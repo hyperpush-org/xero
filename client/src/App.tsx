@@ -4,7 +4,7 @@ import { type View } from '@/components/cadence/data'
 import { ExecutionView } from '@/components/cadence/execution-view'
 import { PhaseView } from '@/components/cadence/phase-view'
 import { ProjectRail } from '@/components/cadence/project-rail'
-import { CadenceShell } from '@/components/cadence/shell'
+import { CadenceShell, type PlatformVariant } from '@/components/cadence/shell'
 import { SettingsDialog } from '@/components/cadence/settings-dialog'
 import { type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
@@ -72,6 +72,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   } = useCadenceDesktopState({ adapter })
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
 
   const renderBody = () => {
     if (isLoading && !activeProject) {
@@ -185,7 +186,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   }
 
   return (
-    <CadenceShell activeView={activeView} onViewChange={setActiveView} projectName={activeProject?.name} onOpenSettings={() => setSettingsOpen(true)}>
+    <CadenceShell activeView={activeView} onViewChange={setActiveView} projectName={activeProject?.name} onOpenSettings={() => setSettingsOpen(true)} platformOverride={platformOverride}>
       <ProjectRail
         activeProjectBranch={repositoryStatus?.branchLabel ?? activeProject?.branchLabel ?? null}
         activeProjectId={activeProjectId}
@@ -207,6 +208,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onLogout={() => logoutRuntimeSession()}
         onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
         onUpsertNotificationRoute={(request) => upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })}
+        platformOverride={platformOverride}
+        onPlatformOverrideChange={setPlatformOverride}
       />
     </CadenceShell>
   )

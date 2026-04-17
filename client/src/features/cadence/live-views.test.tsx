@@ -382,7 +382,6 @@ function makeExecution(
     latestDecisionOutcome: project.latestDecisionOutcome,
     notificationBroker: project.notificationBroker,
     operatorActionError: null,
-    executionUnavailableReason: 'Execution waves and task-by-task progress are not available from the backend yet.',
     verificationUnavailableReason:
       project.verificationRecords.length > 0 || project.resumeHistory.length > 0
         ? 'Durable operator verification and resume history are loaded from the selected project snapshot.'
@@ -1473,7 +1472,6 @@ describe('live views', () => {
       />,
     )
 
-    expect(screen.getByText('No live waves yet')).toBeVisible()
     expect(screen.getByText('The repository is currently clean, so there are no live execution-side file changes to show here.')).toBeVisible()
     expect(screen.getByText('Channel dispatch diagnostics')).toBeVisible()
     expect(

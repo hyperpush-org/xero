@@ -8,7 +8,7 @@ import {
 } from '@/src/lib/cadence-model'
 import type { WorkflowPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import { GitBranch, Hash, LoaderCircle, Milestone, PanelRight, PanelRightClose, Play, Terminal } from 'lucide-react'
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { CenteredEmptyState } from '@/components/cadence/centered-empty-state'
 
 interface PhaseViewProps {
   workflow: WorkflowPaneView
@@ -160,27 +160,31 @@ export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: 
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Milestone header */}
-        <div className="shrink-0 border-b border-border px-6 pb-5 pt-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground">Milestone</p>
-              <h1 className="text-lg font-semibold text-foreground">{milestoneLabel}</h1>
+        <div className="shrink-0 border-b border-border px-5 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 min-w-0 text-[13px]">
+              <span className="shrink-0 text-muted-foreground">Milestone —</span>
+              <h2 className="truncate font-medium text-foreground">{milestoneLabel}</h2>
             </div>
             {hasStarted ? (
-              <div className="text-right">
-                <span className="tabular-nums text-2xl font-semibold text-foreground">{lifecyclePercent}%</span>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
+              <div className="flex items-center gap-3 shrink-0">
+                <div className="w-24 h-1 overflow-hidden rounded-full bg-border">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-500"
+                    style={{ width: `${lifecyclePercent}%` }}
+                  />
+                </div>
+                <span className="tabular-nums text-[12px] font-medium text-foreground">{lifecyclePercent}%</span>
+                <span className="text-[11px] text-muted-foreground">
                   {lifecycle.completedCount}/{LIFECYCLE_STAGE_ORDER.length} stages
-                </p>
+                </span>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
-                <span className="rounded-full border border-border bg-secondary/40 px-2.5 py-1 text-[11px] text-muted-foreground">
-                  Not started
-                </span>
+              <div className="flex items-center gap-3 shrink-0 text-[12px]">
+                <span className="text-muted-foreground">Not started</span>
                 {canStartRun && onStartRun && (
                   <button
-                    className="flex items-center gap-1.5 rounded-full border border-border bg-card/80 px-3 py-1 text-[11px] font-medium text-foreground hover:bg-card hover:border-border/80 transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                     disabled={isStartingRun}
                     onClick={() => void onStartRun()}
                     type="button"
@@ -196,14 +200,6 @@ export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: 
               </div>
             )}
           </div>
-          {hasStarted && (
-            <div className="mt-3 h-1 overflow-hidden rounded-full bg-border">
-              <div
-                className="h-full rounded-full bg-primary transition-all duration-500"
-                style={{ width: `${lifecyclePercent}%` }}
-              />
-            </div>
-          )}
         </div>
 
         {/* Main content */}
@@ -229,19 +225,11 @@ export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: 
               </section>
             </div>
           ) : (
-            <div className="flex flex-1 items-center justify-center">
-              <Empty className="border-0">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Milestone className="size-5 text-muted-foreground" />
-                  </EmptyMedia>
-                  <EmptyTitle className="text-sm font-medium text-foreground">No milestone assigned</EmptyTitle>
-                  <EmptyDescription className="text-xs">
-                    Assign a milestone to this project to start tracking planning lifecycle stages.
-                  </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            </div>
+            <CenteredEmptyState
+              description="Assign a milestone to this project to start tracking planning lifecycle stages."
+              icon={Milestone}
+              title="No milestone assigned"
+            />
           )}
         </div>
       </div>

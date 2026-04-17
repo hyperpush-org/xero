@@ -1,27 +1,31 @@
 "use client"
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ExecutionPaneView,
   RepositoryDiffState,
 } from '@/src/features/cadence/use-cadence-desktop-state'
-import type {
-  RepositoryDiffScope,
-  ResumeHistoryEntryView,
-  VerificationRecordView,
-} from '@/src/lib/cadence-model'
+import type { RepositoryDiffScope } from '@/src/lib/cadence-model'
 import {
   AlertCircle,
   Check,
-  ChevronRight,
   FileCode,
+  FileMinus,
+  FilePlus,
+  FileSymlink,
+  FileWarning,
   GitBranch,
   Hash,
   Loader2,
   RefreshCw,
+  Terminal,
 } from 'lucide-react'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
+import { CenteredEmptyState } from '@/components/cadence/centered-empty-state'
+import { getLangFromPath, tokenizeCode, type TokenizedLine } from '@/lib/shiki'
+
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
 
 interface ExecutionViewProps {
   execution: ExecutionPaneView
@@ -33,142 +37,538 @@ interface ExecutionViewProps {
 
 type ExecutionTab = 'waves' | 'changes' | 'verify'
 
-type DiffLineKind = 'add' | 'del' | 'meta' | 'context'
-
-type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive'
-type NotificationBrokerRouteView = ExecutionPaneView['notificationBroker']['routes'][number]
-
-interface DiffLineView {
-  kind: DiffLineKind
-  content: string
-}
-
 const TAB_LABELS: Record<ExecutionTab, string> = {
   waves: 'Execution',
   changes: 'Changes',
   verify: 'Verify',
 }
 
-function parsePatch(patch: string): DiffLineView[] {
-  return patch.split('\n').map((content) => {
-    if (content.startsWith('+') && !content.startsWith('+++')) {
-      return { kind: 'add', content }
+// ---------------------------------------------------------------------------
+// Diff parsing — unified patch → per-file structures
+// ---------------------------------------------------------------------------
+
+type DiffLineKind = 'add' | 'del' | 'hunk' | 'context'
+
+interface DiffLine {
+  kind: DiffLineKind
+  content: string
+  /** Line number in the new file (null for deletions and hunk headers) */
+  newNum: number | null
+  /** Line number in the old file (null for additions and hunk headers) */
+  oldNum: number | null
+}
+
+interface FileDiff {
+  path: string
+  name: string
+  changeKind: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'unknown'
+  additions: number
+  deletions: number
+  lines: DiffLine[]
+}
+
+const HUNK_HEADER_RE = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/
+
+function parseUnifiedPatch(patch: string): FileDiff[] {
+  if (!patch.trim()) return []
+
+  const files: FileDiff[] = []
+  let current: {
+    path: string
+    changeKind: FileDiff['changeKind']
+    lines: DiffLine[]
+    adds: number
+    dels: number
+  } | null = null
+
+  let oldLine = 0
+  let newLine = 0
+
+  function flush() {
+    if (!current) return
+    const parts = current.path.split('/')
+    files.push({
+      path: current.path,
+      name: parts[parts.length - 1],
+      changeKind: current.changeKind,
+      additions: current.adds,
+      deletions: current.dels,
+      lines: current.lines,
+    })
+    current = null
+  }
+
+  const rawLines = patch.split('\n')
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i]
+
+    if (line.startsWith('diff --git ')) {
+      flush()
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/)
+      const filePath = match ? match[2] : 'unknown'
+
+      let changeKind: FileDiff['changeKind'] = 'modified'
+      let j = i + 1
+      while (j < rawLines.length && !rawLines[j].startsWith('diff --git ') && !rawLines[j].startsWith('@@')) {
+        if (rawLines[j].startsWith('new file mode')) changeKind = 'added'
+        else if (rawLines[j].startsWith('deleted file mode')) changeKind = 'deleted'
+        else if (rawLines[j].startsWith('rename from') || rawLines[j].startsWith('similarity index')) changeKind = 'renamed'
+        else if (rawLines[j].startsWith('copy from')) changeKind = 'copied'
+        j++
+      }
+
+      current = { path: filePath, changeKind, lines: [], adds: 0, dels: 0 }
+      continue
     }
 
-    if (content.startsWith('-') && !content.startsWith('---')) {
-      return { kind: 'del', content }
-    }
+    if (!current) continue
 
     if (
-      content.startsWith('diff ') ||
-      content.startsWith('index ') ||
-      content.startsWith('@@') ||
-      content.startsWith('---') ||
-      content.startsWith('+++')
+      line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ') ||
+      line.startsWith('old mode') || line.startsWith('new mode') ||
+      line.startsWith('new file mode') || line.startsWith('deleted file mode') ||
+      line.startsWith('rename from') || line.startsWith('rename to') ||
+      line.startsWith('copy from') || line.startsWith('copy to') ||
+      line.startsWith('similarity index') || line.startsWith('dissimilarity index')
     ) {
-      return { kind: 'meta', content }
+      continue
     }
 
-    return { kind: 'context', content }
-  })
+    const hunkMatch = line.match(HUNK_HEADER_RE)
+    if (hunkMatch) {
+      oldLine = parseInt(hunkMatch[1], 10)
+      newLine = parseInt(hunkMatch[2], 10)
+      current.lines.push({ kind: 'hunk', content: line, oldNum: null, newNum: null })
+      continue
+    }
+
+    if (line.startsWith('+')) {
+      current.lines.push({ kind: 'add', content: line.slice(1), oldNum: null, newNum: newLine })
+      current.adds++
+      newLine++
+    } else if (line.startsWith('-')) {
+      current.lines.push({ kind: 'del', content: line.slice(1), oldNum: oldLine, newNum: null })
+      current.dels++
+      oldLine++
+    } else if (line.startsWith('\\')) {
+      continue
+    } else {
+      const text = line.startsWith(' ') ? line.slice(1) : line
+      current.lines.push({ kind: 'context', content: text, oldNum: oldLine, newNum: newLine })
+      oldLine++
+      newLine++
+    }
+  }
+
+  flush()
+  return files
 }
 
-function displayValue(value: string | null | undefined, fallback: string): string {
-  if (typeof value !== 'string') {
-    return fallback
-  }
+// ---------------------------------------------------------------------------
+// Syntax highlighting — reconstruct old/new code, tokenize, map back
+// ---------------------------------------------------------------------------
 
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : fallback
+/**
+ * For each diff line, build a mapping to the token array from either
+ * the "new" tokenization (context + adds) or the "old" tokenization (context + dels).
+ */
+function useHighlightedDiff(file: FileDiff | null): Map<number, TokenizedLine> {
+  const [tokenMap, setTokenMap] = useState<Map<number, TokenizedLine>>(new Map())
+  const filePathRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!file) {
+      setTokenMap(new Map())
+      return
+    }
+
+    // Reset immediately on file change to avoid stale tokens
+    if (filePathRef.current !== file.path) {
+      filePathRef.current = file.path
+      setTokenMap(new Map())
+    }
+
+    // Capture non-null file for use inside closures (TS narrowing doesn't cross async boundaries)
+    const currentFile = file
+
+    const lang = getLangFromPath(currentFile.path)
+    if (!lang) return
+
+    let cancelled = false
+
+    const newCodeLines: string[] = []
+    const newDiffIndices: number[] = []
+    const oldCodeLines: string[] = []
+    const oldDiffIndices: number[] = []
+
+    for (let i = 0; i < currentFile.lines.length; i++) {
+      const line = currentFile.lines[i]
+      if (line.kind === 'hunk') continue
+      if (line.kind === 'context' || line.kind === 'add') {
+        newCodeLines.push(line.content)
+        newDiffIndices.push(i)
+      }
+      if (line.kind === 'context' || line.kind === 'del') {
+        oldCodeLines.push(line.content)
+        oldDiffIndices.push(i)
+      }
+    }
+
+    async function run() {
+      const results = new Map<number, TokenizedLine>()
+
+      const newTokens = await tokenizeCode(newCodeLines.join('\n'), lang!)
+      if (cancelled) return
+      if (newTokens) {
+        for (let i = 0; i < newTokens.length && i < newDiffIndices.length; i++) {
+          results.set(newDiffIndices[i], newTokens[i])
+        }
+      }
+
+      const oldTokens = await tokenizeCode(oldCodeLines.join('\n'), lang!)
+      if (cancelled) return
+      if (oldTokens) {
+        for (let i = 0; i < oldTokens.length && i < oldDiffIndices.length; i++) {
+          const diffIdx = oldDiffIndices[i]
+          if (currentFile.lines[diffIdx].kind === 'del') {
+            results.set(diffIdx, oldTokens[i])
+          }
+        }
+      }
+
+      if (!cancelled) setTokenMap(results)
+    }
+
+    run()
+    return () => { cancelled = true }
+  }, [file])
+
+  return tokenMap
 }
 
-function getTimestampValue(timestamp: string | null | undefined): number {
-  if (typeof timestamp !== 'string' || timestamp.trim().length === 0) {
-    return 0
-  }
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
 
-  const parsed = new Date(timestamp)
-  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime()
-}
-
-function sortByNewest<T>(values: T[], getTimestamp: (value: T) => string | null | undefined): T[] {
-  return [...values].sort((left, right) => getTimestampValue(getTimestamp(right)) - getTimestampValue(getTimestamp(left)))
-}
-
-function formatTimestamp(timestamp: string | null | undefined): string {
-  if (typeof timestamp !== 'string' || timestamp.trim().length === 0) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(timestamp)
-  if (Number.isNaN(parsed.getTime())) {
-    return timestamp
-  }
-
-  return parsed.toLocaleString()
-}
-
-function getVerificationBadgeVariant(status: VerificationRecordView['status']): BadgeVariant {
-  switch (status) {
-    case 'pending':
-      return 'secondary'
-    case 'passed':
-      return 'default'
-    case 'failed':
-      return 'destructive'
+function getKindBadge(changeKind: FileDiff['changeKind']): { label: string; cls: string } {
+  switch (changeKind) {
+    case 'added': return { label: 'A', cls: 'bg-success/15 text-success' }
+    case 'deleted': return { label: 'D', cls: 'bg-destructive/15 text-destructive-foreground' }
+    case 'renamed': return { label: 'R', cls: 'bg-chart-4/15 text-chart-4' }
+    case 'copied': return { label: 'C', cls: 'bg-chart-2/15 text-chart-2' }
+    case 'modified': return { label: 'M', cls: 'bg-chart-1/15 text-chart-1' }
+    default: return { label: '?', cls: 'bg-muted text-muted-foreground' }
   }
 }
 
-function getResumeBadgeVariant(status: ResumeHistoryEntryView['status']): BadgeVariant {
-  switch (status) {
-    case 'started':
-      return 'default'
-    case 'failed':
-      return 'destructive'
+function getFileIcon(kind: FileDiff['changeKind']) {
+  switch (kind) {
+    case 'added': return FilePlus
+    case 'deleted': return FileMinus
+    case 'renamed': case 'copied': return FileSymlink
+    default: return FileCode
   }
 }
 
-function getRouteDiagnosticBadgeVariant(route: NotificationBrokerRouteView): BadgeVariant {
-  if (route.hasFailures) {
-    return 'destructive'
+/** Render a line's code content with syntax tokens when available, or plain text. */
+function TokenizedContent({ content, tokens }: { content: string; tokens?: TokenizedLine }) {
+  if (!tokens || tokens.length === 0) {
+    return <>{content || ' '}</>
   }
 
-  if (route.hasPending) {
-    return 'secondary'
-  }
-
-  return 'default'
-}
-
-function getRouteDiagnosticLabel(route: NotificationBrokerRouteView): string {
-  if (route.hasFailures) {
-    return 'Needs attention'
-  }
-
-  if (route.hasPending) {
-    return 'Pending replies'
-  }
-
-  return 'Healthy'
-}
-
-function StatusBadge({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-md border border-border bg-card/70 px-3 py-2">
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-[13px] text-foreground/80">{value}</p>
+    <>
+      {tokens.map((tok, i) => (
+        <span key={i} style={tok.color ? { color: tok.color } : undefined}>
+          {tok.content}
+        </span>
+      ))}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Diff viewer table
+// ---------------------------------------------------------------------------
+
+function DiffViewer({ file, baseLabel }: { file: FileDiff; baseLabel: string }) {
+  const tokenMap = useHighlightedDiff(file)
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      {/* File path header */}
+      <div className="flex items-center gap-2 border-b border-border bg-secondary/20 px-3 py-1.5 shrink-0">
+        {(() => {
+          const Icon = getFileIcon(file.changeKind)
+          return <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        })()}
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/80">
+          {file.path}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+          {baseLabel}
+        </span>
+      </div>
+
+      {/* Diff lines */}
+      <div className="flex-1 overflow-auto scrollbar-thin">
+        <table className="w-full border-collapse font-mono text-[11px] leading-[18px]">
+          <tbody>
+            {file.lines.map((line, idx) => {
+              if (line.kind === 'hunk') {
+                return (
+                  <tr key={idx} className="bg-chart-1/[0.04]">
+                    <td className="w-[1px] whitespace-nowrap border-r border-border select-none">
+                      <span className="block px-2 py-px text-right text-[10px] text-chart-1/40">···</span>
+                    </td>
+                    <td className="py-px pl-3 pr-4 text-chart-1/60 select-none">{line.content}</td>
+                  </tr>
+                )
+              }
+
+              // Single gutter: show new-file line number for context/add, old-file for del
+              const lineNum = line.kind === 'del' ? line.oldNum : line.newNum
+
+              const rowBg =
+                line.kind === 'add'
+                  ? 'bg-success/[0.06]'
+                  : line.kind === 'del'
+                    ? 'bg-destructive/[0.08]'
+                    : ''
+
+              const gutterColor =
+                line.kind === 'add'
+                  ? 'text-success/30'
+                  : line.kind === 'del'
+                    ? 'text-destructive-foreground/30'
+                    : 'text-muted-foreground/40'
+
+              // Prefix indicator
+              const prefix = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '
+
+              // For add/del with no syntax tokens, tint the text; for context + highlighted, use token colors
+              const hasTokens = tokenMap.has(idx)
+              const plainColor =
+                line.kind === 'add'
+                  ? 'text-success/90'
+                  : line.kind === 'del'
+                    ? 'text-destructive-foreground/90'
+                    : 'text-foreground/70'
+
+              return (
+                <tr key={idx} className={rowBg}>
+                  <td className={`w-[1px] whitespace-nowrap border-r border-border px-2 py-px text-right select-none tabular-nums ${gutterColor}`}>
+                    {lineNum ?? ''}
+                  </td>
+                  <td className="whitespace-pre py-px pl-3 pr-4">
+                    <span className={line.kind === 'add' ? 'text-success/50' : line.kind === 'del' ? 'text-destructive-foreground/50' : 'text-transparent'} aria-hidden>
+                      {prefix}
+                    </span>
+                    {hasTokens ? (
+                      <TokenizedContent content={line.content} tokens={tokenMap.get(idx)} />
+                    ) : (
+                      <span className={plainColor}>{line.content || ' '}</span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
-function VerifyEmptyState({ title, body }: { title: string; body: string }) {
+// ---------------------------------------------------------------------------
+// Changes tab
+// ---------------------------------------------------------------------------
+
+function ChangesView({
+  execution,
+  activeDiffScope,
+  activeDiff,
+  onSelectDiffScope,
+  onRetryDiff,
+}: Omit<ExecutionViewProps, 'execution'> & { execution: ExecutionPaneView }) {
+  const fileDiffs = useMemo(() => parseUnifiedPatch(activeDiff.diff?.patch ?? ''), [activeDiff.diff?.patch])
+  const [selectedIdx, setSelectedIdx] = useState(0)
+
+  const selectedFile = fileDiffs[selectedIdx] ?? fileDiffs[0] ?? null
+  const totalAdds = fileDiffs.reduce((s, f) => s + f.additions, 0)
+  const totalDels = fileDiffs.reduce((s, f) => s + f.deletions, 0)
+
   return (
-    <div className="rounded-xl border border-dashed border-border/70 bg-secondary/20 px-4 py-5 text-sm text-muted-foreground">
-      <p className="font-medium text-foreground/85">{title}</p>
-      <p className="mt-1 leading-6">{body}</p>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 shrink-0 bg-secondary/20">
+        <div className="flex items-center gap-1">
+          {execution.diffScopes.map((ds) => (
+            <button
+              className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                activeDiffScope === ds.scope
+                  ? 'bg-secondary text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+              }`}
+              key={ds.scope}
+              onClick={() => { onSelectDiffScope(ds.scope); setSelectedIdx(0) }}
+              type="button"
+            >
+              {ds.label}
+              {ds.count > 0 ? <span className="ml-1.5 tabular-nums opacity-60">{ds.count}</span> : null}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <GitBranch className="h-3 w-3" />
+            {execution.branchLabel}
+          </span>
+          <span className="flex items-center gap-1 font-mono">
+            <Hash className="h-3 w-3" />
+            {execution.headShaLabel.slice(0, 8)}
+          </span>
+          <button
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-secondary/50 hover:text-foreground"
+            onClick={onRetryDiff}
+            type="button"
+          >
+            <RefreshCw className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+
+      {/* Loading */}
+      {activeDiff.status === 'loading' ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>Loading {activeDiffScope} diff…</span>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Error */}
+      {activeDiff.status === 'error' ? (
+        <div className="flex flex-1 items-center justify-center p-6">
+          <div className="max-w-sm rounded-lg border border-destructive/20 bg-destructive/5 p-4">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive-foreground" />
+              <div className="flex-1">
+                <p className="text-[13px] font-medium text-destructive-foreground">Failed to load diff</p>
+                <p className="mt-1 text-[12px] leading-5 text-destructive-foreground/70">
+                  {activeDiff.errorMessage ?? 'Unknown error.'}
+                </p>
+                <button
+                  className="mt-3 rounded border border-destructive/30 px-2.5 py-1 text-[11px] font-medium text-destructive-foreground transition-colors hover:bg-destructive/10"
+                  onClick={onRetryDiff}
+                  type="button"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Empty */}
+      {activeDiff.status === 'ready' && activeDiff.diff?.isEmpty ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center gap-2 text-center">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-success/10">
+              <Check className="h-5 w-5 text-success" />
+            </div>
+            <p className="text-[13px] font-medium text-foreground/80">No {activeDiffScope} changes</p>
+            <p className="max-w-xs text-[12px] leading-5 text-muted-foreground">Working tree is clean for this scope.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {/* File list + diff viewer */}
+      {activeDiff.status === 'ready' && activeDiff.diff && !activeDiff.diff.isEmpty && fileDiffs.length > 0 ? (
+        <div className="flex min-h-0 flex-1">
+          {/* File sidebar */}
+          <div className="flex w-64 shrink-0 flex-col border-r border-border">
+            <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+              <span className="text-[11px] text-muted-foreground">
+                {fileDiffs.length} {fileDiffs.length === 1 ? 'file' : 'files'}
+              </span>
+              <div className="flex items-center gap-2 font-mono text-[11px]">
+                {totalAdds > 0 ? <span className="text-success">+{totalAdds}</span> : null}
+                {totalDels > 0 ? <span className="text-destructive-foreground">−{totalDels}</span> : null}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto scrollbar-thin">
+              {fileDiffs.map((file, i) => {
+                const badge = getKindBadge(file.changeKind)
+                const selected = i === selectedIdx || (selectedIdx >= fileDiffs.length && i === 0)
+                return (
+                  <button
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${
+                      selected
+                        ? 'bg-secondary text-foreground'
+                        : 'text-foreground/70 hover:bg-secondary/40 hover:text-foreground'
+                    }`}
+                    key={`${file.path}-${i}`}
+                    onClick={() => setSelectedIdx(i)}
+                    type="button"
+                  >
+                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[9px] font-bold ${badge.cls}`}>
+                      {badge.label}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={file.path}>
+                      {file.path}
+                    </span>
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
+                      {file.additions > 0 ? `+${file.additions}` : ''}
+                      {file.additions > 0 && file.deletions > 0 ? ' ' : ''}
+                      {file.deletions > 0 ? `−${file.deletions}` : ''}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {activeDiff.diff.truncated ? (
+              <div className="border-t border-border px-3 py-1.5">
+                <span className="text-[10px] text-muted-foreground">
+                  <FileWarning className="mr-1 inline h-3 w-3" />
+                  Output was truncated
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          {/* Diff viewer */}
+          {selectedFile ? (
+            <DiffViewer file={selectedFile} baseLabel={activeDiff.diff.baseRevisionLabel} />
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Malformed patch fallback */}
+      {activeDiff.status === 'ready' && activeDiff.diff && !activeDiff.diff.isEmpty && fileDiffs.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center gap-2 text-center">
+            <FileWarning className="h-5 w-5 text-muted-foreground" />
+            <p className="text-[13px] font-medium text-foreground/80">Could not parse diff</p>
+            <p className="max-w-xs text-[12px] leading-5 text-muted-foreground">
+              The patch was not empty but contained no parseable file diffs.
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Top-level ExecutionView
+// ---------------------------------------------------------------------------
 
 export function ExecutionView({
   execution,
@@ -178,49 +578,26 @@ export function ExecutionView({
   onRetryDiff,
 }: ExecutionViewProps) {
   const [activeTab, setActiveTab] = useState<ExecutionTab>('waves')
-  const diffLines = useMemo(() => parsePatch(activeDiff.diff?.patch ?? ''), [activeDiff.diff?.patch])
-  const verificationRecords = useMemo(
-    () => sortByNewest(execution.verificationRecords, (record) => record.recordedAt).slice(0, 8),
-    [execution.verificationRecords],
-  )
-  const resumeHistory = useMemo(
-    () => sortByNewest(execution.resumeHistory, (entry) => entry.createdAt).slice(0, 8),
-    [execution.resumeHistory],
-  )
-  const routeDiagnostics = useMemo(
-    () => execution.notificationBroker.routes.slice(0, 8),
-    [execution.notificationBroker.routes],
-  )
-  const failedRouteCount = useMemo(
-    () => routeDiagnostics.filter((route) => route.hasFailures).length,
-    [routeDiagnostics],
-  )
-  const pendingRouteCount = useMemo(
-    () => routeDiagnostics.filter((route) => route.hasPending).length,
-    [routeDiagnostics],
-  )
-  const hasDurableVerificationState = verificationRecords.length > 0 || resumeHistory.length > 0
 
   const handleSelectTab = (tab: ExecutionTab) => {
     setActiveTab(tab)
-
-    if (tab === 'changes') {
-      onSelectDiffScope(activeDiffScope)
-    }
+    if (tab === 'changes') onSelectDiffScope(activeDiffScope)
   }
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex items-center border-b border-border shrink-0">
-        <div className="border-r border-border px-5 py-3">
-          <p className="mb-0.5 text-[10px] text-muted-foreground">Phase {execution.activePhase?.id ?? '—'}</p>
-          <h2 className="text-[13px] font-medium text-foreground">{execution.activePhase?.name ?? 'No active phase yet'}</h2>
+        <div className="border-r border-border px-5 py-2.5">
+          <div className="flex items-center gap-2 text-[13px]">
+            <span className="text-muted-foreground">Phase —</span>
+            <h2 className="font-medium text-foreground">{execution.activePhase?.name ?? 'None active'}</h2>
+          </div>
         </div>
 
         <nav className="flex h-full items-center">
           {(['waves', 'changes', 'verify'] as const).map((tab) => (
             <button
-              className={`-mb-px border-b px-4 py-3 text-[12px] font-medium capitalize transition-colors ${
+              className={`-mb-px border-b-2 px-4 py-3 text-[12px] font-medium transition-colors ${
                 activeTab === tab
                   ? 'border-foreground text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground/70'
@@ -233,390 +610,37 @@ export function ExecutionView({
             </button>
           ))}
         </nav>
+      </div>
 
-        <div className="ml-auto flex items-center gap-3 px-5 text-[11px] text-muted-foreground">
-          <div className="flex items-center gap-1">
-            <GitBranch className="h-3.5 w-3.5" />
-            <span className="font-mono">{execution.branchLabel}</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Hash className="h-3.5 w-3.5" />
-            <span className="font-mono">{execution.headShaLabel}</span>
-          </div>
+      {activeTab === 'waves' ? (
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <CenteredEmptyState
+            description="Execution activity will appear here once this project records live run output or backend execution views become available."
+            icon={Terminal}
+            title="No execution activity yet"
+          />
         </div>
-      </div>
+      ) : null}
 
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {activeTab === 'waves' ? (
-          <div className="max-w-4xl space-y-4 p-5">
-            <div className="grid gap-3 sm:grid-cols-4">
-              <StatusBadge label="Selected project" value={execution.project.id} />
-              <StatusBadge label="Tracked paths" value={execution.statusCount} />
-              <StatusBadge label="Branch" value={execution.branchLabel} />
-              <StatusBadge label="HEAD" value={execution.headShaLabel} />
-            </div>
+      {activeTab === 'changes' ? (
+        <ChangesView
+          activeDiff={activeDiff}
+          activeDiffScope={activeDiffScope}
+          execution={execution}
+          onRetryDiff={onRetryDiff}
+          onSelectDiffScope={onSelectDiffScope}
+        />
+      ) : null}
 
-            <div className="rounded-lg border border-border bg-card p-4">
-              <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution availability</p>
-              <h3 className="mt-2 text-[15px] font-semibold text-foreground">No live waves yet</h3>
-              <p className="mt-2 text-[13px] leading-6 text-muted-foreground">{execution.executionUnavailableReason}</p>
-            </div>
-
-            <div className="rounded-lg border border-border bg-card/70 p-4">
-              <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Current repository truth</p>
-              {execution.statusEntries.length > 0 ? (
-                <div className="mt-3 space-y-2">
-                  {execution.statusEntries.map((entry) => (
-                    <div key={entry.path} className="flex items-center gap-3 rounded-md border border-border/70 px-3 py-2 text-[12px]">
-                      <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate font-mono text-foreground/80">{entry.path}</span>
-                      <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide">
-                        {entry.staged ? <span className="rounded bg-success/10 px-1.5 py-0.5 text-success">staged</span> : null}
-                        {entry.unstaged ? <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-foreground/70">unstaged</span> : null}
-                        {entry.untracked ? <span className="rounded bg-secondary px-1.5 py-0.5 text-muted-foreground">untracked</span> : null}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-3 text-[13px] leading-6 text-muted-foreground">The repository is currently clean, so there are no live execution-side file changes to show here.</p>
-              )}
-            </div>
-
-            <div className="rounded-lg border border-border bg-card/70 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Channel dispatch diagnostics</p>
-                <Badge variant={execution.notificationBroker.failedCount > 0 ? 'destructive' : execution.notificationBroker.pendingCount > 0 ? 'secondary' : 'default'}>
-                  {execution.notificationBroker.dispatchCount} dispatch rows
-                </Badge>
-              </div>
-
-              <div className="mt-3 grid gap-2 sm:grid-cols-4">
-                <StatusBadge label="Routes" value={execution.notificationBroker.routeCount} />
-                <StatusBadge label="Failed routes" value={failedRouteCount} />
-                <StatusBadge label="Pending routes" value={pendingRouteCount} />
-                <StatusBadge
-                  label="Latest dispatch"
-                  value={displayValue(formatTimestamp(execution.notificationBroker.latestUpdatedAt), 'Unknown')}
-                />
-              </div>
-
-              {execution.notificationBroker.isTruncated ? (
-                <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
-                  Showing the newest {execution.notificationBroker.dispatchCount} dispatch rows out of{' '}
-                  {execution.notificationBroker.totalBeforeTruncation} total rows.
-                </p>
-              ) : null}
-
-              {routeDiagnostics.length > 0 ? (
-                <div className="mt-4 space-y-3">
-                  {routeDiagnostics.map((route) => (
-                    <div key={route.routeId} className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-mono text-sm font-semibold text-foreground">{route.routeId}</p>
-                        <Badge variant={getRouteDiagnosticBadgeVariant(route)}>{getRouteDiagnosticLabel(route)}</Badge>
-                      </div>
-
-                      <div className="mt-3 grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
-                        <p>Pending: <span className="font-mono text-foreground/75">{route.pendingCount}</span></p>
-                        <p>Sent: <span className="font-mono text-foreground/75">{route.sentCount}</span></p>
-                        <p>Failed: <span className="font-mono text-foreground/75">{route.failedCount}</span></p>
-                        <p>Claimed: <span className="font-mono text-foreground/75">{route.claimedCount}</span></p>
-                      </div>
-
-                      {route.latestFailureCode && route.latestFailureMessage ? (
-                        <div className="mt-3 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
-                          <p className="font-mono">{route.latestFailureCode}</p>
-                          <p className="mt-1 leading-5 text-destructive/90">{route.latestFailureMessage}</p>
-                        </div>
-                      ) : (
-                        <p className="mt-3 text-[11px] text-muted-foreground">No failure diagnostics recorded for this route.</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-3 text-[13px] leading-6 text-muted-foreground">
-                  Cadence has not recorded any notification dispatch rows for this project yet, so channel health stays empty instead of fabricated.
-                </p>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {activeTab === 'changes' ? (
-          <div className="max-w-4xl p-5">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              {execution.diffScopes.map((diffScope) => (
-                <button
-                  className={`rounded-md border px-3 py-1.5 text-[11px] font-medium transition-colors ${
-                    activeDiffScope === diffScope.scope
-                      ? 'border-foreground bg-secondary text-foreground'
-                      : 'border-border bg-card/70 text-muted-foreground hover:text-foreground'
-                  }`}
-                  key={diffScope.scope}
-                  onClick={() => onSelectDiffScope(diffScope.scope)}
-                  type="button"
-                >
-                  {diffScope.label} · {diffScope.count}
-                </button>
-              ))}
-            </div>
-
-            <div className="mb-4 grid gap-3 sm:grid-cols-4">
-              <StatusBadge label="Selected project" value={execution.project.id} />
-              <StatusBadge label="Active diff" value={activeDiffScope} />
-              <StatusBadge label="Status paths" value={execution.statusCount} />
-              <StatusBadge label="Repository state" value={execution.hasChanges ? 'Dirty' : 'Clean'} />
-            </div>
-
-            {activeDiff.status === 'loading' ? (
-              <div className="mb-4 flex items-center gap-2 rounded-md border border-border bg-secondary/30 px-3.5 py-2.5 text-[12px] text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>Loading {activeDiffScope} diff…</span>
-              </div>
-            ) : null}
-
-            {activeDiff.status === 'error' ? (
-              <div className="mb-4 rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-3 text-[12px] text-destructive">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <div className="flex-1">
-                    <p className="font-medium">Failed to load the {activeDiffScope} diff.</p>
-                    <p className="mt-1 leading-5">{activeDiff.errorMessage ?? 'Unknown diff load error.'}</p>
-                  </div>
-                  <button
-                    className="rounded border border-destructive/30 px-2 py-1 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/10"
-                    onClick={onRetryDiff}
-                    type="button"
-                  >
-                    Retry
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {activeDiff.status === 'ready' && activeDiff.diff?.isEmpty ? (
-              <div className="rounded-lg border border-border bg-card p-5">
-                <div className="flex items-center gap-2 text-foreground/80">
-                  <Check className="h-4 w-4 text-success" />
-                  <h3 className="text-[14px] font-semibold">No {activeDiffScope} diff available</h3>
-                </div>
-                <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
-                  The backend returned an empty patch for this scope, so the current repository truth is a clean or non-diffable state for {activeDiffScope} changes.
-                </p>
-              </div>
-            ) : null}
-
-            {activeDiff.diff && !activeDiff.diff.isEmpty ? (
-              <div className="rounded-md border border-border overflow-hidden">
-                <div className="flex items-center justify-between border-b border-border bg-secondary/30 px-3.5 py-2">
-                  <span className="text-[11px] font-mono text-muted-foreground">
-                    {activeDiffScope} diff · base {activeDiff.diff.baseRevisionLabel}
-                  </span>
-                  <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
-                    {activeDiff.diff.truncated ? (
-                      <span className="rounded bg-secondary px-1.5 py-0.5">truncated</span>
-                    ) : null}
-                    <button
-                      className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 transition-colors hover:bg-secondary/50"
-                      onClick={onRetryDiff}
-                      type="button"
-                    >
-                      <RefreshCw className="h-3 w-3" />
-                      Refresh
-                    </button>
-                  </div>
-                </div>
-                <div className="overflow-x-auto font-mono text-[11px] leading-5">
-                  {diffLines.map((line, index) => (
-                    <div
-                      className={`flex px-3.5 ${line.kind === 'add' ? 'border-l-2 border-success/30 bg-success/5' : ''} ${
-                        line.kind === 'del' ? 'border-l-2 border-destructive/30 bg-destructive/5' : ''
-                      } ${line.kind === 'meta' ? 'border-l-2 border-border bg-secondary/20 text-foreground/60' : ''} ${
-                        line.kind === 'context' ? 'border-l-2 border-transparent' : ''
-                      }`}
-                      key={`${line.kind}-${index}`}
-                    >
-                      <span
-                        className={`w-4 shrink-0 select-none text-center ${line.kind === 'add' ? 'text-success' : ''} ${
-                          line.kind === 'del' ? 'text-destructive' : ''
-                        } ${line.kind === 'meta' ? 'text-muted-foreground' : ''}`}
-                      >
-                        {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : line.kind === 'meta' ? '›' : ' '}
-                      </span>
-                      <span
-                        className={`flex-1 whitespace-pre-wrap ${line.kind === 'add' ? 'text-success/80' : ''} ${
-                          line.kind === 'del' ? 'text-destructive/80' : ''
-                        } ${line.kind === 'context' ? 'text-foreground/60' : ''}`}
-                      >
-                        {line.content || ' '}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {activeTab === 'verify' ? (
-          <div className="max-w-4xl space-y-4 p-5">
-            <div className="rounded-lg border border-border bg-card p-4">
-              <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Verification availability</p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <h3 className="text-[15px] font-semibold text-foreground">
-                  {hasDurableVerificationState ? 'Repo-local operator verification truth' : 'No verification records yet'}
-                </h3>
-                <Badge variant={hasDurableVerificationState ? 'default' : 'outline'}>
-                  {verificationRecords.length + resumeHistory.length} durable rows
-                </Badge>
-              </div>
-              <p className="mt-2 text-[13px] leading-6 text-muted-foreground">{execution.verificationUnavailableReason}</p>
-            </div>
-
-            {execution.operatorActionError ? (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Operator loop error remains visible</AlertTitle>
-                <AlertDescription>
-                  <p>{execution.operatorActionError.message}</p>
-                  <p className="font-mono text-[11px] text-destructive/80">code: {execution.operatorActionError.code}</p>
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <StatusBadge label="Selected project" value={execution.project.id} />
-              <StatusBadge label="Verification rows" value={verificationRecords.length} />
-              <StatusBadge label="Resume rows" value={resumeHistory.length} />
-              <StatusBadge
-                label="Latest decision"
-                value={execution.latestDecisionOutcome ? displayValue(execution.latestDecisionOutcome.statusLabel, execution.latestDecisionOutcome.status) : 'None'}
-              />
-            </div>
-
-            {!hasDurableVerificationState ? (
-              <VerifyEmptyState
-                body="Cadence will keep this view empty until the selected project snapshot contains real verification or resume rows. No placeholder pass state is fabricated here."
-                title="No durable verification or resume rows yet"
-              />
-            ) : (
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,1fr)]">
-                <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Verification records</p>
-                      <p className="mt-1 text-sm text-muted-foreground">Durable rows written when approval decisions are persisted or verification outcomes are recorded.</p>
-                    </div>
-                    <Badge variant={verificationRecords.length > 0 ? 'default' : 'outline'}>{verificationRecords.length} rows</Badge>
-                  </div>
-
-                  <div className="mt-4 space-y-3">
-                    {verificationRecords.length > 0 ? (
-                      verificationRecords.map((record) => (
-                        <div key={record.id} className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-sm font-semibold text-foreground">{displayValue(record.summary, 'Verification record available.')}</p>
-                            <Badge variant={getVerificationBadgeVariant(record.status)}>
-                              {displayValue(record.statusLabel, record.status)}
-                            </Badge>
-                          </div>
-                          <div className="mt-3 grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-2">
-                            <p>Action id: <span className="font-mono text-foreground/75">{displayValue(record.sourceActionId, 'Unknown')}</span></p>
-                            <p>Recorded: <span className="text-foreground/75">{formatTimestamp(record.recordedAt)}</span></p>
-                          </div>
-                          {record.detail ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{record.detail}</p> : null}
-                        </div>
-                      ))
-                    ) : (
-                      <VerifyEmptyState
-                        body="Cadence has resume history for this project, but no separate durable verification rows were recorded yet."
-                        title="No verification rows recorded"
-                      />
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Latest operator decision</p>
-                        <p className="mt-1 text-sm text-muted-foreground">Most recent durable approval outcome linked to this repo-local verification history.</p>
-                      </div>
-                      <Badge
-                        variant={
-                          execution.latestDecisionOutcome
-                            ? execution.latestDecisionOutcome.status === 'approved'
-                              ? 'default'
-                              : 'destructive'
-                            : 'outline'
-                        }
-                      >
-                        {execution.latestDecisionOutcome ? displayValue(execution.latestDecisionOutcome.statusLabel, execution.latestDecisionOutcome.status) : 'None'}
-                      </Badge>
-                    </div>
-
-                    {execution.latestDecisionOutcome ? (
-                      <div className="mt-4 rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                        <p className="text-sm font-semibold text-foreground">{displayValue(execution.latestDecisionOutcome.title, 'Operator decision')}</p>
-                        <p className="mt-3 text-[11px] text-muted-foreground">
-                          Action id: <span className="font-mono text-foreground/75">{displayValue(execution.latestDecisionOutcome.actionId, 'Unknown')}</span>
-                        </p>
-                        <p className="mt-1 text-[11px] text-muted-foreground">
-                          Resolved: <span className="text-foreground/75">{formatTimestamp(execution.latestDecisionOutcome.resolvedAt)}</span>
-                        </p>
-                        {execution.latestDecisionOutcome.decisionNote ? (
-                          <p className="mt-3 text-sm leading-6 text-muted-foreground">{execution.latestDecisionOutcome.decisionNote}</p>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <VerifyEmptyState
-                        body="Once an operator decision is resolved, Cadence keeps the latest durable outcome visible alongside verification history."
-                        title="No resolved operator decision yet"
-                      />
-                    )}
-                  </div>
-
-                  <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Resume history</p>
-                        <p className="mt-1 text-sm text-muted-foreground">Durable restarts that were recorded after an approved operator action reopened the runtime loop.</p>
-                      </div>
-                      <Badge variant={resumeHistory.length > 0 ? 'default' : 'outline'}>{resumeHistory.length} rows</Badge>
-                    </div>
-
-                    <div className="mt-4 space-y-3">
-                      {resumeHistory.length > 0 ? (
-                        resumeHistory.map((entry) => (
-                          <div key={entry.id} className="rounded-xl border border-border/70 bg-background/70 px-4 py-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-semibold text-foreground">{displayValue(entry.summary, 'Resume history recorded.')}</p>
-                              <Badge variant={getResumeBadgeVariant(entry.status)}>{displayValue(entry.statusLabel, entry.status)}</Badge>
-                            </div>
-                            <div className="mt-3 grid gap-2 text-[11px] text-muted-foreground">
-                              <p>Action id: <span className="font-mono text-foreground/75">{displayValue(entry.sourceActionId, 'Unknown')}</span></p>
-                              <p>Session: <span className="font-mono text-foreground/75">{displayValue(entry.sessionId, 'Unknown')}</span></p>
-                              <p>Recorded: <span className="text-foreground/75">{formatTimestamp(entry.createdAt)}</span></p>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <VerifyEmptyState
-                          body="Verification rows exist for this project, but no durable resume entry has been recorded yet."
-                          title="No resume history recorded"
-                        />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
+      {activeTab === 'verify' ? (
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <CenteredEmptyState
+            description="Verification results will appear here once this project records durable verification outcomes or resume history."
+            icon={Check}
+            title="No verification activity yet"
+          />
+        </div>
+      ) : null}
     </div>
   )
 }

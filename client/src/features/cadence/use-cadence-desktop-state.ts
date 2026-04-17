@@ -246,7 +246,6 @@ export interface ExecutionPaneView {
   latestDecisionOutcome: ProjectDetailView['latestDecisionOutcome']
   notificationBroker: ProjectDetailView['notificationBroker']
   operatorActionError: OperatorActionErrorView | null
-  executionUnavailableReason: string
   verificationUnavailableReason: string
 }
 
@@ -2641,7 +2640,6 @@ export function useCadenceDesktopState(
       latestDecisionOutcome: activeProject.latestDecisionOutcome,
       notificationBroker: activeProject.notificationBroker,
       operatorActionError,
-      executionUnavailableReason: 'Execution waves and task-by-task progress are not available from the backend yet.',
       verificationUnavailableReason:
         activeProject.verificationRecords.length > 0 || activeProject.resumeHistory.length > 0
           ? 'Durable operator verification and resume history are loaded from the selected project snapshot.'

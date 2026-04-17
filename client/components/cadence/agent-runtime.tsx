@@ -1655,7 +1655,7 @@ export function AgentRuntime({
           <div className="flex items-center gap-3 text-[11px]">
             <span className="text-muted-foreground">Phase {agent.activePhase?.id ?? '—'}</span>
             <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
-            <span className="font-medium text-foreground/80">{agent.activePhase?.name ?? 'No active phase yet'}</span>
+            <span className="font-medium text-foreground/80">{agent.activePhase?.name ?? 'None active'}</span>
             <div className="ml-auto flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
               <div className="flex items-center gap-1">
                 <GitBranch className="h-3.5 w-3.5" />
