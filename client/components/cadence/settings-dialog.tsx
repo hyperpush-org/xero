@@ -37,6 +37,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -177,6 +178,9 @@ export function SettingsDialog({
       >
         <DialogHeader className="shrink-0 border-b border-border px-5 py-3">
           <DialogTitle className="text-sm">Settings</DialogTitle>
+          <DialogDescription className="sr-only">
+            Configure providers, notification routes, and development options for the selected project.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1">

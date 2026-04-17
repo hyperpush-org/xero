@@ -2988,7 +2988,7 @@ export function getLatestDecisionOutcome(
   approvals: OperatorApprovalView[],
 ): OperatorDecisionOutcomeView | null {
   const latestResolvedApproval = approvals.find((approval) => approval.status !== 'pending' && approval.resolvedAt)
-  if (!latestResolvedApproval || !latestResolvedApproval.resolvedAt) {
+  if (!latestResolvedApproval || !latestResolvedApproval.resolvedAt || latestResolvedApproval.status === 'pending') {
     return null
   }
 

@@ -1539,12 +1539,19 @@ export function AgentRuntime({
     }))
 
     setRouteFormErrors((currentErrors) => {
-      if (!currentErrors[field] && !currentErrors.form) {
+      const errorField =
+        field === 'routeId' || field === 'routeKind' || field === 'routeTarget' || field === 'metadataJson'
+          ? field
+          : null
+
+      if ((!errorField || !currentErrors[errorField]) && !currentErrors.form) {
         return currentErrors
       }
 
       const nextErrors = { ...currentErrors }
-      delete nextErrors[field]
+      if (errorField) {
+        delete nextErrors[errorField]
+      }
       delete nextErrors.form
       return nextErrors
     })

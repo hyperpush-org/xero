@@ -1111,7 +1111,10 @@ export function useCadenceDesktopState(
   const notificationDispatchesRef = useRef<Record<string, NotificationDispatchDto[]>>({})
   const trustSnapshotRef = useRef<Record<string, AgentTrustSnapshotView>>({})
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingRuntimeRefreshRef = useRef<{ projectId: string; source: RefreshSource } | null>(null)
+  const pendingRuntimeRefreshRef = useRef<{
+    projectId: string
+    source: Extract<RefreshSource, 'runtime_run:updated' | 'runtime_stream:action_required'>
+  } | null>(null)
   const runtimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
   const runtimeRunRefreshKeyRef = useRef<Record<string, string>>({})
 

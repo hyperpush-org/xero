@@ -1,0 +1,1 @@
+- Use ShadCN for all UI where possible

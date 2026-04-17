@@ -127,11 +127,14 @@ export class CadenceDesktopError extends Error {
     retryable?: boolean
     cause?: unknown
   }) {
-    super(options.message, { cause: options.cause })
+    super(options.message)
     this.name = 'CadenceDesktopError'
     this.code = options.code ?? 'desktop_error'
     this.errorClass = options.errorClass ?? 'system_fault'
     this.retryable = options.retryable ?? false
+    if (options.cause !== undefined) {
+      ;(this as Error & { cause?: unknown }).cause = options.cause
+    }
   }
 }
 
