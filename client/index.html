@@ -5,6 +5,59 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <title>Cadence</title>
+    <script>
+      // Apply platform class before the app mounts so corner clipping is stable from first paint.
+      ;(() => {
+        const platform = navigator.platform.toLowerCase()
+
+        if (platform.includes('mac')) {
+          document.documentElement.classList.add('platform-macos')
+        } else if (platform.includes('win')) {
+          document.documentElement.classList.add('platform-windows')
+        } else if (platform.includes('linux')) {
+          document.documentElement.classList.add('platform-linux')
+        }
+      })()
+    </script>
+    <style>
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #101010;
+      }
+
+      html.platform-macos {
+        border-radius: 20px;
+        clip-path: inset(0 round 20px);
+      }
+
+      html.platform-windows {
+        border-radius: 8px;
+        clip-path: inset(0 round 8px);
+      }
+
+      html.platform-macos body,
+      html.platform-macos #root {
+        border-radius: 20px;
+      }
+
+      html.platform-windows body,
+      html.platform-windows #root {
+        border-radius: 8px;
+      }
+
+      /* Window drag regions — must live outside Tailwind/PostCSS to survive the build */
+      .titlebar-drag-region {
+        -webkit-app-region: drag;
+      }
+      .titlebar-no-drag {
+        -webkit-app-region: no-drag;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
