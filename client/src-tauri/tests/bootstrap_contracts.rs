@@ -2,8 +2,10 @@ use cadence_desktop_lib::{
     commands::{
         ApplyWorkflowTransitionRequestDto, ApplyWorkflowTransitionResponseDto,
         AutonomousLifecycleReasonDto, AutonomousRunDto, AutonomousRunRecoveryStateDto,
-        AutonomousRunStateDto, AutonomousRunStatusDto, AutonomousUnitDto,
-        AutonomousUnitKindDto, AutonomousUnitStatusDto, BranchSummaryDto, ChangeKind,
+        AutonomousRunStateDto, AutonomousRunStatusDto, AutonomousUnitArtifactDto,
+        AutonomousUnitArtifactStatusDto, AutonomousUnitAttemptDto, AutonomousUnitDto,
+        AutonomousUnitHistoryEntryDto, AutonomousUnitKindDto, AutonomousUnitStatusDto,
+        BranchSummaryDto, ChangeKind,
         CommandError, CommandErrorClass, GetAutonomousRunRequestDto, GetRuntimeRunRequestDto,
         ImportRepositoryRequestDto, ListNotificationDispatchesRequestDto,
         ListNotificationDispatchesResponseDto, ListNotificationRoutesRequestDto,
@@ -189,7 +191,8 @@ fn sample_autonomous_run(duplicate_start_detected: bool) -> AutonomousRunDto {
         supervisor_kind: "detached_pty".into(),
         status: AutonomousRunStatusDto::Stale,
         recovery_state: AutonomousRunRecoveryStateDto::RecoveryRequired,
-        active_unit_id: Some("run-1:checkpoint:2".into()),
+        active_unit_id: Some("run-1:unit:researcher".into()),
+        active_attempt_id: Some("run-1:unit:researcher:attempt:1".into()),
         duplicate_start_detected,
         duplicate_start_run_id: duplicate_start_detected.then_some("run-1".into()),
         duplicate_start_reason: duplicate_start_detected.then_some(
@@ -225,13 +228,13 @@ fn sample_autonomous_unit() -> AutonomousUnitDto {
     AutonomousUnitDto {
         project_id: "project-1".into(),
         run_id: "run-1".into(),
-        unit_id: "run-1:checkpoint:2".into(),
-        sequence: 2,
-        kind: AutonomousUnitKindDto::State,
+        unit_id: "run-1:unit:researcher".into(),
+        sequence: 1,
+        kind: AutonomousUnitKindDto::Researcher,
         status: AutonomousUnitStatusDto::Active,
-        summary: "Supervisor heartbeat recorded.".into(),
+        summary: "Researcher child session launched.".into(),
         boundary_id: None,
-        started_at: "2026-04-15T23:10:02Z".into(),
+        started_at: "2026-04-15T23:10:00Z".into(),
         finished_at: None,
         updated_at: "2026-04-15T23:10:03Z".into(),
         last_error_code: Some("runtime_supervisor_connect_failed".into()),
@@ -241,6 +244,54 @@ fn sample_autonomous_unit() -> AutonomousUnitDto {
                 .into(),
         }),
     }
+}
+
+fn sample_autonomous_attempt() -> AutonomousUnitAttemptDto {
+    AutonomousUnitAttemptDto {
+        project_id: "project-1".into(),
+        run_id: "run-1".into(),
+        unit_id: "run-1:unit:researcher".into(),
+        attempt_id: "run-1:unit:researcher:attempt:1".into(),
+        attempt_number: 1,
+        child_session_id: "child-session-1".into(),
+        status: AutonomousUnitStatusDto::Active,
+        boundary_id: None,
+        started_at: "2026-04-15T23:10:00Z".into(),
+        finished_at: None,
+        updated_at: "2026-04-15T23:10:03Z".into(),
+        last_error_code: Some("runtime_supervisor_connect_failed".into()),
+        last_error: Some(RuntimeRunDiagnosticDto {
+            code: "runtime_supervisor_connect_failed".into(),
+            message: "Cadence could not connect to the detached supervisor control endpoint."
+                .into(),
+        }),
+    }
+}
+
+fn sample_autonomous_artifact() -> AutonomousUnitArtifactDto {
+    AutonomousUnitArtifactDto {
+        project_id: "project-1".into(),
+        run_id: "run-1".into(),
+        unit_id: "run-1:unit:researcher".into(),
+        attempt_id: "run-1:unit:researcher:attempt:1".into(),
+        artifact_id: "artifact-research-summary".into(),
+        artifact_kind: "research_summary".into(),
+        status: AutonomousUnitArtifactStatusDto::Recorded,
+        summary: "Research summary persisted for downstream planning.".into(),
+        content_hash: Some(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+        ),
+        created_at: "2026-04-15T23:10:03Z".into(),
+        updated_at: "2026-04-15T23:10:03Z".into(),
+    }
+}
+
+fn sample_autonomous_history() -> Vec<AutonomousUnitHistoryEntryDto> {
+    vec![AutonomousUnitHistoryEntryDto {
+        unit: sample_autonomous_unit(),
+        latest_attempt: Some(sample_autonomous_attempt()),
+        artifacts: vec![sample_autonomous_artifact()],
+    }]
 }
 
 fn sample_snapshot() -> ProjectSnapshotResponseDto {
@@ -1043,7 +1094,8 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "supervisorKind": "detached_pty",
                 "status": "stale",
                 "recoveryState": "recovery_required",
-                "activeUnitId": "run-1:checkpoint:2",
+                "activeUnitId": "run-1:unit:researcher",
+                "activeAttemptId": "run-1:unit:researcher:attempt:1",
                 "duplicateStartDetected": false,
                 "duplicateStartRunId": null,
                 "duplicateStartReason": null,
@@ -1071,13 +1123,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "autonomousUnit": {
                 "projectId": "project-1",
                 "runId": "run-1",
-                "unitId": "run-1:checkpoint:2",
-                "sequence": 2,
-                "kind": "state",
+                "unitId": "run-1:unit:researcher",
+                "sequence": 1,
+                "kind": "researcher",
                 "status": "active",
-                "summary": "Supervisor heartbeat recorded.",
+                "summary": "Researcher child session launched.",
                 "boundaryId": null,
-                "startedAt": "2026-04-15T23:10:02Z",
+                "startedAt": "2026-04-15T23:10:00Z",
                 "finishedAt": null,
                 "updatedAt": "2026-04-15T23:10:03Z",
                 "lastErrorCode": "runtime_supervisor_connect_failed",
@@ -1435,6 +1487,8 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
     let autonomous_state = serde_json::to_value(AutonomousRunStateDto {
         run: Some(sample_autonomous_run(true)),
         unit: Some(sample_autonomous_unit()),
+        attempt: Some(sample_autonomous_attempt()),
+        history: sample_autonomous_history(),
     })
     .expect("autonomous run state should serialize");
     assert_eq!(
@@ -1447,7 +1501,8 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "supervisorKind": "detached_pty",
                 "status": "stale",
                 "recoveryState": "recovery_required",
-                "activeUnitId": "run-1:checkpoint:2",
+                "activeUnitId": "run-1:unit:researcher",
+                "activeAttemptId": "run-1:unit:researcher:attempt:1",
                 "duplicateStartDetected": true,
                 "duplicateStartRunId": "run-1",
                 "duplicateStartReason": "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.",
@@ -1475,13 +1530,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "unit": {
                 "projectId": "project-1",
                 "runId": "run-1",
-                "unitId": "run-1:checkpoint:2",
-                "sequence": 2,
-                "kind": "state",
+                "unitId": "run-1:unit:researcher",
+                "sequence": 1,
+                "kind": "researcher",
                 "status": "active",
-                "summary": "Supervisor heartbeat recorded.",
+                "summary": "Researcher child session launched.",
                 "boundaryId": null,
-                "startedAt": "2026-04-15T23:10:02Z",
+                "startedAt": "2026-04-15T23:10:00Z",
                 "finishedAt": null,
                 "updatedAt": "2026-04-15T23:10:03Z",
                 "lastErrorCode": "runtime_supervisor_connect_failed",
@@ -1489,7 +1544,80 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                     "code": "runtime_supervisor_connect_failed",
                     "message": "Cadence could not connect to the detached supervisor control endpoint."
                 }
-            }
+            },
+            "attempt": {
+                "projectId": "project-1",
+                "runId": "run-1",
+                "unitId": "run-1:unit:researcher",
+                "attemptId": "run-1:unit:researcher:attempt:1",
+                "attemptNumber": 1,
+                "childSessionId": "child-session-1",
+                "status": "active",
+                "boundaryId": null,
+                "startedAt": "2026-04-15T23:10:00Z",
+                "finishedAt": null,
+                "updatedAt": "2026-04-15T23:10:03Z",
+                "lastErrorCode": "runtime_supervisor_connect_failed",
+                "lastError": {
+                    "code": "runtime_supervisor_connect_failed",
+                    "message": "Cadence could not connect to the detached supervisor control endpoint."
+                }
+            },
+            "history": [
+                {
+                    "unit": {
+                        "projectId": "project-1",
+                        "runId": "run-1",
+                        "unitId": "run-1:unit:researcher",
+                        "sequence": 1,
+                        "kind": "researcher",
+                        "status": "active",
+                        "summary": "Researcher child session launched.",
+                        "boundaryId": null,
+                        "startedAt": "2026-04-15T23:10:00Z",
+                        "finishedAt": null,
+                        "updatedAt": "2026-04-15T23:10:03Z",
+                        "lastErrorCode": "runtime_supervisor_connect_failed",
+                        "lastError": {
+                            "code": "runtime_supervisor_connect_failed",
+                            "message": "Cadence could not connect to the detached supervisor control endpoint."
+                        }
+                    },
+                    "latestAttempt": {
+                        "projectId": "project-1",
+                        "runId": "run-1",
+                        "unitId": "run-1:unit:researcher",
+                        "attemptId": "run-1:unit:researcher:attempt:1",
+                        "attemptNumber": 1,
+                        "childSessionId": "child-session-1",
+                        "status": "active",
+                        "boundaryId": null,
+                        "startedAt": "2026-04-15T23:10:00Z",
+                        "finishedAt": null,
+                        "updatedAt": "2026-04-15T23:10:03Z",
+                        "lastErrorCode": "runtime_supervisor_connect_failed",
+                        "lastError": {
+                            "code": "runtime_supervisor_connect_failed",
+                            "message": "Cadence could not connect to the detached supervisor control endpoint."
+                        }
+                    },
+                    "artifacts": [
+                        {
+                            "projectId": "project-1",
+                            "runId": "run-1",
+                            "unitId": "run-1:unit:researcher",
+                            "attemptId": "run-1:unit:researcher:attempt:1",
+                            "artifactId": "artifact-research-summary",
+                            "artifactKind": "research_summary",
+                            "status": "recorded",
+                            "summary": "Research summary persisted for downstream planning.",
+                            "contentHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                            "createdAt": "2026-04-15T23:10:03Z",
+                            "updatedAt": "2026-04-15T23:10:03Z"
+                        }
+                    ]
+                }
+            ]
         })
     );
 

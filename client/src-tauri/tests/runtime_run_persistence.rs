@@ -78,7 +78,7 @@ fn sample_checkpoint(
     }
 }
 
-fn sample_autonomous_run(project_id: &str, run_id: &str) -> project_store::AutonomousRunRecord {
+fn sample_autonomous_run_record(project_id: &str, run_id: &str) -> project_store::AutonomousRunRecord {
     project_store::AutonomousRunRecord {
         project_id: project_id.into(),
         run_id: run_id.into(),
@@ -102,6 +102,52 @@ fn sample_autonomous_run(project_id: &str, run_id: &str) -> project_store::Auton
         crash_reason: None,
         last_error: None,
         updated_at: "2099-04-15T19:00:20Z".into(),
+    }
+}
+
+fn sample_autonomous_unit(project_id: &str, run_id: &str) -> project_store::AutonomousUnitRecord {
+    project_store::AutonomousUnitRecord {
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        unit_id: format!("{run_id}:unit:1"),
+        sequence: 1,
+        kind: project_store::AutonomousUnitKind::Researcher,
+        status: project_store::AutonomousUnitStatus::Active,
+        summary: "Researcher child session launched.".into(),
+        boundary_id: None,
+        started_at: "2099-04-15T19:00:00Z".into(),
+        finished_at: None,
+        updated_at: "2099-04-15T19:00:20Z".into(),
+        last_error: None,
+    }
+}
+
+fn sample_autonomous_attempt(
+    project_id: &str,
+    run_id: &str,
+) -> project_store::AutonomousUnitAttemptRecord {
+    project_store::AutonomousUnitAttemptRecord {
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        unit_id: format!("{run_id}:unit:1"),
+        attempt_id: format!("{run_id}:unit:1:attempt:1"),
+        attempt_number: 1,
+        child_session_id: "child-session-1".into(),
+        status: project_store::AutonomousUnitStatus::Active,
+        boundary_id: None,
+        started_at: "2099-04-15T19:00:00Z".into(),
+        finished_at: None,
+        updated_at: "2099-04-15T19:00:20Z".into(),
+        last_error: None,
+    }
+}
+
+fn sample_autonomous_run(project_id: &str, run_id: &str) -> project_store::AutonomousRunUpsertRecord {
+    project_store::AutonomousRunUpsertRecord {
+        run: sample_autonomous_run_record(project_id, run_id),
+        unit: Some(sample_autonomous_unit(project_id, run_id)),
+        attempt: Some(sample_autonomous_attempt(project_id, run_id)),
+        artifacts: Vec::new(),
     }
 }
 
@@ -815,32 +861,53 @@ fn autonomous_run_persistence_tracks_current_unit_duplicate_start_and_cancel_met
     .expect("persist autonomous run");
     assert_eq!(persisted.run.status, project_store::AutonomousRunStatus::Running);
     assert_eq!(persisted.run.active_unit_sequence, Some(1));
+    assert_eq!(persisted.unit.as_ref().map(|unit| unit.sequence), Some(1));
+    assert_eq!(
+        persisted.unit.as_ref().map(|unit| unit.kind.clone()),
+        Some(project_store::AutonomousUnitKind::Researcher)
+    );
     assert_eq!(
         persisted
-            .unit_checkpoint
+            .attempt
             .as_ref()
-            .map(|checkpoint| checkpoint.summary.as_str()),
-        Some("Supervisor launched and connected to the project PTY.")
+            .map(|attempt| attempt.child_session_id.as_str()),
+        Some("child-session-1")
     );
+    assert_eq!(persisted.history.len(), 1);
 
     let cancelled = project_store::upsert_autonomous_run(
         &repo_root,
-        &project_store::AutonomousRunRecord {
-            status: project_store::AutonomousRunStatus::Cancelled,
-            duplicate_start_detected: true,
-            duplicate_start_run_id: Some(run_id.into()),
-            duplicate_start_reason: Some(
-                "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
-                    .into(),
-            ),
-            cancelled_at: Some("2099-04-15T19:01:05Z".into()),
-            stopped_at: Some("2099-04-15T19:01:05Z".into()),
-            cancel_reason: Some(project_store::RuntimeRunDiagnosticRecord {
-                code: "autonomous_run_cancelled".into(),
-                message: "Operator cancelled the autonomous run from the desktop shell.".into(),
+        &project_store::AutonomousRunUpsertRecord {
+            run: project_store::AutonomousRunRecord {
+                status: project_store::AutonomousRunStatus::Cancelled,
+                duplicate_start_detected: true,
+                duplicate_start_run_id: Some(run_id.into()),
+                duplicate_start_reason: Some(
+                    "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
+                        .into(),
+                ),
+                cancelled_at: Some("2099-04-15T19:01:05Z".into()),
+                stopped_at: Some("2099-04-15T19:01:05Z".into()),
+                cancel_reason: Some(project_store::RuntimeRunDiagnosticRecord {
+                    code: "autonomous_run_cancelled".into(),
+                    message: "Operator cancelled the autonomous run from the desktop shell.".into(),
+                }),
+                updated_at: "2099-04-15T19:01:05Z".into(),
+                ..sample_autonomous_run_record(project_id, run_id)
+            },
+            unit: Some(project_store::AutonomousUnitRecord {
+                status: project_store::AutonomousUnitStatus::Cancelled,
+                finished_at: Some("2099-04-15T19:01:05Z".into()),
+                updated_at: "2099-04-15T19:01:05Z".into(),
+                ..sample_autonomous_unit(project_id, run_id)
             }),
-            updated_at: "2099-04-15T19:01:05Z".into(),
-            ..sample_autonomous_run(project_id, run_id)
+            attempt: Some(project_store::AutonomousUnitAttemptRecord {
+                status: project_store::AutonomousUnitStatus::Cancelled,
+                finished_at: Some("2099-04-15T19:01:05Z".into()),
+                updated_at: "2099-04-15T19:01:05Z".into(),
+                ..sample_autonomous_attempt(project_id, run_id)
+            }),
+            artifacts: Vec::new(),
         },
     )
     .expect("persist cancelled autonomous run");
@@ -868,17 +935,18 @@ fn autonomous_run_persistence_tracks_current_unit_duplicate_start_and_cancel_met
     );
     assert!(recovered.run.duplicate_start_detected);
     assert_eq!(recovered.run.active_unit_sequence, Some(1));
+    assert_eq!(recovered.unit.as_ref().map(|unit| unit.sequence), Some(1));
     assert_eq!(
         recovered
-            .unit_checkpoint
+            .attempt
             .as_ref()
-            .map(|checkpoint| checkpoint.sequence),
+            .map(|attempt| attempt.attempt_number),
         Some(1)
     );
 }
 
 #[test]
-fn autonomous_run_decode_fails_closed_when_unit_checkpoint_is_missing() {
+fn autonomous_run_decode_fails_closed_when_unit_row_is_missing() {
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-1";
     let repo_root = seed_project(&root, project_id, "repo-1", "repo");
@@ -901,22 +969,19 @@ fn autonomous_run_decode_fails_closed_when_unit_checkpoint_is_missing() {
     .expect("persist runtime run for autonomous decode failure");
     project_store::upsert_autonomous_run(
         &repo_root,
-        &project_store::AutonomousRunRecord {
-            active_unit_sequence: Some(1),
-            ..sample_autonomous_run(project_id, run_id)
-        },
+        &sample_autonomous_run(project_id, run_id),
     )
     .expect("persist autonomous run before corruption");
 
     let connection = open_state_connection(&repo_root);
     connection
         .execute(
-            "DELETE FROM runtime_run_checkpoints WHERE project_id = ?1 AND run_id = ?2 AND sequence = 1",
+            "DELETE FROM autonomous_units WHERE project_id = ?1 AND run_id = ?2",
             params![project_id, run_id],
         )
-        .expect("delete active autonomous checkpoint");
+        .expect("delete active autonomous unit row");
 
     let error = project_store::load_autonomous_run(&repo_root, project_id)
-        .expect_err("missing active-unit checkpoint should fail closed");
+        .expect_err("missing active autonomous unit row should fail closed");
     assert_eq!(error.code, "runtime_run_decode_failed");
 }
