@@ -25,9 +25,9 @@ export function SiteHeader() {
           <Image
             src="/logo.svg"
             alt="Cadence"
-            width={112}
-            height={26}
-            className="h-5 w-auto opacity-95"
+            width={120}
+            height={40}
+            className="h-5.5 w-auto opacity-95"
             priority
           />
         </Link>
