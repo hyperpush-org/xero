@@ -12,17 +12,21 @@ use cadence_desktop_lib::{
     auth::{persist_openai_codex_session, StoredOpenAiCodexSession},
     commands::{
         apply_workflow_transition::apply_workflow_transition,
+        cancel_autonomous_run::cancel_autonomous_run, get_autonomous_run::get_autonomous_run,
         get_project_snapshot::get_project_snapshot, get_runtime_run::get_runtime_run,
         get_runtime_session::get_runtime_session, resolve_operator_action::resolve_operator_action,
-        resume_operator_run::resume_operator_run, start_runtime_run::start_runtime_run,
-        start_runtime_session::start_runtime_session, stop_runtime_run::stop_runtime_run,
-        submit_notification_reply::submit_notification_reply, ApplyWorkflowTransitionRequestDto,
-        GetRuntimeRunRequestDto, NotificationDispatchStatusDto, NotificationReplyClaimStatusDto,
-        OperatorApprovalStatus, PhaseStatus, PhaseStep, ProjectIdRequestDto, ProjectUpdateReason,
-        ProjectUpdatedPayloadDto, ResolveOperatorActionRequestDto, ResumeHistoryStatus,
-        ResumeOperatorRunRequestDto, RuntimeAuthPhase, RuntimeRunCheckpointKindDto, RuntimeRunDto,
-        RuntimeRunStatusDto, RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto,
-        RuntimeUpdatedPayloadDto, StartRuntimeRunRequestDto, StopRuntimeRunRequestDto,
+        resume_operator_run::resume_operator_run, start_autonomous_run::start_autonomous_run,
+        start_runtime_run::start_runtime_run, start_runtime_session::start_runtime_session,
+        stop_runtime_run::stop_runtime_run, submit_notification_reply::submit_notification_reply,
+        ApplyWorkflowTransitionRequestDto, AutonomousRunRecoveryStateDto,
+        AutonomousRunStatusDto, AutonomousUnitStatusDto, CancelAutonomousRunRequestDto,
+        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
+        NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
+        ProjectIdRequestDto, ProjectUpdateReason, ProjectUpdatedPayloadDto,
+        ResolveOperatorActionRequestDto, ResumeHistoryStatus, ResumeOperatorRunRequestDto,
+        RuntimeAuthPhase, RuntimeRunCheckpointKindDto, RuntimeRunDto, RuntimeRunStatusDto,
+        RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto, RuntimeUpdatedPayloadDto,
+        StartAutonomousRunRequestDto, StartRuntimeRunRequestDto, StopRuntimeRunRequestDto,
         SubmitNotificationReplyRequestDto, WorkflowAutomaticDispatchStatusDto,
         PROJECT_UPDATED_EVENT, RUNTIME_RUN_UPDATED_EVENT, RUNTIME_UPDATED_EVENT,
     },
@@ -957,6 +961,151 @@ fn get_runtime_run_recovers_truthful_running_state_after_fresh_host_reload() {
     .expect("stop recovered runtime run")
     .expect("recovered runtime run should still exist");
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}
+
+#[test]
+fn start_autonomous_run_reuses_existing_boundary_and_persists_duplicate_start_visibility() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let recorder = attach_event_recorders(&app);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+    recorder.clear();
+
+    let first = start_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("start autonomous run");
+    let running = first.run.expect("autonomous start should return run state");
+    assert_eq!(running.project_id, project_id);
+    assert!(matches!(
+        running.status,
+        AutonomousRunStatusDto::Starting | AutonomousRunStatusDto::Running
+    ));
+    assert!(!running.duplicate_start_detected);
+
+    wait_for_runtime_run(&app, &running.project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+
+    let second = start_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("second autonomous start should reconnect");
+    let duplicate = second.run.expect("duplicate autonomous start should return run state");
+    assert_eq!(duplicate.run_id, running.run_id);
+    assert!(duplicate.duplicate_start_detected);
+    assert_eq!(duplicate.duplicate_start_run_id.as_deref(), Some(running.run_id.as_str()));
+    assert_eq!(
+        duplicate.duplicate_start_reason.as_deref(),
+        Some(
+            "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
+        )
+    );
+    assert_eq!(count_runtime_run_rows(&repo_root), 1);
+    assert_eq!(recorder.runtime_update_count(), 0);
+    assert!(recorder.runtime_run_update_count() >= 1);
+
+    let persisted = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("get autonomous run after duplicate start")
+    .run
+    .expect("persisted autonomous run should exist");
+    assert_eq!(persisted.run_id, running.run_id);
+    assert!(persisted.duplicate_start_detected);
+    assert_eq!(persisted.recovery_state, AutonomousRunRecoveryStateDto::Healthy);
+
+    let cancelled = cancel_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        CancelAutonomousRunRequestDto {
+            project_id,
+            run_id: running.run_id,
+        },
+    )
+    .expect("cancel autonomous run should succeed")
+    .run
+    .expect("cancelled autonomous run should still exist");
+    assert_eq!(cancelled.status, AutonomousRunStatusDto::Cancelled);
+    assert!(cancelled.cancelled_at.is_some());
+    assert_eq!(cancelled.recovery_state, AutonomousRunRecoveryStateDto::Terminal);
+}
+
+#[test]
+fn get_autonomous_run_recovers_stale_boundary_after_fresh_host_reload() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+    seed_unreachable_runtime_run(&repo_root, &project_id, "run-unreachable");
+
+    let (fresh_state, _fresh_registry_path, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+
+    let recovered = get_autonomous_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("get autonomous run after fresh-host restart");
+    let run = recovered.run.expect("autonomous run should exist after restart");
+    let unit = recovered.unit.expect("autonomous unit should exist after restart");
+    assert_eq!(run.run_id, "run-unreachable");
+    assert_eq!(run.status, AutonomousRunStatusDto::Stale);
+    assert_eq!(
+        run.recovery_state,
+        AutonomousRunRecoveryStateDto::RecoveryRequired
+    );
+    assert!(run.crashed_at.is_some());
+    assert_eq!(
+        run.crash_reason.as_ref().map(|reason| reason.code.as_str()),
+        Some("runtime_supervisor_connect_failed")
+    );
+    assert_eq!(unit.run_id, run.run_id);
+    assert_eq!(unit.status, AutonomousUnitStatusDto::Active);
+
+    let snapshot = get_project_snapshot(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("project snapshot should expose recovered autonomous state");
+    assert_eq!(
+        snapshot
+            .autonomous_run
+            .as_ref()
+            .map(|autonomous| autonomous.run_id.as_str()),
+        Some("run-unreachable")
+    );
+    assert_eq!(
+        snapshot
+            .autonomous_unit
+            .as_ref()
+            .map(|autonomous| autonomous.sequence),
+        Some(1)
+    );
 }
 
 #[test]

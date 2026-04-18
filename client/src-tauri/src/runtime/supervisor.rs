@@ -931,10 +931,11 @@ fn probe_runtime_run_with_timeout(
                 SupervisorProcessStatus::Failed => RuntimeRunStatus::Failed,
             };
             let response_error = last_error.map(protocol_diagnostic_into_record);
+            let persisted_error = response_error.clone().or_else(|| latest.run.last_error.clone());
 
             if latest.run.transport.liveness == RuntimeRunTransportLiveness::Reachable
                 && latest.run.status == mapped_status
-                && latest.run.last_error == response_error
+                && latest.run.last_error == persisted_error
             {
                 if matches!(
                     latest.run.status,
@@ -958,7 +959,7 @@ fn probe_runtime_run_with_timeout(
                 &latest,
                 mapped_status,
                 RuntimeRunTransportLiveness::Reachable,
-                response_error,
+                persisted_error,
                 last_heartbeat_at,
                 latest.run.stopped_at.clone(),
             )?;

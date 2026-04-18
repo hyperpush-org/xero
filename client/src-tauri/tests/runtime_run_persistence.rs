@@ -78,6 +78,33 @@ fn sample_checkpoint(
     }
 }
 
+fn sample_autonomous_run(project_id: &str, run_id: &str) -> project_store::AutonomousRunRecord {
+    project_store::AutonomousRunRecord {
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        runtime_kind: "openai_codex".into(),
+        supervisor_kind: "detached_pty".into(),
+        status: project_store::AutonomousRunStatus::Running,
+        active_unit_sequence: Some(1),
+        duplicate_start_detected: false,
+        duplicate_start_run_id: None,
+        duplicate_start_reason: None,
+        started_at: "2099-04-15T19:00:00Z".into(),
+        last_heartbeat_at: Some("2099-04-15T19:00:10Z".into()),
+        last_checkpoint_at: Some("2099-04-15T19:00:20Z".into()),
+        paused_at: None,
+        cancelled_at: None,
+        completed_at: None,
+        crashed_at: None,
+        stopped_at: None,
+        pause_reason: None,
+        cancel_reason: None,
+        crash_reason: None,
+        last_error: None,
+        updated_at: "2099-04-15T19:00:20Z".into(),
+    }
+}
+
 fn create_legacy_state_db(repo_root: &Path, project_id: &str) -> PathBuf {
     let cadence_dir = repo_root.join(".cadence");
     std::fs::create_dir_all(&cadence_dir).expect("create cadence dir");
@@ -756,4 +783,140 @@ fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
     assert_eq!(recovered.last_checkpoint_sequence, 1);
     assert_eq!(recovered.checkpoints.len(), 1);
     assert_eq!(recovered.checkpoints[0].summary, "First checkpoint.");
+}
+
+#[test]
+fn autonomous_run_persistence_tracks_current_unit_duplicate_start_and_cancel_metadata() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Supervisor launched and connected to the project PTY.",
+                "2099-04-15T19:00:20Z",
+            )),
+        },
+    )
+    .expect("persist runtime run for autonomous projection");
+
+    let persisted = project_store::upsert_autonomous_run(
+        &repo_root,
+        &sample_autonomous_run(project_id, run_id),
+    )
+    .expect("persist autonomous run");
+    assert_eq!(persisted.run.status, project_store::AutonomousRunStatus::Running);
+    assert_eq!(persisted.run.active_unit_sequence, Some(1));
+    assert_eq!(
+        persisted
+            .unit_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.summary.as_str()),
+        Some("Supervisor launched and connected to the project PTY.")
+    );
+
+    let cancelled = project_store::upsert_autonomous_run(
+        &repo_root,
+        &project_store::AutonomousRunRecord {
+            status: project_store::AutonomousRunStatus::Cancelled,
+            duplicate_start_detected: true,
+            duplicate_start_run_id: Some(run_id.into()),
+            duplicate_start_reason: Some(
+                "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
+                    .into(),
+            ),
+            cancelled_at: Some("2099-04-15T19:01:05Z".into()),
+            stopped_at: Some("2099-04-15T19:01:05Z".into()),
+            cancel_reason: Some(project_store::RuntimeRunDiagnosticRecord {
+                code: "autonomous_run_cancelled".into(),
+                message: "Operator cancelled the autonomous run from the desktop shell.".into(),
+            }),
+            updated_at: "2099-04-15T19:01:05Z".into(),
+            ..sample_autonomous_run(project_id, run_id)
+        },
+    )
+    .expect("persist cancelled autonomous run");
+    assert_eq!(
+        cancelled.run.status,
+        project_store::AutonomousRunStatus::Cancelled
+    );
+    assert!(cancelled.run.duplicate_start_detected);
+    assert_eq!(cancelled.run.cancelled_at.as_deref(), Some("2099-04-15T19:01:05Z"));
+    assert_eq!(
+        cancelled
+            .run
+            .cancel_reason
+            .as_ref()
+            .map(|reason| reason.code.as_str()),
+        Some("autonomous_run_cancelled")
+    );
+
+    let recovered = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("reload autonomous run")
+        .expect("autonomous run should still exist");
+    assert_eq!(
+        recovered.run.status,
+        project_store::AutonomousRunStatus::Cancelled
+    );
+    assert!(recovered.run.duplicate_start_detected);
+    assert_eq!(recovered.run.active_unit_sequence, Some(1));
+    assert_eq!(
+        recovered
+            .unit_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.sequence),
+        Some(1)
+    );
+}
+
+#[test]
+fn autonomous_run_decode_fails_closed_when_unit_checkpoint_is_missing() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+        },
+    )
+    .expect("persist runtime run for autonomous decode failure");
+    project_store::upsert_autonomous_run(
+        &repo_root,
+        &project_store::AutonomousRunRecord {
+            active_unit_sequence: Some(1),
+            ..sample_autonomous_run(project_id, run_id)
+        },
+    )
+    .expect("persist autonomous run before corruption");
+
+    let connection = open_state_connection(&repo_root);
+    connection
+        .execute(
+            "DELETE FROM runtime_run_checkpoints WHERE project_id = ?1 AND run_id = ?2 AND sequence = 1",
+            params![project_id, run_id],
+        )
+        .expect("delete active autonomous checkpoint");
+
+    let error = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect_err("missing active-unit checkpoint should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
 }

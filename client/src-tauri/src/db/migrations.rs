@@ -482,6 +482,69 @@ pub fn migrations() -> &'static Migrations<'static> {
                     ON notification_reply_claims(project_id, route_id, created_at DESC, id DESC);
                 "#,
             ),
+            M::up(
+                r#"
+                CREATE TABLE IF NOT EXISTS autonomous_runs (
+                    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                    run_id TEXT NOT NULL,
+                    runtime_kind TEXT NOT NULL,
+                    supervisor_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    active_unit_sequence INTEGER,
+                    duplicate_start_detected INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_start_detected IN (0, 1)),
+                    duplicate_start_run_id TEXT,
+                    duplicate_start_reason TEXT,
+                    started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT,
+                    last_checkpoint_at TEXT,
+                    paused_at TEXT,
+                    cancelled_at TEXT,
+                    completed_at TEXT,
+                    crashed_at TEXT,
+                    stopped_at TEXT,
+                    pause_reason_code TEXT,
+                    pause_reason_message TEXT,
+                    cancel_reason_code TEXT,
+                    cancel_reason_message TEXT,
+                    crash_reason_code TEXT,
+                    crash_reason_message TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    CHECK (run_id <> ''),
+                    CHECK (runtime_kind <> ''),
+                    CHECK (supervisor_kind <> ''),
+                    CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'stale', 'failed', 'stopped', 'crashed', 'completed')),
+                    CHECK (active_unit_sequence IS NULL OR active_unit_sequence > 0),
+                    CHECK (duplicate_start_run_id IS NULL OR duplicate_start_run_id <> ''),
+                    CHECK (duplicate_start_reason IS NULL OR duplicate_start_reason <> ''),
+                    CHECK (
+                        (pause_reason_code IS NULL AND pause_reason_message IS NULL)
+                        OR (pause_reason_code IS NOT NULL AND pause_reason_message IS NOT NULL)
+                    ),
+                    CHECK (
+                        (cancel_reason_code IS NULL AND cancel_reason_message IS NULL)
+                        OR (cancel_reason_code IS NOT NULL AND cancel_reason_message IS NOT NULL)
+                    ),
+                    CHECK (
+                        (crash_reason_code IS NULL AND crash_reason_message IS NULL)
+                        OR (crash_reason_code IS NOT NULL AND crash_reason_message IS NOT NULL)
+                    ),
+                    CHECK (
+                        (last_error_code IS NULL AND last_error_message IS NULL)
+                        OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+                    ),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES runtime_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_autonomous_runs_project_run
+                    ON autonomous_runs(project_id, run_id);
+                CREATE INDEX IF NOT EXISTS idx_autonomous_runs_status_updated
+                    ON autonomous_runs(project_id, status, updated_at DESC);
+                "#,
+            ),
         ])
     });
 

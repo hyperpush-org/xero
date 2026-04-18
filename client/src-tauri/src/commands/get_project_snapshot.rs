@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::runtime_support::{
-    autonomous_run_state_from_snapshot, emit_runtime_run_updated_if_changed,
-    load_persisted_runtime_run, load_runtime_run_status,
+    emit_runtime_run_updated_if_changed, load_persisted_runtime_run, load_runtime_run_status,
+    sync_autonomous_run_state, AutonomousSyncIntent,
 };
 
 #[tauri::command]
@@ -65,7 +65,12 @@ pub fn get_project_snapshot<R: Runtime>(
                 let after = load_runtime_run_status(state.inner(), Path::new(&root_path), &project_id)?;
                 emit_runtime_run_updated_if_changed(&app, &project_id, &before, &after)?;
 
-                let autonomous_state = autonomous_run_state_from_snapshot(after.as_ref());
+                let autonomous_state = sync_autonomous_run_state(
+                    Path::new(&root_path),
+                    &project_id,
+                    after.as_ref(),
+                    AutonomousSyncIntent::Observe,
+                )?;
                 let mut snapshot = record.snapshot;
                 snapshot.autonomous_run = autonomous_state.run;
                 snapshot.autonomous_unit = autonomous_state.unit;
