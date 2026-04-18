@@ -78,6 +78,7 @@ import {
 const COMMANDS = {
   importRepository: 'import_repository',
   listProjects: 'list_projects',
+  removeProject: 'remove_project',
   getProjectSnapshot: 'get_project_snapshot',
   getRepositoryStatus: 'get_repository_status',
   getRepositoryDiff: 'get_repository_diff',
@@ -153,6 +154,7 @@ export interface CadenceDesktopAdapter {
   pickRepositoryFolder(): Promise<string | null>
   importRepository(path: string): Promise<ImportRepositoryResponseDto>
   listProjects(): Promise<ListProjectsResponseDto>
+  removeProject(projectId: string): Promise<ListProjectsResponseDto>
   getProjectSnapshot(projectId: string): Promise<ProjectSnapshotResponseDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
@@ -442,6 +444,12 @@ export const cadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   listProjects() {
     return invokeTyped(COMMANDS.listProjects, listProjectsResponseSchema)
+  },
+
+  removeProject(projectId) {
+    return invokeTyped(COMMANDS.removeProject, listProjectsResponseSchema, {
+      request: { projectId },
+    })
   },
 
   getProjectSnapshot(projectId) {

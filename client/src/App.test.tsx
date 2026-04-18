@@ -226,6 +226,7 @@ function createAdapter(options?: {
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
+  let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'cadence')]
 
   const upsertNotificationRoute = vi.fn(async (request: UpsertNotificationRouteRequestDto) => {
     const route = {
@@ -265,7 +266,11 @@ function createAdapter(options?: {
       project: makeProjectSummary('project-1', 'cadence'),
       repository: makeStatus().repository,
     }),
-    listProjects: async () => ({ projects: options?.projects ?? [makeProjectSummary('project-1', 'cadence')] }),
+    listProjects: async () => ({ projects: currentProjects }),
+    removeProject: async (projectId) => {
+      currentProjects = currentProjects.filter((project) => project.id !== projectId)
+      return { projects: currentProjects }
+    },
     getProjectSnapshot: async () => currentSnapshot,
     getRepositoryStatus: async () => currentStatus,
     getRepositoryDiff: async (_projectId, scope) => ({ ...currentDiff, scope }),

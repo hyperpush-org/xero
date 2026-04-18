@@ -342,6 +342,10 @@ function createMockAdapter(options?: {
   }
   const notificationDispatchErrors = options?.notificationDispatchErrors ?? {}
 
+  let listedProjects = (options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'cadence')]).map((project) => ({
+    ...project,
+  }))
+
   const streamSubscriptions: Array<{
     projectId: string
     handler: (payload: RuntimeStreamEventDto) => void
@@ -354,25 +358,29 @@ function createMockAdapter(options?: {
   const runtimeUnlisten = vi.fn()
   const runtimeRunUnlisten = vi.fn()
   const pickRepositoryFolder = vi.fn(async (): Promise<string | null> => '/tmp/imported')
-  const importRepository = vi.fn(async () =>
-    options?.importResponse ?? {
-      project: makeProjectSummary('project-2', 'orchestra'),
-      repository: {
-        id: 'repo-project-2',
-        projectId: 'project-2',
-        rootPath: '/tmp/orchestra',
-        displayName: 'orchestra',
-        branch: 'feature/import',
-        headSha: null,
-        isGitRepo: true,
-      },
-    },
-  )
-  const listProjects = vi.fn(async () =>
-    options?.listProjects ?? {
-      projects: [makeProjectSummary('project-1', 'cadence')],
-    },
-  )
+  const importRepository = vi.fn(async () => {
+    const response =
+      options?.importResponse ?? {
+        project: makeProjectSummary('project-2', 'orchestra'),
+        repository: {
+          id: 'repo-project-2',
+          projectId: 'project-2',
+          rootPath: '/tmp/orchestra',
+          displayName: 'orchestra',
+          branch: 'feature/import',
+          headSha: null,
+          isGitRepo: true,
+        },
+      }
+
+    listedProjects = [...listedProjects.filter((project) => project.id !== response.project.id), response.project]
+    return response
+  })
+  const listProjects = vi.fn(async () => ({ projects: listedProjects }))
+  const removeProject = vi.fn(async (projectId: string) => {
+    listedProjects = listedProjects.filter((project) => project.id !== projectId)
+    return { projects: listedProjects }
+  })
   const getProjectSnapshot = vi.fn(async (projectId: string) => snapshots[projectId])
   const getRepositoryStatus = vi.fn(async (projectId: string) => statuses[projectId])
   const getRepositoryDiff = vi.fn(async (_projectId: string, scope: 'staged' | 'unstaged' | 'worktree') => {
@@ -627,6 +635,7 @@ function createMockAdapter(options?: {
     pickRepositoryFolder,
     importRepository,
     listProjects,
+    removeProject,
     getProjectSnapshot,
     getRepositoryStatus,
     getRepositoryDiff,
@@ -700,6 +709,7 @@ function createMockAdapter(options?: {
     pickRepositoryFolder,
     importRepository,
     listProjects,
+    removeProject,
     getProjectSnapshot,
     getRepositoryStatus,
     getRepositoryDiff,
@@ -816,6 +826,9 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       </button>
       <button onClick={() => void state.importProject()} type="button">
         Import project
+      </button>
+      <button onClick={() => void state.removeProject('project-1')} type="button">
+        Remove project 1
       </button>
       <button onClick={() => void state.showRepositoryDiff('unstaged')} type="button">
         Load unstaged diff
@@ -1335,6 +1348,26 @@ describe('useCadenceDesktopState', () => {
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
     expect(screen.getByTestId('project-count')).toHaveTextContent('2')
+  })
+
+  it('removes the active project from the sidebar list and loads the next available project', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')],
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove project 1' }))
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+    expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+    expect(setup.removeProject).toHaveBeenCalledWith('project-1')
+    expect(setup.listProjects).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the current selection intact when snapshot loading fails', async () => {

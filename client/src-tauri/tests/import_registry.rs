@@ -7,11 +7,11 @@ use std::{
 
 use cadence_desktop_lib::{
     commands::{
-        get_project_snapshot, import_repository, list_projects, CommandError, CommandErrorClass,
-        ImportRepositoryRequestDto, ListProjectsResponseDto, PhaseStatus, PhaseStep,
-        PhaseSummaryDto, ProjectIdRequestDto, ProjectSnapshotResponseDto, ProjectUpdateReason,
-        ProjectUpdatedPayloadDto, RepositoryStatusChangedPayloadDto, PROJECT_UPDATED_EVENT,
-        REPOSITORY_STATUS_CHANGED_EVENT,
+        get_project_snapshot, import_repository, list_projects, remove_project, CommandError,
+        CommandErrorClass, ImportRepositoryRequestDto, ListProjectsResponseDto, PhaseStatus,
+        PhaseStep, PhaseSummaryDto, ProjectIdRequestDto, ProjectSnapshotResponseDto,
+        ProjectUpdateReason, ProjectUpdatedPayloadDto, RepositoryStatusChangedPayloadDto,
+        PROJECT_UPDATED_EVENT, REPOSITORY_STATUS_CHANGED_EVENT,
     },
     configure_builder_with_state,
     db::migrations::migrations,
@@ -93,6 +93,19 @@ fn list_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
 ) -> Result<ListProjectsResponseDto, CommandError> {
     list_projects(app.handle().clone(), app.state::<DesktopState>())
+}
+
+fn remove_with_app(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+) -> Result<ListProjectsResponseDto, CommandError> {
+    remove_project(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.to_owned(),
+        },
+    )
 }
 
 fn snapshot_with_app(
@@ -793,6 +806,38 @@ fn list_projects_reopens_valid_imports_and_prunes_deleted_roots() {
         .projects
         .iter()
         .all(|record| record.root_path != deleted_import.repository.root_path));
+}
+
+#[test]
+fn remove_project_hides_registry_entry_without_touching_repo_local_state_and_reimport_restores_it() {
+    let registry_root = tempfile::tempdir().expect("registry temp dir");
+    let app = build_mock_app(create_state(&registry_root));
+    let repository_root = init_git_repo();
+
+    let imported = import_with_app(&app, repository_root.path()).expect("import succeeds");
+    let database_path = database_path(repository_root.path());
+    assert!(database_path.exists(), "repo-local database should exist after import");
+
+    let remove_response = remove_with_app(&app, &imported.project.id).expect("remove project succeeds");
+    assert!(remove_response.projects.is_empty());
+    assert!(database_path.exists(), "remove should keep the repo-local database intact");
+
+    let registry = read_registry(&registry_path(&registry_root));
+    assert!(registry.projects.is_empty(), "removed project should no longer be listed in the registry");
+
+    let listed_after_remove = list_with_app(&app).expect("list after remove succeeds");
+    assert!(listed_after_remove.projects.is_empty());
+
+    let snapshot_error = snapshot_with_app(&app, &imported.project.id).expect_err("removed project should not resolve through the registry");
+    assert_eq!(snapshot_error, CommandError::project_not_found());
+
+    let reimported = import_with_app(&app, repository_root.path()).expect("reimport succeeds");
+    assert_eq!(reimported.project.id, imported.project.id);
+    assert!(database_path.exists(), "reimport should reuse the existing repo-local database");
+
+    let listed_after_reimport = list_with_app(&app).expect("list after reimport succeeds");
+    assert_eq!(listed_after_reimport.projects.len(), 1);
+    assert_eq!(listed_after_reimport.projects[0].id, imported.project.id);
 }
 
 #[test]

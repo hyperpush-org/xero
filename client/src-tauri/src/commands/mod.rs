@@ -12,6 +12,7 @@ pub mod list_notification_routes;
 pub mod list_projects;
 pub mod logout_runtime_session;
 pub mod record_notification_dispatch_outcome;
+pub mod remove_project;
 pub mod resolve_operator_action;
 pub mod resume_operator_run;
 pub(crate) mod runtime_support;
@@ -47,6 +48,7 @@ pub use list_notification_routes::list_notification_routes;
 pub use list_projects::list_projects;
 pub use logout_runtime_session::logout_runtime_session;
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
+pub use remove_project::remove_project;
 pub use resolve_operator_action::resolve_operator_action;
 pub use resume_operator_run::resume_operator_run;
 pub use start_autonomous_run::start_autonomous_run;
@@ -64,6 +66,7 @@ pub use upsert_workflow_graph::upsert_workflow_graph;
 
 pub const IMPORT_REPOSITORY_COMMAND: &str = "import_repository";
 pub const LIST_PROJECTS_COMMAND: &str = "list_projects";
+pub const REMOVE_PROJECT_COMMAND: &str = "remove_project";
 pub const GET_AUTONOMOUS_RUN_COMMAND: &str = "get_autonomous_run";
 pub const GET_PROJECT_SNAPSHOT_COMMAND: &str = "get_project_snapshot";
 pub const GET_REPOSITORY_STATUS_COMMAND: &str = "get_repository_status";
@@ -96,6 +99,7 @@ pub const APPLY_WORKFLOW_TRANSITION_COMMAND: &str = "apply_workflow_transition";
 pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     IMPORT_REPOSITORY_COMMAND,
     LIST_PROJECTS_COMMAND,
+    REMOVE_PROJECT_COMMAND,
     GET_AUTONOMOUS_RUN_COMMAND,
     GET_PROJECT_SNAPSHOT_COMMAND,
     GET_REPOSITORY_STATUS_COMMAND,

@@ -48,8 +48,8 @@ use cadence_desktop_lib::{
         LIST_NOTIFICATION_DISPATCHES_COMMAND, LIST_NOTIFICATION_ROUTES_COMMAND,
         LIST_PROJECTS_COMMAND, PROJECT_UPDATED_EVENT, RECORD_NOTIFICATION_DISPATCH_OUTCOME_COMMAND,
         REFRESH_OPENAI_CODEX_AUTH_COMMAND, REGISTERED_COMMAND_NAMES,
-        REPOSITORY_STATUS_CHANGED_EVENT, RESOLVE_OPERATOR_ACTION_COMMAND,
-        RESUME_OPERATOR_RUN_COMMAND, RUNTIME_RUN_UPDATED_EVENT, RUNTIME_UPDATED_EVENT,
+        REMOVE_PROJECT_COMMAND, REPOSITORY_STATUS_CHANGED_EVENT, RUNTIME_RUN_UPDATED_EVENT,
+        RUNTIME_UPDATED_EVENT, RESOLVE_OPERATOR_ACTION_COMMAND, RESUME_OPERATOR_RUN_COMMAND,
         START_AUTONOMOUS_RUN_COMMAND, START_OPENAI_CODEX_AUTH_COMMAND, START_RUNTIME_RUN_COMMAND,
         STOP_RUNTIME_RUN_COMMAND, SUBMIT_NOTIFICATION_REPLY_COMMAND,
         SUBSCRIBE_RUNTIME_STREAM_COMMAND, SYNC_NOTIFICATION_ADAPTERS_COMMAND,
@@ -401,13 +401,24 @@ fn builder_boots_and_registered_commands_return_expected_contract_shapes() {
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        28,
-        "expected twenty-eight desktop commands"
+        29,
+        "expected twenty-nine desktop commands"
     );
 
     tauri::test::assert_ipc_response(
         &webview,
         invoke_request(LIST_PROJECTS_COMMAND, json!({})),
+        Ok(ListProjectsResponseDto {
+            projects: Vec::new(),
+        }),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            REMOVE_PROJECT_COMMAND,
+            json!({ "request": { "projectId": "project-1" } }),
+        ),
         Ok(ListProjectsResponseDto {
             projects: Vec::new(),
         }),

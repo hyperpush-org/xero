@@ -51,11 +51,14 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     isLoading,
     isProjectLoading,
     isImporting,
+    projectRemovalStatus,
+    pendingProjectRemovalId,
     errorMessage,
     refreshSource,
     isDesktopRuntime,
     selectProject,
     importProject,
+    removeProject,
     retry,
     showRepositoryDiff,
     retryActiveRepositoryDiff,
@@ -194,16 +197,16 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   return (
     <CadenceShell activeView={activeView} onViewChange={setActiveView} projectName={activeProject?.name} onOpenSettings={() => setSettingsOpen(true)} platformOverride={platformOverride}>
       <ProjectRail
-        activeProjectBranch={repositoryStatus?.branchLabel ?? activeProject?.branchLabel ?? null}
         activeProjectId={activeProjectId}
         errorMessage={errorMessage}
         isImporting={isImporting}
         isLoading={isLoading || isProjectLoading}
         onImportProject={() => void importProject()}
+        onRemoveProject={(projectId) => void removeProject(projectId)}
         onSelectProject={(projectId) => void selectProject(projectId)}
+        pendingProjectRemovalId={pendingProjectRemovalId}
+        projectRemovalStatus={projectRemovalStatus}
         projects={projects}
-        refreshSource={refreshSource}
-        repositoryStatus={repositoryStatus}
       />
       {renderBody()}
       <SettingsDialog

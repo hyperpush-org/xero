@@ -71,6 +71,7 @@ export type RefreshSource =
   | 'startup'
   | 'selection'
   | 'import'
+  | 'remove'
   | 'project:updated'
   | 'repository:status_changed'
   | 'runtime:updated'
@@ -82,6 +83,7 @@ export type RefreshSource =
 
 export type OperatorActionDecision = 'approve' | 'reject'
 export type OperatorActionStatus = 'idle' | 'running'
+export type ProjectRemovalStatus = 'idle' | 'running'
 export type AutonomousRunActionKind = 'start' | 'cancel' | 'inspect'
 export type AutonomousRunActionStatus = 'idle' | 'running'
 export type RuntimeRunActionKind = 'start' | 'stop'
@@ -297,6 +299,8 @@ export interface UseCadenceDesktopStateResult {
   isLoading: boolean
   isProjectLoading: boolean
   isImporting: boolean
+  projectRemovalStatus: ProjectRemovalStatus
+  pendingProjectRemovalId: string | null
   errorMessage: string | null
   refreshSource: RefreshSource
   isDesktopRuntime: boolean
@@ -311,6 +315,7 @@ export interface UseCadenceDesktopStateResult {
   runtimeRunActionError: OperatorActionErrorView | null
   selectProject: (projectId: string) => Promise<void>
   importProject: () => Promise<void>
+  removeProject: (projectId: string) => Promise<void>
   retry: () => Promise<void>
   showRepositoryDiff: (scope: RepositoryDiffScope, options?: { force?: boolean }) => Promise<void>
   retryActiveRepositoryDiff: () => Promise<void>
@@ -1238,6 +1243,8 @@ export function useCadenceDesktopState(
   const [isLoading, setIsLoading] = useState(true)
   const [isProjectLoading, setIsProjectLoading] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
+  const [projectRemovalStatus, setProjectRemovalStatus] = useState<ProjectRemovalStatus>('idle')
+  const [pendingProjectRemovalId, setPendingProjectRemovalId] = useState<string | null>(null)
   const [operatorActionStatus, setOperatorActionStatus] = useState<OperatorActionStatus>('idle')
   const [pendingOperatorActionId, setPendingOperatorActionId] = useState<string | null>(null)
   const [operatorActionError, setOperatorActionError] = useState<OperatorActionErrorView | null>(null)
@@ -2111,9 +2118,9 @@ export function useCadenceDesktopState(
     }
   }, [clearBlockedNotificationSyncPoll])
 
-  const bootstrap = useCallback(async () => {
+  const bootstrap = useCallback(async (source: 'startup' | 'remove' = 'startup') => {
     setIsLoading(true)
-    setRefreshSource('startup')
+    setRefreshSource(source)
     setErrorMessage(null)
 
     try {
@@ -2154,7 +2161,7 @@ export function useCadenceDesktopState(
           ? preferredProjectId
           : nextProjects[0].id
 
-      await loadProject(nextProjectId, 'startup')
+      await loadProject(nextProjectId, source)
     } catch (error) {
       setErrorMessage(getDesktopErrorMessage(error))
     } finally {
@@ -2394,6 +2401,30 @@ export function useCadenceDesktopState(
       setIsImporting(false)
     }
   }, [adapter, loadProject])
+
+  const removeProject = useCallback(
+    async (projectId: string) => {
+      if (!projectId.trim()) {
+        return
+      }
+
+      setProjectRemovalStatus('running')
+      setPendingProjectRemovalId(projectId)
+      setRefreshSource('remove')
+      setErrorMessage(null)
+
+      try {
+        await adapter.removeProject(projectId)
+        await bootstrap('remove')
+      } catch (error) {
+        setErrorMessage(getDesktopErrorMessage(error))
+      } finally {
+        setPendingProjectRemovalId(null)
+        setProjectRemovalStatus('idle')
+      }
+    },
+    [adapter, bootstrap],
+  )
 
   const retry = useCallback(async () => {
     if (activeProjectIdRef.current) {
@@ -3365,6 +3396,8 @@ export function useCadenceDesktopState(
     isLoading,
     isProjectLoading,
     isImporting,
+    projectRemovalStatus,
+    pendingProjectRemovalId,
     errorMessage,
     refreshSource,
     isDesktopRuntime: adapter.isDesktopRuntime(),
@@ -3379,6 +3412,7 @@ export function useCadenceDesktopState(
     runtimeRunActionError,
     selectProject,
     importProject,
+    removeProject,
     retry,
     showRepositoryDiff,
     retryActiveRepositoryDiff,

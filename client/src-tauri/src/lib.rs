@@ -23,6 +23,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         .invoke_handler(tauri::generate_handler![
             commands::import_repository::import_repository,
             commands::list_projects::list_projects,
+            commands::remove_project::remove_project,
             commands::get_project_snapshot::get_project_snapshot,
             commands::get_repository_status::get_repository_status,
             commands::get_repository_diff::get_repository_diff,

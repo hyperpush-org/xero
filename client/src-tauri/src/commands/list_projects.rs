@@ -9,13 +9,10 @@ use crate::{
     state::DesktopState,
 };
 
-#[tauri::command]
-pub fn list_projects<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, DesktopState>,
+pub(crate) fn load_projects_from_registry(
+    registry_path: &Path,
 ) -> CommandResult<ListProjectsResponseDto> {
-    let registry_path = state.registry_file(&app)?;
-    let registry = registry::read_registry(&registry_path)?;
+    let registry = registry::read_registry(registry_path)?;
 
     let mut projects = Vec::new();
     let mut seen_project_ids = HashSet::new();
@@ -48,8 +45,17 @@ pub fn list_projects<R: Runtime>(
     }
 
     if pruned_stale_roots {
-        let _ = registry::replace_projects(&registry_path, live_root_records);
+        let _ = registry::replace_projects(registry_path, live_root_records);
     }
 
     Ok(ListProjectsResponseDto { projects })
+}
+
+#[tauri::command]
+pub fn list_projects<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+) -> CommandResult<ListProjectsResponseDto> {
+    let registry_path = state.registry_file(&app)?;
+    load_projects_from_registry(&registry_path)
 }

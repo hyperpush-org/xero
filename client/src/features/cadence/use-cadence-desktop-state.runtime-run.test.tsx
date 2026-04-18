@@ -801,6 +801,9 @@ function createMockAdapter(options?: {
         projects: [makeProjectSummary('project-1', 'cadence')],
       },
     ),
+    removeProject: vi.fn(async () => ({
+      projects: options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'cadence')],
+    })),
     getProjectSnapshot,
     getRepositoryStatus: vi.fn(async (projectId: string) => statuses[projectId]),
     getRepositoryDiff: vi.fn(async (projectId: string, scope: 'staged' | 'unstaged' | 'worktree') =>
