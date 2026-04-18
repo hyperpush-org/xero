@@ -969,7 +969,7 @@ fn config_and_capability_files_lock_the_packaged_vite_shell_and_auth_opener_perm
 #[test]
 fn platform_matrix_artifact_locks_cross_platform_verification_contract() {
     let matrix = include_str!("platform-matrix.md");
-    let command = "cargo test --manifest-path client/src-tauri/Cargo.toml --test bootstrap_contracts --test openai_oauth_auth_flow --test runtime_run_persistence --test runtime_supervisor --test runtime_event_stream --test runtime_run_bridge --test notification_route_credentials --test notification_channel_dispatch --test notification_channel_replies && pnpm --dir client test -- src/lib/cadence-model.test.ts src/features/cadence/use-cadence-desktop-state.runtime-run.test.tsx src/features/cadence/live-views.test.tsx components/cadence/agent-runtime.test.tsx src/App.test.tsx && pnpm --dir client exec tauri build --debug";
+    let command = "cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_fixture_parity --test bootstrap_contracts --test openai_oauth_auth_flow --test runtime_run_persistence --test runtime_supervisor --test runtime_event_stream --test runtime_run_bridge --test notification_route_credentials --test notification_channel_dispatch --test notification_channel_replies && pnpm --dir client test -- src/lib/cadence-model.test.ts src/features/cadence/use-cadence-desktop-state.runtime-run.test.tsx src/features/cadence/live-views.test.tsx components/cadence/agent-runtime.test.tsx src/App.test.tsx && pnpm --dir client exec tauri build --debug";
 
     assert!(
         matrix.contains(command),

@@ -44,6 +44,28 @@ pub fn script_sleep(seconds: u64) -> String {
     sleep_command(RuntimePlatform::detect(), seconds)
 }
 
+pub fn script_print_line(line: &str) -> String {
+    validate_fragment("line", line);
+    print_line_step(RuntimePlatform::detect(), line)
+}
+
+pub fn script_join_steps(steps: &[String]) -> String {
+    assert!(
+        !steps.is_empty(),
+        "{MALFORMED_TEMPLATE_ERROR}: script step list cannot be empty"
+    );
+
+    for step in steps {
+        validate_fragment("step", step);
+        assert!(
+            !step.trim().is_empty(),
+            "{MALFORMED_TEMPLATE_ERROR}: script step cannot be blank"
+        );
+    }
+
+    command_join(RuntimePlatform::detect(), steps)
+}
+
 pub fn script_exit(code: i32) -> String {
     if RuntimePlatform::detect().is_windows() {
         format!("exit /B {code}")
