@@ -1,96 +1,53 @@
 import Link from "next/link"
-import Image from "next/image"
 import { Github } from "lucide-react"
-import {
-  DiscordIcon,
-  XBrandIcon,
-} from "@/components/landing/brand-icons"
+import { DiscordIcon, XBrandIcon } from "@/components/landing/brand-icons"
 
-const cols = [
-  {
-    title: "Product",
-    items: ["Download", "Models", "Changelog", "Roadmap", "Status"],
-  },
-  {
-    title: "Resources",
-    items: ["Docs", "Agent architecture", "Security", "Benchmarks", "Examples"],
-  },
-  {
-    title: "Company",
-    items: ["About", "Careers", "Press kit", "Contact", "Brand"],
-  },
-  {
-    title: "Legal",
-    items: ["Privacy", "Terms", "DPA", "Subprocessors", "Responsible disclosure"],
-  },
+const links = [
+  { label: "Docs", href: "#" },
+  { label: "Changelog", href: "#" },
+  { label: "Privacy", href: "#" },
+  { label: "Terms", href: "#" },
+]
+
+const social = [
+  { icon: Github, label: "GitHub", href: "#" },
+  { icon: XBrandIcon, label: "X", href: "#" },
+  { icon: DiscordIcon, label: "Discord", href: "#" },
 ]
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border/60 bg-background">
-      <div className="mx-auto w-full max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-2 gap-8 md:grid-cols-6">
-          <div className="col-span-2">
-            <Link href="/" className="inline-flex items-center gap-2">
-              <Image
-                src="/logo.svg"
-                alt="Cadence"
-                width={112}
-                height={26}
-                className="h-5 w-auto opacity-95"
-              />
-            </Link>
-            <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              The agentic coding studio for people who still care about what ships.
-              Built in Rust, runs on your desktop, works with the AI subscriptions
-              you already pay for.
-            </p>
-            <div className="mt-5 flex items-center gap-2">
-              {[
-                { icon: Github, label: "GitHub" },
-                { icon: XBrandIcon, label: "X" },
-                { icon: DiscordIcon, label: "Discord" },
-              ].map(({ icon: Icon, label }) => (
-                <Link
-                  key={label}
-                  href="#"
-                  aria-label={label}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border/60 bg-card text-muted-foreground transition-colors hover:border-border hover:text-foreground"
-                >
-                  <span aria-hidden>
-                    <Icon className="h-4 w-4" />
-                  </span>
-                </Link>
-              ))}
-            </div>
-          </div>
-
-          {cols.map((c) => (
-            <div key={c.title}>
-              <p className="text-xs font-medium uppercase tracking-wider text-foreground">
-                {c.title}
-              </p>
-              <ul className="mt-4 space-y-2.5">
-                {c.items.map((i) => (
-                  <li key={i}>
-                    <Link
-                      href="#"
-                      className="text-sm text-muted-foreground transition-colors hover:text-foreground"
-                    >
-                      {i}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-12 flex flex-col items-start justify-between gap-4 border-t border-border/60 pt-6 text-xs text-muted-foreground sm:flex-row sm:items-center">
-          <span>© {new Date().getFullYear()} Cadence Labs, Inc. All rights reserved.</span>
-          <span className="font-mono">
-            crafted in Rust · v0.9.2 · 42MB idle
+    <footer className="border-t border-border/60">
+      <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
+          <span className="text-xs text-muted-foreground/60">
+            © {new Date().getFullYear()} Cadence Labs
           </span>
+
+          <nav className="flex items-center gap-5">
+            {links.map((l) => (
+              <Link
+                key={l.label}
+                href={l.href}
+                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {l.label}
+              </Link>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2">
+            {social.map(({ icon: Icon, label, href }) => (
+              <Link
+                key={label}
+                href={href}
+                aria-label={label}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground"
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </Link>
+            ))}
+          </div>
         </div>
       </div>
     </footer>
