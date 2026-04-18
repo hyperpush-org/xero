@@ -211,6 +211,75 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
   }
 }
 
+function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['autonomousRun']>> = {}) {
+  return {
+    projectId: 'project-1',
+    runId: 'auto-run-1',
+    runtimeKind: 'openai_codex',
+    runtimeLabel: 'Openai Codex · Autonomous run active',
+    supervisorKind: 'detached_pty',
+    supervisorLabel: 'Detached Pty',
+    status: 'running' as const,
+    statusLabel: 'Autonomous run active',
+    recoveryState: 'recovery_required' as const,
+    recoveryLabel: 'Recovery required',
+    activeUnitId: 'auto-run-1:checkpoint:2',
+    duplicateStartDetected: false,
+    duplicateStartRunId: null,
+    duplicateStartReason: null,
+    startedAt: '2026-04-16T20:00:00Z',
+    lastHeartbeatAt: '2026-04-16T20:00:05Z',
+    lastCheckpointAt: '2026-04-16T20:00:06Z',
+    pausedAt: null,
+    cancelledAt: null,
+    completedAt: null,
+    crashedAt: '2026-04-16T20:03:00Z',
+    stoppedAt: null,
+    pauseReason: null,
+    cancelReason: null,
+    crashReason: {
+      code: 'runtime_supervisor_connect_failed',
+      message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
+    },
+    lastErrorCode: 'runtime_supervisor_connect_failed',
+    lastError: {
+      code: 'runtime_supervisor_connect_failed',
+      message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
+      retryable: true,
+    },
+    updatedAt: '2026-04-16T20:03:00Z',
+    isActive: true,
+    needsRecovery: true,
+    isTerminal: false,
+    isFailed: true,
+    ...overrides,
+  }
+}
+
+function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['autonomousUnit']>> = {}) {
+  return {
+    projectId: 'project-1',
+    runId: 'auto-run-1',
+    unitId: 'auto-run-1:checkpoint:2',
+    sequence: 2,
+    kind: 'state' as const,
+    kindLabel: 'State',
+    status: 'active' as const,
+    statusLabel: 'Active',
+    summary: 'Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.',
+    boundaryId: 'checkpoint:2',
+    startedAt: '2026-04-16T20:00:01Z',
+    finishedAt: null,
+    updatedAt: '2026-04-16T20:03:00Z',
+    lastErrorCode: null,
+    lastError: null,
+    isActive: true,
+    isTerminal: false,
+    isFailed: false,
+    ...overrides,
+  }
+}
+
 function getStreamStatusLabel(status: RuntimeStreamView['status']): string {
   switch (status) {
     case 'idle':
@@ -498,6 +567,102 @@ describe('live views', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
     await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+  })
+
+  it('renders the recovered autonomous ledger as a first-class desktop truth surface', () => {
+    const autonomousRun = makeAutonomousRun({
+      duplicateStartDetected: true,
+      duplicateStartRunId: 'auto-run-1',
+      duplicateStartReason:
+        'Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.',
+    })
+    const autonomousUnit = makeAutonomousUnit()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent(
+          makeProject({
+            autonomousRun,
+            autonomousUnit,
+            runtimeRun: makeRuntimeRun({
+              status: 'stale',
+              statusLabel: 'Supervisor stale',
+              transport: {
+                kind: 'tcp',
+                endpoint: '127.0.0.1:4455',
+                liveness: 'unreachable',
+                livenessLabel: 'Control unreachable',
+              },
+              lastErrorCode: 'runtime_supervisor_connect_failed',
+              lastError: {
+                code: 'runtime_supervisor_connect_failed',
+                message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
+                retryable: true,
+              },
+              isActive: false,
+              isStale: true,
+            }),
+          }),
+          {
+            runtimeSession: makeRuntimeSession({
+              phase: 'authenticated',
+              phaseLabel: 'Authenticated',
+              runtimeLabel: 'Openai Codex · Authenticated',
+              accountId: 'acct@example.com',
+              accountLabel: 'acct@example.com',
+              sessionId: 'session-1',
+              sessionLabel: 'session-1',
+              lastErrorCode: null,
+              lastError: null,
+              isAuthenticated: true,
+              isLoginInProgress: false,
+              needsManualInput: false,
+              isSignedOut: false,
+              isFailed: false,
+            }),
+            autonomousRun,
+            autonomousUnit,
+            runtimeRun: makeRuntimeRun({
+              status: 'stale',
+              statusLabel: 'Supervisor stale',
+              transport: {
+                kind: 'tcp',
+                endpoint: '127.0.0.1:4455',
+                liveness: 'unreachable',
+                livenessLabel: 'Control unreachable',
+              },
+              lastErrorCode: 'runtime_supervisor_connect_failed',
+              lastError: {
+                code: 'runtime_supervisor_connect_failed',
+                message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
+                retryable: true,
+              },
+              isActive: false,
+              isStale: true,
+            }),
+            runtimeStream: makeRuntimeStream({ status: 'idle' }),
+            runtimeRunUnavailableReason:
+              'Cadence recovered a supervised harness run and its durable checkpoints before the live runtime feed resumed.',
+            messagesUnavailableReason:
+              'Cadence recovered a supervised harness run, but the live runtime stream has not resumed yet. Durable checkpoints remain visible below.',
+          },
+        )}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Autonomous run truth' })).toBeVisible()
+    expect(
+      screen.getByText(
+        'Cadence is projecting the durable autonomous run and active unit boundary separately from the live runtime/session feed.',
+      ),
+    ).toBeVisible()
+    expect(screen.getByText('Current autonomous boundary')).toBeVisible()
+    expect(
+      screen.getByText('Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.'),
+    ).toBeVisible()
+    expect(screen.getByText('Duplicate start prevented')).toBeVisible()
+    expect(screen.getByText('run: auto-run-1')).toBeVisible()
+    expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
   })
 
   it('renders recovered runtime and durable operator controls with the current headings', async () => {

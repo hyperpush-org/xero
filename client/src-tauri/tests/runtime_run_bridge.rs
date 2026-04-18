@@ -18,7 +18,7 @@ use cadence_desktop_lib::{
         resume_operator_run::resume_operator_run, start_autonomous_run::start_autonomous_run,
         start_runtime_run::start_runtime_run, start_runtime_session::start_runtime_session,
         stop_runtime_run::stop_runtime_run, submit_notification_reply::submit_notification_reply,
-        ApplyWorkflowTransitionRequestDto, AutonomousRunRecoveryStateDto,
+        ApplyWorkflowTransitionRequestDto, AutonomousRunRecoveryStateDto, AutonomousRunStateDto,
         AutonomousRunStatusDto, AutonomousUnitStatusDto, CancelAutonomousRunRequestDto,
         GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
         NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
@@ -558,12 +558,49 @@ fn wait_for_runtime_run(
     }
 }
 
+fn wait_for_autonomous_run(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    predicate: impl Fn(&AutonomousRunStateDto) -> bool,
+) -> AutonomousRunStateDto {
+    let deadline = Instant::now() + Duration::from_secs(6);
+
+    loop {
+        let autonomous_run = get_autonomous_run(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            GetAutonomousRunRequestDto {
+                project_id: project_id.into(),
+            },
+        )
+        .expect("get autonomous run should succeed");
+
+        if predicate(&autonomous_run) {
+            return autonomous_run;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for autonomous run predicate, last snapshot: {autonomous_run:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn count_runtime_run_rows(repo_root: &Path) -> i64 {
     let database_path = database_path_for_repo(repo_root);
     let connection = rusqlite::Connection::open(&database_path).expect("open runtime db");
     connection
         .query_row("SELECT COUNT(*) FROM runtime_runs", [], |row| row.get(0))
         .expect("count runtime runs")
+}
+
+fn count_autonomous_run_rows(repo_root: &Path) -> i64 {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = rusqlite::Connection::open(&database_path).expect("open runtime db");
+    connection
+        .query_row("SELECT COUNT(*) FROM autonomous_runs", [], |row| row.get(0))
+        .expect("count autonomous runs")
 }
 
 fn count_workflow_transition_rows(repo_root: &Path, project_id: &str) -> i64 {
@@ -1045,6 +1082,171 @@ fn start_autonomous_run_reuses_existing_boundary_and_persists_duplicate_start_vi
     assert_eq!(cancelled.status, AutonomousRunStatusDto::Cancelled);
     assert!(cancelled.cancelled_at.is_some());
     assert_eq!(cancelled.recovery_state, AutonomousRunRecoveryStateDto::Terminal);
+}
+
+#[test]
+fn autonomous_run_rehydrates_same_boundary_after_reload_and_prevents_duplicate_continuation() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+
+    let started = start_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("start autonomous run for reload proof");
+    let started_run = started
+        .run
+        .expect("autonomous start should return run state");
+    assert!(matches!(
+        started_run.status,
+        AutonomousRunStatusDto::Starting | AutonomousRunStatusDto::Running
+    ));
+
+    let initial_runtime = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.run_id == started_run.run_id
+            && runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+            && runtime_run.last_checkpoint_sequence >= 1
+    });
+    let initial_autonomous = wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
+        let Some(run) = autonomous_state.run.as_ref() else {
+            return false;
+        };
+        let Some(unit) = autonomous_state.unit.as_ref() else {
+            return false;
+        };
+
+        run.run_id == started_run.run_id
+            && matches!(
+                run.status,
+                AutonomousRunStatusDto::Starting | AutonomousRunStatusDto::Running
+            )
+            && run.recovery_state == AutonomousRunRecoveryStateDto::Healthy
+            && run.active_unit_id.as_deref() == Some(unit.unit_id.as_str())
+            && unit.sequence >= 1
+            && unit.status == AutonomousUnitStatusDto::Active
+    });
+    let initial_run = initial_autonomous
+        .run
+        .as_ref()
+        .expect("initial autonomous run should exist");
+    let initial_unit = initial_autonomous
+        .unit
+        .as_ref()
+        .expect("initial autonomous unit should exist");
+    assert_eq!(initial_run.run_id, started_run.run_id);
+    assert_eq!(initial_run.active_unit_id.as_deref(), Some(initial_unit.unit_id.as_str()));
+
+    let (fresh_state, _fresh_registry_path, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+
+    let recovered_runtime = wait_for_runtime_run(&fresh_app, &project_id, |runtime_run| {
+        runtime_run.run_id == started_run.run_id
+            && runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+            && runtime_run.last_checkpoint_sequence >= initial_runtime.last_checkpoint_sequence
+    });
+    assert_eq!(recovered_runtime.run_id, started_run.run_id);
+
+    let recovered = wait_for_autonomous_run(&fresh_app, &project_id, |autonomous_state| {
+        let Some(run) = autonomous_state.run.as_ref() else {
+            return false;
+        };
+        let Some(unit) = autonomous_state.unit.as_ref() else {
+            return false;
+        };
+
+        run.run_id == started_run.run_id
+            && run.recovery_state == AutonomousRunRecoveryStateDto::Healthy
+            && run.active_unit_id.as_deref() == Some(unit.unit_id.as_str())
+            && matches!(
+                run.status,
+                AutonomousRunStatusDto::Starting | AutonomousRunStatusDto::Running
+            )
+            && unit.sequence >= initial_unit.sequence
+            && unit.status == AutonomousUnitStatusDto::Active
+    });
+    let recovered_run = recovered
+        .run
+        .as_ref()
+        .expect("recovered autonomous run should exist");
+    let recovered_unit = recovered
+        .unit
+        .as_ref()
+        .expect("recovered autonomous unit should exist");
+    assert_eq!(recovered_run.run_id, started_run.run_id);
+    assert_eq!(recovered_run.active_unit_id.as_deref(), Some(recovered_unit.unit_id.as_str()));
+    assert_eq!(count_runtime_run_rows(&repo_root), 1);
+    assert_eq!(count_autonomous_run_rows(&repo_root), 1);
+
+    let snapshot = get_project_snapshot(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("project snapshot should expose the same autonomous boundary after reload");
+    assert_eq!(
+        snapshot
+            .autonomous_run
+            .as_ref()
+            .map(|autonomous| autonomous.run_id.as_str()),
+        Some(started_run.run_id.as_str())
+    );
+    assert_eq!(
+        snapshot
+            .autonomous_unit
+            .as_ref()
+            .map(|autonomous| autonomous.unit_id.as_str()),
+        Some(recovered_unit.unit_id.as_str())
+    );
+
+    let duplicate = start_autonomous_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        StartAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("duplicate autonomous start after reload should reconnect");
+    let duplicate_run = duplicate
+        .run
+        .expect("duplicate autonomous start should return run state");
+    assert_eq!(duplicate_run.run_id, started_run.run_id);
+    assert!(duplicate_run.duplicate_start_detected);
+    assert_eq!(
+        duplicate_run.duplicate_start_run_id.as_deref(),
+        Some(started_run.run_id.as_str())
+    );
+    assert_eq!(count_runtime_run_rows(&repo_root), 1);
+    assert_eq!(count_autonomous_run_rows(&repo_root), 1);
+
+    let cancelled = cancel_autonomous_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        CancelAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+            run_id: started_run.run_id.clone(),
+        },
+    )
+    .expect("cancel autonomous run after reload should succeed")
+    .run
+    .expect("cancelled autonomous run should still exist");
+    assert_eq!(cancelled.status, AutonomousRunStatusDto::Cancelled);
+    assert_eq!(cancelled.recovery_state, AutonomousRunRecoveryStateDto::Terminal);
+
+    let stopped_runtime = wait_for_runtime_run(&fresh_app, &project_id, |runtime_run| {
+        runtime_run.run_id == started_run.run_id && runtime_run.status == RuntimeRunStatusDto::Stopped
+    });
+    assert!(stopped_runtime.stopped_at.is_some());
 }
 
 #[test]

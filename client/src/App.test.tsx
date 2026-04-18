@@ -512,6 +512,94 @@ describe('CadenceApp current UI', () => {
     await waitFor(() => expect(startAutonomousRun).toHaveBeenCalledTimes(1))
   })
 
+  it('rehydrates recovered autonomous ledger truth after reload without offering a duplicate start', async () => {
+    const recoveredAutonomousState = makeAutonomousRunState('project-1', 'auto-run-1')
+    recoveredAutonomousState.run = {
+      ...recoveredAutonomousState.run!,
+      recoveryState: 'recovery_required',
+      activeUnitId: 'auto-run-1:checkpoint:2',
+      duplicateStartDetected: true,
+      duplicateStartRunId: 'auto-run-1',
+      duplicateStartReason:
+        'Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.',
+      crashedAt: '2026-04-16T20:03:00Z',
+      crashReason: {
+        code: 'runtime_supervisor_connect_failed',
+        message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
+      },
+      lastErrorCode: 'runtime_supervisor_connect_failed',
+      lastError: {
+        code: 'runtime_supervisor_connect_failed',
+        message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
+        retryable: true,
+      },
+      updatedAt: '2026-04-16T20:03:00Z',
+    }
+    recoveredAutonomousState.unit = {
+      ...recoveredAutonomousState.unit!,
+      unitId: 'auto-run-1:checkpoint:2',
+      sequence: 2,
+      summary: 'Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.',
+      boundaryId: 'checkpoint:2',
+      updatedAt: '2026-04-16T20:03:00Z',
+    }
+
+    const { adapter } = createAdapter({
+      snapshot: {
+        ...makeSnapshot(),
+        autonomousRun: recoveredAutonomousState.run,
+        autonomousUnit: recoveredAutonomousState.unit,
+      },
+      runtimeRun: makeRuntimeRun('project-1', {
+        status: 'stale',
+        transport: {
+          kind: 'tcp',
+          endpoint: '127.0.0.1:4455',
+          liveness: 'unreachable',
+        },
+        lastCheckpointSequence: 2,
+        checkpoints: [
+          {
+            sequence: 1,
+            kind: 'bootstrap',
+            summary: 'Supervisor boot recorded.',
+            createdAt: '2026-04-15T20:00:01Z',
+          },
+          {
+            sequence: 2,
+            kind: 'state',
+            summary: 'Recovered repository context before reconnecting the live feed.',
+            createdAt: '2026-04-15T20:00:06Z',
+          },
+        ],
+        lastErrorCode: 'runtime_supervisor_connect_failed',
+        lastError: {
+          code: 'runtime_supervisor_connect_failed',
+          message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
+          retryable: true,
+        },
+      }),
+      autonomousState: recoveredAutonomousState,
+    })
+
+    render(<CadenceApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+
+    expect(await screen.findByRole('heading', { name: 'Autonomous run truth' })).toBeVisible()
+    expect(
+      screen.getByText('Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.'),
+    ).toBeVisible()
+    expect(screen.getByText('Duplicate start prevented')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Start autonomous run' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Inspect truth' })).toBeVisible()
+    expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
+  })
+
   it('opens Settings and runs the current provider and notification flows', async () => {
     const { adapter, upsertNotificationRoute } = createAdapter({
       runtimeRun: null,
