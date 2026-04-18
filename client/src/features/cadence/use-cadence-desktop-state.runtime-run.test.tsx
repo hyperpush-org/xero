@@ -965,6 +965,8 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
   const firstApprovalBroker = firstApproval
     ? state.activeProject?.notificationBroker.byActionId[firstApproval.actionId] ?? null
     : null
+  const checkpointControlLoop = state.agentView?.checkpointControlLoop ?? null
+  const firstCheckpointCard = checkpointControlLoop?.items[0] ?? null
   const firstApprovalResumeState =
     !firstApproval
       ? 'none'
@@ -1004,6 +1006,15 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="recent-unit-first-evidence-state">
         {state.agentView?.recentAutonomousUnits?.items[0]?.evidenceStateLabel ?? 'none'}
       </div>
+      <div data-testid="checkpoint-loop-count">{String(checkpointControlLoop?.items.length ?? 0)}</div>
+      <div data-testid="checkpoint-loop-window-label">{checkpointControlLoop?.windowLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-action-id">{firstCheckpointCard?.actionId ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-truth-source">{firstCheckpointCard?.truthSource ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-live-state">{firstCheckpointCard?.liveStateLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-durable-state">{firstCheckpointCard?.durableStateLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-broker-state">{firstCheckpointCard?.brokerStateLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-resume-state">{firstCheckpointCard?.resumeStateLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-evidence-state">{firstCheckpointCard?.evidenceStateLabel ?? 'none'}</div>
       <div data-testid="messages-reason">{state.agentView?.messagesUnavailableReason ?? 'none'}</div>
       <div data-testid="stream-status">{state.agentView?.runtimeStreamStatus ?? 'idle'}</div>
       <div data-testid="stream-run-id">{state.agentView?.runtimeStream?.runId ?? 'none'}</div>
@@ -1777,6 +1788,12 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('refresh-source')).toHaveTextContent('project:updated'))
     await waitFor(() => expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('stream-action-required-count')).toHaveTextContent('0')
+    expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('checkpoint-loop-first-action-id')).toHaveTextContent(
+      'scope:auto-dispatch:workflow-research:requires_user_input',
+    )
+    expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('durable_only')
+    expect(screen.getByTestId('checkpoint-loop-first-durable-state')).toHaveTextContent('Pending approval')
     expect(screen.getByTestId('first-approval-resume-state')).toHaveTextContent('waiting')
   })
 
@@ -1916,6 +1933,9 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('broker-failed-count')).toHaveTextContent('1')
     expect(screen.getByTestId('first-approval-broker-dispatch-count')).toHaveTextContent('2')
     expect(screen.getByTestId('first-approval-broker-has-failures')).toHaveTextContent('true')
+    expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('durable_only')
+    expect(screen.getByTestId('checkpoint-loop-first-broker-state')).toHaveTextContent('1 broker failure')
   })
 
   it('surfaces broker command failures without clearing pending approvals or resume history', async () => {
@@ -2266,6 +2286,11 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('refresh-source')).toHaveTextContent('runtime_stream:action_required'))
     await waitFor(() => expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1'))
     await waitFor(() => expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('true'))
+    expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('checkpoint-loop-first-action-id')).toHaveTextContent(actionId)
+    expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('live_and_durable')
+    expect(screen.getByTestId('checkpoint-loop-first-live-state')).toHaveTextContent('Live action required')
+    expect(screen.getByTestId('checkpoint-loop-first-resume-state')).toHaveTextContent('Resume failed')
     expect(screen.getByTestId('sync-polling-action-id')).toHaveTextContent(actionId)
     expect(screen.getByTestId('sync-polling-boundary-id')).toHaveTextContent('boundary-1')
     expect(screen.getByTestId('latest-resume-status')).toHaveTextContent('failed')
@@ -2523,10 +2548,12 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh notification routes' }))
 
-    await waitFor(() => expect(screen.getByTestId('route-load-status')).toHaveTextContent('error'))
-    expect(screen.getByTestId('route-load-error')).toHaveTextContent(
-      'Cadence could not load notification routes for this project.',
+    await waitFor(() =>
+      expect(screen.getByTestId('route-load-error')).toHaveTextContent(
+        'Cadence could not load notification routes for this project.',
+      ),
     )
+    expect(screen.getByTestId('route-load-status')).not.toHaveTextContent('loading')
     expect(screen.getByTestId('route-count')).toHaveTextContent('2')
     expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1')
     expect(screen.getByTestId('latest-resume-status')).toHaveTextContent('failed')

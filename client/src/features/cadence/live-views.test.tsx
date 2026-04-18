@@ -31,6 +31,8 @@ import type {
   RuntimeStreamView,
 } from '@/src/lib/cadence-model'
 
+type CheckpointControlLoopCard = NonNullable<AgentPaneView['checkpointControlLoop']>['items'][number]
+
 function makeLifecycle(overrides: Partial<PlanningLifecycleView> = {}): PlanningLifecycleView {
   return {
     stages: [],
@@ -318,6 +320,129 @@ function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeS
     lastIssue: null,
     lastItemAt: null,
     lastSequence: null,
+    ...overrides,
+  }
+}
+
+function makeCheckpointControlLoopCard(
+  overrides: Partial<CheckpointControlLoopCard> = {},
+): CheckpointControlLoopCard {
+  const approval = overrides.approval ?? {
+    actionId: 'flow:flow-1:run:run-1:boundary:boundary-1:terminal_input_required',
+    sessionId: 'session-1',
+    flowId: 'flow-1',
+    actionType: 'terminal_input_required',
+    title: 'Terminal input required',
+    detail: 'Provide terminal input before the run can continue.',
+    gateNodeId: 'workflow-research',
+    gateKey: 'requires_user_input',
+    transitionFromNodeId: 'workflow-discussion',
+    transitionToNodeId: 'workflow-research',
+    transitionKind: 'advance',
+    userAnswer: 'Looks good to resume.',
+    status: 'approved' as const,
+    statusLabel: 'Approved',
+    decisionNote: 'Ready to resume.',
+    createdAt: '2026-04-16T20:03:00Z',
+    updatedAt: '2026-04-16T20:03:30Z',
+    resolvedAt: '2026-04-16T20:03:30Z',
+    isPending: false,
+    isResolved: true,
+    canResume: true,
+    isGateLinked: true,
+    isRuntimeResumable: false,
+    requiresUserAnswer: true,
+    answerRequirementReason: 'gate_linked' as const,
+    answerRequirementLabel: 'Required',
+    answerShapeKind: 'plain_text' as const,
+    answerShapeLabel: 'Required user answer',
+    answerShapeHint: 'Describe the operator decision that justifies approval.',
+    answerPlaceholder: 'Provide operator input for this action.',
+  }
+
+  return {
+    key: 'flow:flow-1:run:run-1:boundary:boundary-1:terminal_input_required::boundary-1',
+    actionId: approval.actionId,
+    boundaryId: 'boundary-1',
+    title: approval.title,
+    detail: approval.detail,
+    gateLinkageLabel: 'workflow-research · requires_user_input · workflow-discussion → workflow-research (advance)',
+    truthSource: 'durable_only',
+    truthSourceLabel: 'Durable only',
+    truthSourceDetail: 'The live row has cleared or is unavailable, so this card is anchored to durable approval and resume truth.',
+    liveActionRequired: null,
+    liveStateLabel: 'Live row unavailable',
+    liveStateDetail:
+      'The selected project snapshot still shows this checkpoint as pending even though the live stream no longer has a matching row.',
+    liveUpdatedAt: '2026-04-16T20:03:30Z',
+    approval,
+    durableStateLabel: approval.statusLabel,
+    durableStateDetail: approval.detail,
+    durableUpdatedAt: approval.updatedAt,
+    latestResume: {
+      id: 1,
+      sourceActionId: approval.actionId,
+      sessionId: 'session-1',
+      status: 'started',
+      statusLabel: 'Resume started',
+      summary: 'Operator resumed the selected project runtime session.',
+      createdAt: '2026-04-16T20:04:00Z',
+    },
+    resumeStateLabel: 'Resume started',
+    resumeDetail: 'Operator resumed the selected project runtime session.',
+    resumeUpdatedAt: '2026-04-16T20:04:00Z',
+    brokerAction: {
+      actionId: approval.actionId,
+      dispatches: [],
+      dispatchCount: 0,
+      pendingCount: 0,
+      sentCount: 0,
+      failedCount: 0,
+      claimedCount: 0,
+      latestUpdatedAt: null,
+      hasFailures: false,
+      hasPending: false,
+      hasClaimed: false,
+    },
+    brokerStateLabel: 'Broker diagnostics unavailable',
+    brokerStateDetail: 'No notification broker fan-out rows were retained for this action in the bounded dispatch window.',
+    brokerLatestUpdatedAt: null,
+    brokerRoutePreviews: [],
+    evidenceCount: 1,
+    evidenceStateLabel: '1 durable evidence row',
+    evidenceSummary: 'Showing the latest durable evidence row linked to this action.',
+    latestEvidenceAt: '2026-04-16T20:04:10Z',
+    evidencePreviews: [
+      {
+        artifactId: 'artifact-checkpoint-1',
+        artifactKindLabel: 'Verification evidence',
+        statusLabel: 'Recorded',
+        summary: 'Captured resume verification evidence for this action.',
+        updatedAt: '2026-04-16T20:04:10Z',
+      },
+    ],
+    sortTimestamp: '2026-04-16T20:04:10Z',
+    ...overrides,
+  }
+}
+
+function makeCheckpointControlLoop(
+  overrides: Partial<NonNullable<AgentPaneView['checkpointControlLoop']>> = {},
+): NonNullable<AgentPaneView['checkpointControlLoop']> {
+  return {
+    items: [makeCheckpointControlLoopCard()],
+    totalCount: 1,
+    visibleCount: 1,
+    hiddenCount: 0,
+    isTruncated: false,
+    windowLabel: 'Showing 1 checkpoint action from the bounded control-loop window.',
+    emptyTitle: 'No checkpoint control loops recorded',
+    emptyBody:
+      'Cadence has not observed a live or durable checkpoint boundary for this project yet. Waiting boundaries, resume outcomes, and broker fan-out will appear here once recorded.',
+    missingEvidenceCount: 0,
+    liveHintOnlyCount: 0,
+    durableOnlyCount: 1,
+    recoveredCount: 0,
     ...overrides,
   }
 }
@@ -665,89 +790,98 @@ describe('live views', () => {
     expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
   })
 
-  it('renders recovered runtime and durable operator controls with the current headings', async () => {
+  it('renders recovered runtime and checkpoint control-loop actions with the current headings', async () => {
     const resolveOperatorAction = vi.fn(async () => undefined)
     const resumeOperatorRun = vi.fn(async () => undefined)
 
+    const pendingApproval = {
+      actionId: 'action-pending',
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      actionType: 'review_worktree',
+      title: 'Review worktree changes',
+      detail: 'Inspect the repository diff before trusting the next operator step.',
+      gateNodeId: 'workflow-research',
+      gateKey: 'requires_user_input',
+      transitionFromNodeId: 'workflow-discussion',
+      transitionToNodeId: 'workflow-research',
+      transitionKind: 'advance',
+      userAnswer: null,
+      status: 'pending' as const,
+      statusLabel: 'Pending approval',
+      decisionNote: null,
+      createdAt: '2026-04-13T20:02:00Z',
+      updatedAt: '2026-04-13T20:02:00Z',
+      resolvedAt: null,
+      isPending: true,
+      isResolved: false,
+      canResume: false,
+      isGateLinked: true,
+      isRuntimeResumable: false,
+      requiresUserAnswer: true,
+      answerRequirementReason: 'gate_linked' as const,
+      answerRequirementLabel: 'Required',
+      answerShapeKind: 'plain_text' as const,
+      answerShapeLabel: 'Required user answer',
+      answerShapeHint: 'Describe the operator decision that justifies approval.',
+      answerPlaceholder: 'Provide operator input for this action.',
+    }
+    const approvedCard = makeCheckpointControlLoopCard({
+      actionId: 'action-approved',
+      key: 'action-approved::boundary-2',
+      boundaryId: 'boundary-2',
+      title: 'Resume after plan review',
+      detail: 'Retry resume after the operator confirms the plan is safe.',
+      approval: {
+        actionId: 'action-approved',
+        sessionId: 'session-1',
+        flowId: 'flow-1',
+        actionType: 'review_plan',
+        title: 'Resume after plan review',
+        detail: 'Retry resume after the operator confirms the plan is safe.',
+        gateNodeId: 'workflow-research',
+        gateKey: 'requires_user_input',
+        transitionFromNodeId: 'workflow-discussion',
+        transitionToNodeId: 'workflow-research',
+        transitionKind: 'advance',
+        userAnswer: 'Looks good to resume.',
+        status: 'approved',
+        statusLabel: 'Approved',
+        decisionNote: 'Ready to resume.',
+        createdAt: '2026-04-13T20:01:00Z',
+        updatedAt: '2026-04-13T20:03:30Z',
+        resolvedAt: '2026-04-13T20:03:30Z',
+        isPending: false,
+        isResolved: true,
+        canResume: true,
+        isGateLinked: true,
+        isRuntimeResumable: false,
+        requiresUserAnswer: true,
+        answerRequirementReason: 'gate_linked',
+        answerRequirementLabel: 'Required',
+        answerShapeKind: 'plain_text',
+        answerShapeLabel: 'Required user answer',
+        answerShapeHint: 'Describe the operator decision that justifies approval.',
+        answerPlaceholder: 'Provide operator input for this action.',
+      },
+      latestResume: {
+        id: 2,
+        sourceActionId: 'action-approved',
+        sessionId: 'session-1',
+        status: 'started',
+        statusLabel: 'Resume started',
+        summary: 'Operator resumed the selected project runtime session.',
+        createdAt: '2026-04-13T20:04:00Z',
+      },
+      resumeStateLabel: 'Resume started',
+      resumeDetail: 'Operator resumed the selected project runtime session.',
+      resumeUpdatedAt: '2026-04-13T20:04:00Z',
+    })
+
     const project = makeProject({
-      approvalRequests: [
-        {
-          actionId: 'action-pending',
-          sessionId: 'session-1',
-          flowId: 'flow-1',
-          actionType: 'review_worktree',
-          title: 'Review worktree changes',
-          detail: 'Inspect the repository diff before trusting the next operator step.',
-          gateNodeId: 'workflow-research',
-          gateKey: 'requires_user_input',
-          transitionFromNodeId: 'workflow-discussion',
-          transitionToNodeId: 'workflow-research',
-          transitionKind: 'advance',
-          userAnswer: null,
-          status: 'pending',
-          statusLabel: 'Pending approval',
-          decisionNote: null,
-          createdAt: '2026-04-13T20:02:00Z',
-          updatedAt: '2026-04-13T20:02:00Z',
-          resolvedAt: null,
-          isPending: true,
-          isResolved: false,
-          canResume: false,
-          isGateLinked: true,
-          isRuntimeResumable: false,
-          requiresUserAnswer: true,
-          answerRequirementReason: 'gate_linked',
-          answerRequirementLabel: 'Required',
-          answerShapeKind: 'plain_text',
-          answerShapeLabel: 'Required user answer',
-          answerShapeHint: 'Describe the operator decision that justifies approval.',
-          answerPlaceholder: 'Provide operator input for this action.',
-        },
-        {
-          actionId: 'action-approved',
-          sessionId: 'session-1',
-          flowId: 'flow-1',
-          actionType: 'review_plan',
-          title: 'Resume after plan review',
-          detail: 'Retry resume after the operator confirms the plan is safe.',
-          gateNodeId: 'workflow-research',
-          gateKey: 'requires_user_input',
-          transitionFromNodeId: 'workflow-discussion',
-          transitionToNodeId: 'workflow-research',
-          transitionKind: 'advance',
-          userAnswer: 'Looks good to resume.',
-          status: 'approved',
-          statusLabel: 'Approved',
-          decisionNote: 'Ready to resume.',
-          createdAt: '2026-04-13T20:01:00Z',
-          updatedAt: '2026-04-13T20:03:30Z',
-          resolvedAt: '2026-04-13T20:03:30Z',
-          isPending: false,
-          isResolved: true,
-          canResume: true,
-          isGateLinked: true,
-          isRuntimeResumable: false,
-          requiresUserAnswer: true,
-          answerRequirementReason: 'gate_linked',
-          answerRequirementLabel: 'Required',
-          answerShapeKind: 'plain_text',
-          answerShapeLabel: 'Required user answer',
-          answerShapeHint: 'Describe the operator decision that justifies approval.',
-          answerPlaceholder: 'Provide operator input for this action.',
-        },
-      ],
+      approvalRequests: [pendingApproval, approvedCard.approval!],
       pendingApprovalCount: 1,
-      resumeHistory: [
-        {
-          id: 2,
-          sourceActionId: 'action-approved',
-          sessionId: 'session-1',
-          status: 'started',
-          statusLabel: 'Resume started',
-          summary: 'Operator resumed the selected project runtime session.',
-          createdAt: '2026-04-13T20:04:00Z',
-        },
-      ],
+      resumeHistory: [approvedCard.latestResume!],
     })
 
     render(
@@ -771,6 +905,37 @@ describe('live views', () => {
           }),
           runtimeRun: makeRuntimeRun(),
           runtimeStream: makeRuntimeStream({ status: 'idle' }),
+          checkpointControlLoop: makeCheckpointControlLoop({
+            items: [
+              makeCheckpointControlLoopCard({
+                actionId: 'action-pending',
+                key: 'action-pending::boundary-1',
+                boundaryId: 'boundary-1',
+                title: pendingApproval.title,
+                detail: pendingApproval.detail,
+                approval: pendingApproval,
+                durableStateLabel: pendingApproval.statusLabel,
+                durableStateDetail: pendingApproval.detail,
+                durableUpdatedAt: pendingApproval.updatedAt,
+                latestResume: null,
+                resumeStateLabel: 'Waiting on approval',
+                resumeDetail: 'Cadence is waiting for operator input before this action can resume the run.',
+                resumeUpdatedAt: pendingApproval.updatedAt,
+                evidenceCount: 0,
+                evidenceStateLabel: 'No durable evidence in bounded window',
+                evidenceSummary:
+                  'Cadence did not retain a matching tool result, verification row, or policy denial for this action in the bounded evidence window.',
+                latestEvidenceAt: null,
+                evidencePreviews: [],
+              }),
+              approvedCard,
+            ],
+            totalCount: 2,
+            visibleCount: 2,
+            hiddenCount: 0,
+            windowLabel: 'Showing 2 checkpoint actions from the bounded control-loop window.',
+            durableOnlyCount: 2,
+          }),
           runtimeRunUnavailableReason: 'Cadence recovered a supervised harness run and its durable checkpoints before the live runtime feed resumed.',
           messagesUnavailableReason: 'Cadence recovered a supervised harness run, but the live runtime stream has not resumed yet. Durable checkpoints remain visible below.',
         })}
@@ -781,10 +946,11 @@ describe('live views', () => {
 
     expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Durable approvals and resume checkpoints' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
     expect(screen.getByText('Supervisor boot recorded.')).toBeVisible()
     expect(screen.getByText('Review worktree changes')).toBeVisible()
-    expect(screen.getByText('Latest resume started: Operator resumed the selected project runtime session.')).toBeVisible()
+    expect(screen.getByText('Resume after plan review')).toBeVisible()
+    expect(screen.getAllByText('Latest resume started: Operator resumed the selected project runtime session.').length).toBeGreaterThan(0)
 
     fireEvent.change(screen.getByLabelText('Operator answer for action-pending'), {
       target: { value: 'Proceed after validating repo changes.' },

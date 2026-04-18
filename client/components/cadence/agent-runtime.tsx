@@ -671,13 +671,25 @@ function getCheckpointControlLoopCoverageAlertMeta(controlLoop: NonNullable<Agen
     coverageNotes.push(`${controlLoop.hiddenCount} older checkpoint action${controlLoop.hiddenCount === 1 ? '' : 's'} are outside this bounded window.`)
   }
   if (controlLoop.liveHintOnlyCount > 0) {
-    coverageNotes.push(`${controlLoop.liveHintOnlyCount} card${controlLoop.liveHintOnlyCount === 1 ? '' : 's'} are still anchored to live hints while durable rows persist.`)
+    coverageNotes.push(
+      controlLoop.liveHintOnlyCount === 1
+        ? '1 card is still anchored to live hints while durable rows persist.'
+        : `${controlLoop.liveHintOnlyCount} cards are still anchored to live hints while durable rows persist.`,
+    )
   }
   if (controlLoop.missingEvidenceCount > 0) {
-    coverageNotes.push(`${controlLoop.missingEvidenceCount} card${controlLoop.missingEvidenceCount === 1 ? '' : 's'} still lack durable evidence inside the bounded artifact window.`)
+    coverageNotes.push(
+      controlLoop.missingEvidenceCount === 1
+        ? '1 card still lacks durable evidence inside the bounded artifact window.'
+        : `${controlLoop.missingEvidenceCount} cards still lack durable evidence inside the bounded artifact window.`,
+    )
   }
   if (controlLoop.recoveredCount > 0) {
-    coverageNotes.push(`${controlLoop.recoveredCount} card${controlLoop.recoveredCount === 1 ? '' : 's'} are being shown from recovered durable history after the live row cleared.`)
+    coverageNotes.push(
+      controlLoop.recoveredCount === 1
+        ? '1 card is being shown from recovered durable history after the live row cleared.'
+        : `${controlLoop.recoveredCount} cards are being shown from recovered durable history after the live row cleared.`,
+    )
   }
 
   if (coverageNotes.length === 0) {

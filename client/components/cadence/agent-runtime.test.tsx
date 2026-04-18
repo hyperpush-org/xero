@@ -385,6 +385,129 @@ function makeRecentAutonomousUnits(
   }
 }
 
+function makeCheckpointControlLoopCard(
+  overrides: Partial<CheckpointControlLoopCard> = {},
+): CheckpointControlLoopCard {
+  const approval = overrides.approval ?? {
+    actionId: 'flow:flow-1:run:run-1:boundary:boundary-1:terminal_input_required',
+    sessionId: 'session-1',
+    flowId: 'flow-1',
+    actionType: 'terminal_input_required',
+    title: 'Terminal input required',
+    detail: 'Provide terminal input before the run can continue.',
+    gateNodeId: 'workflow-research',
+    gateKey: 'requires_user_input',
+    transitionFromNodeId: 'workflow-discussion',
+    transitionToNodeId: 'workflow-research',
+    transitionKind: 'advance',
+    userAnswer: 'Looks good to resume.',
+    status: 'approved' as const,
+    statusLabel: 'Approved',
+    decisionNote: 'Ready to resume.',
+    createdAt: '2026-04-16T20:03:00Z',
+    updatedAt: '2026-04-16T20:03:30Z',
+    resolvedAt: '2026-04-16T20:03:30Z',
+    isPending: false,
+    isResolved: true,
+    canResume: true,
+    isGateLinked: true,
+    isRuntimeResumable: false,
+    requiresUserAnswer: true,
+    answerRequirementReason: 'gate_linked' as const,
+    answerRequirementLabel: 'Required',
+    answerShapeKind: 'plain_text' as const,
+    answerShapeLabel: 'Required user answer',
+    answerShapeHint: 'Describe the operator decision that justifies approval.',
+    answerPlaceholder: 'Provide operator input for this action.',
+  }
+
+  return {
+    key: 'flow:flow-1:run:run-1:boundary:boundary-1:terminal_input_required::boundary-1',
+    actionId: approval.actionId,
+    boundaryId: 'boundary-1',
+    title: approval.title,
+    detail: approval.detail,
+    gateLinkageLabel: 'workflow-research · requires_user_input · workflow-discussion → workflow-research (advance)',
+    truthSource: 'durable_only',
+    truthSourceLabel: 'Durable only',
+    truthSourceDetail: 'The live row has cleared or is unavailable, so this card is anchored to durable approval and resume truth.',
+    liveActionRequired: null,
+    liveStateLabel: 'Live row unavailable',
+    liveStateDetail:
+      'The selected project snapshot still shows this checkpoint as pending even though the live stream no longer has a matching row.',
+    liveUpdatedAt: '2026-04-16T20:03:30Z',
+    approval,
+    durableStateLabel: approval.statusLabel,
+    durableStateDetail: approval.detail,
+    durableUpdatedAt: approval.updatedAt,
+    latestResume: {
+      id: 1,
+      sourceActionId: approval.actionId,
+      sessionId: 'session-1',
+      status: 'started',
+      statusLabel: 'Resume started',
+      summary: 'Operator resumed the selected project runtime session.',
+      createdAt: '2026-04-16T20:04:00Z',
+    },
+    resumeStateLabel: 'Resume started',
+    resumeDetail: 'Operator resumed the selected project runtime session.',
+    resumeUpdatedAt: '2026-04-16T20:04:00Z',
+    brokerAction: {
+      actionId: approval.actionId,
+      dispatches: [],
+      dispatchCount: 0,
+      pendingCount: 0,
+      sentCount: 0,
+      failedCount: 0,
+      claimedCount: 0,
+      latestUpdatedAt: null,
+      hasFailures: false,
+      hasPending: false,
+      hasClaimed: false,
+    },
+    brokerStateLabel: 'Broker diagnostics unavailable',
+    brokerStateDetail: 'No notification broker fan-out rows were retained for this action in the bounded dispatch window.',
+    brokerLatestUpdatedAt: null,
+    brokerRoutePreviews: [],
+    evidenceCount: 1,
+    evidenceStateLabel: '1 durable evidence row',
+    evidenceSummary: 'Showing the latest durable evidence row linked to this action.',
+    latestEvidenceAt: '2026-04-16T20:04:10Z',
+    evidencePreviews: [
+      {
+        artifactId: 'artifact-checkpoint-1',
+        artifactKindLabel: 'Verification evidence',
+        statusLabel: 'Recorded',
+        summary: 'Captured resume verification evidence for this action.',
+        updatedAt: '2026-04-16T20:04:10Z',
+      },
+    ],
+    sortTimestamp: '2026-04-16T20:04:10Z',
+    ...overrides,
+  }
+}
+
+function makeCheckpointControlLoop(
+  overrides: Partial<NonNullable<AgentPaneView['checkpointControlLoop']>> = {},
+): NonNullable<AgentPaneView['checkpointControlLoop']> {
+  return {
+    items: [makeCheckpointControlLoopCard()],
+    totalCount: 1,
+    visibleCount: 1,
+    hiddenCount: 0,
+    isTruncated: false,
+    windowLabel: 'Showing 1 checkpoint action from the bounded control-loop window.',
+    emptyTitle: 'No checkpoint control loops recorded',
+    emptyBody:
+      'Cadence has not observed a live or durable checkpoint boundary for this project yet. Waiting boundaries, resume outcomes, and broker fan-out will appear here once recorded.',
+    missingEvidenceCount: 0,
+    liveHintOnlyCount: 0,
+    durableOnlyCount: 1,
+    recoveredCount: 0,
+    ...overrides,
+  }
+}
+
 function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
   const project = overrides.project ?? makeProject()
   const runtimeSession = overrides.runtimeSession ?? null
@@ -613,70 +736,81 @@ describe('AgentRuntime current UI', () => {
     await waitFor(() => expect(onCancelAutonomousRun).toHaveBeenCalledWith('auto-run-1'))
   })
 
-  it('renders operator approvals and resumes with current labels', async () => {
-    const onResolveOperatorAction = vi.fn(async () => undefined)
+  it('renders checkpoint control-loop cards with resume actions bound to the same action and boundary', async () => {
     const onResumeOperatorRun = vi.fn(async () => undefined)
+    const checkpointCard = makeCheckpointControlLoopCard({
+      title: 'Review worktree changes',
+      detail: 'Inspect the repository diff before trusting the next operator step.',
+      approval: {
+        actionId: 'action-1',
+        sessionId: 'session-1',
+        flowId: 'flow-1',
+        actionType: 'review_worktree',
+        title: 'Review worktree changes',
+        detail: 'Inspect the repository diff before trusting the next operator step.',
+        gateNodeId: 'workflow-research',
+        gateKey: 'requires_user_input',
+        transitionFromNodeId: 'workflow-discussion',
+        transitionToNodeId: 'workflow-research',
+        transitionKind: 'advance',
+        userAnswer: 'Looks good to resume.',
+        status: 'approved',
+        statusLabel: 'Approved',
+        decisionNote: 'Ready to resume.',
+        createdAt: '2026-04-13T20:01:00Z',
+        updatedAt: '2026-04-13T20:03:30Z',
+        resolvedAt: '2026-04-13T20:03:30Z',
+        isPending: false,
+        isResolved: true,
+        canResume: true,
+        isGateLinked: true,
+        isRuntimeResumable: false,
+        requiresUserAnswer: true,
+        answerRequirementReason: 'gate_linked',
+        answerRequirementLabel: 'Required',
+        answerShapeKind: 'plain_text',
+        answerShapeLabel: 'Required user answer',
+        answerShapeHint: 'Describe the operator decision that justifies approval.',
+        answerPlaceholder: 'Provide operator input for this action.',
+      },
+      gateLinkageLabel: 'workflow-research · requires_user_input · workflow-discussion → workflow-research (advance)',
+      latestResume: {
+        id: 1,
+        sourceActionId: 'action-1',
+        sessionId: 'session-1',
+        status: 'started',
+        statusLabel: 'Resume started',
+        summary: 'Operator resumed the selected project runtime session.',
+        createdAt: '2026-04-13T20:04:00Z',
+      },
+      resumeStateLabel: 'Resume started',
+      resumeDetail: 'Operator resumed the selected project runtime session.',
+      resumeUpdatedAt: '2026-04-13T20:04:00Z',
+      actionId: 'action-1',
+      key: 'action-1::boundary-1',
+    })
 
     render(
       <AgentRuntime
         agent={makeAgent({
           runtimeSession: makeRuntimeSession(),
           runtimeRun: makeRuntimeRun(),
-          approvalRequests: [
-            {
-              actionId: 'action-1',
-              sessionId: 'session-1',
-              flowId: 'flow-1',
-              actionType: 'review_worktree',
-              title: 'Review worktree changes',
-              detail: 'Inspect the repository diff before trusting the next operator step.',
-              gateNodeId: 'workflow-research',
-              gateKey: 'requires_user_input',
-              transitionFromNodeId: 'workflow-discussion',
-              transitionToNodeId: 'workflow-research',
-              transitionKind: 'advance',
-              userAnswer: 'Looks good to resume.',
-              status: 'approved',
-              statusLabel: 'Approved',
-              decisionNote: 'Ready to resume.',
-              createdAt: '2026-04-13T20:01:00Z',
-              updatedAt: '2026-04-13T20:03:30Z',
-              resolvedAt: '2026-04-13T20:03:30Z',
-              isPending: false,
-              isResolved: true,
-              canResume: true,
-              isGateLinked: true,
-              isRuntimeResumable: false,
-              requiresUserAnswer: true,
-              answerRequirementReason: 'gate_linked',
-              answerRequirementLabel: 'Required',
-              answerShapeKind: 'plain_text',
-              answerShapeLabel: 'Required user answer',
-              answerShapeHint: 'Describe the operator decision that justifies approval.',
-              answerPlaceholder: 'Provide operator input for this action.',
-            },
-          ],
+          approvalRequests: [checkpointCard.approval!],
           pendingApprovalCount: 0,
-          resumeHistory: [
-            {
-              id: 1,
-              sourceActionId: 'action-1',
-              sessionId: 'session-1',
-              status: 'started',
-              statusLabel: 'Resume started',
-              summary: 'Operator resumed the selected project runtime session.',
-              createdAt: '2026-04-13T20:04:00Z',
-            },
-          ],
+          resumeHistory: [checkpointCard.latestResume!],
+          checkpointControlLoop: makeCheckpointControlLoop({
+            items: [checkpointCard],
+          }),
         })}
-        onResolveOperatorAction={onResolveOperatorAction}
         onResumeOperatorRun={onResumeOperatorRun}
       />,
     )
 
-    expect(screen.getByRole('heading', { name: 'Durable approvals and resume checkpoints' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
     expect(screen.getByText('Review worktree changes')).toBeVisible()
-    expect(screen.getByText('Latest resume started: Operator resumed the selected project runtime session.')).toBeVisible()
+    expect(screen.getByText('Durable only')).toBeVisible()
+    expect(screen.getAllByText('Latest resume started: Operator resumed the selected project runtime session.').length).toBeGreaterThan(0)
+    expect(screen.getByText('Captured resume verification evidence for this action.')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Resume run' }))
     await waitFor(() =>
@@ -684,6 +818,80 @@ describe('AgentRuntime current UI', () => {
         userAnswer: 'Looks good to resume.',
       }),
     )
+  })
+
+  it('renders degraded checkpoint recovery banners and bounded coverage copy explicitly', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          checkpointControlLoop: makeCheckpointControlLoop({
+            items: [
+              makeCheckpointControlLoopCard({
+                truthSource: 'live_hint_only',
+                truthSourceLabel: 'Live hint only',
+                truthSourceDetail:
+                  'Cadence is showing the live action-required row while waiting for durable approval or evidence rows to persist.',
+                liveActionRequired: {
+                  id: 'action-required-1',
+                  kind: 'action_required',
+                  runId: 'run-1',
+                  sequence: 9,
+                  createdAt: '2026-04-16T20:05:00Z',
+                  actionId: 'action-live-only',
+                  boundaryId: 'boundary-live-only',
+                  actionType: 'terminal_input_required',
+                  title: 'Terminal input required',
+                  detail: 'Provide terminal input before the run can continue.',
+                },
+                approval: null,
+                actionId: 'action-live-only',
+                key: 'action-live-only::boundary-live-only',
+                boundaryId: 'boundary-live-only',
+                liveStateLabel: 'Live action required',
+                durableStateLabel: 'Durable approval pending refresh',
+                durableStateDetail:
+                  'The live action-required row arrived before the selected-project snapshot persisted a matching durable approval row.',
+                evidenceCount: 0,
+                evidenceStateLabel: 'No durable evidence in bounded window',
+                evidenceSummary:
+                  'Cadence did not retain a matching tool result, verification row, or policy denial for this action in the bounded evidence window.',
+              }),
+            ],
+            totalCount: 3,
+            visibleCount: 1,
+            hiddenCount: 2,
+            isTruncated: true,
+            windowLabel: 'Showing 1 of 3 checkpoint actions in the bounded control-loop window.',
+            missingEvidenceCount: 1,
+            liveHintOnlyCount: 1,
+            durableOnlyCount: 0,
+            recoveredCount: 1,
+          }),
+          notificationSyncError: {
+            code: 'notification_adapter_sync_failed',
+            message: 'Cadence could not sync notification adapters for this project.',
+            retryable: true,
+          },
+          notificationSyncPollingActive: true,
+          notificationSyncPollingActionId: 'action-live-only',
+          notificationSyncPollingBoundaryId: 'boundary-live-only',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Showing last truthful checkpoint loop')).toBeVisible()
+    expect(
+      screen.getByText(
+        /Cadence is still polling remote routes for blocked boundary boundary-live-only and action action-live-only while preserving the last truthful sync summary\./,
+      ),
+    ).toBeVisible()
+    expect(screen.getByText('Bounded checkpoint coverage')).toBeVisible()
+    expect(screen.getByText(/2 older checkpoint actions are outside this bounded window/)).toBeVisible()
+    expect(screen.getByText(/1 card is being shown from recovered durable history/)).toBeVisible()
+    expect(screen.getByText('Live hint only')).toBeVisible()
+    expect(screen.getByText('Durable approval pending refresh')).toBeVisible()
   })
 
   it('keeps the signed-out shell minimal and truthful', () => {
