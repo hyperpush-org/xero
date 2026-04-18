@@ -35,6 +35,7 @@ use cadence_desktop_lib::{
     git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
     runtime::{
+        autonomous_orchestrator::persist_supervisor_event,
         launch_detached_runtime_supervisor,
         protocol::{
             SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
@@ -742,6 +743,76 @@ fn seed_failed_runtime_run(repo_root: &Path, project_id: &str, run_id: &str) {
         },
     )
     .expect("seed failed runtime run");
+}
+
+fn seed_active_autonomous_run(repo_root: &Path, project_id: &str, run_id: &str) {
+    let timestamp = "2026-04-16T12:00:00Z";
+    let payload = project_store::AutonomousRunUpsertRecord {
+        run: project_store::AutonomousRunRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            runtime_kind: "openai_codex".into(),
+            supervisor_kind: "detached_pty".into(),
+            status: project_store::AutonomousRunStatus::Running,
+            active_unit_sequence: Some(1),
+            duplicate_start_detected: false,
+            duplicate_start_run_id: None,
+            duplicate_start_reason: None,
+            started_at: timestamp.into(),
+            last_heartbeat_at: Some(timestamp.into()),
+            last_checkpoint_at: Some(timestamp.into()),
+            paused_at: None,
+            cancelled_at: None,
+            completed_at: None,
+            crashed_at: None,
+            stopped_at: None,
+            pause_reason: None,
+            cancel_reason: None,
+            crash_reason: None,
+            last_error: None,
+            updated_at: timestamp.into(),
+        },
+        unit: Some(project_store::AutonomousUnitRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            unit_id: format!("{run_id}:unit:1"),
+            sequence: 1,
+            kind: project_store::AutonomousUnitKind::Researcher,
+            status: project_store::AutonomousUnitStatus::Active,
+            summary: "Researcher child session launched.".into(),
+            boundary_id: None,
+            workflow_linkage: None,
+            started_at: timestamp.into(),
+            finished_at: None,
+            updated_at: timestamp.into(),
+            last_error: None,
+        }),
+        attempt: Some(project_store::AutonomousUnitAttemptRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            unit_id: format!("{run_id}:unit:1"),
+            attempt_id: format!("{run_id}:unit:1:attempt:1"),
+            attempt_number: 1,
+            child_session_id: "child-session-1".into(),
+            status: project_store::AutonomousUnitStatus::Active,
+            boundary_id: None,
+            workflow_linkage: None,
+            started_at: timestamp.into(),
+            finished_at: None,
+            updated_at: timestamp.into(),
+            last_error: None,
+        }),
+        artifacts: Vec::new(),
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match project_store::upsert_autonomous_run(repo_root, &payload) {
+            Ok(_) => return,
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Err(error) => panic!("seed active autonomous run: {error:?}"),
+        }
+    }
 }
 
 fn launch_scripted_runtime_run(
@@ -2667,7 +2738,10 @@ fn start_autonomous_run_progresses_lifecycle_graph_and_reuses_handoff_linkage_on
             && attempt.workflow_linkage.as_ref() == Some(linkage)
     });
 
-    let progressed_unit = progressed.unit.as_ref().expect("progressed unit should exist");
+    let progressed_unit = progressed
+        .unit
+        .as_ref()
+        .expect("progressed unit should exist");
     let progressed_attempt = progressed
         .attempt
         .as_ref()
@@ -2682,8 +2756,9 @@ fn start_autonomous_run_progresses_lifecycle_graph_and_reuses_handoff_linkage_on
     assert_eq!(count_workflow_transition_rows(&repo_root, &project_id), 3);
     assert_eq!(count_workflow_handoff_rows(&repo_root, &project_id), 2);
 
-    let events = project_store::load_recent_workflow_transition_events(&repo_root, &project_id, None)
-        .expect("load lifecycle transition events after autonomous progression");
+    let events =
+        project_store::load_recent_workflow_transition_events(&repo_root, &project_id, None)
+            .expect("load lifecycle transition events after autonomous progression");
     let roadmap_transition = events
         .iter()
         .find(|event| event.to_node_id == "roadmap")
@@ -2697,7 +2772,10 @@ fn start_autonomous_run_progresses_lifecycle_graph_and_reuses_handoff_linkage_on
     .expect("roadmap handoff package should exist");
 
     assert_eq!(progressed_linkage.workflow_node_id, "roadmap");
-    assert_eq!(progressed_linkage.transition_id, roadmap_transition.transition_id);
+    assert_eq!(
+        progressed_linkage.transition_id,
+        roadmap_transition.transition_id
+    );
     assert_eq!(
         progressed_linkage.causal_transition_id.as_deref(),
         roadmap_transition.causal_transition_id.as_deref()
@@ -2877,7 +2955,9 @@ fn get_autonomous_run_rejects_stale_workflow_linkage_after_active_stage_drift() 
         },
     )
     .expect("start autonomous run before stage drift");
-    let started_run = started.run.expect("autonomous run should exist before drift");
+    let started_run = started
+        .run
+        .expect("autonomous run should exist before drift");
 
     wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
         autonomous_state
@@ -3103,6 +3183,283 @@ fn resume_operator_run_delivers_approved_terminal_input_without_auth_event_drift
     )
     .expect("stop resumed runtime run")
     .expect("runtime run should exist after stop");
+    assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}
+
+#[test]
+fn resume_operator_run_persists_autonomous_boundary_and_resume_evidence_exactly_once() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    let launched = launch_scripted_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        "run-autonomous-resume-evidence",
+        "session-1",
+        Some("flow-1"),
+        &runtime_shell::script_prompt_read_echo_and_sleep("Enter value: ", "value", "value=", 5),
+    );
+    seed_active_autonomous_run(&repo_root, &project_id, &launched.run.run_id);
+
+    wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+            && runtime_run
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.kind == RuntimeRunCheckpointKindDto::ActionRequired)
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(&project_id, &launched.run.run_id, None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    let replayed_count = match attached {
+        SupervisorControlResponse::Attached { replayed_count, .. } => replayed_count,
+        other => panic!("expected attach ack, got {other:?}"),
+    };
+    let frames = read_event_frames(&mut reader, replayed_count);
+    let (action_id, blocked_boundary_id) = frames
+        .iter()
+        .find_map(|frame| match frame {
+            SupervisorControlResponse::Event {
+                item:
+                    SupervisorLiveEventPayload::ActionRequired {
+                        action_id,
+                        boundary_id,
+                        ..
+                    },
+                ..
+            } => Some((action_id.clone(), boundary_id.clone())),
+            _ => None,
+        })
+        .expect("expected action-required replay frame for autonomous resume evidence test");
+
+    persist_supervisor_event(
+        &repo_root,
+        &project_id,
+        &SupervisorLiveEventPayload::ActionRequired {
+            action_id: action_id.clone(),
+            boundary_id: blocked_boundary_id.clone(),
+            action_type: "terminal_input_required".into(),
+            title: "Terminal input required".into(),
+            detail:
+                "Detached runtime is blocked on terminal input. Approve and resume with a coarse operator answer to continue the same supervised run."
+                    .into(),
+        },
+    )
+    .expect("persist autonomous action-required event")
+    .expect("autonomous action-required persistence should return a snapshot");
+
+    let blocked = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load autonomous run after action-required persistence");
+    assert_eq!(
+        blocked.run.as_ref().map(|run| run.status.clone()),
+        Some(AutonomousRunStatusDto::Paused)
+    );
+    assert_eq!(
+        blocked.unit.as_ref().map(|unit| unit.status.clone()),
+        Some(AutonomousUnitStatusDto::Blocked)
+    );
+    assert_eq!(
+        blocked
+            .attempt
+            .as_ref()
+            .map(|attempt| attempt.status.clone()),
+        Some(AutonomousUnitStatusDto::Blocked)
+    );
+
+    let pending_snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load project snapshot after autonomous boundary pause");
+    assert_eq!(pending_snapshot.approval_requests.len(), 1);
+    assert_eq!(pending_snapshot.approval_requests[0].action_id, action_id);
+    assert!(
+        action_id.contains(blocked_boundary_id.as_str()),
+        "expected runtime action id to encode the blocked boundary, got {action_id}"
+    );
+
+    let blocked_durable = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load durable autonomous run after boundary pause")
+        .expect("durable autonomous run should exist after boundary pause");
+    let blocked_evidence = blocked_durable
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| {
+            matches!(
+                artifact.payload.as_ref(),
+                Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                    if payload.action_id.as_deref() == Some(action_id.as_str())
+                        && payload.boundary_id.as_deref() == Some(blocked_boundary_id.as_str())
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(blocked_evidence.len(), 1);
+    assert!(matches!(
+        blocked_evidence[0].payload.as_ref(),
+        Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+            if payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Blocked
+    ));
+
+    resolve_operator_action(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResolveOperatorActionRequestDto {
+            project_id: project_id.clone(),
+            action_id: action_id.clone(),
+            decision: "approve".into(),
+            user_answer: Some("approved".into()),
+        },
+    )
+    .expect("approve autonomous runtime boundary");
+
+    let resumed = resume_operator_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResumeOperatorRunRequestDto {
+            project_id: project_id.clone(),
+            action_id: action_id.clone(),
+            user_answer: None,
+        },
+    )
+    .expect("resume autonomous runtime boundary");
+    assert_eq!(resumed.resume_entry.status, ResumeHistoryStatus::Started);
+
+    let resumed_autonomous = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load autonomous run after resume");
+    assert_eq!(
+        resumed_autonomous
+            .run
+            .as_ref()
+            .map(|run| run.status.clone()),
+        Some(AutonomousRunStatusDto::Running)
+    );
+    assert_eq!(
+        resumed_autonomous
+            .unit
+            .as_ref()
+            .and_then(|unit| unit.boundary_id.as_deref()),
+        None
+    );
+    assert_eq!(
+        resumed_autonomous
+            .attempt
+            .as_ref()
+            .and_then(|attempt| attempt.boundary_id.as_deref()),
+        None
+    );
+
+    let resumed_durable = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load durable autonomous run after resume")
+        .expect("durable autonomous run should still exist after resume");
+    let boundary_evidence = resumed_durable
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| {
+            matches!(
+                artifact.payload.as_ref(),
+                Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                    if payload.action_id.as_deref() == Some(action_id.as_str())
+                        && payload.boundary_id.as_deref() == Some(blocked_boundary_id.as_str())
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(boundary_evidence.len(), 2);
+    assert_eq!(
+        boundary_evidence
+            .iter()
+            .filter(|artifact| {
+                matches!(
+                    artifact.payload.as_ref(),
+                    Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                        if payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Blocked
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        boundary_evidence
+            .iter()
+            .filter(|artifact| {
+                matches!(
+                    artifact.payload.as_ref(),
+                    Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                        if payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Passed
+                            && payload.evidence_kind == "operator_resume"
+                )
+            })
+            .count(),
+        1
+    );
+
+    let replayed = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("reload autonomous run after resume");
+    assert_eq!(
+        replayed.run.as_ref().map(|run| run.run_id.as_str()),
+        Some(launched.run.run_id.as_str())
+    );
+    let replayed_durable = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("reload durable autonomous run after resume replay")
+        .expect("durable autonomous run should still exist after replay");
+    let replayed_boundary_evidence = replayed_durable
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| {
+            matches!(
+                artifact.payload.as_ref(),
+                Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                    if payload.action_id.as_deref() == Some(action_id.as_str())
+                        && payload.boundary_id.as_deref() == Some(blocked_boundary_id.as_str())
+            )
+        })
+        .count();
+    assert_eq!(replayed_boundary_evidence, 2);
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, &project_id, &action_id),
+        1
+    );
+
+    let stopped = stop_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id,
+            run_id: launched.run.run_id,
+        },
+    )
+    .expect("stop runtime run after autonomous resume evidence test")
+    .expect("runtime run should still exist after stop");
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
 }
 

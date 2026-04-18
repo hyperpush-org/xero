@@ -2755,7 +2755,70 @@ fn emit_normalized_events(
                 summary,
             );
         }
+
+        let should_persist_autonomous_event = match &event.item {
+            SupervisorLiveEventPayload::Tool { .. }
+            | SupervisorLiveEventPayload::ActionRequired { .. } => true,
+            SupervisorLiveEventPayload::Activity { code, .. } => code.contains("policy_denied"),
+            _ => false,
+        };
+        if should_persist_autonomous_event {
+            persist_autonomous_live_event(
+                repo_root,
+                shared,
+                event_hub,
+                persistence_lock,
+                &event.item,
+            );
+        }
     }
+}
+
+fn persist_autonomous_live_event(
+    repo_root: &Path,
+    shared: &Arc<Mutex<SidecarSharedState>>,
+    event_hub: &Arc<Mutex<SupervisorEventHub>>,
+    persistence_lock: &Arc<Mutex<()>>,
+    event: &SupervisorLiveEventPayload,
+) {
+    let project_id = {
+        shared
+            .lock()
+            .expect("sidecar state lock poisoned")
+            .project_id
+            .clone()
+    };
+
+    let Err(error) =
+        super::autonomous_orchestrator::persist_supervisor_event(repo_root, &project_id, event)
+    else {
+        return;
+    };
+
+    let detail = format!(
+        "Cadence kept the prior durable autonomous snapshot after rejecting live-event persistence: [{}] {}",
+        error.code, error.message,
+    );
+    append_live_event(
+        shared,
+        event_hub,
+        &SupervisorLiveEventPayload::Activity {
+            code: "autonomous_live_event_persist_failed".into(),
+            title: "Autonomous live-event persistence deferred".into(),
+            detail: Some(detail),
+        },
+    );
+    let _ = persist_sidecar_checkpoint(
+        repo_root,
+        shared,
+        persistence_lock,
+        RuntimeRunStatus::Running,
+        project_store::RuntimeRunCheckpointKind::State,
+        activity_checkpoint_summary(
+            "autonomous_live_event_persist_failed",
+            "Autonomous live-event persistence deferred",
+        ),
+    );
 }
 
 fn emit_interactive_boundary_if_detected(
@@ -2856,6 +2919,19 @@ fn emit_interactive_boundary_if_detected(
                     action_type: candidate.action_type,
                     title: candidate.title,
                     detail: candidate.detail,
+                },
+            );
+            persist_autonomous_live_event(
+                repo_root,
+                shared,
+                event_hub,
+                persistence_lock,
+                &SupervisorLiveEventPayload::ActionRequired {
+                    action_id: action_id.clone(),
+                    boundary_id: boundary.boundary_id.clone(),
+                    action_type: boundary.action_type.clone(),
+                    title: boundary.title.clone(),
+                    detail: boundary.detail.clone(),
                 },
             );
 

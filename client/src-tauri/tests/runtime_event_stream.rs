@@ -500,6 +500,111 @@ fn seed_runtime_action_required(
     persisted.approval_request.action_id
 }
 
+fn seed_blocked_autonomous_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    action_id: &str,
+    boundary_id: &str,
+) {
+    let timestamp = "2026-04-15T23:10:02Z";
+    let unit_id = format!("{run_id}:unit:1");
+    let attempt_id = format!("{run_id}:unit:1:attempt:1");
+    let artifact_id = format!("{attempt_id}:boundary:{boundary_id}:blocked");
+
+    project_store::upsert_autonomous_run(
+        repo_root,
+        &project_store::AutonomousRunUpsertRecord {
+            run: project_store::AutonomousRunRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                runtime_kind: "openai_codex".into(),
+                supervisor_kind: "detached_pty".into(),
+                status: project_store::AutonomousRunStatus::Paused,
+                active_unit_sequence: Some(1),
+                duplicate_start_detected: false,
+                duplicate_start_run_id: None,
+                duplicate_start_reason: None,
+                started_at: timestamp.into(),
+                last_heartbeat_at: Some(timestamp.into()),
+                last_checkpoint_at: Some(timestamp.into()),
+                paused_at: Some(timestamp.into()),
+                cancelled_at: None,
+                completed_at: None,
+                crashed_at: None,
+                stopped_at: None,
+                pause_reason: Some(project_store::RuntimeRunDiagnosticRecord {
+                    code: "autonomous_operator_action_required".into(),
+                    message: "Provide terminal input to continue this run.".into(),
+                }),
+                cancel_reason: None,
+                crash_reason: None,
+                last_error: None,
+                updated_at: timestamp.into(),
+            },
+            unit: Some(project_store::AutonomousUnitRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                unit_id: unit_id.clone(),
+                sequence: 1,
+                kind: project_store::AutonomousUnitKind::Researcher,
+                status: project_store::AutonomousUnitStatus::Blocked,
+                summary: "Blocked on operator boundary `Terminal input required`.".into(),
+                boundary_id: Some(boundary_id.into()),
+                workflow_linkage: None,
+                started_at: timestamp.into(),
+                finished_at: None,
+                updated_at: timestamp.into(),
+                last_error: None,
+            }),
+            attempt: Some(project_store::AutonomousUnitAttemptRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                unit_id: unit_id.clone(),
+                attempt_id: attempt_id.clone(),
+                attempt_number: 1,
+                child_session_id: "child-session-1".into(),
+                status: project_store::AutonomousUnitStatus::Blocked,
+                boundary_id: Some(boundary_id.into()),
+                workflow_linkage: None,
+                started_at: timestamp.into(),
+                finished_at: None,
+                updated_at: timestamp.into(),
+                last_error: None,
+            }),
+            artifacts: vec![project_store::AutonomousUnitArtifactRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                unit_id,
+                attempt_id,
+                artifact_id: artifact_id.clone(),
+                artifact_kind: "verification_evidence".into(),
+                status: project_store::AutonomousUnitArtifactStatus::Recorded,
+                summary: "Autonomous attempt blocked on `Terminal input required` and is waiting for operator action.".into(),
+                content_hash: None,
+                payload: Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(
+                    project_store::AutonomousVerificationEvidencePayloadRecord {
+                        project_id: project_id.into(),
+                        run_id: run_id.into(),
+                        unit_id: format!("{run_id}:unit:1"),
+                        attempt_id: format!("{run_id}:unit:1:attempt:1"),
+                        artifact_id,
+                        evidence_kind: "terminal_input_required".into(),
+                        label: "Terminal input required".into(),
+                        outcome: project_store::AutonomousVerificationOutcomeRecord::Blocked,
+                        command_result: None,
+                        action_id: Some(action_id.into()),
+                        boundary_id: Some(boundary_id.into()),
+                    },
+                )),
+                created_at: timestamp.into(),
+                updated_at: timestamp.into(),
+            }],
+        },
+    )
+    .expect("seed blocked autonomous run");
+}
+
 fn write_json_line<T: Serialize>(stream: &mut TcpStream, value: &T) {
     serde_json::to_writer(&mut *stream, value).expect("write json line");
     stream.write_all(b"\n").expect("write newline");
@@ -851,6 +956,13 @@ fn runtime_stream_dedupes_replayed_action_required_against_durable_pending_queue
         "boundary-1",
         "2026-04-15T23:10:02Z",
     );
+    seed_blocked_autonomous_run(
+        &repo_root,
+        &project_id,
+        "run-dedupe-action-required",
+        &action_id,
+        "boundary-1",
+    );
 
     let server = thread::spawn({
         let project_id = project_id.clone();
@@ -941,6 +1053,25 @@ fn runtime_stream_dedupes_replayed_action_required_against_durable_pending_queue
         action_required_items[0].boundary_id.as_deref(),
         Some("boundary-1")
     );
+
+    let autonomous_snapshot = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous run after replayed runtime stream")
+        .expect("autonomous run should still exist after replayed runtime stream");
+    let blocked_evidence = autonomous_snapshot
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| {
+            matches!(
+                artifact.payload.as_ref(),
+                Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                    if payload.action_id.as_deref() == Some(action_id.as_str())
+                        && payload.boundary_id.as_deref() == Some("boundary-1")
+                        && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Blocked
+            )
+        })
+        .count();
+    assert_eq!(blocked_evidence, 1);
 
     server.join().expect("join fake supervisor thread");
 }

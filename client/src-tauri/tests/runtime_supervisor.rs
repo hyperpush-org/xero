@@ -15,8 +15,9 @@ use cadence_desktop_lib::{
         SupervisorToolCallState, SUPERVISOR_PROTOCOL_VERSION,
     },
     runtime::{
-        launch_detached_runtime_supervisor, probe_runtime_run, stop_runtime_run,
-        submit_runtime_run_input, RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest,
+        autonomous_orchestrator::persist_supervisor_event, launch_detached_runtime_supervisor,
+        probe_runtime_run, stop_runtime_run, submit_runtime_run_input,
+        RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest,
         RuntimeSupervisorStopRequest, RuntimeSupervisorSubmitInputRequest,
     },
     state::DesktopState,
@@ -135,6 +136,78 @@ fn seed_running_runtime_run(repo_root: &Path, project_id: &str, run_id: &str, en
         },
     )
     .expect("seed running runtime run");
+}
+
+fn seed_active_autonomous_run(repo_root: &Path, project_id: &str, run_id: &str) {
+    let timestamp = "2026-04-16T12:00:00Z";
+    let payload = project_store::AutonomousRunUpsertRecord {
+        run: project_store::AutonomousRunRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            runtime_kind: "openai_codex".into(),
+            supervisor_kind: "detached_pty".into(),
+            status: project_store::AutonomousRunStatus::Running,
+            active_unit_sequence: Some(1),
+            duplicate_start_detected: false,
+            duplicate_start_run_id: None,
+            duplicate_start_reason: None,
+            started_at: timestamp.into(),
+            last_heartbeat_at: Some(timestamp.into()),
+            last_checkpoint_at: Some(timestamp.into()),
+            paused_at: None,
+            cancelled_at: None,
+            completed_at: None,
+            crashed_at: None,
+            stopped_at: None,
+            pause_reason: None,
+            cancel_reason: None,
+            crash_reason: None,
+            last_error: None,
+            updated_at: timestamp.into(),
+        },
+        unit: Some(project_store::AutonomousUnitRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            unit_id: format!("{run_id}:unit:1"),
+            sequence: 1,
+            kind: project_store::AutonomousUnitKind::Researcher,
+            status: project_store::AutonomousUnitStatus::Active,
+            summary: "Researcher child session launched.".into(),
+            boundary_id: None,
+            workflow_linkage: None,
+            started_at: timestamp.into(),
+            finished_at: None,
+            updated_at: timestamp.into(),
+            last_error: None,
+        }),
+        attempt: Some(project_store::AutonomousUnitAttemptRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            unit_id: format!("{run_id}:unit:1"),
+            attempt_id: format!("{run_id}:unit:1:attempt:1"),
+            attempt_number: 1,
+            child_session_id: "child-session-1".into(),
+            status: project_store::AutonomousUnitStatus::Active,
+            boundary_id: None,
+            workflow_linkage: None,
+            started_at: timestamp.into(),
+            finished_at: None,
+            updated_at: timestamp.into(),
+            last_error: None,
+        }),
+        artifacts: Vec::new(),
+    };
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        match project_store::upsert_autonomous_run(repo_root, &payload) {
+            Ok(_) => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(50))
+            }
+            Err(error) => panic!("seed active autonomous run: {error:?}"),
+        }
+    }
 }
 
 fn spawn_single_response_control_server(response_line: String) -> (String, thread::JoinHandle<()>) {
@@ -1072,6 +1145,150 @@ fn detached_supervisor_persists_redacted_interactive_boundary_and_replays_same_a
 
     let stopped = stop_runtime_run(&fresh_state, stop_request(project_id, &repo_root))
         .expect("stop interactive runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+#[test]
+fn detached_supervisor_persists_matching_autonomous_boundary_once_before_reload() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-interactive-autonomous";
+    let repo_root = seed_project(&root, project_id, "repo-interactive-autonomous", "repo");
+    let state = DesktopState::default();
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-interactive-autonomous",
+            &runtime_shell::script_prompt_read_echo_and_sleep(
+                "Enter deployment code: ",
+                "value",
+                "value=",
+                5,
+            ),
+        ),
+    )
+    .expect("launch interactive runtime supervisor for autonomous persistence");
+    seed_active_autonomous_run(&repo_root, project_id, &launched.run.run_id);
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.checkpoints.iter().any(|checkpoint| {
+                checkpoint.kind == project_store::RuntimeRunCheckpointKind::ActionRequired
+            })
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, &launched.run.run_id, None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    let (approval_action_id, boundary_id) = frames
+        .iter()
+        .find_map(|frame| match frame {
+            SupervisorControlResponse::Event {
+                item:
+                    SupervisorLiveEventPayload::ActionRequired {
+                        action_id,
+                        boundary_id,
+                        ..
+                    },
+                ..
+            } => Some((action_id.clone(), boundary_id.clone())),
+            _ => None,
+        })
+        .expect("expected action-required replay frame for autonomous persistence test");
+
+    persist_supervisor_event(
+        &repo_root,
+        project_id,
+        &SupervisorLiveEventPayload::ActionRequired {
+            action_id: approval_action_id.clone(),
+            boundary_id: boundary_id.clone(),
+            action_type: "terminal_input_required".into(),
+            title: "Terminal input required".into(),
+            detail: "Detached runtime is blocked on terminal input. Approve and resume with a coarse operator answer to continue the same supervised run.".into(),
+        },
+    )
+    .expect("persist autonomous boundary from supervisor event")
+    .expect("autonomous boundary persistence should return a snapshot");
+
+    let boundary_snapshot = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("load autonomous run after boundary persistence")
+        .expect("autonomous run should exist after boundary persistence");
+    assert_eq!(
+        boundary_snapshot.run.status,
+        project_store::AutonomousRunStatus::Paused
+    );
+    assert_eq!(
+        boundary_snapshot
+            .unit
+            .as_ref()
+            .map(|unit| unit.status.clone()),
+        Some(project_store::AutonomousUnitStatus::Blocked)
+    );
+    assert_eq!(
+        boundary_snapshot
+            .attempt
+            .as_ref()
+            .map(|attempt| attempt.status.clone()),
+        Some(project_store::AutonomousUnitStatus::Blocked)
+    );
+
+    let boundary_evidence = boundary_snapshot
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| {
+            matches!(
+                artifact.payload.as_ref(),
+                Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                    if payload.boundary_id.as_deref() == Some(boundary_id.as_str())
+                        && payload.action_id.as_deref() == Some(approval_action_id.as_str())
+                        && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Blocked
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(boundary_evidence.len(), 1);
+
+    let approval_action_id = project_store::load_project_snapshot(&repo_root, project_id)
+        .expect("load project snapshot after autonomous boundary persist")
+        .snapshot
+        .approval_requests[0]
+        .action_id
+        .clone();
+    assert!(approval_action_id.contains(boundary_id.as_str()));
+
+    let fresh_state = DesktopState::default();
+    let recovered = probe_runtime_run(&fresh_state, probe_request(project_id, &repo_root))
+        .expect("probe runtime run with fresh host state")
+        .expect("runtime run should still exist after fresh probe");
+    assert_eq!(recovered.run.run_id, launched.run.run_id);
+
+    let replayed_snapshot = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("reload autonomous run after fresh probe")
+        .expect("autonomous run should still exist after fresh probe");
+    let replayed_boundary_evidence = replayed_snapshot
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| {
+            matches!(
+                artifact.payload.as_ref(),
+                Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                    if payload.boundary_id.as_deref() == Some(boundary_id.as_str())
+                        && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Blocked
+            )
+        })
+        .count();
+    assert_eq!(replayed_boundary_evidence, 1);
+
+    let stopped = stop_runtime_run(&fresh_state, stop_request(project_id, &repo_root))
+        .expect("stop interactive runtime supervisor after autonomous persistence test")
         .expect("runtime run should exist after stop");
     assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }

@@ -115,8 +115,8 @@ fn sample_autonomous_workflow_linkage() -> project_store::AutonomousWorkflowLink
         transition_id: "auto:txn-002:workflow-discussion:workflow-research".into(),
         causal_transition_id: Some("txn-001".into()),
         handoff_transition_id: "auto:txn-002:workflow-discussion:workflow-research".into(),
-        handoff_package_hash:
-            "f2a21cec422a39086c026fa96b38f2875b83faabc49461e979c5504c34b2640e".into(),
+        handoff_package_hash: "f2a21cec422a39086c026fa96b38f2875b83faabc49461e979c5504c34b2640e"
+            .into(),
     }
 }
 
@@ -235,7 +235,14 @@ fn seed_autonomous_workflow_linkage_rows(repo_root: &Path, project_id: &str) {
             )
             VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, NULL, '2099-04-15T19:00:00Z')
             "#,
-            params![project_id, "workflow-discussion", 1_i64, 1_i64, "Discussion", "complete"],
+            params![
+                project_id,
+                "workflow-discussion",
+                1_i64,
+                1_i64,
+                "Discussion",
+                "complete"
+            ],
         )
         .expect("insert workflow discussion node");
     connection
@@ -254,7 +261,14 @@ fn seed_autonomous_workflow_linkage_rows(repo_root: &Path, project_id: &str) {
             )
             VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, NULL, '2099-04-15T19:00:00Z')
             "#,
-            params![project_id, "workflow-research", 2_i64, 2_i64, "Research", "active"],
+            params![
+                project_id,
+                "workflow-research",
+                2_i64,
+                2_i64,
+                "Research",
+                "active"
+            ],
         )
         .expect("insert workflow research node");
     connection
@@ -1128,7 +1142,8 @@ fn autonomous_run_persistence_persists_explicit_workflow_linkage_and_replays_ide
     seed_autonomous_workflow_linkage_rows(&repo_root, project_id);
 
     let mut payload = sample_autonomous_run(project_id, run_id);
-    payload.unit.as_mut().expect("unit").workflow_linkage = Some(sample_autonomous_workflow_linkage());
+    payload.unit.as_mut().expect("unit").workflow_linkage =
+        Some(sample_autonomous_workflow_linkage());
     payload.attempt.as_mut().expect("attempt").workflow_linkage =
         Some(sample_autonomous_workflow_linkage());
 
@@ -1156,9 +1171,10 @@ fn autonomous_run_persistence_persists_explicit_workflow_linkage_and_replays_ide
     assert_eq!(second.unit, first.unit);
     assert_eq!(second.attempt, first.attempt);
 
-    let stored_linkage: (String, String, Option<String>, String, String) = open_state_connection(&repo_root)
-        .query_row(
-            r#"
+    let stored_linkage: (String, String, Option<String>, String, String) =
+        open_state_connection(&repo_root)
+            .query_row(
+                r#"
             SELECT
                 workflow_node_id,
                 workflow_transition_id,
@@ -1168,10 +1184,18 @@ fn autonomous_run_persistence_persists_explicit_workflow_linkage_and_replays_ide
             FROM autonomous_units
             WHERE project_id = ?1 AND run_id = ?2
             "#,
-            params![project_id, run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        )
-        .expect("read stored autonomous unit linkage");
+                params![project_id, run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read stored autonomous unit linkage");
     assert_eq!(
         stored_linkage,
         (
@@ -1228,12 +1252,11 @@ fn autonomous_run_persistence_rejects_blank_workflow_linkage_fields() {
     .expect("persist runtime run before invalid linkage request");
 
     let mut payload = sample_autonomous_run(project_id, run_id);
-    payload.unit.as_mut().expect("unit").workflow_linkage = Some(
-        project_store::AutonomousWorkflowLinkageRecord {
+    payload.unit.as_mut().expect("unit").workflow_linkage =
+        Some(project_store::AutonomousWorkflowLinkageRecord {
             workflow_node_id: "".into(),
             ..sample_autonomous_workflow_linkage()
-        },
-    );
+        });
     payload.attempt.as_mut().expect("attempt").workflow_linkage =
         Some(sample_autonomous_workflow_linkage());
 
@@ -1283,7 +1306,8 @@ fn autonomous_run_decode_fails_closed_for_cross_project_workflow_linkage_tamperi
     seed_autonomous_workflow_linkage_rows(&repo_root_two, "project-2");
 
     let mut payload = sample_autonomous_run("project-1", run_id);
-    payload.unit.as_mut().expect("unit").workflow_linkage = Some(sample_autonomous_workflow_linkage());
+    payload.unit.as_mut().expect("unit").workflow_linkage =
+        Some(sample_autonomous_workflow_linkage());
     payload.attempt.as_mut().expect("attempt").workflow_linkage =
         Some(sample_autonomous_workflow_linkage());
     project_store::upsert_autonomous_run(&repo_root_one, &payload)

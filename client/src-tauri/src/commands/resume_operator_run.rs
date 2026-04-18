@@ -13,7 +13,10 @@ use crate::{
         ResumeOperatorRunRequestDto, ResumeOperatorRunResponseDto,
     },
     db::project_store::{self, PreparedRuntimeOperatorResume},
-    runtime::{submit_runtime_run_input, RuntimeSupervisorSubmitInputRequest},
+    runtime::{
+        autonomous_orchestrator::persist_operator_resume, submit_runtime_run_input,
+        RuntimeSupervisorSubmitInputRequest,
+    },
     state::DesktopState,
 };
 
@@ -82,6 +85,22 @@ fn resume_runtime_operator_run<R: Runtime>(
         },
     ) {
         Ok(_) => {
+            if let Err(error) = persist_operator_resume(
+                repo_root,
+                &runtime_resume.project_id,
+                &runtime_resume.approval_request.action_id,
+                &runtime_resume.boundary_id,
+            ) {
+                project_store::record_runtime_operator_resume_outcome(
+                    repo_root,
+                    &runtime_resume,
+                    ResumeHistoryStatus::Failed,
+                    &runtime_resume_failure_summary(&runtime_resume, &error),
+                )?;
+                emit_runtime_resume_updates(app, repo_root, &runtime_resume.project_id)?;
+                return Err(error);
+            }
+
             let resumed = project_store::record_runtime_operator_resume_outcome(
                 repo_root,
                 &runtime_resume,

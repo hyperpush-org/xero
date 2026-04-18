@@ -2009,7 +2009,13 @@ fn persist_autonomous_unit(
         .map(|error| (Some(error.code.as_str()), Some(error.message.as_str())))
         .unwrap_or((None, None));
 
-    let (workflow_node_id, workflow_transition_id, workflow_causal_transition_id, workflow_handoff_transition_id, workflow_handoff_package_hash) = unit
+    let (
+        workflow_node_id,
+        workflow_transition_id,
+        workflow_causal_transition_id,
+        workflow_handoff_transition_id,
+        workflow_handoff_package_hash,
+    ) = unit
         .workflow_linkage
         .as_ref()
         .map(|linkage| {
@@ -2148,7 +2154,13 @@ fn persist_autonomous_unit_attempt(
         .map(|error| (Some(error.code.as_str()), Some(error.message.as_str())))
         .unwrap_or((None, None));
 
-    let (workflow_node_id, workflow_transition_id, workflow_causal_transition_id, workflow_handoff_transition_id, workflow_handoff_package_hash) = attempt
+    let (
+        workflow_node_id,
+        workflow_transition_id,
+        workflow_causal_transition_id,
+        workflow_handoff_transition_id,
+        workflow_handoff_package_hash,
+    ) = attempt
         .workflow_linkage
         .as_ref()
         .map(|linkage| {
@@ -12413,11 +12425,10 @@ fn normalize_autonomous_run_upsert_payload(
         ));
     }
 
-    let normalized_unit_workflow_linkage =
-        normalize_autonomous_workflow_linkage_payload(
-            unit.workflow_linkage.as_ref(),
-            "unit_workflow_linkage",
-        )?;
+    let normalized_unit_workflow_linkage = normalize_autonomous_workflow_linkage_payload(
+        unit.workflow_linkage.as_ref(),
+        "unit_workflow_linkage",
+    )?;
 
     let normalized_attempt = if let Some(attempt) = payload.attempt.as_ref() {
         validate_non_empty_text(
@@ -12655,7 +12666,9 @@ fn validate_autonomous_workflow_linkage_record(
     })?;
 
     validate_workflow_handoff_package_transition_linkage(&handoff_package, &transition_event)
-        .map_err(|error| autonomous_workflow_linkage_error(error_code, database_path, error.message))?;
+        .map_err(|error| {
+            autonomous_workflow_linkage_error(error_code, database_path, error.message)
+        })?;
 
     if handoff_package.package_hash != linkage.handoff_package_hash {
         return Err(autonomous_workflow_linkage_error(
