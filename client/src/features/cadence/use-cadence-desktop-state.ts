@@ -278,6 +278,11 @@ export interface ExecutionPaneView {
   verificationUnavailableReason: string
 }
 
+interface NotificationRoutesLoadResult {
+  routes: NotificationRouteDto[]
+  loadError: OperatorActionErrorView | null
+}
+
 export interface UseCadenceDesktopStateResult {
   projects: ProjectListItem[]
   activeProject: ProjectDetailView | null
@@ -1268,8 +1273,9 @@ export function useCadenceDesktopState(
   const autonomousRecentArtifactsRef = useRef<Record<string, AutonomousUnitArtifactView[]>>({})
   const notificationRoutesRef = useRef<Record<string, NotificationRouteDto[]>>({})
   const notificationRouteLoadStatusesRef = useRef<Record<string, NotificationRoutesLoadStatus>>({})
+  const notificationRouteLoadErrorsRef = useRef<Record<string, OperatorActionErrorView | null>>({})
   const notificationRouteLoadRequestRef = useRef<Record<string, number>>({})
-  const notificationRouteLoadInFlightRef = useRef<Record<string, Promise<NotificationRouteDto[]>>>({})
+  const notificationRouteLoadInFlightRef = useRef<Record<string, Promise<NotificationRoutesLoadResult>>>({})
   const notificationSyncSummariesRef = useRef<Record<string, SyncNotificationAdaptersResponseDto | null>>({})
   const notificationDispatchesRef = useRef<Record<string, NotificationDispatchDto[]>>({})
   const trustSnapshotRef = useRef<Record<string, AgentTrustSnapshotView>>({})
@@ -1331,6 +1337,10 @@ export function useCadenceDesktopState(
   useEffect(() => {
     notificationRouteLoadStatusesRef.current = notificationRouteLoadStatuses
   }, [notificationRouteLoadStatuses])
+
+  useEffect(() => {
+    notificationRouteLoadErrorsRef.current = notificationRouteLoadErrors
+  }, [notificationRouteLoadErrors])
 
   useEffect(() => {
     notificationSyncSummariesRef.current = notificationSyncSummaries
@@ -1538,7 +1548,7 @@ export function useCadenceDesktopState(
   )
 
   const loadNotificationRoutes = useCallback(
-    async (projectId: string, options: { force?: boolean } = {}): Promise<NotificationRouteDto[]> => {
+    async (projectId: string, options: { force?: boolean } = {}): Promise<NotificationRoutesLoadResult> => {
       const force = options.force ?? false
       const inFlightRequest = notificationRouteLoadInFlightRef.current[projectId]
       if (!force && inFlightRequest) {
@@ -1546,6 +1556,7 @@ export function useCadenceDesktopState(
       }
 
       const cachedRoutes = notificationRoutesRef.current[projectId] ?? []
+      const cachedLoadError = notificationRouteLoadErrorsRef.current[projectId] ?? null
       const nextRequestId = (notificationRouteLoadRequestRef.current[projectId] ?? 0) + 1
       notificationRouteLoadRequestRef.current[projectId] = nextRequestId
 
@@ -1558,11 +1569,14 @@ export function useCadenceDesktopState(
         [projectId]: null,
       }))
 
-      const requestPromise = adapter
+      const requestPromise: Promise<NotificationRoutesLoadResult> = adapter
         .listNotificationRoutes(projectId)
         .then((response) => {
           if (notificationRouteLoadRequestRef.current[projectId] !== nextRequestId) {
-            return notificationRoutesRef.current[projectId] ?? cachedRoutes
+            return {
+              routes: notificationRoutesRef.current[projectId] ?? cachedRoutes,
+              loadError: notificationRouteLoadErrorsRef.current[projectId] ?? cachedLoadError,
+            }
           }
 
           const inScopeRoutes = response.routes.filter(
@@ -1577,24 +1591,38 @@ export function useCadenceDesktopState(
             ...currentStatuses,
             [projectId]: 'ready',
           }))
+          setNotificationRouteLoadErrors((currentErrors) => ({
+            ...currentErrors,
+            [projectId]: null,
+          }))
 
-          return inScopeRoutes
+          return {
+            routes: inScopeRoutes,
+            loadError: null,
+          }
         })
         .catch((error) => {
           if (notificationRouteLoadRequestRef.current[projectId] !== nextRequestId) {
-            return notificationRoutesRef.current[projectId] ?? cachedRoutes
+            return {
+              routes: notificationRoutesRef.current[projectId] ?? cachedRoutes,
+              loadError: notificationRouteLoadErrorsRef.current[projectId] ?? cachedLoadError,
+            }
           }
 
+          const loadError = getOperatorActionError(error, 'Cadence could not load notification routes for this project.')
           setNotificationRouteLoadStatuses((currentStatuses) => ({
             ...currentStatuses,
             [projectId]: 'error',
           }))
           setNotificationRouteLoadErrors((currentErrors) => ({
             ...currentErrors,
-            [projectId]: getOperatorActionError(error, 'Cadence could not load notification routes for this project.'),
+            [projectId]: loadError,
           }))
 
-          return notificationRoutesRef.current[projectId] ?? cachedRoutes
+          return {
+            routes: notificationRoutesRef.current[projectId] ?? cachedRoutes,
+            loadError,
+          }
         })
         .finally(() => {
           if (notificationRouteLoadInFlightRef.current[projectId] === requestPromise) {
@@ -1724,17 +1752,11 @@ export function useCadenceDesktopState(
       const routePromise = shouldRefreshRoutes
         ? loadNotificationRoutes(projectId, {
             force: source === 'startup' || source === 'selection' || source === 'import',
-          })
-            .then((routes) => ({
-              ok: true as const,
-              routes,
-              error: null as string | null,
-            }))
-            .catch((error) => ({
-              ok: false as const,
-              routes: notificationRoutesRef.current[projectId] ?? [],
-              error: getDesktopErrorMessage(error),
-            }))
+          }).then((result) => ({
+            ok: result.loadError === null,
+            routes: result.routes,
+            error: result.loadError?.message ?? null,
+          }))
         : Promise.resolve({
             ok: true as const,
             routes: notificationRoutesRef.current[projectId] ?? [],
@@ -2397,9 +2419,22 @@ export function useCadenceDesktopState(
         throw new Error('Select an imported project before loading notification routes.')
       }
 
-      return loadNotificationRoutes(projectId, {
+      const result = await loadNotificationRoutes(projectId, {
         force: options.force ?? false,
       })
+
+      if (result.loadError) {
+        setNotificationRouteLoadStatuses((currentStatuses) => ({
+          ...currentStatuses,
+          [projectId]: 'error',
+        }))
+        setNotificationRouteLoadErrors((currentErrors) => ({
+          ...currentErrors,
+          [projectId]: result.loadError,
+        }))
+      }
+
+      return result.routes
     },
     [loadNotificationRoutes],
   )
