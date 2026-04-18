@@ -1605,6 +1605,16 @@ pub struct AutonomousRunDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousWorkflowLinkageDto {
+    pub workflow_node_id: String,
+    pub transition_id: String,
+    pub causal_transition_id: Option<String>,
+    pub handoff_transition_id: String,
+    pub handoff_package_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousUnitDto {
     pub project_id: String,
     pub run_id: String,
@@ -1614,6 +1624,8 @@ pub struct AutonomousUnitDto {
     pub status: AutonomousUnitStatusDto,
     pub summary: String,
     pub boundary_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_linkage: Option<AutonomousWorkflowLinkageDto>,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub updated_at: String,
@@ -1632,6 +1644,8 @@ pub struct AutonomousUnitAttemptDto {
     pub child_session_id: String,
     pub status: AutonomousUnitStatusDto,
     pub boundary_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_linkage: Option<AutonomousWorkflowLinkageDto>,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub updated_at: String,

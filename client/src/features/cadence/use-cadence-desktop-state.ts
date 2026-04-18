@@ -9,8 +9,7 @@ import {
   applyRepositoryStatus,
   applyRuntimeRun,
   applyRuntimeSession,
-  mapAutonomousRun,
-  mapAutonomousUnit,
+  mapAutonomousRunInspection,
   applyRuntimeStreamIssue,
   createEmptyPlanningLifecycle,
   createRuntimeStreamFromSubscription,
@@ -26,6 +25,9 @@ import {
   mergeRuntimeUpdated,
   upsertProjectListItem,
   notificationRouteCredentialReadinessSchema,
+  type AutonomousUnitAttemptView,
+  type AutonomousUnitArtifactView,
+  type AutonomousUnitHistoryEntryView,
   type NotificationDispatchDto,
   type NotificationDispatchView,
   type NotificationRouteCredentialReadinessDto,
@@ -200,6 +202,9 @@ export interface AgentPaneView {
   runtimeRun?: RuntimeRunView | null
   autonomousRun?: ProjectDetailView['autonomousRun']
   autonomousUnit?: ProjectDetailView['autonomousUnit']
+  autonomousAttempt?: ProjectDetailView['autonomousAttempt']
+  autonomousHistory: ProjectDetailView['autonomousHistory']
+  autonomousRecentArtifacts: ProjectDetailView['autonomousRecentArtifacts']
   runtimeErrorMessage?: string | null
   runtimeRunErrorMessage?: string | null
   autonomousRunErrorMessage?: string | null
@@ -858,11 +863,17 @@ function applyAutonomousRunState(
   project: ProjectDetailView,
   autonomousRun: ProjectDetailView['autonomousRun'],
   autonomousUnit: ProjectDetailView['autonomousUnit'],
+  autonomousAttempt: ProjectDetailView['autonomousAttempt'],
+  autonomousHistory: ProjectDetailView['autonomousHistory'],
+  autonomousRecentArtifacts: ProjectDetailView['autonomousRecentArtifacts'],
 ): ProjectDetailView {
   return {
     ...project,
     autonomousRun: autonomousRun ?? null,
     autonomousUnit: autonomousUnit ?? null,
+    autonomousAttempt: autonomousAttempt ?? null,
+    autonomousHistory,
+    autonomousRecentArtifacts,
   }
 }
 
@@ -1088,6 +1099,9 @@ export function useCadenceDesktopState(
   const [runtimeRuns, setRuntimeRuns] = useState<Record<string, RuntimeRunView>>({})
   const [autonomousRuns, setAutonomousRuns] = useState<Record<string, NonNullable<ProjectDetailView['autonomousRun']>>>({})
   const [autonomousUnits, setAutonomousUnits] = useState<Record<string, NonNullable<ProjectDetailView['autonomousUnit']>>>({})
+  const [autonomousAttempts, setAutonomousAttempts] = useState<Record<string, NonNullable<ProjectDetailView['autonomousAttempt']>>>({})
+  const [autonomousHistories, setAutonomousHistories] = useState<Record<string, AutonomousUnitHistoryEntryView[]>>({})
+  const [autonomousRecentArtifacts, setAutonomousRecentArtifacts] = useState<Record<string, AutonomousUnitArtifactView[]>>({})
   const [notificationRoutes, setNotificationRoutes] = useState<Record<string, NotificationRouteDto[]>>({})
   const [notificationRouteLoadStatuses, setNotificationRouteLoadStatuses] = useState<
     Record<string, NotificationRoutesLoadStatus>
@@ -1139,6 +1153,9 @@ export function useCadenceDesktopState(
   const runtimeRunsRef = useRef<Record<string, RuntimeRunView>>({})
   const autonomousRunsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousRun']>>>({})
   const autonomousUnitsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousUnit']>>>({})
+  const autonomousAttemptsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousAttempt']>>>({})
+  const autonomousHistoriesRef = useRef<Record<string, AutonomousUnitHistoryEntryView[]>>({})
+  const autonomousRecentArtifactsRef = useRef<Record<string, AutonomousUnitArtifactView[]>>({})
   const notificationRoutesRef = useRef<Record<string, NotificationRouteDto[]>>({})
   const notificationRouteLoadStatusesRef = useRef<Record<string, NotificationRoutesLoadStatus>>({})
   const notificationRouteLoadRequestRef = useRef<Record<string, number>>({})
@@ -1181,6 +1198,18 @@ export function useCadenceDesktopState(
   useEffect(() => {
     autonomousUnitsRef.current = autonomousUnits
   }, [autonomousUnits])
+
+  useEffect(() => {
+    autonomousAttemptsRef.current = autonomousAttempts
+  }, [autonomousAttempts])
+
+  useEffect(() => {
+    autonomousHistoriesRef.current = autonomousHistories
+  }, [autonomousHistories])
+
+  useEffect(() => {
+    autonomousRecentArtifactsRef.current = autonomousRecentArtifacts
+  }, [autonomousRecentArtifacts])
 
   useEffect(() => {
     notificationRoutesRef.current = notificationRoutes
@@ -1290,37 +1319,67 @@ export function useCadenceDesktopState(
   const applyAutonomousRunStateUpdate = useCallback(
     (
       projectId: string,
-      autonomousRun: ProjectDetailView['autonomousRun'],
-      autonomousUnit: ProjectDetailView['autonomousUnit'],
+      inspection: {
+        autonomousRun: ProjectDetailView['autonomousRun']
+        autonomousUnit: ProjectDetailView['autonomousUnit']
+        autonomousAttempt: ProjectDetailView['autonomousAttempt']
+        autonomousHistory: ProjectDetailView['autonomousHistory']
+        autonomousRecentArtifacts: ProjectDetailView['autonomousRecentArtifacts']
+      },
       options: { clearGlobalError?: boolean; loadError?: string | null } = {},
     ) => {
       setAutonomousRuns((currentRuns) => {
-        if (!autonomousRun) {
+        if (!inspection.autonomousRun) {
           return removeProjectRecord(currentRuns, projectId)
         }
 
         return {
           ...currentRuns,
-          [projectId]: autonomousRun,
+          [projectId]: inspection.autonomousRun,
         }
       })
       setAutonomousUnits((currentUnits) => {
-        if (!autonomousUnit) {
+        if (!inspection.autonomousUnit) {
           return removeProjectRecord(currentUnits, projectId)
         }
 
         return {
           ...currentUnits,
-          [projectId]: autonomousUnit,
+          [projectId]: inspection.autonomousUnit,
         }
       })
+      setAutonomousAttempts((currentAttempts) => {
+        if (!inspection.autonomousAttempt) {
+          return removeProjectRecord(currentAttempts, projectId)
+        }
+
+        return {
+          ...currentAttempts,
+          [projectId]: inspection.autonomousAttempt,
+        }
+      })
+      setAutonomousHistories((currentHistories) => ({
+        ...currentHistories,
+        [projectId]: inspection.autonomousHistory,
+      }))
+      setAutonomousRecentArtifacts((currentArtifacts) => ({
+        ...currentArtifacts,
+        [projectId]: inspection.autonomousRecentArtifacts,
+      }))
       setAutonomousRunLoadErrors((currentErrors) => ({
         ...currentErrors,
         [projectId]: options.loadError ?? null,
       }))
       setActiveProject((currentProject) =>
         currentProject && currentProject.id === projectId
-          ? applyAutonomousRunState(currentProject, autonomousRun, autonomousUnit)
+          ? applyAutonomousRunState(
+              currentProject,
+              inspection.autonomousRun,
+              inspection.autonomousUnit,
+              inspection.autonomousAttempt,
+              inspection.autonomousHistory,
+              inspection.autonomousRecentArtifacts,
+            )
           : currentProject,
       )
 
@@ -1328,7 +1387,7 @@ export function useCadenceDesktopState(
         setErrorMessage(options.loadError ?? null)
       }
 
-      return autonomousRun
+      return inspection.autonomousRun
     },
     [],
   )
@@ -1355,13 +1414,12 @@ export function useCadenceDesktopState(
   const syncAutonomousRun = useCallback(
     async (projectId: string) => {
       const response = await adapter.getAutonomousRun(projectId)
-      const autonomousRun = response.run ? mapAutonomousRun(response.run) : null
-      const autonomousUnit = response.unit ? mapAutonomousUnit(response.unit) : null
-      applyAutonomousRunStateUpdate(projectId, autonomousRun, autonomousUnit, {
+      const inspection = mapAutonomousRunInspection(response)
+      applyAutonomousRunStateUpdate(projectId, inspection, {
         clearGlobalError: false,
         loadError: null,
       })
-      return autonomousRun
+      return inspection.autonomousRun
     },
     [adapter, applyAutonomousRunStateUpdate],
   )
@@ -1492,14 +1550,18 @@ export function useCadenceDesktopState(
         .getAutonomousRun(projectId)
         .then((response) => ({
           ok: true as const,
-          autonomousRun: response.run ? mapAutonomousRun(response.run) : null,
-          autonomousUnit: response.unit ? mapAutonomousUnit(response.unit) : null,
+          inspection: mapAutonomousRunInspection(response),
           error: null as string | null,
         }))
         .catch((error) => ({
           ok: false as const,
-          autonomousRun: autonomousRunsRef.current[projectId] ?? null,
-          autonomousUnit: autonomousUnitsRef.current[projectId] ?? null,
+          inspection: {
+            autonomousRun: autonomousRunsRef.current[projectId] ?? null,
+            autonomousUnit: autonomousUnitsRef.current[projectId] ?? null,
+            autonomousAttempt: autonomousAttemptsRef.current[projectId] ?? null,
+            autonomousHistory: autonomousHistoriesRef.current[projectId] ?? [],
+            autonomousRecentArtifacts: autonomousRecentArtifactsRef.current[projectId] ?? [],
+          },
           error: getDesktopErrorMessage(error),
         }))
 
@@ -1601,6 +1663,10 @@ export function useCadenceDesktopState(
         const cachedRuntimeRun = runtimeRunsRef.current[projectId] ?? null
         const cachedAutonomousRun = autonomousRunsRef.current[projectId] ?? snapshotProject.autonomousRun ?? null
         const cachedAutonomousUnit = autonomousUnitsRef.current[projectId] ?? snapshotProject.autonomousUnit ?? null
+        const cachedAutonomousAttempt = autonomousAttemptsRef.current[projectId] ?? snapshotProject.autonomousAttempt ?? null
+        const cachedAutonomousHistory = autonomousHistoriesRef.current[projectId] ?? snapshotProject.autonomousHistory
+        const cachedAutonomousRecentArtifacts =
+          autonomousRecentArtifactsRef.current[projectId] ?? snapshotProject.autonomousRecentArtifacts
         const nextProject = applyAutonomousRunState(
           applyRuntimeRun(
             applyRuntimeSession(applyRepositoryStatus(snapshotProject, status), cachedRuntime),
@@ -1608,6 +1674,9 @@ export function useCadenceDesktopState(
           ),
           cachedAutonomousRun,
           cachedAutonomousUnit,
+          cachedAutonomousAttempt,
+          cachedAutonomousHistory,
+          cachedAutonomousRecentArtifacts,
         )
         const nextSummary = mapProjectSummary(snapshotResponse.project)
 
@@ -1663,39 +1732,73 @@ export function useCadenceDesktopState(
 
         if (autonomousRunResult.ok) {
           setAutonomousRuns((currentRuns) => {
-            if (!autonomousRunResult.autonomousRun) {
+            if (!autonomousRunResult.inspection.autonomousRun) {
               return removeProjectRecord(currentRuns, projectId)
             }
 
             return {
               ...currentRuns,
-              [projectId]: autonomousRunResult.autonomousRun,
+              [projectId]: autonomousRunResult.inspection.autonomousRun,
             }
           })
           setAutonomousUnits((currentUnits) => {
-            if (!autonomousRunResult.autonomousUnit) {
+            if (!autonomousRunResult.inspection.autonomousUnit) {
               return removeProjectRecord(currentUnits, projectId)
             }
 
             return {
               ...currentUnits,
-              [projectId]: autonomousRunResult.autonomousUnit,
+              [projectId]: autonomousRunResult.inspection.autonomousUnit,
             }
           })
+          setAutonomousAttempts((currentAttempts) => {
+            if (!autonomousRunResult.inspection.autonomousAttempt) {
+              return removeProjectRecord(currentAttempts, projectId)
+            }
+
+            return {
+              ...currentAttempts,
+              [projectId]: autonomousRunResult.inspection.autonomousAttempt,
+            }
+          })
+          setAutonomousHistories((currentHistories) => ({
+            ...currentHistories,
+            [projectId]: autonomousRunResult.inspection.autonomousHistory,
+          }))
+          setAutonomousRecentArtifacts((currentArtifacts) => ({
+            ...currentArtifacts,
+            [projectId]: autonomousRunResult.inspection.autonomousRecentArtifacts,
+          }))
         } else {
-          if (autonomousRunResult.autonomousRun) {
+          if (autonomousRunResult.inspection.autonomousRun) {
             setAutonomousRuns((currentRuns) => ({
               ...currentRuns,
-              [projectId]: autonomousRunResult.autonomousRun,
+              [projectId]: autonomousRunResult.inspection.autonomousRun,
             }))
           }
 
-          if (autonomousRunResult.autonomousUnit) {
+          if (autonomousRunResult.inspection.autonomousUnit) {
             setAutonomousUnits((currentUnits) => ({
               ...currentUnits,
-              [projectId]: autonomousRunResult.autonomousUnit,
+              [projectId]: autonomousRunResult.inspection.autonomousUnit,
             }))
           }
+
+          if (autonomousRunResult.inspection.autonomousAttempt) {
+            setAutonomousAttempts((currentAttempts) => ({
+              ...currentAttempts,
+              [projectId]: autonomousRunResult.inspection.autonomousAttempt,
+            }))
+          }
+
+          setAutonomousHistories((currentHistories) => ({
+            ...currentHistories,
+            [projectId]: autonomousRunResult.inspection.autonomousHistory,
+          }))
+          setAutonomousRecentArtifacts((currentArtifacts) => ({
+            ...currentArtifacts,
+            [projectId]: autonomousRunResult.inspection.autonomousRecentArtifacts,
+          }))
         }
 
         setRuntimeLoadErrors((currentErrors) => ({
@@ -1714,11 +1817,24 @@ export function useCadenceDesktopState(
         const finalRuntime = runtimeResult.runtime ?? cachedRuntime
         const finalRuntimeRun = runtimeRunResult.ok ? runtimeRunResult.runtimeRun : runtimeRunResult.runtimeRun ?? cachedRuntimeRun
         const finalAutonomousRun = autonomousRunResult.ok
-          ? autonomousRunResult.autonomousRun
-          : autonomousRunResult.autonomousRun ?? cachedAutonomousRun
+          ? autonomousRunResult.inspection.autonomousRun
+          : autonomousRunResult.inspection.autonomousRun ?? cachedAutonomousRun
         const finalAutonomousUnit = autonomousRunResult.ok
-          ? autonomousRunResult.autonomousUnit
-          : autonomousRunResult.autonomousUnit ?? cachedAutonomousUnit
+          ? autonomousRunResult.inspection.autonomousUnit
+          : autonomousRunResult.inspection.autonomousUnit ?? cachedAutonomousUnit
+        const finalAutonomousAttempt = autonomousRunResult.ok
+          ? autonomousRunResult.inspection.autonomousAttempt
+          : autonomousRunResult.inspection.autonomousAttempt ?? cachedAutonomousAttempt
+        const finalAutonomousHistory = autonomousRunResult.ok
+          ? autonomousRunResult.inspection.autonomousHistory
+          : autonomousRunResult.inspection.autonomousHistory.length > 0
+            ? autonomousRunResult.inspection.autonomousHistory
+            : cachedAutonomousHistory
+        const finalAutonomousRecentArtifacts = autonomousRunResult.ok
+          ? autonomousRunResult.inspection.autonomousRecentArtifacts
+          : autonomousRunResult.inspection.autonomousRecentArtifacts.length > 0
+            ? autonomousRunResult.inspection.autonomousRecentArtifacts
+            : cachedAutonomousRecentArtifacts
         const finalizedProject = applyAutonomousRunState(
           applyRuntimeRun(
             finalRuntime ? applyRuntimeSession(nextProject, finalRuntime) : nextProject,
@@ -1726,6 +1842,9 @@ export function useCadenceDesktopState(
           ),
           finalAutonomousRun,
           finalAutonomousUnit,
+          finalAutonomousAttempt,
+          finalAutonomousHistory,
+          finalAutonomousRecentArtifacts,
         )
         setActiveProject((currentProject) => {
           if (!currentProject || currentProject.id !== projectId) {
@@ -1822,6 +1941,9 @@ export function useCadenceDesktopState(
         setRuntimeRuns({})
         setAutonomousRuns({})
         setAutonomousUnits({})
+        setAutonomousAttempts({})
+        setAutonomousHistories({})
+        setAutonomousRecentArtifacts({})
         setNotificationRoutes({})
         setNotificationRouteLoadStatuses({})
         setNotificationRouteLoadErrors({})
@@ -2294,9 +2416,7 @@ export function useCadenceDesktopState(
 
     try {
       const response = await adapter.startAutonomousRun(projectId)
-      const autonomousRun = response.run ? mapAutonomousRun(response.run) : null
-      const autonomousUnit = response.unit ? mapAutonomousUnit(response.unit) : null
-      return applyAutonomousRunStateUpdate(projectId, autonomousRun, autonomousUnit, {
+      return applyAutonomousRunStateUpdate(projectId, mapAutonomousRunInspection(response), {
         clearGlobalError: false,
         loadError: null,
       })
@@ -2354,9 +2474,7 @@ export function useCadenceDesktopState(
 
       try {
         const response = await adapter.cancelAutonomousRun(projectId, runId)
-        const autonomousRun = response.run ? mapAutonomousRun(response.run) : null
-        const autonomousUnit = response.unit ? mapAutonomousUnit(response.unit) : null
-        return applyAutonomousRunStateUpdate(projectId, autonomousRun, autonomousUnit, {
+        return applyAutonomousRunStateUpdate(projectId, mapAutonomousRunInspection(response), {
           clearGlobalError: false,
           loadError: null,
         })
@@ -2501,6 +2619,15 @@ export function useCadenceDesktopState(
   const activeAutonomousUnit = activeProjectId
     ? autonomousUnits[activeProjectId] ?? activeProject?.autonomousUnit ?? null
     : null
+  const activeAutonomousAttempt = activeProjectId
+    ? autonomousAttempts[activeProjectId] ?? activeProject?.autonomousAttempt ?? null
+    : null
+  const activeAutonomousHistory = activeProjectId
+    ? autonomousHistories[activeProjectId] ?? activeProject?.autonomousHistory ?? []
+    : []
+  const activeAutonomousRecentArtifacts = activeProjectId
+    ? autonomousRecentArtifacts[activeProjectId] ?? activeProject?.autonomousRecentArtifacts ?? []
+    : []
   const activeAutonomousRunErrorMessage = activeProjectId ? autonomousRunLoadErrors[activeProjectId] ?? null : null
   const activeRuntimeRunId = activeRuntimeRun?.runId ?? null
   const activeRuntimeSubscriptionKey =
@@ -2828,6 +2955,9 @@ export function useCadenceDesktopState(
       runtimeRun: activeRuntimeRun,
       autonomousRun: activeAutonomousRun,
       autonomousUnit: activeAutonomousUnit,
+      autonomousAttempt: activeAutonomousAttempt,
+      autonomousHistory: activeAutonomousHistory,
+      autonomousRecentArtifacts: activeAutonomousRecentArtifacts,
       runtimeErrorMessage: activeRuntimeErrorMessage,
       runtimeRunErrorMessage: activeRuntimeRunErrorMessage,
       autonomousRunErrorMessage: activeAutonomousRunErrorMessage,
@@ -2886,6 +3016,9 @@ export function useCadenceDesktopState(
     activeNotificationSyncSummary,
     activePhase,
     activeProject,
+    activeAutonomousAttempt,
+    activeAutonomousHistory,
+    activeAutonomousRecentArtifacts,
     activeAutonomousRun,
     activeAutonomousRunErrorMessage,
     activeAutonomousUnit,

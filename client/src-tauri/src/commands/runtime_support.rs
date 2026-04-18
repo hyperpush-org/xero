@@ -15,7 +15,8 @@ use crate::{
         AutonomousToolResultPayloadDto, AutonomousUnitArtifactDto, AutonomousUnitArtifactStatusDto,
         AutonomousUnitAttemptDto, AutonomousUnitDto, AutonomousUnitHistoryEntryDto,
         AutonomousUnitKindDto, AutonomousUnitStatusDto, AutonomousVerificationEvidencePayloadDto,
-        AutonomousVerificationOutcomeDto, CommandError, CommandErrorClass, CommandResult,
+        AutonomousVerificationOutcomeDto, AutonomousWorkflowLinkageDto, CommandError,
+        CommandErrorClass, CommandResult,
         ProjectUpdateReason, ProjectUpdatedPayloadDto, RuntimeDiagnosticDto,
         RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto, RuntimeRunDiagnosticDto,
         RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportDto, RuntimeRunTransportLivenessDto,
@@ -24,7 +25,7 @@ use crate::{
     },
     db::project_store::{
         self, AutonomousArtifactCommandResultRecord, AutonomousArtifactPayloadRecord,
-        AutonomousRunRecord, AutonomousRunSnapshotRecord, AutonomousRunStatus,
+        AutonomousRunSnapshotRecord, AutonomousRunStatus,
         AutonomousRunUpsertRecord, AutonomousToolCallStateRecord, AutonomousUnitArtifactRecord,
         AutonomousUnitArtifactStatus, AutonomousUnitAttemptRecord, AutonomousUnitHistoryRecord,
         AutonomousUnitKind, AutonomousUnitRecord, AutonomousUnitStatus,
@@ -45,11 +46,6 @@ pub(crate) const OPENAI_RUNTIME_KIND: &str = OPENAI_CODEX_PROVIDER_ID;
 pub(crate) const DEFAULT_RUNTIME_RUN_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT: Duration = Duration::from_millis(750);
 pub(crate) const DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
-const AUTONOMOUS_DUPLICATE_START_REASON: &str =
-    "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.";
-const AUTONOMOUS_CANCEL_REASON_CODE: &str = "autonomous_run_cancelled";
-const AUTONOMOUS_CANCEL_REASON_MESSAGE: &str =
-    "Operator cancelled the autonomous run from the desktop shell.";
 
 pub(crate) fn resolve_project_root<R: Runtime>(
     app: &AppHandle<R>,
@@ -503,6 +499,18 @@ fn autonomous_history_dto_from_snapshot(
         .collect()
 }
 
+fn autonomous_workflow_linkage_dto_from_record(
+    linkage: &project_store::AutonomousWorkflowLinkageRecord,
+) -> AutonomousWorkflowLinkageDto {
+    AutonomousWorkflowLinkageDto {
+        workflow_node_id: linkage.workflow_node_id.clone(),
+        transition_id: linkage.transition_id.clone(),
+        causal_transition_id: linkage.causal_transition_id.clone(),
+        handoff_transition_id: linkage.handoff_transition_id.clone(),
+        handoff_package_hash: linkage.handoff_package_hash.clone(),
+    }
+}
+
 fn autonomous_unit_dto_from_record(unit: &AutonomousUnitRecord) -> AutonomousUnitDto {
     AutonomousUnitDto {
         project_id: unit.project_id.clone(),
@@ -513,6 +521,10 @@ fn autonomous_unit_dto_from_record(unit: &AutonomousUnitRecord) -> AutonomousUni
         status: autonomous_unit_status_dto(&unit.status),
         summary: unit.summary.clone(),
         boundary_id: unit.boundary_id.clone(),
+        workflow_linkage: unit
+            .workflow_linkage
+            .as_ref()
+            .map(autonomous_workflow_linkage_dto_from_record),
         started_at: unit.started_at.clone(),
         finished_at: unit.finished_at.clone(),
         updated_at: unit.updated_at.clone(),
@@ -533,6 +545,10 @@ fn autonomous_attempt_dto_from_record(
         child_session_id: attempt.child_session_id.clone(),
         status: autonomous_unit_status_dto(&attempt.status),
         boundary_id: attempt.boundary_id.clone(),
+        workflow_linkage: attempt
+            .workflow_linkage
+            .as_ref()
+            .map(autonomous_workflow_linkage_dto_from_record),
         started_at: attempt.started_at.clone(),
         finished_at: attempt.finished_at.clone(),
         updated_at: attempt.updated_at.clone(),
@@ -776,33 +792,6 @@ fn autonomous_artifact_status_dto(
         AutonomousUnitArtifactStatus::Rejected => AutonomousUnitArtifactStatusDto::Rejected,
         AutonomousUnitArtifactStatus::Redacted => AutonomousUnitArtifactStatusDto::Redacted,
     }
-}
-
-fn autonomous_unit_status_for_run(status: &AutonomousRunStatus) -> AutonomousUnitStatus {
-    match status {
-        AutonomousRunStatus::Starting
-        | AutonomousRunStatus::Running
-        | AutonomousRunStatus::Stale
-        | AutonomousRunStatus::Cancelling => AutonomousUnitStatus::Active,
-        AutonomousRunStatus::Paused => AutonomousUnitStatus::Paused,
-        AutonomousRunStatus::Cancelled => AutonomousUnitStatus::Cancelled,
-        AutonomousRunStatus::Stopped | AutonomousRunStatus::Completed => {
-            AutonomousUnitStatus::Completed
-        }
-        AutonomousRunStatus::Failed | AutonomousRunStatus::Crashed => AutonomousUnitStatus::Failed,
-    }
-}
-
-fn generate_autonomous_child_session_id() -> String {
-    let mut bytes = [0_u8; 8];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!(
-        "child-{}",
-        bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    )
 }
 
 fn runtime_reason_dto(reason: &RuntimeRunDiagnosticRecord) -> AutonomousLifecycleReasonDto {

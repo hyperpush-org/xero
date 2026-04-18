@@ -653,6 +653,31 @@ pub fn migrations() -> &'static Migrations<'static> {
                     ADD COLUMN payload_json TEXT;
                 "#,
             ),
+            M::up(
+                r#"
+                ALTER TABLE autonomous_units
+                    ADD COLUMN workflow_node_id TEXT;
+                ALTER TABLE autonomous_units
+                    ADD COLUMN workflow_transition_id TEXT;
+                ALTER TABLE autonomous_units
+                    ADD COLUMN workflow_causal_transition_id TEXT;
+                ALTER TABLE autonomous_units
+                    ADD COLUMN workflow_handoff_transition_id TEXT;
+                ALTER TABLE autonomous_units
+                    ADD COLUMN workflow_handoff_package_hash TEXT;
+
+                ALTER TABLE autonomous_unit_attempts
+                    ADD COLUMN workflow_node_id TEXT;
+                ALTER TABLE autonomous_unit_attempts
+                    ADD COLUMN workflow_transition_id TEXT;
+                ALTER TABLE autonomous_unit_attempts
+                    ADD COLUMN workflow_causal_transition_id TEXT;
+                ALTER TABLE autonomous_unit_attempts
+                    ADD COLUMN workflow_handoff_transition_id TEXT;
+                ALTER TABLE autonomous_unit_attempts
+                    ADD COLUMN workflow_handoff_package_hash TEXT;
+                "#,
+            ),
         ])
     });
 

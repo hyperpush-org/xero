@@ -441,6 +441,15 @@ pub struct AutonomousRunRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousWorkflowLinkageRecord {
+    pub workflow_node_id: String,
+    pub transition_id: String,
+    pub causal_transition_id: Option<String>,
+    pub handoff_transition_id: String,
+    pub handoff_package_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutonomousUnitRecord {
     pub project_id: String,
     pub run_id: String,
@@ -450,6 +459,7 @@ pub struct AutonomousUnitRecord {
     pub status: AutonomousUnitStatus,
     pub summary: String,
     pub boundary_id: Option<String>,
+    pub workflow_linkage: Option<AutonomousWorkflowLinkageRecord>,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub updated_at: String,
@@ -466,6 +476,7 @@ pub struct AutonomousUnitAttemptRecord {
     pub child_session_id: String,
     pub status: AutonomousUnitStatus,
     pub boundary_id: Option<String>,
+    pub workflow_linkage: Option<AutonomousWorkflowLinkageRecord>,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub updated_at: String,
@@ -959,6 +970,11 @@ struct RawAutonomousUnitRow {
     status: String,
     summary: String,
     boundary_id: Option<String>,
+    workflow_node_id: Option<String>,
+    workflow_transition_id: Option<String>,
+    workflow_causal_transition_id: Option<String>,
+    workflow_handoff_transition_id: Option<String>,
+    workflow_handoff_package_hash: Option<String>,
     started_at: String,
     finished_at: Option<String>,
     last_error_code: Option<String>,
@@ -976,6 +992,11 @@ struct RawAutonomousUnitAttemptRow {
     child_session_id: String,
     status: String,
     boundary_id: Option<String>,
+    workflow_node_id: Option<String>,
+    workflow_transition_id: Option<String>,
+    workflow_causal_transition_id: Option<String>,
+    workflow_handoff_transition_id: Option<String>,
+    workflow_handoff_package_hash: Option<String>,
     started_at: String,
     finished_at: Option<String>,
     last_error_code: Option<String>,
@@ -1925,10 +1946,32 @@ pub fn upsert_autonomous_run(
 
     if let Some(unit) = payload.unit.as_ref() {
         persist_autonomous_unit(&transaction, &database_path, unit)?;
+        if let Some(linkage) = unit.workflow_linkage.as_ref() {
+            validate_autonomous_workflow_linkage_record(
+                &transaction,
+                &database_path,
+                &payload.run.project_id,
+                linkage,
+                "unit",
+                &unit.unit_id,
+                "autonomous_run_request_invalid",
+            )?;
+        }
     }
 
     if let Some(attempt) = payload.attempt.as_ref() {
         persist_autonomous_unit_attempt(&transaction, &database_path, attempt)?;
+        if let Some(linkage) = attempt.workflow_linkage.as_ref() {
+            validate_autonomous_workflow_linkage_record(
+                &transaction,
+                &database_path,
+                &payload.run.project_id,
+                linkage,
+                "attempt",
+                &attempt.attempt_id,
+                "autonomous_run_request_invalid",
+            )?;
+        }
     }
 
     for artifact in &payload.artifacts {
@@ -1966,6 +2009,20 @@ fn persist_autonomous_unit(
         .map(|error| (Some(error.code.as_str()), Some(error.message.as_str())))
         .unwrap_or((None, None));
 
+    let (workflow_node_id, workflow_transition_id, workflow_causal_transition_id, workflow_handoff_transition_id, workflow_handoff_package_hash) = unit
+        .workflow_linkage
+        .as_ref()
+        .map(|linkage| {
+            (
+                Some(linkage.workflow_node_id.as_str()),
+                Some(linkage.transition_id.as_str()),
+                linkage.causal_transition_id.as_deref(),
+                Some(linkage.handoff_transition_id.as_str()),
+                Some(linkage.handoff_package_hash.as_str()),
+            )
+        })
+        .unwrap_or((None, None, None, None, None));
+
     transaction
         .execute(
             r#"
@@ -1978,19 +2035,29 @@ fn persist_autonomous_unit(
                 status,
                 summary,
                 boundary_id,
+                workflow_node_id,
+                workflow_transition_id,
+                workflow_causal_transition_id,
+                workflow_handoff_transition_id,
+                workflow_handoff_package_hash,
                 started_at,
                 finished_at,
                 last_error_code,
                 last_error_message,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             ON CONFLICT(unit_id) DO UPDATE SET
                 sequence = excluded.sequence,
                 kind = excluded.kind,
                 status = excluded.status,
                 summary = excluded.summary,
                 boundary_id = excluded.boundary_id,
+                workflow_node_id = excluded.workflow_node_id,
+                workflow_transition_id = excluded.workflow_transition_id,
+                workflow_causal_transition_id = excluded.workflow_causal_transition_id,
+                workflow_handoff_transition_id = excluded.workflow_handoff_transition_id,
+                workflow_handoff_package_hash = excluded.workflow_handoff_package_hash,
                 started_at = excluded.started_at,
                 finished_at = excluded.finished_at,
                 last_error_code = excluded.last_error_code,
@@ -2006,6 +2073,11 @@ fn persist_autonomous_unit(
                 autonomous_unit_status_sql_value(&unit.status),
                 unit.summary.as_str(),
                 unit.boundary_id.as_deref(),
+                workflow_node_id,
+                workflow_transition_id,
+                workflow_causal_transition_id,
+                workflow_handoff_transition_id,
+                workflow_handoff_package_hash,
                 unit.started_at.as_str(),
                 unit.finished_at.as_deref(),
                 last_error_code,
@@ -2076,6 +2148,20 @@ fn persist_autonomous_unit_attempt(
         .map(|error| (Some(error.code.as_str()), Some(error.message.as_str())))
         .unwrap_or((None, None));
 
+    let (workflow_node_id, workflow_transition_id, workflow_causal_transition_id, workflow_handoff_transition_id, workflow_handoff_package_hash) = attempt
+        .workflow_linkage
+        .as_ref()
+        .map(|linkage| {
+            (
+                Some(linkage.workflow_node_id.as_str()),
+                Some(linkage.transition_id.as_str()),
+                linkage.causal_transition_id.as_deref(),
+                Some(linkage.handoff_transition_id.as_str()),
+                Some(linkage.handoff_package_hash.as_str()),
+            )
+        })
+        .unwrap_or((None, None, None, None, None));
+
     transaction
         .execute(
             r#"
@@ -2088,18 +2174,28 @@ fn persist_autonomous_unit_attempt(
                 child_session_id,
                 status,
                 boundary_id,
+                workflow_node_id,
+                workflow_transition_id,
+                workflow_causal_transition_id,
+                workflow_handoff_transition_id,
+                workflow_handoff_package_hash,
                 started_at,
                 finished_at,
                 last_error_code,
                 last_error_message,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             ON CONFLICT(attempt_id) DO UPDATE SET
                 attempt_number = excluded.attempt_number,
                 child_session_id = excluded.child_session_id,
                 status = excluded.status,
                 boundary_id = excluded.boundary_id,
+                workflow_node_id = excluded.workflow_node_id,
+                workflow_transition_id = excluded.workflow_transition_id,
+                workflow_causal_transition_id = excluded.workflow_causal_transition_id,
+                workflow_handoff_transition_id = excluded.workflow_handoff_transition_id,
+                workflow_handoff_package_hash = excluded.workflow_handoff_package_hash,
                 started_at = excluded.started_at,
                 finished_at = excluded.finished_at,
                 last_error_code = excluded.last_error_code,
@@ -2115,6 +2211,11 @@ fn persist_autonomous_unit_attempt(
                 attempt.child_session_id.as_str(),
                 autonomous_unit_status_sql_value(&attempt.status),
                 attempt.boundary_id.as_deref(),
+                workflow_node_id,
+                workflow_transition_id,
+                workflow_causal_transition_id,
+                workflow_handoff_transition_id,
+                workflow_handoff_package_hash,
                 attempt.started_at.as_str(),
                 attempt.finished_at.as_deref(),
                 last_error_code,
@@ -2239,6 +2340,11 @@ fn read_autonomous_unit_attempt_by_id(
             child_session_id,
             status,
             boundary_id,
+            workflow_node_id,
+            workflow_transition_id,
+            workflow_causal_transition_id,
+            workflow_handoff_transition_id,
+            workflow_handoff_package_hash,
             started_at,
             finished_at,
             last_error_code,
@@ -2260,11 +2366,16 @@ fn read_autonomous_unit_attempt_by_id(
                 child_session_id: row.get(5)?,
                 status: row.get(6)?,
                 boundary_id: row.get(7)?,
-                started_at: row.get(8)?,
-                finished_at: row.get(9)?,
-                last_error_code: row.get(10)?,
-                last_error_message: row.get(11)?,
-                updated_at: row.get(12)?,
+                workflow_node_id: row.get(8)?,
+                workflow_transition_id: row.get(9)?,
+                workflow_causal_transition_id: row.get(10)?,
+                workflow_handoff_transition_id: row.get(11)?,
+                workflow_handoff_package_hash: row.get(12)?,
+                started_at: row.get(13)?,
+                finished_at: row.get(14)?,
+                last_error_code: row.get(15)?,
+                last_error_message: row.get(16)?,
+                updated_at: row.get(17)?,
             })
         },
     );
@@ -9026,6 +9137,11 @@ fn read_autonomous_units(
                 status,
                 summary,
                 boundary_id,
+                workflow_node_id,
+                workflow_transition_id,
+                workflow_causal_transition_id,
+                workflow_handoff_transition_id,
+                workflow_handoff_package_hash,
                 started_at,
                 finished_at,
                 last_error_code,
@@ -9061,11 +9177,16 @@ fn read_autonomous_units(
                     status: row.get(5)?,
                     summary: row.get(6)?,
                     boundary_id: row.get(7)?,
-                    started_at: row.get(8)?,
-                    finished_at: row.get(9)?,
-                    last_error_code: row.get(10)?,
-                    last_error_message: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    workflow_node_id: row.get(8)?,
+                    workflow_transition_id: row.get(9)?,
+                    workflow_causal_transition_id: row.get(10)?,
+                    workflow_handoff_transition_id: row.get(11)?,
+                    workflow_handoff_package_hash: row.get(12)?,
+                    started_at: row.get(13)?,
+                    finished_at: row.get(14)?,
+                    last_error_code: row.get(15)?,
+                    last_error_message: row.get(16)?,
+                    updated_at: row.get(17)?,
                 })
             },
         )
@@ -9094,6 +9215,18 @@ fn read_autonomous_units(
             })?,
             database_path,
         )?;
+
+        if let Some(linkage) = unit.workflow_linkage.as_ref() {
+            validate_autonomous_workflow_linkage_record(
+                connection,
+                database_path,
+                project_id,
+                linkage,
+                "unit",
+                &unit.unit_id,
+                "runtime_run_decode_failed",
+            )?;
+        }
 
         if !units.is_empty() && unit.sequence >= last_sequence {
             return Err(map_runtime_run_decode_error(
@@ -9130,6 +9263,11 @@ fn read_autonomous_unit_attempts(
                 child_session_id,
                 status,
                 boundary_id,
+                workflow_node_id,
+                workflow_transition_id,
+                workflow_causal_transition_id,
+                workflow_handoff_transition_id,
+                workflow_handoff_package_hash,
                 started_at,
                 finished_at,
                 last_error_code,
@@ -9165,11 +9303,16 @@ fn read_autonomous_unit_attempts(
                     child_session_id: row.get(5)?,
                     status: row.get(6)?,
                     boundary_id: row.get(7)?,
-                    started_at: row.get(8)?,
-                    finished_at: row.get(9)?,
-                    last_error_code: row.get(10)?,
-                    last_error_message: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    workflow_node_id: row.get(8)?,
+                    workflow_transition_id: row.get(9)?,
+                    workflow_causal_transition_id: row.get(10)?,
+                    workflow_handoff_transition_id: row.get(11)?,
+                    workflow_handoff_package_hash: row.get(12)?,
+                    started_at: row.get(13)?,
+                    finished_at: row.get(14)?,
+                    last_error_code: row.get(15)?,
+                    last_error_message: row.get(16)?,
+                    updated_at: row.get(17)?,
                 })
             },
         )
@@ -9185,7 +9328,7 @@ fn read_autonomous_unit_attempts(
 
     let mut attempts = Vec::new();
     for row in rows {
-        attempts.push(decode_autonomous_unit_attempt_row(
+        let attempt = decode_autonomous_unit_attempt_row(
             row.map_err(|error| {
                 CommandError::system_fault(
                     "autonomous_unit_attempt_query_failed",
@@ -9196,7 +9339,21 @@ fn read_autonomous_unit_attempts(
                 )
             })?,
             database_path,
-        )?);
+        )?;
+
+        if let Some(linkage) = attempt.workflow_linkage.as_ref() {
+            validate_autonomous_workflow_linkage_record(
+                connection,
+                database_path,
+                project_id,
+                linkage,
+                "attempt",
+                &attempt.attempt_id,
+                "runtime_run_decode_failed",
+            )?;
+        }
+
+        attempts.push(attempt);
     }
 
     Ok(attempts)
@@ -9404,6 +9561,40 @@ fn build_autonomous_unit_history(
                 unit_attempts.into_iter().next()
             })
             .flatten();
+
+        if let Some(attempt) = latest_attempt.as_ref() {
+            match (&unit.workflow_linkage, &attempt.workflow_linkage) {
+                (None, None) => {}
+                (Some(_), Some(_)) if unit.workflow_linkage == attempt.workflow_linkage => {}
+                (None, Some(_)) => {
+                    return Err(map_runtime_run_decode_error(
+                        database_path,
+                        format!(
+                            "Autonomous attempt `{}` retained workflow linkage while parent unit `{}` did not.",
+                            attempt.attempt_id, unit.unit_id
+                        ),
+                    ));
+                }
+                (Some(_), None) => {
+                    return Err(map_runtime_run_decode_error(
+                        database_path,
+                        format!(
+                            "Autonomous attempt `{}` is missing workflow linkage while parent unit `{}` retained durable linkage.",
+                            attempt.attempt_id, unit.unit_id
+                        ),
+                    ));
+                }
+                (Some(_), Some(_)) => {
+                    return Err(map_runtime_run_decode_error(
+                        database_path,
+                        format!(
+                            "Autonomous attempt `{}` workflow linkage does not match parent unit `{}` linkage.",
+                            attempt.attempt_id, unit.unit_id
+                        ),
+                    ));
+                }
+            }
+        }
 
         let unit_artifacts = latest_attempt
             .as_ref()
@@ -9747,6 +9938,97 @@ fn decode_autonomous_run_row(
     })
 }
 
+fn decode_autonomous_workflow_linkage_row(
+    workflow_node_id: Option<String>,
+    transition_id: Option<String>,
+    causal_transition_id: Option<String>,
+    handoff_transition_id: Option<String>,
+    handoff_package_hash: Option<String>,
+    database_path: &Path,
+) -> Result<Option<AutonomousWorkflowLinkageRecord>, CommandError> {
+    let populated_fields = [
+        workflow_node_id.is_some(),
+        transition_id.is_some(),
+        handoff_transition_id.is_some(),
+        handoff_package_hash.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+
+    if populated_fields == 0 && causal_transition_id.is_none() {
+        return Ok(None);
+    }
+
+    if populated_fields != 4 {
+        return Err(map_runtime_run_decode_error(
+            database_path,
+            "Autonomous workflow linkage rows must either omit all linkage fields or persist non-empty `workflow_node_id`, `transition_id`, `handoff_transition_id`, and `handoff_package_hash` values."
+                .into(),
+        ));
+    }
+
+    let handoff_package_hash = require_runtime_run_non_empty_owned(
+        handoff_package_hash.ok_or_else(|| {
+            map_runtime_run_decode_error(
+                database_path,
+                "Field `workflow_handoff_package_hash` must be a non-empty string when workflow linkage is present."
+                    .into(),
+            )
+        })?,
+        "workflow_handoff_package_hash",
+        database_path,
+    )?;
+    validate_workflow_handoff_package_hash(
+        &handoff_package_hash,
+        "workflow_handoff_package_hash",
+        database_path,
+        "runtime_run_decode_failed",
+    )?;
+
+    Ok(Some(AutonomousWorkflowLinkageRecord {
+        workflow_node_id: require_runtime_run_non_empty_owned(
+            workflow_node_id.ok_or_else(|| {
+                map_runtime_run_decode_error(
+                    database_path,
+                    "Field `workflow_node_id` must be a non-empty string when workflow linkage is present."
+                        .into(),
+                )
+            })?,
+            "workflow_node_id",
+            database_path,
+        )?,
+        transition_id: require_runtime_run_non_empty_owned(
+            transition_id.ok_or_else(|| {
+                map_runtime_run_decode_error(
+                    database_path,
+                    "Field `workflow_transition_id` must be a non-empty string when workflow linkage is present."
+                        .into(),
+                )
+            })?,
+            "workflow_transition_id",
+            database_path,
+        )?,
+        causal_transition_id: decode_runtime_run_optional_non_empty_text(
+            causal_transition_id,
+            "workflow_causal_transition_id",
+            database_path,
+        )?,
+        handoff_transition_id: require_runtime_run_non_empty_owned(
+            handoff_transition_id.ok_or_else(|| {
+                map_runtime_run_decode_error(
+                    database_path,
+                    "Field `workflow_handoff_transition_id` must be a non-empty string when workflow linkage is present."
+                        .into(),
+                )
+            })?,
+            "workflow_handoff_transition_id",
+            database_path,
+        )?,
+        handoff_package_hash,
+    }))
+}
+
 fn decode_autonomous_unit_row(
     raw_row: RawAutonomousUnitRow,
     database_path: &Path,
@@ -9774,6 +10056,14 @@ fn decode_autonomous_unit_row(
         boundary_id: decode_runtime_run_optional_non_empty_text(
             raw_row.boundary_id,
             "boundary_id",
+            database_path,
+        )?,
+        workflow_linkage: decode_autonomous_workflow_linkage_row(
+            raw_row.workflow_node_id,
+            raw_row.workflow_transition_id,
+            raw_row.workflow_causal_transition_id,
+            raw_row.workflow_handoff_transition_id,
+            raw_row.workflow_handoff_package_hash,
             database_path,
         )?,
         started_at: require_runtime_run_non_empty_owned(
@@ -9833,6 +10123,14 @@ fn decode_autonomous_unit_attempt_row(
         boundary_id: decode_runtime_run_optional_non_empty_text(
             raw_row.boundary_id,
             "boundary_id",
+            database_path,
+        )?,
+        workflow_linkage: decode_autonomous_workflow_linkage_row(
+            raw_row.workflow_node_id,
+            raw_row.workflow_transition_id,
+            raw_row.workflow_causal_transition_id,
+            raw_row.workflow_handoff_transition_id,
+            raw_row.workflow_handoff_package_hash,
             database_path,
         )?,
         started_at: require_runtime_run_non_empty_owned(
@@ -12092,7 +12390,13 @@ fn normalize_autonomous_run_upsert_payload(
         ));
     }
 
-    if let Some(attempt) = payload.attempt.as_ref() {
+    let normalized_unit_workflow_linkage =
+        normalize_autonomous_workflow_linkage_payload(
+            unit.workflow_linkage.as_ref(),
+            "unit_workflow_linkage",
+        )?;
+
+    let normalized_attempt = if let Some(attempt) = payload.attempt.as_ref() {
         validate_non_empty_text(
             &attempt.attempt_id,
             "attempt_id",
@@ -12147,7 +12451,23 @@ fn normalize_autonomous_run_upsert_payload(
                 "autonomous_run_request_invalid",
             )?;
         }
-    }
+
+        let normalized_attempt_workflow_linkage = normalize_autonomous_workflow_linkage_payload(
+            attempt.workflow_linkage.as_ref(),
+            "attempt_workflow_linkage",
+        )?;
+        validate_matching_autonomous_workflow_linkage_payloads(
+            normalized_unit_workflow_linkage.as_ref(),
+            normalized_attempt_workflow_linkage.as_ref(),
+        )?;
+
+        Some(AutonomousUnitAttemptRecord {
+            workflow_linkage: normalized_attempt_workflow_linkage,
+            ..attempt.clone()
+        })
+    } else {
+        None
+    };
 
     let normalized_artifacts = payload
         .artifacts
@@ -12164,10 +12484,182 @@ fn normalize_autonomous_run_upsert_payload(
 
     Ok(AutonomousRunUpsertRecord {
         run: payload.run.clone(),
-        unit: Some(unit.clone()),
-        attempt: payload.attempt.clone(),
+        unit: Some(AutonomousUnitRecord {
+            workflow_linkage: normalized_unit_workflow_linkage,
+            ..unit.clone()
+        }),
+        attempt: normalized_attempt,
         artifacts: normalized_artifacts,
     })
+}
+
+fn normalize_autonomous_workflow_linkage_payload(
+    linkage: Option<&AutonomousWorkflowLinkageRecord>,
+    field_prefix: &str,
+) -> Result<Option<AutonomousWorkflowLinkageRecord>, CommandError> {
+    let Some(linkage) = linkage else {
+        return Ok(None);
+    };
+
+    validate_non_empty_text(
+        &linkage.workflow_node_id,
+        &format!("{field_prefix}_workflow_node_id"),
+        "autonomous_run_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &linkage.transition_id,
+        &format!("{field_prefix}_transition_id"),
+        "autonomous_run_request_invalid",
+    )?;
+    if let Some(causal_transition_id) = linkage.causal_transition_id.as_deref() {
+        validate_non_empty_text(
+            causal_transition_id,
+            &format!("{field_prefix}_causal_transition_id"),
+            "autonomous_run_request_invalid",
+        )?;
+    }
+    validate_non_empty_text(
+        &linkage.handoff_transition_id,
+        &format!("{field_prefix}_handoff_transition_id"),
+        "autonomous_run_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &linkage.handoff_package_hash,
+        &format!("{field_prefix}_handoff_package_hash"),
+        "autonomous_run_request_invalid",
+    )?;
+
+    if linkage.handoff_package_hash.len() != 64
+        || linkage
+            .handoff_package_hash
+            .chars()
+            .any(|ch| !ch.is_ascii_hexdigit() || ch.is_ascii_uppercase())
+    {
+        return Err(CommandError::user_fixable(
+            "autonomous_run_request_invalid",
+            format!(
+                "Cadence requires {field_prefix} handoff package hashes to be lowercase 64-character hex digests."
+            ),
+        ));
+    }
+
+    Ok(Some(linkage.clone()))
+}
+
+fn validate_matching_autonomous_workflow_linkage_payloads(
+    unit_linkage: Option<&AutonomousWorkflowLinkageRecord>,
+    attempt_linkage: Option<&AutonomousWorkflowLinkageRecord>,
+) -> Result<(), CommandError> {
+    match (unit_linkage, attempt_linkage) {
+        (None, None) | (Some(_), None) => Ok(()),
+        (None, Some(_)) => Err(CommandError::system_fault(
+            "autonomous_run_request_invalid",
+            "Cadence requires autonomous attempts to omit workflow linkage until the parent unit carries durable workflow linkage.",
+        )),
+        (Some(unit_linkage), Some(attempt_linkage)) if unit_linkage == attempt_linkage => Ok(()),
+        (Some(_), Some(_)) => Err(CommandError::system_fault(
+            "autonomous_run_request_invalid",
+            "Cadence requires autonomous attempt workflow linkage to match the owning unit linkage exactly.",
+        )),
+    }
+}
+
+fn validate_autonomous_workflow_linkage_record(
+    connection: &Connection,
+    database_path: &Path,
+    project_id: &str,
+    linkage: &AutonomousWorkflowLinkageRecord,
+    owner_kind: &str,
+    owner_id: &str,
+    error_code: &'static str,
+) -> Result<(), CommandError> {
+    let transition_event = read_transition_event_by_transition_id(
+        connection,
+        database_path,
+        project_id,
+        &linkage.transition_id,
+    )?
+    .ok_or_else(|| {
+        autonomous_workflow_linkage_error(
+            error_code,
+            database_path,
+            format!(
+                "Autonomous {owner_kind} `{owner_id}` references workflow transition `{}` that is missing for project `{project_id}`.",
+                linkage.transition_id
+            ),
+        )
+    })?;
+
+    if transition_event.to_node_id != linkage.workflow_node_id {
+        return Err(autonomous_workflow_linkage_error(
+            error_code,
+            database_path,
+            format!(
+                "Autonomous {owner_kind} `{owner_id}` workflow node `{}` does not match transition `{}` destination node `{}`.",
+                linkage.workflow_node_id, linkage.transition_id, transition_event.to_node_id
+            ),
+        ));
+    }
+
+    if transition_event.causal_transition_id != linkage.causal_transition_id {
+        return Err(autonomous_workflow_linkage_error(
+            error_code,
+            database_path,
+            format!(
+                "Autonomous {owner_kind} `{owner_id}` causal transition linkage {:?} does not match durable transition `{}` causal linkage {:?}.",
+                linkage.causal_transition_id,
+                linkage.transition_id,
+                transition_event.causal_transition_id
+            ),
+        ));
+    }
+
+    let handoff_package = read_workflow_handoff_package_by_transition_id(
+        connection,
+        database_path,
+        project_id,
+        &linkage.handoff_transition_id,
+    )?
+    .ok_or_else(|| {
+        autonomous_workflow_linkage_error(
+            error_code,
+            database_path,
+            format!(
+                "Autonomous {owner_kind} `{owner_id}` references workflow handoff `{}` that is missing for project `{project_id}`.",
+                linkage.handoff_transition_id
+            ),
+        )
+    })?;
+
+    validate_workflow_handoff_package_transition_linkage(&handoff_package, &transition_event)
+        .map_err(|error| autonomous_workflow_linkage_error(error_code, database_path, error.message))?;
+
+    if handoff_package.package_hash != linkage.handoff_package_hash {
+        return Err(autonomous_workflow_linkage_error(
+            error_code,
+            database_path,
+            format!(
+                "Autonomous {owner_kind} `{owner_id}` handoff package hash `{}` does not match durable package hash `{}` for transition `{}`.",
+                linkage.handoff_package_hash,
+                handoff_package.package_hash,
+                linkage.handoff_transition_id
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn autonomous_workflow_linkage_error(
+    error_code: &'static str,
+    database_path: &Path,
+    message: String,
+) -> CommandError {
+    if error_code == "runtime_run_decode_failed" {
+        return map_runtime_run_decode_error(database_path, message);
+    }
+
+    CommandError::system_fault(error_code, message)
 }
 
 fn normalize_autonomous_unit_artifact_record(

@@ -2,12 +2,12 @@ use cadence_desktop_lib::{
     commands::{
         ApplyWorkflowTransitionRequestDto, ApplyWorkflowTransitionResponseDto,
         AutonomousArtifactPayloadDto, AutonomousCommandResultDto, AutonomousLifecycleReasonDto,
-        AutonomousPolicyDeniedPayloadDto, AutonomousRunDto, AutonomousRunRecoveryStateDto,
-        AutonomousRunStateDto, AutonomousRunStatusDto, AutonomousToolCallStateDto,
-        AutonomousToolResultPayloadDto, AutonomousUnitArtifactDto, AutonomousUnitArtifactStatusDto,
-        AutonomousUnitAttemptDto, AutonomousUnitDto, AutonomousUnitHistoryEntryDto,
-        AutonomousUnitKindDto, AutonomousUnitStatusDto, AutonomousVerificationEvidencePayloadDto,
-        AutonomousVerificationOutcomeDto, BranchSummaryDto, CancelAutonomousRunRequestDto,
+        AutonomousRunDto, AutonomousRunRecoveryStateDto, AutonomousRunStateDto,
+        AutonomousRunStatusDto, AutonomousToolCallStateDto, AutonomousToolResultPayloadDto,
+        AutonomousUnitArtifactDto, AutonomousUnitArtifactStatusDto, AutonomousUnitAttemptDto,
+        AutonomousUnitDto, AutonomousUnitHistoryEntryDto, AutonomousUnitKindDto,
+        AutonomousUnitStatusDto, AutonomousWorkflowLinkageDto, BranchSummaryDto,
+        CancelAutonomousRunRequestDto,
         ChangeKind, CommandError, CommandErrorClass, GetAutonomousRunRequestDto,
         GetRuntimeRunRequestDto, ImportRepositoryRequestDto, ListNotificationDispatchesRequestDto,
         ListNotificationDispatchesResponseDto, ListNotificationRoutesRequestDto,
@@ -226,6 +226,17 @@ fn sample_autonomous_run(duplicate_start_detected: bool) -> AutonomousRunDto {
     }
 }
 
+fn sample_autonomous_workflow_linkage() -> AutonomousWorkflowLinkageDto {
+    AutonomousWorkflowLinkageDto {
+        workflow_node_id: "workflow-research".into(),
+        transition_id: "auto:txn-002:workflow-discussion:workflow-research".into(),
+        causal_transition_id: Some("txn-001".into()),
+        handoff_transition_id: "auto:txn-002:workflow-discussion:workflow-research".into(),
+        handoff_package_hash:
+            "a18fc57e3d2b8f4ef67f5b50f37ba7d85f49a1be987f17fa9dc0ad5a64ff8322".into(),
+    }
+}
+
 fn sample_autonomous_unit() -> AutonomousUnitDto {
     AutonomousUnitDto {
         project_id: "project-1".into(),
@@ -236,6 +247,7 @@ fn sample_autonomous_unit() -> AutonomousUnitDto {
         status: AutonomousUnitStatusDto::Active,
         summary: "Researcher child session launched.".into(),
         boundary_id: None,
+        workflow_linkage: Some(sample_autonomous_workflow_linkage()),
         started_at: "2026-04-15T23:10:00Z".into(),
         finished_at: None,
         updated_at: "2026-04-15T23:10:03Z".into(),
@@ -258,6 +270,7 @@ fn sample_autonomous_attempt() -> AutonomousUnitAttemptDto {
         child_session_id: "child-session-1".into(),
         status: AutonomousUnitStatusDto::Active,
         boundary_id: None,
+        workflow_linkage: Some(sample_autonomous_workflow_linkage()),
         started_at: "2026-04-15T23:10:00Z".into(),
         finished_at: None,
         updated_at: "2026-04-15T23:10:03Z".into(),
@@ -1151,6 +1164,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "status": "active",
                 "summary": "Researcher child session launched.",
                 "boundaryId": null,
+                "workflowLinkage": {
+                    "workflowNodeId": "workflow-research",
+                    "transitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                    "causalTransitionId": "txn-001",
+                    "handoffTransitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                    "handoffPackageHash": "a18fc57e3d2b8f4ef67f5b50f37ba7d85f49a1be987f17fa9dc0ad5a64ff8322"
+                },
                 "startedAt": "2026-04-15T23:10:00Z",
                 "finishedAt": null,
                 "updatedAt": "2026-04-15T23:10:03Z",
@@ -1558,6 +1578,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "status": "active",
                 "summary": "Researcher child session launched.",
                 "boundaryId": null,
+                "workflowLinkage": {
+                    "workflowNodeId": "workflow-research",
+                    "transitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                    "causalTransitionId": "txn-001",
+                    "handoffTransitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                    "handoffPackageHash": "a18fc57e3d2b8f4ef67f5b50f37ba7d85f49a1be987f17fa9dc0ad5a64ff8322"
+                },
                 "startedAt": "2026-04-15T23:10:00Z",
                 "finishedAt": null,
                 "updatedAt": "2026-04-15T23:10:03Z",
@@ -1576,6 +1603,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "childSessionId": "child-session-1",
                 "status": "active",
                 "boundaryId": null,
+                "workflowLinkage": {
+                    "workflowNodeId": "workflow-research",
+                    "transitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                    "causalTransitionId": "txn-001",
+                    "handoffTransitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                    "handoffPackageHash": "a18fc57e3d2b8f4ef67f5b50f37ba7d85f49a1be987f17fa9dc0ad5a64ff8322"
+                },
                 "startedAt": "2026-04-15T23:10:00Z",
                 "finishedAt": null,
                 "updatedAt": "2026-04-15T23:10:03Z",
@@ -1596,6 +1630,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                         "status": "active",
                         "summary": "Researcher child session launched.",
                         "boundaryId": null,
+                        "workflowLinkage": {
+                            "workflowNodeId": "workflow-research",
+                            "transitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                            "causalTransitionId": "txn-001",
+                            "handoffTransitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                            "handoffPackageHash": "a18fc57e3d2b8f4ef67f5b50f37ba7d85f49a1be987f17fa9dc0ad5a64ff8322"
+                        },
                         "startedAt": "2026-04-15T23:10:00Z",
                         "finishedAt": null,
                         "updatedAt": "2026-04-15T23:10:03Z",
@@ -1614,6 +1655,13 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
                         "childSessionId": "child-session-1",
                         "status": "active",
                         "boundaryId": null,
+                        "workflowLinkage": {
+                            "workflowNodeId": "workflow-research",
+                            "transitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                            "causalTransitionId": "txn-001",
+                            "handoffTransitionId": "auto:txn-002:workflow-discussion:workflow-research",
+                            "handoffPackageHash": "a18fc57e3d2b8f4ef67f5b50f37ba7d85f49a1be987f17fa9dc0ad5a64ff8322"
+                        },
                         "startedAt": "2026-04-15T23:10:00Z",
                         "finishedAt": null,
                         "updatedAt": "2026-04-15T23:10:03Z",

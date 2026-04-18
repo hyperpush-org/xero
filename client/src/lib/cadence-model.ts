@@ -29,6 +29,27 @@ const nullableTextSchema = z.string().nullable().optional()
 const nonEmptyOptionalTextSchema = z.string().trim().min(1).nullable().optional()
 const isoTimestampSchema = z.string().datetime({ offset: true })
 
+function sortByNewest<T>(
+  items: readonly T[],
+  getTimestamp: (item: T) => string | null | undefined,
+): T[] {
+  return [...items]
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftTime = Date.parse(getTimestamp(left.item) ?? '')
+      const rightTime = Date.parse(getTimestamp(right.item) ?? '')
+      const normalizedLeftTime = Number.isFinite(leftTime) ? leftTime : 0
+      const normalizedRightTime = Number.isFinite(rightTime) ? rightTime : 0
+
+      if (normalizedLeftTime === normalizedRightTime) {
+        return left.index - right.index
+      }
+
+      return normalizedRightTime - normalizedLeftTime
+    })
+    .map(({ item }) => item)
+}
+
 export const projectSummarySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -1837,6 +1858,18 @@ export const autonomousRunSchema = z
   })
   .strict()
 
+export const autonomousWorkflowLinkageSchema = z
+  .object({
+    workflowNodeId: z.string().trim().min(1),
+    transitionId: z.string().trim().min(1),
+    causalTransitionId: nonEmptyOptionalTextSchema,
+    handoffTransitionId: z.string().trim().min(1),
+    handoffPackageHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'Autonomous workflow linkage handoff package hashes must be lowercase 64-character hex digests.'),
+  })
+  .strict()
+
 export const autonomousUnitSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -1847,6 +1880,7 @@ export const autonomousUnitSchema = z
     status: autonomousUnitStatusSchema,
     summary: z.string().trim().min(1),
     boundaryId: nonEmptyOptionalTextSchema,
+    workflowLinkage: autonomousWorkflowLinkageSchema.nullable().optional(),
     startedAt: isoTimestampSchema,
     finishedAt: nonEmptyOptionalTextSchema,
     updatedAt: isoTimestampSchema,
@@ -1865,6 +1899,7 @@ export const autonomousUnitAttemptSchema = z
     childSessionId: z.string().trim().min(1),
     status: autonomousUnitStatusSchema,
     boundaryId: nonEmptyOptionalTextSchema,
+    workflowLinkage: autonomousWorkflowLinkageSchema.nullable().optional(),
     startedAt: isoTimestampSchema,
     finishedAt: nonEmptyOptionalTextSchema,
     updatedAt: isoTimestampSchema,
@@ -2251,6 +2286,7 @@ export type AutonomousRunRecoveryStateDto = z.infer<typeof autonomousRunRecovery
 export type AutonomousUnitKindDto = z.infer<typeof autonomousUnitKindSchema>
 export type AutonomousUnitStatusDto = z.infer<typeof autonomousUnitStatusSchema>
 export type AutonomousUnitArtifactStatusDto = z.infer<typeof autonomousUnitArtifactStatusSchema>
+export type AutonomousWorkflowLinkageDto = z.infer<typeof autonomousWorkflowLinkageSchema>
 export type AutonomousToolCallStateDto = z.infer<typeof autonomousToolCallStateSchema>
 export type AutonomousVerificationOutcomeDto = z.infer<typeof autonomousVerificationOutcomeSchema>
 export type AutonomousLifecycleReasonDto = z.infer<typeof autonomousLifecycleReasonSchema>
@@ -2607,6 +2643,14 @@ export interface AutonomousRunView {
   isFailed: boolean
 }
 
+export interface AutonomousWorkflowLinkageView {
+  workflowNodeId: string
+  transitionId: string
+  causalTransitionId: string | null
+  handoffTransitionId: string
+  handoffPackageHash: string
+}
+
 export interface AutonomousUnitView {
   projectId: string
   runId: string
@@ -2618,6 +2662,7 @@ export interface AutonomousUnitView {
   statusLabel: string
   summary: string
   boundaryId: string | null
+  workflowLinkage: AutonomousWorkflowLinkageView | null
   startedAt: string
   finishedAt: string | null
   updatedAt: string
@@ -2638,6 +2683,7 @@ export interface AutonomousUnitAttemptView {
   status: AutonomousUnitStatusDto
   statusLabel: string
   boundaryId: string | null
+  workflowLinkage: AutonomousWorkflowLinkageView | null
   startedAt: string
   finishedAt: string | null
   updatedAt: string
@@ -4181,6 +4227,7 @@ export function mapAutonomousRun(autonomousRun: AutonomousRunDto): AutonomousRun
     recoveryState: autonomousRun.recoveryState,
     recoveryLabel: getAutonomousRunRecoveryLabel(autonomousRun.recoveryState),
     activeUnitId: normalizeOptionalText(autonomousRun.activeUnitId),
+    activeAttemptId: normalizeOptionalText(autonomousRun.activeAttemptId),
     duplicateStartDetected: autonomousRun.duplicateStartDetected,
     duplicateStartRunId: normalizeOptionalText(autonomousRun.duplicateStartRunId),
     duplicateStartReason: normalizeOptionalText(autonomousRun.duplicateStartReason),
@@ -4205,6 +4252,24 @@ export function mapAutonomousRun(autonomousRun: AutonomousRunDto): AutonomousRun
   }
 }
 
+function mapAutonomousWorkflowLinkage(
+  workflowLinkage: AutonomousWorkflowLinkageDto,
+): AutonomousWorkflowLinkageView {
+  return {
+    workflowNodeId: normalizeText(workflowLinkage.workflowNodeId, 'workflow-node-unavailable'),
+    transitionId: normalizeText(workflowLinkage.transitionId, 'workflow-transition-unavailable'),
+    causalTransitionId: normalizeOptionalText(workflowLinkage.causalTransitionId),
+    handoffTransitionId: normalizeText(
+      workflowLinkage.handoffTransitionId,
+      'workflow-handoff-transition-unavailable',
+    ),
+    handoffPackageHash: normalizeText(
+      workflowLinkage.handoffPackageHash,
+      'workflow-handoff-package-hash-unavailable',
+    ),
+  }
+}
+
 export function mapAutonomousUnit(autonomousUnit: AutonomousUnitDto): AutonomousUnitView {
   return {
     projectId: autonomousUnit.projectId,
@@ -4217,6 +4282,9 @@ export function mapAutonomousUnit(autonomousUnit: AutonomousUnitDto): Autonomous
     statusLabel: getAutonomousUnitStatusLabel(autonomousUnit.status),
     summary: normalizeText(autonomousUnit.summary, 'Autonomous unit boundary recorded.'),
     boundaryId: normalizeOptionalText(autonomousUnit.boundaryId),
+    workflowLinkage: autonomousUnit.workflowLinkage
+      ? mapAutonomousWorkflowLinkage(autonomousUnit.workflowLinkage)
+      : null,
     startedAt: autonomousUnit.startedAt,
     finishedAt: normalizeOptionalText(autonomousUnit.finishedAt),
     updatedAt: autonomousUnit.updatedAt,
@@ -4225,6 +4293,199 @@ export function mapAutonomousUnit(autonomousUnit: AutonomousUnitDto): Autonomous
     isActive: autonomousUnit.status === 'active',
     isTerminal: ['completed', 'cancelled', 'failed'].includes(autonomousUnit.status),
     isFailed: autonomousUnit.status === 'failed',
+  }
+}
+
+function getAutonomousArtifactKindLabel(artifactKind: string): string {
+  switch (artifactKind) {
+    case 'tool_result':
+      return 'Tool result'
+    case 'verification_evidence':
+      return 'Verification evidence'
+    case 'policy_denied':
+      return 'Policy denied'
+    default:
+      return humanizeRuntimeKind(artifactKind)
+  }
+}
+
+function getAutonomousArtifactStatusLabel(status: AutonomousUnitArtifactStatusDto): string {
+  switch (status) {
+    case 'pending':
+      return 'Pending'
+    case 'recorded':
+      return 'Recorded'
+    case 'rejected':
+      return 'Rejected'
+  }
+}
+
+function getAutonomousToolCallStateLabel(state: AutonomousToolCallStateDto): string {
+  switch (state) {
+    case 'pending':
+      return 'Pending'
+    case 'running':
+      return 'Running'
+    case 'succeeded':
+      return 'Succeeded'
+    case 'failed':
+      return 'Failed'
+  }
+}
+
+function getAutonomousVerificationOutcomeLabel(outcome: AutonomousVerificationOutcomeDto): string {
+  switch (outcome) {
+    case 'passed':
+      return 'Passed'
+    case 'failed':
+      return 'Failed'
+    case 'blocked':
+      return 'Blocked'
+  }
+}
+
+export function mapAutonomousAttempt(autonomousAttempt: AutonomousUnitAttemptDto): AutonomousUnitAttemptView {
+  return {
+    projectId: autonomousAttempt.projectId,
+    runId: autonomousAttempt.runId,
+    unitId: autonomousAttempt.unitId,
+    attemptId: normalizeText(autonomousAttempt.attemptId, 'autonomous-attempt-unavailable'),
+    attemptNumber: autonomousAttempt.attemptNumber,
+    childSessionId: normalizeText(autonomousAttempt.childSessionId, 'child-session-unavailable'),
+    status: autonomousAttempt.status,
+    statusLabel: getAutonomousUnitStatusLabel(autonomousAttempt.status),
+    boundaryId: normalizeOptionalText(autonomousAttempt.boundaryId),
+    workflowLinkage: autonomousAttempt.workflowLinkage
+      ? mapAutonomousWorkflowLinkage(autonomousAttempt.workflowLinkage)
+      : null,
+    startedAt: autonomousAttempt.startedAt,
+    finishedAt: normalizeOptionalText(autonomousAttempt.finishedAt),
+    updatedAt: autonomousAttempt.updatedAt,
+    lastErrorCode: normalizeOptionalText(autonomousAttempt.lastErrorCode),
+    lastError: autonomousAttempt.lastError ?? null,
+    isActive: autonomousAttempt.status === 'active',
+    isTerminal: ['completed', 'cancelled', 'failed'].includes(autonomousAttempt.status),
+    isFailed: autonomousAttempt.status === 'failed',
+  }
+}
+
+function mapAutonomousCommandResult(commandResult: AutonomousCommandResultDto): AutonomousCommandResultView {
+  return {
+    exitCode: commandResult.exitCode ?? null,
+    timedOut: commandResult.timedOut,
+    summary: normalizeText(commandResult.summary, 'Autonomous command result recorded.'),
+  }
+}
+
+function getAutonomousArtifactDetail(
+  artifact: AutonomousUnitArtifactDto,
+  commandResult: AutonomousCommandResultView | null,
+): string | null {
+  const payload = artifact.payload ?? null
+  if (!payload) {
+    return normalizeOptionalText(artifact.summary)
+  }
+
+  switch (payload.kind) {
+    case 'tool_result':
+      return commandResult?.summary ?? normalizeOptionalText(artifact.summary)
+    case 'verification_evidence':
+      return commandResult?.summary ?? normalizeOptionalText(payload.label) ?? normalizeOptionalText(artifact.summary)
+    case 'policy_denied':
+      return normalizeOptionalText(payload.message) ?? normalizeOptionalText(artifact.summary)
+  }
+}
+
+export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): AutonomousUnitArtifactView {
+  const payload = artifact.payload ?? null
+  const commandResult = payload?.commandResult ? mapAutonomousCommandResult(payload.commandResult) : null
+
+  let toolName: string | null = null
+  let toolState: AutonomousToolCallStateDto | null = null
+  let toolStateLabel: string | null = null
+  let evidenceKind: string | null = null
+  let verificationOutcome: AutonomousVerificationOutcomeDto | null = null
+  let verificationOutcomeLabel: string | null = null
+  let diagnosticCode: string | null = null
+  let actionId: string | null = null
+  let boundaryId: string | null = null
+
+  switch (payload?.kind) {
+    case 'tool_result':
+      toolName = normalizeOptionalText(payload.toolName)
+      toolState = payload.toolState
+      toolStateLabel = getAutonomousToolCallStateLabel(payload.toolState)
+      actionId = normalizeOptionalText(payload.actionId)
+      boundaryId = normalizeOptionalText(payload.boundaryId)
+      break
+    case 'verification_evidence':
+      evidenceKind = normalizeOptionalText(payload.evidenceKind)
+      verificationOutcome = payload.outcome
+      verificationOutcomeLabel = getAutonomousVerificationOutcomeLabel(payload.outcome)
+      actionId = normalizeOptionalText(payload.actionId)
+      boundaryId = normalizeOptionalText(payload.boundaryId)
+      break
+    case 'policy_denied':
+      toolName = normalizeOptionalText(payload.toolName)
+      diagnosticCode = normalizeOptionalText(payload.diagnosticCode)
+      actionId = normalizeOptionalText(payload.actionId)
+      boundaryId = normalizeOptionalText(payload.boundaryId)
+      break
+  }
+
+  return {
+    projectId: artifact.projectId,
+    runId: artifact.runId,
+    unitId: artifact.unitId,
+    attemptId: artifact.attemptId,
+    artifactId: normalizeText(artifact.artifactId, 'autonomous-artifact-unavailable'),
+    artifactKind: artifact.artifactKind,
+    artifactKindLabel: getAutonomousArtifactKindLabel(artifact.artifactKind),
+    status: artifact.status,
+    statusLabel: getAutonomousArtifactStatusLabel(artifact.status),
+    summary: normalizeText(artifact.summary, 'Autonomous artifact recorded.'),
+    contentHash: normalizeOptionalText(artifact.contentHash),
+    payload,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    detail: getAutonomousArtifactDetail(artifact, commandResult),
+    commandResult,
+    toolName,
+    toolState,
+    toolStateLabel,
+    evidenceKind,
+    verificationOutcome,
+    verificationOutcomeLabel,
+    diagnosticCode,
+    actionId,
+    boundaryId,
+    isToolResult: artifact.artifactKind === 'tool_result',
+    isVerificationEvidence: artifact.artifactKind === 'verification_evidence',
+    isPolicyDenied: artifact.artifactKind === 'policy_denied',
+  }
+}
+
+export function mapAutonomousHistoryEntry(entry: AutonomousUnitHistoryEntryDto): AutonomousUnitHistoryEntryView {
+  return {
+    unit: mapAutonomousUnit(entry.unit),
+    latestAttempt: entry.latestAttempt ? mapAutonomousAttempt(entry.latestAttempt) : null,
+    artifacts: sortByNewest((entry.artifacts ?? []).map(mapAutonomousArtifact), (artifact) => artifact.updatedAt || artifact.createdAt),
+  }
+}
+
+export function mapAutonomousRunInspection(autonomousState: AutonomousRunStateDto): AutonomousRunInspectionView {
+  const autonomousHistory = (autonomousState.history ?? []).map(mapAutonomousHistoryEntry)
+  const autonomousRecentArtifacts = sortByNewest(
+    autonomousHistory.flatMap((entry) => entry.artifacts),
+    (artifact) => artifact.updatedAt || artifact.createdAt,
+  ).slice(0, 5)
+
+  return {
+    autonomousRun: autonomousState.run ? mapAutonomousRun(autonomousState.run) : null,
+    autonomousUnit: autonomousState.unit ? mapAutonomousUnit(autonomousState.unit) : null,
+    autonomousAttempt: autonomousState.attempt ? mapAutonomousAttempt(autonomousState.attempt) : null,
+    autonomousHistory,
+    autonomousRecentArtifacts,
   }
 }
 

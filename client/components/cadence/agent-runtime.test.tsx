@@ -96,6 +96,9 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     runtimeRun: null,
     autonomousRun: null,
     autonomousUnit: null,
+    autonomousAttempt: null,
+    autonomousHistory: [],
+    autonomousRecentArtifacts: [],
     ...overrides,
   }
 }
@@ -243,6 +246,69 @@ function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['au
   }
 }
 
+function makeAutonomousAttempt(overrides: Partial<NonNullable<ProjectDetailView['autonomousAttempt']>> = {}) {
+  return {
+    projectId: 'project-1',
+    runId: 'auto-run-1',
+    unitId: 'auto-run-1:checkpoint:2',
+    attemptId: 'auto-run-1:checkpoint:2:attempt:1',
+    attemptNumber: 1,
+    childSessionId: 'child-session-1',
+    status: 'active' as const,
+    statusLabel: 'Active',
+    boundaryId: 'checkpoint:2',
+    startedAt: '2026-04-16T20:00:02Z',
+    finishedAt: null,
+    updatedAt: '2026-04-16T20:03:00Z',
+    lastErrorCode: null,
+    lastError: null,
+    isActive: true,
+    isTerminal: false,
+    isFailed: false,
+    ...overrides,
+  }
+}
+
+function makeAutonomousArtifact(
+  overrides: Partial<NonNullable<ProjectDetailView['autonomousRecentArtifacts']>[number]> = {},
+) {
+  return {
+    projectId: 'project-1',
+    runId: 'auto-run-1',
+    unitId: 'auto-run-1:checkpoint:2',
+    attemptId: 'auto-run-1:checkpoint:2:attempt:1',
+    artifactId: 'auto-run-1:checkpoint:2:attempt:1:tool:readme',
+    artifactKind: 'tool_result',
+    artifactKindLabel: 'Tool result',
+    status: 'recorded' as const,
+    statusLabel: 'Recorded',
+    summary: 'Read README.md from the imported repository root.',
+    contentHash: 'abc123',
+    payload: null,
+    createdAt: '2026-04-16T20:01:00Z',
+    updatedAt: '2026-04-16T20:03:00Z',
+    detail: 'Tool `read` succeeded for `README.md`.',
+    commandResult: {
+      exitCode: 0,
+      timedOut: false,
+      summary: 'read completed',
+    },
+    toolName: 'read',
+    toolState: 'succeeded' as const,
+    toolStateLabel: 'Succeeded',
+    evidenceKind: null,
+    verificationOutcome: null,
+    verificationOutcomeLabel: null,
+    diagnosticCode: null,
+    actionId: null,
+    boundaryId: null,
+    isToolResult: true,
+    isVerificationEvidence: false,
+    isPolicyDenied: false,
+    ...overrides,
+  }
+}
+
 function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeStreamView {
   return {
     projectId: 'project-1',
@@ -285,6 +351,9 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     runtimeRun,
     autonomousRun: overrides.autonomousRun ?? project.autonomousRun ?? null,
     autonomousUnit: overrides.autonomousUnit ?? project.autonomousUnit ?? null,
+    autonomousAttempt: overrides.autonomousAttempt ?? project.autonomousAttempt ?? null,
+    autonomousHistory: overrides.autonomousHistory ?? project.autonomousHistory,
+    autonomousRecentArtifacts: overrides.autonomousRecentArtifacts ?? project.autonomousRecentArtifacts,
     runtimeErrorMessage: null,
     runtimeRunErrorMessage: null,
     autonomousRunErrorMessage: null,
@@ -372,6 +441,46 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Operator paused the autonomous run for review.')).toBeVisible()
     expect(screen.getByText('Duplicate start prevented')).toBeVisible()
     expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('renders the current autonomous attempt and recent evidence summaries', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          autonomousRun: makeAutonomousRun(),
+          autonomousUnit: makeAutonomousUnit(),
+          autonomousAttempt: makeAutonomousAttempt(),
+          autonomousRecentArtifacts: [
+            makeAutonomousArtifact(),
+            makeAutonomousArtifact({
+              artifactId: 'auto-run-1:checkpoint:2:attempt:1:verify:block',
+              artifactKind: 'verification_evidence',
+              artifactKindLabel: 'Verification evidence',
+              summary: 'Blocked on operator approval before resuming the executor boundary.',
+              detail: 'Operator approval is required before the executor can continue.',
+              commandResult: null,
+              toolName: null,
+              toolState: null,
+              toolStateLabel: null,
+              evidenceKind: 'operator_approval',
+              verificationOutcome: 'blocked',
+              verificationOutcomeLabel: 'Blocked',
+              actionId: 'action-1',
+              boundaryId: 'boundary-1',
+              isToolResult: false,
+              isVerificationEvidence: true,
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Current attempt')).toBeVisible()
+    expect(screen.getByText('child-session-1')).toBeVisible()
+    expect(screen.getByText('Recent evidence')).toBeVisible()
+    expect(screen.getByText('Read README.md from the imported repository root.')).toBeVisible()
+    expect(screen.getByText('Blocked on operator approval before resuming the executor boundary.')).toBeVisible()
   })
 
   it('inspects and cancels the active autonomous run from pane controls', async () => {

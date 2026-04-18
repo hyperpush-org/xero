@@ -457,6 +457,54 @@ function getAutonomousRecoveryBadgeVariant(
   }
 }
 
+function getAutonomousAttemptBadgeVariant(
+  attempt: AgentPaneView['autonomousAttempt'] | null | undefined,
+): BadgeVariant {
+  if (!attempt) {
+    return 'outline'
+  }
+
+  switch (attempt.status) {
+    case 'active':
+      return 'default'
+    case 'blocked':
+      return 'secondary'
+    case 'completed':
+    case 'cancelled':
+      return 'outline'
+    case 'failed':
+      return 'destructive'
+    case 'pending':
+      return 'secondary'
+  }
+}
+
+function getAutonomousArtifactBadgeVariant(
+  artifact: AgentPaneView['autonomousRecentArtifacts'][number],
+): BadgeVariant {
+  if (artifact.isPolicyDenied) {
+    return 'destructive'
+  }
+
+  if (artifact.isVerificationEvidence) {
+    return artifact.verificationOutcome === 'failed'
+      ? 'destructive'
+      : artifact.verificationOutcome === 'blocked'
+        ? 'secondary'
+        : 'default'
+  }
+
+  if (artifact.isToolResult) {
+    return artifact.toolState === 'failed'
+      ? 'destructive'
+      : artifact.toolState === 'running' || artifact.toolState === 'pending'
+        ? 'secondary'
+        : 'outline'
+  }
+
+  return 'outline'
+}
+
 function getLatestAutonomousLifecycleReason(
   autonomousRun: AgentPaneView['autonomousRun'] | null,
 ): { label: string; message: string } | null {
@@ -878,6 +926,11 @@ export function AgentRuntime({
   const runtimeRun = agent.runtimeRun ?? null
   const autonomousRun = agent.autonomousRun ?? null
   const autonomousUnit = agent.autonomousUnit ?? null
+  const autonomousAttempt = agent.autonomousAttempt ?? null
+  const autonomousRecentArtifacts = useMemo(
+    () => sortByNewest(agent.autonomousRecentArtifacts ?? [], (artifact) => artifact.updatedAt || artifact.createdAt).slice(0, 5),
+    [agent.autonomousRecentArtifacts],
+  )
   const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
   const hasIncompleteRuntimeRunPayload = Boolean(runtimeRun && !renderableRuntimeRun)
   const runtimeStream = agent.runtimeStream ?? null
@@ -1951,62 +2004,165 @@ export function AgentRuntime({
                 </div>
 
                 {autonomousRun ? (
-                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-                    <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-base font-semibold text-foreground">Current autonomous boundary</h3>
-                        {autonomousUnit ? <Badge variant="outline">{autonomousUnit.kindLabel}</Badge> : null}
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <CountCard label="Run ID" value={autonomousRun.runId} />
-                        <CountCard label="Recovery" value={autonomousRun.recoveryLabel} />
-                        <CountCard label="Active unit" value={displayValue(autonomousRun.activeUnitId, 'No active unit')} />
-                        <CountCard label="Unit status" value={autonomousUnit?.statusLabel ?? 'Unavailable'} />
-                      </div>
-                      {autonomousUnit ? (
-                        <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm">
-                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                            <span>{formatSequence(autonomousUnit.sequence)}</span>
-                            <span>{autonomousUnit.unitId}</span>
-                          </div>
-                          <p className="mt-2 font-medium text-foreground">{autonomousUnit.summary}</p>
-                          <p className="mt-2 text-muted-foreground">
-                            Boundary {displayValue(autonomousUnit.boundaryId, 'unavailable')} · Updated {formatTimestamp(autonomousUnit.updatedAt)}
-                          </p>
+                  <div className="space-y-4">
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-base font-semibold text-foreground">Current autonomous boundary</h3>
+                          {autonomousUnit ? <Badge variant="outline">{autonomousUnit.kindLabel}</Badge> : null}
                         </div>
-                      ) : (
-                        <FeedEmptyState
-                          body="Cadence has not rehydrated an active autonomous unit boundary for this project yet."
-                          title="No autonomous unit recorded"
-                        />
-                      )}
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <CountCard label="Run ID" value={autonomousRun.runId} />
+                          <CountCard label="Recovery" value={autonomousRun.recoveryLabel} />
+                          <CountCard label="Active unit" value={displayValue(autonomousRun.activeUnitId, 'No active unit')} />
+                          <CountCard label="Unit status" value={autonomousUnit?.statusLabel ?? 'Unavailable'} />
+                        </div>
+                        {autonomousUnit ? (
+                          <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm">
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                              <span>{formatSequence(autonomousUnit.sequence)}</span>
+                              <span>{autonomousUnit.unitId}</span>
+                            </div>
+                            <p className="mt-2 font-medium text-foreground">{autonomousUnit.summary}</p>
+                            <p className="mt-2 text-muted-foreground">
+                              Boundary {displayValue(autonomousUnit.boundaryId, 'unavailable')} · Updated {formatTimestamp(autonomousUnit.updatedAt)}
+                            </p>
+                          </div>
+                        ) : (
+                          <FeedEmptyState
+                            body="Cadence has not rehydrated an active autonomous unit boundary for this project yet."
+                            title="No autonomous unit recorded"
+                          />
+                        )}
+                      </div>
+
+                      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+                        <h3 className="text-base font-semibold text-foreground">Lifecycle diagnostics</h3>
+                        <InfoRow label="Started" value={formatTimestamp(autonomousRun.startedAt)} />
+                        <InfoRow label="Last checkpoint" value={formatTimestamp(autonomousRun.lastCheckpointAt)} />
+                        <InfoRow label="Last heartbeat" value={formatTimestamp(autonomousRun.lastHeartbeatAt)} />
+                        <InfoRow label="Updated" value={formatTimestamp(autonomousRun.updatedAt)} />
+                        <InfoRow label="Recovery state" value={autonomousRun.recoveryLabel} />
+                        {latestAutonomousLifecycleReason ? (
+                          <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+                            <p className="text-sm font-medium text-foreground">{latestAutonomousLifecycleReason.label}</p>
+                            <p className="mt-2 text-sm leading-6 text-muted-foreground">{latestAutonomousLifecycleReason.message}</p>
+                          </div>
+                        ) : null}
+                        {autonomousRun.lastError?.message ? (
+                          <Alert variant="destructive">
+                            <AlertCircle className="h-4 w-4" />
+                            <AlertTitle>Last autonomous error</AlertTitle>
+                            <AlertDescription>
+                              <p>{autonomousRun.lastError.message}</p>
+                              {autonomousRun.lastErrorCode ? (
+                                <p className="font-mono text-[11px] text-destructive/80">code: {autonomousRun.lastErrorCode}</p>
+                              ) : null}
+                            </AlertDescription>
+                          </Alert>
+                        ) : null}
+                      </div>
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
-                      <h3 className="text-base font-semibold text-foreground">Lifecycle diagnostics</h3>
-                      <InfoRow label="Started" value={formatTimestamp(autonomousRun.startedAt)} />
-                      <InfoRow label="Last checkpoint" value={formatTimestamp(autonomousRun.lastCheckpointAt)} />
-                      <InfoRow label="Last heartbeat" value={formatTimestamp(autonomousRun.lastHeartbeatAt)} />
-                      <InfoRow label="Updated" value={formatTimestamp(autonomousRun.updatedAt)} />
-                      <InfoRow label="Recovery state" value={autonomousRun.recoveryLabel} />
-                      {latestAutonomousLifecycleReason ? (
-                        <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3">
-                          <p className="text-sm font-medium text-foreground">{latestAutonomousLifecycleReason.label}</p>
-                          <p className="mt-2 text-sm leading-6 text-muted-foreground">{latestAutonomousLifecycleReason.message}</p>
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+                      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-base font-semibold text-foreground">Current attempt</h3>
+                          {autonomousAttempt ? (
+                            <Badge variant={getAutonomousAttemptBadgeVariant(autonomousAttempt)}>
+                              {autonomousAttempt.statusLabel}
+                            </Badge>
+                          ) : null}
                         </div>
-                      ) : null}
-                      {autonomousRun.lastError?.message ? (
-                        <Alert variant="destructive">
-                          <AlertCircle className="h-4 w-4" />
-                          <AlertTitle>Last autonomous error</AlertTitle>
-                          <AlertDescription>
-                            <p>{autonomousRun.lastError.message}</p>
-                            {autonomousRun.lastErrorCode ? (
-                              <p className="font-mono text-[11px] text-destructive/80">code: {autonomousRun.lastErrorCode}</p>
+                        {autonomousAttempt ? (
+                          <>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <CountCard label="Attempt" value={`#${autonomousAttempt.attemptNumber}`} />
+                              <CountCard label="Child session" value={autonomousAttempt.childSessionId} />
+                              <CountCard label="Boundary" value={displayValue(autonomousAttempt.boundaryId, 'None')} />
+                              <CountCard label="Updated" value={formatTimestamp(autonomousAttempt.updatedAt)} />
+                            </div>
+                            <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm">
+                              <p className="font-medium text-foreground">Attempt {autonomousAttempt.attemptId}</p>
+                              <p className="mt-2 text-muted-foreground">
+                                Started {formatTimestamp(autonomousAttempt.startedAt)} · Finished {formatTimestamp(autonomousAttempt.finishedAt)}
+                              </p>
+                            </div>
+                            {autonomousAttempt.lastError?.message ? (
+                              <Alert variant="destructive">
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertTitle>Last attempt error</AlertTitle>
+                                <AlertDescription>
+                                  <p>{autonomousAttempt.lastError.message}</p>
+                                  {autonomousAttempt.lastErrorCode ? (
+                                    <p className="font-mono text-[11px] text-destructive/80">code: {autonomousAttempt.lastErrorCode}</p>
+                                  ) : null}
+                                </AlertDescription>
+                              </Alert>
                             ) : null}
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
+                          </>
+                        ) : (
+                          <FeedEmptyState
+                            title="No autonomous attempt recorded"
+                            body="Cadence has not persisted an active autonomous attempt for this project yet."
+                          />
+                        )}
+                      </div>
+
+                      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="text-base font-semibold text-foreground">Recent evidence</h3>
+                          <Badge variant="outline">{autonomousRecentArtifacts.length} items</Badge>
+                        </div>
+                        {autonomousRecentArtifacts.length > 0 ? (
+                          <div className="space-y-3">
+                            {autonomousRecentArtifacts.map((artifact) => (
+                              <div
+                                key={artifact.artifactId}
+                                className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm"
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge variant={getAutonomousArtifactBadgeVariant(artifact)}>
+                                    {artifact.artifactKindLabel}
+                                  </Badge>
+                                  <Badge variant="outline">{artifact.statusLabel}</Badge>
+                                  {artifact.toolStateLabel ? <Badge variant="outline">{artifact.toolStateLabel}</Badge> : null}
+                                  {artifact.verificationOutcomeLabel ? (
+                                    <Badge variant="outline">{artifact.verificationOutcomeLabel}</Badge>
+                                  ) : null}
+                                </div>
+                                <p className="mt-2 font-medium text-foreground">{artifact.summary}</p>
+                                {artifact.detail ? (
+                                  <p className="mt-2 text-muted-foreground">{artifact.detail}</p>
+                                ) : null}
+                                <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
+                                  <InfoRow label="Artifact" mono value={artifact.artifactId} />
+                                  <InfoRow label="Attempt" mono value={artifact.attemptId} />
+                                  <InfoRow label="Updated" value={formatTimestamp(artifact.updatedAt)} />
+                                  {artifact.diagnosticCode ? <InfoRow label="Diagnostic" mono value={artifact.diagnosticCode} /> : null}
+                                  {artifact.actionId ? <InfoRow label="Action" mono value={artifact.actionId} /> : null}
+                                  {artifact.boundaryId ? <InfoRow label="Boundary" mono value={artifact.boundaryId} /> : null}
+                                  {artifact.commandResult ? (
+                                    <InfoRow
+                                      label="Command result"
+                                      value={
+                                        artifact.commandResult.exitCode === null
+                                          ? artifact.commandResult.summary
+                                          : `exit ${artifact.commandResult.exitCode}${artifact.commandResult.timedOut ? ' • timeout' : ''} • ${artifact.commandResult.summary}`
+                                      }
+                                    />
+                                  ) : null}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <FeedEmptyState
+                            title="No tool evidence recorded"
+                            body="Cadence has not persisted a recent tool result, verification evidence row, or policy denial for this project yet."
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
