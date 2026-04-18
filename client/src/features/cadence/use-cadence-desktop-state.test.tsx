@@ -12,6 +12,7 @@ import {
   type RepositoryStatusResponseDto,
   type ResolveOperatorActionResponseDto,
   type ResumeOperatorRunResponseDto,
+  type AutonomousRunStateDto,
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
@@ -186,6 +187,52 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
   }
 }
 
+function makeAutonomousRunState(projectId: string, runId = `auto-${projectId}`): AutonomousRunStateDto {
+  return {
+    run: {
+      projectId,
+      runId,
+      runtimeKind: 'openai_codex',
+      supervisorKind: 'detached_pty',
+      status: 'running',
+      recoveryState: 'healthy',
+      activeUnitId: `${runId}:checkpoint:1`,
+      duplicateStartDetected: false,
+      duplicateStartRunId: null,
+      duplicateStartReason: null,
+      startedAt: '2026-04-16T20:00:00Z',
+      lastHeartbeatAt: '2026-04-16T20:00:05Z',
+      lastCheckpointAt: '2026-04-16T20:00:06Z',
+      pausedAt: null,
+      cancelledAt: null,
+      completedAt: null,
+      crashedAt: null,
+      stoppedAt: null,
+      pauseReason: null,
+      cancelReason: null,
+      crashReason: null,
+      lastErrorCode: null,
+      lastError: null,
+      updatedAt: '2026-04-16T20:00:06Z',
+    },
+    unit: {
+      projectId,
+      runId,
+      unitId: `${runId}:checkpoint:1`,
+      sequence: 1,
+      kind: 'state',
+      status: 'active',
+      summary: 'Recovered the current autonomous unit boundary.',
+      boundaryId: 'checkpoint:1',
+      startedAt: '2026-04-16T20:00:01Z',
+      finishedAt: null,
+      updatedAt: '2026-04-16T20:00:06Z',
+      lastErrorCode: null,
+      lastError: null,
+    },
+  }
+}
+
 function makeStreamResponse(
   projectId: string,
   overrides: Partial<SubscribeRuntimeStreamResponseDto> = {},
@@ -233,6 +280,7 @@ function createMockAdapter(options?: {
   statuses?: Record<string, RepositoryStatusResponseDto>
   runtimeSessions?: Record<string, RuntimeSessionDto>
   runtimeRuns?: Record<string, RuntimeRunDto | null>
+  autonomousStates?: Record<string, AutonomousRunStateDto | null>
   notificationDispatches?: Record<string, ListNotificationDispatchesResponseDto['dispatches']>
   notificationRoutes?: Record<string, ListNotificationRoutesResponseDto['routes']>
   notificationDispatchErrors?: Record<string, Error>
@@ -278,6 +326,10 @@ function createMockAdapter(options?: {
   }
   const runtimeRuns = options?.runtimeRuns ?? {
     'project-1': makeRuntimeRun('project-1'),
+    'project-2': null,
+  }
+  const autonomousStates = options?.autonomousStates ?? {
+    'project-1': makeAutonomousRunState('project-1'),
     'project-2': null,
   }
   const notificationDispatches = options?.notificationDispatches ?? {
@@ -328,6 +380,9 @@ function createMockAdapter(options?: {
     return configuredDiff ?? makeDiff('project-1', scope, scope === 'unstaged' ? 'diff --git a/file b/file\n+change' : '')
   })
   const getRuntimeRun = vi.fn(async (projectId: string): Promise<RuntimeRunDto | null> => runtimeRuns[projectId] ?? null)
+  const getAutonomousRun = vi.fn(async (projectId: string): Promise<AutonomousRunStateDto> =>
+    autonomousStates[projectId] ?? { run: null, unit: null },
+  )
   const getRuntimeSession = vi.fn(async (projectId: string) => runtimeSessions[projectId])
   const listNotificationDispatches = vi.fn(async (projectId: string) => {
     const error = notificationDispatchErrors[projectId]
@@ -384,8 +439,35 @@ function createMockAdapter(options?: {
   const submitOpenAiCallback = vi.fn(async (projectId: string, flowId: string) =>
     makeRuntimeSession(projectId, { flowId, phase: 'authenticated' }),
   )
+  const startAutonomousRun = vi.fn(async (projectId: string) => {
+    const nextState = makeAutonomousRunState(projectId)
+    autonomousStates[projectId] = nextState
+    return nextState
+  })
   const startRuntimeRun = vi.fn(async (projectId: string) => runtimeRuns[projectId] ?? makeRuntimeRun(projectId))
   const startRuntimeSession = vi.fn(async (projectId: string) => makeRuntimeSession(projectId))
+  const cancelAutonomousRun = vi.fn(async (projectId: string, runId: string) => {
+    const nextState = makeAutonomousRunState(projectId, runId)
+    nextState.run = {
+      ...nextState.run!,
+      status: 'cancelled',
+      recoveryState: 'terminal',
+      cancelledAt: '2026-04-16T20:10:00Z',
+      cancelReason: {
+        code: 'operator_cancelled',
+        message: 'Operator cancelled the autonomous run from the desktop shell.',
+      },
+      updatedAt: '2026-04-16T20:10:00Z',
+    }
+    nextState.unit = {
+      ...nextState.unit!,
+      status: 'cancelled',
+      finishedAt: '2026-04-16T20:10:00Z',
+      updatedAt: '2026-04-16T20:10:00Z',
+    }
+    autonomousStates[projectId] = nextState
+    return nextState
+  })
   const stopRuntimeRun = vi.fn(async (projectId: string, runId: string): Promise<RuntimeRunDto | null> => {
     const currentRun = runtimeRuns[projectId]
     if (!currentRun) {
@@ -548,12 +630,15 @@ function createMockAdapter(options?: {
     getProjectSnapshot,
     getRepositoryStatus,
     getRepositoryDiff,
+    getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
     startOpenAiLogin,
     submitOpenAiCallback,
+    startAutonomousRun,
     startRuntimeRun,
     startRuntimeSession,
+    cancelAutonomousRun,
     stopRuntimeRun,
     logoutRuntimeSession,
     resolveOperatorAction,

@@ -50,6 +50,9 @@ import { Textarea } from '@/components/ui/textarea'
 interface AgentRuntimeProps {
   agent: AgentPaneView
   onStartLogin?: () => Promise<RuntimeSessionView | null>
+  onStartAutonomousRun?: () => Promise<unknown>
+  onInspectAutonomousRun?: () => Promise<unknown>
+  onCancelAutonomousRun?: (runId: string) => Promise<unknown>
   onStartRuntimeRun?: () => Promise<RuntimeRunView | null>
   onStartRuntimeSession?: () => Promise<RuntimeSessionView | null>
   onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
@@ -414,6 +417,73 @@ function getRuntimeRunBadgeVariant(runtimeRun: RuntimeRunView | null): BadgeVari
       return 'default'
     case 'failed':
       return 'destructive'
+  }
+}
+
+function getAutonomousRunBadgeVariant(autonomousRun: AgentPaneView['autonomousRun'] | null): BadgeVariant {
+  if (!autonomousRun) {
+    return 'outline'
+  }
+
+  switch (autonomousRun.status) {
+    case 'starting':
+    case 'paused':
+    case 'cancelling':
+    case 'stale':
+      return 'secondary'
+    case 'running':
+    case 'completed':
+    case 'stopped':
+    case 'cancelled':
+      return 'default'
+    case 'failed':
+    case 'crashed':
+      return 'destructive'
+  }
+}
+
+function getAutonomousRecoveryBadgeVariant(
+  recoveryState: AgentPaneView['autonomousRun'] extends { recoveryState: infer T } ? T : never,
+): BadgeVariant {
+  switch (recoveryState) {
+    case 'healthy':
+      return 'default'
+    case 'terminal':
+      return 'outline'
+    case 'recovery_required':
+      return 'secondary'
+    case 'failed':
+      return 'destructive'
+  }
+}
+
+function getLatestAutonomousLifecycleReason(
+  autonomousRun: AgentPaneView['autonomousRun'] | null,
+): { label: string; message: string } | null {
+  if (!autonomousRun) {
+    return null
+  }
+
+  const candidates = [
+    autonomousRun.pauseReason && autonomousRun.pausedAt
+      ? { label: 'Last pause reason', message: autonomousRun.pauseReason.message, timestamp: autonomousRun.pausedAt }
+      : null,
+    autonomousRun.cancelReason && autonomousRun.cancelledAt
+      ? { label: 'Last cancel reason', message: autonomousRun.cancelReason.message, timestamp: autonomousRun.cancelledAt }
+      : null,
+    autonomousRun.crashReason && autonomousRun.crashedAt
+      ? { label: 'Last crash reason', message: autonomousRun.crashReason.message, timestamp: autonomousRun.crashedAt }
+      : null,
+  ].filter((candidate): candidate is { label: string; message: string; timestamp: string } => Boolean(candidate))
+
+  if (candidates.length === 0) {
+    return null
+  }
+
+  candidates.sort((left, right) => getTimestampValue(right.timestamp) - getTimestampValue(left.timestamp))
+  return {
+    label: candidates[0].label,
+    message: candidates[0].message,
   }
 }
 
@@ -790,6 +860,9 @@ function CountCard({
 export function AgentRuntime({
   agent,
   onStartLogin,
+  onStartAutonomousRun,
+  onInspectAutonomousRun,
+  onCancelAutonomousRun,
   onStartRuntimeRun,
   onStartRuntimeSession,
   onStopRuntimeRun,
@@ -803,6 +876,8 @@ export function AgentRuntime({
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
+  const autonomousRun = agent.autonomousRun ?? null
+  const autonomousUnit = agent.autonomousUnit ?? null
   const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
   const hasIncompleteRuntimeRunPayload = Boolean(runtimeRun && !renderableRuntimeRun)
   const runtimeStream = agent.runtimeStream ?? null
@@ -813,6 +888,8 @@ export function AgentRuntime({
   const transcriptItems = runtimeStream?.transcriptItems ?? []
   const toolCalls = runtimeStream?.toolCalls ?? []
   const runtimeRunErrorMessage = agent.runtimeRunErrorMessage ?? null
+  const autonomousRunErrorMessage = agent.autonomousRunErrorMessage ?? null
+  const latestAutonomousLifecycleReason = getLatestAutonomousLifecycleReason(autonomousRun)
   const runtimeRunCheckpoints = useMemo<RuntimeRunCheckpointView[]>(
     () => sortByNewest(renderableRuntimeRun?.checkpoints ?? [], (checkpoint) => checkpoint.createdAt).slice(0, 4),
     [renderableRuntimeRun],
@@ -995,6 +1072,7 @@ export function AgentRuntime({
   const [manualInput, setManualInput] = useState('')
   const [pendingAction, setPendingAction] = useState<PendingAction>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [autonomousRunActionMessage, setAutonomousRunActionMessage] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
   const [routePanelMessage, setRoutePanelMessage] = useState<string | null>(null)
   const [browserMessage, setBrowserMessage] = useState<string | null>(null)
@@ -1026,6 +1104,13 @@ export function AgentRuntime({
   const showNoRunStreamBanner = Boolean(runtimeSession?.isAuthenticated && !hasAttachedRun)
   const hasRepositoryBinding = Boolean(agent.repositoryPath?.trim())
   const canStartLogin = hasRepositoryBinding && typeof onStartLogin === 'function'
+  const canStartAutonomousRun = Boolean(
+    hasRepositoryBinding && typeof onStartAutonomousRun === 'function' && runtimeSession?.isAuthenticated && runtimeSession.sessionId,
+  )
+  const canInspectAutonomousRun = hasRepositoryBinding && typeof onInspectAutonomousRun === 'function'
+  const canCancelAutonomousRun = Boolean(
+    hasRepositoryBinding && autonomousRun && !autonomousRun.isTerminal && !autonomousRun.isFailed && typeof onCancelAutonomousRun === 'function',
+  )
   const canStartRuntimeRun = Boolean(
     hasRepositoryBinding && typeof onStartRuntimeRun === 'function' && (runtimeSession?.isAuthenticated || renderableRuntimeRun),
   )
@@ -1056,6 +1141,17 @@ export function AgentRuntime({
   const pendingOperatorActionId = agent.pendingOperatorActionId
   const runtimeRunActionStatus = agent.runtimeRunActionStatus ?? 'idle'
   const pendingRuntimeRunAction = agent.pendingRuntimeRunAction ?? null
+  const autonomousRunActionStatus = agent.autonomousRunActionStatus ?? 'idle'
+  const pendingAutonomousRunAction = agent.pendingAutonomousRunAction ?? null
+  const autonomousRunActionError =
+    agent.autonomousRunActionError ??
+    (autonomousRunActionMessage
+      ? {
+          code: 'autonomous_run_action_failed',
+          message: autonomousRunActionMessage,
+          retryable: false,
+        }
+      : null)
   const runtimeRunActionError =
     agent.runtimeRunActionError ??
     (runtimeRunActionMessage
@@ -1106,6 +1202,10 @@ export function AgentRuntime({
   }, [sortedResumeHistory])
   const runtimeRunStatusText = getRuntimeRunStatusText(renderableRuntimeRun)
   const primaryRuntimeRunActionLabel = getPrimaryRuntimeRunActionLabel(renderableRuntimeRun)
+  const autonomousRunActionErrorTitle =
+    autonomousRunActionError?.retryable || autonomousRunActionError?.code.includes('timeout')
+      ? 'Autonomous run control needs retry'
+      : 'Autonomous run control failed'
   const runtimeRunActionErrorTitle =
     runtimeRunActionError?.retryable || runtimeRunActionError?.code.includes('timeout')
       ? 'Run control needs retry'
@@ -1227,6 +1327,17 @@ export function AgentRuntime({
       setRuntimeRunActionMessage(null)
     }
   }, [agent.runtimeRunActionError, renderableRuntimeRun?.runId, renderableRuntimeRun?.updatedAt])
+
+  useEffect(() => {
+    if (agent.autonomousRunActionError) {
+      setAutonomousRunActionMessage(null)
+      return
+    }
+
+    if (autonomousRun?.updatedAt) {
+      setAutonomousRunActionMessage(null)
+    }
+  }, [agent.autonomousRunActionError, autonomousRun?.runId, autonomousRun?.updatedAt])
 
   useEffect(() => {
     if (operatorActionStatus === 'idle' && !pendingOperatorActionId) {
@@ -1376,6 +1487,54 @@ export function AgentRuntime({
       setActionMessage(getErrorMessage(error, 'Cadence could not reuse the app-local runtime session for this project.'))
     } finally {
       setPendingAction(null)
+    }
+  }
+
+  async function handleStartAutonomousRun() {
+    if (!canStartAutonomousRun || !onStartAutonomousRun) {
+      return
+    }
+
+    setAutonomousRunActionMessage(null)
+
+    try {
+      await onStartAutonomousRun()
+    } catch (error) {
+      setAutonomousRunActionMessage(
+        getErrorMessage(error, 'Cadence could not start the autonomous run for this project.'),
+      )
+    }
+  }
+
+  async function handleInspectAutonomousRun() {
+    if (!canInspectAutonomousRun || !onInspectAutonomousRun) {
+      return
+    }
+
+    setAutonomousRunActionMessage(null)
+
+    try {
+      await onInspectAutonomousRun()
+    } catch (error) {
+      setAutonomousRunActionMessage(
+        getErrorMessage(error, 'Cadence could not inspect the autonomous run truth for this project.'),
+      )
+    }
+  }
+
+  async function handleCancelAutonomousRun() {
+    if (!canCancelAutonomousRun || !onCancelAutonomousRun || !autonomousRun) {
+      return
+    }
+
+    setAutonomousRunActionMessage(null)
+
+    try {
+      await onCancelAutonomousRun(autonomousRun.runId)
+    } catch (error) {
+      setAutonomousRunActionMessage(
+        getErrorMessage(error, 'Cadence could not cancel the autonomous run for this project.'),
+      )
     }
   }
 
@@ -1680,6 +1839,189 @@ export function AgentRuntime({
 
         <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4">
           <div className="mx-auto flex max-w-4xl flex-col gap-4">
+            <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Autonomous ledger</p>
+                    <h2 className="mt-2 text-lg font-semibold text-foreground">Autonomous run truth</h2>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={getAutonomousRunBadgeVariant(autonomousRun)}>
+                      {autonomousRun?.statusLabel ?? 'No autonomous run'}
+                    </Badge>
+                    {autonomousRun ? (
+                      <Badge variant={getAutonomousRecoveryBadgeVariant(autonomousRun.recoveryState)}>
+                        {autonomousRun.recoveryLabel}
+                      </Badge>
+                    ) : null}
+                    {autonomousUnit ? <Badge variant="outline">{autonomousUnit.statusLabel}</Badge> : null}
+                  </div>
+                </div>
+
+                <p className="text-sm leading-6 text-muted-foreground">
+                  {autonomousRun
+                    ? 'Cadence is projecting the durable autonomous run and active unit boundary separately from the live runtime/session feed.'
+                    : runtimeSession?.isAuthenticated && runtimeSession.sessionId
+                      ? 'Start an autonomous run to bind the selected project to a durable run/unit ledger and recovery state.'
+                      : 'Authenticate the selected project first so Cadence can bind an autonomous run to a stable runtime session.'}
+                </p>
+
+                {autonomousRunActionError ? (
+                  <Alert variant="destructive">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>{autonomousRunActionErrorTitle}</AlertTitle>
+                    <AlertDescription>
+                      <p>{autonomousRunActionError.message}</p>
+                      {autonomousRunActionError.code ? (
+                        <p className="font-mono text-[11px] text-destructive/80">code: {autonomousRunActionError.code}</p>
+                      ) : null}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+
+                {autonomousRunErrorMessage ? (
+                  <Alert>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Showing last truthful autonomous snapshot</AlertTitle>
+                    <AlertDescription>{autonomousRunErrorMessage}</AlertDescription>
+                  </Alert>
+                ) : null}
+
+                {autonomousRun?.duplicateStartDetected ? (
+                  <Alert>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle>Duplicate start prevented</AlertTitle>
+                    <AlertDescription>
+                      <p>{displayValue(autonomousRun.duplicateStartReason, 'Cadence reused the active autonomous run instead of launching a duplicate continuation.')}</p>
+                      {autonomousRun.duplicateStartRunId ? (
+                        <p className="mt-1 font-mono text-[11px] text-muted-foreground">run: {autonomousRun.duplicateStartRunId}</p>
+                      ) : null}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  {canStartAutonomousRun ? (
+                    <Button
+                      disabled={autonomousRunActionStatus === 'running'}
+                      onClick={() => void handleStartAutonomousRun()}
+                      type="button"
+                    >
+                      {autonomousRunActionStatus === 'running' && pendingAutonomousRunAction === 'start' ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Play className="h-4 w-4" />
+                      )}
+                      Start autonomous run
+                    </Button>
+                  ) : null}
+
+                  {canCancelAutonomousRun ? (
+                    <Button
+                      disabled={autonomousRunActionStatus === 'running' && pendingAutonomousRunAction === 'cancel'}
+                      onClick={() => void handleCancelAutonomousRun()}
+                      type="button"
+                      variant="outline"
+                    >
+                      {autonomousRunActionStatus === 'running' && pendingAutonomousRunAction === 'cancel' ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <XCircle className="h-4 w-4" />
+                      )}
+                      Cancel autonomous run
+                    </Button>
+                  ) : null}
+
+                  {canInspectAutonomousRun ? (
+                    <Button
+                      disabled={autonomousRunActionStatus === 'running' && pendingAutonomousRunAction === 'inspect'}
+                      onClick={() => void handleInspectAutonomousRun()}
+                      type="button"
+                      variant="secondary"
+                    >
+                      {autonomousRunActionStatus === 'running' && pendingAutonomousRunAction === 'inspect' ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="h-4 w-4" />
+                      )}
+                      Inspect truth
+                    </Button>
+                  ) : null}
+                </div>
+
+                {autonomousRun ? (
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                    <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base font-semibold text-foreground">Current autonomous boundary</h3>
+                        {autonomousUnit ? <Badge variant="outline">{autonomousUnit.kindLabel}</Badge> : null}
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <CountCard label="Run ID" value={autonomousRun.runId} />
+                        <CountCard label="Recovery" value={autonomousRun.recoveryLabel} />
+                        <CountCard label="Active unit" value={displayValue(autonomousRun.activeUnitId, 'No active unit')} />
+                        <CountCard label="Unit status" value={autonomousUnit?.statusLabel ?? 'Unavailable'} />
+                      </div>
+                      {autonomousUnit ? (
+                        <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm">
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                            <span>{formatSequence(autonomousUnit.sequence)}</span>
+                            <span>{autonomousUnit.unitId}</span>
+                          </div>
+                          <p className="mt-2 font-medium text-foreground">{autonomousUnit.summary}</p>
+                          <p className="mt-2 text-muted-foreground">
+                            Boundary {displayValue(autonomousUnit.boundaryId, 'unavailable')} · Updated {formatTimestamp(autonomousUnit.updatedAt)}
+                          </p>
+                        </div>
+                      ) : (
+                        <FeedEmptyState
+                          body="Cadence has not rehydrated an active autonomous unit boundary for this project yet."
+                          title="No autonomous unit recorded"
+                        />
+                      )}
+                    </div>
+
+                    <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+                      <h3 className="text-base font-semibold text-foreground">Lifecycle diagnostics</h3>
+                      <InfoRow label="Started" value={formatTimestamp(autonomousRun.startedAt)} />
+                      <InfoRow label="Last checkpoint" value={formatTimestamp(autonomousRun.lastCheckpointAt)} />
+                      <InfoRow label="Last heartbeat" value={formatTimestamp(autonomousRun.lastHeartbeatAt)} />
+                      <InfoRow label="Updated" value={formatTimestamp(autonomousRun.updatedAt)} />
+                      <InfoRow label="Recovery state" value={autonomousRun.recoveryLabel} />
+                      {latestAutonomousLifecycleReason ? (
+                        <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+                          <p className="text-sm font-medium text-foreground">{latestAutonomousLifecycleReason.label}</p>
+                          <p className="mt-2 text-sm leading-6 text-muted-foreground">{latestAutonomousLifecycleReason.message}</p>
+                        </div>
+                      ) : null}
+                      {autonomousRun.lastError?.message ? (
+                        <Alert variant="destructive">
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertTitle>Last autonomous error</AlertTitle>
+                          <AlertDescription>
+                            <p>{autonomousRun.lastError.message}</p>
+                            {autonomousRun.lastErrorCode ? (
+                              <p className="font-mono text-[11px] text-destructive/80">code: {autonomousRun.lastErrorCode}</p>
+                            ) : null}
+                          </AlertDescription>
+                        </Alert>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <FeedEmptyState
+                    body={
+                      runtimeSession?.isAuthenticated && runtimeSession.sessionId
+                        ? 'No autonomous run has been recorded for the selected project yet. Start one from this pane to populate durable run/unit truth.'
+                        : 'Cadence needs an authenticated runtime session with a stable session id before it can create the first autonomous run.'
+                    }
+                    title="No autonomous run recorded"
+                  />
+                )}
+              </div>
+            </section>
+
             {hasIncompleteRuntimeRunPayload || renderableRuntimeRun ? (
               <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
                 <div className="flex flex-col gap-4">

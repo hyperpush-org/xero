@@ -9,6 +9,8 @@ import {
   applyRepositoryStatus,
   applyRuntimeRun,
   applyRuntimeSession,
+  mapAutonomousRun,
+  mapAutonomousUnit,
   applyRuntimeStreamIssue,
   createEmptyPlanningLifecycle,
   createRuntimeStreamFromSubscription,
@@ -70,6 +72,8 @@ export type RefreshSource =
 
 export type OperatorActionDecision = 'approve' | 'reject'
 export type OperatorActionStatus = 'idle' | 'running'
+export type AutonomousRunActionKind = 'start' | 'cancel' | 'inspect'
+export type AutonomousRunActionStatus = 'idle' | 'running'
 export type RuntimeRunActionKind = 'start' | 'stop'
 export type RuntimeRunActionStatus = 'idle' | 'running'
 
@@ -194,8 +198,11 @@ export interface AgentPaneView {
   repositoryPath: string | null
   runtimeSession?: RuntimeSessionView | null
   runtimeRun?: RuntimeRunView | null
+  autonomousRun?: ProjectDetailView['autonomousRun']
+  autonomousUnit?: ProjectDetailView['autonomousUnit']
   runtimeErrorMessage?: string | null
   runtimeRunErrorMessage?: string | null
+  autonomousRunErrorMessage?: string | null
   authPhase?: RuntimeAuthPhaseDto | null
   authPhaseLabel?: string
   runtimeStream?: RuntimeStreamView | null
@@ -224,6 +231,9 @@ export interface AgentPaneView {
   operatorActionStatus: OperatorActionStatus
   pendingOperatorActionId: string | null
   operatorActionError: OperatorActionErrorView | null
+  autonomousRunActionStatus: AutonomousRunActionStatus
+  pendingAutonomousRunAction: AutonomousRunActionKind | null
+  autonomousRunActionError: OperatorActionErrorView | null
   runtimeRunActionStatus: RuntimeRunActionStatus
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
@@ -269,6 +279,9 @@ export interface UseCadenceDesktopStateResult {
   operatorActionStatus: OperatorActionStatus
   pendingOperatorActionId: string | null
   operatorActionError: OperatorActionErrorView | null
+  autonomousRunActionStatus: AutonomousRunActionStatus
+  pendingAutonomousRunAction: AutonomousRunActionKind | null
+  autonomousRunActionError: OperatorActionErrorView | null
   runtimeRunActionStatus: RuntimeRunActionStatus
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
@@ -279,6 +292,9 @@ export interface UseCadenceDesktopStateResult {
   retryActiveRepositoryDiff: () => Promise<void>
   startOpenAiLogin: () => Promise<RuntimeSessionView | null>
   submitOpenAiCallback: (flowId: string, options?: { manualInput?: string | null }) => Promise<RuntimeSessionView | null>
+  startAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
+  inspectAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
+  cancelAutonomousRun: (runId: string) => Promise<ProjectDetailView['autonomousRun'] | null>
   startRuntimeRun: () => Promise<RuntimeRunView | null>
   startRuntimeSession: () => Promise<RuntimeSessionView | null>
   stopRuntimeRun: (runId: string) => Promise<RuntimeRunView | null>
@@ -838,6 +854,18 @@ function applyRuntimeToProjectList(project: ProjectListItem, runtimeSession: Run
   }
 }
 
+function applyAutonomousRunState(
+  project: ProjectDetailView,
+  autonomousRun: ProjectDetailView['autonomousRun'],
+  autonomousUnit: ProjectDetailView['autonomousUnit'],
+): ProjectDetailView {
+  return {
+    ...project,
+    autonomousRun: autonomousRun ?? null,
+    autonomousUnit: autonomousUnit ?? null,
+  }
+}
+
 function removeProjectRecord<T>(records: Record<string, T>, projectId: string): Record<string, T> {
   if (!(projectId in records)) {
     return records
@@ -1058,6 +1086,8 @@ export function useCadenceDesktopState(
   )
   const [runtimeSessions, setRuntimeSessions] = useState<Record<string, RuntimeSessionView>>({})
   const [runtimeRuns, setRuntimeRuns] = useState<Record<string, RuntimeRunView>>({})
+  const [autonomousRuns, setAutonomousRuns] = useState<Record<string, NonNullable<ProjectDetailView['autonomousRun']>>>({})
+  const [autonomousUnits, setAutonomousUnits] = useState<Record<string, NonNullable<ProjectDetailView['autonomousUnit']>>>({})
   const [notificationRoutes, setNotificationRoutes] = useState<Record<string, NotificationRouteDto[]>>({})
   const [notificationRouteLoadStatuses, setNotificationRouteLoadStatuses] = useState<
     Record<string, NotificationRoutesLoadStatus>
@@ -1074,6 +1104,7 @@ export function useCadenceDesktopState(
   const [runtimeStreams, setRuntimeStreams] = useState<Record<string, RuntimeStreamView>>({})
   const [runtimeLoadErrors, setRuntimeLoadErrors] = useState<Record<string, string | null>>({})
   const [runtimeRunLoadErrors, setRuntimeRunLoadErrors] = useState<Record<string, string | null>>({})
+  const [autonomousRunLoadErrors, setAutonomousRunLoadErrors] = useState<Record<string, string | null>>({})
   const [activeDiffScope, setActiveDiffScope] = useState<RepositoryDiffScope>('unstaged')
   const [isLoading, setIsLoading] = useState(true)
   const [isProjectLoading, setIsProjectLoading] = useState(false)
@@ -1081,6 +1112,9 @@ export function useCadenceDesktopState(
   const [operatorActionStatus, setOperatorActionStatus] = useState<OperatorActionStatus>('idle')
   const [pendingOperatorActionId, setPendingOperatorActionId] = useState<string | null>(null)
   const [operatorActionError, setOperatorActionError] = useState<OperatorActionErrorView | null>(null)
+  const [autonomousRunActionStatus, setAutonomousRunActionStatus] = useState<AutonomousRunActionStatus>('idle')
+  const [pendingAutonomousRunAction, setPendingAutonomousRunAction] = useState<AutonomousRunActionKind | null>(null)
+  const [autonomousRunActionError, setAutonomousRunActionError] = useState<OperatorActionErrorView | null>(null)
   const [runtimeRunActionStatus, setRuntimeRunActionStatus] = useState<RuntimeRunActionStatus>('idle')
   const [pendingRuntimeRunAction, setPendingRuntimeRunAction] = useState<RuntimeRunActionKind | null>(null)
   const [runtimeRunActionError, setRuntimeRunActionError] = useState<OperatorActionErrorView | null>(null)
@@ -1103,6 +1137,8 @@ export function useCadenceDesktopState(
   const repositoryDiffsRef = useRef<Record<RepositoryDiffScope, RepositoryDiffState>>(createInitialRepositoryDiffs())
   const runtimeSessionsRef = useRef<Record<string, RuntimeSessionView>>({})
   const runtimeRunsRef = useRef<Record<string, RuntimeRunView>>({})
+  const autonomousRunsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousRun']>>>({})
+  const autonomousUnitsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousUnit']>>>({})
   const notificationRoutesRef = useRef<Record<string, NotificationRouteDto[]>>({})
   const notificationRouteLoadStatusesRef = useRef<Record<string, NotificationRoutesLoadStatus>>({})
   const notificationRouteLoadRequestRef = useRef<Record<string, number>>({})
@@ -1137,6 +1173,14 @@ export function useCadenceDesktopState(
   useEffect(() => {
     runtimeRunsRef.current = runtimeRuns
   }, [runtimeRuns])
+
+  useEffect(() => {
+    autonomousRunsRef.current = autonomousRuns
+  }, [autonomousRuns])
+
+  useEffect(() => {
+    autonomousUnitsRef.current = autonomousUnits
+  }, [autonomousUnits])
 
   useEffect(() => {
     notificationRoutesRef.current = notificationRoutes
@@ -1243,6 +1287,52 @@ export function useCadenceDesktopState(
     [],
   )
 
+  const applyAutonomousRunStateUpdate = useCallback(
+    (
+      projectId: string,
+      autonomousRun: ProjectDetailView['autonomousRun'],
+      autonomousUnit: ProjectDetailView['autonomousUnit'],
+      options: { clearGlobalError?: boolean; loadError?: string | null } = {},
+    ) => {
+      setAutonomousRuns((currentRuns) => {
+        if (!autonomousRun) {
+          return removeProjectRecord(currentRuns, projectId)
+        }
+
+        return {
+          ...currentRuns,
+          [projectId]: autonomousRun,
+        }
+      })
+      setAutonomousUnits((currentUnits) => {
+        if (!autonomousUnit) {
+          return removeProjectRecord(currentUnits, projectId)
+        }
+
+        return {
+          ...currentUnits,
+          [projectId]: autonomousUnit,
+        }
+      })
+      setAutonomousRunLoadErrors((currentErrors) => ({
+        ...currentErrors,
+        [projectId]: options.loadError ?? null,
+      }))
+      setActiveProject((currentProject) =>
+        currentProject && currentProject.id === projectId
+          ? applyAutonomousRunState(currentProject, autonomousRun, autonomousUnit)
+          : currentProject,
+      )
+
+      if (options.clearGlobalError ?? false) {
+        setErrorMessage(options.loadError ?? null)
+      }
+
+      return autonomousRun
+    },
+    [],
+  )
+
   const syncRuntimeSession = useCallback(
     async (projectId: string) => {
       const response = await adapter.getRuntimeSession(projectId)
@@ -1260,6 +1350,20 @@ export function useCadenceDesktopState(
       })
     },
     [adapter, applyRuntimeRunUpdate],
+  )
+
+  const syncAutonomousRun = useCallback(
+    async (projectId: string) => {
+      const response = await adapter.getAutonomousRun(projectId)
+      const autonomousRun = response.run ? mapAutonomousRun(response.run) : null
+      const autonomousUnit = response.unit ? mapAutonomousUnit(response.unit) : null
+      applyAutonomousRunStateUpdate(projectId, autonomousRun, autonomousUnit, {
+        clearGlobalError: false,
+        loadError: null,
+      })
+      return autonomousRun
+    },
+    [adapter, applyAutonomousRunStateUpdate],
   )
 
   const loadNotificationRoutes = useCallback(
@@ -1353,6 +1457,9 @@ export function useCadenceDesktopState(
       setRuntimeRunActionError(null)
       setPendingRuntimeRunAction(null)
       setRuntimeRunActionStatus('idle')
+      setAutonomousRunActionError(null)
+      setPendingAutonomousRunAction(null)
+      setAutonomousRunActionStatus('idle')
       setNotificationRouteMutationError(null)
 
       const runtimePromise = adapter
@@ -1378,6 +1485,21 @@ export function useCadenceDesktopState(
         .catch((error) => ({
           ok: false as const,
           runtimeRun: runtimeRunsRef.current[projectId] ?? null,
+          error: getDesktopErrorMessage(error),
+        }))
+
+      const autonomousRunPromise = adapter
+        .getAutonomousRun(projectId)
+        .then((response) => ({
+          ok: true as const,
+          autonomousRun: response.run ? mapAutonomousRun(response.run) : null,
+          autonomousUnit: response.unit ? mapAutonomousUnit(response.unit) : null,
+          error: null as string | null,
+        }))
+        .catch((error) => ({
+          ok: false as const,
+          autonomousRun: autonomousRunsRef.current[projectId] ?? null,
+          autonomousUnit: autonomousUnitsRef.current[projectId] ?? null,
           error: getDesktopErrorMessage(error),
         }))
 
@@ -1477,9 +1599,15 @@ export function useCadenceDesktopState(
         const status = mapRepositoryStatus(statusResponse)
         const cachedRuntime = runtimeSessionsRef.current[projectId] ?? null
         const cachedRuntimeRun = runtimeRunsRef.current[projectId] ?? null
-        const nextProject = applyRuntimeRun(
-          applyRuntimeSession(applyRepositoryStatus(snapshotProject, status), cachedRuntime),
-          cachedRuntimeRun,
+        const cachedAutonomousRun = autonomousRunsRef.current[projectId] ?? snapshotProject.autonomousRun ?? null
+        const cachedAutonomousUnit = autonomousUnitsRef.current[projectId] ?? snapshotProject.autonomousUnit ?? null
+        const nextProject = applyAutonomousRunState(
+          applyRuntimeRun(
+            applyRuntimeSession(applyRepositoryStatus(snapshotProject, status), cachedRuntime),
+            cachedRuntimeRun,
+          ),
+          cachedAutonomousRun,
+          cachedAutonomousUnit,
         )
         const nextSummary = mapProjectSummary(snapshotResponse.project)
 
@@ -1494,7 +1622,11 @@ export function useCadenceDesktopState(
         setActiveProject(nextProject)
         resetRepositoryDiffs(status)
 
-        const [runtimeResult, runtimeRunResult] = await Promise.all([runtimePromise, runtimeRunPromise])
+        const [runtimeResult, runtimeRunResult, autonomousRunResult] = await Promise.all([
+          runtimePromise,
+          runtimeRunPromise,
+          autonomousRunPromise,
+        ])
         if (latestLoadRequestRef.current !== requestId) {
           return nextProject
         }
@@ -1529,6 +1661,43 @@ export function useCadenceDesktopState(
           }))
         }
 
+        if (autonomousRunResult.ok) {
+          setAutonomousRuns((currentRuns) => {
+            if (!autonomousRunResult.autonomousRun) {
+              return removeProjectRecord(currentRuns, projectId)
+            }
+
+            return {
+              ...currentRuns,
+              [projectId]: autonomousRunResult.autonomousRun,
+            }
+          })
+          setAutonomousUnits((currentUnits) => {
+            if (!autonomousRunResult.autonomousUnit) {
+              return removeProjectRecord(currentUnits, projectId)
+            }
+
+            return {
+              ...currentUnits,
+              [projectId]: autonomousRunResult.autonomousUnit,
+            }
+          })
+        } else {
+          if (autonomousRunResult.autonomousRun) {
+            setAutonomousRuns((currentRuns) => ({
+              ...currentRuns,
+              [projectId]: autonomousRunResult.autonomousRun,
+            }))
+          }
+
+          if (autonomousRunResult.autonomousUnit) {
+            setAutonomousUnits((currentUnits) => ({
+              ...currentUnits,
+              [projectId]: autonomousRunResult.autonomousUnit,
+            }))
+          }
+        }
+
         setRuntimeLoadErrors((currentErrors) => ({
           ...currentErrors,
           [projectId]: runtimeResult.error,
@@ -1537,12 +1706,26 @@ export function useCadenceDesktopState(
           ...currentErrors,
           [projectId]: runtimeRunResult.error,
         }))
+        setAutonomousRunLoadErrors((currentErrors) => ({
+          ...currentErrors,
+          [projectId]: autonomousRunResult.error,
+        }))
 
         const finalRuntime = runtimeResult.runtime ?? cachedRuntime
         const finalRuntimeRun = runtimeRunResult.ok ? runtimeRunResult.runtimeRun : runtimeRunResult.runtimeRun ?? cachedRuntimeRun
-        const finalizedProject = applyRuntimeRun(
-          finalRuntime ? applyRuntimeSession(nextProject, finalRuntime) : nextProject,
-          finalRuntimeRun,
+        const finalAutonomousRun = autonomousRunResult.ok
+          ? autonomousRunResult.autonomousRun
+          : autonomousRunResult.autonomousRun ?? cachedAutonomousRun
+        const finalAutonomousUnit = autonomousRunResult.ok
+          ? autonomousRunResult.autonomousUnit
+          : autonomousRunResult.autonomousUnit ?? cachedAutonomousUnit
+        const finalizedProject = applyAutonomousRunState(
+          applyRuntimeRun(
+            finalRuntime ? applyRuntimeSession(nextProject, finalRuntime) : nextProject,
+            finalRuntimeRun,
+          ),
+          finalAutonomousRun,
+          finalAutonomousUnit,
         )
         setActiveProject((currentProject) => {
           if (!currentProject || currentProject.id !== projectId) {
@@ -1558,6 +1741,7 @@ export function useCadenceDesktopState(
             routeResult.error,
             runtimeResult.error,
             runtimeRunResult.error,
+            autonomousRunResult.error,
           ),
         )
 
@@ -1636,6 +1820,8 @@ export function useCadenceDesktopState(
         setActiveProject(null)
         setRepositoryStatus(null)
         setRuntimeRuns({})
+        setAutonomousRuns({})
+        setAutonomousUnits({})
         setNotificationRoutes({})
         setNotificationRouteLoadStatuses({})
         setNotificationRouteLoadErrors({})
@@ -1647,6 +1833,7 @@ export function useCadenceDesktopState(
         setRuntimeStreams({})
         setRuntimeLoadErrors({})
         setRuntimeRunLoadErrors({})
+        setAutonomousRunLoadErrors({})
         trustSnapshotRef.current = {}
         resetRepositoryDiffs(null)
         return
@@ -2095,6 +2282,104 @@ export function useCadenceDesktopState(
     [adapter, applyRuntimeSessionUpdate, syncRuntimeSession],
   )
 
+  const startAutonomousRun = useCallback(async () => {
+    const projectId = activeProjectIdRef.current
+    if (!projectId) {
+      throw new Error('Select an imported project before starting an autonomous run.')
+    }
+
+    setAutonomousRunActionStatus('running')
+    setPendingAutonomousRunAction('start')
+    setAutonomousRunActionError(null)
+
+    try {
+      const response = await adapter.startAutonomousRun(projectId)
+      const autonomousRun = response.run ? mapAutonomousRun(response.run) : null
+      const autonomousUnit = response.unit ? mapAutonomousUnit(response.unit) : null
+      return applyAutonomousRunStateUpdate(projectId, autonomousRun, autonomousUnit, {
+        clearGlobalError: false,
+        loadError: null,
+      })
+    } catch (error) {
+      setAutonomousRunActionError(
+        getOperatorActionError(error, 'Cadence could not start or inspect the autonomous run for this project.'),
+      )
+
+      try {
+        await syncAutonomousRun(projectId)
+      } catch {
+        // Ignore follow-up refresh failures and preserve the last truthful state.
+      }
+
+      throw error
+    } finally {
+      setAutonomousRunActionStatus('idle')
+      setPendingAutonomousRunAction(null)
+    }
+  }, [adapter, applyAutonomousRunStateUpdate, syncAutonomousRun])
+
+  const inspectAutonomousRun = useCallback(async () => {
+    const projectId = activeProjectIdRef.current
+    if (!projectId) {
+      throw new Error('Select an imported project before inspecting autonomous run truth.')
+    }
+
+    setAutonomousRunActionStatus('running')
+    setPendingAutonomousRunAction('inspect')
+    setAutonomousRunActionError(null)
+
+    try {
+      return await syncAutonomousRun(projectId)
+    } catch (error) {
+      setAutonomousRunActionError(
+        getOperatorActionError(error, 'Cadence could not inspect the autonomous run truth for this project.'),
+      )
+      throw error
+    } finally {
+      setAutonomousRunActionStatus('idle')
+      setPendingAutonomousRunAction(null)
+    }
+  }, [syncAutonomousRun])
+
+  const cancelAutonomousRun = useCallback(
+    async (runId: string) => {
+      const projectId = activeProjectIdRef.current
+      if (!projectId) {
+        throw new Error('Select an imported project before cancelling the autonomous run.')
+      }
+
+      setAutonomousRunActionStatus('running')
+      setPendingAutonomousRunAction('cancel')
+      setAutonomousRunActionError(null)
+
+      try {
+        const response = await adapter.cancelAutonomousRun(projectId, runId)
+        const autonomousRun = response.run ? mapAutonomousRun(response.run) : null
+        const autonomousUnit = response.unit ? mapAutonomousUnit(response.unit) : null
+        return applyAutonomousRunStateUpdate(projectId, autonomousRun, autonomousUnit, {
+          clearGlobalError: false,
+          loadError: null,
+        })
+      } catch (error) {
+        setAutonomousRunActionError(
+          getOperatorActionError(error, 'Cadence could not cancel the autonomous run for this project.'),
+        )
+
+        try {
+          await syncAutonomousRun(projectId)
+        } catch {
+          // Ignore follow-up refresh failures and preserve the last truthful state.
+        }
+
+        throw error
+      } finally {
+        setAutonomousRunActionStatus('idle')
+        setPendingAutonomousRunAction(null)
+      }
+    },
+    [adapter, applyAutonomousRunStateUpdate, syncAutonomousRun],
+  )
+
   const startRuntimeRun = useCallback(async () => {
     const projectId = activeProjectIdRef.current
     if (!projectId) {
@@ -2210,6 +2495,13 @@ export function useCadenceDesktopState(
     ? runtimeSessions[activeProjectId] ?? activeProject?.runtimeSession ?? null
     : null
   const activeRuntimeRun = activeProjectId ? runtimeRuns[activeProjectId] ?? activeProject?.runtimeRun ?? null : null
+  const activeAutonomousRun = activeProjectId
+    ? autonomousRuns[activeProjectId] ?? activeProject?.autonomousRun ?? null
+    : null
+  const activeAutonomousUnit = activeProjectId
+    ? autonomousUnits[activeProjectId] ?? activeProject?.autonomousUnit ?? null
+    : null
+  const activeAutonomousRunErrorMessage = activeProjectId ? autonomousRunLoadErrors[activeProjectId] ?? null : null
   const activeRuntimeRunId = activeRuntimeRun?.runId ?? null
   const activeRuntimeSubscriptionKey =
     activeProjectId && activeRuntimeSession?.isAuthenticated && activeRuntimeSession.sessionId && activeRuntimeRunId
@@ -2534,8 +2826,11 @@ export function useCadenceDesktopState(
       repositoryPath: activeProject.repository?.rootPath ?? null,
       runtimeSession: activeRuntimeSession,
       runtimeRun: activeRuntimeRun,
+      autonomousRun: activeAutonomousRun,
+      autonomousUnit: activeAutonomousUnit,
       runtimeErrorMessage: activeRuntimeErrorMessage,
       runtimeRunErrorMessage: activeRuntimeRunErrorMessage,
+      autonomousRunErrorMessage: activeAutonomousRunErrorMessage,
       authPhase: activeRuntimeSession?.phase ?? null,
       authPhaseLabel: activeRuntimeSession?.phaseLabel ?? 'Runtime unavailable',
       runtimeStream: activeRuntimeStream,
@@ -2565,6 +2860,9 @@ export function useCadenceDesktopState(
       operatorActionStatus,
       pendingOperatorActionId,
       operatorActionError,
+      autonomousRunActionStatus,
+      pendingAutonomousRunAction,
+      autonomousRunActionError,
       runtimeRunActionStatus,
       pendingRuntimeRunAction,
       runtimeRunActionError,
@@ -2588,6 +2886,9 @@ export function useCadenceDesktopState(
     activeNotificationSyncSummary,
     activePhase,
     activeProject,
+    activeAutonomousRun,
+    activeAutonomousRunErrorMessage,
+    activeAutonomousUnit,
     activeRuntimeErrorMessage,
     activeRuntimeRun,
     activeRuntimeRunErrorMessage,
@@ -2597,10 +2898,13 @@ export function useCadenceDesktopState(
     notificationRouteMutationStatus,
     operatorActionError,
     operatorActionStatus,
+    pendingAutonomousRunAction,
     pendingNotificationRouteId,
     pendingOperatorActionId,
     pendingRuntimeRunAction,
     repositoryStatus,
+    autonomousRunActionError,
+    autonomousRunActionStatus,
     runtimeRunActionError,
     runtimeRunActionStatus,
   ])
@@ -2670,6 +2974,9 @@ export function useCadenceDesktopState(
     operatorActionStatus,
     pendingOperatorActionId,
     operatorActionError,
+    autonomousRunActionStatus,
+    pendingAutonomousRunAction,
+    autonomousRunActionError,
     runtimeRunActionStatus,
     pendingRuntimeRunAction,
     runtimeRunActionError,
@@ -2680,6 +2987,9 @@ export function useCadenceDesktopState(
     retryActiveRepositoryDiff,
     startOpenAiLogin,
     submitOpenAiCallback,
+    startAutonomousRun,
+    inspectAutonomousRun,
+    cancelAutonomousRun,
     startRuntimeRun,
     startRuntimeSession,
     stopRuntimeRun,

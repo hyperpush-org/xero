@@ -94,6 +94,8 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     },
     runtimeSession: null,
     runtimeRun: null,
+    autonomousRun: null,
+    autonomousUnit: null,
     ...overrides,
   }
 }
@@ -176,6 +178,71 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
   }
 }
 
+function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['autonomousRun']>> = {}) {
+  return {
+    projectId: 'project-1',
+    runId: 'auto-run-1',
+    runtimeKind: 'openai_codex',
+    runtimeLabel: 'Openai Codex · Autonomous run active',
+    supervisorKind: 'detached_pty',
+    supervisorLabel: 'Detached Pty',
+    status: 'running' as const,
+    statusLabel: 'Autonomous run active',
+    recoveryState: 'recovery_required' as const,
+    recoveryLabel: 'Recovery required',
+    activeUnitId: 'auto-run-1:checkpoint:2',
+    duplicateStartDetected: false,
+    duplicateStartRunId: null,
+    duplicateStartReason: null,
+    startedAt: '2026-04-16T20:00:00Z',
+    lastHeartbeatAt: '2026-04-16T20:00:05Z',
+    lastCheckpointAt: '2026-04-16T20:00:06Z',
+    pausedAt: '2026-04-16T20:03:00Z',
+    cancelledAt: null,
+    completedAt: null,
+    crashedAt: null,
+    stoppedAt: null,
+    pauseReason: {
+      code: 'operator_pause',
+      message: 'Operator paused the autonomous run for review.',
+    },
+    cancelReason: null,
+    crashReason: null,
+    lastErrorCode: null,
+    lastError: null,
+    updatedAt: '2026-04-16T20:03:00Z',
+    isActive: true,
+    needsRecovery: true,
+    isTerminal: false,
+    isFailed: false,
+    ...overrides,
+  }
+}
+
+function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['autonomousUnit']>> = {}) {
+  return {
+    projectId: 'project-1',
+    runId: 'auto-run-1',
+    unitId: 'auto-run-1:checkpoint:2',
+    sequence: 2,
+    kind: 'state' as const,
+    kindLabel: 'State',
+    status: 'active' as const,
+    statusLabel: 'Active',
+    summary: 'Recovered the current autonomous unit boundary.',
+    boundaryId: 'checkpoint:2',
+    startedAt: '2026-04-16T20:00:01Z',
+    finishedAt: null,
+    updatedAt: '2026-04-16T20:03:00Z',
+    lastErrorCode: null,
+    lastError: null,
+    isActive: true,
+    isTerminal: false,
+    isFailed: false,
+    ...overrides,
+  }
+}
+
 function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeStreamView {
   return {
     projectId: 'project-1',
@@ -216,8 +283,11 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     repositoryPath: project.repository?.rootPath ?? null,
     runtimeSession,
     runtimeRun,
+    autonomousRun: overrides.autonomousRun ?? project.autonomousRun ?? null,
+    autonomousUnit: overrides.autonomousUnit ?? project.autonomousUnit ?? null,
     runtimeErrorMessage: null,
     runtimeRunErrorMessage: null,
+    autonomousRunErrorMessage: null,
     authPhase: runtimeSession?.phase ?? null,
     authPhaseLabel: runtimeSession?.phaseLabel ?? 'Signed out',
     runtimeStream,
@@ -235,6 +305,9 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     operatorActionStatus: overrides.operatorActionStatus ?? 'idle',
     pendingOperatorActionId: overrides.pendingOperatorActionId ?? null,
     operatorActionError: overrides.operatorActionError ?? null,
+    autonomousRunActionStatus: overrides.autonomousRunActionStatus ?? 'idle',
+    pendingAutonomousRunAction: overrides.pendingAutonomousRunAction ?? null,
+    autonomousRunActionError: overrides.autonomousRunActionError ?? null,
     runtimeRunActionStatus: overrides.runtimeRunActionStatus ?? 'idle',
     pendingRuntimeRunAction: overrides.pendingRuntimeRunAction ?? null,
     runtimeRunActionError: overrides.runtimeRunActionError ?? null,
@@ -259,29 +332,31 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
 }
 
 describe('AgentRuntime current UI', () => {
-  it('renders an authenticated empty state and starts a run from the footer control', async () => {
-    const onStartRuntimeRun = vi.fn(async () => null)
+  it('renders an authenticated autonomous empty state and starts a run from the ledger control', async () => {
+    const onStartAutonomousRun = vi.fn(async () => null)
 
     render(
       <AgentRuntime
-        agent={makeAgent({ runtimeSession: makeRuntimeSession() })}
-        onStartRuntimeRun={onStartRuntimeRun}
+        agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+        onStartAutonomousRun={onStartAutonomousRun}
       />,
     )
 
-    expect(screen.getByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
-    expect(screen.getByText('No supervised run is attached')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Start run' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Autonomous run truth' })).toBeVisible()
+    expect(screen.getByText('No autonomous run recorded')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Start autonomous run' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
-    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Start autonomous run' }))
+    await waitFor(() => expect(onStartAutonomousRun).toHaveBeenCalledTimes(1))
   })
 
-  it('renders a recovered run snapshot with current checkpoint copy', () => {
+  it('renders autonomous recovery truth with current unit and lifecycle reason copy', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
-          runtimeSession: makeRuntimeSession(),
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          autonomousRun: makeAutonomousRun({ duplicateStartDetected: true, duplicateStartRunId: 'auto-run-1' }),
+          autonomousUnit: makeAutonomousUnit(),
           runtimeRun: makeRuntimeRun(),
           runtimeStream: makeRuntimeStream({ status: 'idle' }),
           runtimeRunUnavailableReason: 'Cadence recovered a supervised harness run and its durable checkpoints before the live runtime feed resumed.',
@@ -290,9 +365,36 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
+    expect(screen.getByRole('heading', { name: 'Autonomous run truth' })).toBeVisible()
+    expect(screen.getByText('Current autonomous boundary')).toBeVisible()
+    expect(screen.getByText('Recovered the current autonomous unit boundary.')).toBeVisible()
+    expect(screen.getByText('Last pause reason')).toBeVisible()
+    expect(screen.getByText('Operator paused the autonomous run for review.')).toBeVisible()
+    expect(screen.getByText('Duplicate start prevented')).toBeVisible()
     expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText('Supervisor boot recorded.')).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
+  })
+
+  it('inspects and cancels the active autonomous run from pane controls', async () => {
+    const onInspectAutonomousRun = vi.fn(async () => undefined)
+    const onCancelAutonomousRun = vi.fn(async () => undefined)
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          autonomousRun: makeAutonomousRun(),
+          autonomousUnit: makeAutonomousUnit(),
+        })}
+        onInspectAutonomousRun={onInspectAutonomousRun}
+        onCancelAutonomousRun={onCancelAutonomousRun}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect truth' }))
+    await waitFor(() => expect(onInspectAutonomousRun).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel autonomous run' }))
+    await waitFor(() => expect(onCancelAutonomousRun).toHaveBeenCalledWith('auto-run-1'))
   })
 
   it('renders operator approvals and resumes with current labels', async () => {

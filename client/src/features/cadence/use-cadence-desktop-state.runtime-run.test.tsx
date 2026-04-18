@@ -12,6 +12,7 @@ import type {
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
   ResumeOperatorRunResponseDto,
+  AutonomousRunStateDto,
   RuntimeRunDto,
   RuntimeRunUpdatedPayloadDto,
   RuntimeSessionDto,
@@ -344,6 +345,58 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
   }
 }
 
+function makeAutonomousRunState(
+  projectId: string,
+  overrides: Partial<NonNullable<AutonomousRunStateDto['run']>> = {},
+): AutonomousRunStateDto {
+  const runId = overrides.runId ?? `auto-${projectId}`
+
+  return {
+    run: {
+      projectId,
+      runId,
+      runtimeKind: 'openai_codex',
+      supervisorKind: 'detached_pty',
+      status: 'running',
+      recoveryState: 'healthy',
+      activeUnitId: `${runId}:checkpoint:2`,
+      duplicateStartDetected: false,
+      duplicateStartRunId: null,
+      duplicateStartReason: null,
+      startedAt: '2026-04-16T20:00:00Z',
+      lastHeartbeatAt: '2026-04-16T20:00:05Z',
+      lastCheckpointAt: '2026-04-16T20:00:06Z',
+      pausedAt: null,
+      cancelledAt: null,
+      completedAt: null,
+      crashedAt: null,
+      stoppedAt: null,
+      pauseReason: null,
+      cancelReason: null,
+      crashReason: null,
+      lastErrorCode: null,
+      lastError: null,
+      updatedAt: '2026-04-16T20:00:06Z',
+      ...overrides,
+    },
+    unit: {
+      projectId,
+      runId,
+      unitId: `${runId}:checkpoint:2`,
+      sequence: 2,
+      kind: 'state',
+      status: 'active',
+      summary: 'Recovered the current autonomous unit boundary.',
+      boundaryId: 'checkpoint:2',
+      startedAt: '2026-04-16T20:00:01Z',
+      finishedAt: null,
+      updatedAt: '2026-04-16T20:00:06Z',
+      lastErrorCode: null,
+      lastError: null,
+    },
+  }
+}
+
 function makeStreamResponse(
   projectId: string,
   overrides: Partial<SubscribeRuntimeStreamResponseDto> = {},
@@ -399,6 +452,7 @@ function createMockAdapter(options?: {
   statuses?: Record<string, RepositoryStatusResponseDto>
   runtimeSessions?: Record<string, RuntimeSessionDto>
   runtimeRuns?: Record<string, RuntimeRunDto | null>
+  autonomousStates?: Record<string, AutonomousRunStateDto | null>
   runtimeSessionErrors?: Record<string, Error>
   runtimeRunErrors?: Record<string, Error>
   notificationDispatches?: Record<string, ListNotificationDispatchesResponseDto['dispatches']>
@@ -430,6 +484,10 @@ function createMockAdapter(options?: {
   const runtimeRuns = options?.runtimeRuns ?? {
     'project-1': makeRuntimeRun('project-1'),
     'project-2': makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+  }
+  const autonomousStates = options?.autonomousStates ?? {
+    'project-1': makeAutonomousRunState('project-1'),
+    'project-2': makeAutonomousRunState('project-2', { runId: 'auto-project-2' }),
   }
   const runtimeSessionErrors = options?.runtimeSessionErrors ?? {}
   const runtimeRunErrors = options?.runtimeRunErrors ?? {}
@@ -473,6 +531,8 @@ function createMockAdapter(options?: {
 
     return runtimeRuns[projectId] ?? null
   })
+
+  const getAutonomousRun = vi.fn(async (projectId: string) => autonomousStates[projectId] ?? { run: null, unit: null })
 
   const listNotificationDispatches = vi.fn(async (projectId: string) => {
     const error = notificationDispatchErrors[projectId]
@@ -608,12 +668,45 @@ function createMockAdapter(options?: {
     getRepositoryDiff: vi.fn(async (projectId: string, scope: 'staged' | 'unstaged' | 'worktree') =>
       makeDiff(projectId, scope),
     ),
+    getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
     startOpenAiLogin: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     submitOpenAiCallback: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
+    startAutonomousRun: vi.fn(async (projectId: string) => {
+      const nextState = makeAutonomousRunState(projectId, {
+        duplicateStartDetected: Boolean(autonomousStates[projectId]?.run),
+        duplicateStartRunId: autonomousStates[projectId]?.run?.runId ?? null,
+        duplicateStartReason: autonomousStates[projectId]?.run
+          ? 'Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.'
+          : null,
+      })
+      autonomousStates[projectId] = nextState
+      return nextState
+    }),
     startRuntimeRun: vi.fn(async (projectId: string) => runtimeRuns[projectId] ?? makeRuntimeRun(projectId)),
     startRuntimeSession: vi.fn(async (projectId: string) => runtimeSessions[projectId]),
+    cancelAutonomousRun: vi.fn(async (projectId: string, runId: string) => {
+      const nextState = makeAutonomousRunState(projectId, {
+        runId,
+        status: 'cancelled',
+        recoveryState: 'terminal',
+        cancelledAt: '2026-04-16T20:10:00Z',
+        cancelReason: {
+          code: 'operator_cancelled',
+          message: 'Operator cancelled the autonomous run from the desktop shell.',
+        },
+        updatedAt: '2026-04-16T20:10:00Z',
+      })
+      nextState.unit = {
+        ...nextState.unit!,
+        status: 'cancelled',
+        finishedAt: '2026-04-16T20:10:00Z',
+        updatedAt: '2026-04-16T20:10:00Z',
+      }
+      autonomousStates[projectId] = nextState
+      return nextState
+    }),
     stopRuntimeRun: vi.fn(async (projectId: string) => runtimeRuns[projectId] ?? null),
     logoutRuntimeSession: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     resolveOperatorAction: resolveOperatorAction as never,
@@ -689,6 +782,7 @@ function createMockAdapter(options?: {
     adapter,
     getProjectSnapshot,
     getRuntimeRun,
+    getAutonomousRun,
     listNotificationRoutes,
     listNotificationDispatches,
     syncNotificationAdapters,
@@ -755,6 +849,14 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       </div>
       <div data-testid="runtime-run-error">{state.agentView?.runtimeRunErrorMessage ?? 'none'}</div>
       <div data-testid="runtime-run-reason">{state.agentView?.runtimeRunUnavailableReason ?? 'none'}</div>
+      <div data-testid="autonomous-run-id">{state.agentView?.autonomousRun?.runId ?? 'none'}</div>
+      <div data-testid="autonomous-run-status">{state.agentView?.autonomousRun?.status ?? 'none'}</div>
+      <div data-testid="autonomous-run-recovery">{state.agentView?.autonomousRun?.recoveryState ?? 'none'}</div>
+      <div data-testid="autonomous-run-duplicate-start">{String(state.agentView?.autonomousRun?.duplicateStartDetected ?? false)}</div>
+      <div data-testid="autonomous-run-error">{state.agentView?.autonomousRunErrorMessage ?? 'none'}</div>
+      <div data-testid="autonomous-unit-id">{state.agentView?.autonomousUnit?.unitId ?? 'none'}</div>
+      <div data-testid="autonomous-unit-status">{state.agentView?.autonomousUnit?.status ?? 'none'}</div>
+      <div data-testid="autonomous-unit-summary">{state.agentView?.autonomousUnit?.summary ?? 'none'}</div>
       <div data-testid="messages-reason">{state.agentView?.messagesUnavailableReason ?? 'none'}</div>
       <div data-testid="stream-status">{state.agentView?.runtimeStreamStatus ?? 'idle'}</div>
       <div data-testid="stream-run-id">{state.agentView?.runtimeStream?.runId ?? 'none'}</div>
@@ -826,6 +928,18 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="workflow-lifecycle-action-required">{String(state.workflowView?.actionRequiredLifecycleCount ?? 0)}</div>
       <button onClick={() => void state.retry()} type="button">
         Retry state
+      </button>
+      <button onClick={() => void state.startAutonomousRun().catch(() => undefined)} type="button">
+        Start autonomous run
+      </button>
+      <button onClick={() => void state.inspectAutonomousRun().catch(() => undefined)} type="button">
+        Inspect autonomous run
+      </button>
+      <button
+        onClick={() => void state.cancelAutonomousRun(state.agentView?.autonomousRun?.runId ?? 'missing').catch(() => undefined)}
+        type="button"
+      >
+        Cancel autonomous run
       </button>
       <button onClick={() => void state.selectProject('project-2')} type="button">
         Select project 2
@@ -935,6 +1049,85 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('runtime-run-last-checkpoint-summary')).toHaveTextContent(
       'Recovered repository context before reconnecting the live feed.',
     )
+  })
+
+  it('hydrates autonomous run and unit truth independently from the durable ledger', async () => {
+    const setup = createMockAdapter({
+      autonomousStates: {
+        'project-1': makeAutonomousRunState('project-1', {
+          runId: 'auto-project-1',
+          recoveryState: 'recovery_required',
+          pausedAt: '2026-04-16T20:03:00Z',
+          pauseReason: {
+            code: 'operator_pause',
+            message: 'Operator paused the autonomous run for review.',
+          },
+          updatedAt: '2026-04-16T20:03:00Z',
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('auto-project-1'))
+    expect(screen.getByTestId('autonomous-run-status')).toHaveTextContent('running')
+    expect(screen.getByTestId('autonomous-run-recovery')).toHaveTextContent('recovery_required')
+    expect(screen.getByTestId('autonomous-unit-id')).toHaveTextContent('auto-project-1:checkpoint:2')
+    expect(screen.getByTestId('autonomous-unit-status')).toHaveTextContent('active')
+  })
+
+  it('preserves the last truthful autonomous run state when later autonomous refreshes fail', async () => {
+    const setup = createMockAdapter({
+      autonomousStates: {
+        'project-1': makeAutonomousRunState('project-1', { runId: 'auto-project-1' }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('auto-project-1'))
+
+    setup.getAutonomousRun.mockRejectedValueOnce(new Error('autonomous refresh failed'))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry state' }))
+
+    await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('autonomous refresh failed'))
+    expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('auto-project-1')
+    expect(screen.getByTestId('autonomous-unit-id')).toHaveTextContent('auto-project-1:checkpoint:2')
+  })
+
+  it('starts, inspects, and cancels the autonomous run through the hook actions', async () => {
+    const setup = createMockAdapter({
+      autonomousStates: {
+        'project-1': null,
+      },
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('none')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start autonomous run' }))
+    await waitFor(() => expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('auto-project-1'))
+    expect(screen.getByTestId('autonomous-run-duplicate-start')).toHaveTextContent('false')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect autonomous run' }))
+    await waitFor(() => expect(setup.getAutonomousRun).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel autonomous run' }))
+    await waitFor(() => expect(screen.getByTestId('autonomous-run-status')).toHaveTextContent('cancelled'))
+    expect(screen.getByTestId('autonomous-run-recovery')).toHaveTextContent('terminal')
+    expect(screen.getByTestId('autonomous-unit-status')).toHaveTextContent('cancelled')
   })
 
   it('keeps recovered checkpoints visible while the live runtime stream is still reconnecting', async () => {

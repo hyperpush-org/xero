@@ -26,6 +26,7 @@ import type {
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
   RuntimeRunDto,
+  AutonomousRunStateDto,
   RuntimeRunUpdatedPayloadDto,
   RuntimeSessionDto,
   RuntimeStreamEventDto,
@@ -117,8 +118,8 @@ function makeRuntimeSession(projectId = 'project-1', overrides: Partial<RuntimeS
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
     flowId: null,
-    sessionId: null,
-    accountId: null,
+    sessionId: 'session-1',
+    accountId: 'acct-1',
     phase: 'authenticated',
     callbackBound: true,
     authorizationUrl: 'https://auth.openai.com/oauth/authorize?client_id=test',
@@ -162,6 +163,52 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
   }
 }
 
+function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): AutonomousRunStateDto {
+  return {
+    run: {
+      projectId,
+      runId,
+      runtimeKind: 'openai_codex',
+      supervisorKind: 'detached_pty',
+      status: 'running',
+      recoveryState: 'healthy',
+      activeUnitId: `${runId}:checkpoint:1`,
+      duplicateStartDetected: false,
+      duplicateStartRunId: null,
+      duplicateStartReason: null,
+      startedAt: '2026-04-16T20:00:00Z',
+      lastHeartbeatAt: '2026-04-16T20:00:05Z',
+      lastCheckpointAt: '2026-04-16T20:00:06Z',
+      pausedAt: null,
+      cancelledAt: null,
+      completedAt: null,
+      crashedAt: null,
+      stoppedAt: null,
+      pauseReason: null,
+      cancelReason: null,
+      crashReason: null,
+      lastErrorCode: null,
+      lastError: null,
+      updatedAt: '2026-04-16T20:00:06Z',
+    },
+    unit: {
+      projectId,
+      runId,
+      unitId: `${runId}:checkpoint:1`,
+      sequence: 1,
+      kind: 'state',
+      status: 'active',
+      summary: 'Recovered the current autonomous unit boundary.',
+      boundaryId: 'checkpoint:1',
+      startedAt: '2026-04-16T20:00:01Z',
+      finishedAt: null,
+      updatedAt: '2026-04-16T20:00:06Z',
+      lastErrorCode: null,
+      lastError: null,
+    },
+  }
+}
+
 function createAdapter(options?: {
   projects?: ListProjectsResponseDto['projects']
   snapshot?: ProjectSnapshotResponseDto
@@ -169,6 +216,7 @@ function createAdapter(options?: {
   diff?: RepositoryDiffResponseDto
   runtimeSession?: RuntimeSessionDto
   runtimeRun?: RuntimeRunDto | null
+  autonomousState?: AutonomousRunStateDto
   notificationRoutes?: ListNotificationRoutesResponseDto['routes']
 }) {
   let currentSnapshot = options?.snapshot ?? makeSnapshot()
@@ -176,6 +224,7 @@ function createAdapter(options?: {
   let currentDiff = options?.diff ?? makeDiff()
   let currentRuntimeSession = options?.runtimeSession ?? makeRuntimeSession()
   let currentRuntimeRun = options?.runtimeRun ?? null
+  let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
 
   const upsertNotificationRoute = vi.fn(async (request: UpsertNotificationRouteRequestDto) => {
@@ -204,6 +253,11 @@ function createAdapter(options?: {
     return currentRuntimeRun
   })
 
+  const startAutonomousRun = vi.fn(async () => {
+    currentAutonomousState = makeAutonomousRunState('project-1')
+    return currentAutonomousState
+  })
+
   const adapter: CadenceDesktopAdapter = {
     isDesktopRuntime: () => true,
     pickRepositoryFolder: async () => null,
@@ -215,6 +269,7 @@ function createAdapter(options?: {
     getProjectSnapshot: async () => currentSnapshot,
     getRepositoryStatus: async () => currentStatus,
     getRepositoryDiff: async (_projectId, scope) => ({ ...currentDiff, scope }),
+    getAutonomousRun: async () => currentAutonomousState ?? { run: null, unit: null },
     getRuntimeRun: async () => currentRuntimeRun,
     getRuntimeSession: async () => currentRuntimeSession,
     startOpenAiLogin: async () => {
@@ -228,6 +283,7 @@ function createAdapter(options?: {
       currentRuntimeSession = makeRuntimeSession('project-1')
       return currentRuntimeSession
     },
+    startAutonomousRun,
     startRuntimeRun,
     startRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1')
@@ -240,6 +296,28 @@ function createAdapter(options?: {
         stoppedAt: '2026-04-15T20:10:00Z',
       })
       return currentRuntimeRun
+    },
+    cancelAutonomousRun: async (_projectId, runId) => {
+      currentAutonomousState = {
+        run: {
+          ...makeAutonomousRunState('project-1', runId).run!,
+          status: 'cancelled',
+          recoveryState: 'terminal',
+          cancelledAt: '2026-04-16T20:10:00Z',
+          cancelReason: {
+            code: 'operator_cancelled',
+            message: 'Operator cancelled the autonomous run from the desktop shell.',
+          },
+          updatedAt: '2026-04-16T20:10:00Z',
+        },
+        unit: {
+          ...makeAutonomousRunState('project-1', runId).unit!,
+          status: 'cancelled',
+          finishedAt: '2026-04-16T20:10:00Z',
+          updatedAt: '2026-04-16T20:10:00Z',
+        },
+      }
+      return currentAutonomousState
     },
     logoutRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1', {
@@ -392,7 +470,7 @@ function createAdapter(options?: {
     onRuntimeRunUpdated: async (_handler: (payload: RuntimeRunUpdatedPayloadDto) => void) => () => {},
   }
 
-  return { adapter, upsertNotificationRoute, startRuntimeRun }
+  return { adapter, upsertNotificationRoute, startRuntimeRun, startAutonomousRun }
 }
 
 describe('CadenceApp current UI', () => {
@@ -417,8 +495,8 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByText('No milestone assigned')).toBeVisible()
   })
 
-  it('switches to Agent and starts a supervised run with the current shell controls', async () => {
-    const { adapter, startRuntimeRun } = createAdapter({ runtimeRun: null })
+  it('switches to Agent and starts an autonomous run from the current shell controls', async () => {
+    const { adapter, startAutonomousRun } = createAdapter({ runtimeRun: null, autonomousState: null })
 
     render(<CadenceApp adapter={adapter} />)
 
@@ -427,11 +505,11 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Autonomous run truth' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start autonomous run' }))
 
-    await waitFor(() => expect(startRuntimeRun).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(startAutonomousRun).toHaveBeenCalledTimes(1))
   })
 
   it('opens Settings and runs the current provider and notification flows', async () => {

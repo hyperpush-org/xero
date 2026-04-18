@@ -61,6 +61,9 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     retryActiveRepositoryDiff,
     startOpenAiLogin,
     submitOpenAiCallback,
+    startAutonomousRun,
+    inspectAutonomousRun,
+    cancelAutonomousRun,
     startRuntimeRun,
     startRuntimeSession,
     stopRuntimeRun,
@@ -144,6 +147,9 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
           onRetryStream={() => retry()}
           onStartLogin={() => startOpenAiLogin()}
+          onStartAutonomousRun={() => startAutonomousRun()}
+          onInspectAutonomousRun={() => inspectAutonomousRun()}
+          onCancelAutonomousRun={(runId) => cancelAutonomousRun(runId)}
           onStartRuntimeRun={() => startRuntimeRun()}
           onStartRuntimeSession={() => startRuntimeSession()}
           onStopRuntimeRun={(runId) => stopRuntimeRun(runId)}
