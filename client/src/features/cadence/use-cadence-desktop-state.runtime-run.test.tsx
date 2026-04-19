@@ -312,6 +312,7 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
     projectId,
     runId: `run-${projectId}`,
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     supervisorKind: 'detached_pty',
     status: 'running',
     transport: {
@@ -356,6 +357,7 @@ function makeAutonomousRunState(
       projectId,
       runId,
       runtimeKind: 'openai_codex',
+      providerId: 'openai_codex',
       supervisorKind: 'detached_pty',
       status: 'running',
       recoveryState: 'healthy',
@@ -983,7 +985,9 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="error">{state.errorMessage ?? 'none'}</div>
       <div data-testid="refresh-source">{state.refreshSource ?? 'none'}</div>
       <div data-testid="auth-phase">{state.agentView?.authPhase ?? 'none'}</div>
+      <div data-testid="runtime-provider-id">{state.agentView?.runtimeSession?.providerId ?? 'none'}</div>
       <div data-testid="runtime-run-id">{state.agentView?.runtimeRun?.runId ?? 'none'}</div>
+      <div data-testid="runtime-run-provider-id">{state.agentView?.runtimeRun?.providerId ?? 'none'}</div>
       <div data-testid="runtime-run-status">{state.agentView?.runtimeRun?.status ?? 'none'}</div>
       <div data-testid="runtime-run-status-label">{state.agentView?.runtimeRun?.statusLabel ?? 'none'}</div>
       <div data-testid="runtime-run-checkpoint-count">{String(state.agentView?.runtimeRun?.checkpointCount ?? 0)}</div>
@@ -993,6 +997,7 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="runtime-run-error">{state.agentView?.runtimeRunErrorMessage ?? 'none'}</div>
       <div data-testid="runtime-run-reason">{state.agentView?.runtimeRunUnavailableReason ?? 'none'}</div>
       <div data-testid="autonomous-run-id">{state.agentView?.autonomousRun?.runId ?? 'none'}</div>
+      <div data-testid="autonomous-run-provider-id">{state.agentView?.autonomousRun?.providerId ?? 'none'}</div>
       <div data-testid="autonomous-run-status">{state.agentView?.autonomousRun?.status ?? 'none'}</div>
       <div data-testid="autonomous-run-recovery">{state.agentView?.autonomousRun?.recoveryState ?? 'none'}</div>
       <div data-testid="autonomous-run-duplicate-start">{String(state.agentView?.autonomousRun?.duplicateStartDetected ?? false)}</div>
@@ -1170,7 +1175,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
         'project-1': new Error('runtime auth failed'),
       },
       runtimeRuns: {
-        'project-1': makeRuntimeRun('project-1'),
+        'project-1': makeRuntimeRun('project-1', { providerId: 'azure_openai' }),
       },
     })
 
@@ -1180,6 +1185,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     expect(screen.getByTestId('auth-phase')).toHaveTextContent('none')
     expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1')
+    expect(screen.getByTestId('runtime-run-provider-id')).toHaveTextContent('azure_openai')
     expect(screen.getByTestId('runtime-run-status')).toHaveTextContent('running')
     expect(screen.getByTestId('runtime-run-checkpoint-count')).toHaveTextContent('2')
     expect(screen.getByTestId('runtime-run-last-checkpoint-summary')).toHaveTextContent(
@@ -1220,6 +1226,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
       autonomousStates: {
         'project-1': makeAutonomousRunState('project-1', {
           runId: 'auto-project-1',
+          providerId: 'azure_openai',
           recoveryState: 'recovery_required',
           pausedAt: '2026-04-16T20:03:00Z',
           pauseReason: {
@@ -1234,6 +1241,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('auto-project-1'))
+    expect(screen.getByTestId('autonomous-run-provider-id')).toHaveTextContent('azure_openai')
     expect(screen.getByTestId('autonomous-run-status')).toHaveTextContent('running')
     expect(screen.getByTestId('autonomous-run-recovery')).toHaveTextContent('recovery_required')
     expect(screen.getByTestId('autonomous-unit-id')).toHaveTextContent('auto-project-1:checkpoint:2')
@@ -1243,7 +1251,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
   it('preserves the last truthful autonomous run state when later autonomous refreshes fail', async () => {
     const setup = createMockAdapter({
       autonomousStates: {
-        'project-1': makeAutonomousRunState('project-1', { runId: 'auto-project-1' }),
+        'project-1': makeAutonomousRunState('project-1', { runId: 'auto-project-1', providerId: 'azure_openai' }),
       },
     })
 
@@ -1256,6 +1264,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('autonomous refresh failed'))
     expect(screen.getByTestId('autonomous-run-id')).toHaveTextContent('auto-project-1')
+    expect(screen.getByTestId('autonomous-run-provider-id')).toHaveTextContent('azure_openai')
     expect(screen.getByTestId('autonomous-unit-id')).toHaveTextContent('auto-project-1:checkpoint:2')
   })
 

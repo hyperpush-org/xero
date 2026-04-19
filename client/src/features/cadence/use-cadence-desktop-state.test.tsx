@@ -160,6 +160,7 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
     projectId,
     runId: `run-${projectId}`,
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     supervisorKind: 'detached_pty',
     status: 'running',
     transport: {
@@ -193,6 +194,7 @@ function makeAutonomousRunState(projectId: string, runId = `auto-${projectId}`):
       projectId,
       runId,
       runtimeKind: 'openai_codex',
+      providerId: 'openai_codex',
       supervisorKind: 'detached_pty',
       status: 'running',
       recoveryState: 'healthy',
@@ -780,6 +782,7 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="active-project-id">{state.activeProjectId ?? 'none'}</div>
       <div data-testid="branch">{state.activeProject?.branch ?? 'none'}</div>
       <div data-testid="runtime-label">{state.agentView?.runtimeLabel ?? 'none'}</div>
+      <div data-testid="runtime-provider-id">{state.agentView?.runtimeSession?.providerId ?? 'none'}</div>
       <div data-testid="auth-phase">{state.agentView?.authPhase ?? 'none'}</div>
       <div data-testid="auth-phase-label">{state.agentView?.authPhaseLabel ?? 'none'}</div>
       <div data-testid="session-label">{state.agentView?.runtimeSession?.sessionLabel ?? 'none'}</div>
@@ -1880,6 +1883,7 @@ describe('useCadenceDesktopState', () => {
       setup.emitRuntimeUpdated({
         projectId: 'project-1',
         runtimeKind: 'openai_codex',
+        providerId: 'openai_codex',
         flowId: null,
         sessionId: null,
         accountId: null,
@@ -1909,6 +1913,7 @@ describe('useCadenceDesktopState', () => {
       setup.emitRuntimeUpdated({
         projectId: 'project-1',
         runtimeKind: 'openai_codex',
+        providerId: 'azure_openai',
         flowId: 'flow-1',
         sessionId: null,
         accountId: 'acct-1',
@@ -1924,9 +1929,32 @@ describe('useCadenceDesktopState', () => {
     })
 
     await waitFor(() => expect(screen.getByTestId('auth-phase')).toHaveTextContent('awaiting_manual_input'))
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('azure_openai')
     expect(screen.getByTestId('runtime-label')).toHaveTextContent('Openai Codex · Awaiting manual input')
     expect(screen.getByTestId('session-reason')).toHaveTextContent('Paste the redirect URL to finish login.')
     expect(screen.getByTestId('refresh-source')).toHaveTextContent('runtime:updated')
+
+    act(() => {
+      setup.emitRuntimeUpdated({
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        providerId: 'stale_provider',
+        flowId: 'flow-1',
+        sessionId: 'session-stale',
+        accountId: 'acct-stale',
+        authPhase: 'idle',
+        lastErrorCode: 'auth_session_not_found',
+        lastError: {
+          code: 'auth_session_not_found',
+          message: 'Stale payload should not win.',
+          retryable: false,
+        },
+        updatedAt: '2026-04-13T20:00:00Z',
+      })
+    })
+
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('azure_openai')
+    expect(screen.getByTestId('auth-phase')).toHaveTextContent('awaiting_manual_input')
 
     act(() => {
       setup.emitRuntimeUpdatedError(

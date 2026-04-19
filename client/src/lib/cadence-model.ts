@@ -1657,6 +1657,7 @@ export const runtimeSessionSchema = z.object({
 export const runtimeUpdatedPayloadSchema = z.object({
   projectId: z.string().trim().min(1),
   runtimeKind: z.string().trim().min(1),
+  providerId: z.string().trim().min(1),
   flowId: nonEmptyOptionalTextSchema,
   sessionId: nonEmptyOptionalTextSchema,
   accountId: nonEmptyOptionalTextSchema,
@@ -1699,6 +1700,7 @@ export const runtimeRunSchema = z
     projectId: z.string().trim().min(1),
     runId: z.string().trim().min(1),
     runtimeKind: z.string().trim().min(1),
+    providerId: z.string().trim().min(1),
     supervisorKind: z.string().trim().min(1),
     status: runtimeRunStatusSchema,
     transport: runtimeRunTransportSchema,
@@ -1833,6 +1835,7 @@ export const autonomousRunSchema = z
     projectId: z.string().trim().min(1),
     runId: z.string().trim().min(1),
     runtimeKind: z.string().trim().min(1),
+    providerId: z.string().trim().min(1),
     supervisorKind: z.string().trim().min(1),
     status: autonomousRunStatusSchema,
     recoveryState: autonomousRunRecoveryStateSchema,
@@ -2578,6 +2581,7 @@ export interface RuntimeRunView {
   projectId: string
   runId: string
   runtimeKind: string
+  providerId: string
   runtimeLabel: string
   supervisorKind: string
   supervisorLabel: string
@@ -2611,6 +2615,7 @@ export interface AutonomousRunView {
   projectId: string
   runId: string
   runtimeKind: string
+  providerId: string
   runtimeLabel: string
   supervisorKind: string
   supervisorLabel: string
@@ -4247,7 +4252,7 @@ export function mapRepositoryDiff(diff: RepositoryDiffResponseDto): RepositoryDi
 
 export function mapRuntimeSession(runtime: RuntimeSessionDto): RuntimeSessionView {
   const runtimeKind = normalizeText(runtime.runtimeKind, 'openai_codex')
-  const providerId = normalizeText(runtime.providerId, runtimeKind)
+  const providerId = normalizeText(runtime.providerId, 'provider-unavailable')
   const accountId = normalizeOptionalText(runtime.accountId)
   const sessionId = normalizeOptionalText(runtime.sessionId)
 
@@ -4295,6 +4300,7 @@ export function mapRuntimeRunCheckpoint(checkpoint: RuntimeRunCheckpointDto): Ru
 
 export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
   const runtimeKind = normalizeText(runtimeRun.runtimeKind, 'openai_codex')
+  const providerId = normalizeText(runtimeRun.providerId, 'provider-unavailable')
   const supervisorKind = normalizeText(runtimeRun.supervisorKind, 'detached_pty')
   const checkpoints = runtimeRun.checkpoints
     .map(mapRuntimeRunCheckpoint)
@@ -4305,6 +4311,7 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
     projectId: runtimeRun.projectId,
     runId: normalizeText(runtimeRun.runId, 'run-unavailable'),
     runtimeKind,
+    providerId,
     runtimeLabel: getRuntimeRunLabel(runtimeKind, runtimeRun.status),
     supervisorKind,
     supervisorLabel: humanizeRuntimeKind(supervisorKind),
@@ -4337,12 +4344,14 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
 
 export function mapAutonomousRun(autonomousRun: AutonomousRunDto): AutonomousRunView {
   const runtimeKind = normalizeText(autonomousRun.runtimeKind, 'openai_codex')
+  const providerId = normalizeText(autonomousRun.providerId, 'provider-unavailable')
   const supervisorKind = normalizeText(autonomousRun.supervisorKind, 'detached_pty')
 
   return {
     projectId: autonomousRun.projectId,
     runId: normalizeText(autonomousRun.runId, 'autonomous-run-unavailable'),
     runtimeKind,
+    providerId,
     runtimeLabel: getAutonomousRunLabel(runtimeKind, autonomousRun.status),
     supervisorKind,
     supervisorLabel: humanizeRuntimeKind(supervisorKind),
@@ -4617,13 +4626,17 @@ export function mergeRuntimeUpdated(
   currentRuntime: RuntimeSessionView | null,
   payload: RuntimeUpdatedPayloadDto,
 ): RuntimeSessionView {
+  if (currentRuntime && timestampToSortValue(payload.updatedAt) < timestampToSortValue(currentRuntime.updatedAt)) {
+    return currentRuntime
+  }
+
   const nextFlowId = normalizeOptionalText(payload.flowId)
   const currentFlowId = currentRuntime?.flowId ?? null
 
   return mapRuntimeSession({
     projectId: payload.projectId,
     runtimeKind: payload.runtimeKind,
-    providerId: currentRuntime?.providerId ?? payload.runtimeKind,
+    providerId: payload.providerId,
     flowId: nextFlowId,
     sessionId: normalizeOptionalText(payload.sessionId),
     accountId: normalizeOptionalText(payload.accountId),

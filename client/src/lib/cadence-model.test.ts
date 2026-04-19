@@ -120,6 +120,7 @@ function makeAutonomousRun(overrides: Partial<NonNullable<ProjectSnapshotRespons
     projectId: 'project-1',
     runId: 'run-1',
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     supervisorKind: 'detached_pty',
     status: 'stale' as const,
     recoveryState: 'recovery_required' as const,
@@ -1780,12 +1781,13 @@ describe('cadence-model', () => {
   it('maps autonomous run and unit truth from project snapshots independently of runtime auth state', () => {
     const project = mapProjectSnapshot(
       makeSnapshot({
-        autonomousRun: makeAutonomousRun({ duplicateStartDetected: true, duplicateStartRunId: 'run-1' }),
+        autonomousRun: makeAutonomousRun({ providerId: 'azure_openai', duplicateStartDetected: true, duplicateStartRunId: 'run-1' }),
         autonomousUnit: makeAutonomousUnit(),
       }),
     )
 
     expect(project.autonomousRun?.runId).toBe('run-1')
+    expect(project.autonomousRun?.providerId).toBe('azure_openai')
     expect(project.autonomousRun?.statusLabel).toBe('Autonomous run stale')
     expect(project.autonomousRun?.recoveryLabel).toBe('Recovery required')
     expect(project.autonomousRun?.duplicateStartDetected).toBe(true)
@@ -1807,6 +1809,44 @@ describe('cadence-model', () => {
     ).toThrow(/Autonomous unit run id must match/)
   })
 
+  it('maps runtime-run provider identity independently from runtime kind labels', () => {
+    const runtimeRun = mapRuntimeRun(
+      runtimeRunSchema.parse({
+        projectId: 'project-1',
+        runId: 'run-1',
+        runtimeKind: 'openai_codex',
+        providerId: 'azure_openai',
+        supervisorKind: 'detached_pty',
+        status: 'running',
+        transport: {
+          kind: 'tcp',
+          endpoint: '127.0.0.1:4455',
+          liveness: 'reachable',
+        },
+        startedAt: '2026-04-15T20:00:00Z',
+        lastHeartbeatAt: '2026-04-15T20:00:05Z',
+        lastCheckpointSequence: 1,
+        lastCheckpointAt: '2026-04-15T20:00:06Z',
+        stoppedAt: null,
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-04-15T20:00:06Z',
+        checkpoints: [
+          {
+            sequence: 1,
+            kind: 'state',
+            summary: 'Recovered repository context before reconnecting the live feed.',
+            createdAt: '2026-04-15T20:00:06Z',
+          },
+        ],
+      }),
+    )
+
+    expect(runtimeRun.providerId).toBe('azure_openai')
+    expect(runtimeRun.runtimeKind).toBe('openai_codex')
+    expect(runtimeRun.runtimeLabel).toBe('Openai Codex · Running')
+  })
+
   it('maps repository status counts and applies branch metadata onto the active project', () => {
     const project = mapProjectSnapshot(makeSnapshot())
     const status = mapRepositoryStatus(makeStatus())
@@ -1822,14 +1862,16 @@ describe('cadence-model', () => {
 
   it('maps authenticated runtime sessions into truthful agent/runtime labels', () => {
     const baseProject = applyRepositoryStatus(mapProjectSnapshot(makeSnapshot()), mapRepositoryStatus(makeStatus()))
-    const runtime = mapRuntimeSession(makeRuntimeSession())
+    const runtime = mapRuntimeSession(makeRuntimeSession({ providerId: 'azure_openai' }))
     const merged = applyRuntimeSession(baseProject, runtime)
 
     expect(runtime.isAuthenticated).toBe(true)
+    expect(runtime.providerId).toBe('azure_openai')
     expect(runtime.phaseLabel).toBe('Authenticated')
     expect(runtime.runtimeLabel).toBe('Openai Codex · Authenticated')
     expect(runtime.accountLabel).toBe('acct-1')
     expect(merged.runtimeLabel).toBe('Openai Codex · Authenticated')
+    expect(merged.runtimeSession?.providerId).toBe('azure_openai')
     expect(merged.runtimeSession?.sessionLabel).toBe('session-1')
   })
 
@@ -1866,17 +1908,20 @@ describe('cadence-model', () => {
     expect(awaitingManual.runtimeLabel).toBe('Openai Codex · Awaiting manual input')
   })
 
-  it('merges runtime update events while preserving flow-bound manual fallback metadata', () => {
+  it('merges runtime update events while preserving explicit provider identity and ignoring stale payloads', () => {
     const currentRuntime = mapRuntimeSession(
       makeRuntimeSession({
+        providerId: 'openai_codex',
         phase: 'awaiting_manual_input',
         callbackBound: false,
+        updatedAt: '2026-04-13T20:00:30Z',
       }),
     )
 
     const merged = mergeRuntimeUpdated(currentRuntime, {
       projectId: 'project-1',
       runtimeKind: 'openai_codex',
+      providerId: 'azure_openai',
       flowId: 'flow-1',
       sessionId: 'session-2',
       accountId: 'acct-1',
@@ -1887,9 +1932,31 @@ describe('cadence-model', () => {
     })
 
     expect(merged.phase).toBe('authenticated')
+    expect(merged.providerId).toBe('azure_openai')
     expect(merged.sessionId).toBe('session-2')
     expect(merged.authorizationUrl).toBe('https://auth.openai.com/oauth/authorize')
     expect(merged.redirectUri).toBe('http://127.0.0.1:1455/auth/callback')
+
+    const stale = mergeRuntimeUpdated(merged, {
+      projectId: 'project-1',
+      runtimeKind: 'openai_codex',
+      providerId: 'stale_provider',
+      flowId: 'flow-1',
+      sessionId: 'session-stale',
+      accountId: 'acct-stale',
+      authPhase: 'idle',
+      lastErrorCode: 'auth_session_not_found',
+      lastError: {
+        code: 'auth_session_not_found',
+        message: 'Stale payload should not win.',
+        retryable: false,
+      },
+      updatedAt: '2026-04-13T20:00:00Z',
+    })
+
+    expect(stale).toBe(merged)
+    expect(stale.providerId).toBe('azure_openai')
+    expect(stale.sessionId).toBe('session-2')
   })
 
   it('normalizes runtime stream items into capped project-owned stream state', () => {
@@ -2458,6 +2525,7 @@ describe('cadence-model', () => {
       runtimeUpdatedPayloadSchema.parse({
         projectId: 'project-1',
         runtimeKind: 'openai_codex',
+        providerId: 'openai_codex',
         flowId: 'flow-1',
         sessionId: 'session-1',
         accountId: 'acct-1',
@@ -2465,6 +2533,71 @@ describe('cadence-model', () => {
         lastErrorCode: null,
         lastError: null,
         updatedAt: '2026-04-13T20:01:00Z',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runtimeUpdatedPayloadSchema.parse({
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        providerId: '   ',
+        flowId: 'flow-1',
+        sessionId: 'session-1',
+        accountId: 'acct-1',
+        authPhase: 'authenticated',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-04-13T20:01:00Z',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runtimeUpdatedPayloadSchema.parse({
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        providerId: 'openai_codex',
+        flowId: 'flow-1',
+        sessionId: '   ',
+        accountId: 'acct-1',
+        authPhase: 'authenticated',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-04-13T20:01:00Z',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      runtimeRunSchema.parse({
+        projectId: 'project-1',
+        runId: 'run-1',
+        runtimeKind: 'openai_codex',
+        providerId: '   ',
+        supervisorKind: 'detached_pty',
+        status: 'running',
+        transport: {
+          kind: 'tcp',
+          endpoint: '127.0.0.1:4455',
+          liveness: 'reachable',
+        },
+        startedAt: '2026-04-15T20:00:00Z',
+        lastHeartbeatAt: '2026-04-15T20:00:05Z',
+        lastCheckpointSequence: 1,
+        lastCheckpointAt: '2026-04-15T20:00:06Z',
+        stoppedAt: null,
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-04-15T20:00:06Z',
+        checkpoints: [],
+      }),
+    ).toThrow()
+
+    expect(() =>
+      projectSnapshotResponseSchema.parse({
+        ...makeSnapshot(),
+        autonomousRun: {
+          ...makeAutonomousRun(),
+          providerId: '   ',
+        },
       }),
     ).toThrow()
 
