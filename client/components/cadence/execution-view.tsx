@@ -599,7 +599,7 @@ export function ExecutionView({
         <nav className="flex h-full items-center">
           {(['waves', 'changes', 'verify'] as const).map((tab) => (
             <button
-              className={`-mb-px border-b-2 px-4 py-[10px] text-[12px] font-medium transition-colors ${
+              className={`-mb-0.5 border-b-2 px-4 py-[10px] text-[12px] font-medium transition-colors ${
                 activeTab === tab
                   ? 'border-foreground text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground/70'
