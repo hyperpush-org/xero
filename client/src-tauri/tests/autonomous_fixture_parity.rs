@@ -13,19 +13,17 @@ use cadence_desktop_lib::{
         AutonomousRunStatusDto, AutonomousUnitKindDto, AutonomousUnitStatusDto,
         GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
         NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
-        ProjectIdRequestDto, ResumeHistoryStatus, RuntimeRunCheckpointKindDto,
-        RuntimeRunStatusDto, RuntimeRunTransportLivenessDto, StopRuntimeRunRequestDto,
+        ProjectIdRequestDto, ResumeHistoryStatus, RuntimeRunCheckpointKindDto, RuntimeRunStatusDto,
+        RuntimeRunTransportLivenessDto, StopRuntimeRunRequestDto,
         SubmitNotificationReplyRequestDto,
     },
     configure_builder_with_state,
-    db::{database_path_for_repo, self, project_store},
+    db::{self, database_path_for_repo, project_store},
     git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
     runtime::{
-        autonomous_orchestrator::persist_supervisor_event,
-        launch_detached_runtime_supervisor,
-        protocol::SupervisorLiveEventPayload,
-        RuntimeSupervisorLaunchRequest,
+        autonomous_orchestrator::persist_supervisor_event, launch_detached_runtime_supervisor,
+        protocol::SupervisorLiveEventPayload, RuntimeSupervisorLaunchRequest,
     },
     state::DesktopState,
 };
@@ -309,8 +307,9 @@ fn wait_for_notification_dispatches_for_action(
     let deadline = Instant::now() + Duration::from_secs(5);
 
     loop {
-        let dispatches = project_store::load_notification_dispatches(repo_root, project_id, Some(action_id))
-            .expect("load notification dispatches for action");
+        let dispatches =
+            project_store::load_notification_dispatches(repo_root, project_id, Some(action_id))
+                .expect("load notification dispatches for action");
         if dispatches.len() == expected_count {
             return dispatches;
         }
@@ -363,7 +362,9 @@ fn count_workflow_handoff_rows(repo_root: &Path, project_id: &str) -> i64 {
     )
 }
 
-fn history_shape(state: &AutonomousRunStateDto) -> Vec<(u32, String, u32, String, String, String, String, String)> {
+fn history_shape(
+    state: &AutonomousRunStateDto,
+) -> Vec<(u32, String, u32, String, String, String, String, String)> {
     state
         .history
         .iter()
@@ -561,15 +562,12 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     let durable_progressed = project_store::load_autonomous_run(&repo_root, &project_id)
         .expect("load durable progressed autonomous run")
         .expect("durable progressed autonomous run should exist");
-    let roadmap_transition = project_store::load_recent_workflow_transition_events(
-        &repo_root,
-        &project_id,
-        None,
-    )
-    .expect("load lifecycle transition events")
-    .into_iter()
-    .find(|event| event.to_node_id == "roadmap")
-    .expect("roadmap transition should exist");
+    let roadmap_transition =
+        project_store::load_recent_workflow_transition_events(&repo_root, &project_id, None)
+            .expect("load lifecycle transition events")
+            .into_iter()
+            .find(|event| event.to_node_id == "roadmap")
+            .expect("roadmap transition should exist");
     let roadmap_handoff = project_store::load_workflow_handoff_package(
         &repo_root,
         &project_id,
@@ -578,7 +576,10 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     .expect("load roadmap handoff package")
     .expect("roadmap handoff package should exist");
     assert_eq!(progressed_linkage.workflow_node_id, "roadmap");
-    assert_eq!(progressed_linkage.transition_id, roadmap_transition.transition_id);
+    assert_eq!(
+        progressed_linkage.transition_id,
+        roadmap_transition.transition_id
+    );
     assert_eq!(
         progressed_linkage.causal_transition_id.as_deref(),
         roadmap_transition.causal_transition_id.as_deref()
@@ -716,9 +717,9 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
         .iter()
         .find(|dispatch| dispatch.route_id == "route-discord")
         .expect("discord dispatch row should exist");
-    assert!(dispatches.iter().all(|dispatch| {
-        dispatch.status == project_store::NotificationDispatchStatus::Pending
-    }));
+    assert!(dispatches
+        .iter()
+        .all(|dispatch| { dispatch.status == project_store::NotificationDispatchStatus::Pending }));
 
     let paused_durable = project_store::load_autonomous_run(&repo_root, &project_id)
         .expect("load durable autonomous run after boundary pause")
@@ -866,10 +867,13 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     )
     .expect("load project snapshot after malformed replies");
     assert!(still_paused_snapshot.resume_history.is_empty());
-    assert!(still_paused_snapshot.approval_requests.iter().any(|approval_request| {
-        approval_request.action_id == action_id
-            && approval_request.status == OperatorApprovalStatus::Pending
-    }));
+    assert!(still_paused_snapshot
+        .approval_requests
+        .iter()
+        .any(|approval_request| {
+            approval_request.action_id == action_id
+                && approval_request.status == OperatorApprovalStatus::Pending
+        }));
 
     let first = submit_notification_reply(
         fresh_paused_app.handle().clone(),
@@ -889,7 +893,10 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
         first.claim.status,
         NotificationReplyClaimStatusDto::Accepted
     );
-    assert_eq!(first.dispatch.status, NotificationDispatchStatusDto::Claimed);
+    assert_eq!(
+        first.dispatch.status,
+        NotificationDispatchStatusDto::Claimed
+    );
     assert_eq!(
         first.resolve_result.approval_request.status,
         OperatorApprovalStatus::Approved
@@ -943,8 +950,9 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     });
     assert_eq!(resumed_runtime.run_id, launched.run.run_id);
 
-    let claims = project_store::load_notification_reply_claims(&repo_root, &project_id, Some(&action_id))
-        .expect("load reply claims after accepted and duplicate replies");
+    let claims =
+        project_store::load_notification_reply_claims(&repo_root, &project_id, Some(&action_id))
+            .expect("load reply claims after accepted and duplicate replies");
     assert_eq!(claims.len(), 3);
     assert!(claims.iter().any(|claim| {
         claim.status == project_store::NotificationReplyClaimStatus::Accepted
@@ -961,8 +969,9 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
             && claim.rejection_code.as_deref() == Some("notification_reply_already_claimed")
     }));
 
-    let dispatches_after = project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
-        .expect("load notification dispatches after remote replies");
+    let dispatches_after =
+        project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
+            .expect("load notification dispatches after remote replies");
     assert_eq!(
         dispatches_after
             .iter()
@@ -1046,17 +1055,23 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     )
     .expect("load project snapshot after remote resume");
     assert_eq!(resumed_snapshot.resume_history.len(), 1);
-    assert_eq!(resumed_snapshot.resume_history[0].status, ResumeHistoryStatus::Started);
+    assert_eq!(
+        resumed_snapshot.resume_history[0].status,
+        ResumeHistoryStatus::Started
+    );
     assert_eq!(
         resumed_snapshot.resume_history[0]
             .source_action_id
             .as_deref(),
         Some(action_id.as_str())
     );
-    assert!(resumed_snapshot.approval_requests.iter().any(|approval_request| {
-        approval_request.action_id == action_id
-            && approval_request.status == OperatorApprovalStatus::Approved
-    }));
+    assert!(resumed_snapshot
+        .approval_requests
+        .iter()
+        .any(|approval_request| {
+            approval_request.action_id == action_id
+                && approval_request.status == OperatorApprovalStatus::Approved
+        }));
 
     let fresh_resumed_app = build_mock_app(create_state(&root));
     let replayed = wait_for_autonomous_run(&fresh_resumed_app, &project_id, |autonomous| {
@@ -1072,8 +1087,14 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     });
     assert_eq!(history_shape(&replayed), paused_shape);
     assert_eq!(
-        replayed.run.as_ref().map(|run| run.active_unit_id.as_deref()),
-        resumed.run.as_ref().map(|run| run.active_unit_id.as_deref())
+        replayed
+            .run
+            .as_ref()
+            .map(|run| run.active_unit_id.as_deref()),
+        resumed
+            .run
+            .as_ref()
+            .map(|run| run.active_unit_id.as_deref())
     );
     assert_eq!(
         replayed

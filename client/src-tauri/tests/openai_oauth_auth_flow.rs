@@ -18,8 +18,15 @@ use cadence_desktop_lib::{
         refresh_openai_codex_session, start_openai_codex_flow, OpenAiCodexAuthConfig,
         StoredOpenAiCodexSession,
     },
-    commands::RuntimeAuthPhase,
+    commands::{
+        get_runtime_session::get_runtime_session, start_openai_login::start_openai_login,
+        submit_openai_callback::submit_openai_callback, ProjectIdRequestDto, RuntimeAuthPhase,
+        StartOpenAiLoginRequestDto, SubmitOpenAiCallbackRequestDto,
+    },
     configure_builder_with_state,
+    db::{self, database_path_for_repo},
+    git::repository::CanonicalRepository,
+    registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
 use serde_json::json;
@@ -38,6 +45,60 @@ fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
         DesktopState::default().with_auth_store_file_override(auth_store_path.clone()),
         auth_store_path,
     )
+}
+
+fn create_project_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
+    let registry_path = root.path().join("app-data").join("project-registry.json");
+    let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    (
+        DesktopState::default()
+            .with_registry_file_override(registry_path.clone())
+            .with_auth_store_file_override(auth_store_path.clone()),
+        registry_path,
+        auth_store_path,
+    )
+}
+
+fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
+    let repo_root = root.path().join("repo");
+    std::fs::create_dir_all(&repo_root).expect("create repo root");
+    let canonical_root = std::fs::canonicalize(&repo_root).expect("canonical repo root");
+    let root_path_string = canonical_root.to_string_lossy().into_owned();
+
+    let repository = CanonicalRepository {
+        project_id: "project-1".into(),
+        repository_id: "repo-1".into(),
+        root_path: canonical_root.clone(),
+        root_path_string: root_path_string.clone(),
+        common_git_dir: canonical_root.join(".git"),
+        display_name: "repo".into(),
+        branch_name: Some("main".into()),
+        head_sha: Some("abc123".into()),
+        branch: None,
+        status_entries: Vec::new(),
+        has_staged_changes: false,
+        has_unstaged_changes: false,
+        has_untracked_changes: false,
+    };
+
+    db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
+        .expect("import project into repo-local db");
+
+    let registry_path = app
+        .state::<DesktopState>()
+        .registry_file(&app.handle().clone())
+        .expect("registry path");
+    registry::replace_projects(
+        &registry_path,
+        vec![RegistryProjectRecord {
+            project_id: repository.project_id.clone(),
+            repository_id: repository.repository_id.clone(),
+            root_path: root_path_string,
+        }],
+    )
+    .expect("persist registry entry");
+
+    (repository.project_id, canonical_root)
 }
 
 fn auth_config(server: &TestHttpServer) -> OpenAiCodexAuthConfig {
@@ -76,6 +137,21 @@ fn send_callback(redirect_uri: &str, state: &str, code: &str) {
         response.status().is_success(),
         "callback should return success html"
     );
+}
+
+fn active_flow_expected_state(app: &tauri::App<tauri::test::MockRuntime>, flow_id: &str) -> String {
+    let authorization_url = app
+        .state::<DesktopState>()
+        .active_auth_flows()
+        .snapshot(flow_id)
+        .expect("active flow snapshot")
+        .authorization_url;
+
+    url::Url::parse(&authorization_url)
+        .expect("authorization url")
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+        .expect("expected state query")
 }
 
 #[test]
@@ -534,6 +610,212 @@ fn cancelled_login_rejects_completion() {
     )
     .expect_err("cancelled flow should fail");
     assert_eq!(error.code, "auth_flow_cancelled");
+}
+
+#[test]
+fn start_openai_login_reuses_in_flight_flow_and_exposes_redacted_snapshot() {
+    let server = TestHttpServer::spawn(|_| TestHttpResponse::plain(200, "unused"));
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_project_state(&root);
+    let state = state.with_openai_auth_config_override(auth_config(&server));
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let first = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            originator: Some("cadence-tests".into()),
+        },
+    )
+    .expect("start wrapper login");
+    assert_eq!(first.phase, RuntimeAuthPhase::AwaitingBrowserCallback);
+    assert_eq!(first.callback_bound, Some(true));
+
+    let second = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            originator: Some("cadence-tests".into()),
+        },
+    )
+    .expect("repeat wrapper login should reuse active flow");
+    assert_eq!(second.flow_id, first.flow_id);
+    assert_eq!(second.redirect_uri, first.redirect_uri);
+    assert_eq!(second.authorization_url, first.authorization_url);
+
+    let flow_id = first.flow_id.expect("flow id");
+    let snapshot = app
+        .state::<DesktopState>()
+        .active_auth_flows()
+        .snapshot(&flow_id)
+        .expect("active flow snapshot");
+    assert_eq!(snapshot.phase, RuntimeAuthPhase::AwaitingBrowserCallback);
+    assert!(snapshot.session_id.is_none());
+    assert!(snapshot.account_id.is_none());
+    assert!(snapshot.last_error.is_none());
+    assert!(!serde_json::to_string(&snapshot)
+        .expect("snapshot json")
+        .contains("refresh_token"));
+}
+
+#[test]
+fn wrapper_commands_complete_browser_callback_without_repo_secret_leakage() {
+    let server = TestHttpServer::spawn(|form| {
+        let code = form.get("code").cloned().unwrap_or_default();
+        TestHttpResponse::json(
+            200,
+            json!({
+                "access_token": jwt_with_account_id(&format!("acct-{code}")),
+                "refresh_token": format!("refresh-{code}"),
+                "expires_in": 3600,
+            })
+            .to_string(),
+        )
+    });
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_project_state(&root);
+    let state = state.with_openai_auth_config_override(auth_config(&server));
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    let started = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            originator: Some("cadence-tests".into()),
+        },
+    )
+    .expect("start wrapper login");
+    let flow_id = started.flow_id.clone().expect("flow id");
+    let redirect_uri = started.redirect_uri.clone().expect("redirect uri");
+    let expected_state = active_flow_expected_state(&app, &flow_id);
+    send_callback(&redirect_uri, &expected_state, "browser-code");
+
+    let runtime = submit_openai_callback(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SubmitOpenAiCallbackRequestDto {
+            project_id: project_id.clone(),
+            flow_id: flow_id.clone(),
+            manual_input: None,
+        },
+    )
+    .expect("submit wrapper callback");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.account_id.as_deref(), Some("acct-browser-code"));
+    assert_eq!(runtime.provider_id, "openai_codex");
+    assert!(runtime.authorization_url.is_none());
+    assert!(runtime.redirect_uri.is_none());
+
+    let status = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("get runtime session");
+    assert_eq!(status.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(status.account_id.as_deref(), Some("acct-browser-code"));
+
+    let auth_store = std::fs::read_to_string(&auth_store_path).expect("auth store contents");
+    assert!(auth_store.contains("refresh-browser-code"));
+
+    let request = server.single_request();
+    assert_eq!(
+        request.get("code").map(String::as_str),
+        Some("browser-code")
+    );
+
+    let database_bytes = std::fs::read(database_path_for_repo(&repo_root)).expect("runtime db");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains("refresh-browser-code"));
+    assert!(!database_text.contains("chatgpt_account_id"));
+}
+
+#[test]
+fn wrapper_submit_supports_manual_fallback_and_preserves_redaction() {
+    let occupied = TcpListener::bind(("127.0.0.1", 0)).expect("occupied port");
+    let occupied_port = occupied.local_addr().expect("occupied addr").port();
+    let server = TestHttpServer::spawn(|form| {
+        let code = form.get("code").cloned().unwrap_or_default();
+        TestHttpResponse::json(
+            200,
+            json!({
+                "access_token": jwt_with_account_id(&format!("acct-{code}")),
+                "refresh_token": format!("refresh-{code}"),
+                "expires_in": 3600,
+            })
+            .to_string(),
+        )
+    });
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_project_state(&root);
+    let mut config = auth_config(&server);
+    config.callback_port = occupied_port;
+    let state = state.with_openai_auth_config_override(config);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    let started = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            originator: Some("cadence-tests".into()),
+        },
+    )
+    .expect("start wrapper login");
+    let flow_id = started.flow_id.clone().expect("flow id");
+    let redirect_uri = started.redirect_uri.clone().expect("redirect uri");
+    assert_eq!(started.phase, RuntimeAuthPhase::AwaitingManualInput);
+    assert_eq!(started.callback_bound, Some(false));
+    assert_eq!(
+        started.last_error_code.as_deref(),
+        Some("callback_listener_bind_failed")
+    );
+
+    let manual_input = format!(
+        "{}?code=manual-wrapper-code&state={}",
+        redirect_uri,
+        active_flow_expected_state(&app, &flow_id)
+    );
+
+    let runtime = submit_openai_callback(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SubmitOpenAiCallbackRequestDto {
+            project_id: project_id.clone(),
+            flow_id,
+            manual_input: Some(manual_input),
+        },
+    )
+    .expect("submit manual wrapper callback");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(
+        runtime.account_id.as_deref(),
+        Some("acct-manual-wrapper-code")
+    );
+
+    let auth_store = std::fs::read_to_string(&auth_store_path).expect("auth store contents");
+    assert!(auth_store.contains("refresh-manual-wrapper-code"));
+
+    let request = server.single_request();
+    assert_eq!(
+        request.get("code").map(String::as_str),
+        Some("manual-wrapper-code")
+    );
+
+    let database_bytes = std::fs::read(database_path_for_repo(&repo_root)).expect("runtime db");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains("refresh-manual-wrapper-code"));
+    assert!(!database_text.contains("chatgpt_account_id"));
+
+    drop(occupied);
 }
 
 struct TestHttpServer {

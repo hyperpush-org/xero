@@ -3,6 +3,7 @@ pub mod autonomous_tool_runtime;
 pub mod autonomous_workflow_progression;
 pub mod platform_adapter;
 pub mod protocol;
+pub mod provider;
 pub mod stream;
 pub mod supervisor;
 
@@ -21,6 +22,10 @@ pub use platform_adapter::{
     resolve_runtime_supervisor_binary, resolve_runtime_supervisor_binary_with_current_executable,
     OpenAiCallbackBindResult, OpenAiCallbackPolicy, RuntimeAdapterDiagnostic, RuntimePlatform,
     RuntimeShellSelection, RuntimeShellSource, RuntimeSupervisorBinaryResolution,
+};
+pub use provider::{
+    openai_codex_provider, ResolvedRuntimeProvider, RuntimeProvider,
+    OPENAI_CODEX_AUTH_STORE_FILE_NAME, OPENAI_CODEX_PROVIDER_ID,
 };
 pub use stream::{start_runtime_stream, RuntimeStreamController, RuntimeStreamRequest};
 pub use supervisor::{

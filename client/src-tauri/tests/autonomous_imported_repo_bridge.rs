@@ -12,9 +12,9 @@ use cadence_desktop_lib::{
         get_runtime_run::get_runtime_run, start_autonomous_run::start_autonomous_run,
         start_runtime_session::start_runtime_session, AutonomousRunRecoveryStateDto,
         AutonomousRunStateDto, AutonomousRunStatusDto, CancelAutonomousRunRequestDto,
-        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, ProjectIdRequestDto,
-        RuntimeAuthPhase, RuntimeRunDto, RuntimeRunStatusDto,
-        RuntimeRunTransportLivenessDto, StartAutonomousRunRequestDto,
+        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, ProjectIdRequestDto, RuntimeAuthPhase,
+        RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportLivenessDto,
+        StartAutonomousRunRequestDto,
     },
     configure_builder_with_state, db,
     git::repository::{ensure_cadence_excluded, CanonicalRepository},
@@ -72,14 +72,21 @@ fn commit_all(repo_root: &Path, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repo.find_tree(tree_id).expect("find tree");
-    let signature = git2::Signature::now("Cadence Test", "cadence@example.com")
-        .expect("create test signature");
+    let signature =
+        git2::Signature::now("Cadence Test", "cadence@example.com").expect("create test signature");
 
     let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
     match parent.as_ref() {
         Some(parent) => {
-            repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[parent])
-                .expect("commit repo state");
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &[parent],
+            )
+            .expect("commit repo state");
         }
         None => {
             repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
@@ -91,8 +98,7 @@ fn commit_all(repo_root: &Path, message: &str) {
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
     let repo_root = root.path().join("imported-proof-repo");
     fs::create_dir_all(repo_root.join("notes")).expect("create repo notes directory");
-    fs::write(repo_root.join("README.md"), "alpha\nbeta\n")
-        .expect("seed imported repo readme");
+    fs::write(repo_root.join("README.md"), "alpha\nbeta\n").expect("seed imported repo readme");
 
     Repository::init(&repo_root).expect("init imported git repo");
     commit_all(&repo_root, "Initial imported proof repo state");
@@ -241,7 +247,9 @@ fn load_git_statuses(repo_root: &Path) -> Vec<(String, Status)> {
         .recurse_untracked_dirs(true)
         .include_unmodified(false);
 
-    let statuses = repo.statuses(Some(&mut options)).expect("load git statuses");
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .expect("load git statuses");
 
     statuses
         .iter()
@@ -328,7 +336,10 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
             assert_eq!(output.cwd, "notes");
             assert_eq!(output.exit_code, Some(0));
             let stdout = output.stdout.expect("command stdout should be captured");
-            assert!(stdout.contains("notes"), "expected repo-scoped cwd in stdout: {stdout}");
+            assert!(
+                stdout.contains("notes"),
+                "expected repo-scoped cwd in stdout: {stdout}"
+            );
         }
         other => panic!("unexpected command output: {other:?}"),
     }
@@ -356,7 +367,8 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
         .expect("notes/proof.txt should be present in git status");
 
     assert!(
-        readme_status.contains(Status::WT_MODIFIED) || readme_status.contains(Status::INDEX_MODIFIED),
+        readme_status.contains(Status::WT_MODIFIED)
+            || readme_status.contains(Status::INDEX_MODIFIED),
         "expected README.md to show a modified status, got {readme_status:?}"
     );
     assert!(
@@ -382,7 +394,9 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
         },
     )
     .expect("start autonomous run on imported repo");
-    let started_run = started.run.expect("autonomous start should return run state");
+    let started_run = started
+        .run
+        .expect("autonomous start should return run state");
     assert!(!started_run.duplicate_start_detected);
     assert!(matches!(
         started_run.status,
@@ -411,7 +425,10 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
             && run.recovery_state == AutonomousRunRecoveryStateDto::Healthy
             && run.active_unit_id.as_deref() == Some(unit.unit_id.as_str())
     });
-    let running_run = running.run.as_ref().expect("running autonomous run should exist");
+    let running_run = running
+        .run
+        .as_ref()
+        .expect("running autonomous run should exist");
     let running_unit = running
         .unit
         .as_ref()
@@ -491,7 +508,10 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
     .run
     .expect("cancelled imported repo autonomous run should still exist");
     assert_eq!(cancelled.status, AutonomousRunStatusDto::Cancelled);
-    assert_eq!(cancelled.recovery_state, AutonomousRunRecoveryStateDto::Terminal);
+    assert_eq!(
+        cancelled.recovery_state,
+        AutonomousRunRecoveryStateDto::Terminal
+    );
 
     let statuses = load_git_statuses(&repo_root);
     assert!(statuses.is_empty(), "shell-only duplicate-start proof should not mutate the imported repo worktree, got {statuses:?}");

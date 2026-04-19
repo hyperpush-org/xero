@@ -1,6 +1,10 @@
 pub mod openai_codex;
 pub mod store;
 
+pub use crate::runtime::{
+    openai_codex_provider, ResolvedRuntimeProvider, RuntimeProvider,
+    OPENAI_CODEX_AUTH_STORE_FILE_NAME, OPENAI_CODEX_PROVIDER_ID,
+};
 pub use openai_codex::{
     cancel_openai_codex_flow, complete_openai_codex_flow, refresh_openai_codex_session,
     start_openai_codex_flow, OpenAiCodexAuthConfig, OpenAiCodexAuthSession, StartedOpenAiCodexFlow,
@@ -16,13 +20,11 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Runtime};
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use crate::commands::RuntimeAuthPhase;
-
-pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
-pub const OPENAI_CODEX_AUTH_STORE_FILE_NAME: &str = "openai-codex-auth.json";
+use crate::{commands::RuntimeAuthPhase, state::DesktopState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -102,23 +104,112 @@ impl AuthFlowError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartedRuntimeAuthFlow {
+    pub provider_id: String,
+    pub flow_id: String,
+    pub authorization_url: String,
+    pub redirect_uri: String,
+    pub expected_state: String,
+    pub phase: RuntimeAuthPhase,
+    pub callback_bound: bool,
+    pub last_error_code: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAuthSession {
+    pub provider_id: String,
+    pub session_id: String,
+    pub account_id: String,
+    pub expires_at: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ActiveAuthFlow {
+    OpenAiCodex(openai_codex::ActiveOpenAiCodexFlow),
+}
+
+impl ActiveAuthFlow {
+    pub fn provider(&self) -> ResolvedRuntimeProvider {
+        match self {
+            Self::OpenAiCodex(_) => openai_codex_provider(),
+        }
+    }
+
+    pub fn flow_id(&self) -> &str {
+        match self {
+            Self::OpenAiCodex(flow) => flow.flow_id(),
+        }
+    }
+
+    pub fn snapshot(&self) -> RuntimeAuthStateSnapshot {
+        match self {
+            Self::OpenAiCodex(flow) => flow.snapshot(),
+        }
+    }
+}
+
+impl From<openai_codex::ActiveOpenAiCodexFlow> for ActiveAuthFlow {
+    fn from(flow: openai_codex::ActiveOpenAiCodexFlow) -> Self {
+        Self::OpenAiCodex(flow)
+    }
+}
+
+impl From<StartedOpenAiCodexFlow> for StartedRuntimeAuthFlow {
+    fn from(flow: StartedOpenAiCodexFlow) -> Self {
+        Self {
+            provider_id: openai_codex_provider().provider_id.into(),
+            flow_id: flow.flow_id,
+            authorization_url: flow.authorization_url,
+            redirect_uri: flow.redirect_uri,
+            expected_state: flow.expected_state,
+            phase: flow.phase,
+            callback_bound: flow.callback_bound,
+            last_error_code: flow.last_error_code,
+            updated_at: flow.updated_at,
+        }
+    }
+}
+
+impl From<OpenAiCodexAuthSession> for RuntimeAuthSession {
+    fn from(session: OpenAiCodexAuthSession) -> Self {
+        Self {
+            provider_id: session.provider_id,
+            session_id: session.session_id,
+            account_id: session.account_id,
+            expires_at: session.expires_at,
+            updated_at: session.updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ActiveAuthFlowRegistry {
-    inner: Arc<Mutex<HashMap<String, openai_codex::ActiveOpenAiCodexFlow>>>,
+    inner: Arc<Mutex<HashMap<String, ActiveAuthFlow>>>,
 }
 
 impl ActiveAuthFlowRegistry {
-    pub fn insert(&self, flow: openai_codex::ActiveOpenAiCodexFlow) {
+    pub fn insert(&self, flow: ActiveAuthFlow) {
         self.inner
             .lock()
             .expect("active auth flow registry lock poisoned")
             .insert(flow.flow_id().to_owned(), flow);
     }
 
+    pub fn flow(&self, flow_id: &str) -> Option<ActiveAuthFlow> {
+        self.inner
+            .lock()
+            .expect("active auth flow registry lock poisoned")
+            .get(flow_id)
+            .cloned()
+    }
+
     pub fn with_flow<T>(
         &self,
         flow_id: &str,
-        operation: impl FnOnce(&mut openai_codex::ActiveOpenAiCodexFlow) -> T,
+        operation: impl FnOnce(&mut ActiveAuthFlow) -> T,
     ) -> Option<T> {
         let mut flows = self
             .inner
@@ -133,8 +224,97 @@ impl ActiveAuthFlowRegistry {
             .lock()
             .expect("active auth flow registry lock poisoned")
             .get(flow_id)
-            .map(openai_codex::ActiveOpenAiCodexFlow::snapshot)
+            .map(ActiveAuthFlow::snapshot)
     }
+}
+
+pub fn start_provider_auth_flow(
+    state: &DesktopState,
+    provider: RuntimeProvider,
+    originator: Option<&str>,
+) -> Result<StartedRuntimeAuthFlow, AuthFlowError> {
+    match provider {
+        RuntimeProvider::OpenAiCodex => {
+            openai_codex::start_openai_codex_flow(state, state.openai_auth_config(), originator)
+                .map(Into::into)
+        }
+    }
+}
+
+pub fn complete_provider_auth_flow<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    provider: RuntimeProvider,
+    flow_id: &str,
+    manual_input: Option<&str>,
+) -> Result<RuntimeAuthSession, AuthFlowError> {
+    let requested_provider = provider.resolve();
+    let active_flow = state
+        .active_auth_flows()
+        .flow(flow_id)
+        .ok_or_else(|| auth_flow_not_found_error(flow_id, requested_provider))?;
+    let actual_provider = active_flow.provider();
+    if actual_provider != requested_provider {
+        return Err(auth_flow_provider_mismatch_error(
+            flow_id,
+            requested_provider,
+            actual_provider,
+        ));
+    }
+
+    match provider {
+        RuntimeProvider::OpenAiCodex => openai_codex::complete_openai_codex_flow(
+            app,
+            state,
+            flow_id,
+            manual_input,
+            &state.openai_auth_config(),
+        )
+        .map(Into::into),
+    }
+}
+
+pub fn refresh_provider_auth_session<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    provider: RuntimeProvider,
+    account_id: &str,
+) -> Result<RuntimeAuthSession, AuthFlowError> {
+    match provider {
+        RuntimeProvider::OpenAiCodex => openai_codex::refresh_openai_codex_session(
+            app,
+            state,
+            account_id,
+            &state.openai_auth_config(),
+        )
+        .map(Into::into),
+    }
+}
+
+fn auth_flow_not_found_error(flow_id: &str, provider: ResolvedRuntimeProvider) -> AuthFlowError {
+    AuthFlowError::terminal(
+        "auth_flow_not_found",
+        RuntimeAuthPhase::Failed,
+        format!(
+            "Cadence could not find the active {} auth flow `{flow_id}`.",
+            provider.provider_id
+        ),
+    )
+}
+
+fn auth_flow_provider_mismatch_error(
+    flow_id: &str,
+    requested_provider: ResolvedRuntimeProvider,
+    actual_provider: ResolvedRuntimeProvider,
+) -> AuthFlowError {
+    AuthFlowError::terminal(
+        "auth_flow_provider_mismatch",
+        RuntimeAuthPhase::Failed,
+        format!(
+            "Cadence rejected auth flow `{flow_id}` because it belongs to provider `{}` instead of `{}`. Start a fresh login.",
+            actual_provider.provider_id, requested_provider.provider_id
+        ),
+    )
 }
 
 pub fn now_timestamp() -> String {

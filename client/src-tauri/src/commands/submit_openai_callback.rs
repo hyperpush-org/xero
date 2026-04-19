@@ -1,18 +1,18 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    auth::{complete_openai_codex_flow, OpenAiCodexAuthConfig},
+    auth::complete_provider_auth_flow,
     commands::{
         validate_non_empty, CommandResult, RuntimeDiagnosticDto, RuntimeSessionDto,
         SubmitOpenAiCallbackRequestDto,
     },
+    runtime::openai_codex_provider,
     state::DesktopState,
 };
 
 use super::runtime_support::{
     command_error_from_auth, default_runtime_session, emit_runtime_updated,
     persist_runtime_session, resolve_project_root, runtime_diagnostic_from_auth,
-    OPENAI_RUNTIME_KIND,
 };
 
 #[tauri::command]
@@ -24,20 +24,20 @@ pub fn submit_openai_callback<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.flow_id, "flowId")?;
 
+    let provider = openai_codex_provider();
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let config = OpenAiCodexAuthConfig::for_platform();
 
-    match complete_openai_codex_flow(
+    match complete_provider_auth_flow(
         &app,
         state.inner(),
+        provider.provider,
         &request.flow_id,
         request.manual_input.as_deref(),
-        &config,
     ) {
         Ok(session) => {
             let runtime = RuntimeSessionDto {
                 project_id: request.project_id,
-                runtime_kind: OPENAI_RUNTIME_KIND.into(),
+                runtime_kind: provider.runtime_kind.into(),
                 provider_id: session.provider_id,
                 flow_id: None,
                 session_id: Some(session.session_id),
@@ -57,10 +57,19 @@ pub fn submit_openai_callback<R: Runtime>(
         Err(error) => {
             let snapshot = state.inner().active_auth_flows().snapshot(&request.flow_id);
             let failed = if let Some(snapshot) = snapshot {
-                let last_error = snapshot.last_error.map(runtime_diagnostic_from_auth);
+                let last_error = snapshot
+                    .last_error
+                    .map(runtime_diagnostic_from_auth)
+                    .or_else(|| {
+                        Some(RuntimeDiagnosticDto {
+                            code: error.code.clone(),
+                            message: error.message.clone(),
+                            retryable: error.retryable,
+                        })
+                    });
                 RuntimeSessionDto {
                     project_id: request.project_id.clone(),
-                    runtime_kind: OPENAI_RUNTIME_KIND.into(),
+                    runtime_kind: provider.runtime_kind.into(),
                     provider_id: snapshot.provider_id,
                     flow_id: Some(snapshot.flow_id),
                     session_id: snapshot.session_id,

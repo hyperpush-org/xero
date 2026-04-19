@@ -3,10 +3,13 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{
-    auth::{ActiveAuthFlowRegistry, AuthFlowError, OPENAI_CODEX_AUTH_STORE_FILE_NAME},
+    auth::{ActiveAuthFlowRegistry, AuthFlowError, OpenAiCodexAuthConfig},
     commands::CommandError,
     notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
-    runtime::{RuntimeStreamController, RuntimeSupervisorController},
+    runtime::{
+        openai_codex_provider, ResolvedRuntimeProvider, RuntimeStreamController,
+        RuntimeSupervisorController,
+    },
 };
 
 pub const REGISTRY_FILE_NAME: &str = "project-registry.json";
@@ -31,6 +34,7 @@ pub struct DesktopState {
     auth_store_file_override: Option<PathBuf>,
     notification_credential_store_file_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
+    openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
     runtime_stream_controller: RuntimeStreamController,
@@ -56,6 +60,11 @@ impl DesktopState {
 
     pub fn with_runtime_supervisor_binary_override(mut self, path: PathBuf) -> Self {
         self.runtime_supervisor_binary_override = Some(path);
+        self
+    }
+
+    pub fn with_openai_auth_config_override(mut self, config: OpenAiCodexAuthConfig) -> Self {
+        self.openai_auth_config_override = Some(config);
         self
     }
 
@@ -87,6 +96,12 @@ impl DesktopState {
 
     pub fn runtime_supervisor_binary_override(&self) -> Option<&PathBuf> {
         self.runtime_supervisor_binary_override.as_ref()
+    }
+
+    pub fn openai_auth_config(&self) -> OpenAiCodexAuthConfig {
+        self.openai_auth_config_override
+            .clone()
+            .unwrap_or_else(OpenAiCodexAuthConfig::for_platform)
     }
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {
@@ -126,9 +141,10 @@ impl DesktopState {
         Ok(app_data_dir.join(NOTIFICATION_CREDENTIAL_STORE_FILE_NAME))
     }
 
-    pub fn auth_store_file<R: Runtime>(
+    pub fn auth_store_file_for_provider<R: Runtime>(
         &self,
         app: &AppHandle<R>,
+        provider: ResolvedRuntimeProvider,
     ) -> Result<PathBuf, AuthFlowError> {
         if let Some(path) = &self.auth_store_file_override {
             return Ok(path.clone());
@@ -142,6 +158,13 @@ impl DesktopState {
             )
         })?;
 
-        Ok(app_data_dir.join(OPENAI_CODEX_AUTH_STORE_FILE_NAME))
+        Ok(app_data_dir.join(provider.auth_store_file_name))
+    }
+
+    pub fn auth_store_file<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<PathBuf, AuthFlowError> {
+        self.auth_store_file_for_provider(app, openai_codex_provider())
     }
 }

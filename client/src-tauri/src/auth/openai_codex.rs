@@ -14,14 +14,11 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime};
 use url::Url;
 
-use super::{
-    now_timestamp, store, AuthDiagnostic, AuthFlowError, RuntimeAuthStateSnapshot,
-    OPENAI_CODEX_PROVIDER_ID,
-};
+use super::{now_timestamp, store, AuthDiagnostic, AuthFlowError, RuntimeAuthStateSnapshot};
 use crate::{
     commands::RuntimeAuthPhase,
     runtime::{
-        bind_openai_callback_listener, default_openai_callback_policy,
+        bind_openai_callback_listener, default_openai_callback_policy, openai_codex_provider,
         resolve_openai_callback_policy, OpenAiCallbackBindResult,
     },
     state::DesktopState,
@@ -147,7 +144,7 @@ impl ActiveOpenAiCodexFlow {
             .expect("openai oauth flow lock poisoned");
 
         RuntimeAuthStateSnapshot {
-            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            provider_id: openai_codex_provider().provider_id.into(),
             flow_id: self.flow_id.clone(),
             session_id: observation.session_id.clone(),
             account_id: observation.account_id.clone(),
@@ -318,7 +315,7 @@ pub fn start_openai_codex_flow(
         spawn_callback_listener(listener, flow.clone());
     }
 
-    state.active_auth_flows().insert(flow);
+    state.active_auth_flows().insert(flow.into());
 
     Ok(StartedOpenAiCodexFlow {
         flow_id,
@@ -339,16 +336,16 @@ pub fn complete_openai_codex_flow<R: Runtime>(
     manual_input: Option<&str>,
     config: &OpenAiCodexAuthConfig,
 ) -> Result<OpenAiCodexAuthSession, AuthFlowError> {
-    let selected_flow = state
-        .active_auth_flows()
-        .with_flow(flow_id, |flow| flow.clone())
-        .ok_or_else(|| {
-            AuthFlowError::terminal(
-                "auth_flow_not_found",
-                RuntimeAuthPhase::Failed,
-                format!("Cadence could not find the active OpenAI auth flow `{flow_id}`."),
-            )
-        })?;
+    let selected_flow = state.active_auth_flows().flow(flow_id).ok_or_else(|| {
+        AuthFlowError::terminal(
+            "auth_flow_not_found",
+            RuntimeAuthPhase::Failed,
+            format!("Cadence could not find the active OpenAI auth flow `{flow_id}`."),
+        )
+    })?;
+    let selected_flow = match selected_flow {
+        super::ActiveAuthFlow::OpenAiCodex(selected_flow) => selected_flow,
+    };
 
     if selected_flow.is_cancelled() {
         return Err(AuthFlowError::terminal(
@@ -397,13 +394,13 @@ pub fn complete_openai_codex_flow<R: Runtime>(
     })?;
 
     let session = OpenAiCodexAuthSession {
-        provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+        provider_id: openai_codex_provider().provider_id.into(),
         session_id: random_hex(16)?,
         account_id: account_id.clone(),
         expires_at: token_response.expires_at,
         updated_at: now_timestamp(),
     };
-    let auth_store_path = state.auth_store_file(app)?;
+    let auth_store_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
     store::persist_openai_codex_session(
         &auth_store_path,
         store::StoredOpenAiCodexSession {
@@ -435,7 +432,7 @@ pub fn refresh_openai_codex_session<R: Runtime>(
         ));
     }
 
-    let auth_store_path = state.auth_store_file(app)?;
+    let auth_store_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
     let stored_session = store::load_openai_codex_session(&auth_store_path, account_id)?
         .ok_or_else(|| {
             AuthFlowError::terminal(
@@ -450,7 +447,7 @@ pub fn refresh_openai_codex_session<R: Runtime>(
     let refreshed = refresh_access_token(&stored_session.refresh_token, config)?;
     let refreshed_account_id = extract_account_id(&refreshed.access_token)?;
     let updated_session = OpenAiCodexAuthSession {
-        provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+        provider_id: openai_codex_provider().provider_id.into(),
         session_id: stored_session.session_id.clone(),
         account_id: refreshed_account_id.clone(),
         expires_at: refreshed.expires_at,
@@ -479,10 +476,17 @@ pub fn cancel_openai_codex_flow(
 ) -> Result<RuntimeAuthStateSnapshot, AuthFlowError> {
     state
         .active_auth_flows()
-        .with_flow(flow_id, |flow| {
-            flow.mark_cancelled();
-            flow.snapshot()
-        })
+        .with_flow(
+            flow_id,
+            |flow| -> Result<RuntimeAuthStateSnapshot, AuthFlowError> {
+                let flow = match flow {
+                    super::ActiveAuthFlow::OpenAiCodex(flow) => flow,
+                };
+                flow.mark_cancelled();
+                Ok(flow.snapshot())
+            },
+        )
+        .transpose()?
         .ok_or_else(|| {
             AuthFlowError::terminal(
                 "auth_flow_not_found",
