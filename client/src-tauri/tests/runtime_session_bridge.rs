@@ -10,12 +10,13 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cadence_desktop_lib::{
     auth::{
         now_timestamp, persist_openai_codex_session, remove_openai_codex_session,
-        OpenAiCodexAuthConfig, StoredOpenAiCodexSession,
+        OpenAiCodexAuthConfig, OpenRouterAuthConfig, StoredOpenAiCodexSession,
     },
     commands::{
         get_runtime_session::get_runtime_session, logout_runtime_session::logout_runtime_session,
         start_openai_login::start_openai_login, start_runtime_session::start_runtime_session,
-        ProjectIdRequestDto, RuntimeAuthPhase, StartOpenAiLoginRequestDto,
+        upsert_runtime_settings::upsert_runtime_settings, ProjectIdRequestDto, RuntimeAuthPhase,
+        StartOpenAiLoginRequestDto, UpsertRuntimeSettingsRequestDto,
     },
     configure_builder_with_state,
     db::{self, database_path_for_repo, project_store},
@@ -37,10 +38,17 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 fn create_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
     let registry_path = root.path().join("app-data").join("project-registry.json");
     let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    let runtime_settings_path = root.path().join("app-data").join("runtime-settings.json");
+    let openrouter_credential_path = root
+        .path()
+        .join("app-data")
+        .join("openrouter-credentials.json");
     (
         DesktopState::default()
             .with_registry_file_override(registry_path.clone())
-            .with_auth_store_file_override(auth_store_path.clone()),
+            .with_auth_store_file_override(auth_store_path.clone())
+            .with_runtime_settings_file_override(runtime_settings_path)
+            .with_openrouter_credential_file_override(openrouter_credential_path),
         registry_path,
         auth_store_path,
     )
@@ -160,6 +168,13 @@ fn auth_config_with_token_url(token_url: String) -> OpenAiCodexAuthConfig {
     config.token_url = token_url;
     config.callback_port = 0;
     config.originator = "cadence-tests".into();
+    config.timeout = Duration::from_secs(5);
+    config
+}
+
+fn openrouter_auth_config(models_url: String) -> OpenRouterAuthConfig {
+    let mut config = OpenRouterAuthConfig::default();
+    config.models_url = models_url;
     config.timeout = Duration::from_secs(5);
     config
 }
@@ -606,6 +621,186 @@ fn logout_runtime_session_succeeds_when_backing_auth_row_is_already_gone() {
     assert_eq!(runtime.account_id.as_deref(), Some("acct-1"));
     assert!(runtime.session_id.is_none());
     assert!(runtime.last_error.is_none());
+}
+
+#[test]
+fn start_runtime_session_binds_openrouter_from_global_settings_without_secret_leakage() {
+    let models_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let state = state.with_openrouter_auth_config_override(openrouter_auth_config(format!(
+        "{models_base_url}/api/v1/models"
+    )));
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let secret = "sk-or-v1-openrouter-secret";
+
+    upsert_runtime_settings(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertRuntimeSettingsRequestDto {
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o-mini".into(),
+            openrouter_api_key: Some(secret.into()),
+        },
+    )
+    .expect("save openrouter runtime settings");
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind openrouter runtime session");
+
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "openrouter");
+    assert_eq!(runtime.runtime_kind, "openrouter");
+    assert!(runtime.session_id.is_some());
+    assert!(runtime.account_id.is_some());
+    assert!(runtime.last_error.is_none());
+
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db bytes");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains(secret));
+}
+
+#[test]
+fn start_runtime_session_maps_openrouter_validation_failures_to_typed_diagnostics() {
+    let cases = [
+        (401_u16, "openrouter_invalid_api_key", false),
+        (402_u16, "openrouter_insufficient_credits", false),
+        (429_u16, "openrouter_rate_limited", true),
+        (503_u16, "openrouter_provider_unavailable", true),
+    ];
+
+    for (status, expected_code, expected_retryable) in cases {
+        let models_base_url = spawn_static_http_server(status, "denied");
+        let root = tempfile::tempdir().expect("temp dir");
+        let (state, _registry_path, _auth_store_path) = create_state(&root);
+        let state = state.with_openrouter_auth_config_override(openrouter_auth_config(format!(
+            "{models_base_url}/api/v1/models"
+        )));
+        let app = build_mock_app(state);
+        let (project_id, _repo_root) = seed_project(&root, &app);
+
+        upsert_runtime_settings(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            UpsertRuntimeSettingsRequestDto {
+                provider_id: "openrouter".into(),
+                model_id: "openai/gpt-4o-mini".into(),
+                openrouter_api_key: Some("sk-or-v1-openrouter-secret".into()),
+            },
+        )
+        .expect("save openrouter runtime settings");
+
+        let runtime = start_runtime_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            ProjectIdRequestDto {
+                project_id: project_id.clone(),
+            },
+        )
+        .expect("surface openrouter diagnostic");
+
+        assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
+        assert_eq!(runtime.provider_id, "openrouter");
+        assert_eq!(runtime.last_error_code.as_deref(), Some(expected_code));
+        assert_eq!(
+            runtime.last_error.as_ref().map(|diagnostic| diagnostic.retryable),
+            Some(expected_retryable)
+        );
+        assert!(runtime.session_id.is_none());
+    }
+}
+
+#[test]
+fn get_runtime_session_rejects_stale_openrouter_binding_after_key_rotation() {
+    let models_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let state = state.with_openrouter_auth_config_override(openrouter_auth_config(format!(
+        "{models_base_url}/api/v1/models"
+    )));
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    upsert_runtime_settings(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertRuntimeSettingsRequestDto {
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o-mini".into(),
+            openrouter_api_key: Some("sk-or-v1-first".into()),
+        },
+    )
+    .expect("save initial openrouter settings");
+
+    let first = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind first openrouter runtime session");
+
+    upsert_runtime_settings(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertRuntimeSettingsRequestDto {
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o-mini".into(),
+            openrouter_api_key: Some("sk-or-v1-second".into()),
+        },
+    )
+    .expect("rotate openrouter key");
+
+    let reconciled = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("reconcile stale openrouter binding");
+
+    assert_eq!(reconciled.phase, RuntimeAuthPhase::Idle);
+    assert_eq!(
+        reconciled.last_error_code.as_deref(),
+        Some("openrouter_binding_stale")
+    );
+    assert!(reconciled.session_id.is_none());
+
+    let rebound_models_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#,
+    );
+    let (rebound_state, _registry_path, _auth_store_path) = create_state(&root);
+    let rebound_state = rebound_state.with_openrouter_auth_config_override(
+        openrouter_auth_config(format!("{rebound_models_base_url}/api/v1/models")),
+    );
+    let rebound_app = build_mock_app(rebound_state);
+    let rebound = start_runtime_session(
+        rebound_app.handle().clone(),
+        rebound_app.state::<DesktopState>(),
+        ProjectIdRequestDto { project_id },
+    )
+    .expect("rebind rotated openrouter key");
+
+    assert_eq!(rebound.phase, RuntimeAuthPhase::Authenticated);
+    assert_ne!(rebound.session_id, first.session_id);
+    assert_ne!(rebound.account_id, first.account_id);
 }
 
 #[test]

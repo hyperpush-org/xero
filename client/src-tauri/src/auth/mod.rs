@@ -1,13 +1,21 @@
 pub mod openai_codex;
+pub mod openrouter;
 pub mod store;
 
 pub use crate::runtime::{
-    openai_codex_provider, ResolvedRuntimeProvider, RuntimeProvider,
-    OPENAI_CODEX_AUTH_STORE_FILE_NAME, OPENAI_CODEX_PROVIDER_ID,
+    openai_codex_provider, openrouter_provider, ResolvedRuntimeProvider, RuntimeProvider,
+    OPENAI_CODEX_AUTH_STORE_FILE_NAME, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
 };
 pub use openai_codex::{
     cancel_openai_codex_flow, complete_openai_codex_flow, refresh_openai_codex_session,
     start_openai_codex_flow, OpenAiCodexAuthConfig, OpenAiCodexAuthSession, StartedOpenAiCodexFlow,
+};
+pub(crate) use openrouter::{
+    bind_openrouter_runtime_session, reconcile_openrouter_runtime_session,
+};
+pub use openrouter::{
+    OpenRouterAuthConfig, OpenRouterBindOutcome, OpenRouterReconcileOutcome,
+    OpenRouterRuntimeSessionBinding,
 };
 pub use store::{
     load_latest_openai_codex_session, load_openai_codex_session, persist_openai_codex_session,
@@ -238,6 +246,11 @@ pub fn start_provider_auth_flow(
             openai_codex::start_openai_codex_flow(state, state.openai_auth_config(), originator)
                 .map(Into::into)
         }
+        RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
+            "auth_flow_unavailable",
+            RuntimeAuthPhase::Failed,
+            "Cadence binds OpenRouter runtime sessions from the saved app-global API key and does not support a browser login flow for that provider.",
+        )),
     }
 }
 
@@ -271,6 +284,11 @@ pub fn complete_provider_auth_flow<R: Runtime>(
             &state.openai_auth_config(),
         )
         .map(Into::into),
+        RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
+            "auth_flow_unavailable",
+            RuntimeAuthPhase::Failed,
+            "Cadence does not complete an OpenRouter browser login flow because OpenRouter runtime sessions bind from the saved app-global API key instead.",
+        )),
     }
 }
 
@@ -288,6 +306,11 @@ pub fn refresh_provider_auth_session<R: Runtime>(
             &state.openai_auth_config(),
         )
         .map(Into::into),
+        RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
+            "auth_refresh_unavailable",
+            RuntimeAuthPhase::Failed,
+            "Cadence does not refresh OpenRouter runtime sessions through a browser auth store. Rebind from the saved app-global API key instead.",
+        )),
     }
 }
 

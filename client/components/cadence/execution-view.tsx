@@ -587,19 +587,19 @@ export function ExecutionView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex items-center border-b border-border shrink-0">
-        <div className="border-r border-border px-5 py-2.5">
-          <div className="flex items-center gap-2 text-[13px]">
+      <div className="flex items-center border-b border-border bg-card/30 shrink-0">
+        <div className="border-r border-border px-4 py-[10px]">
+          <div className="flex items-center gap-3 text-[12px]">
             <span className="text-muted-foreground">Phase</span>
             <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
-            <h2 className="font-medium text-foreground">{execution.activePhase?.name ?? 'None active'}</h2>
+            <h2 className="font-medium text-foreground/80">{execution.activePhase?.name ?? 'None active'}</h2>
           </div>
         </div>
 
         <nav className="flex h-full items-center">
           {(['waves', 'changes', 'verify'] as const).map((tab) => (
             <button
-              className={`-mb-px border-b-2 px-4 py-3 text-[12px] font-medium transition-colors ${
+              className={`-mb-px border-b-2 px-4 py-[10px] text-[12px] font-medium transition-colors ${
                 activeTab === tab
                   ? 'border-foreground text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground/70'

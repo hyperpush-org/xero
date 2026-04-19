@@ -25,10 +25,12 @@ pub use platform_adapter::{
 };
 pub use provider::{
     bind_provider_runtime_session, default_runtime_provider, logout_provider_runtime_session,
-    openai_codex_provider, reconcile_provider_runtime_session, refresh_provider_runtime_session,
-    resolve_runtime_provider_identity, ResolvedRuntimeProvider, RuntimeProvider,
-    RuntimeProviderBindOutcome, RuntimeProviderReconcileOutcome, RuntimeProviderSessionBinding,
+    openai_codex_provider, openrouter_provider, reconcile_provider_runtime_session,
+    refresh_provider_runtime_session, resolve_runtime_provider_identity,
+    ResolvedRuntimeProvider, RuntimeProvider, RuntimeProviderBindOutcome,
+    RuntimeProviderReconcileOutcome, RuntimeProviderSessionBinding,
     OPENAI_CODEX_AUTH_STORE_FILE_NAME, OPENAI_CODEX_PROVIDER_ID,
+    OPENROUTER_AUTH_STORE_FILE_NAME, OPENROUTER_PROVIDER_ID,
 };
 pub use stream::{start_runtime_stream, RuntimeStreamController, RuntimeStreamRequest};
 pub use supervisor::{

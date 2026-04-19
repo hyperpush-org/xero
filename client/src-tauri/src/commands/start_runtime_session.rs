@@ -5,15 +5,14 @@ use crate::{
         validate_non_empty, CommandResult, RuntimeAuthPhase, RuntimeDiagnosticDto,
         RuntimeSessionDto,
     },
-    runtime::{
-        bind_provider_runtime_session, refresh_provider_runtime_session,
-        resolve_runtime_provider_identity, RuntimeProviderBindOutcome,
-    },
+    runtime::{bind_provider_runtime_session, RuntimeProviderBindOutcome},
     state::DesktopState,
 };
 
 use super::{
-    get_runtime_session::reconcile_runtime_session,
+    get_runtime_session::{
+        prepare_runtime_session_for_selected_provider, reconcile_prepared_runtime_session,
+    },
     runtime_support::{
         emit_runtime_updated, load_runtime_session_status, persist_runtime_session,
         resolve_project_root, runtime_diagnostic_from_auth,
@@ -30,34 +29,38 @@ pub fn start_runtime_session<R: Runtime>(
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let current = load_runtime_session_status(state.inner(), &repo_root, &request.project_id)?;
-    let current = reconcile_runtime_session(&app, state.inner(), &repo_root, current)?;
-
-    if current.phase == RuntimeAuthPhase::Authenticated || is_login_in_progress(&current.phase) {
-        return Ok(current);
-    }
-
-    let provider = match resolve_runtime_provider_identity(
-        Some(current.provider_id.as_str()),
-        Some(current.runtime_kind.as_str()),
+    let original = current.clone();
+    let (current, selection) = match prepare_runtime_session_for_selected_provider(
+        &app,
+        state.inner(),
+        current,
     ) {
-        Ok(provider) => provider,
-        Err(diagnostic) => {
-            let updated = runtime_with_phase(
-                current,
-                RuntimeAuthPhase::Idle,
-                Some(runtime_diagnostic_from_auth(diagnostic)),
-            );
+        Ok(prepared) => prepared,
+        Err(updated) => {
             let persisted = persist_runtime_session(&repo_root, &updated)?;
             emit_runtime_updated(&app, &persisted)?;
             return Ok(persisted);
         }
     };
+    let current = reconcile_prepared_runtime_session(
+        &app,
+        state.inner(),
+        &repo_root,
+        original,
+        current,
+        selection.clone(),
+    )?;
+
+    if current.phase == RuntimeAuthPhase::Authenticated || is_login_in_progress(&current.phase) {
+        return Ok(current);
+    }
 
     match bind_provider_runtime_session(
         &app,
         state.inner(),
-        provider,
+        selection.provider,
         current.account_id.as_deref(),
+        Some(&selection.settings),
     ) {
         Ok(RuntimeProviderBindOutcome::Ready(binding)) => {
             let authenticated = runtime_from_provider(
@@ -86,10 +89,10 @@ pub fn start_runtime_session<R: Runtime>(
             let refreshing = persist_runtime_session(&repo_root, &refreshing)?;
             emit_runtime_updated(&app, &refreshing)?;
 
-            match refresh_provider_runtime_session(
+            match crate::runtime::refresh_provider_runtime_session(
                 &app,
                 state.inner(),
-                provider,
+                selection.provider,
                 &binding.account_id,
             ) {
                 Ok(binding) => {
@@ -114,7 +117,7 @@ pub fn start_runtime_session<R: Runtime>(
                     };
                     let failed = runtime_from_provider(
                         &request.project_id,
-                        provider,
+                        selection.provider,
                         Some(binding.account_id),
                         None,
                         if error.retryable {

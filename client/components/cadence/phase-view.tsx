@@ -147,28 +147,26 @@ export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-border px-5 py-3">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-2 text-[13px]">
-              <span className="shrink-0 text-muted-foreground">Milestone</span>
-              <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
-              <h2 className="truncate font-medium text-foreground">{milestoneLabel}</h2>
-            </div>
+        <div className="shrink-0 border-b border-border bg-card/30 px-4 py-[10px]">
+          <div className="flex items-center gap-3 text-[12px]">
+            <span className="shrink-0 text-muted-foreground">Milestone</span>
+            <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+            <h2 className="truncate font-medium text-foreground/80">{milestoneLabel}</h2>
             {hasStarted ? (
-              <div className="shrink-0 flex items-center gap-3">
+              <div className="ml-auto shrink-0 flex items-center gap-3">
                 <div className="h-1 w-24 overflow-hidden rounded-full bg-border">
                   <div
                     className="h-full rounded-full bg-primary transition-all duration-500"
                     style={{ width: `${lifecyclePercent}%` }}
                   />
                 </div>
-                <span className="tabular-nums text-[12px] font-medium text-foreground">{lifecyclePercent}%</span>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="tabular-nums font-medium text-foreground/80">{lifecyclePercent}%</span>
+                <span className="text-muted-foreground">
                   {lifecycle.completedCount}/{LIFECYCLE_STAGE_ORDER.length} stages
                 </span>
               </div>
             ) : (
-              <div className="shrink-0 flex items-center gap-3 text-[12px]">
+              <div className="ml-auto shrink-0 flex items-center gap-3">
                 <span className="text-muted-foreground">Not started</span>
                 {canStartRun && onStartRun ? (
                   <button

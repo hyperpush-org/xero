@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{
-    auth::{ActiveAuthFlowRegistry, AuthFlowError, OpenAiCodexAuthConfig},
+    auth::{
+        ActiveAuthFlowRegistry, AuthFlowError, OpenAiCodexAuthConfig, OpenRouterAuthConfig,
+    },
     commands::CommandError,
     notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
     runtime::{
@@ -39,6 +41,7 @@ pub struct DesktopState {
     openrouter_credential_file_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
     openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
+    openrouter_auth_config_override: Option<OpenRouterAuthConfig>,
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
     runtime_stream_controller: RuntimeStreamController,
@@ -82,6 +85,11 @@ impl DesktopState {
         self
     }
 
+    pub fn with_openrouter_auth_config_override(mut self, config: OpenRouterAuthConfig) -> Self {
+        self.openrouter_auth_config_override = Some(config);
+        self
+    }
+
     pub fn with_failpoints(mut self, failpoints: ImportFailpoints) -> Self {
         self.import_failpoints = failpoints;
         self
@@ -116,6 +124,12 @@ impl DesktopState {
         self.openai_auth_config_override
             .clone()
             .unwrap_or_else(OpenAiCodexAuthConfig::for_platform)
+    }
+
+    pub fn openrouter_auth_config(&self) -> OpenRouterAuthConfig {
+        self.openrouter_auth_config_override
+            .clone()
+            .unwrap_or_else(OpenRouterAuthConfig::for_platform)
     }
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {
