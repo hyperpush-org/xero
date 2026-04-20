@@ -30,9 +30,11 @@ use crate::{
 use super::{
     platform_adapter::resolve_runtime_supervisor_binary,
     protocol::{
+        CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary,
         SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
         SupervisorProcessStatus, SupervisorProtocolDiagnostic, SupervisorStartupMessage,
-        SupervisorToolCallState, SUPERVISOR_KIND_DETACHED_PTY, SUPERVISOR_PROTOCOL_VERSION,
+        SupervisorToolCallState, ToolResultSummary, WebToolResultSummary,
+        SUPERVISOR_KIND_DETACHED_PTY, SUPERVISOR_PROTOCOL_VERSION,
         SUPERVISOR_TRANSPORT_KIND_TCP,
     },
 };
@@ -2423,14 +2425,44 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
                     );
                 }
             };
-            if [
-                Some(tool_call_id.as_str()),
-                Some(tool_name.as_str()),
-                detail.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| contains_prohibited_live_content(value).is_some())
+            let tool_summary = value
+                .get("tool_summary")
+                .map(sanitize_tool_result_summary_value)
+                .transpose();
+            let tool_summary = match tool_summary {
+                Ok(tool_summary) => tool_summary,
+                Err(ToolSummaryDecodeError::Oversized) => {
+                    return diagnostic_live_event(
+                        "runtime_supervisor_live_event_oversized",
+                        "Live output fragment dropped",
+                        "Cadence dropped an oversized structured tool summary before replay.",
+                    );
+                }
+                Err(ToolSummaryDecodeError::Unsupported) => {
+                    return diagnostic_live_event(
+                        "runtime_supervisor_live_event_unsupported",
+                        "Live output fragment dropped",
+                        "Cadence dropped a structured tool payload with an unsupported tool_summary kind.",
+                    );
+                }
+                Err(ToolSummaryDecodeError::Invalid) => {
+                    return diagnostic_live_event(
+                        "runtime_supervisor_live_event_invalid",
+                        "Live output fragment dropped",
+                        "Cadence dropped a structured tool payload with invalid tool_summary metadata.",
+                    );
+                }
+            };
+            if [Some(tool_call_id.as_str()), Some(tool_name.as_str()), detail.as_deref()]
+                .into_iter()
+                .flatten()
+                .chain(
+                    tool_summary
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(tool_result_summary_text_fragments),
+                )
+                .any(|value| contains_prohibited_live_content(value).is_some())
             {
                 redacted_live_event()
             } else {
@@ -2441,6 +2473,7 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
                         tool_name,
                         tool_state,
                         detail,
+                        tool_summary,
                     },
                 }
             }
@@ -2668,6 +2701,99 @@ fn sanitize_text_fragment(raw: &str) -> Result<Option<String>, ()> {
         return Err(());
     }
     Ok(Some(trimmed.to_string()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolSummaryDecodeError {
+    Invalid,
+    Oversized,
+    Unsupported,
+}
+
+fn sanitize_tool_result_summary_value(
+    value: &serde_json::Value,
+) -> Result<ToolResultSummary, ToolSummaryDecodeError> {
+    let parsed = serde_json::from_value::<ToolResultSummary>(value.clone()).map_err(|error| {
+        let details = error.to_string();
+        if details.contains("unknown variant") {
+            ToolSummaryDecodeError::Unsupported
+        } else {
+            ToolSummaryDecodeError::Invalid
+        }
+    })?;
+    sanitize_tool_result_summary(parsed)
+}
+
+fn sanitize_tool_result_summary(
+    summary: ToolResultSummary,
+) -> Result<ToolResultSummary, ToolSummaryDecodeError> {
+    match summary {
+        ToolResultSummary::Command(summary) => Ok(ToolResultSummary::Command(summary)),
+        ToolResultSummary::File(summary) => Ok(ToolResultSummary::File(FileToolResultSummary {
+            path: sanitize_optional_tool_summary_text(summary.path)?,
+            scope: sanitize_optional_tool_summary_text(summary.scope)?,
+            line_count: summary.line_count,
+            match_count: summary.match_count,
+            truncated: summary.truncated,
+        })),
+        ToolResultSummary::Git(summary) => Ok(ToolResultSummary::Git(GitToolResultSummary {
+            scope: summary.scope,
+            changed_files: summary.changed_files,
+            truncated: summary.truncated,
+            base_revision: sanitize_optional_tool_summary_text(summary.base_revision)?,
+        })),
+        ToolResultSummary::Web(summary) => Ok(ToolResultSummary::Web(WebToolResultSummary {
+            target: sanitize_required_tool_summary_text(summary.target)?,
+            result_count: summary.result_count,
+            final_url: sanitize_optional_tool_summary_text(summary.final_url)?,
+            content_kind: summary.content_kind,
+            content_type: sanitize_optional_tool_summary_text(summary.content_type)?,
+            truncated: summary.truncated,
+        })),
+    }
+}
+
+fn sanitize_optional_tool_summary_text(
+    value: Option<String>,
+) -> Result<Option<String>, ToolSummaryDecodeError> {
+    value
+        .map(|value| match sanitize_text_fragment(&value) {
+            Ok(sanitized) => Ok(sanitized),
+            Err(()) => Err(ToolSummaryDecodeError::Oversized),
+        })
+        .transpose()
+        .map(|value| value.flatten())
+}
+
+fn sanitize_required_tool_summary_text(
+    value: String,
+) -> Result<String, ToolSummaryDecodeError> {
+    match sanitize_text_fragment(&value) {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(ToolSummaryDecodeError::Invalid),
+        Err(()) => Err(ToolSummaryDecodeError::Oversized),
+    }
+}
+
+fn tool_result_summary_text_fragments(summary: &ToolResultSummary) -> Vec<&str> {
+    match summary {
+        ToolResultSummary::Command(CommandToolResultSummary { .. }) => Vec::new(),
+        ToolResultSummary::File(summary) => [summary.path.as_deref(), summary.scope.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect(),
+        ToolResultSummary::Git(GitToolResultSummary { base_revision, .. }) => {
+            base_revision.iter().map(String::as_str).collect()
+        }
+        ToolResultSummary::Web(summary) => [
+            Some(summary.target.as_str()),
+            summary.final_url.as_deref(),
+            summary.content_type.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    }
 }
 
 fn contains_prohibited_live_content(value: &str) -> Option<&'static str> {

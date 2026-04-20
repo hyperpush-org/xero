@@ -193,6 +193,16 @@ fn sample_tool_result_artifact(
                     summary: "Command exited successfully after capturing structured evidence."
                         .into(),
                 }),
+                tool_summary: Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::Command(
+                    cadence_desktop_lib::runtime::protocol::CommandToolResultSummary {
+                        exit_code: Some(0),
+                        timed_out: false,
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        stdout_redacted: false,
+                        stderr_redacted: false,
+                    },
+                )),
                 action_id: Some("action-1".into()),
                 boundary_id: Some("boundary-1".into()),
             },
@@ -1392,6 +1402,7 @@ fn autonomous_run_persistence_canonicalizes_structured_artifact_payloads_and_rel
         ",\"toolCallId\":\"tool-call-1\"",
         ",\"toolName\":\"shell.exec\"",
         ",\"toolState\":\"succeeded\"",
+        ",\"toolSummary\":{\"exitCode\":0,\"kind\":\"command\",\"stderrRedacted\":false,\"stderrTruncated\":false,\"stdoutRedacted\":false,\"stdoutTruncated\":false,\"timedOut\":false}",
         ",\"unitId\":\"run-1:unit:1\"",
         "}"
     );

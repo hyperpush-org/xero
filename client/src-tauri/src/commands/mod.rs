@@ -34,7 +34,7 @@ pub mod upsert_workflow_graph;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::db::project_store;
+use crate::{db::project_store, runtime::protocol::ToolResultSummary};
 
 pub use apply_workflow_transition::apply_workflow_transition;
 pub use cancel_autonomous_run::cancel_autonomous_run;
@@ -1545,6 +1545,8 @@ pub struct AutonomousToolResultPayloadDto {
     pub tool_name: String,
     pub tool_state: AutonomousToolCallStateDto,
     pub command_result: Option<AutonomousCommandResultDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_summary: Option<ToolResultSummary>,
     pub action_id: Option<String>,
     pub boundary_id: Option<String>,
 }
@@ -1820,6 +1822,8 @@ pub struct RuntimeStreamItemDto {
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_state: Option<RuntimeToolCallState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_summary: Option<ToolResultSummary>,
     pub action_id: Option<String>,
     pub boundary_id: Option<String>,
     pub action_type: Option<String>,

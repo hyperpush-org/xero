@@ -1811,6 +1811,53 @@ export const autonomousCommandResultSchema = z
   })
   .strict()
 
+export const gitToolResultScopeSchema = z.enum(['staged', 'unstaged', 'worktree'])
+export const webToolResultContentKindSchema = z.enum(['html', 'plain_text'])
+
+export const toolResultSummarySchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('command'),
+      exitCode: z.number().int().nullable().optional(),
+      timedOut: z.boolean(),
+      stdoutTruncated: z.boolean(),
+      stderrTruncated: z.boolean(),
+      stdoutRedacted: z.boolean(),
+      stderrRedacted: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('file'),
+      path: nonEmptyOptionalTextSchema,
+      scope: nonEmptyOptionalTextSchema,
+      lineCount: z.number().int().nonnegative().nullable().optional(),
+      matchCount: z.number().int().nonnegative().nullable().optional(),
+      truncated: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('git'),
+      scope: gitToolResultScopeSchema.nullable().optional(),
+      changedFiles: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+      baseRevision: nonEmptyOptionalTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('web'),
+      target: z.string().trim().min(1),
+      resultCount: z.number().int().nonnegative().nullable().optional(),
+      finalUrl: nonEmptyOptionalTextSchema,
+      contentKind: webToolResultContentKindSchema.nullable().optional(),
+      contentType: nonEmptyOptionalTextSchema,
+      truncated: z.boolean(),
+    })
+    .strict(),
+])
+
 export const autonomousToolResultPayloadSchema = z
   .object({
     kind: z.literal('tool_result'),
@@ -1823,6 +1870,7 @@ export const autonomousToolResultPayloadSchema = z
     toolName: z.string().trim().min(1),
     toolState: autonomousToolCallStateSchema,
     commandResult: autonomousCommandResultSchema.nullable().optional(),
+    toolSummary: toolResultSummarySchema.nullable().optional(),
     actionId: nonEmptyOptionalTextSchema,
     boundaryId: nonEmptyOptionalTextSchema,
   })
@@ -2203,6 +2251,7 @@ export const runtimeStreamItemSchema = z.object({
   toolCallId: nonEmptyOptionalTextSchema,
   toolName: nonEmptyOptionalTextSchema,
   toolState: runtimeToolCallStateSchema.nullable().optional(),
+  toolSummary: toolResultSummarySchema.nullable().optional(),
   actionId: nonEmptyOptionalTextSchema,
   boundaryId: nonEmptyOptionalTextSchema,
   actionType: nonEmptyOptionalTextSchema,
@@ -2334,6 +2383,9 @@ export type AutonomousToolCallStateDto = z.infer<typeof autonomousToolCallStateS
 export type AutonomousVerificationOutcomeDto = z.infer<typeof autonomousVerificationOutcomeSchema>
 export type AutonomousLifecycleReasonDto = z.infer<typeof autonomousLifecycleReasonSchema>
 export type AutonomousCommandResultDto = z.infer<typeof autonomousCommandResultSchema>
+export type GitToolResultScopeDto = z.infer<typeof gitToolResultScopeSchema>
+export type WebToolResultContentKindDto = z.infer<typeof webToolResultContentKindSchema>
+export type ToolResultSummaryDto = z.infer<typeof toolResultSummarySchema>
 export type AutonomousToolResultPayloadDto = z.infer<typeof autonomousToolResultPayloadSchema>
 export type AutonomousVerificationEvidencePayloadDto = z.infer<typeof autonomousVerificationEvidencePayloadSchema>
 export type AutonomousPolicyDeniedPayloadDto = z.infer<typeof autonomousPolicyDeniedPayloadSchema>
@@ -2844,6 +2896,7 @@ export interface RuntimeStreamToolItemView extends RuntimeStreamBaseItemView {
   toolName: string
   toolState: RuntimeToolCallStateDto
   detail: string | null
+  toolSummary?: ToolResultSummaryDto | null
 }
 
 export interface RuntimeStreamActivityItemView extends RuntimeStreamBaseItemView {
@@ -3443,6 +3496,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         toolName,
         toolState,
         detail: normalizeOptionalText(event.item.detail),
+        ...(event.item.toolSummary ? { toolSummary: event.item.toolSummary } : {}),
       }
     }
     case 'activity': {

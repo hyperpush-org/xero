@@ -8,16 +8,19 @@ use crate::{
     auth::now_timestamp,
     commands::CommandError,
     db::project_store::{
-        self, AutonomousArtifactPayloadRecord, AutonomousPolicyDeniedPayloadRecord,
-        AutonomousRunRecord, AutonomousRunSnapshotRecord, AutonomousRunStatus,
-        AutonomousRunUpsertRecord, AutonomousToolCallStateRecord,
-        AutonomousToolResultPayloadRecord, AutonomousUnitArtifactRecord,
-        AutonomousUnitArtifactStatus, AutonomousUnitAttemptRecord, AutonomousUnitKind,
-        AutonomousUnitRecord, AutonomousUnitStatus, AutonomousVerificationEvidencePayloadRecord,
-        AutonomousVerificationOutcomeRecord, RuntimeRunDiagnosticRecord, RuntimeRunSnapshotRecord,
-        RuntimeRunStatus,
+        self, AutonomousArtifactCommandResultRecord, AutonomousArtifactPayloadRecord,
+        AutonomousPolicyDeniedPayloadRecord, AutonomousRunRecord,
+        AutonomousRunSnapshotRecord, AutonomousRunStatus, AutonomousRunUpsertRecord,
+        AutonomousToolCallStateRecord, AutonomousToolResultPayloadRecord,
+        AutonomousUnitArtifactRecord, AutonomousUnitArtifactStatus, AutonomousUnitAttemptRecord,
+        AutonomousUnitKind, AutonomousUnitRecord, AutonomousUnitStatus,
+        AutonomousVerificationEvidencePayloadRecord, AutonomousVerificationOutcomeRecord,
+        RuntimeRunDiagnosticRecord, RuntimeRunSnapshotRecord, RuntimeRunStatus,
     },
-    runtime::protocol::{SupervisorLiveEventPayload, SupervisorToolCallState},
+    runtime::protocol::{
+        CommandToolResultSummary, SupervisorLiveEventPayload, SupervisorToolCallState,
+        ToolResultSummary,
+    },
 };
 
 const AUTONOMOUS_DUPLICATE_START_REASON: &str =
@@ -303,6 +306,7 @@ pub fn persist_supervisor_event(
             tool_name,
             tool_state,
             detail,
+            tool_summary,
         } => {
             let Some(attempt) = payload.attempt.as_ref() else {
                 return Ok(None);
@@ -314,6 +318,9 @@ pub fn persist_supervisor_event(
             );
             let timestamp = existing_artifact_timestamp(existing.as_ref(), &artifact_id)
                 .unwrap_or_else(now_timestamp);
+            let command_result = tool_summary
+                .as_ref()
+                .and_then(|summary| command_result_record_for_tool_summary(summary, detail.as_deref()));
             upsert_artifact(
                 &mut payload.artifacts,
                 AutonomousUnitArtifactRecord {
@@ -340,7 +347,8 @@ pub fn persist_supervisor_event(
                             tool_call_id: tool_call_id.clone(),
                             tool_name: tool_name.clone(),
                             tool_state: supervisor_tool_state_record(tool_state),
-                            command_result: None,
+                            command_result,
+                            tool_summary: tool_summary.clone(),
                             action_id: None,
                             boundary_id: None,
                         },
@@ -742,6 +750,36 @@ fn existing_artifact_timestamp(
             .find(|artifact| artifact.artifact_id == artifact_id)
             .map(|artifact| artifact.created_at.clone())
     })
+}
+
+fn command_result_record_for_tool_summary(
+    summary: &ToolResultSummary,
+    detail: Option<&str>,
+) -> Option<AutonomousArtifactCommandResultRecord> {
+    match summary {
+        ToolResultSummary::Command(CommandToolResultSummary {
+            exit_code,
+            timed_out,
+            ..
+        }) => Some(AutonomousArtifactCommandResultRecord {
+            exit_code: *exit_code,
+            timed_out: *timed_out,
+            summary: detail
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| match (timed_out, exit_code) {
+                    (true, Some(code)) => {
+                        format!("Command timed out and exited with code {code}.")
+                    }
+                    (true, None) => "Command timed out before reporting an exit code.".into(),
+                    (false, Some(0)) => "Command exited successfully.".into(),
+                    (false, Some(code)) => format!("Command exited with code {code}."),
+                    (false, None) => "Command terminated without an exit code.".into(),
+                }),
+        }),
+        _ => None,
+    }
 }
 
 fn supervisor_tool_state_record(state: &SupervisorToolCallState) -> AutonomousToolCallStateRecord {

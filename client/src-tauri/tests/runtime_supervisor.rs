@@ -647,6 +647,7 @@ fn detached_supervisor_attach_replays_buffered_events_after_fresh_host_probe() {
                     tool_name,
                     tool_state: SupervisorToolCallState::Running,
                     detail,
+                    ..
                 },
             ..
         } if tool_call_id == "tool-1"

@@ -609,6 +609,7 @@ fn autonomous_artifact_payload_dto_from_record(
                     .command_result
                     .as_ref()
                     .map(autonomous_command_result_dto_from_record),
+                tool_summary: tool.tool_summary.clone(),
                 action_id: tool.action_id.clone(),
                 boundary_id: tool.boundary_id.clone(),
             })

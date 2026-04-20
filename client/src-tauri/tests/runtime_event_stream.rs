@@ -740,7 +740,22 @@ fn runtime_stream_replays_real_supervisor_events_after_fresh_host_reload() {
 
     let live_lines = vec![
         format!(
-            "{STRUCTURED_EVENT_PREFIX}{{\"kind\":\"tool\",\"tool_call_id\":\"tool-1\",\"tool_name\":\"inspect_repository\",\"tool_state\":\"running\",\"detail\":\"Collecting workspace context\"}}"
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-1",
+                "tool_name": "read",
+                "tool_state": "running",
+                "detail": "Collecting workspace context",
+                "tool_summary": {
+                    "kind": "file",
+                    "path": "README.md",
+                    "scope": null,
+                    "lineCount": 12,
+                    "matchCount": null,
+                    "truncated": true
+                }
+            })
         ),
         "plain transcript line".to_string(),
         format!(
@@ -808,10 +823,14 @@ fn runtime_stream_replays_real_supervisor_events_after_fresh_host_reload() {
             tool_name: Some(tool_name),
             tool_state: Some(RuntimeToolCallState::Running),
             detail: Some(detail),
+            tool_summary: Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::File(summary)),
             ..
         } if tool_call_id == "tool-1"
-            && tool_name == "inspect_repository"
+            && tool_name == "read"
             && detail == "Collecting workspace context"
+            && summary.path.as_deref() == Some("README.md")
+            && summary.line_count == Some(12)
+            && summary.truncated
     ));
     assert!(matches!(
         &items[1],
@@ -1374,6 +1393,7 @@ fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_activity() 
         tool_call_id: None,
         tool_name: None,
         tool_state: None,
+        tool_summary: None,
         action_id: None,
         boundary_id: None,
         action_type: None,

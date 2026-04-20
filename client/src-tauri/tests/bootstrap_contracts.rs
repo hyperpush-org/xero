@@ -319,6 +319,7 @@ fn sample_autonomous_artifact() -> AutonomousUnitArtifactDto {
                     summary: "Command exited successfully after persisting structured evidence."
                         .into(),
                 }),
+                tool_summary: None,
                 action_id: Some("action-1".into()),
                 boundary_id: Some("boundary-1".into()),
             },
@@ -2611,6 +2612,7 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
         tool_call_id: None,
         tool_name: None,
         tool_state: None,
+        tool_summary: None,
         action_id: None,
         boundary_id: None,
         action_type: None,

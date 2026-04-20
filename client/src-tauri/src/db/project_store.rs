@@ -20,6 +20,7 @@ use crate::{
     notifications::{
         route_target::parse_notification_route_target_for_kind, NotificationRouteKind,
     },
+    runtime::protocol::{GitToolResultScope, ToolResultSummary},
 };
 
 const MAX_APPROVAL_REQUEST_ROWS: i64 = 50;
@@ -371,6 +372,8 @@ pub struct AutonomousToolResultPayloadRecord {
     pub tool_name: String,
     pub tool_state: AutonomousToolCallStateRecord,
     pub command_result: Option<AutonomousArtifactCommandResultRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_summary: Option<ToolResultSummary>,
     pub action_id: Option<String>,
     pub boundary_id: Option<String>,
 }
@@ -13202,6 +13205,11 @@ fn validate_autonomous_artifact_payload(
             if let Some(command_result) = tool.command_result.as_ref() {
                 validate_autonomous_artifact_command_result(command_result)?;
             }
+            validate_autonomous_tool_result_summary(
+                &tool.tool_state,
+                tool.command_result.as_ref(),
+                tool.tool_summary.as_ref(),
+            )?;
         }
         AutonomousArtifactPayloadRecord::VerificationEvidence(evidence) => {
             validate_autonomous_artifact_payload_linkage(
@@ -13355,6 +13363,165 @@ fn validate_autonomous_artifact_command_result(
         "autonomous_run_request_invalid",
     )?;
     validate_autonomous_artifact_text(&command_result.summary, "artifact_command_summary")
+}
+
+fn validate_autonomous_tool_result_summary(
+    tool_state: &AutonomousToolCallStateRecord,
+    command_result: Option<&AutonomousArtifactCommandResultRecord>,
+    tool_summary: Option<&ToolResultSummary>,
+) -> Result<(), CommandError> {
+    if let Some(command_result) = command_result {
+        if matches!(tool_state, AutonomousToolCallStateRecord::Pending | AutonomousToolCallStateRecord::Running)
+        {
+            return Err(CommandError::user_fixable(
+                "autonomous_run_request_invalid",
+                "Cadence only persists command_result metadata after a tool reaches a terminal state.",
+            ));
+        }
+        if matches!(tool_state, AutonomousToolCallStateRecord::Failed)
+            && command_result.exit_code == Some(0)
+            && !command_result.timed_out
+        {
+            return Err(CommandError::user_fixable(
+                "autonomous_run_request_invalid",
+                "Cadence rejected a failed tool_result payload whose command_result reported a successful exit code.",
+            ));
+        }
+    }
+
+    let Some(tool_summary) = tool_summary else {
+        return Ok(());
+    };
+
+    match tool_summary {
+        ToolResultSummary::Command(summary) => {
+            if matches!(tool_state, AutonomousToolCallStateRecord::Pending | AutonomousToolCallStateRecord::Running)
+            {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence only persists command tool_summary metadata after a tool reaches a terminal state.",
+                ));
+            }
+            let Some(command_result) = command_result else {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires command tool_summary metadata to include the paired command_result payload.",
+                ));
+            };
+            if summary.exit_code != command_result.exit_code
+                || summary.timed_out != command_result.timed_out
+            {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires command tool_summary exit metadata to match the paired command_result payload.",
+                ));
+            }
+            if matches!(tool_state, AutonomousToolCallStateRecord::Failed)
+                && summary.exit_code == Some(0)
+                && !summary.timed_out
+            {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence rejected a failed tool_result payload whose command tool_summary reported a successful exit code.",
+                ));
+            }
+        }
+        ToolResultSummary::File(summary) => {
+            if matches!(tool_state, AutonomousToolCallStateRecord::Failed) {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence does not persist file tool_summary metadata for failed tool results.",
+                ));
+            }
+            if command_result.is_some() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires file tool_summary metadata to omit command_result payloads.",
+                ));
+            }
+            if summary.path.is_none() && summary.scope.is_none() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires file tool_summary metadata to include a bounded path or scope.",
+                ));
+            }
+            if let Some(path) = summary.path.as_deref() {
+                validate_non_empty_text(path, "tool_summary_file_path", "autonomous_run_request_invalid")?;
+                validate_autonomous_artifact_text(path, "tool_summary_file_path")?;
+            }
+            if let Some(scope) = summary.scope.as_deref() {
+                validate_non_empty_text(scope, "tool_summary_file_scope", "autonomous_run_request_invalid")?;
+                validate_autonomous_artifact_text(scope, "tool_summary_file_scope")?;
+            }
+        }
+        ToolResultSummary::Git(summary) => {
+            if matches!(tool_state, AutonomousToolCallStateRecord::Failed) {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence does not persist git tool_summary metadata for failed tool results.",
+                ));
+            }
+            if command_result.is_some() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires git tool_summary metadata to omit command_result payloads.",
+                ));
+            }
+            if let Some(base_revision) = summary.base_revision.as_deref() {
+                validate_non_empty_text(
+                    base_revision,
+                    "tool_summary_git_base_revision",
+                    "autonomous_run_request_invalid",
+                )?;
+                validate_autonomous_artifact_text(base_revision, "tool_summary_git_base_revision")?;
+            }
+            if let Some(scope) = summary.scope.as_ref() {
+                match scope {
+                    GitToolResultScope::Staged
+                    | GitToolResultScope::Unstaged
+                    | GitToolResultScope::Worktree => {}
+                }
+            }
+        }
+        ToolResultSummary::Web(summary) => {
+            if matches!(tool_state, AutonomousToolCallStateRecord::Failed) {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence does not persist web tool_summary metadata for failed tool results.",
+                ));
+            }
+            if command_result.is_some() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires web tool_summary metadata to omit command_result payloads.",
+                ));
+            }
+            validate_non_empty_text(
+                &summary.target,
+                "tool_summary_web_target",
+                "autonomous_run_request_invalid",
+            )?;
+            validate_autonomous_artifact_text(&summary.target, "tool_summary_web_target")?;
+            if let Some(final_url) = summary.final_url.as_deref() {
+                validate_non_empty_text(
+                    final_url,
+                    "tool_summary_web_final_url",
+                    "autonomous_run_request_invalid",
+                )?;
+                validate_autonomous_artifact_text(final_url, "tool_summary_web_final_url")?;
+            }
+            if let Some(content_type) = summary.content_type.as_deref() {
+                validate_non_empty_text(
+                    content_type,
+                    "tool_summary_web_content_type",
+                    "autonomous_run_request_invalid",
+                )?;
+                validate_autonomous_artifact_text(content_type, "tool_summary_web_content_type")?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_autonomous_artifact_text(value: &str, field: &str) -> Result<(), CommandError> {

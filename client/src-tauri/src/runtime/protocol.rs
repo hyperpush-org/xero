@@ -30,6 +30,71 @@ pub enum SupervisorToolCallState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitToolResultScope {
+    Staged,
+    Unstaged,
+    Worktree,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebToolResultContentKind {
+    Html,
+    PlainText,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommandToolResultSummary {
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_redacted: bool,
+    pub stderr_redacted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileToolResultSummary {
+    pub path: Option<String>,
+    pub scope: Option<String>,
+    pub line_count: Option<usize>,
+    pub match_count: Option<usize>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitToolResultSummary {
+    pub scope: Option<GitToolResultScope>,
+    pub changed_files: usize,
+    pub truncated: bool,
+    pub base_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebToolResultSummary {
+    pub target: String,
+    pub result_count: Option<usize>,
+    pub final_url: Option<String>,
+    pub content_kind: Option<WebToolResultContentKind>,
+    pub content_type: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ToolResultSummary {
+    Command(CommandToolResultSummary),
+    File(FileToolResultSummary),
+    Git(GitToolResultSummary),
+    Web(WebToolResultSummary),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum SupervisorLiveEventPayload {
     Transcript {
@@ -40,6 +105,8 @@ pub enum SupervisorLiveEventPayload {
         tool_name: String,
         tool_state: SupervisorToolCallState,
         detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_summary: Option<ToolResultSummary>,
     },
     Activity {
         code: String,
