@@ -5,6 +5,10 @@ import {
   applyRuntimeStreamIssue,
   applyWorkflowTransitionRequestSchema,
   applyWorkflowTransitionResponseSchema,
+  autonomousRunStateSchema,
+  autonomousToolResultPayloadSchema,
+  autonomousUnitAttemptSchema,
+  autonomousUnitSchema,
   composeNotificationRouteTarget,
   createRuntimeStreamFromSubscription,
   decomposeNotificationRouteTarget,
@@ -12,6 +16,7 @@ import {
   getRuntimeStreamStatusLabel,
   listNotificationDispatchesResponseSchema,
   listNotificationRoutesResponseSchema,
+  mapAutonomousArtifact,
   mapAutonomousUnit,
   mapProjectSnapshot,
   mapProjectSummary,
@@ -34,15 +39,14 @@ import {
   syncNotificationAdaptersRequestSchema,
   syncNotificationAdaptersResponseSchema,
   subscribeRuntimeStreamResponseSchema,
-  autonomousRunStateSchema,
-  autonomousUnitAttemptSchema,
-  autonomousUnitSchema,
+  toolResultSummarySchema,
   upsertNotificationRouteCredentialsRequestSchema,
   upsertNotificationRouteCredentialsResponseSchema,
   upsertNotificationRouteRequestSchema,
   upsertRuntimeSettingsRequestSchema,
   upsertWorkflowGraphRequestSchema,
   upsertWorkflowGraphResponseSchema,
+  type AutonomousUnitArtifactDto,
   type ProjectSnapshotResponseDto,
   type RepositoryStatusResponseDto,
   type RuntimeSessionDto,
@@ -1995,6 +1999,15 @@ describe('cadence-model', () => {
         toolCallId: 'bootstrap-repository-context',
         toolName: 'inspect_repository_context',
         toolState: 'running',
+        toolSummary: {
+          kind: 'command',
+          exitCode: 0,
+          timedOut: false,
+          stdoutTruncated: true,
+          stderrTruncated: false,
+          stdoutRedacted: false,
+          stderrRedacted: true,
+        },
         actionType: null,
         title: null,
         detail: 'Collecting repository status.',
@@ -2076,6 +2089,11 @@ describe('cadence-model', () => {
       toolCallId: 'bootstrap-repository-context',
       toolName: 'inspect_repository_context',
       toolState: 'running',
+      toolSummary: {
+        kind: 'command',
+        stdoutTruncated: true,
+        stderrRedacted: true,
+      },
     })
     expect(withActivity.activityItems[0]).toMatchObject({
       runId: 'run-1',
@@ -2091,6 +2109,113 @@ describe('cadence-model', () => {
     expect(completed.lastSequence).toBeGreaterThan(withActionRequired.lastSequence ?? 0)
     expect(completed.completion?.detail).toBe('Runtime bootstrap finished for project-1.')
     expect(getRuntimeStreamStatusLabel(completed.status)).toBe('Stream complete')
+  })
+
+  it('projects additive tool summaries through autonomous artifacts while rejecting malformed nested summary drift', () => {
+    const fileSummary = toolResultSummarySchema.parse({
+      kind: 'file',
+      path: 'src/lib.rs',
+      scope: 'workspace',
+      lineCount: 120,
+      matchCount: 4,
+      truncated: true,
+    })
+    const gitSummary = toolResultSummarySchema.parse({
+      kind: 'git',
+      scope: 'worktree',
+      changedFiles: 3,
+      truncated: false,
+      baseRevision: 'main~1',
+    })
+    const webSummary = toolResultSummarySchema.parse({
+      kind: 'web',
+      target: 'https://example.com/search?q=cadence',
+      resultCount: 5,
+      finalUrl: 'https://example.com/search?q=cadence',
+      contentKind: 'html',
+      contentType: 'text/html',
+      truncated: false,
+    })
+
+    expect([fileSummary.kind, gitSummary.kind, webSummary.kind]).toEqual(['file', 'git', 'web'])
+
+    const artifactPayloadBase = {
+      kind: 'tool_result' as const,
+      projectId: 'project-1',
+      runId: 'run-1',
+      unitId: 'run-1:checkpoint:2',
+      attemptId: 'attempt-1',
+      artifactId: 'artifact-1',
+      toolCallId: 'tool-call-1',
+      toolName: 'git_diff',
+      toolState: 'succeeded' as const,
+      commandResult: null,
+      actionId: 'action-1',
+      boundaryId: 'boundary-1',
+    }
+
+    const artifactWithSummary: AutonomousUnitArtifactDto = {
+      projectId: 'project-1',
+      runId: 'run-1',
+      unitId: 'run-1:checkpoint:2',
+      attemptId: 'attempt-1',
+      artifactId: 'artifact-1',
+      artifactKind: 'tool_result',
+      status: 'recorded',
+      summary: 'Git diff summary recorded.',
+      contentHash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      payload: autonomousToolResultPayloadSchema.parse({
+        ...artifactPayloadBase,
+        toolSummary: gitSummary,
+      }),
+      createdAt: '2026-04-16T14:00:00Z',
+      updatedAt: '2026-04-16T14:00:01Z',
+    }
+
+    const mappedArtifact = mapAutonomousArtifact(artifactWithSummary)
+    expect(mappedArtifact.toolSummary).toEqual(gitSummary)
+    expect(mappedArtifact.toolSummary?.kind).toBe('git')
+    expect(mappedArtifact.toolSummary?.baseRevision).toBe('main~1')
+
+    const legacyArtifact = mapAutonomousArtifact({
+      ...artifactWithSummary,
+      payload: autonomousToolResultPayloadSchema.parse(artifactPayloadBase),
+    })
+    expect(legacyArtifact.toolSummary).toBeNull()
+
+    expect(() =>
+      toolResultSummarySchema.parse({
+        kind: 'unknown',
+        target: 'https://example.com',
+        truncated: false,
+      }),
+    ).toThrow()
+
+    expect(() =>
+      autonomousToolResultPayloadSchema.parse({
+        ...artifactPayloadBase,
+        toolSummary: {
+          kind: 'command',
+          exitCode: 0,
+          timedOut: false,
+          stdoutTruncated: 'yes',
+          stderrTruncated: false,
+          stdoutRedacted: false,
+          stderrRedacted: false,
+        },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      autonomousToolResultPayloadSchema.parse({
+        ...artifactPayloadBase,
+        toolSummary: {
+          kind: 'file',
+          path: 'src/lib.rs',
+          scope: 'workspace',
+        },
+      }),
+    ).toThrow()
   })
 
   it('dedupes replayed action-required items by run and action identity', () => {

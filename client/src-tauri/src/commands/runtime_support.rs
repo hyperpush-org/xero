@@ -15,12 +15,15 @@ use crate::{
         AutonomousToolResultPayloadDto, AutonomousUnitArtifactDto, AutonomousUnitArtifactStatusDto,
         AutonomousUnitAttemptDto, AutonomousUnitDto, AutonomousUnitHistoryEntryDto,
         AutonomousUnitKindDto, AutonomousUnitStatusDto, AutonomousVerificationEvidencePayloadDto,
-        AutonomousVerificationOutcomeDto, AutonomousWorkflowLinkageDto, CommandError,
-        CommandErrorClass, CommandResult, ProjectUpdateReason, ProjectUpdatedPayloadDto,
-        RuntimeDiagnosticDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
-        RuntimeRunDiagnosticDto, RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportDto,
+        AutonomousVerificationOutcomeDto, AutonomousWorkflowLinkageDto,
+        CommandToolResultSummaryDto, CommandError, CommandErrorClass, CommandResult,
+        FileToolResultSummaryDto, GitToolResultScopeDto, GitToolResultSummaryDto,
+        ProjectUpdateReason, ProjectUpdatedPayloadDto, RuntimeDiagnosticDto,
+        RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto, RuntimeRunDiagnosticDto,
+        RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportDto,
         RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto, RuntimeSessionDto,
-        RuntimeUpdatedPayloadDto, PROJECT_UPDATED_EVENT, RUNTIME_RUN_UPDATED_EVENT,
+        RuntimeUpdatedPayloadDto, ToolResultSummaryDto, WebToolResultContentKindDto,
+        WebToolResultSummaryDto, PROJECT_UPDATED_EVENT, RUNTIME_RUN_UPDATED_EVENT,
         RUNTIME_UPDATED_EVENT,
     },
     db::project_store::{
@@ -37,6 +40,7 @@ use crate::{
         autonomous_orchestrator::{reconcile_runtime_snapshot, AutonomousRuntimeReconcileIntent},
         autonomous_workflow_progression::persist_autonomous_workflow_progression,
         default_runtime_provider, probe_runtime_run, resolve_runtime_provider_identity,
+        protocol::{GitToolResultScope, ToolResultSummary, WebToolResultContentKind},
         RuntimeSupervisorProbeRequest,
     },
     state::DesktopState,
@@ -609,7 +613,10 @@ fn autonomous_artifact_payload_dto_from_record(
                     .command_result
                     .as_ref()
                     .map(autonomous_command_result_dto_from_record),
-                tool_summary: tool.tool_summary.clone(),
+                tool_summary: tool
+                    .tool_summary
+                    .as_ref()
+                    .map(tool_result_summary_dto_from_protocol),
                 action_id: tool.action_id.clone(),
                 boundary_id: tool.boundary_id.clone(),
             })
@@ -658,6 +665,64 @@ fn autonomous_command_result_dto_from_record(
         exit_code: command_result.exit_code,
         timed_out: command_result.timed_out,
         summary: command_result.summary.clone(),
+    }
+}
+
+pub(crate) fn tool_result_summary_dto_from_protocol(
+    summary: &ToolResultSummary,
+) -> ToolResultSummaryDto {
+    match summary {
+        ToolResultSummary::Command(summary) => {
+            ToolResultSummaryDto::Command(CommandToolResultSummaryDto {
+                exit_code: summary.exit_code,
+                timed_out: summary.timed_out,
+                stdout_truncated: summary.stdout_truncated,
+                stderr_truncated: summary.stderr_truncated,
+                stdout_redacted: summary.stdout_redacted,
+                stderr_redacted: summary.stderr_redacted,
+            })
+        }
+        ToolResultSummary::File(summary) => ToolResultSummaryDto::File(FileToolResultSummaryDto {
+            path: summary.path.clone(),
+            scope: summary.scope.clone(),
+            line_count: summary.line_count,
+            match_count: summary.match_count,
+            truncated: summary.truncated,
+        }),
+        ToolResultSummary::Git(summary) => ToolResultSummaryDto::Git(GitToolResultSummaryDto {
+            scope: summary.scope.clone().map(git_tool_result_scope_dto),
+            changed_files: summary.changed_files,
+            truncated: summary.truncated,
+            base_revision: summary.base_revision.clone(),
+        }),
+        ToolResultSummary::Web(summary) => ToolResultSummaryDto::Web(WebToolResultSummaryDto {
+            target: summary.target.clone(),
+            result_count: summary.result_count,
+            final_url: summary.final_url.clone(),
+            content_kind: summary
+                .content_kind
+                .clone()
+                .map(web_tool_result_content_kind_dto),
+            content_type: summary.content_type.clone(),
+            truncated: summary.truncated,
+        }),
+    }
+}
+
+fn git_tool_result_scope_dto(scope: GitToolResultScope) -> GitToolResultScopeDto {
+    match scope {
+        GitToolResultScope::Staged => GitToolResultScopeDto::Staged,
+        GitToolResultScope::Unstaged => GitToolResultScopeDto::Unstaged,
+        GitToolResultScope::Worktree => GitToolResultScopeDto::Worktree,
+    }
+}
+
+fn web_tool_result_content_kind_dto(
+    kind: WebToolResultContentKind,
+) -> WebToolResultContentKindDto {
+    match kind {
+        WebToolResultContentKind::Html => WebToolResultContentKindDto::Html,
+        WebToolResultContentKind::PlainText => WebToolResultContentKindDto::PlainText,
     }
 }
 

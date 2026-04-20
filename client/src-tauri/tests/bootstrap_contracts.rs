@@ -8,7 +8,9 @@ use cadence_desktop_lib::{
         AutonomousUnitDto, AutonomousUnitHistoryEntryDto, AutonomousUnitKindDto,
         AutonomousUnitStatusDto, AutonomousWorkflowLinkageDto, BranchSummaryDto,
         CancelAutonomousRunRequestDto, ChangeKind, CommandError, CommandErrorClass,
-        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, ImportRepositoryRequestDto,
+        CommandToolResultSummaryDto, FileToolResultSummaryDto, GetAutonomousRunRequestDto,
+        GetRuntimeRunRequestDto, GitToolResultScopeDto, GitToolResultSummaryDto,
+        ImportRepositoryRequestDto,
         ListNotificationDispatchesRequestDto, ListNotificationDispatchesResponseDto,
         ListNotificationRoutesRequestDto, ListNotificationRoutesResponseDto,
         ListProjectsResponseDto, NotificationDispatchDto, NotificationDispatchOutcomeStatusDto,
@@ -31,10 +33,11 @@ use cadence_desktop_lib::{
         SubmitNotificationReplyResponseDto, SubmitOpenAiCallbackRequestDto,
         SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
         SyncNotificationAdaptersRequestDto, SyncNotificationAdaptersResponseDto,
-        UpsertNotificationRouteCredentialsRequestDto,
+        ToolResultSummaryDto, UpsertNotificationRouteCredentialsRequestDto,
         UpsertNotificationRouteCredentialsResponseDto, UpsertNotificationRouteRequestDto,
         UpsertNotificationRouteResponseDto, UpsertWorkflowGraphRequestDto,
         UpsertWorkflowGraphResponseDto, VerificationRecordDto, VerificationRecordStatus,
+        WebToolResultContentKindDto, WebToolResultSummaryDto,
         WorkflowAutomaticDispatchOutcomeDto, WorkflowAutomaticDispatchPackageOutcomeDto,
         WorkflowAutomaticDispatchPackageStatusDto, WorkflowAutomaticDispatchStatusDto,
         WorkflowGateMetadataDto, WorkflowGateStateDto, WorkflowGraphEdgeDto,
@@ -288,6 +291,47 @@ fn sample_autonomous_attempt() -> AutonomousUnitAttemptDto {
                 .into(),
         }),
     }
+}
+
+fn sample_command_tool_summary() -> ToolResultSummaryDto {
+    ToolResultSummaryDto::Command(CommandToolResultSummaryDto {
+        exit_code: Some(0),
+        timed_out: false,
+        stdout_truncated: true,
+        stderr_truncated: false,
+        stdout_redacted: false,
+        stderr_redacted: true,
+    })
+}
+
+fn sample_file_tool_summary() -> ToolResultSummaryDto {
+    ToolResultSummaryDto::File(FileToolResultSummaryDto {
+        path: Some("src/lib.rs".into()),
+        scope: Some("workspace".into()),
+        line_count: Some(120),
+        match_count: Some(4),
+        truncated: true,
+    })
+}
+
+fn sample_git_tool_summary() -> ToolResultSummaryDto {
+    ToolResultSummaryDto::Git(GitToolResultSummaryDto {
+        scope: Some(GitToolResultScopeDto::Worktree),
+        changed_files: 3,
+        truncated: false,
+        base_revision: Some("main~1".into()),
+    })
+}
+
+fn sample_web_tool_summary() -> ToolResultSummaryDto {
+    ToolResultSummaryDto::Web(WebToolResultSummaryDto {
+        target: "https://example.com/search?q=cadence".into(),
+        result_count: Some(5),
+        final_url: Some("https://example.com/search?q=cadence".into()),
+        content_kind: Some(WebToolResultContentKindDto::Html),
+        content_type: Some("text/html".into()),
+        truncated: false,
+    })
 }
 
 fn sample_autonomous_artifact() -> AutonomousUnitArtifactDto {
@@ -1031,6 +1075,123 @@ fn platform_matrix_artifact_locks_cross_platform_verification_contract() {
     assert!(matrix.contains("## Linux"));
     assert!(matrix.contains("## Windows"));
     assert!(matrix.contains("No platform-specific skips"));
+}
+
+#[test]
+fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payloads() {
+    assert_eq!(
+        serde_json::to_value(sample_command_tool_summary())
+            .expect("command tool summary should serialize"),
+        json!({
+            "kind": "command",
+            "exitCode": 0,
+            "timedOut": false,
+            "stdoutTruncated": true,
+            "stderrTruncated": false,
+            "stdoutRedacted": false,
+            "stderrRedacted": true
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(sample_file_tool_summary())
+            .expect("file tool summary should serialize"),
+        json!({
+            "kind": "file",
+            "path": "src/lib.rs",
+            "scope": "workspace",
+            "lineCount": 120,
+            "matchCount": 4,
+            "truncated": true
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(sample_git_tool_summary())
+            .expect("git tool summary should serialize"),
+        json!({
+            "kind": "git",
+            "scope": "worktree",
+            "changedFiles": 3,
+            "truncated": false,
+            "baseRevision": "main~1"
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(sample_web_tool_summary())
+            .expect("web tool summary should serialize"),
+        json!({
+            "kind": "web",
+            "target": "https://example.com/search?q=cadence",
+            "resultCount": 5,
+            "finalUrl": "https://example.com/search?q=cadence",
+            "contentKind": "html",
+            "contentType": "text/html",
+            "truncated": false
+        })
+    );
+
+    let autonomous_tool_payload = serde_json::to_value(AutonomousToolResultPayloadDto {
+        project_id: "project-1".into(),
+        run_id: "run-1".into(),
+        unit_id: "run-1:unit:researcher".into(),
+        attempt_id: "run-1:unit:researcher:attempt:1".into(),
+        artifact_id: "artifact-tool-result".into(),
+        tool_call_id: "tool-call-1".into(),
+        tool_name: "git_diff".into(),
+        tool_state: AutonomousToolCallStateDto::Succeeded,
+        command_result: None,
+        tool_summary: Some(sample_git_tool_summary()),
+        action_id: Some("action-1".into()),
+        boundary_id: Some("boundary-1".into()),
+    })
+    .expect("autonomous tool payload should serialize");
+    assert_eq!(
+        autonomous_tool_payload["toolSummary"],
+        json!({
+            "kind": "git",
+            "scope": "worktree",
+            "changedFiles": 3,
+            "truncated": false,
+            "baseRevision": "main~1"
+        })
+    );
+
+    let runtime_stream_tool_item = serde_json::to_value(RuntimeStreamItemDto {
+        kind: RuntimeStreamItemKind::Tool,
+        run_id: "run-1".into(),
+        sequence: 8,
+        session_id: Some("session-1".into()),
+        flow_id: Some("flow-1".into()),
+        text: None,
+        tool_call_id: Some("tool-call-2".into()),
+        tool_name: Some("web_fetch".into()),
+        tool_state: Some(cadence_desktop_lib::commands::RuntimeToolCallState::Succeeded),
+        tool_summary: Some(sample_web_tool_summary()),
+        action_id: None,
+        boundary_id: None,
+        action_type: None,
+        title: None,
+        detail: Some("Fetched bounded web content.".into()),
+        code: None,
+        message: None,
+        retryable: None,
+        created_at: "2026-04-16T14:00:02Z".into(),
+    })
+    .expect("runtime stream tool item should serialize");
+    assert_eq!(
+        runtime_stream_tool_item["toolSummary"],
+        json!({
+            "kind": "web",
+            "target": "https://example.com/search?q=cadence",
+            "resultCount": 5,
+            "finalUrl": "https://example.com/search?q=cadence",
+            "contentKind": "html",
+            "contentType": "text/html",
+            "truncated": false
+        })
+    );
 }
 
 #[test]

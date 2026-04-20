@@ -979,7 +979,9 @@ fn map_supervisor_event_to_stream_item(
             tool_call_id: Some(tool_call_id),
             tool_name: Some(tool_name),
             tool_state: Some(map_supervisor_tool_state(tool_state)),
-            tool_summary,
+            tool_summary: tool_summary
+                .as_ref()
+                .map(crate::commands::runtime_support::tool_result_summary_dto_from_protocol),
             action_id: None,
             boundary_id: None,
             action_type: None,

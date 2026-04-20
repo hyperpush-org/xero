@@ -34,7 +34,7 @@ pub mod upsert_workflow_graph;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{db::project_store, runtime::protocol::ToolResultSummary};
+use crate::db::project_store;
 
 pub use apply_workflow_transition::apply_workflow_transition;
 pub use cancel_autonomous_run::cancel_autonomous_run;
@@ -1533,6 +1533,71 @@ pub struct AutonomousCommandResultDto {
     pub summary: String,
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitToolResultScopeDto {
+    Staged,
+    Unstaged,
+    Worktree,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebToolResultContentKindDto {
+    Html,
+    PlainText,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommandToolResultSummaryDto {
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_redacted: bool,
+    pub stderr_redacted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileToolResultSummaryDto {
+    pub path: Option<String>,
+    pub scope: Option<String>,
+    pub line_count: Option<usize>,
+    pub match_count: Option<usize>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitToolResultSummaryDto {
+    pub scope: Option<GitToolResultScopeDto>,
+    pub changed_files: usize,
+    pub truncated: bool,
+    pub base_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebToolResultSummaryDto {
+    pub target: String,
+    pub result_count: Option<usize>,
+    pub final_url: Option<String>,
+    pub content_kind: Option<WebToolResultContentKindDto>,
+    pub content_type: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ToolResultSummaryDto {
+    Command(CommandToolResultSummaryDto),
+    File(FileToolResultSummaryDto),
+    Git(GitToolResultSummaryDto),
+    Web(WebToolResultSummaryDto),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousToolResultPayloadDto {
@@ -1546,7 +1611,7 @@ pub struct AutonomousToolResultPayloadDto {
     pub tool_state: AutonomousToolCallStateDto,
     pub command_result: Option<AutonomousCommandResultDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_summary: Option<ToolResultSummary>,
+    pub tool_summary: Option<ToolResultSummaryDto>,
     pub action_id: Option<String>,
     pub boundary_id: Option<String>,
 }
@@ -1823,7 +1888,7 @@ pub struct RuntimeStreamItemDto {
     pub tool_name: Option<String>,
     pub tool_state: Option<RuntimeToolCallState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_summary: Option<ToolResultSummary>,
+    pub tool_summary: Option<ToolResultSummaryDto>,
     pub action_id: Option<String>,
     pub boundary_id: Option<String>,
     pub action_type: Option<String>,

@@ -2841,6 +2841,7 @@ export interface AutonomousUnitArtifactView {
   updatedAt: string
   detail: string | null
   commandResult: AutonomousCommandResultView | null
+  toolSummary: ToolResultSummaryDto | null
   toolName: string | null
   toolState: AutonomousToolCallStateDto | null
   toolStateLabel: string | null
@@ -2896,7 +2897,7 @@ export interface RuntimeStreamToolItemView extends RuntimeStreamBaseItemView {
   toolName: string
   toolState: RuntimeToolCallStateDto
   detail: string | null
-  toolSummary?: ToolResultSummaryDto | null
+  toolSummary: ToolResultSummaryDto | null
 }
 
 export interface RuntimeStreamActivityItemView extends RuntimeStreamBaseItemView {
@@ -3496,7 +3497,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         toolName,
         toolState,
         detail: normalizeOptionalText(event.item.detail),
-        ...(event.item.toolSummary ? { toolSummary: event.item.toolSummary } : {}),
+        toolSummary: event.item.toolSummary ?? null,
       }
     }
     case 'activity': {
@@ -4627,6 +4628,7 @@ export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): Auto
   const payload = artifact.payload ?? null
   const commandResult = payload?.commandResult ? mapAutonomousCommandResult(payload.commandResult) : null
 
+  let toolSummary: ToolResultSummaryDto | null = null
   let toolName: string | null = null
   let toolState: AutonomousToolCallStateDto | null = null
   let toolStateLabel: string | null = null
@@ -4639,6 +4641,7 @@ export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): Auto
 
   switch (payload?.kind) {
     case 'tool_result':
+      toolSummary = payload.toolSummary ?? null
       toolName = normalizeOptionalText(payload.toolName)
       toolState = payload.toolState
       toolStateLabel = getAutonomousToolCallStateLabel(payload.toolState)
@@ -4677,6 +4680,7 @@ export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): Auto
     updatedAt: artifact.updatedAt,
     detail: getAutonomousArtifactDetail(artifact, commandResult),
     commandResult,
+    toolSummary,
     toolName,
     toolState,
     toolStateLabel,
