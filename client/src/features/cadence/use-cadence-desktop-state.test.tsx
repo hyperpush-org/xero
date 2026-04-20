@@ -255,7 +255,7 @@ function makeStreamResponse(
     runId: `run-${projectId}`,
     sessionId: 'session-1',
     flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'activity', 'action_required', 'complete', 'failure'],
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     ...overrides,
   }
 }
@@ -277,7 +277,7 @@ function makeStreamEvent(
     sessionId: overrides.sessionId ?? 'session-1',
     flowId: overrides.flowId ?? 'flow-1',
     subscribedItemKinds:
-      overrides.subscribedItemKinds ?? ['transcript', 'tool', 'activity', 'action_required', 'complete', 'failure'],
+      overrides.subscribedItemKinds ?? ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     item: {
       runId,
       sequence,
@@ -836,6 +836,10 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="stream-last-sequence">{String(state.agentView?.runtimeStream?.lastSequence ?? 0)}</div>
       <div data-testid="stream-error">{state.agentView?.runtimeStreamError?.message ?? 'none'}</div>
       <div data-testid="stream-item-count">{String(state.agentView?.runtimeStreamItems?.length ?? 0)}</div>
+      <div data-testid="stream-skill-count">{String(state.agentView?.skillItems?.length ?? 0)}</div>
+      <div data-testid="stream-skill-first-id">{state.agentView?.skillItems?.[0]?.skillId ?? 'none'}</div>
+      <div data-testid="stream-skill-first-stage">{state.agentView?.skillItems?.[0]?.stage ?? 'none'}</div>
+      <div data-testid="stream-skill-first-result">{state.agentView?.skillItems?.[0]?.result ?? 'none'}</div>
       <div data-testid="activity-count">{String(state.agentView?.activityItems?.length ?? 0)}</div>
       <div data-testid="action-required-count">{String(state.agentView?.actionRequiredItems?.length ?? 0)}</div>
       <div data-testid="action-required-title">{state.agentView?.actionRequiredItems?.[0]?.title ?? 'none'}</div>
@@ -1731,6 +1735,12 @@ describe('useCadenceDesktopState', () => {
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
     await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1))
+    expect(setup.subscribeRuntimeStream).toHaveBeenCalledWith(
+      'project-1',
+      ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+      expect.any(Function),
+      expect.any(Function),
+    )
     expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing')
 
     act(() => {
@@ -1763,6 +1773,47 @@ describe('useCadenceDesktopState', () => {
       setup.emitRuntimeStream(
         0,
         makeStreamEvent('project-1', {
+          kind: 'skill',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          toolSummary: null,
+          skillId: 'find-skills',
+          skillStage: 'install',
+          skillResult: 'succeeded',
+          skillSource: {
+            repo: 'vercel-labs/skills',
+            path: 'skills/find-skills',
+            reference: 'main',
+            treeHash: '0123456789abcdef0123456789abcdef01234567',
+          },
+          skillCacheStatus: 'refreshed',
+          skillDiagnostic: null,
+          actionId: null,
+          boundaryId: null,
+          actionType: null,
+          title: null,
+          detail: 'Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:02Z',
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-skill-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('stream-skill-first-id')).toHaveTextContent('find-skills')
+    expect(screen.getByTestId('stream-skill-first-stage')).toHaveTextContent('install')
+    expect(screen.getByTestId('stream-skill-first-result')).toHaveTextContent('succeeded')
+
+    act(() => {
+      setup.emitRuntimeStream(
+        0,
+        makeStreamEvent('project-1', {
           kind: 'action_required',
           sessionId: 'session-1',
           flowId: 'flow-1',
@@ -1778,7 +1829,7 @@ describe('useCadenceDesktopState', () => {
           code: null,
           message: null,
           retryable: null,
-          createdAt: '2026-04-13T20:01:01Z',
+          createdAt: '2026-04-13T20:01:03Z',
         }),
       )
     })

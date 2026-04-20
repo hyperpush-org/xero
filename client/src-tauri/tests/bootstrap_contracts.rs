@@ -1258,7 +1258,10 @@ fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payl
         boundary_id: None,
         action_type: None,
         title: None,
-        detail: Some("Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.".into()),
+        detail: Some(
+            "Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree."
+                .into(),
+        ),
         code: None,
         message: None,
         retryable: None,

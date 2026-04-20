@@ -8,11 +8,12 @@ use crate::{
     commands::{CommandError, PhaseStatus, PhaseStep, PlanningLifecycleStageKindDto},
     db::project_store::{
         self, ApplyWorkflowTransitionRecord, AutonomousRunSnapshotRecord, AutonomousRunStatus,
-        AutonomousRunUpsertRecord, AutonomousUnitAttemptRecord, AutonomousUnitKind,
-        AutonomousUnitRecord, AutonomousUnitStatus, AutonomousWorkflowLinkageRecord,
-        WorkflowAutomaticDispatchOutcome, WorkflowAutomaticDispatchPackageOutcome,
-        WorkflowGraphEdgeRecord, WorkflowGraphNodeRecord, WorkflowHandoffPackageRecord,
-        WorkflowTransitionEventRecord, WorkflowTransitionGateDecision,
+        AutonomousRunUpsertRecord, AutonomousUnitArtifactRecord, AutonomousUnitAttemptRecord,
+        AutonomousUnitKind, AutonomousUnitRecord, AutonomousUnitStatus,
+        AutonomousWorkflowLinkageRecord, WorkflowAutomaticDispatchOutcome,
+        WorkflowAutomaticDispatchPackageOutcome, WorkflowGraphEdgeRecord, WorkflowGraphNodeRecord,
+        WorkflowHandoffPackageRecord, WorkflowTransitionEventRecord,
+        WorkflowTransitionGateDecision,
     },
 };
 
@@ -28,12 +29,12 @@ pub fn persist_autonomous_workflow_progression(
         payload.run.status,
         AutonomousRunStatus::Starting | AutonomousRunStatus::Running
     ) {
-        return project_store::upsert_autonomous_run(repo_root, &payload);
+        return persist_autonomous_run_if_changed(repo_root, existing, &payload);
     }
 
     let graph = project_store::load_workflow_graph(repo_root, project_id)?;
     if graph.nodes.is_empty() {
-        return project_store::upsert_autonomous_run(repo_root, &payload);
+        return persist_autonomous_run_if_changed(repo_root, existing, &payload);
     }
 
     let existing_linkage = existing
@@ -57,7 +58,7 @@ pub fn persist_autonomous_workflow_progression(
         collect_progression_states(repo_root, project_id, &payload.run.run_id, existing_linkage)?;
 
     if progression_states.is_empty() {
-        return project_store::upsert_autonomous_run(repo_root, &payload);
+        return persist_autonomous_run_if_changed(repo_root, existing, &payload);
     }
 
     let mut persisted = existing.cloned();
@@ -82,6 +83,58 @@ pub fn persist_autonomous_workflow_progression(
             ),
         )
     })
+}
+
+fn persist_autonomous_run_if_changed(
+    repo_root: &Path,
+    existing: Option<&AutonomousRunSnapshotRecord>,
+    payload: &AutonomousRunUpsertRecord,
+) -> Result<AutonomousRunSnapshotRecord, CommandError> {
+    if autonomous_run_payload_matches_existing(existing, payload) {
+        return Ok(existing
+            .expect("matching autonomous payload requires an existing snapshot")
+            .clone());
+    }
+
+    project_store::upsert_autonomous_run(repo_root, payload)
+}
+
+fn autonomous_run_payload_matches_existing(
+    existing: Option<&AutonomousRunSnapshotRecord>,
+    payload: &AutonomousRunUpsertRecord,
+) -> bool {
+    let Some(existing) = existing else {
+        return false;
+    };
+
+    existing.run == payload.run
+        && existing.unit == payload.unit
+        && existing.attempt == payload.attempt
+        && current_attempt_artifacts(existing) == payload.artifacts.as_slice()
+}
+
+fn current_attempt_artifacts(
+    existing: &AutonomousRunSnapshotRecord,
+) -> &[AutonomousUnitArtifactRecord] {
+    let Some(attempt_id) = existing
+        .attempt
+        .as_ref()
+        .map(|attempt| attempt.attempt_id.as_str())
+    else {
+        return &[];
+    };
+
+    existing
+        .history
+        .iter()
+        .find(|entry| {
+            entry
+                .latest_attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.attempt_id == attempt_id)
+        })
+        .map(|entry| entry.artifacts.as_slice())
+        .unwrap_or(&[])
 }
 
 #[derive(Debug, Clone)]

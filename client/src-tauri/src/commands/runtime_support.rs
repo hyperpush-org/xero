@@ -750,9 +750,7 @@ pub(crate) fn autonomous_skill_lifecycle_result_dto_from_protocol(
     result: SupervisorSkillLifecycleResult,
 ) -> AutonomousSkillLifecycleResultDto {
     match result {
-        SupervisorSkillLifecycleResult::Succeeded => {
-            AutonomousSkillLifecycleResultDto::Succeeded
-        }
+        SupervisorSkillLifecycleResult::Succeeded => AutonomousSkillLifecycleResultDto::Succeeded,
         SupervisorSkillLifecycleResult::Failed => AutonomousSkillLifecycleResultDto::Failed,
     }
 }

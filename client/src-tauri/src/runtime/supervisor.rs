@@ -33,10 +33,10 @@ use super::{
         CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary,
         SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
         SupervisorProcessStatus, SupervisorProtocolDiagnostic, SupervisorSkillCacheStatus,
-        SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult,
-        SupervisorSkillLifecycleStage, SupervisorSkillSourceMetadata, SupervisorStartupMessage,
-        SupervisorToolCallState, ToolResultSummary, WebToolResultSummary,
-        SUPERVISOR_KIND_DETACHED_PTY, SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_TRANSPORT_KIND_TCP,
+        SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
+        SupervisorSkillSourceMetadata, SupervisorStartupMessage, SupervisorToolCallState,
+        ToolResultSummary, WebToolResultSummary, SUPERVISOR_KIND_DETACHED_PTY,
+        SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_TRANSPORT_KIND_TCP,
     },
 };
 
@@ -2556,9 +2556,7 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
         }
         "skill" => {
             let Some(skill_id) = value.get("skill_id").and_then(serde_json::Value::as_str) else {
-                return diagnostic_skill_live_event(SkillLiveEventDecodeError::Missing(
-                    "skill_id",
-                ));
+                return diagnostic_skill_live_event(SkillLiveEventDecodeError::Missing("skill_id"));
             };
             let Some(stage) = value.get("stage").and_then(serde_json::Value::as_str) else {
                 return diagnostic_skill_live_event(SkillLiveEventDecodeError::Missing("stage"));
@@ -2598,9 +2596,7 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
             let detail = match sanitize_text_fragment(detail) {
                 Ok(Some(detail)) => detail,
                 Ok(None) => {
-                    return diagnostic_skill_live_event(SkillLiveEventDecodeError::Blank(
-                        "detail",
-                    ))
+                    return diagnostic_skill_live_event(SkillLiveEventDecodeError::Blank("detail"))
                 }
                 Err(()) => {
                     return diagnostic_skill_live_event(SkillLiveEventDecodeError::Oversized(
@@ -2683,11 +2679,7 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
             .into_iter()
             .flatten()
             .chain(diagnostic.as_ref().into_iter().flat_map(|diagnostic| {
-                [
-                    diagnostic.code.as_str(),
-                    diagnostic.message.as_str(),
-                ]
-                .into_iter()
+                [diagnostic.code.as_str(), diagnostic.message.as_str()].into_iter()
             }))
             .any(|value| contains_prohibited_live_content(value).is_some())
             {
@@ -2957,7 +2949,10 @@ fn sanitize_skill_diagnostic(
     let code = sanitize_skill_source_text_field(diagnostic.get("code"), "diagnostic.code")?;
     let message =
         sanitize_skill_source_text_field(diagnostic.get("message"), "diagnostic.message")?;
-    let Some(retryable) = diagnostic.get("retryable").and_then(serde_json::Value::as_bool) else {
+    let Some(retryable) = diagnostic
+        .get("retryable")
+        .and_then(serde_json::Value::as_bool)
+    else {
         return Err(SkillLiveEventDecodeError::Missing("diagnostic.retryable"));
     };
 

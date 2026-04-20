@@ -819,15 +819,15 @@ fn imported_repo_skill_runtime_uses_cadence_cache_boundary_and_keeps_repo_clean(
         Arc::new(FilesystemAutonomousSkillCacheStore::new(cache_root.clone())),
     );
 
-    let initial_source = skill_source_metadata(
-        "find-skills",
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    );
+    let initial_source =
+        skill_source_metadata("find-skills", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let first_install = runtime
-        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-            source: initial_source.clone(),
-            timeout_ms: Some(1_000),
-        })
+        .install(
+            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+                source: initial_source.clone(),
+                timeout_ms: Some(1_000),
+            },
+        )
         .expect("initial imported-repo skill install should succeed");
     let cached_invoke = runtime
         .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
@@ -854,19 +854,24 @@ fn imported_repo_skill_runtime_uses_cadence_cache_boundary_and_keeps_repo_clean(
     );
 
     let refreshed = runtime
-        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-            source: skill_source_metadata(
-                "find-skills",
-                "cccccccccccccccccccccccccccccccccccccccc",
-            ),
-            timeout_ms: Some(1_000),
-        })
+        .install(
+            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+                source: skill_source_metadata(
+                    "find-skills",
+                    "cccccccccccccccccccccccccccccccccccccccc",
+                ),
+                timeout_ms: Some(1_000),
+            },
+        )
         .expect("refreshed imported-repo skill install should succeed");
 
     assert_eq!(project_id, "project-1");
     assert_eq!(first_install.cache_status, AutonomousSkillCacheStatus::Miss);
     assert_eq!(cached_invoke.cache_status, AutonomousSkillCacheStatus::Hit);
-    assert_eq!(refreshed.cache_status, AutonomousSkillCacheStatus::Refreshed);
+    assert_eq!(
+        refreshed.cache_status,
+        AutonomousSkillCacheStatus::Refreshed
+    );
     assert_eq!(first_install.cache_key, refreshed.cache_key);
     assert!(
         Path::new(&first_install.cache_directory).starts_with(&cache_root),
@@ -935,5 +940,8 @@ fn imported_repo_skill_runtime_uses_cadence_cache_boundary_and_keeps_repo_clean(
     );
     assert!(!repo_root.join(".agents").exists());
     assert!(!repo_root.join(".pi").exists());
-    assert!(!repo_root.join(".cadence").join("autonomous-skills").exists());
+    assert!(!repo_root
+        .join(".cadence")
+        .join("autonomous-skills")
+        .exists());
 }

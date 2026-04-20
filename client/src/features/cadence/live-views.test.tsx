@@ -308,11 +308,12 @@ function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeS
     runId: 'run-1',
     sessionId: 'session-1',
     flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'activity', 'action_required', 'complete', 'failure'],
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     status: 'idle',
     items: [],
     transcriptItems: [],
     toolCalls: [],
+    skillItems: [],
     activityItems: [],
     actionRequired: [],
     completion: null,
@@ -472,6 +473,7 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     runtimeStreamStatusLabel: overrides.runtimeStreamStatusLabel ?? getStreamStatusLabel(runtimeStreamStatus),
     runtimeStreamError: overrides.runtimeStreamError ?? runtimeStream?.lastIssue ?? null,
     runtimeStreamItems: overrides.runtimeStreamItems ?? runtimeStream?.items ?? [],
+    skillItems: overrides.skillItems ?? runtimeStream?.skillItems ?? [],
     activityItems: overrides.activityItems ?? runtimeStream?.activityItems ?? [],
     actionRequiredItems: overrides.actionRequiredItems ?? runtimeStream?.actionRequired ?? [],
     approvalRequests: overrides.approvalRequests ?? project.approvalRequests,
@@ -692,6 +694,68 @@ describe('live views', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
     await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+  })
+
+  it('renders projected skill lifecycle rows in the live agent feed', () => {
+    const skillItems: RuntimeStreamView['skillItems'] = [
+      {
+        id: 'skill-discovery-1',
+        kind: 'skill',
+        runId: 'run-1',
+        sequence: 3,
+        createdAt: '2026-04-18T15:00:00Z',
+        skillId: 'find-skills',
+        stage: 'discovery',
+        result: 'succeeded',
+        detail: 'Discovery completed for the requested skill set.',
+        source: {
+          repo: 'vercel-labs/skills',
+          path: 'skills/find-skills',
+          reference: 'main',
+          treeHash: '0123456789abcdef0123456789abcdef01234567',
+        },
+        cacheStatus: 'miss',
+        diagnostic: null,
+      },
+    ]
+
+    render(
+      <AgentRuntime
+        agent={makeAgent(makeProject(), {
+          runtimeSession: makeRuntimeSession({
+            phase: 'authenticated',
+            phaseLabel: 'Authenticated',
+            runtimeLabel: 'Openai Codex · Authenticated',
+            accountId: 'acct@example.com',
+            accountLabel: 'acct@example.com',
+            sessionId: 'session-1',
+            sessionLabel: 'session-1',
+            lastErrorCode: null,
+            lastError: null,
+            isAuthenticated: true,
+            isLoginInProgress: false,
+            needsManualInput: false,
+            isSignedOut: false,
+            isFailed: false,
+          }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStream: makeRuntimeStream({
+            status: 'live',
+            items: skillItems,
+            skillItems,
+            lastSequence: 3,
+          }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: getStreamStatusLabel('live'),
+          skillItems,
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Skill lane' })).toBeVisible()
+    expect(screen.getByText('find-skills')).toBeVisible()
+    expect(screen.getByText('Discovery')).toBeVisible()
+    expect(screen.getByText('Cache miss')).toBeVisible()
   })
 
   it('renders recovered runtime without the removed autonomous and remote debug panels', () => {

@@ -59,6 +59,7 @@ import {
   type RuntimeStreamActionRequiredItemView,
   type RuntimeStreamActivityItemView,
   type RuntimeStreamIssueView,
+  type RuntimeStreamSkillItemView,
   type RuntimeStreamItemKindDto,
   type RuntimeStreamStatus,
   type RuntimeStreamView,
@@ -237,6 +238,7 @@ export interface AgentPaneView {
   runtimeStreamStatusLabel?: string
   runtimeStreamError?: RuntimeStreamIssueView | null
   runtimeStreamItems?: RuntimeStreamViewItem[]
+  skillItems?: RuntimeStreamSkillItemView[]
   activityItems?: RuntimeStreamActivityItemView[]
   actionRequiredItems?: RuntimeStreamActionRequiredItemView[]
   notificationBroker: ProjectDetailView['notificationBroker']
@@ -368,6 +370,7 @@ const REPOSITORY_DIFF_SCOPE_LABELS: Record<RepositoryDiffScope, string> = {
 const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'transcript',
   'tool',
+  'skill',
   'activity',
   'action_required',
   'complete',
@@ -3514,6 +3517,7 @@ export function useCadenceDesktopState(
       runtimeStreamStatusLabel: getRuntimeStreamStatusLabel(activeRuntimeStream?.status ?? 'idle'),
       runtimeStreamError: activeRuntimeStream?.lastIssue ?? null,
       runtimeStreamItems: activeRuntimeStream?.items ?? [],
+      skillItems: activeRuntimeStream?.skillItems ?? [],
       activityItems: activeRuntimeStream?.activityItems ?? [],
       actionRequiredItems: activeRuntimeStream?.actionRequired ?? [],
       notificationBroker: activeProject.notificationBroker,

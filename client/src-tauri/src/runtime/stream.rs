@@ -1377,7 +1377,8 @@ fn validate_stream_item(item: &RuntimeStreamItemDto) -> Result<(), CommandError>
             }
             if matches!(
                 stage,
-                AutonomousSkillLifecycleStageDto::Install | AutonomousSkillLifecycleStageDto::Invoke
+                AutonomousSkillLifecycleStageDto::Install
+                    | AutonomousSkillLifecycleStageDto::Invoke
             ) && matches!(result, AutonomousSkillLifecycleResultDto::Succeeded)
                 && item.skill_cache_status.is_none()
             {

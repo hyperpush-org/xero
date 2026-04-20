@@ -711,7 +711,7 @@ fn subscribe_runtime_stream_returns_run_scoped_response_for_an_attachable_run() 
         subscribe_request(
             &project_id,
             &channel_string(),
-            &["transcript", "tool", "activity", "complete"],
+            &["transcript", "tool", "skill", "activity", "complete"],
         ),
         Ok(SubscribeRuntimeStreamResponseDto {
             project_id: project_id.clone(),
@@ -722,6 +722,7 @@ fn subscribe_runtime_stream_returns_run_scoped_response_for_an_attachable_run() 
             subscribed_item_kinds: vec![
                 RuntimeStreamItemKind::Transcript,
                 RuntimeStreamItemKind::Tool,
+                RuntimeStreamItemKind::Skill,
                 RuntimeStreamItemKind::Activity,
                 RuntimeStreamItemKind::Complete,
             ],

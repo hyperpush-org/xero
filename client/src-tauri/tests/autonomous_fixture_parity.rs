@@ -16,14 +16,13 @@ use cadence_desktop_lib::{
         get_runtime_run::get_runtime_run, start_runtime_session::start_runtime_session,
         stop_runtime_run::stop_runtime_run, submit_notification_reply::submit_notification_reply,
         AutonomousRunStateDto, AutonomousRunStatusDto, AutonomousSkillCacheStatusDto,
-        AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleStageDto,
-        AutonomousUnitKindDto, AutonomousUnitStatusDto, GetAutonomousRunRequestDto,
-        GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
-        NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
-        ProjectIdRequestDto, ResumeHistoryStatus, RuntimeAuthPhase,
+        AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleStageDto, AutonomousUnitKindDto,
+        AutonomousUnitStatusDto, GetAutonomousRunRequestDto, GetRuntimeRunRequestDto,
+        NotificationDispatchStatusDto, NotificationReplyClaimStatusDto, OperatorApprovalStatus,
+        PhaseStatus, PhaseStep, ProjectIdRequestDto, ResumeHistoryStatus, RuntimeAuthPhase,
         RuntimeRunCheckpointKindDto, RuntimeRunStatusDto, RuntimeRunTransportLivenessDto,
-        RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind,
-        StopRuntimeRunRequestDto, SubmitNotificationReplyRequestDto,
+        RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind, StopRuntimeRunRequestDto,
+        SubmitNotificationReplyRequestDto,
     },
     configure_builder_with_state,
     db::{self, database_path_for_repo, project_store},
@@ -34,10 +33,9 @@ use cadence_desktop_lib::{
         protocol::SupervisorLiveEventPayload, start_runtime_stream, AutonomousSkillRuntime,
         AutonomousSkillRuntimeConfig, AutonomousSkillSource, AutonomousSkillSourceEntryKind,
         AutonomousSkillSourceError, AutonomousSkillSourceFileRequest,
-        AutonomousSkillSourceFileResponse, AutonomousSkillSourceMetadata,
-        AutonomousSkillSourceTreeEntry, AutonomousSkillSourceTreeRequest,
-        AutonomousSkillSourceTreeResponse, FilesystemAutonomousSkillCacheStore,
-        RuntimeStreamRequest, RuntimeSupervisorLaunchRequest,
+        AutonomousSkillSourceFileResponse, AutonomousSkillSourceTreeEntry,
+        AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse,
+        FilesystemAutonomousSkillCacheStore, RuntimeStreamRequest, RuntimeSupervisorLaunchRequest,
     },
     state::DesktopState,
 };
@@ -553,15 +551,6 @@ fn skill_runtime_config() -> AutonomousSkillRuntimeConfig {
         github_api_base_url: "https://api.github.com".into(),
         github_token: None,
         limits: Default::default(),
-    }
-}
-
-fn skill_source_metadata(skill_id: &str, tree_hash: &str) -> AutonomousSkillSourceMetadata {
-    AutonomousSkillSourceMetadata {
-        repo: "vercel-labs/skills".into(),
-        path: format!("skills/{skill_id}"),
-        reference: "main".into(),
-        tree_hash: tree_hash.into(),
     }
 }
 
@@ -1471,13 +1460,15 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
     );
 
     let discovered = skill_runtime
-        .discover(cadence_desktop_lib::runtime::AutonomousSkillDiscoverRequest {
-            query: "find".into(),
-            result_limit: Some(5),
-            timeout_ms: Some(1_000),
-            source_repo: None,
-            source_ref: None,
-        })
+        .discover(
+            cadence_desktop_lib::runtime::AutonomousSkillDiscoverRequest {
+                query: "find".into(),
+                result_limit: Some(5),
+                timeout_ms: Some(1_000),
+                source_repo: None,
+                source_ref: None,
+            },
+        )
         .expect("fixture discovery should succeed");
     let discovered_source = discovered
         .candidates
@@ -1486,10 +1477,12 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
         .source
         .clone();
     let installed = skill_runtime
-        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-            source: discovered_source.clone(),
-            timeout_ms: Some(1_000),
-        })
+        .install(
+            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+                source: discovered_source.clone(),
+                timeout_ms: Some(1_000),
+            },
+        )
         .expect("fixture install should succeed");
     let invoked = skill_runtime
         .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
@@ -1498,8 +1491,14 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
         })
         .expect("fixture invoke should reuse the Cadence cache");
 
-    assert_eq!(installed.cache_status, cadence_desktop_lib::runtime::AutonomousSkillCacheStatus::Miss);
-    assert_eq!(invoked.cache_status, cadence_desktop_lib::runtime::AutonomousSkillCacheStatus::Hit);
+    assert_eq!(
+        installed.cache_status,
+        cadence_desktop_lib::runtime::AutonomousSkillCacheStatus::Miss
+    );
+    assert_eq!(
+        invoked.cache_status,
+        cadence_desktop_lib::runtime::AutonomousSkillCacheStatus::Hit
+    );
     assert_eq!(source.tree_request_count(), 2);
     assert_eq!(source.file_request_count(), 2);
     assert!(Path::new(&installed.cache_directory).starts_with(&cache_root));
@@ -1643,9 +1642,15 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
 
     let payload_jsons = load_skill_payload_jsons(&repo_root);
     assert_eq!(payload_jsons.len(), 3);
-    assert!(payload_jsons.iter().all(|payload| !payload.contains("# Find Skills")));
-    assert!(payload_jsons.iter().all(|payload| !payload.contains("Use this for discovery.")));
-    assert!(payload_jsons.iter().all(|payload| !payload.contains("SKILL.md")));
+    assert!(payload_jsons
+        .iter()
+        .all(|payload| !payload.contains("# Find Skills")));
+    assert!(payload_jsons
+        .iter()
+        .all(|payload| !payload.contains("Use this for discovery.")));
+    assert!(payload_jsons
+        .iter()
+        .all(|payload| !payload.contains("SKILL.md")));
 
     let fresh_app = build_mock_app(create_state(&root));
     let fresh_runtime = seed_authenticated_runtime(&fresh_app, &root, &project_id);
@@ -1682,14 +1687,20 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
         &repo_root,
         &fresh_runtime,
         &launched.run.run_id,
-        vec![RuntimeStreamItemKind::Skill, RuntimeStreamItemKind::Complete],
+        vec![
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Complete,
+        ],
         channel,
     );
 
     let items = collect_until_terminal(receiver);
     assert_monotonic_sequences(&items, &launched.run.run_id);
     assert_eq!(
-        items.iter().map(|item| item.kind.clone()).collect::<Vec<_>>(),
+        items
+            .iter()
+            .map(|item| item.kind.clone())
+            .collect::<Vec<_>>(),
         vec![
             RuntimeStreamItemKind::Skill,
             RuntimeStreamItemKind::Skill,
@@ -1756,4 +1767,86 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
             && runtime_run.status == RuntimeRunStatusDto::Stopped
     });
     assert_eq!(final_runtime.status, RuntimeRunStatusDto::Stopped);
+}
+
+#[test]
+fn get_autonomous_run_reuses_unchanged_snapshot_without_write_lock_contention() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime_session = seed_authenticated_runtime(&app, &root, &project_id);
+
+    let launched = launch_scripted_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        "run-autonomous-observe-noop",
+        runtime_session
+            .session_id
+            .as_deref()
+            .expect("authenticated runtime session id"),
+        runtime_session.flow_id.as_deref(),
+        &runtime_shell::script_join_steps(&[
+            runtime_shell::script_print_line("noop"),
+            runtime_shell::script_exit(0),
+        ]),
+    );
+
+    let stopped_runtime = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.run_id == launched.run.run_id
+            && runtime_run.status == RuntimeRunStatusDto::Stopped
+    });
+    assert_eq!(stopped_runtime.status, RuntimeRunStatusDto::Stopped);
+
+    let initial = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("seed autonomous snapshot before lock");
+    let initial_run = initial.run.as_ref().expect("autonomous run should exist");
+    assert_eq!(initial_run.run_id, launched.run.run_id);
+    assert_eq!(initial_run.status, AutonomousRunStatusDto::Stopped);
+
+    let database_path = database_path_for_repo(&repo_root);
+    let locking_connection =
+        rusqlite::Connection::open(&database_path).expect("open runtime db for write lock");
+    locking_connection
+        .execute_batch("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE;")
+        .expect("acquire write lock");
+
+    let observed = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("get autonomous run should reuse existing snapshot without writes");
+
+    locking_connection
+        .execute_batch("ROLLBACK;")
+        .expect("release write lock");
+
+    let observed_run = observed
+        .run
+        .as_ref()
+        .expect("observed autonomous run should exist");
+    assert_eq!(observed_run.run_id, launched.run.run_id);
+    assert_eq!(observed_run.status, AutonomousRunStatusDto::Stopped);
+    assert_eq!(
+        observed
+            .history
+            .first()
+            .and_then(|entry| entry.latest_attempt.as_ref())
+            .map(|attempt| attempt.attempt_id.clone()),
+        initial
+            .history
+            .first()
+            .and_then(|entry| entry.latest_attempt.as_ref())
+            .map(|attempt| attempt.attempt_id.clone())
+    );
 }

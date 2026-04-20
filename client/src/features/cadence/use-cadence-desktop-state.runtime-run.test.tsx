@@ -547,7 +547,7 @@ function makeStreamResponse(
     runId: `run-${projectId}`,
     sessionId: 'session-1',
     flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'activity', 'action_required', 'complete', 'failure'],
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     ...overrides,
   }
 }
@@ -1028,6 +1028,10 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="stream-run-id">{state.agentView?.runtimeStream?.runId ?? 'none'}</div>
       <div data-testid="stream-last-sequence">{String(state.agentView?.runtimeStream?.lastSequence ?? 0)}</div>
       <div data-testid="stream-item-count">{String(state.agentView?.runtimeStreamItems?.length ?? 0)}</div>
+      <div data-testid="stream-skill-count">{String(state.agentView?.skillItems?.length ?? 0)}</div>
+      <div data-testid="stream-skill-first-id">{state.agentView?.skillItems?.[0]?.skillId ?? 'none'}</div>
+      <div data-testid="stream-skill-first-stage">{state.agentView?.skillItems?.[0]?.stage ?? 'none'}</div>
+      <div data-testid="stream-skill-first-result">{state.agentView?.skillItems?.[0]?.result ?? 'none'}</div>
       <div data-testid="stream-action-required-count">{String(state.agentView?.actionRequiredItems?.length ?? 0)}</div>
       <div data-testid="pending-approval-count">{String(state.agentView?.pendingApprovalCount ?? 0)}</div>
       <div data-testid="resume-history-count">{String(resumeHistory.length)}</div>
@@ -2081,6 +2085,207 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('resume-history-count')).toHaveTextContent('0')
     expect(screen.getByTestId('error')).toHaveTextContent('none')
     expect(screen.getByTestId('refresh-source')).toHaveTextContent('selection')
+  })
+
+  it('projects replayed skill lifecycle rows into the agent view during runtime reconnect', async () => {
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', { runId: 'run-project-1' }),
+      },
+      subscribeResponses: {
+        'project-1': makeStreamResponse('project-1', {
+          runId: 'run-project-1',
+          subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing'))
+
+    act(() => {
+      setup.emitRuntimeStream(0, {
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        runId: 'run-project-1',
+        sessionId: 'session-1',
+        flowId: 'flow-1',
+        subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+        item: {
+          kind: 'skill',
+          runId: 'run-project-1',
+          sequence: 4,
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          toolSummary: null,
+          skillId: 'find-skills',
+          skillStage: 'invoke',
+          skillResult: 'failed',
+          skillSource: {
+            repo: 'vercel-labs/skills',
+            path: 'skills/find-skills',
+            reference: 'main',
+            treeHash: '0123456789abcdef0123456789abcdef01234567',
+          },
+          skillCacheStatus: 'hit',
+          skillDiagnostic: {
+            code: 'autonomous_skill_invoke_failed',
+            message: 'Cadence could not invoke autonomous skill `find-skills`.',
+            retryable: false,
+          },
+          actionId: null,
+          boundaryId: null,
+          actionType: null,
+          title: null,
+          detail: 'Autonomous skill `find-skills` failed during invocation.',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-16T13:30:00Z',
+        },
+      })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
+    expect(screen.getByTestId('stream-item-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('stream-skill-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('stream-skill-first-id')).toHaveTextContent('find-skills')
+    expect(screen.getByTestId('stream-skill-first-stage')).toHaveTextContent('invoke')
+    expect(screen.getByTestId('stream-skill-first-result')).toHaveTextContent('failed')
+  })
+
+  it('fails closed on malformed skill events and preserves the last truthful skill lane', async () => {
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', { runId: 'run-project-1' }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
+
+    act(() => {
+      setup.emitRuntimeStream(0, {
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        runId: 'run-project-1',
+        sessionId: 'session-1',
+        flowId: 'flow-1',
+        subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+        item: {
+          kind: 'skill',
+          runId: 'run-project-1',
+          sequence: 1,
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          toolSummary: null,
+          skillId: 'find-skills',
+          skillStage: 'install',
+          skillResult: 'succeeded',
+          skillSource: {
+            repo: 'vercel-labs/skills',
+            path: 'skills/find-skills',
+            reference: 'main',
+            treeHash: '0123456789abcdef0123456789abcdef01234567',
+          },
+          skillCacheStatus: 'refreshed',
+          skillDiagnostic: null,
+          actionId: null,
+          boundaryId: null,
+          actionType: null,
+          title: null,
+          detail: 'Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-16T13:30:00Z',
+        },
+      })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-skill-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('stream-skill-first-id')).toHaveTextContent('find-skills')
+
+    act(() => {
+      setup.emitRuntimeStream(0, {
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        runId: 'run-project-1',
+        sessionId: 'session-1',
+        flowId: 'flow-1',
+        subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+        item: {
+          kind: 'skill',
+          runId: 'run-project-1',
+          sequence: 2,
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          toolSummary: null,
+          skillId: 'find-skills',
+          skillStage: null,
+          skillResult: 'failed',
+          skillSource: {
+            repo: 'vercel-labs/skills',
+            path: 'skills/find-skills',
+            reference: 'main',
+            treeHash: '0123456789abcdef0123456789abcdef01234567',
+          },
+          skillCacheStatus: 'hit',
+          skillDiagnostic: null,
+          actionId: null,
+          boundaryId: null,
+          actionType: null,
+          title: null,
+          detail: 'Malformed skill event missing a lifecycle stage.',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-16T13:30:01Z',
+        },
+      })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('error'))
+    expect(screen.getByTestId('stream-skill-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('stream-skill-first-id')).toHaveTextContent('find-skills')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Cadence received a runtime skill item without a skillStage value.',
+    )
   })
 
   it('fails closed on malformed stream items and preserves the last valid projection', async () => {

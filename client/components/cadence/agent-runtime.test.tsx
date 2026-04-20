@@ -316,11 +316,12 @@ function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeS
     runId: 'run-1',
     sessionId: 'session-1',
     flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'activity', 'action_required', 'complete', 'failure'],
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     status: 'idle',
     items: [],
     transcriptItems: [],
     toolCalls: [],
+    skillItems: [],
     activityItems: [],
     actionRequired: [],
     completion: null,
@@ -540,6 +541,7 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     runtimeStreamStatusLabel: overrides.runtimeStreamStatusLabel ?? 'No live stream',
     runtimeStreamError: overrides.runtimeStreamError ?? null,
     runtimeStreamItems: overrides.runtimeStreamItems ?? [],
+    skillItems: overrides.skillItems ?? runtimeStream?.skillItems ?? [],
     activityItems: overrides.activityItems ?? [],
     actionRequiredItems: overrides.actionRequiredItems ?? [],
     approvalRequests: overrides.approvalRequests ?? project.approvalRequests,
@@ -839,6 +841,128 @@ describe('AgentRuntime current UI', () => {
       'placeholder',
       'Configure an OpenRouter API key in Settings to start.',
     )
+  })
+
+  it('renders a first-class skill lane with truthful source, cache, and diagnostic detail', () => {
+    const skillItems: RuntimeStreamView['skillItems'] = [
+      {
+        id: 'skill-install',
+        kind: 'skill',
+        runId: 'run-1',
+        sequence: 7,
+        createdAt: '2026-04-18T14:00:00Z',
+        skillId: 'find-skills',
+        stage: 'install',
+        result: 'succeeded',
+        detail: 'Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.',
+        source: {
+          repo: 'vercel-labs/skills',
+          path: 'skills/find-skills',
+          reference: 'main',
+          treeHash: '0123456789abcdef0123456789abcdef01234567',
+        },
+        cacheStatus: 'refreshed',
+        diagnostic: null,
+      },
+      {
+        id: 'skill-invoke',
+        kind: 'skill',
+        runId: 'run-1',
+        sequence: 8,
+        createdAt: '2026-04-18T14:00:02Z',
+        skillId: 'react-best-practices',
+        stage: 'invoke',
+        result: 'failed',
+        detail: 'Autonomous skill `react-best-practices` failed during invocation.',
+        source: {
+          repo: 'vercel-labs/skills',
+          path: 'skills/react-best-practices',
+          reference: 'main',
+          treeHash: 'fedcba98765432100123456789abcdef01234567',
+        },
+        cacheStatus: 'hit',
+        diagnostic: {
+          code: 'autonomous_skill_invoke_failed',
+          message: 'Cadence could not invoke autonomous skill `react-best-practices`.',
+          retryable: false,
+        },
+      },
+    ]
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', phase: 'authenticated', phaseLabel: 'Authenticated' }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStream: makeRuntimeStream({
+            status: 'live',
+            items: skillItems,
+            skillItems,
+            lastSequence: 8,
+          }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Streaming live activity',
+          skillItems,
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Skill lane' })).toBeVisible()
+    expect(screen.getByText('find-skills')).toBeVisible()
+    expect(screen.getByText('react-best-practices')).toBeVisible()
+    expect(screen.getByText('Install')).toBeVisible()
+    expect(screen.getByText('Invoke')).toBeVisible()
+    expect(screen.getByText('Cache refreshed')).toBeVisible()
+    expect(screen.getByText('Cache hit')).toBeVisible()
+    expect(screen.getByText('vercel-labs/skills · skills/find-skills @ main')).toBeVisible()
+    expect(screen.getByText('tree 0123456789ab')).toBeVisible()
+    expect(screen.getByText('Cadence could not invoke autonomous skill `react-best-practices`.')).toBeVisible()
+    expect(screen.getByText('code: autonomous_skill_invoke_failed · terminal')).toBeVisible()
+  })
+
+  it('renders the empty skill lane state when a run has no skill lifecycle rows yet', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', phase: 'authenticated', phaseLabel: 'Authenticated' }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStream: makeRuntimeStream({
+            status: 'live',
+            items: [
+              {
+                id: 'transcript-1',
+                kind: 'transcript',
+                runId: 'run-1',
+                sequence: 1,
+                createdAt: '2026-04-18T14:10:00Z',
+                text: 'Connected to cadence.',
+              },
+            ],
+            transcriptItems: [
+              {
+                id: 'transcript-1',
+                kind: 'transcript',
+                runId: 'run-1',
+                sequence: 1,
+                createdAt: '2026-04-18T14:10:00Z',
+                text: 'Connected to cadence.',
+              },
+            ],
+            skillItems: [],
+            lastSequence: 1,
+          }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Streaming live activity',
+          skillItems: [],
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Skill lane' })).toBeVisible()
+    expect(screen.getByText('No skill activity yet')).toBeVisible()
+    expect(
+      screen.getByText('Cadence has not observed any skill discovery, install, or invoke lifecycle rows for this run yet.'),
+    ).toBeVisible()
   })
 
   it('keeps the signed-out shell minimal and truthful', () => {

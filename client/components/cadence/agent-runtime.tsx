@@ -15,6 +15,7 @@ import type {
   RuntimeRunCheckpointView,
   RuntimeRunView,
   RuntimeSessionView,
+  RuntimeStreamSkillItemView,
   RuntimeStreamStatus,
   RuntimeStreamToolItemView,
   UpsertNotificationRouteRequestDto,
@@ -891,6 +892,56 @@ function getToolStateLabel(toolState: RuntimeStreamToolItemView['toolState']): s
   }
 }
 
+function getSkillStageLabel(stage: RuntimeStreamSkillItemView['stage']): string {
+  switch (stage) {
+    case 'discovery':
+      return 'Discovery'
+    case 'install':
+      return 'Install'
+    case 'invoke':
+      return 'Invoke'
+  }
+}
+
+function getSkillResultBadgeVariant(result: RuntimeStreamSkillItemView['result']): BadgeVariant {
+  switch (result) {
+    case 'succeeded':
+      return 'default'
+    case 'failed':
+      return 'destructive'
+  }
+}
+
+function getSkillResultLabel(result: RuntimeStreamSkillItemView['result']): string {
+  switch (result) {
+    case 'succeeded':
+      return 'Succeeded'
+    case 'failed':
+      return 'Failed'
+  }
+}
+
+function getSkillCacheLabel(cacheStatus: RuntimeStreamSkillItemView['cacheStatus']): string {
+  switch (cacheStatus) {
+    case 'miss':
+      return 'Cache miss'
+    case 'hit':
+      return 'Cache hit'
+    case 'refreshed':
+      return 'Cache refreshed'
+    case null:
+      return 'Cache unavailable'
+  }
+}
+
+function formatSkillSource(item: RuntimeStreamSkillItemView): string {
+  return `${item.source.repo} · ${item.source.path} @ ${item.source.reference}`
+}
+
+function formatSkillTreeHash(item: RuntimeStreamSkillItemView): string {
+  return item.source.treeHash.slice(0, 12)
+}
+
 function getApprovalBadgeVariant(status: OperatorApprovalView['status']): BadgeVariant {
   switch (status) {
     case 'pending':
@@ -1105,7 +1156,7 @@ function getStreamStatusMeta(agent: AgentPaneView, runtimeSession: RuntimeSessio
     return {
       eyebrow: 'Agent feed',
       title: 'No supervised run attached yet',
-      body: 'Start or reconnect a supervised run to populate the run-scoped transcript, tool, and activity lanes for this selected project.',
+      body: 'Start or reconnect a supervised run to populate the run-scoped transcript, tool, skill, and activity lanes for this selected project.',
       badgeVariant: 'outline' as const,
     }
   }
@@ -1159,7 +1210,7 @@ function getStreamStatusMeta(agent: AgentPaneView, runtimeSession: RuntimeSessio
         title: runtimeRun ? 'Waiting for the first run-scoped event' : 'No supervised run attached yet',
         body: runtimeRun
           ? agent.messagesUnavailableReason
-          : 'Start or reconnect a supervised run to populate the run-scoped transcript, tool, and activity lanes for this selected project.',
+          : 'Start or reconnect a supervised run to populate the run-scoped transcript, tool, skill, and activity lanes for this selected project.',
         badgeVariant: 'outline' as const,
       }
   }
@@ -1267,6 +1318,7 @@ export function AgentRuntime({
   const runtimeStreamItems = agent.runtimeStreamItems ?? runtimeStream?.items ?? []
   const activityItems = agent.activityItems ?? runtimeStream?.activityItems ?? []
   const actionRequiredItems = agent.actionRequiredItems ?? runtimeStream?.actionRequired ?? []
+  const skillItems = agent.skillItems ?? runtimeStream?.skillItems ?? []
   const transcriptItems = runtimeStream?.transcriptItems ?? []
   const toolCalls = runtimeStream?.toolCalls ?? []
   const runtimeRunErrorMessage = agent.runtimeRunErrorMessage ?? null
@@ -1582,6 +1634,7 @@ export function AgentRuntime({
       transcriptItems.length > 0 ||
       activityItems.length > 0 ||
       toolCalls.length > 0 ||
+      skillItems.length > 0 ||
       actionRequiredItems.length > 0 ||
       latestCompletion ||
       latestFailure,
@@ -3035,7 +3088,7 @@ export function AgentRuntime({
 
                 {showNoRunStreamBanner ? (
                   <FeedEmptyState
-                    body="Start or reconnect a supervised run to populate the run-scoped transcript, tool, and activity lanes for this selected project."
+                    body="Start or reconnect a supervised run to populate the run-scoped transcript, tool, skill, and activity lanes for this selected project."
                     title="No supervised run is attached"
                   />
                 ) : null}
@@ -3051,7 +3104,7 @@ export function AgentRuntime({
                   </Alert>
                 ) : null}
 
-                <div className="grid gap-4 lg:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <div className="rounded-xl border border-border/70 bg-card/70 p-4">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-base font-semibold text-foreground">Transcript</h3>
@@ -3121,6 +3174,48 @@ export function AgentRuntime({
                         ))
                       ) : (
                         <FeedEmptyState body="Cadence has not observed any tool calls for this run yet." title="No tool calls yet" />
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border/70 bg-card/70 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-base font-semibold text-foreground">Skill lane</h3>
+                      <Badge variant="outline">{skillItems.length} item{skillItems.length === 1 ? '' : 's'}</Badge>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {skillItems.length > 0 ? (
+                        skillItems.map((item) => (
+                          <div key={item.id} className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                              <span>{formatSequence(item.sequence)}</span>
+                              <span>{item.runId}</span>
+                              <Badge variant="outline">{getSkillStageLabel(item.stage)}</Badge>
+                              <Badge variant={getSkillResultBadgeVariant(item.result)}>{getSkillResultLabel(item.result)}</Badge>
+                              {item.cacheStatus ? <Badge variant="secondary">{getSkillCacheLabel(item.cacheStatus)}</Badge> : null}
+                            </div>
+                            <p className="mt-2 text-sm font-medium text-foreground">{item.skillId}</p>
+                            <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.detail}</p>
+                            <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
+                              <p>{formatSkillSource(item)}</p>
+                              <p className="font-mono text-[10px]">tree {formatSkillTreeHash(item)}</p>
+                            </div>
+                            {item.diagnostic ? (
+                              <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-2 text-[11px] text-destructive/90">
+                                <p className="font-medium">{item.diagnostic.message}</p>
+                                <p className="mt-1 font-mono">
+                                  code: {item.diagnostic.code}
+                                  {item.diagnostic.retryable ? ' · retryable' : ' · terminal'}
+                                </p>
+                              </div>
+                            ) : null}
+                          </div>
+                        ))
+                      ) : (
+                        <FeedEmptyState
+                          body="Cadence has not observed any skill discovery, install, or invoke lifecycle rows for this run yet."
+                          title="No skill activity yet"
+                        />
                       )}
                     </div>
                   </div>
