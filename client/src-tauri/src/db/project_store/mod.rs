@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, Error as SqlError, ErrorCode, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, Error as SqlError, ErrorCode, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -38,12 +38,13 @@ pub use workflow::*;
 pub(crate) use workflow::{
     apply_workflow_transition_mutation, attempt_automatic_dispatch_after_transition,
     compute_workflow_handoff_package_hash, decode_operator_resume_transition_context,
-    derive_resume_transition_id, read_latest_transition_id, read_transition_event_by_transition_id,
-    read_workflow_handoff_package_by_transition_id, resolve_operator_approval_gate_link,
+    derive_resume_transition_id, read_latest_transition_id, read_project_row,
+    read_transition_event_by_transition_id, read_workflow_handoff_package_by_transition_id,
+    resolve_operator_approval_gate_link, validate_non_empty_text,
     validate_workflow_handoff_package_hash, validate_workflow_handoff_package_transition_linkage,
-    OperatorApprovalGateLink, WorkflowTransitionGateMutationRecord,
-    WorkflowTransitionMutationApplyOutcome, WorkflowTransitionMutationRecord,
-    OPERATOR_RESUME_MUTATION_ERROR_PROFILE,
+    OperatorApprovalGateLink, ResolveOperatorAnswerRequirement, RuntimeOperatorResumeTarget,
+    WorkflowTransitionGateMutationRecord, WorkflowTransitionMutationApplyOutcome,
+    WorkflowTransitionMutationRecord, OPERATOR_RESUME_MUTATION_ERROR_PROFILE,
 };
 
 const MAX_APPROVAL_REQUEST_ROWS: i64 = 50;
@@ -93,7 +94,7 @@ pub struct PreparedRuntimeOperatorResume {
 }
 
 #[derive(Debug)]
-struct ProjectSummaryRow {
+pub(crate) struct ProjectSummaryRow {
     id: String,
     name: String,
     description: String,

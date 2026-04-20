@@ -19,12 +19,12 @@ use super::{
     enqueue_notification_dispatches_best_effort_with_connection,
     find_prohibited_runtime_persistence_content, find_prohibited_transition_diagnostic_content,
     format_notification_dispatch_enqueue_outcome, is_retryable_sql_error,
-    is_unique_constraint_violation, map_operator_loop_write_error, map_snapshot_decode_error,
-    open_project_database, parse_phase_status, parse_phase_step, phase_status_sql_value,
-    phase_step_sql_value, read_operator_approval_by_action_id, read_operator_approvals,
-    read_phase_summaries, read_planning_lifecycle_projection, read_project_row,
-    read_resume_history, read_runtime_session_row, require_non_empty_owned, sqlite_path_suffix,
-    validate_non_empty_text, NotificationDispatchEnqueueRecord,
+    is_unique_constraint_violation, map_operator_loop_write_error, map_project_query_error,
+    map_snapshot_decode_error, open_project_database, parse_phase_status, parse_phase_step,
+    planning_lifecycle_stage_label, read_operator_approval_by_action_id, read_operator_approvals,
+    read_phase_summaries, read_planning_lifecycle_projection, read_resume_history,
+    read_runtime_session_row, require_non_empty_owned, sqlite_path_suffix,
+    NotificationDispatchEnqueueRecord, ProjectSummaryRow,
 };
 
 const MAX_WORKFLOW_TRANSITION_EVENT_ROWS: i64 = 200;
@@ -364,11 +364,11 @@ struct OperatorApprovalGateCandidate {
 
 #[derive(Debug, Clone)]
 pub(crate) struct OperatorApprovalGateLink {
-    gate_node_id: String,
-    gate_key: String,
-    transition_from_node_id: String,
-    transition_to_node_id: String,
-    transition_kind: String,
+    pub(crate) gate_node_id: String,
+    pub(crate) gate_key: String,
+    pub(crate) transition_from_node_id: String,
+    pub(crate) transition_to_node_id: String,
+    pub(crate) transition_kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,23 +381,23 @@ pub struct OperatorApprovalGateLinkInput {
 }
 
 #[derive(Debug, Clone)]
-struct OperatorResumeTransitionContext {
-    gate_node_id: String,
-    gate_key: String,
-    transition_from_node_id: String,
-    transition_to_node_id: String,
-    transition_kind: String,
-    user_answer: String,
+pub(crate) struct OperatorResumeTransitionContext {
+    pub(crate) gate_node_id: String,
+    pub(crate) gate_key: String,
+    pub(crate) transition_from_node_id: String,
+    pub(crate) transition_to_node_id: String,
+    pub(crate) transition_kind: String,
+    pub(crate) user_answer: String,
 }
 
 #[derive(Debug, Clone)]
-struct RuntimeOperatorResumeTarget {
-    run_id: String,
-    boundary_id: String,
+pub(crate) struct RuntimeOperatorResumeTarget {
+    pub(crate) run_id: String,
+    pub(crate) boundary_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolveOperatorAnswerRequirement {
+pub(crate) enum ResolveOperatorAnswerRequirement {
     GateLinked,
     RuntimeResumable,
 }
@@ -406,25 +406,25 @@ type WorkflowTransitionSqlErrorMapper = fn(&str, &Path, SqlError, &str) -> Comma
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkflowTransitionGateMutationRecord {
-    node_id: String,
-    gate_key: String,
-    gate_state: WorkflowGateState,
-    decision_context: Option<String>,
-    require_pending_or_blocked: bool,
+    pub(crate) node_id: String,
+    pub(crate) gate_key: String,
+    pub(crate) gate_state: WorkflowGateState,
+    pub(crate) decision_context: Option<String>,
+    pub(crate) require_pending_or_blocked: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkflowTransitionMutationRecord {
-    transition_id: String,
-    causal_transition_id: Option<String>,
-    from_node_id: String,
-    to_node_id: String,
-    transition_kind: String,
-    gate_decision: WorkflowTransitionGateDecision,
-    gate_decision_context: Option<String>,
-    gate_updates: Vec<WorkflowTransitionGateMutationRecord>,
-    required_gate_requirement: Option<String>,
-    occurred_at: String,
+    pub(crate) transition_id: String,
+    pub(crate) causal_transition_id: Option<String>,
+    pub(crate) from_node_id: String,
+    pub(crate) to_node_id: String,
+    pub(crate) transition_kind: String,
+    pub(crate) gate_decision: WorkflowTransitionGateDecision,
+    pub(crate) gate_decision_context: Option<String>,
+    pub(crate) gate_updates: Vec<WorkflowTransitionGateMutationRecord>,
+    pub(crate) required_gate_requirement: Option<String>,
+    pub(crate) occurred_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1634,7 +1634,7 @@ fn map_workflow_handoff_build_dependency_error(
     }
 }
 
-fn read_project_row(
+pub(crate) fn read_project_row(
     connection: &Connection,
     database_path: &Path,
     repo_root: &Path,
@@ -2348,137 +2348,6 @@ pub(crate) fn read_workflow_handoff_package_by_transition_id(
         database_path,
     )
     .map(Some)
-}
-
-fn validate_workflow_handoff_lifecycle_projection(
-    lifecycle_projection: &PlanningLifecycleProjectionDto,
-    transition_id: &str,
-) -> Result<(), CommandError> {
-    let mut previous_index: Option<usize> = None;
-    let mut seen_stage_indexes = [false; 4];
-
-    for stage in &lifecycle_projection.stages {
-        let stage_index = workflow_handoff_lifecycle_stage_index(stage.stage);
-
-        if seen_stage_indexes[stage_index] {
-            return Err(CommandError::user_fixable(
-                "workflow_handoff_build_lifecycle_invalid",
-                format!(
-                    "Cadence cannot assemble workflow handoff package `{transition_id}` because lifecycle stage `{}` appears more than once.",
-                    planning_lifecycle_stage_label(&stage.stage)
-                ),
-            ));
-        }
-
-        if let Some(previous_index) = previous_index {
-            if stage_index < previous_index {
-                return Err(CommandError::user_fixable(
-                    "workflow_handoff_build_lifecycle_invalid",
-                    format!(
-                        "Cadence cannot assemble workflow handoff package `{transition_id}` because lifecycle stages are not in canonical order."
-                    ),
-                ));
-            }
-        }
-
-        seen_stage_indexes[stage_index] = true;
-        previous_index = Some(stage_index);
-    }
-
-    Ok(())
-}
-
-fn workflow_handoff_lifecycle_stage_index(stage: PlanningLifecycleStageKindDto) -> usize {
-    match stage {
-        PlanningLifecycleStageKindDto::Discussion => 0,
-        PlanningLifecycleStageKindDto::Research => 1,
-        PlanningLifecycleStageKindDto::Requirements => 2,
-        PlanningLifecycleStageKindDto::Roadmap => 3,
-    }
-}
-
-fn ensure_workflow_handoff_optional_text(
-    value: Option<&str>,
-    field: &'static str,
-) -> Result<(), CommandError> {
-    if let Some(value) = value {
-        ensure_workflow_handoff_safe_text(value, field)?;
-    }
-
-    Ok(())
-}
-
-fn ensure_workflow_handoff_safe_text(value: &str, field: &'static str) -> Result<(), CommandError> {
-    if let Some(secret_hint) = find_prohibited_workflow_handoff_content(value) {
-        return Err(CommandError::user_fixable(
-            "workflow_handoff_redaction_failed",
-            format!(
-                "Cadence refused to assemble workflow handoff package because `{field}` contained {secret_hint}. Remove secret-bearing transcript/tool/auth content before retrying."
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
-fn find_prohibited_workflow_handoff_content(value: &str) -> Option<&'static str> {
-    find_prohibited_runtime_persistence_content(value)
-}
-
-fn serialize_workflow_handoff_package_payload(
-    payload: &WorkflowHandoffPackagePayload,
-    database_path: &Path,
-) -> Result<String, CommandError> {
-    let raw_payload = serde_json::to_value(payload).map_err(|error| {
-        CommandError::system_fault(
-            "workflow_handoff_serialize_failed",
-            format!(
-                "Cadence could not serialize workflow handoff package payload in {}: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
-
-    let canonical_payload = canonicalize_workflow_handoff_json_value(raw_payload);
-    let serialized_payload = serde_json::to_string(&canonical_payload).map_err(|error| {
-        CommandError::system_fault(
-            "workflow_handoff_serialize_failed",
-            format!(
-                "Cadence could not canonicalize workflow handoff package payload in {}: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
-
-    if let Some(secret_hint) = find_prohibited_workflow_handoff_content(&serialized_payload) {
-        return Err(CommandError::user_fixable(
-            "workflow_handoff_redaction_failed",
-            format!(
-                "Cadence refused to assemble workflow handoff package because serialized payload contained {secret_hint}. Remove secret-bearing transcript/tool/auth content before retrying."
-            ),
-        ));
-    }
-
-    Ok(serialized_payload)
-}
-
-fn map_workflow_handoff_build_dependency_error(
-    code: &str,
-    dependency: &str,
-    error: CommandError,
-) -> CommandError {
-    let message = format!(
-        "Cadence could not assemble workflow handoff package because {dependency} could not be loaded: {}",
-        error.message
-    );
-
-    match error.class {
-        CommandErrorClass::UserFixable | CommandErrorClass::PolicyDenied => {
-            CommandError::user_fixable(code, message)
-        }
-        CommandErrorClass::Retryable => CommandError::retryable(code, message),
-        CommandErrorClass::SystemFault => CommandError::system_fault(code, message),
-    }
 }
 
 fn decode_workflow_graph_node_row(
@@ -4943,7 +4812,11 @@ fn assert_transition_edge_exists(
     Ok(())
 }
 
-fn validate_non_empty_text(value: &str, field: &str, code: &str) -> Result<(), CommandError> {
+pub(crate) fn validate_non_empty_text(
+    value: &str,
+    field: &str,
+    code: &str,
+) -> Result<(), CommandError> {
     if value.trim().is_empty() {
         return Err(CommandError::user_fixable(
             code,
