@@ -1,21 +1,29 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{
+        mpsc::{sync_channel, Receiver},
+        Arc, Mutex, MutexGuard, OnceLock,
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use cadence_desktop_lib::{
+    auth::{persist_openai_codex_session, StoredOpenAiCodexSession},
     commands::{
         get_autonomous_run::get_autonomous_run, get_project_snapshot::get_project_snapshot,
-        get_runtime_run::get_runtime_run, stop_runtime_run::stop_runtime_run,
-        submit_notification_reply::submit_notification_reply, AutonomousRunStateDto,
-        AutonomousRunStatusDto, AutonomousUnitKindDto, AutonomousUnitStatusDto,
-        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
+        get_runtime_run::get_runtime_run, start_runtime_session::start_runtime_session,
+        stop_runtime_run::stop_runtime_run, submit_notification_reply::submit_notification_reply,
+        AutonomousRunStateDto, AutonomousRunStatusDto, AutonomousSkillCacheStatusDto,
+        AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleStageDto,
+        AutonomousUnitKindDto, AutonomousUnitStatusDto, GetAutonomousRunRequestDto,
+        GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
         NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
-        ProjectIdRequestDto, ResumeHistoryStatus, RuntimeRunCheckpointKindDto, RuntimeRunStatusDto,
-        RuntimeRunTransportLivenessDto, StopRuntimeRunRequestDto,
-        SubmitNotificationReplyRequestDto,
+        ProjectIdRequestDto, ResumeHistoryStatus, RuntimeAuthPhase,
+        RuntimeRunCheckpointKindDto, RuntimeRunStatusDto, RuntimeRunTransportLivenessDto,
+        RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind,
+        StopRuntimeRunRequestDto, SubmitNotificationReplyRequestDto,
     },
     configure_builder_with_state,
     db::{self, database_path_for_repo, project_store},
@@ -23,7 +31,13 @@ use cadence_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     runtime::{
         autonomous_orchestrator::persist_supervisor_event, launch_detached_runtime_supervisor,
-        protocol::SupervisorLiveEventPayload, RuntimeSupervisorLaunchRequest,
+        protocol::SupervisorLiveEventPayload, start_runtime_stream, AutonomousSkillRuntime,
+        AutonomousSkillRuntimeConfig, AutonomousSkillSource, AutonomousSkillSourceEntryKind,
+        AutonomousSkillSourceError, AutonomousSkillSourceFileRequest,
+        AutonomousSkillSourceFileResponse, AutonomousSkillSourceMetadata,
+        AutonomousSkillSourceTreeEntry, AutonomousSkillSourceTreeRequest,
+        AutonomousSkillSourceTreeResponse, FilesystemAutonomousSkillCacheStore,
+        RuntimeStreamRequest, RuntimeSupervisorLaunchRequest,
     },
     state::DesktopState,
 };
@@ -57,6 +71,9 @@ fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
         .with_registry_file_override(registry_path)
         .with_auth_store_file_override(auth_store_path)
+        .with_autonomous_skill_cache_dir_override(
+            root.path().join("app-data").join("autonomous-skills"),
+        )
         .with_runtime_supervisor_binary_override(supervisor_binary_path())
 }
 
@@ -431,6 +448,274 @@ fn fixture_story_script() -> String {
             5,
         ),
     ])
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after unix epoch")
+        .as_secs() as i64
+}
+
+#[derive(Clone, Default)]
+struct FixtureSkillSource {
+    state: Arc<Mutex<FixtureSkillSourceState>>,
+}
+
+#[derive(Default)]
+struct FixtureSkillSourceState {
+    tree_response: Option<Result<AutonomousSkillSourceTreeResponse, AutonomousSkillSourceError>>,
+    file_responses: BTreeMap<
+        (String, String, String),
+        Result<AutonomousSkillSourceFileResponse, AutonomousSkillSourceError>,
+    >,
+    tree_requests: Vec<AutonomousSkillSourceTreeRequest>,
+    file_requests: Vec<AutonomousSkillSourceFileRequest>,
+}
+
+impl FixtureSkillSource {
+    fn set_tree_response(
+        &self,
+        response: Result<AutonomousSkillSourceTreeResponse, AutonomousSkillSourceError>,
+    ) {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .tree_response = Some(response);
+    }
+
+    fn set_file_text(&self, repo: &str, reference: &str, path: &str, content: &str) {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .file_responses
+            .insert(
+                (repo.into(), reference.into(), path.into()),
+                Ok(AutonomousSkillSourceFileResponse {
+                    bytes: content.as_bytes().to_vec(),
+                }),
+            );
+    }
+
+    fn tree_request_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .tree_requests
+            .len()
+    }
+
+    fn file_request_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .file_requests
+            .len()
+    }
+}
+
+impl AutonomousSkillSource for FixtureSkillSource {
+    fn list_tree(
+        &self,
+        request: &AutonomousSkillSourceTreeRequest,
+    ) -> Result<AutonomousSkillSourceTreeResponse, AutonomousSkillSourceError> {
+        let mut state = self.state.lock().expect("fixture source lock");
+        state.tree_requests.push(request.clone());
+        state
+            .tree_response
+            .clone()
+            .expect("fixture tree response should exist")
+    }
+
+    fn fetch_file(
+        &self,
+        request: &AutonomousSkillSourceFileRequest,
+    ) -> Result<AutonomousSkillSourceFileResponse, AutonomousSkillSourceError> {
+        let mut state = self.state.lock().expect("fixture source lock");
+        state.file_requests.push(request.clone());
+        state
+            .file_responses
+            .get(&(
+                request.repo.clone(),
+                request.reference.clone(),
+                request.path.clone(),
+            ))
+            .cloned()
+            .expect("fixture file response should exist")
+    }
+}
+
+fn skill_runtime_config() -> AutonomousSkillRuntimeConfig {
+    AutonomousSkillRuntimeConfig {
+        default_source_repo: "vercel-labs/skills".into(),
+        default_source_ref: "main".into(),
+        default_source_root: "skills".into(),
+        github_api_base_url: "https://api.github.com".into(),
+        github_token: None,
+        limits: Default::default(),
+    }
+}
+
+fn skill_source_metadata(skill_id: &str, tree_hash: &str) -> AutonomousSkillSourceMetadata {
+    AutonomousSkillSourceMetadata {
+        repo: "vercel-labs/skills".into(),
+        path: format!("skills/{skill_id}"),
+        reference: "main".into(),
+        tree_hash: tree_hash.into(),
+    }
+}
+
+fn standard_skill_tree(skill_id: &str, tree_hash: &str) -> AutonomousSkillSourceTreeResponse {
+    AutonomousSkillSourceTreeResponse {
+        entries: vec![
+            AutonomousSkillSourceTreeEntry {
+                path: format!("skills/{skill_id}"),
+                kind: AutonomousSkillSourceEntryKind::Tree,
+                hash: tree_hash.into(),
+                bytes: None,
+            },
+            AutonomousSkillSourceTreeEntry {
+                path: format!("skills/{skill_id}/SKILL.md"),
+                kind: AutonomousSkillSourceEntryKind::Blob,
+                hash: "1111111111111111111111111111111111111111".into(),
+                bytes: Some(256),
+            },
+            AutonomousSkillSourceTreeEntry {
+                path: format!("skills/{skill_id}/guide.md"),
+                kind: AutonomousSkillSourceEntryKind::Blob,
+                hash: "2222222222222222222222222222222222222222".into(),
+                bytes: Some(64),
+            },
+        ],
+    }
+}
+
+fn seed_authenticated_runtime(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    root: &TempDir,
+    project_id: &str,
+) -> RuntimeSessionDto {
+    let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    persist_openai_codex_session(
+        &auth_store_path,
+        StoredOpenAiCodexSession {
+            provider_id: "openai_codex".into(),
+            session_id: "session-auth".into(),
+            account_id: "acct-1".into(),
+            access_token: "header.payload.signature".into(),
+            refresh_token: "refresh-1".into(),
+            expires_at: current_unix_timestamp() + Duration::from_secs(3600).as_secs() as i64,
+            updated_at: "2026-04-18T19:00:00Z".into(),
+        },
+    )
+    .expect("persist auth session");
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.into(),
+        },
+    )
+    .expect("start runtime session");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    runtime
+}
+
+fn capture_stream_channel() -> (
+    tauri::ipc::Channel<RuntimeStreamItemDto>,
+    Receiver<RuntimeStreamItemDto>,
+) {
+    let (tx, rx) = sync_channel(32);
+    let channel = tauri::ipc::Channel::<RuntimeStreamItemDto>::new(move |body| {
+        tx.send(
+            body.deserialize::<RuntimeStreamItemDto>()
+                .expect("deserialize runtime stream item"),
+        )
+        .expect("send runtime stream item to test receiver");
+        Ok(())
+    });
+
+    (channel, rx)
+}
+
+fn start_direct_runtime_stream(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    repo_root: &Path,
+    runtime: &RuntimeSessionDto,
+    run_id: &str,
+    requested_item_kinds: Vec<RuntimeStreamItemKind>,
+    channel: tauri::ipc::Channel<RuntimeStreamItemDto>,
+) {
+    start_runtime_stream(
+        app.handle().clone(),
+        app.state::<DesktopState>().inner().clone(),
+        RuntimeStreamRequest {
+            project_id: project_id.into(),
+            repo_root: repo_root.to_path_buf(),
+            session_id: runtime
+                .session_id
+                .clone()
+                .expect("authenticated runtime should have a session id"),
+            flow_id: runtime.flow_id.clone(),
+            runtime_kind: runtime.runtime_kind.clone(),
+            run_id: run_id.into(),
+            requested_item_kinds,
+        },
+        channel,
+    );
+}
+
+fn collect_until_terminal(receiver: Receiver<RuntimeStreamItemDto>) -> Vec<RuntimeStreamItemDto> {
+    let mut items = Vec::new();
+
+    loop {
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(item) => {
+                let terminal = matches!(
+                    item.kind,
+                    RuntimeStreamItemKind::Complete | RuntimeStreamItemKind::Failure
+                );
+                items.push(item);
+                if terminal {
+                    return items;
+                }
+            }
+            Err(error) => panic!("timed out waiting for runtime stream items: {error}"),
+        }
+    }
+}
+
+fn assert_monotonic_sequences(items: &[RuntimeStreamItemDto], expected_run_id: &str) {
+    let mut previous = None;
+    for item in items {
+        assert_eq!(item.run_id, expected_run_id);
+        if let Some(previous) = previous {
+            assert!(
+                item.sequence > previous,
+                "expected strictly increasing sequences, got {previous} then {} in {items:?}",
+                item.sequence
+            );
+        }
+        previous = Some(item.sequence);
+    }
+}
+
+fn load_skill_payload_jsons(repo_root: &Path) -> Vec<String> {
+    let connection = rusqlite::Connection::open(database_path_for_repo(repo_root))
+        .expect("open runtime db for skill payloads");
+    let mut statement = connection
+        .prepare(
+            "SELECT payload_json FROM autonomous_unit_artifacts WHERE artifact_kind = 'skill_lifecycle' ORDER BY artifact_id",
+        )
+        .expect("prepare skill payload query");
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query skill payload rows");
+
+    rows.map(|row| row.expect("decode skill payload row"))
+        .collect()
 }
 
 #[test]
@@ -1147,4 +1432,328 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
     .expect("stop runtime run after fixture parity proof")
     .expect("runtime run should still exist after stop");
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}
+
+#[test]
+fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_reload() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime_session = seed_authenticated_runtime(&app, &root, &project_id);
+    let cache_root = app
+        .state::<DesktopState>()
+        .autonomous_skill_cache_dir(&app.handle().clone())
+        .expect("autonomous skill cache dir");
+
+    let source = FixtureSkillSource::default();
+    source.set_tree_response(Ok(standard_skill_tree(
+        "find-skills",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )));
+    source.set_file_text(
+        "vercel-labs/skills",
+        "main",
+        "skills/find-skills/SKILL.md",
+        "---\nname: find-skills\ndescription: Discover installable skills.\nuser-invocable: false\n---\n\n# Find Skills\n",
+    );
+    source.set_file_text(
+        "vercel-labs/skills",
+        "main",
+        "skills/find-skills/guide.md",
+        "Use this for discovery.\n",
+    );
+
+    let skill_runtime = AutonomousSkillRuntime::with_source_and_cache(
+        skill_runtime_config(),
+        Arc::new(source.clone()),
+        Arc::new(FilesystemAutonomousSkillCacheStore::new(cache_root.clone())),
+    );
+
+    let discovered = skill_runtime
+        .discover(cadence_desktop_lib::runtime::AutonomousSkillDiscoverRequest {
+            query: "find".into(),
+            result_limit: Some(5),
+            timeout_ms: Some(1_000),
+            source_repo: None,
+            source_ref: None,
+        })
+        .expect("fixture discovery should succeed");
+    let discovered_source = discovered
+        .candidates
+        .first()
+        .expect("discovery should return one skill candidate")
+        .source
+        .clone();
+    let installed = skill_runtime
+        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: discovered_source.clone(),
+            timeout_ms: Some(1_000),
+        })
+        .expect("fixture install should succeed");
+    let invoked = skill_runtime
+        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+            source: discovered_source.clone(),
+            timeout_ms: Some(1_000),
+        })
+        .expect("fixture invoke should reuse the Cadence cache");
+
+    assert_eq!(installed.cache_status, cadence_desktop_lib::runtime::AutonomousSkillCacheStatus::Miss);
+    assert_eq!(invoked.cache_status, cadence_desktop_lib::runtime::AutonomousSkillCacheStatus::Hit);
+    assert_eq!(source.tree_request_count(), 2);
+    assert_eq!(source.file_request_count(), 2);
+    assert!(Path::new(&installed.cache_directory).starts_with(&cache_root));
+    assert!(Path::new(&invoked.cache_directory).starts_with(&cache_root));
+
+    let skill_lines = vec![
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "skill",
+                "skill_id": discovered.candidates[0].skill_id,
+                "stage": "discovery",
+                "result": "succeeded",
+                "detail": "Resolved autonomous skill `find-skills` from the fixture vercel-labs/skills tree.",
+                "source": {
+                    "repo": discovered_source.repo,
+                    "path": discovered_source.path,
+                    "reference": discovered_source.reference,
+                    "tree_hash": discovered_source.tree_hash,
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "skill",
+                "skill_id": installed.skill_id,
+                "stage": "install",
+                "result": "succeeded",
+                "detail": "Installed autonomous skill `find-skills` from the Cadence-owned fixture cache.",
+                "source": {
+                    "repo": installed.source.repo,
+                    "path": installed.source.path,
+                    "reference": installed.source.reference,
+                    "tree_hash": installed.source.tree_hash,
+                },
+                "cache_status": "miss"
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "skill",
+                "skill_id": invoked.skill_id,
+                "stage": "invoke",
+                "result": "succeeded",
+                "detail": "Invoked autonomous skill `find-skills` from the Cadence-owned fixture cache.",
+                "source": {
+                    "repo": invoked.source.repo,
+                    "path": invoked.source.path,
+                    "reference": invoked.source.reference,
+                    "tree_hash": invoked.source.tree_hash,
+                },
+                "cache_status": "hit"
+            })
+        ),
+    ];
+
+    let launched = launch_scripted_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        "run-skill-fixture-parity",
+        runtime_session
+            .session_id
+            .as_deref()
+            .expect("authenticated runtime session id"),
+        runtime_session.flow_id.as_deref(),
+        &runtime_shell::script_print_lines_and_sleep(&skill_lines, 3),
+    );
+
+    let observed = wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
+        let Some(run) = autonomous_state.run.as_ref() else {
+            return false;
+        };
+
+        run.run_id == launched.run.run_id
+            && autonomous_state.history.first().is_some_and(|entry| {
+                entry
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.artifact_kind == "skill_lifecycle")
+                    .count()
+                    == 3
+            })
+    });
+    let observed_skill_count = observed
+        .history
+        .first()
+        .expect("observed autonomous history entry")
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_kind == "skill_lifecycle")
+        .count();
+    assert_eq!(observed_skill_count, 3);
+
+    let durable = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load durable autonomous run after fixture skill story")
+        .expect("durable autonomous run should exist after fixture skill story");
+    let skill_artifacts = durable
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .filter(|artifact| artifact.artifact_kind == "skill_lifecycle")
+        .collect::<Vec<_>>();
+    assert_eq!(skill_artifacts.len(), 3);
+    assert!(skill_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::SkillLifecycle(payload))
+                if payload.stage == project_store::AutonomousSkillLifecycleStageRecord::Discovery
+                    && payload.result == project_store::AutonomousSkillLifecycleResultRecord::Succeeded
+                    && payload.skill_id == "find-skills"
+                    && payload.source.repo == "vercel-labs/skills"
+                    && payload.source.path == "skills/find-skills"
+                    && payload.source.reference == "main"
+                    && payload.source.tree_hash == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    && payload.cache.status.is_none()
+        )
+    }));
+    assert!(skill_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::SkillLifecycle(payload))
+                if payload.stage == project_store::AutonomousSkillLifecycleStageRecord::Install
+                    && payload.result == project_store::AutonomousSkillLifecycleResultRecord::Succeeded
+                    && payload.cache.status
+                        == Some(project_store::AutonomousSkillCacheStatusRecord::Miss)
+        )
+    }));
+    assert!(skill_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::SkillLifecycle(payload))
+                if payload.stage == project_store::AutonomousSkillLifecycleStageRecord::Invoke
+                    && payload.result == project_store::AutonomousSkillLifecycleResultRecord::Succeeded
+                    && payload.cache.status
+                        == Some(project_store::AutonomousSkillCacheStatusRecord::Hit)
+        )
+    }));
+
+    let payload_jsons = load_skill_payload_jsons(&repo_root);
+    assert_eq!(payload_jsons.len(), 3);
+    assert!(payload_jsons.iter().all(|payload| !payload.contains("# Find Skills")));
+    assert!(payload_jsons.iter().all(|payload| !payload.contains("Use this for discovery.")));
+    assert!(payload_jsons.iter().all(|payload| !payload.contains("SKILL.md")));
+
+    let fresh_app = build_mock_app(create_state(&root));
+    let fresh_runtime = seed_authenticated_runtime(&fresh_app, &root, &project_id);
+    let reloaded = wait_for_autonomous_run(&fresh_app, &project_id, |autonomous_state| {
+        let Some(run) = autonomous_state.run.as_ref() else {
+            return false;
+        };
+        run.run_id == launched.run.run_id
+            && autonomous_state.history.first().is_some_and(|entry| {
+                entry
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.artifact_kind == "skill_lifecycle")
+                    .count()
+                    == 3
+            })
+    });
+    assert_eq!(
+        reloaded
+            .history
+            .first()
+            .expect("reloaded autonomous history entry")
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.artifact_kind == "skill_lifecycle")
+            .count(),
+        3
+    );
+
+    let (channel, receiver) = capture_stream_channel();
+    start_direct_runtime_stream(
+        &fresh_app,
+        &project_id,
+        &repo_root,
+        &fresh_runtime,
+        &launched.run.run_id,
+        vec![RuntimeStreamItemKind::Skill, RuntimeStreamItemKind::Complete],
+        channel,
+    );
+
+    let items = collect_until_terminal(receiver);
+    assert_monotonic_sequences(&items, &launched.run.run_id);
+    assert_eq!(
+        items.iter().map(|item| item.kind.clone()).collect::<Vec<_>>(),
+        vec![
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Complete,
+        ],
+        "unexpected replayed fixture skill items: {items:?}"
+    );
+
+    assert_eq!(items[0].skill_id.as_deref(), Some("find-skills"));
+    assert_eq!(
+        items[0].skill_stage,
+        Some(AutonomousSkillLifecycleStageDto::Discovery)
+    );
+    assert_eq!(
+        items[0].skill_result,
+        Some(AutonomousSkillLifecycleResultDto::Succeeded)
+    );
+    assert_eq!(items[0].skill_cache_status, None);
+    assert_eq!(
+        items[0].detail.as_deref(),
+        Some("Resolved autonomous skill `find-skills` from the fixture vercel-labs/skills tree.")
+    );
+
+    assert_eq!(items[1].skill_id.as_deref(), Some("find-skills"));
+    assert_eq!(
+        items[1].skill_stage,
+        Some(AutonomousSkillLifecycleStageDto::Install)
+    );
+    assert_eq!(
+        items[1].skill_result,
+        Some(AutonomousSkillLifecycleResultDto::Succeeded)
+    );
+    assert_eq!(
+        items[1].skill_cache_status,
+        Some(AutonomousSkillCacheStatusDto::Miss)
+    );
+    assert_eq!(
+        items[1].detail.as_deref(),
+        Some("Installed autonomous skill `find-skills` from the Cadence-owned fixture cache.")
+    );
+
+    assert_eq!(items[2].skill_id.as_deref(), Some("find-skills"));
+    assert_eq!(
+        items[2].skill_stage,
+        Some(AutonomousSkillLifecycleStageDto::Invoke)
+    );
+    assert_eq!(
+        items[2].skill_result,
+        Some(AutonomousSkillLifecycleResultDto::Succeeded)
+    );
+    assert_eq!(
+        items[2].skill_cache_status,
+        Some(AutonomousSkillCacheStatusDto::Hit)
+    );
+    assert_eq!(
+        items[2].detail.as_deref(),
+        Some("Invoked autonomous skill `find-skills` from the Cadence-owned fixture cache.")
+    );
+    assert!(items[2].skill_diagnostic.is_none());
+
+    let final_runtime = wait_for_runtime_run(&fresh_app, &project_id, |runtime_run| {
+        runtime_run.run_id == launched.run.run_id
+            && runtime_run.status == RuntimeRunStatusDto::Stopped
+    });
+    assert_eq!(final_runtime.status, RuntimeRunStatusDto::Stopped);
 }

@@ -1,6 +1,8 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -22,7 +24,13 @@ use cadence_desktop_lib::{
     runtime::{
         AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
         AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousReadRequest,
-        AutonomousToolOutput, AutonomousToolRuntime, AutonomousWriteRequest,
+        AutonomousSkillCacheManifest, AutonomousSkillCacheStatus, AutonomousSkillRuntime,
+        AutonomousSkillRuntimeConfig, AutonomousSkillSource, AutonomousSkillSourceEntryKind,
+        AutonomousSkillSourceError, AutonomousSkillSourceFileRequest,
+        AutonomousSkillSourceFileResponse, AutonomousSkillSourceMetadata,
+        AutonomousSkillSourceTreeEntry, AutonomousSkillSourceTreeRequest,
+        AutonomousSkillSourceTreeResponse, AutonomousToolOutput, AutonomousToolRuntime,
+        AutonomousWriteRequest, FilesystemAutonomousSkillCacheStore,
     },
     state::DesktopState,
 };
@@ -47,6 +55,9 @@ fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
         DesktopState::default()
             .with_registry_file_override(registry_path)
             .with_auth_store_file_override(auth_store_path.clone())
+            .with_autonomous_skill_cache_dir_override(
+                root.path().join("app-data").join("autonomous-skills"),
+            )
             .with_runtime_supervisor_binary_override(supervisor_binary_path()),
         auth_store_path,
     )
@@ -288,6 +299,145 @@ fn current_head_sha(repo_root: &Path) -> Option<String> {
             .ok()
             .and_then(|head| head.target().map(|oid| oid.to_string()))
     })
+}
+
+#[derive(Clone, Default)]
+struct FixtureSkillSource {
+    state: Arc<Mutex<FixtureSkillSourceState>>,
+}
+
+#[derive(Default)]
+struct FixtureSkillSourceState {
+    tree_response: Option<Result<AutonomousSkillSourceTreeResponse, AutonomousSkillSourceError>>,
+    file_responses: BTreeMap<
+        (String, String, String),
+        Result<AutonomousSkillSourceFileResponse, AutonomousSkillSourceError>,
+    >,
+    tree_requests: Vec<AutonomousSkillSourceTreeRequest>,
+    file_requests: Vec<AutonomousSkillSourceFileRequest>,
+}
+
+impl FixtureSkillSource {
+    fn set_tree_response(
+        &self,
+        response: Result<AutonomousSkillSourceTreeResponse, AutonomousSkillSourceError>,
+    ) {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .tree_response = Some(response);
+    }
+
+    fn set_file_text(&self, repo: &str, reference: &str, path: &str, content: &str) {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .file_responses
+            .insert(
+                (repo.into(), reference.into(), path.into()),
+                Ok(AutonomousSkillSourceFileResponse {
+                    bytes: content.as_bytes().to_vec(),
+                }),
+            );
+    }
+
+    fn tree_request_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .tree_requests
+            .len()
+    }
+
+    fn file_request_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("fixture source lock")
+            .file_requests
+            .len()
+    }
+}
+
+impl AutonomousSkillSource for FixtureSkillSource {
+    fn list_tree(
+        &self,
+        request: &AutonomousSkillSourceTreeRequest,
+    ) -> Result<AutonomousSkillSourceTreeResponse, AutonomousSkillSourceError> {
+        let mut state = self.state.lock().expect("fixture source lock");
+        state.tree_requests.push(request.clone());
+        state
+            .tree_response
+            .clone()
+            .expect("fixture tree response should exist")
+    }
+
+    fn fetch_file(
+        &self,
+        request: &AutonomousSkillSourceFileRequest,
+    ) -> Result<AutonomousSkillSourceFileResponse, AutonomousSkillSourceError> {
+        let mut state = self.state.lock().expect("fixture source lock");
+        state.file_requests.push(request.clone());
+        state
+            .file_responses
+            .get(&(
+                request.repo.clone(),
+                request.reference.clone(),
+                request.path.clone(),
+            ))
+            .cloned()
+            .expect("fixture file response should exist")
+    }
+}
+
+fn runtime_config() -> AutonomousSkillRuntimeConfig {
+    AutonomousSkillRuntimeConfig {
+        default_source_repo: "vercel-labs/skills".into(),
+        default_source_ref: "main".into(),
+        default_source_root: "skills".into(),
+        github_api_base_url: "https://api.github.com".into(),
+        github_token: None,
+        limits: Default::default(),
+    }
+}
+
+fn skill_source_metadata(skill_id: &str, tree_hash: &str) -> AutonomousSkillSourceMetadata {
+    AutonomousSkillSourceMetadata {
+        repo: "vercel-labs/skills".into(),
+        path: format!("skills/{skill_id}"),
+        reference: "main".into(),
+        tree_hash: tree_hash.into(),
+    }
+}
+
+fn standard_skill_tree(skill_id: &str, tree_hash: &str) -> AutonomousSkillSourceTreeResponse {
+    AutonomousSkillSourceTreeResponse {
+        entries: vec![
+            AutonomousSkillSourceTreeEntry {
+                path: format!("skills/{skill_id}"),
+                kind: AutonomousSkillSourceEntryKind::Tree,
+                hash: tree_hash.into(),
+                bytes: None,
+            },
+            AutonomousSkillSourceTreeEntry {
+                path: format!("skills/{skill_id}/SKILL.md"),
+                kind: AutonomousSkillSourceEntryKind::Blob,
+                hash: "1111111111111111111111111111111111111111".into(),
+                bytes: Some(256),
+            },
+            AutonomousSkillSourceTreeEntry {
+                path: format!("skills/{skill_id}/guide.md"),
+                kind: AutonomousSkillSourceEntryKind::Blob,
+                hash: "2222222222222222222222222222222222222222".into(),
+                bytes: Some(64),
+            },
+        ],
+    }
+}
+
+fn read_manifest(cache_root: &Path, cache_key: &str) -> AutonomousSkillCacheManifest {
+    let manifest_path = cache_root.join(cache_key).join("manifest.json");
+    let contents = fs::read_to_string(&manifest_path).expect("read manifest file");
+    serde_json::from_str(&contents).expect("decode manifest")
 }
 
 #[test]
@@ -632,4 +782,158 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
 
     let statuses = load_git_statuses(&repo_root);
     assert!(statuses.is_empty(), "shell-only duplicate-start proof should not mutate the imported repo worktree, got {statuses:?}");
+}
+
+#[test]
+fn imported_repo_skill_runtime_uses_cadence_cache_boundary_and_keeps_repo_clean() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let cache_root = app
+        .state::<DesktopState>()
+        .autonomous_skill_cache_dir(&app.handle().clone())
+        .expect("autonomous skill cache dir");
+
+    let source = FixtureSkillSource::default();
+    source.set_tree_response(Ok(standard_skill_tree(
+        "find-skills",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )));
+    source.set_file_text(
+        "vercel-labs/skills",
+        "main",
+        "skills/find-skills/SKILL.md",
+        "---\nname: find-skills\ndescription: Imported repo proof.\nuser-invocable: false\n---\n\n# Find Skills\n",
+    );
+    source.set_file_text(
+        "vercel-labs/skills",
+        "main",
+        "skills/find-skills/guide.md",
+        "first guide\n",
+    );
+
+    let runtime = AutonomousSkillRuntime::with_source_and_cache(
+        runtime_config(),
+        Arc::new(source.clone()),
+        Arc::new(FilesystemAutonomousSkillCacheStore::new(cache_root.clone())),
+    );
+
+    let initial_source = skill_source_metadata(
+        "find-skills",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let first_install = runtime
+        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: initial_source.clone(),
+            timeout_ms: Some(1_000),
+        })
+        .expect("initial imported-repo skill install should succeed");
+    let cached_invoke = runtime
+        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+            source: initial_source,
+            timeout_ms: Some(1_000),
+        })
+        .expect("cached imported-repo skill invoke should succeed");
+
+    source.set_tree_response(Ok(standard_skill_tree(
+        "find-skills",
+        "cccccccccccccccccccccccccccccccccccccccc",
+    )));
+    source.set_file_text(
+        "vercel-labs/skills",
+        "main",
+        "skills/find-skills/SKILL.md",
+        "---\nname: find-skills\ndescription: Imported repo proof refreshed.\nuser-invocable: false\n---\n\n# Find Skills\n",
+    );
+    source.set_file_text(
+        "vercel-labs/skills",
+        "main",
+        "skills/find-skills/guide.md",
+        "second guide\n",
+    );
+
+    let refreshed = runtime
+        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "cccccccccccccccccccccccccccccccccccccccc",
+            ),
+            timeout_ms: Some(1_000),
+        })
+        .expect("refreshed imported-repo skill install should succeed");
+
+    assert_eq!(project_id, "project-1");
+    assert_eq!(first_install.cache_status, AutonomousSkillCacheStatus::Miss);
+    assert_eq!(cached_invoke.cache_status, AutonomousSkillCacheStatus::Hit);
+    assert_eq!(refreshed.cache_status, AutonomousSkillCacheStatus::Refreshed);
+    assert_eq!(first_install.cache_key, refreshed.cache_key);
+    assert!(
+        Path::new(&first_install.cache_directory).starts_with(&cache_root),
+        "expected Cadence to install imported-repo skills under app data, got {}",
+        first_install.cache_directory
+    );
+    assert!(
+        Path::new(&refreshed.cache_directory).starts_with(&cache_root),
+        "expected refreshed imported-repo skills under app data, got {}",
+        refreshed.cache_directory
+    );
+    assert!(!Path::new(&first_install.cache_directory).starts_with(&repo_root));
+    assert!(!Path::new(&refreshed.cache_directory).starts_with(&repo_root));
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let global_agents = home.join(".agents").join("skills");
+        let global_pi = home.join(".pi").join("agent").join("skills");
+        assert!(
+            !Path::new(&first_install.cache_directory).starts_with(&global_agents),
+            "Cadence must never install imported-repo skills into ~/.agents/skills"
+        );
+        assert!(
+            !Path::new(&first_install.cache_directory).starts_with(&global_pi),
+            "Cadence must never install imported-repo skills into ~/.pi/agent/skills"
+        );
+        assert!(
+            !Path::new(&refreshed.cache_directory).starts_with(&global_agents),
+            "Cadence must never refresh imported-repo skills inside ~/.agents/skills"
+        );
+        assert!(
+            !Path::new(&refreshed.cache_directory).starts_with(&global_pi),
+            "Cadence must never refresh imported-repo skills inside ~/.pi/agent/skills"
+        );
+    }
+
+    let manifest = read_manifest(&cache_root, &refreshed.cache_key);
+    assert_eq!(manifest.skill_id, "find-skills");
+    assert_eq!(manifest.description, "Imported repo proof refreshed.");
+    assert_eq!(
+        manifest.source.tree_hash,
+        "cccccccccccccccccccccccccccccccccccccccc"
+    );
+    assert!(
+        cache_root
+            .join(&refreshed.cache_key)
+            .join("trees")
+            .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .is_dir(),
+        "expected the initial tree revision to remain addressable inside the Cadence cache"
+    );
+    assert!(
+        cache_root
+            .join(&refreshed.cache_key)
+            .join("trees")
+            .join("cccccccccccccccccccccccccccccccccccccccc")
+            .is_dir(),
+        "expected the refreshed tree revision to be written under the same Cadence cache key"
+    );
+    assert_eq!(source.tree_request_count(), 2);
+    assert_eq!(source.file_request_count(), 4);
+
+    let statuses = load_git_statuses(&repo_root);
+    assert!(
+        statuses.is_empty(),
+        "skill runtime cache activity must not dirty the imported repo worktree, got {statuses:?}"
+    );
+    assert!(!repo_root.join(".agents").exists());
+    assert!(!repo_root.join(".pi").exists());
+    assert!(!repo_root.join(".cadence").join("autonomous-skills").exists());
 }

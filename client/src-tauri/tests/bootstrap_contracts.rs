@@ -1096,10 +1096,15 @@ fn config_and_capability_files_lock_the_packaged_vite_shell_and_auth_opener_perm
 fn platform_matrix_artifact_locks_cross_platform_verification_contract() {
     let matrix = include_str!("platform-matrix.md");
     let command = "cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_imported_repo_bridge --test autonomous_fixture_parity --test autonomous_tool_runtime --test runtime_run_persistence --test runtime_supervisor --test runtime_event_stream --test runtime_run_bridge --test notification_route_credentials --test notification_channel_dispatch --test notification_channel_replies --test bootstrap_contracts && pnpm --dir client test -- src/lib/cadence-model.test.ts src/features/cadence/agent-runtime-projections.test.ts src/features/cadence/use-cadence-desktop-state.runtime-run.test.tsx src/features/cadence/live-views.test.tsx components/cadence/agent-runtime.test.tsx src/App.test.tsx && pnpm --dir client exec tauri build --debug";
+    let autonomous_skill_parity_command = "cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_runtime --test autonomous_fixture_parity --test autonomous_imported_repo_bridge --test bootstrap_contracts && cargo check --manifest-path client/src-tauri/Cargo.toml";
 
     assert!(
         matrix.contains(command),
         "platform matrix artifact must lock the exact slice verification command set"
+    );
+    assert!(
+        matrix.contains(autonomous_skill_parity_command),
+        "platform matrix artifact must also lock the autonomous skill parity verification command"
     );
     assert!(matrix.contains("## macOS"));
     assert!(matrix.contains("## Linux"));

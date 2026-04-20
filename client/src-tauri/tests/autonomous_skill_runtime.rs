@@ -186,8 +186,9 @@ fn runtime_with_state(
     AutonomousSkillRuntime,
     PathBuf,
 ) {
-    let state = DesktopState::default()
-        .with_autonomous_skill_cache_dir_override(root.path().join("app-data").join("skills"));
+    let state = DesktopState::default().with_autonomous_skill_cache_dir_override(
+        root.path().join("app-data").join("autonomous-skills"),
+    );
     let app = build_mock_app(state);
     let cache_root = app
         .state::<DesktopState>()
@@ -367,8 +368,8 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
     );
 
     let root = tempfile::tempdir().expect("temp dir");
-    let runtime = runtime_with_cache_root(root.path(), source.clone());
-    runtime
+    let (_app, runtime, cache_root) = runtime_with_state(&root, source.clone());
+    let initial = runtime
         .install(
             cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
                 source: skill_source_metadata(
@@ -379,6 +380,15 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
             },
         )
         .expect("first install should succeed");
+
+    assert_eq!(initial.cache_status, AutonomousSkillCacheStatus::Miss);
+    assert_eq!(
+        PathBuf::from(&initial.cache_directory),
+        cache_root
+            .join(&initial.cache_key)
+            .join("trees")
+            .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
 
     source.set_tree_response(Ok(standard_skill_tree(
         "find-skills",
@@ -413,7 +423,31 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
         refreshed.cache_status,
         AutonomousSkillCacheStatus::Refreshed
     );
-    let manifest = read_manifest(root.path(), &refreshed.cache_key);
+    assert_eq!(refreshed.cache_key, initial.cache_key);
+    assert_eq!(
+        PathBuf::from(&refreshed.cache_directory),
+        cache_root
+            .join(&refreshed.cache_key)
+            .join("trees")
+            .join("cccccccccccccccccccccccccccccccccccccccc")
+    );
+    assert!(
+        cache_root
+            .join(&refreshed.cache_key)
+            .join("trees")
+            .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .is_dir(),
+        "expected the original tree revision to remain available under the Cadence cache key"
+    );
+    assert!(
+        cache_root
+            .join(&refreshed.cache_key)
+            .join("trees")
+            .join("cccccccccccccccccccccccccccccccccccccccc")
+            .is_dir(),
+        "expected the refreshed tree revision to be written under the same Cadence cache key"
+    );
+    let manifest = read_manifest(&cache_root, &refreshed.cache_key);
     assert_eq!(
         manifest.source.tree_hash,
         "cccccccccccccccccccccccccccccccccccccccc"
