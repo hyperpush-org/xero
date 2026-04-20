@@ -18,7 +18,8 @@ use cadence_desktop_lib::{
         ProjectIdRequestDto, ProjectSummaryDto, ProjectUpdateReason, ProjectUpdatedPayloadDto,
         RuntimeAuthPhase, RuntimeRunCheckpointKindDto, RuntimeRunTransportLivenessDto,
         RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
-        SubscribeRuntimeStreamResponseDto, SUBSCRIBE_RUNTIME_STREAM_COMMAND,
+        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto,
+        SUBSCRIBE_RUNTIME_STREAM_COMMAND,
     },
     configure_builder_with_state,
     db::{
@@ -823,7 +824,7 @@ fn runtime_stream_replays_real_supervisor_events_after_fresh_host_reload() {
             tool_name: Some(tool_name),
             tool_state: Some(RuntimeToolCallState::Running),
             detail: Some(detail),
-            tool_summary: Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::File(summary)),
+            tool_summary: Some(ToolResultSummaryDto::File(summary)),
             ..
         } if tool_call_id == "tool-1"
             && tool_name == "read"
