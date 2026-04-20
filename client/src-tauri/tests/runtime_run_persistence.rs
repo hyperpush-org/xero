@@ -218,6 +218,44 @@ fn sample_tool_result_artifact(
     }
 }
 
+fn sample_verification_evidence_artifact(
+    project_id: &str,
+    run_id: &str,
+) -> project_store::AutonomousUnitArtifactRecord {
+    let unit_id = format!("{run_id}:unit:1");
+    let attempt_id = format!("{run_id}:unit:1:attempt:1");
+    let artifact_id = "artifact-verification-evidence".to_string();
+
+    project_store::AutonomousUnitArtifactRecord {
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        unit_id: unit_id.clone(),
+        attempt_id: attempt_id.clone(),
+        artifact_id: artifact_id.clone(),
+        artifact_kind: "verification_evidence".into(),
+        status: project_store::AutonomousUnitArtifactStatus::Recorded,
+        summary: "Autonomous attempt paused on terminal input and recorded deterministic boundary evidence.".into(),
+        content_hash: None,
+        payload: Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(
+            project_store::AutonomousVerificationEvidencePayloadRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                unit_id,
+                attempt_id,
+                artifact_id,
+                evidence_kind: "terminal_input_required".into(),
+                label: "Terminal input required".into(),
+                outcome: project_store::AutonomousVerificationOutcomeRecord::Blocked,
+                command_result: None,
+                action_id: Some("action-1".into()),
+                boundary_id: Some("boundary-1".into()),
+            },
+        )),
+        created_at: "2099-04-15T19:00:20Z".into(),
+        updated_at: "2099-04-15T19:00:20Z".into(),
+    }
+}
+
 fn sample_skill_source_metadata() -> AutonomousSkillSourceMetadata {
     AutonomousSkillSourceMetadata {
         repo: "vercel-labs/skills".into(),
@@ -1496,6 +1534,92 @@ fn autonomous_run_persistence_canonicalizes_structured_artifact_payloads_and_rel
 }
 
 #[test]
+fn autonomous_run_persistence_canonicalizes_verification_evidence_payloads_and_reloads_them() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Supervisor launched and connected to the project PTY.",
+                "2099-04-15T19:00:20Z",
+            )),
+        },
+    )
+    .expect("persist runtime run for verification evidence persistence");
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![sample_verification_evidence_artifact(project_id, run_id)];
+
+    let persisted = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect("persist autonomous run with verification evidence artifact");
+    let artifact = &persisted.history[0].artifacts[0];
+    let payload_hash = artifact
+        .content_hash
+        .as_ref()
+        .expect("verification evidence artifact should compute content hash")
+        .clone();
+    assert!(matches!(
+        artifact.payload.as_ref(),
+        Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(_))
+    ));
+
+    let stored_payload_json: String = open_state_connection(&repo_root)
+        .query_row(
+            "SELECT payload_json FROM autonomous_unit_artifacts WHERE artifact_id = ?1",
+            params![artifact.artifact_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("read stored verification evidence payload json");
+    let expected_payload_json = concat!(
+        "{",
+        "\"actionId\":\"action-1\"",
+        ",\"artifactId\":\"artifact-verification-evidence\"",
+        ",\"attemptId\":\"run-1:unit:1:attempt:1\"",
+        ",\"boundaryId\":\"boundary-1\"",
+        ",\"commandResult\":null",
+        ",\"evidenceKind\":\"terminal_input_required\"",
+        ",\"kind\":\"verification_evidence\"",
+        ",\"label\":\"Terminal input required\"",
+        ",\"outcome\":\"blocked\"",
+        ",\"projectId\":\"project-1\"",
+        ",\"runId\":\"run-1\"",
+        ",\"unitId\":\"run-1:unit:1\"",
+        "}"
+    );
+    assert_eq!(stored_payload_json, expected_payload_json);
+
+    let mut hasher = Sha256::new();
+    hasher.update(stored_payload_json.as_bytes());
+    let expected_hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(payload_hash, expected_hash);
+
+    let recovered = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("reload autonomous run with verification evidence artifact")
+        .expect("verification evidence autonomous run should exist");
+    assert_eq!(
+        recovered.history[0].artifacts[0].content_hash.as_deref(),
+        Some(expected_hash.as_str())
+    );
+    assert!(matches!(
+        recovered.history[0].artifacts[0].payload.as_ref(),
+        Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(_))
+    ));
+}
+
+#[test]
 fn autonomous_run_persistence_canonicalizes_skill_lifecycle_payloads_and_reloads_them() {
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-1";
@@ -1578,6 +1702,44 @@ fn autonomous_run_persistence_canonicalizes_skill_lifecycle_payloads_and_reloads
         recovered.history[0].artifacts[0].payload.as_ref(),
         Some(project_store::AutonomousArtifactPayloadRecord::SkillLifecycle(_))
     ));
+}
+
+#[test]
+fn autonomous_run_persistence_rejects_verification_evidence_action_boundary_mismatch() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+        },
+    )
+    .expect("persist runtime run for verification evidence linkage mismatch");
+
+    let mut artifact = sample_verification_evidence_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(evidence)) =
+        artifact.payload.as_mut()
+    {
+        evidence.boundary_id = None;
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let error = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect_err("verification evidence action/boundary mismatch should be rejected");
+    assert_eq!(error.code, "autonomous_run_request_invalid");
 }
 
 #[test]

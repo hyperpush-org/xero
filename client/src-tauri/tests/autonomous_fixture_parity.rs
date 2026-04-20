@@ -12,21 +12,19 @@ use std::{
 };
 
 use cadence_desktop_lib::{
-    auth::{
-        persist_openai_codex_session, OpenRouterAuthConfig, StoredOpenAiCodexSession,
-    },
+    auth::{persist_openai_codex_session, OpenRouterAuthConfig, StoredOpenAiCodexSession},
     commands::{
         get_autonomous_run::get_autonomous_run, get_project_snapshot::get_project_snapshot,
         get_runtime_run::get_runtime_run, start_runtime_session::start_runtime_session,
         stop_runtime_run::stop_runtime_run, submit_notification_reply::submit_notification_reply,
         upsert_runtime_settings::upsert_runtime_settings, AutonomousRunStateDto,
-        AutonomousRunStatusDto, AutonomousSkillCacheStatusDto,
-        AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleStageDto, AutonomousUnitKindDto,
-        AutonomousUnitStatusDto, GetAutonomousRunRequestDto, GetRuntimeRunRequestDto,
-        NotificationDispatchStatusDto, NotificationReplyClaimStatusDto, OperatorApprovalStatus,
-        PhaseStatus, PhaseStep, ProjectIdRequestDto, ResumeHistoryStatus, RuntimeAuthPhase,
-        RuntimeRunCheckpointKindDto, RuntimeRunStatusDto, RuntimeRunTransportLivenessDto,
-        RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind, StopRuntimeRunRequestDto,
+        AutonomousRunStatusDto, AutonomousSkillCacheStatusDto, AutonomousSkillLifecycleResultDto,
+        AutonomousSkillLifecycleStageDto, AutonomousUnitKindDto, AutonomousUnitStatusDto,
+        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, NotificationDispatchStatusDto,
+        NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
+        ProjectIdRequestDto, ResumeHistoryStatus, RuntimeAuthPhase, RuntimeRunCheckpointKindDto,
+        RuntimeRunStatusDto, RuntimeRunTransportLivenessDto, RuntimeSessionDto,
+        RuntimeStreamItemDto, RuntimeStreamItemKind, StopRuntimeRunRequestDto,
         SubmitNotificationReplyRequestDto, UpsertRuntimeSettingsRequestDto,
     },
     configure_builder_with_state,
@@ -99,29 +97,40 @@ fn openrouter_auth_config(models_url: String) -> OpenRouterAuthConfig {
 }
 
 fn spawn_static_http_server(status: u16, body: &str) -> String {
+    spawn_static_http_server_with_requests(status, body, 1)
+}
+
+fn spawn_static_http_server_with_requests(status: u16, body: &str, request_count: usize) -> String {
+    assert!(
+        request_count > 0,
+        "test http server must handle at least one request"
+    );
+
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test http server");
     let address = listener.local_addr().expect("test http server addr");
     let body = body.to_owned();
 
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept test http request");
-        let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line).expect("read request line");
-            if bytes == 0 || line == "\r\n" {
-                break;
+        for _ in 0..request_count {
+            let (mut stream, _) = listener.accept().expect("accept test http request");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let bytes = reader.read_line(&mut line).expect("read request line");
+                if bytes == 0 || line == "\r\n" {
+                    break;
+                }
             }
-        }
 
-        write!(
-            stream,
-            "HTTP/1.1 {status} Test\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body,
-        )
-        .expect("write test http response");
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .expect("write test http response");
+        }
     });
 
     format!("http://{address}")
@@ -545,7 +554,11 @@ fn combined_fixture_story_script(skill_lines: &[String]) -> String {
             "detail": "Collected deterministic fixture proof context"
         })
     )));
-    steps.extend(skill_lines.iter().map(|line| runtime_shell::script_print_line(line)));
+    steps.extend(
+        skill_lines
+            .iter()
+            .map(|line| runtime_shell::script_print_line(line)),
+    );
     steps.push(runtime_shell::script_print_line(&format!(
         "{STRUCTURED_EVENT_PREFIX}{}",
         json!({
@@ -1570,7 +1583,8 @@ fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resume_and_relo
 }
 
 #[test]
-fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_recovery_after_reload() {
+fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_recovery_after_reload(
+) {
     let _guard = supervisor_test_guard();
     let models_base_url =
         spawn_static_http_server(200, r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#);
@@ -1590,11 +1604,8 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
         "telegram:ops-room",
     );
 
-    let runtime_session = seed_openrouter_runtime(
-        &app,
-        &project_id,
-        "sk-or-v1-openrouter-deterministic-proof",
-    );
+    let runtime_session =
+        seed_openrouter_runtime(&app, &project_id, "sk-or-v1-openrouter-deterministic-proof");
     let runtime_session_id = runtime_session
         .session_id
         .clone()
@@ -1656,10 +1667,12 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
         .source
         .clone();
     let installed = skill_runtime
-        .install(cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-            source: discovered_source.clone(),
-            timeout_ms: Some(1_000),
-        })
+        .install(
+            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
+                source: discovered_source.clone(),
+                timeout_ms: Some(1_000),
+            },
+        )
         .expect("fixture install should succeed");
     let invoked = skill_runtime
         .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
@@ -1761,6 +1774,46 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
             && attempt.workflow_linkage.as_ref() == Some(linkage)
     });
     let progressed_shape = history_shape(&progressed);
+
+    thread::sleep(Duration::from_secs(3));
+    let boundary_id = "boundary-1".to_string();
+    let persisted_boundary = project_store::upsert_runtime_action_required(
+        &repo_root,
+        &project_store::RuntimeActionRequiredUpsertRecord {
+            project_id: project_id.clone(),
+            run_id: launched.run.run_id.clone(),
+            runtime_kind: launched.run.runtime_kind.clone(),
+            session_id: runtime_session_id.clone(),
+            flow_id: runtime_session.flow_id.clone(),
+            transport_endpoint: launched.run.transport.endpoint.clone(),
+            started_at: launched.run.started_at.clone(),
+            last_heartbeat_at: launched.run.last_heartbeat_at.clone(),
+            last_error: None,
+            boundary_id: boundary_id.clone(),
+            action_type: "terminal_input_required".into(),
+            title: "Terminal input required".into(),
+            detail: "Detached runtime is blocked on terminal input. Approve and resume with a coarse operator answer to continue the same supervised run.".into(),
+            checkpoint_summary:
+                "Detached runtime blocked on terminal input and is awaiting operator approval."
+                    .into(),
+            created_at: "2026-04-18T19:00:00Z".into(),
+        },
+    )
+    .expect("persist runtime action-required boundary for openrouter fixture parity proof");
+    let persisted_action_id = persisted_boundary.approval_request.action_id.clone();
+    persist_supervisor_event(
+        &repo_root,
+        &project_id,
+        &SupervisorLiveEventPayload::ActionRequired {
+            action_id: persisted_action_id.clone(),
+            boundary_id: boundary_id.clone(),
+            action_type: "terminal_input_required".into(),
+            title: "Terminal input required".into(),
+            detail: "Detached runtime is blocked on terminal input. Approve and resume with a coarse operator answer to continue the same supervised run.".into(),
+        },
+    )
+    .expect("persist autonomous action-required event for openrouter fixture parity proof")
+    .expect("openrouter autonomous action-required persistence should return a snapshot");
 
     let paused = wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
         let Some(run) = autonomous_state.run.as_ref() else {
@@ -2108,12 +2161,14 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
         ResumeHistoryStatus::Started
     );
     assert_eq!(
-        resumed_snapshot.resume_history[0].source_action_id.as_deref(),
+        resumed_snapshot.resume_history[0]
+            .source_action_id
+            .as_deref(),
         Some(action_id.as_str())
     );
 
     let replay_models_base_url =
-        spawn_static_http_server(200, r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#);
+        spawn_static_http_server_with_requests(200, r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#, 2);
     let replay_app = build_mock_app(create_openrouter_state(
         &root,
         format!("{replay_models_base_url}/api/v1/models"),
@@ -2579,6 +2634,80 @@ fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecycle_after_r
             && runtime_run.status == RuntimeRunStatusDto::Stopped
     });
     assert_eq!(final_runtime.status, RuntimeRunStatusDto::Stopped);
+}
+
+#[test]
+fn get_autonomous_run_returns_transient_state_when_initial_persist_hits_write_lock() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime_session = seed_authenticated_runtime(&app, &root, &project_id);
+
+    let launched = launch_scripted_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        "run-autonomous-observe-write-lock",
+        runtime_session
+            .session_id
+            .as_deref()
+            .expect("authenticated runtime session id"),
+        runtime_session.flow_id.as_deref(),
+        &runtime_shell::script_print_line_and_sleep("hold", 2),
+    );
+
+    wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.run_id == launched.run.run_id
+            && runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+
+    let database_path = database_path_for_repo(&repo_root);
+    let locking_connection =
+        rusqlite::Connection::open(&database_path).expect("open runtime db for write lock");
+    locking_connection
+        .execute_batch("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE;")
+        .expect("acquire write lock");
+
+    let observed = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("get autonomous run should fall back to the transient snapshot while the durable autonomous row is locked");
+
+    locking_connection
+        .execute_batch("ROLLBACK;")
+        .expect("release write lock");
+
+    let observed_run = observed
+        .run
+        .as_ref()
+        .expect("observed autonomous run should exist");
+    assert_eq!(observed_run.run_id, launched.run.run_id);
+    assert!(matches!(
+        observed_run.status,
+        AutonomousRunStatusDto::Starting | AutonomousRunStatusDto::Running
+    ));
+    assert!(!observed_run.duplicate_start_detected);
+
+    let recovered = wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
+        autonomous_state
+            .run
+            .as_ref()
+            .is_some_and(|run| run.run_id == launched.run.run_id)
+    });
+    assert_eq!(
+        recovered
+            .run
+            .as_ref()
+            .expect("recovered autonomous run should exist")
+            .run_id,
+        launched.run.run_id
+    );
 }
 
 #[test]

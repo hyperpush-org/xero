@@ -33,6 +33,7 @@
   },
   "bundle": {
     "active": true,
+    "targets": ["app"],
     "icon": ["../public/icon-light-32x32.png"]
   }
 }

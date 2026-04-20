@@ -343,12 +343,24 @@ pub(crate) fn sync_autonomous_run_state(
     let existing = load_persisted_autonomous_run(repo_root, project_id)?;
 
     let persisted = match runtime_snapshot {
-        Some(snapshot) => persist_autonomous_workflow_progression(
-            repo_root,
-            project_id,
-            existing.as_ref(),
-            reconcile_autonomous_run_snapshot(existing.as_ref(), snapshot, intent),
-        )?,
+        Some(snapshot) => {
+            let payload = reconcile_autonomous_run_snapshot(existing.as_ref(), snapshot, intent);
+            match persist_autonomous_workflow_progression(
+                repo_root,
+                project_id,
+                existing.as_ref(),
+                payload.clone(),
+            ) {
+                Ok(persisted) => persisted,
+                Err(error) if should_fallback_autonomous_sync(&error, intent) => {
+                    return Ok(autonomous_run_state_from_transient_payload(
+                        existing.as_ref(),
+                        &payload,
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
         None => {
             if let Some(existing) = existing {
                 existing
@@ -364,6 +376,69 @@ pub(crate) fn sync_autonomous_run_state(
     };
 
     Ok(autonomous_run_state_from_snapshot(Some(&persisted)))
+}
+
+fn should_fallback_autonomous_sync(error: &CommandError, intent: AutonomousSyncIntent) -> bool {
+    matches!(
+        intent,
+        AutonomousSyncIntent::Observe | AutonomousSyncIntent::DuplicateStart
+    ) && matches!(error.class, CommandErrorClass::Retryable)
+        && matches!(
+            error.code.as_str(),
+            "autonomous_run_transaction_failed"
+                | "autonomous_run_persist_failed"
+                | "autonomous_run_commit_failed"
+        )
+}
+
+fn autonomous_run_state_from_transient_payload(
+    existing: Option<&AutonomousRunSnapshotRecord>,
+    payload: &AutonomousRunUpsertRecord,
+) -> AutonomousRunStateDto {
+    let history = merge_transient_autonomous_history(existing, payload);
+    let snapshot = AutonomousRunSnapshotRecord {
+        run: payload.run.clone(),
+        unit: payload.unit.clone(),
+        attempt: payload.attempt.clone(),
+        history,
+    };
+    autonomous_run_state_from_snapshot(Some(&snapshot))
+}
+
+fn merge_transient_autonomous_history(
+    existing: Option<&AutonomousRunSnapshotRecord>,
+    payload: &AutonomousRunUpsertRecord,
+) -> Vec<AutonomousUnitHistoryRecord> {
+    let same_run = existing.is_some_and(|snapshot| snapshot.run.run_id == payload.run.run_id);
+    let mut history = if same_run {
+        existing
+            .map(|snapshot| snapshot.history.clone())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let Some(unit) = payload.unit.as_ref() else {
+        return history;
+    };
+
+    let next_entry = AutonomousUnitHistoryRecord {
+        unit: unit.clone(),
+        latest_attempt: payload.attempt.clone(),
+        artifacts: payload.artifacts.clone(),
+    };
+
+    if let Some(position) = history
+        .iter()
+        .position(|entry| entry.unit.unit_id == unit.unit_id)
+    {
+        history[position] = next_entry;
+    } else {
+        history.insert(0, next_entry);
+    }
+
+    history.sort_by(|left, right| right.unit.sequence.cmp(&left.unit.sequence));
+    history
 }
 
 pub(crate) fn autonomous_run_state_from_snapshot(

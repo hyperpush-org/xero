@@ -1032,6 +1032,11 @@ fn config_and_capability_files_lock_the_packaged_vite_shell_and_auth_opener_perm
         bundle_active,
         "tauri.conf bundle.active must stay true so packaged-app posture remains explicit"
     );
+    assert_eq!(
+        tauri_config["bundle"]["targets"],
+        json!(["app"]),
+        "tauri.conf bundle.targets drifted; debug release-gate builds must bundle only the macOS app artifact in deterministic local environments"
+    );
 
     assert_eq!(
         capability["identifier"],
@@ -1137,7 +1142,9 @@ fn platform_matrix_artifact_locks_cross_platform_verification_contract() {
         "platform matrix artifact must keep macOS, Linux, and Windows platform sections"
     );
     assert!(
-        matrix.contains("No platform-specific skips are allowed for this M008/S06 release-gate contract."),
+        matrix.contains(
+            "No platform-specific skips are allowed for this M008/S06 release-gate contract."
+        ),
         "platform matrix artifact must explicitly forbid platform-specific skips"
     );
     assert!(
