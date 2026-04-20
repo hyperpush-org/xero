@@ -70,10 +70,17 @@ fn build_mock_app() -> (tauri::App<tauri::test::MockRuntime>, TempDir) {
         .path()
         .join("app-data")
         .join("notification-credentials.json");
+    let runtime_settings_path = root.path().join("app-data").join("runtime-settings.json");
+    let openrouter_credential_path = root
+        .path()
+        .join("app-data")
+        .join("openrouter-credentials.json");
     let state = DesktopState::default()
         .with_registry_file_override(registry_path)
         .with_auth_store_file_override(auth_store_path)
-        .with_notification_credential_store_file_override(credential_store_path);
+        .with_notification_credential_store_file_override(credential_store_path)
+        .with_runtime_settings_file_override(runtime_settings_path)
+        .with_openrouter_credential_file_override(openrouter_credential_path);
 
     let app = configure_builder_with_state(tauri::test::mock_builder(), state)
         .build(tauri::generate_context!())
@@ -402,8 +409,8 @@ fn builder_boots_and_registered_commands_return_expected_contract_shapes() {
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        29,
-        "expected twenty-nine desktop commands"
+        31,
+        "expected thirty-one desktop commands"
     );
 
     tauri::test::assert_ipc_response(

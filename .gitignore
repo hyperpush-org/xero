@@ -1,6 +1,5 @@
 
 # ── GSD baseline (auto-generated) ──
-.gsd
 .gsd-id
 .bg-shell/
 .DS_Store
@@ -29,3 +28,6 @@ coverage/
 .cache/
 tmp/
 .tmp-gsd2-ref/
+
+# ── GSD baseline (auto-generated) ──
+.gsd
