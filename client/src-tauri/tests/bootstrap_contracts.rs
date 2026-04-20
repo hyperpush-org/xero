@@ -1197,6 +1197,12 @@ fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payl
         tool_name: Some("web_fetch".into()),
         tool_state: Some(cadence_desktop_lib::commands::RuntimeToolCallState::Succeeded),
         tool_summary: Some(sample_web_tool_summary()),
+        skill_id: None,
+        skill_stage: None,
+        skill_result: None,
+        skill_source: None,
+        skill_cache_status: None,
+        skill_diagnostic: None,
         action_id: None,
         boundary_id: None,
         action_type: None,
@@ -1218,6 +1224,73 @@ fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payl
             "contentKind": "html",
             "contentType": "text/html",
             "truncated": false
+        })
+    );
+
+    let runtime_stream_skill_item = serde_json::to_value(RuntimeStreamItemDto {
+        kind: RuntimeStreamItemKind::Skill,
+        run_id: "run-1".into(),
+        sequence: 9,
+        session_id: Some("session-1".into()),
+        flow_id: Some("flow-1".into()),
+        text: None,
+        tool_call_id: None,
+        tool_name: None,
+        tool_state: None,
+        tool_summary: None,
+        skill_id: Some("find-skills".into()),
+        skill_stage: Some(AutonomousSkillLifecycleStageDto::Install),
+        skill_result: Some(AutonomousSkillLifecycleResultDto::Succeeded),
+        skill_source: Some(AutonomousSkillLifecycleSourceDto {
+            repo: "vercel-labs/skills".into(),
+            path: "skills/find-skills".into(),
+            reference: "main".into(),
+            tree_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+        }),
+        skill_cache_status: Some(AutonomousSkillCacheStatusDto::Refreshed),
+        skill_diagnostic: None,
+        action_id: None,
+        boundary_id: None,
+        action_type: None,
+        title: None,
+        detail: Some("Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.".into()),
+        code: None,
+        message: None,
+        retryable: None,
+        created_at: "2026-04-16T14:00:03Z".into(),
+    })
+    .expect("runtime stream skill item should serialize");
+    assert_eq!(
+        runtime_stream_skill_item,
+        json!({
+            "kind": "skill",
+            "runId": "run-1",
+            "sequence": 9,
+            "sessionId": "session-1",
+            "flowId": "flow-1",
+            "text": null,
+            "toolCallId": null,
+            "toolName": null,
+            "toolState": null,
+            "actionId": null,
+            "boundaryId": null,
+            "actionType": null,
+            "title": null,
+            "detail": "Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.",
+            "code": null,
+            "message": null,
+            "retryable": null,
+            "createdAt": "2026-04-16T14:00:03Z",
+            "skillId": "find-skills",
+            "skillStage": "install",
+            "skillResult": "succeeded",
+            "skillSource": {
+                "repo": "vercel-labs/skills",
+                "path": "skills/find-skills",
+                "reference": "main",
+                "treeHash": "0123456789abcdef0123456789abcdef01234567"
+            },
+            "skillCacheStatus": "refreshed"
         })
     );
 }
@@ -2865,6 +2938,7 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
         item_kinds: vec![
             "transcript".into(),
             "tool".into(),
+            "skill".into(),
             "activity".into(),
             "failure".into(),
         ],
@@ -2875,7 +2949,7 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
         json!({
             "projectId": "project-1",
             "channel": "__CHANNEL__:77",
-            "itemKinds": ["transcript", "tool", "activity", "failure"]
+            "itemKinds": ["transcript", "tool", "skill", "activity", "failure"]
         })
     );
 
@@ -2888,6 +2962,7 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
         subscribed_item_kinds: vec![
             RuntimeStreamItemKind::Transcript,
             RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Skill,
             RuntimeStreamItemKind::Activity,
             RuntimeStreamItemKind::Failure,
         ],
@@ -2901,7 +2976,7 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "runId": "run-1",
             "sessionId": "session-1",
             "flowId": null,
-            "subscribedItemKinds": ["transcript", "tool", "activity", "failure"]
+            "subscribedItemKinds": ["transcript", "tool", "skill", "activity", "failure"]
         })
     );
 
@@ -2916,6 +2991,12 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
         tool_name: None,
         tool_state: None,
         tool_summary: None,
+        skill_id: None,
+        skill_stage: None,
+        skill_result: None,
+        skill_source: None,
+        skill_cache_status: None,
+        skill_diagnostic: None,
         action_id: None,
         boundary_id: None,
         action_type: None,
@@ -3251,6 +3332,7 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
         &[
             "transcript",
             "tool",
+            "skill",
             "activity",
             "action_required",
             "complete",

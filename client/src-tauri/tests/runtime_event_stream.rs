@@ -14,11 +14,13 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cadence_desktop_lib::{
     auth::{now_timestamp, persist_openai_codex_session, StoredOpenAiCodexSession},
     commands::{
-        start_runtime_session::start_runtime_session, CommandError, CommandErrorClass,
-        ProjectIdRequestDto, ProjectSummaryDto, ProjectUpdateReason, ProjectUpdatedPayloadDto,
-        RuntimeAuthPhase, RuntimeRunCheckpointKindDto, RuntimeRunTransportLivenessDto,
-        RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
-        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto, SUBSCRIBE_RUNTIME_STREAM_COMMAND,
+        start_runtime_session::start_runtime_session, AutonomousSkillCacheStatusDto,
+        AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleStageDto, CommandError,
+        CommandErrorClass, ProjectIdRequestDto, ProjectSummaryDto, ProjectUpdateReason,
+        ProjectUpdatedPayloadDto, RuntimeAuthPhase, RuntimeRunCheckpointKindDto,
+        RuntimeRunTransportLivenessDto, RuntimeSessionDto, RuntimeStreamItemDto,
+        RuntimeStreamItemKind, RuntimeToolCallState, SubscribeRuntimeStreamResponseDto,
+        ToolResultSummaryDto, SUBSCRIBE_RUNTIME_STREAM_COMMAND,
     },
     configure_builder_with_state,
     db::{
@@ -642,7 +644,7 @@ fn subscribe_runtime_stream_rejects_missing_channel_and_unsupported_kind_lists_a
         subscribe_request("project-1", &channel_string(), &["bogus"]),
         Err(CommandError::user_fixable(
             "runtime_stream_item_kind_unsupported",
-            "Cadence does not support runtime stream item kind `bogus`. Allowed kinds: transcript, tool, activity, action_required, complete, failure.",
+            "Cadence does not support runtime stream item kind `bogus`. Allowed kinds: transcript, tool, skill, activity, action_required, complete, failure.",
         )),
     );
 }
@@ -854,6 +856,221 @@ fn runtime_stream_replays_real_supervisor_events_after_fresh_host_reload() {
     ));
     assert!(matches!(
         &items[3],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Complete,
+            detail: Some(detail),
+            ..
+        } if detail.contains("finished")
+    ));
+
+    stop_supervisor_run(
+        fresh_app.state::<DesktopState>().inner(),
+        &project_id,
+        &repo_root,
+    );
+}
+
+#[test]
+fn runtime_stream_replays_first_class_skill_events_with_source_metadata_after_fresh_host_reload() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime = seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+
+    let skill_source = json!({
+        "repo": "vercel-labs/skills",
+        "path": "skills/find-skills",
+        "reference": "main",
+        "tree_hash": "0123456789abcdef0123456789abcdef01234567"
+    });
+    let live_lines = vec![
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-1",
+                "tool_name": "read",
+                "tool_state": "running",
+                "detail": "Collecting workspace context"
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "skill",
+                "skill_id": "find-skills",
+                "stage": "install",
+                "result": "succeeded",
+                "detail": "Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.",
+                "source": skill_source,
+                "cache_status": "refreshed"
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "skill",
+                "skill_id": "find-skills",
+                "stage": "invoke",
+                "result": "failed",
+                "detail": "Autonomous skill `find-skills` failed during invocation.",
+                "source": skill_source,
+                "cache_status": "hit",
+                "diagnostic": {
+                    "code": "autonomous_skill_invoke_failed",
+                    "message": "Cadence could not invoke autonomous skill `find-skills`.",
+                    "retryable": false
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{{\"kind\":\"activity\",\"code\":\"phase_progress\",\"title\":\"Planning\",\"detail\":\"Replay buffer ready\"}}"
+        ),
+    ];
+
+    let launched = launch_supervised_run(
+        app.state::<DesktopState>().inner(),
+        &project_id,
+        &repo_root,
+        "run-skill-reload",
+        &runtime_shell::script_print_lines_and_sleep(&live_lines, 3),
+    );
+
+    wait_for_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        |snapshot| {
+            snapshot.run.status == RuntimeRunStatus::Running
+                && snapshot.last_checkpoint_sequence >= 4
+        },
+    );
+
+    let (fresh_state, _fresh_registry_path, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+    let (channel, receiver) = capture_stream_channel();
+    start_direct_runtime_stream(
+        &fresh_app,
+        &project_id,
+        &repo_root,
+        &runtime,
+        &launched.run.run_id,
+        vec![
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Activity,
+            RuntimeStreamItemKind::Complete,
+        ],
+        channel,
+    );
+
+    let items = collect_until_terminal(receiver);
+    assert_monotonic_sequences(&items, &launched.run.run_id);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Skill,
+            RuntimeStreamItemKind::Activity,
+            RuntimeStreamItemKind::Complete,
+        ],
+        "unexpected replay items: {items:?}"
+    );
+
+    assert!(matches!(
+        &items[0],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Tool,
+            tool_call_id: Some(tool_call_id),
+            tool_name: Some(tool_name),
+            tool_state: Some(RuntimeToolCallState::Running),
+            detail: Some(detail),
+            ..
+        } if tool_call_id == "tool-1"
+            && tool_name == "read"
+            && detail == "Collecting workspace context"
+    ));
+
+    let install_skill = &items[1];
+    assert_eq!(install_skill.skill_id.as_deref(), Some("find-skills"));
+    assert_eq!(
+        install_skill.skill_stage,
+        Some(AutonomousSkillLifecycleStageDto::Install)
+    );
+    assert_eq!(
+        install_skill.skill_result,
+        Some(AutonomousSkillLifecycleResultDto::Succeeded)
+    );
+    assert_eq!(
+        install_skill.skill_cache_status,
+        Some(AutonomousSkillCacheStatusDto::Refreshed)
+    );
+    assert_eq!(
+        install_skill.detail.as_deref(),
+        Some("Installed autonomous skill `find-skills` from the cached vercel-labs/skills tree.")
+    );
+    let install_source = install_skill
+        .skill_source
+        .as_ref()
+        .expect("install skill source metadata");
+    assert_eq!(install_source.repo, "vercel-labs/skills");
+    assert_eq!(install_source.path, "skills/find-skills");
+    assert_eq!(install_source.reference, "main");
+    assert_eq!(
+        install_source.tree_hash,
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    assert_eq!(install_skill.skill_diagnostic, None);
+
+    let invoke_skill = &items[2];
+    assert_eq!(invoke_skill.skill_id.as_deref(), Some("find-skills"));
+    assert_eq!(
+        invoke_skill.skill_stage,
+        Some(AutonomousSkillLifecycleStageDto::Invoke)
+    );
+    assert_eq!(
+        invoke_skill.skill_result,
+        Some(AutonomousSkillLifecycleResultDto::Failed)
+    );
+    assert_eq!(
+        invoke_skill.skill_cache_status,
+        Some(AutonomousSkillCacheStatusDto::Hit)
+    );
+    assert_eq!(
+        invoke_skill.detail.as_deref(),
+        Some("Autonomous skill `find-skills` failed during invocation.")
+    );
+    let invoke_diagnostic = invoke_skill
+        .skill_diagnostic
+        .as_ref()
+        .expect("failed skill diagnostic");
+    assert_eq!(invoke_diagnostic.code, "autonomous_skill_invoke_failed");
+    assert_eq!(
+        invoke_diagnostic.message,
+        "Cadence could not invoke autonomous skill `find-skills`."
+    );
+    assert!(!invoke_diagnostic.retryable);
+
+    assert!(matches!(
+        &items[3],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Activity,
+            code: Some(code),
+            title: Some(title),
+            detail: Some(detail),
+            ..
+        } if code == "phase_progress"
+            && title == "Planning"
+            && detail == "Replay buffer ready"
+    ));
+    assert!(matches!(
+        &items[4],
         RuntimeStreamItemDto {
             kind: RuntimeStreamItemKind::Complete,
             detail: Some(detail),
@@ -1394,6 +1611,12 @@ fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_activity() 
         tool_name: None,
         tool_state: None,
         tool_summary: None,
+        skill_id: None,
+        skill_stage: None,
+        skill_result: None,
+        skill_source: None,
+        skill_cache_status: None,
+        skill_diagnostic: None,
         action_id: None,
         boundary_id: None,
         action_type: None,
@@ -1435,6 +1658,7 @@ fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_activity() 
         &[
             "transcript",
             "tool",
+            "skill",
             "activity",
             "action_required",
             "complete",
