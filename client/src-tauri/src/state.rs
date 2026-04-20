@@ -7,8 +7,8 @@ use crate::{
     commands::CommandError,
     notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
     runtime::{
-        openai_codex_provider, ResolvedRuntimeProvider, RuntimeStreamController,
-        RuntimeSupervisorController,
+        openai_codex_provider, AutonomousWebConfig, ResolvedRuntimeProvider,
+        RuntimeStreamController, RuntimeSupervisorController,
     },
 };
 
@@ -40,6 +40,7 @@ pub struct DesktopState {
     runtime_supervisor_binary_override: Option<PathBuf>,
     openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
     openrouter_auth_config_override: Option<OpenRouterAuthConfig>,
+    autonomous_web_config_override: Option<AutonomousWebConfig>,
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
     runtime_stream_controller: RuntimeStreamController,
@@ -88,6 +89,11 @@ impl DesktopState {
         self
     }
 
+    pub fn with_autonomous_web_config_override(mut self, config: AutonomousWebConfig) -> Self {
+        self.autonomous_web_config_override = Some(config);
+        self
+    }
+
     pub fn with_failpoints(mut self, failpoints: ImportFailpoints) -> Self {
         self.import_failpoints = failpoints;
         self
@@ -128,6 +134,12 @@ impl DesktopState {
         self.openrouter_auth_config_override
             .clone()
             .unwrap_or_else(OpenRouterAuthConfig::for_platform)
+    }
+
+    pub fn autonomous_web_config(&self) -> AutonomousWebConfig {
+        self.autonomous_web_config_override
+            .clone()
+            .unwrap_or_else(AutonomousWebConfig::for_platform)
     }
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {

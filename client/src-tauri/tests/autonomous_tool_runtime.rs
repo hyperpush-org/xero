@@ -1,6 +1,9 @@
 use std::{
     fs,
+    io::{BufRead, BufReader, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
+    thread,
 };
 
 use cadence_desktop_lib::{
@@ -15,7 +18,9 @@ use cadence_desktop_lib::{
         AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
         AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousReadRequest,
         AutonomousSearchRequest, AutonomousToolOutput, AutonomousToolRequest,
-        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousWriteRequest,
+        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousWebConfig,
+        AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
 };
@@ -149,6 +154,36 @@ fn current_head_sha(repo_root: &Path) -> Option<String> {
 fn shell_argv(script: impl Into<String>) -> Vec<String> {
     let shell = runtime_shell::launch_script(script);
     std::iter::once(shell.program).chain(shell.args).collect()
+}
+
+fn spawn_static_http_server(status: u16, content_type: &str, body: &str) -> String {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test http server");
+    let address = listener.local_addr().expect("test http server addr");
+    let content_type = content_type.to_string();
+    let body = body.to_string();
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept test http request");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes = reader.read_line(&mut line).expect("read request line");
+            if bytes == 0 || line == "\r\n" {
+                break;
+            }
+        }
+
+        write!(
+            stream,
+            "HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        )
+        .expect("write test http response");
+    });
+
+    format!("http://{address}")
 }
 
 #[test]
@@ -318,6 +353,119 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
         }
         other => panic!("unexpected command output: {other:?}"),
     }
+}
+
+#[test]
+fn tool_runtime_executes_web_search_and_fetch_with_backend_owned_config() {
+    let search_base_url = spawn_static_http_server(
+        200,
+        "application/json",
+        &serde_json::json!({
+            "results": [
+                {
+                    "title": "Rust result",
+                    "url": "https://example.com/rust",
+                    "snippet": "Rust &amp; systems"
+                },
+                {
+                    "title": "Second result",
+                    "url": "https://example.com/second",
+                    "snippet": null
+                }
+            ]
+        })
+        .to_string(),
+    );
+    let fetch_base_url = spawn_static_http_server(
+        200,
+        "text/html; charset=utf-8",
+        "<!doctype html><html><head><title>Example Page</title></head><body><h1>Heading</h1><p>Alpha &amp; beta</p></body></html>",
+    );
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let state = create_state(&root).with_autonomous_web_config_override(AutonomousWebConfig {
+        search_provider: Some(AutonomousWebSearchProviderConfig::new(format!(
+            "{search_base_url}/search"
+        ))),
+        limits: Default::default(),
+    });
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let search = runtime
+        .web_search(AutonomousWebSearchRequest {
+            query: "rust".into(),
+            result_count: Some(1),
+            timeout_ms: Some(1_000),
+        })
+        .expect("web search should succeed");
+    assert_eq!(search.tool_name, "web_search");
+    match search.output {
+        AutonomousToolOutput::WebSearch(output) => {
+            assert_eq!(output.results.len(), 1);
+            assert_eq!(output.results[0].title, "Rust result");
+            assert_eq!(output.results[0].snippet.as_deref(), Some("Rust & systems"));
+            assert!(output.truncated);
+        }
+        other => panic!("unexpected web search output: {other:?}"),
+    }
+
+    let fetch = runtime
+        .web_fetch(AutonomousWebFetchRequest {
+            url: format!("{fetch_base_url}/page"),
+            max_chars: Some(200),
+            timeout_ms: Some(1_000),
+        })
+        .expect("web fetch should succeed");
+    assert_eq!(fetch.tool_name, "web_fetch");
+    match fetch.output {
+        AutonomousToolOutput::WebFetch(output) => {
+            assert_eq!(output.content_type.as_deref(), Some("text/html"));
+            assert_eq!(output.content_kind, AutonomousWebFetchContentKind::Html);
+            assert_eq!(output.title.as_deref(), Some("Example Page"));
+            assert!(output.content.contains("Heading"));
+            assert!(output.content.contains("Alpha & beta"));
+            assert!(!output.truncated);
+        }
+        other => panic!("unexpected web fetch output: {other:?}"),
+    }
+
+    let provider_missing = AutonomousToolRuntime::with_limits_and_web_config(
+        root.path().join("repo"),
+        AutonomousToolRuntimeLimits::default(),
+        AutonomousWebConfig::default(),
+    )
+    .expect("build runtime without backend web config");
+    let provider_missing_error = provider_missing
+        .web_search(AutonomousWebSearchRequest {
+            query: "rust".into(),
+            result_count: None,
+            timeout_ms: None,
+        })
+        .expect_err("missing backend provider config should fail closed");
+    assert_eq!(
+        provider_missing_error.code,
+        "autonomous_web_search_provider_unavailable"
+    );
+
+    let invalid_fetch_error = runtime
+        .web_fetch(AutonomousWebFetchRequest {
+            url: "mailto:test@example.com".into(),
+            max_chars: None,
+            timeout_ms: None,
+        })
+        .expect_err("unsupported fetch schemes should fail closed");
+    assert_eq!(
+        invalid_fetch_error.code,
+        "autonomous_web_fetch_scheme_unsupported"
+    );
 }
 
 #[test]

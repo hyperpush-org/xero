@@ -12,6 +12,12 @@ use globset::{GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
 
+use super::autonomous_web_runtime::{
+    AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchOutput,
+    AutonomousWebFetchRequest, AutonomousWebRuntime, AutonomousWebSearchOutput,
+    AutonomousWebSearchRequest, AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
+};
+
 use crate::{
     commands::{
         validate_non_empty, BranchSummaryDto, CommandError, CommandErrorClass, CommandResult,
@@ -93,16 +99,29 @@ impl Default for AutonomousToolRuntimeLimits {
 pub struct AutonomousToolRuntime {
     repo_root: PathBuf,
     limits: AutonomousToolRuntimeLimits,
+    web_runtime: AutonomousWebRuntime,
 }
 
 impl AutonomousToolRuntime {
     pub fn new(repo_root: impl AsRef<Path>) -> CommandResult<Self> {
-        Self::with_limits(repo_root, AutonomousToolRuntimeLimits::default())
+        Self::with_limits_and_web_config(
+            repo_root,
+            AutonomousToolRuntimeLimits::default(),
+            AutonomousWebConfig::for_platform(),
+        )
     }
 
     pub fn with_limits(
         repo_root: impl AsRef<Path>,
         limits: AutonomousToolRuntimeLimits,
+    ) -> CommandResult<Self> {
+        Self::with_limits_and_web_config(repo_root, limits, AutonomousWebConfig::for_platform())
+    }
+
+    pub fn with_limits_and_web_config(
+        repo_root: impl AsRef<Path>,
+        limits: AutonomousToolRuntimeLimits,
+        web_config: AutonomousWebConfig,
     ) -> CommandResult<Self> {
         let repo_root = repo_root.as_ref();
         let canonical_root = fs::canonicalize(repo_root).map_err(|error| match error.kind() {
@@ -129,6 +148,7 @@ impl AutonomousToolRuntime {
         Ok(Self {
             repo_root: canonical_root,
             limits,
+            web_runtime: AutonomousWebRuntime::new(web_config),
         })
     }
 
@@ -138,7 +158,11 @@ impl AutonomousToolRuntime {
         project_id: &str,
     ) -> CommandResult<Self> {
         let repo_root = resolve_imported_repo_root(app, state, project_id)?;
-        Self::new(repo_root)
+        Self::with_limits_and_web_config(
+            repo_root,
+            AutonomousToolRuntimeLimits::default(),
+            state.autonomous_web_config(),
+        )
     }
 
     pub fn repo_root(&self) -> &Path {
@@ -156,6 +180,8 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::Find(request) => self.find(request),
             AutonomousToolRequest::GitStatus(request) => self.git_status(request),
             AutonomousToolRequest::GitDiff(request) => self.git_diff(request),
+            AutonomousToolRequest::WebSearch(request) => self.web_search(request),
+            AutonomousToolRequest::WebFetch(request) => self.web_fetch(request),
             AutonomousToolRequest::Edit(request) => self.edit(request),
             AutonomousToolRequest::Write(request) => self.write(request),
             AutonomousToolRequest::Command(request) => self.command(request),
@@ -447,6 +473,63 @@ impl AutonomousToolRuntime {
                 truncated: response.truncated,
                 base_revision: response.base_revision,
             }),
+        })
+    }
+
+    pub fn web_search(
+        &self,
+        request: AutonomousWebSearchRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let output = self.web_runtime.search(request)?;
+        let result_count = output.results.len();
+        let summary = if result_count == 0 {
+            format!("Web search returned 0 result(s) for `{}`.", output.query)
+        } else if output.truncated {
+            format!(
+                "Web search returned {result_count} result(s) for `{}` (truncated).",
+                output.query
+            )
+        } else {
+            format!(
+                "Web search returned {result_count} result(s) for `{}`.",
+                output.query
+            )
+        };
+
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_WEB_SEARCH.into(),
+            summary,
+            command_result: None,
+            output: AutonomousToolOutput::WebSearch(output),
+        })
+    }
+
+    pub fn web_fetch(
+        &self,
+        request: AutonomousWebFetchRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let output = self.web_runtime.fetch(request)?;
+        let kind = match output.content_kind {
+            AutonomousWebFetchContentKind::Html => "HTML",
+            AutonomousWebFetchContentKind::PlainText => "plain-text",
+        };
+        let summary = if output.truncated {
+            format!(
+                "Fetched {kind} content from `{}` via `{}` (truncated).",
+                output.url, output.final_url
+            )
+        } else {
+            format!(
+                "Fetched {kind} content from `{}` via `{}`.",
+                output.url, output.final_url
+            )
+        };
+
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_WEB_FETCH.into(),
+            summary,
+            command_result: None,
+            output: AutonomousToolOutput::WebFetch(output),
         })
     }
 
@@ -1096,6 +1179,8 @@ pub enum AutonomousToolRequest {
     Find(AutonomousFindRequest),
     GitStatus(AutonomousGitStatusRequest),
     GitDiff(AutonomousGitDiffRequest),
+    WebSearch(AutonomousWebSearchRequest),
+    WebFetch(AutonomousWebFetchRequest),
     Edit(AutonomousEditRequest),
     Write(AutonomousWriteRequest),
     Command(AutonomousCommandRequest),
@@ -1183,6 +1268,8 @@ pub enum AutonomousToolOutput {
     Find(AutonomousFindOutput),
     GitStatus(AutonomousGitStatusOutput),
     GitDiff(AutonomousGitDiffOutput),
+    WebSearch(AutonomousWebSearchOutput),
+    WebFetch(AutonomousWebFetchOutput),
     Edit(AutonomousEditOutput),
     Write(AutonomousWriteOutput),
     Command(AutonomousCommandOutput),

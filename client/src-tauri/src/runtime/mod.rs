@@ -1,5 +1,6 @@
 pub mod autonomous_orchestrator;
 pub mod autonomous_tool_runtime;
+pub mod autonomous_web_runtime;
 pub mod autonomous_workflow_progression;
 pub mod platform_adapter;
 pub mod protocol;
@@ -18,6 +19,13 @@ pub use autonomous_tool_runtime::{
     AutonomousWriteRequest, AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND,
     AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_READ,
     AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_WRITE,
+};
+pub use autonomous_web_runtime::{
+    AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchOutput,
+    AutonomousWebFetchRequest, AutonomousWebRuntime, AutonomousWebRuntimeLimits,
+    AutonomousWebSearchOutput, AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest,
+    AutonomousWebTransport, AutonomousWebTransportError, AutonomousWebTransportRequest,
+    AutonomousWebTransportResponse, AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
 };
 pub use platform_adapter::{
     bind_openai_callback_listener, default_openai_callback_policy, resolve_openai_callback_policy,
