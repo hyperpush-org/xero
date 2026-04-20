@@ -362,7 +362,7 @@ function ProvidersSection({
   onLogout?: () => Promise<RuntimeSessionView | null>
 }) {
   const [providerId, setProviderId] = useState<RuntimeProviderId>("openrouter")
-  const [modelId, setModelId] = useState("")
+  const [openrouterModelId, setOpenrouterModelId] = useState("")
   const [openrouterApiKey, setOpenrouterApiKey] = useState("")
   const [clearOpenrouterApiKey, setClearOpenrouterApiKey] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -385,7 +385,7 @@ function ProvidersSection({
     }
 
     setProviderId(runtimeSettings.providerId)
-    setModelId(runtimeSettings.modelId)
+    setOpenrouterModelId(runtimeSettings.providerId === "openrouter" ? runtimeSettings.modelId : "")
     setOpenrouterApiKey("")
     setClearOpenrouterApiKey(false)
     setFormError(null)
@@ -396,16 +396,14 @@ function ProvidersSection({
   }, [runtimeSession?.isAuthenticated, runtimeSession?.updatedAt])
 
   function selectProvider(nextProviderId: RuntimeProviderId) {
-    const nextProvider = PROVIDER_OPTIONS.find((option) => option.value === nextProviderId) ?? PROVIDER_OPTIONS[0]
     setProviderId(nextProviderId)
-    setModelId(nextProvider.fixedModelId ?? runtimeSettings?.modelId ?? modelId)
     setFormError(null)
   }
 
   async function handleSave() {
     if (!onUpsertRuntimeSettings) return
 
-    const normalizedModelId = providerOption.fixedModelId ?? modelId.trim()
+    const normalizedModelId = providerOption.fixedModelId ?? openrouterModelId.trim()
     if (!normalizedModelId) {
       setFormError("Model ID is required.")
       return
@@ -600,9 +598,9 @@ function ProvidersSection({
                   id="runtime-model-id"
                   className="h-8 text-[12px]"
                   disabled={Boolean(providerOption.fixedModelId) || isSaving}
-                  onChange={(event) => setModelId(event.target.value)}
+                  onChange={(event) => setOpenrouterModelId(event.target.value)}
                   placeholder={providerOption.fixedModelId ?? "openai/gpt-4.1-mini"}
-                  value={providerOption.fixedModelId ?? modelId}
+                  value={providerOption.fixedModelId ?? openrouterModelId}
                 />
                 <p className="text-[11px] text-muted-foreground">
                   {providerOption.fixedModelId

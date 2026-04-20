@@ -2060,4 +2060,106 @@ describe('useCadenceDesktopState', () => {
     expect(setup.repositoryUnlisten).toHaveBeenCalledTimes(1)
     expect(setup.runtimeUnlisten).toHaveBeenCalledTimes(1)
   })
+
+  it('loads app-global runtime settings and keeps selected-project runtime truth separate after save', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'openai_codex',
+        modelId: 'openai_codex',
+        openrouterApiKeyConfigured: false,
+      }),
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('none')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load runtime settings' }))
+
+    await waitFor(() => expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openai_codex'))
+    expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save OpenRouter runtime settings' }))
+
+    await waitFor(() =>
+      expect(setup.upsertRuntimeSettings).toHaveBeenCalledWith({
+        providerId: 'openrouter',
+        modelId: 'openai/gpt-4.1-mini',
+        openrouterApiKey: 'sk-or-v1-test-secret',
+      }),
+    )
+    await waitFor(() => expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter'))
+
+    expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('openai/gpt-4.1-mini')
+    expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('auth-phase')).toHaveTextContent('authenticated')
+    expect(screen.getByTestId('runtime-settings-load-error-code')).toHaveTextContent('none')
+    expect(screen.getByTestId('runtime-settings-save-error-code')).toHaveTextContent('none')
+  })
+
+  it('preserves the last-known-good runtime settings snapshot when refresh or save fails', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'openrouter',
+        modelId: 'meta-llama/llama-3.1-8b-instruct',
+        openrouterApiKeyConfigured: true,
+      }),
+    })
+
+    setup.getRuntimeSettings
+      .mockResolvedValueOnce(
+        makeRuntimeSettings({
+          providerId: 'openrouter',
+          modelId: 'meta-llama/llama-3.1-8b-instruct',
+          openrouterApiKeyConfigured: true,
+        }),
+      )
+      .mockRejectedValueOnce(
+        new CadenceDesktopError({
+          code: 'runtime_settings_timeout',
+          errorClass: 'retryable',
+          message: 'Cadence timed out while loading app-global runtime settings.',
+          retryable: true,
+        }),
+      )
+
+    setup.upsertRuntimeSettings.mockRejectedValueOnce(
+      new CadenceDesktopError({
+        code: 'runtime_settings_write_failed',
+        errorClass: 'retryable',
+        message: 'Cadence could not save app-global runtime settings.',
+        retryable: true,
+      }),
+    )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load runtime settings' }))
+
+    await waitFor(() => expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter'))
+    expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('meta-llama/llama-3.1-8b-instruct')
+    expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load runtime settings' }))
+
+    await waitFor(() => expect(screen.getByTestId('runtime-settings-load-status')).toHaveTextContent('error'))
+    expect(screen.getByTestId('runtime-settings-load-error-code')).toHaveTextContent('runtime_settings_timeout')
+    expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter')
+    expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('meta-llama/llama-3.1-8b-instruct')
+    expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save OpenRouter runtime settings' }))
+
+    await waitFor(() => expect(screen.getByTestId('runtime-settings-save-error-code')).toHaveTextContent('runtime_settings_write_failed'))
+    expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter')
+    expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('meta-llama/llama-3.1-8b-instruct')
+    expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
+  })
 })
