@@ -2,11 +2,6 @@ use std::{
     collections::HashSet,
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
     time::Duration,
 };
 
@@ -14,19 +9,12 @@ use tauri::{ipc::Channel, AppHandle, Runtime};
 
 use crate::{
     commands::{
-        get_runtime_session::reconcile_runtime_session,
-        runtime_support::{
-            load_persisted_runtime_run, load_runtime_run_status, load_runtime_session_status,
-            DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-        },
+        runtime_support::DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
         AutonomousSkillLifecycleDiagnosticDto, AutonomousSkillLifecycleResultDto,
         AutonomousSkillLifecycleSourceDto, AutonomousSkillLifecycleStageDto, CommandError,
-        OperatorApprovalStatus, RuntimeAuthPhase, RuntimeStreamItemDto, RuntimeStreamItemKind,
-        RuntimeToolCallState,
+        RuntimeAuthPhase, RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
     },
-    db::project_store::{
-        self, RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness,
-    },
+    db::project_store::{RuntimeRunSnapshotRecord, RuntimeRunStatus},
     runtime::protocol::{
         SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
         SupervisorToolCallState, SUPERVISOR_PROTOCOL_VERSION,
@@ -41,45 +29,16 @@ const TERMINAL_SNAPSHOT_RETRY_INTERVAL: Duration = Duration::from_millis(120);
 const TERMINAL_SNAPSHOT_RETRY_ATTEMPTS: u32 = 6;
 const PROTOCOL_LINE_LIMIT: usize = 16 * 1024;
 
-#[derive(Debug, Clone, Default)]
-pub struct RuntimeStreamController {
-    inner: Arc<Mutex<RuntimeStreamRegistry>>,
-}
+mod controller;
+mod preflight;
 
-#[derive(Debug, Default)]
-struct RuntimeStreamRegistry {
-    next_generation: u64,
-    active: Option<ActiveRuntimeStream>,
-}
+pub use controller::{start_runtime_stream, RuntimeStreamController, RuntimeStreamRequest};
 
-#[derive(Debug, Clone)]
-struct ActiveRuntimeStream {
-    project_id: String,
-    session_id: String,
-    run_id: String,
-    generation: u64,
-    cancelled: Arc<AtomicBool>,
-}
-
-#[derive(Debug, Clone)]
-struct RuntimeStreamLease {
-    project_id: String,
-    session_id: String,
-    run_id: String,
-    generation: u64,
-    cancelled: Arc<AtomicBool>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RuntimeStreamRequest {
-    pub project_id: String,
-    pub repo_root: PathBuf,
-    pub session_id: String,
-    pub flow_id: Option<String>,
-    pub runtime_kind: String,
-    pub run_id: String,
-    pub requested_item_kinds: Vec<RuntimeStreamItemKind>,
-}
+use controller::RuntimeStreamLease;
+use preflight::{
+    ensure_stream_identity, load_pending_action_required, load_streamable_runtime_run,
+    load_terminal_runtime_snapshot,
+};
 
 #[derive(Debug, Clone)]
 struct PendingActionRequired {
@@ -114,85 +73,6 @@ enum StreamExit {
 }
 
 type StreamResult<T = u64> = Result<T, StreamExit>;
-
-impl RuntimeStreamController {
-    fn begin_stream(&self, project_id: &str, session_id: &str, run_id: &str) -> RuntimeStreamLease {
-        let mut registry = self.inner.lock().expect("runtime stream registry poisoned");
-
-        if let Some(active) = registry.active.take() {
-            active.cancelled.store(true, Ordering::SeqCst);
-        }
-
-        registry.next_generation = registry.next_generation.saturating_add(1);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let generation = registry.next_generation;
-
-        registry.active = Some(ActiveRuntimeStream {
-            project_id: project_id.into(),
-            session_id: session_id.into(),
-            run_id: run_id.into(),
-            generation,
-            cancelled: cancelled.clone(),
-        });
-
-        RuntimeStreamLease {
-            project_id: project_id.into(),
-            session_id: session_id.into(),
-            run_id: run_id.into(),
-            generation,
-            cancelled,
-        }
-    }
-
-    fn finish_stream(&self, lease: &RuntimeStreamLease) {
-        let mut registry = self.inner.lock().expect("runtime stream registry poisoned");
-        let should_clear = registry.active.as_ref().is_some_and(|active| {
-            active.project_id == lease.project_id
-                && active.session_id == lease.session_id
-                && active.run_id == lease.run_id
-                && active.generation == lease.generation
-        });
-
-        if should_clear {
-            registry.active = None;
-        }
-    }
-}
-
-impl RuntimeStreamLease {
-    fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
-    }
-}
-
-pub fn start_runtime_stream<R: Runtime + 'static>(
-    app: AppHandle<R>,
-    state: DesktopState,
-    request: RuntimeStreamRequest,
-    channel: Channel<RuntimeStreamItemDto>,
-) {
-    let lease = state.runtime_stream_controller().begin_stream(
-        &request.project_id,
-        &request.session_id,
-        &request.run_id,
-    );
-    let controller = state.runtime_stream_controller().clone();
-
-    std::thread::spawn(move || {
-        let outcome = emit_runtime_stream(&app, &state, &request, &lease, &channel);
-
-        if let Err(StreamExit::Failed(failure)) = outcome {
-            let _ = emit_failure_item(
-                &channel,
-                &request,
-                failure.last_sequence.saturating_add(1),
-                failure.error,
-            );
-        }
-
-        controller.finish_stream(&lease);
-    });
-}
 
 fn emit_runtime_stream<R: Runtime>(
     app: &AppHandle<R>,
@@ -237,287 +117,6 @@ fn emit_runtime_stream<R: Runtime>(
         &terminal_snapshot,
         attach_state.last_sequence,
     )
-}
-
-fn ensure_stream_identity<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    request: &RuntimeStreamRequest,
-    last_sequence: u64,
-) -> StreamResult<()> {
-    let runtime = load_runtime_session_status(state, &request.repo_root, &request.project_id)
-        .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-    let runtime =
-        reconcile_runtime_session(app, state, &request.repo_root, runtime).map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-
-    if runtime.phase != RuntimeAuthPhase::Authenticated {
-        return Err(StreamExit::Failed(StreamFailure {
-            error: runtime_auth_lost_error(&runtime.phase),
-            last_sequence,
-        }));
-    }
-
-    let latest_session_id = runtime.session_id.ok_or_else(|| {
-        StreamExit::Failed(StreamFailure {
-            error: CommandError::retryable(
-                "runtime_stream_session_missing",
-                "Cadence could not keep the live runtime stream attached because the authenticated runtime session became incomplete.",
-            ),
-            last_sequence,
-        })
-    })?;
-
-    if latest_session_id != request.session_id {
-        return Err(StreamExit::Failed(StreamFailure {
-            error: CommandError::retryable(
-                "runtime_stream_session_stale",
-                "Cadence discarded a stale runtime stream because the selected project's authenticated session changed.",
-            ),
-            last_sequence,
-        }));
-    }
-
-    Ok(())
-}
-
-fn load_terminal_runtime_snapshot(
-    state: &DesktopState,
-    request: &RuntimeStreamRequest,
-    last_sequence: u64,
-) -> StreamResult<RuntimeRunSnapshotRecord> {
-    let mut latest_snapshot: Option<RuntimeRunSnapshotRecord> = None;
-
-    for attempt in 0..TERMINAL_SNAPSHOT_RETRY_ATTEMPTS {
-        let snapshot = load_runtime_run_status(state, &request.repo_root, &request.project_id)
-            .map_err(|error| {
-                StreamExit::Failed(StreamFailure {
-                    error,
-                    last_sequence,
-                })
-            })?
-            .ok_or_else(|| {
-                StreamExit::Failed(StreamFailure {
-                    error: CommandError::retryable(
-                        "runtime_stream_run_unavailable",
-                        "Cadence lost the durable runtime-run row before the live stream could finish cleanly.",
-                    ),
-                    last_sequence,
-                })
-            })?;
-
-        if snapshot.run.run_id != request.run_id {
-            return Err(StreamExit::Failed(StreamFailure {
-                error: CommandError::retryable(
-                    "runtime_stream_run_replaced",
-                    format!(
-                        "Cadence discarded the live runtime stream because run `{}` replaced `{}` before the bridge finished.",
-                        snapshot.run.run_id, request.run_id
-                    ),
-                ),
-                last_sequence,
-            }));
-        }
-
-        let is_terminal = matches!(
-            snapshot.run.status,
-            RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed
-        );
-        latest_snapshot = Some(snapshot);
-        if is_terminal {
-            break;
-        }
-
-        if attempt + 1 < TERMINAL_SNAPSHOT_RETRY_ATTEMPTS {
-            std::thread::sleep(TERMINAL_SNAPSHOT_RETRY_INTERVAL);
-        }
-    }
-
-    latest_snapshot.ok_or_else(|| {
-        StreamExit::Failed(StreamFailure {
-            error: CommandError::retryable(
-                "runtime_stream_run_unavailable",
-                "Cadence lost the durable runtime-run row before the live stream could finish cleanly.",
-            ),
-            last_sequence,
-        })
-    })
-}
-
-fn load_streamable_runtime_run(
-    request: &RuntimeStreamRequest,
-    last_sequence: u64,
-) -> StreamResult<RuntimeRunSnapshotRecord> {
-    let snapshot = load_persisted_runtime_run(&request.repo_root, &request.project_id)
-        .map_err(|error| StreamExit::Failed(StreamFailure { error, last_sequence }))?
-        .ok_or_else(|| {
-            StreamExit::Failed(StreamFailure {
-                error: CommandError::retryable(
-                    "runtime_stream_run_unavailable",
-                    "Cadence cannot attach a live runtime stream because the selected project has no durable run to bridge.",
-                ),
-                last_sequence,
-            })
-        })?;
-
-    if snapshot.run.run_id != request.run_id {
-        return Err(StreamExit::Failed(StreamFailure {
-            error: CommandError::retryable(
-                "runtime_stream_run_replaced",
-                format!(
-                    "Cadence discarded the live runtime stream because run `{}` replaced `{}` before attach started.",
-                    snapshot.run.run_id, request.run_id
-                ),
-            ),
-            last_sequence,
-        }));
-    }
-
-    ensure_attachable_runtime_run(&snapshot).map_err(|error| {
-        StreamExit::Failed(StreamFailure {
-            error,
-            last_sequence,
-        })
-    })?;
-
-    Ok(snapshot)
-}
-
-fn load_pending_action_required(
-    request: &RuntimeStreamRequest,
-    last_sequence: u64,
-) -> StreamResult<Vec<PendingActionRequired>> {
-    let snapshot = project_store::load_project_snapshot(&request.repo_root, &request.project_id)
-        .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?
-        .snapshot;
-
-    let mut pending = Vec::new();
-
-    for approval in snapshot
-        .approval_requests
-        .into_iter()
-        .filter(|approval| approval.status == OperatorApprovalStatus::Pending)
-    {
-        if let Some(session_id) = approval.session_id.as_deref() {
-            if session_id != request.session_id {
-                return Err(StreamExit::Failed(StreamFailure {
-                    error: CommandError::system_fault(
-                        "runtime_stream_session_mismatch",
-                        format!(
-                            "Cadence refused to project pending approval `{}` because it belongs to session `{session_id}` while `{}` is active.",
-                            approval.action_id, request.session_id
-                        ),
-                    ),
-                    last_sequence,
-                }));
-            }
-        }
-
-        if let (Some(expected_flow_id), Some(flow_id)) =
-            (request.flow_id.as_deref(), approval.flow_id.as_deref())
-        {
-            if flow_id != expected_flow_id {
-                return Err(StreamExit::Failed(StreamFailure {
-                    error: CommandError::system_fault(
-                        "runtime_stream_flow_mismatch",
-                        format!(
-                            "Cadence refused to project pending approval `{}` because it belongs to flow `{flow_id}` while `{expected_flow_id}` is active.",
-                            approval.action_id
-                        ),
-                    ),
-                    last_sequence,
-                }));
-            }
-        }
-
-        require_non_empty(
-            Some(approval.action_id.as_str()),
-            "actionId",
-            "runtime action-required item",
-        )
-        .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-        require_non_empty(
-            Some(approval.action_type.as_str()),
-            "actionType",
-            "runtime action-required item",
-        )
-        .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-        require_non_empty(
-            Some(approval.title.as_str()),
-            "title",
-            "runtime action-required item",
-        )
-        .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-        require_non_empty(
-            Some(approval.detail.as_str()),
-            "detail",
-            "runtime action-required item",
-        )
-        .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-
-        let boundary_id = parse_runtime_boundary_id_for_run(&approval.action_id, &request.run_id)
-            .map_err(|error| {
-            StreamExit::Failed(StreamFailure {
-                error,
-                last_sequence,
-            })
-        })?;
-
-        let Some(boundary_id) = boundary_id else {
-            continue;
-        };
-
-        pending.push(PendingActionRequired {
-            action_id: approval.action_id,
-            boundary_id: Some(boundary_id),
-            action_type: approval.action_type,
-            title: approval.title,
-            detail: approval.detail,
-            created_at: approval.created_at,
-        });
-    }
-
-    pending.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.action_id.cmp(&right.action_id))
-    });
-
-    Ok(pending)
 }
 
 fn attach_and_forward_supervisor_stream(
@@ -1197,47 +796,6 @@ fn emit_terminal_item(
                 })
             })?;
             Ok(next_sequence)
-        }
-    }
-}
-
-fn ensure_attachable_runtime_run(snapshot: &RuntimeRunSnapshotRecord) -> Result<(), CommandError> {
-    let reachable = snapshot.run.transport.liveness == RuntimeRunTransportLiveness::Reachable;
-    let active = matches!(
-        snapshot.run.status,
-        RuntimeRunStatus::Starting | RuntimeRunStatus::Running
-    );
-
-    if active && reachable {
-        return Ok(());
-    }
-
-    let last_error_message = snapshot
-        .run
-        .last_error
-        .as_ref()
-        .map(|error| error.message.clone());
-
-    match snapshot.run.status {
-        RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed => Err(CommandError::user_fixable(
-            "runtime_stream_run_unavailable",
-            last_error_message.unwrap_or_else(|| {
-                format!(
-                    "Cadence cannot attach a live runtime stream because run `{}` is already terminal.",
-                    snapshot.run.run_id
-                )
-            }),
-        )),
-        RuntimeRunStatus::Starting | RuntimeRunStatus::Running | RuntimeRunStatus::Stale => {
-            Err(CommandError::retryable(
-                "runtime_stream_run_stale",
-                last_error_message.unwrap_or_else(|| {
-                    format!(
-                        "Cadence cannot attach a live runtime stream because detached run `{}` is not currently reachable.",
-                        snapshot.run.run_id
-                    )
-                }),
-            ))
         }
     }
 }
