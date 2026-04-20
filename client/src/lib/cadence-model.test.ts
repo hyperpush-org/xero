@@ -24,6 +24,7 @@ import {
   resolveOperatorActionRequestSchema,
   runtimeRunSchema,
   runtimeSessionSchema,
+  runtimeSettingsSchema,
   runtimeStreamItemSchema,
   runtimeUpdatedPayloadSchema,
   resumeOperatorRunRequestSchema,
@@ -39,6 +40,7 @@ import {
   upsertNotificationRouteCredentialsRequestSchema,
   upsertNotificationRouteCredentialsResponseSchema,
   upsertNotificationRouteRequestSchema,
+  upsertRuntimeSettingsRequestSchema,
   upsertWorkflowGraphRequestSchema,
   upsertWorkflowGraphResponseSchema,
   type ProjectSnapshotResponseDto,
@@ -2523,6 +2525,44 @@ describe('cadence-model', () => {
         accountId: '   ',
       }),
     ).toThrow()
+
+    expect(() =>
+      runtimeSettingsSchema.parse({
+        providerId: 'openai_codex',
+        modelId: 'openai/gpt-4.1-mini',
+        openrouterApiKeyConfigured: false,
+      }),
+    ).toThrow(/openai_codex/)
+
+    expect(() =>
+      runtimeSettingsSchema.parse({
+        providerId: 'openrouter',
+        modelId: 'openai/gpt-4.1-mini',
+        openrouterApiKeyConfigured: true,
+        openrouterApiKey: 'sk-or-v1-should-never-cross-the-boundary',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      upsertRuntimeSettingsRequestSchema.parse({
+        providerId: 'azure_openai',
+        modelId: 'azure_openai',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      upsertRuntimeSettingsRequestSchema.parse({
+        providerId: 'openrouter',
+        modelId: '   ',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      upsertRuntimeSettingsRequestSchema.parse({
+        providerId: 'openai_codex',
+        modelId: 'openai/gpt-4.1-mini',
+      }),
+    ).toThrow(/openai_codex/)
 
     expect(() =>
       runtimeUpdatedPayloadSchema.parse({

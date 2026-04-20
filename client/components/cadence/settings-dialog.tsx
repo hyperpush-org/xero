@@ -3,11 +3,18 @@
 import { useEffect, useState } from "react"
 import { z } from "zod"
 import { openUrl } from "@tauri-apps/plugin-opener"
-import type { AgentPaneView } from "@/src/features/cadence/use-cadence-desktop-state"
+import type {
+  AgentPaneView,
+  OperatorActionErrorView,
+  RuntimeSettingsLoadStatus,
+  RuntimeSettingsSaveStatus,
+} from "@/src/features/cadence/use-cadence-desktop-state"
 import type {
   NotificationRouteKindDto,
   RuntimeSessionView,
+  RuntimeSettingsDto,
   UpsertNotificationRouteRequestDto,
+  UpsertRuntimeSettingsRequestDto,
 } from "@/src/lib/cadence-model"
 import type { PlatformVariant } from "@/components/cadence/shell"
 import { detectPlatform } from "@/components/cadence/shell"
@@ -60,8 +67,16 @@ function errMsg(error: unknown, fallback: string): string {
 }
 
 function routeTargetDisplay(kind: NotificationRouteKindDto, target: string): string {
-  try { return decomposeNotificationRouteTarget(kind, target).channelTarget }
-  catch { return target || "—" }
+  try {
+    return decomposeNotificationRouteTarget(kind, target).channelTarget
+  } catch {
+    return target || "—"
+  }
+}
+
+function errorViewMessage(error: OperatorActionErrorView | null, fallback: string): string {
+  if (error?.message?.trim()) return error.message
+  return fallback
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +92,9 @@ const routeFormSchema = z
   })
   .strict()
   .superRefine((v, ctx) => {
-    try { composeNotificationRouteTarget(v.routeKind, v.routeTarget) }
-    catch (e) {
+    try {
+      composeNotificationRouteTarget(v.routeKind, v.routeTarget)
+    } catch (e) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routeTarget"], message: errMsg(e, "Invalid target format.") })
     }
   })
@@ -96,7 +112,8 @@ function parseFormErrors(error: unknown): RouteFormErrors {
   for (const issue of error.issues) {
     const p = issue.path[0]
     if ((p === "routeId" || p === "routeKind" || p === "routeTarget") && !out[p]) {
-      out[p] = issue.message; continue
+      out[p] = issue.message
+      continue
     }
     if (!out.form) out.form = issue.message
   }
@@ -147,6 +164,13 @@ export interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agent: AgentPaneView | null
+  runtimeSettings: RuntimeSettingsDto | null
+  runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
+  runtimeSettingsLoadError: OperatorActionErrorView | null
+  runtimeSettingsSaveStatus: RuntimeSettingsSaveStatus
+  runtimeSettingsSaveError: OperatorActionErrorView | null
+  onRefreshRuntimeSettings?: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
+  onUpsertRuntimeSettings?: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
   onStartLogin?: () => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
   onRefreshNotificationRoutes?: (options?: { force?: boolean }) => Promise<unknown>
@@ -161,14 +185,36 @@ export interface SettingsDialogProps {
 // ---------------------------------------------------------------------------
 
 export function SettingsDialog({
-  open, onOpenChange, agent,
-  onStartLogin, onLogout,
-  onRefreshNotificationRoutes, onUpsertNotificationRoute,
-  platformOverride, onPlatformOverrideChange,
+  open,
+  onOpenChange,
+  agent,
+  runtimeSettings,
+  runtimeSettingsLoadStatus,
+  runtimeSettingsLoadError,
+  runtimeSettingsSaveStatus,
+  runtimeSettingsSaveError,
+  onRefreshRuntimeSettings,
+  onUpsertRuntimeSettings,
+  onStartLogin,
+  onLogout,
+  onRefreshNotificationRoutes,
+  onUpsertNotificationRoute,
+  platformOverride,
+  onPlatformOverrideChange,
 }: SettingsDialogProps) {
   const [section, setSection] = useState<SettingsSection>("providers")
 
-  useEffect(() => { if (open) setSection("providers") }, [open])
+  useEffect(() => {
+    if (open) setSection("providers")
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !onRefreshRuntimeSettings) {
+      return
+    }
+
+    void onRefreshRuntimeSettings({ force: true }).catch(() => undefined)
+  }, [open, onRefreshRuntimeSettings])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -179,12 +225,11 @@ export function SettingsDialog({
         <DialogHeader className="shrink-0 border-b border-border px-5 py-3">
           <DialogTitle className="text-sm">Settings</DialogTitle>
           <DialogDescription className="sr-only">
-            Configure providers, notification routes, and development options for the selected project.
+            Configure app-global providers, selected-project notification routes, and development options.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1">
-          {/* Sidebar */}
           <nav className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar/50 px-2 py-3">
             {NAV.map(({ id, label, icon: Icon }) => (
               <button
@@ -204,30 +249,39 @@ export function SettingsDialog({
             ))}
           </nav>
 
-          {/* Content */}
           <div className="flex flex-1 flex-col overflow-y-auto px-6 py-5">
-              {!agent ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <p className="text-sm text-muted-foreground">Select a project to configure settings.</p>
-                </div>
-              ) : section === "providers" ? (
-                <ProvidersSection
-                  agent={agent}
-                  onStartLogin={onStartLogin}
-                  onLogout={onLogout}
-                />
-              ) : section === "notifications" ? (
+            {section === "providers" ? (
+              <ProvidersSection
+                agent={agent}
+                runtimeSettings={runtimeSettings}
+                runtimeSettingsLoadStatus={runtimeSettingsLoadStatus}
+                runtimeSettingsLoadError={runtimeSettingsLoadError}
+                runtimeSettingsSaveStatus={runtimeSettingsSaveStatus}
+                runtimeSettingsSaveError={runtimeSettingsSaveError}
+                onRefreshRuntimeSettings={onRefreshRuntimeSettings}
+                onUpsertRuntimeSettings={onUpsertRuntimeSettings}
+                onStartLogin={onStartLogin}
+                onLogout={onLogout}
+              />
+            ) : section === "notifications" ? (
+              agent ? (
                 <NotificationsSection
                   agent={agent}
                   onRefreshNotificationRoutes={onRefreshNotificationRoutes}
                   onUpsertNotificationRoute={onUpsertNotificationRoute}
                 />
-              ) : section === "development" ? (
-                <DevelopmentSection
-                  platformOverride={platformOverride}
-                  onPlatformOverrideChange={onPlatformOverrideChange}
+              ) : (
+                <ProjectBoundEmptyState
+                  title="Notifications require a selected project"
+                  body="Provider settings are app-global, but notification routes stay project-bound so Cadence never writes cross-project delivery state into the wrong repository view."
                 />
-              ) : null}
+              )
+            ) : section === "development" ? (
+              <DevelopmentSection
+                platformOverride={platformOverride}
+                onPlatformOverrideChange={onPlatformOverrideChange}
+              />
+            ) : null}
           </div>
         </div>
       </DialogContent>
@@ -235,45 +289,181 @@ export function SettingsDialog({
   )
 }
 
+function ProjectBoundEmptyState({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center py-16 text-center">
+      <div className="max-w-md rounded-xl border border-border bg-card px-6 py-8 shadow-sm">
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{body}</p>
+      </div>
+    </div>
+  )
+}
+
 // ===========================================================================
-// Providers Section — card-per-provider layout
+// Providers Section — app-global provider settings plus selected-project auth
 // ===========================================================================
 
 type AuthPending = "login" | "logout" | null
+type RuntimeProviderId = RuntimeSettingsDto["providerId"]
 
-function ProvidersSection({ agent, onStartLogin, onLogout }: {
-  agent: AgentPaneView
+const PROVIDER_OPTIONS: Array<{
+  value: RuntimeProviderId
+  label: string
+  description: string
+  Icon: React.ElementType
+  fixedModelId?: string
+}> = [
+  {
+    value: "openrouter",
+    label: "OpenRouter",
+    description: "App-global API key with configurable model routing.",
+    Icon: KeyRound,
+  },
+  {
+    value: "openai_codex",
+    label: "OpenAI Codex",
+    description: "Project-bound browser login for the desktop runtime.",
+    Icon: OpenAIIcon,
+    fixedModelId: "openai_codex",
+  },
+]
+
+const COMING_SOON_PROVIDERS: Array<{
+  label: string
+  description: string
+  Icon: React.ElementType
+}> = [
+  { label: "Anthropic", description: "Claude agent runtime", Icon: AnthropicIcon },
+  { label: "Google", description: "Gemini agent runtime", Icon: GoogleIcon },
+]
+
+function ProvidersSection({
+  agent,
+  runtimeSettings,
+  runtimeSettingsLoadStatus,
+  runtimeSettingsLoadError,
+  runtimeSettingsSaveStatus,
+  runtimeSettingsSaveError,
+  onRefreshRuntimeSettings,
+  onUpsertRuntimeSettings,
+  onStartLogin,
+  onLogout,
+}: {
+  agent: AgentPaneView | null
+  runtimeSettings: RuntimeSettingsDto | null
+  runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
+  runtimeSettingsLoadError: OperatorActionErrorView | null
+  runtimeSettingsSaveStatus: RuntimeSettingsSaveStatus
+  runtimeSettingsSaveError: OperatorActionErrorView | null
+  onRefreshRuntimeSettings?: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
+  onUpsertRuntimeSettings?: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
   onStartLogin?: () => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
 }) {
-  const rs = agent.runtimeSession ?? null
-  const hasBind = Boolean(agent.repositoryPath?.trim())
-  const isConnected = Boolean(rs?.isAuthenticated)
-  const isInProgress = Boolean(rs?.isLoginInProgress)
-
+  const [providerId, setProviderId] = useState<RuntimeProviderId>("openrouter")
+  const [modelId, setModelId] = useState("")
+  const [openrouterApiKey, setOpenrouterApiKey] = useState("")
+  const [clearOpenrouterApiKey, setClearOpenrouterApiKey] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
   const [pending, setPending] = useState<AuthPending>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [authError, setAuthError] = useState<string | null>(null)
 
-  useEffect(() => { setError(null) }, [rs?.isAuthenticated, rs?.updatedAt])
+  const providerOption = PROVIDER_OPTIONS.find((option) => option.value === providerId) ?? PROVIDER_OPTIONS[0]
+  const hasSelectedProject = Boolean(agent?.repositoryPath?.trim())
+  const runtimeSession = agent?.runtimeSession ?? null
+  const isConnected = Boolean(runtimeSession?.isAuthenticated)
+  const isInProgress = Boolean(runtimeSession?.isLoginInProgress)
+  const isSaving = runtimeSettingsSaveStatus === "running"
+  const openrouterConfigured = runtimeSettings?.openrouterApiKeyConfigured ?? false
+  const needsOpenrouterKey =
+    providerId === "openrouter" && !openrouterConfigured && openrouterApiKey.trim().length === 0 && !clearOpenrouterApiKey
+
+  useEffect(() => {
+    if (!runtimeSettings) {
+      return
+    }
+
+    setProviderId(runtimeSettings.providerId)
+    setModelId(runtimeSettings.modelId)
+    setOpenrouterApiKey("")
+    setClearOpenrouterApiKey(false)
+    setFormError(null)
+  }, [runtimeSettings])
+
+  useEffect(() => {
+    setAuthError(null)
+  }, [runtimeSession?.isAuthenticated, runtimeSession?.updatedAt])
+
+  function selectProvider(nextProviderId: RuntimeProviderId) {
+    const nextProvider = PROVIDER_OPTIONS.find((option) => option.value === nextProviderId) ?? PROVIDER_OPTIONS[0]
+    setProviderId(nextProviderId)
+    setModelId(nextProvider.fixedModelId ?? runtimeSettings?.modelId ?? modelId)
+    setFormError(null)
+  }
+
+  async function handleSave() {
+    if (!onUpsertRuntimeSettings) return
+
+    const normalizedModelId = providerOption.fixedModelId ?? modelId.trim()
+    if (!normalizedModelId) {
+      setFormError("Model ID is required.")
+      return
+    }
+
+    setFormError(null)
+
+    const request: UpsertRuntimeSettingsRequestDto = {
+      providerId,
+      modelId: normalizedModelId,
+      ...(clearOpenrouterApiKey
+        ? { openrouterApiKey: "" }
+        : openrouterApiKey.length > 0
+          ? { openrouterApiKey }
+          : {}),
+    }
+
+    try {
+      await onUpsertRuntimeSettings(request)
+      setClearOpenrouterApiKey(false)
+    } catch {
+      // Hook state surfaces the typed error while the form preserves the last-known-good snapshot.
+    } finally {
+      setOpenrouterApiKey("")
+    }
+  }
 
   async function handleConnect() {
-    if (!hasBind || !onStartLogin) return
-    setPending("login"); setError(null)
+    if (!hasSelectedProject || !onStartLogin) return
+    setPending("login")
+    setAuthError(null)
     try {
       const next = await onStartLogin()
       if (next?.authorizationUrl) {
-        try { await openUrl(next.authorizationUrl) } catch { /* browser open failed — login still started */ }
+        try {
+          await openUrl(next.authorizationUrl)
+        } catch {
+          // Browser open failed — the login flow still started in the desktop runtime.
+        }
       }
-    } catch (e) { setError(errMsg(e, "Could not start login.")) }
-    finally { setPending(null) }
+    } catch (error) {
+      setAuthError(errMsg(error, "Could not start login."))
+    } finally {
+      setPending(null)
+    }
   }
 
   async function handleDisconnect() {
     if (!onLogout) return
-    setPending("logout"); setError(null)
-    try { await onLogout() }
-    catch (e) { setError(errMsg(e, "Could not sign out.")) }
-    finally { setPending(null) }
+    setPending("logout")
+    setAuthError(null)
+    try {
+      await onLogout()
+    } catch (error) {
+      setAuthError(errMsg(error, "Could not sign out."))
+    } finally {
+      setPending(null)
+    }
   }
 
   return (
@@ -281,75 +471,328 @@ function ProvidersSection({ agent, onStartLogin, onLogout }: {
       <div>
         <h3 className="text-sm font-semibold text-foreground">Providers</h3>
         <p className="mt-1 text-[12px] text-muted-foreground">
-          Connect AI providers to power agent runtime sessions.
+          Configure the app-global runtime provider, model, and OpenRouter key without requiring a selected project.
         </p>
       </div>
 
-      {error && (
+      {runtimeSettingsLoadError && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Connection error</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
+          <AlertTitle>Settings load failed</AlertTitle>
+          <AlertDescription className="space-y-3">
+            <p>{errorViewMessage(runtimeSettingsLoadError, "Cadence could not load app-global runtime settings.")}</p>
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-[11px]"
+                onClick={() => void onRefreshRuntimeSettings?.({ force: true }).catch(() => undefined)}
+              >
+                Retry
+              </Button>
+            </div>
+          </AlertDescription>
         </Alert>
       )}
 
-      <div className="grid gap-2">
-        {/* OpenAI */}
-        <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
-            <OpenAIIcon className="h-4 w-4 text-foreground/70" />
+      {runtimeSettingsSaveError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Settings save failed</AlertTitle>
+          <AlertDescription>{errorViewMessage(runtimeSettingsSaveError, "Cadence could not save app-global runtime settings.")}</AlertDescription>
+        </Alert>
+      )}
+
+      {authError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Connection error</AlertTitle>
+          <AlertDescription>{authError}</AlertDescription>
+        </Alert>
+      )}
+
+      {runtimeSettingsLoadStatus === "loading" && !runtimeSettings ? (
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-[12px] text-muted-foreground">
+          <LoaderCircle className="h-4 w-4 animate-spin" />
+          Loading app-global provider settings…
+        </div>
+      ) : null}
+
+      {!runtimeSettings && runtimeSettingsLoadStatus === "error" ? null : !runtimeSettings ? (
+        <div className="rounded-lg border border-border bg-card px-4 py-3 text-[12px] text-muted-foreground">
+          Open the dialog to load the app-global provider settings.
+        </div>
+      ) : (
+        <>
+          <div className="grid gap-2">
+            {PROVIDER_OPTIONS.map(({ value, label, description, Icon }) => {
+              const selected = providerId === value
+              const openrouterCard = value === "openrouter"
+
+              return (
+                <div key={value} className="rounded-lg border border-border bg-card px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
+                      <Icon className="h-4 w-4 text-foreground/70" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[13px] font-medium text-foreground">{label}</p>
+                        {selected ? <Badge variant="default" className="text-[10px]">Selected</Badge> : null}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">{description}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {openrouterCard ? (
+                        <Badge variant={openrouterConfigured ? "default" : "outline"} className="text-[10px]">
+                          {openrouterConfigured ? "Key configured" : "Key missing"}
+                        </Badge>
+                      ) : hasSelectedProject ? (
+                        isConnected ? (
+                          <Badge variant="default" className="gap-1 text-[10px]">
+                            <Check className="h-3 w-3" />
+                            Connected
+                          </Badge>
+                        ) : isInProgress ? (
+                          <Badge variant="secondary" className="gap-1 text-[10px]">
+                            <LoaderCircle className="h-3 w-3 animate-spin" />
+                            Connecting…
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">Not connected</Badge>
+                        )
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">Select project</Badge>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={selected ? "secondary" : "outline"}
+                        className="h-7 text-[11px]"
+                        onClick={() => selectProvider(value)}
+                      >
+                        {selected ? "Selected" : "Use provider"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-medium text-foreground">OpenAI</p>
-            <p className="text-[11px] text-muted-foreground">Codex agent runtime</p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {isConnected ? (
-              <>
-                <Badge variant="default" className="gap-1 text-[10px]"><Check className="h-3 w-3" />Connected</Badge>
-                <Button variant="ghost" size="sm" className="h-7 text-[11px]" disabled={pending !== null} onClick={() => void handleDisconnect()}>
-                  {pending === "logout" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
-                  Disconnect
+
+          <div className="rounded-lg border border-border bg-card px-4 py-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-medium text-foreground">Selected provider settings</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {providerId === "openrouter"
+                    ? "Choose the OpenRouter model Cadence should bind against and manage the saved app-global API key state."
+                    : "OpenAI Codex uses the fixed modelId `openai_codex`; browser login remains project-bound."}
+                </p>
+              </div>
+              <Badge variant="outline" className="text-[10px]">App-global</Badge>
+            </div>
+
+            <div className="mt-4 grid gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-model-id" className="text-[11px]">Model ID</Label>
+                <Input
+                  id="runtime-model-id"
+                  className="h-8 text-[12px]"
+                  disabled={Boolean(providerOption.fixedModelId) || isSaving}
+                  onChange={(event) => setModelId(event.target.value)}
+                  placeholder={providerOption.fixedModelId ?? "openai/gpt-4.1-mini"}
+                  value={providerOption.fixedModelId ?? modelId}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {providerOption.fixedModelId
+                    ? "OpenAI Codex keeps a fixed model identifier so the desktop adapter never drifts from the closed provider catalog."
+                    : "Use the exact OpenRouter model slug that Cadence should validate during runtime bind/reconcile."}
+                </p>
+              </div>
+
+              <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label htmlFor="openrouter-api-key" className="text-[11px]">OpenRouter API key</Label>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      Cadence only stores the app-global key in app-local Tauri storage and only projects configured-state back into the UI.
+                    </p>
+                  </div>
+                  <Badge variant={openrouterConfigured ? "default" : "outline"} className="text-[10px]">
+                    {openrouterConfigured ? "Configured" : "Not configured"}
+                  </Badge>
+                </div>
+                <Input
+                  id="openrouter-api-key"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-8 text-[12px]"
+                  disabled={isSaving}
+                  onChange={(event) => {
+                    setOpenrouterApiKey(event.target.value)
+                    if (event.target.value.trim().length > 0) {
+                      setClearOpenrouterApiKey(false)
+                    }
+                  }}
+                  placeholder={openrouterConfigured ? "Leave blank to keep the saved key" : "Paste a new OpenRouter API key"}
+                  value={openrouterApiKey}
+                />
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  <span>
+                    {clearOpenrouterApiKey
+                      ? "The saved OpenRouter key will be cleared on the next save."
+                      : openrouterConfigured
+                        ? "Leaving this blank preserves the saved key."
+                        : "Saving without a key leaves OpenRouter unconfigured until a key is added."}
+                  </span>
+                  {openrouterConfigured ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={isSaving}
+                      onClick={() => {
+                        setClearOpenrouterApiKey((current) => !current)
+                        setOpenrouterApiKey("")
+                      }}
+                    >
+                      {clearOpenrouterApiKey ? "Keep saved key" : "Clear saved key"}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
+              {needsOpenrouterKey ? (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>OpenRouter needs a saved key</AlertTitle>
+                  <AlertDescription>
+                    Add an OpenRouter API key before expecting Cadence to start or reconcile an OpenRouter runtime session.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
+              {providerId === "openrouter" ? (
+                <Alert>
+                  <KeyRound className="h-4 w-4" />
+                  <AlertTitle>OpenRouter uses saved app-global credentials</AlertTitle>
+                  <AlertDescription>
+                    Selecting OpenRouter changes the provider/model truth immediately after save, but it does not rewrite the selected project runtime session optimistically.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
+              {(formError || runtimeSettingsSaveError) ? (
+                <p className="text-[12px] text-destructive">{formError ?? runtimeSettingsSaveError?.message}</p>
+              ) : null}
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  disabled={!onUpsertRuntimeSettings || isSaving}
+                  onClick={() => void handleSave()}
+                >
+                  {isSaving ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                  Save provider settings
                 </Button>
-              </>
-            ) : isInProgress ? (
-              <Badge variant="secondary" className="gap-1 text-[10px]"><LoaderCircle className="h-3 w-3 animate-spin" />Connecting…</Badge>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  disabled={!onRefreshRuntimeSettings || runtimeSettingsLoadStatus === "loading"}
+                  onClick={() => void onRefreshRuntimeSettings?.({ force: true }).catch(() => undefined)}
+                >
+                  Refresh
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border bg-card px-4 py-4">
+            <div>
+              <p className="text-[13px] font-medium text-foreground">Selected project runtime</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Provider settings are global, but runtime auth and notification routes stay grounded in the selected project.
+              </p>
+            </div>
+
+            {providerId === "openai_codex" ? (
+              <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-secondary/20 px-3 py-3">
+                <div>
+                  <p className="text-[12px] font-medium text-foreground">OpenAI login</p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    {hasSelectedProject
+                      ? "Use browser-based OpenAI auth for the currently selected project runtime session."
+                      : "Select a project before starting or signing out of an OpenAI runtime session."}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {isConnected ? (
+                    <>
+                      <Badge variant="default" className="gap-1 text-[10px]">
+                        <Check className="h-3 w-3" />
+                        Connected
+                      </Badge>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        disabled={pending !== null}
+                        onClick={() => void handleDisconnect()}
+                      >
+                        {pending === "logout" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
+                        Disconnect
+                      </Button>
+                    </>
+                  ) : isInProgress ? (
+                    <Badge variant="secondary" className="gap-1 text-[10px]">
+                      <LoaderCircle className="h-3 w-3 animate-spin" />
+                      Connecting…
+                    </Badge>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7 text-[11px]"
+                      disabled={!hasSelectedProject || pending !== null || !onStartLogin}
+                      onClick={() => void handleConnect()}
+                    >
+                      {pending === "login" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogIn className="h-3 w-3" />}
+                      Connect
+                    </Button>
+                  )}
+                </div>
+              </div>
             ) : (
-              <>
-                <Badge variant="outline" className="text-[10px]">Not connected</Badge>
-                <Button size="sm" className="h-7 text-[11px]" disabled={!hasBind || pending !== null} onClick={() => void handleConnect()}>
-                  {pending === "login" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogIn className="h-3 w-3" />}
-                  Connect
-                </Button>
-              </>
+              <div className="mt-4 rounded-lg border border-border/70 bg-secondary/20 px-3 py-3 text-[11px] text-muted-foreground">
+                OpenRouter runtime sessions bind from the saved app-global provider settings, so there is no project-specific browser login action here.
+              </div>
             )}
           </div>
-        </div>
 
-        {/* Anthropic — coming soon */}
-        <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 opacity-45">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
-            <AnthropicIcon className="h-4 w-4 text-foreground/70" />
+          <div className="grid gap-2">
+            {COMING_SOON_PROVIDERS.map(({ label, description, Icon }) => (
+              <div key={label} className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 opacity-45">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
+                  <Icon className="h-4 w-4 text-foreground/70" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium text-foreground">{label}</p>
+                  <p className="text-[11px] text-muted-foreground">{description}</p>
+                </div>
+                <Badge variant="outline" className="text-[10px]">Coming soon</Badge>
+              </div>
+            ))}
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-medium text-foreground">Anthropic</p>
-            <p className="text-[11px] text-muted-foreground">Claude agent runtime</p>
-          </div>
-          <Badge variant="outline" className="text-[10px]">Coming soon</Badge>
-        </div>
-
-        {/* Google — coming soon */}
-        <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 opacity-45">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
-            <GoogleIcon className="h-4 w-4 text-foreground/70" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-medium text-foreground">Google</p>
-            <p className="text-[11px] text-muted-foreground">Gemini agent runtime</p>
-          </div>
-          <Badge variant="outline" className="text-[10px]">Coming soon</Badge>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   )
 }
@@ -382,7 +825,6 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
   const pendingRouteId = agent.pendingNotificationRouteId ?? null
 
   const [pending, setPending] = useState<RoutePending>(null)
-  // which channel card has its form open
   const [formKind, setFormKind] = useState<NotificationRouteKindDto | null>(null)
   const [form, setForm] = useState<RouteFormValues>(() => defaultRouteForm())
   const [formErrors, setFormErrors] = useState<RouteFormErrors>({})
@@ -404,7 +846,10 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
     setFormErrors((p) => {
       const key = field as string as keyof RouteFormErrors
       if (!p[key] && !p.form) return p
-      const n = { ...p }; delete n[key]; delete n.form; return n
+      const n = { ...p }
+      delete n[key]
+      delete n.form
+      return n
     })
   }
 
@@ -418,7 +863,11 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
 
   function editRoute(r: AgentPaneView["notificationRoutes"][number]) {
     let target = r.routeTarget
-    try { target = decomposeNotificationRouteTarget(r.routeKind, r.routeTarget).channelTarget } catch {}
+    try {
+      target = decomposeNotificationRouteTarget(r.routeKind, r.routeTarget).channelTarget
+    } catch {
+      // Keep the truthful stored target when decomposition fails.
+    }
     setEditingId(r.routeId)
     setForm({ routeId: r.routeId, routeKind: r.routeKind, routeTarget: target, enabled: r.enabled })
     setFormErrors({})
@@ -436,15 +885,24 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
   async function save() {
     if (!canMutate || !onUpsertNotificationRoute) return
     let req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">
-    try { req = toRouteRequest(form); setFormErrors({}) }
-    catch (e) { setFormErrors(parseFormErrors(e)); return }
-    setPending("save"); setFormError(null)
+    try {
+      req = toRouteRequest(form)
+      setFormErrors({})
+    } catch (error) {
+      setFormErrors(parseFormErrors(error))
+      return
+    }
+    setPending("save")
+    setFormError(null)
     try {
       await onUpsertNotificationRoute(req)
       setFormKind(null)
       setEditingId(null)
-    } catch (e) { setFormError(errMsg(e, "Could not save route.")) }
-    finally { setPending(null) }
+    } catch (error) {
+      setFormError(errMsg(error, "Could not save route."))
+    } finally {
+      setPending(null)
+    }
   }
 
   async function toggleRoute(r: AgentPaneView["notificationRoutes"][number]) {
@@ -452,11 +910,17 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
     setPending("toggle")
     try {
       await onUpsertNotificationRoute({
-        routeId: r.routeId, routeKind: r.routeKind, routeTarget: r.routeTarget,
-        enabled: !r.enabled, metadataJson: r.metadataJson ?? null,
+        routeId: r.routeId,
+        routeKind: r.routeKind,
+        routeTarget: r.routeTarget,
+        enabled: !r.enabled,
+        metadataJson: r.metadataJson ?? null,
       })
-    } catch (e) { setFormError(errMsg(e, `Could not update ${r.routeId}.`)) }
-    finally { setPending(null) }
+    } catch (error) {
+      setFormError(errMsg(error, `Could not update ${r.routeId}.`))
+    } finally {
+      setPending(null)
+    }
   }
 
   return (
@@ -476,7 +940,6 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
 
           return (
             <div key={kind} className="rounded-lg border border-border bg-card px-4 py-3">
-              {/* Header row — same structure as provider cards */}
               <div className="flex items-center gap-3">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
                   <Icon className="h-4 w-4 text-foreground/70" />
@@ -514,7 +977,6 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
                 </div>
               </div>
 
-              {/* Configured routes for this channel */}
               {hasRoutes && (
                 <div className="mt-2 grid gap-0.5 border-t border-border pt-2">
                   {channelRoutes.map((r) => {
@@ -559,7 +1021,6 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
                 </div>
               )}
 
-              {/* Inline add / edit form */}
               {formOpen && (
                 <div className={cn("border-t border-border pt-3", hasRoutes ? "mt-1" : "mt-3")}>
                   <p className="mb-2.5 text-[12px] font-medium text-foreground">
@@ -643,10 +1104,10 @@ function NotificationsSection({ agent, onRefreshNotificationRoutes, onUpsertNoti
 // ===========================================================================
 
 const PLATFORM_OPTIONS: Array<{ value: PlatformVariant | null; label: string; hint: string }> = [
-  { value: null,      label: "Auto",    hint: "Use detected OS"            },
-  { value: "macos",   label: "macOS",   hint: "Traffic lights · tabs right" },
-  { value: "windows", label: "Windows", hint: "Tabs left · controls right"  },
-  { value: "linux",   label: "Linux",   hint: "Same as Windows, rounded"    },
+  { value: null, label: "Auto", hint: "Use detected OS" },
+  { value: "macos", label: "macOS", hint: "Traffic lights · tabs right" },
+  { value: "windows", label: "Windows", hint: "Tabs left · controls right" },
+  { value: "linux", label: "Linux", hint: "Same as Windows, rounded" },
 ]
 
 function DevelopmentSection({

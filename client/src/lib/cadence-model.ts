@@ -1638,6 +1638,43 @@ export const runtimeDiagnosticSchema = z.object({
   retryable: z.boolean(),
 })
 
+export const runtimeProviderIdSchema = z.enum(['openrouter', 'openai_codex'])
+
+function validateRuntimeSettingsProviderModel(
+  payload: { providerId: z.infer<typeof runtimeProviderIdSchema>; modelId: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (payload.providerId === 'openai_codex' && payload.modelId !== 'openai_codex') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['modelId'],
+      message: 'Cadence only supports modelId `openai_codex` for provider `openai_codex`.',
+    })
+  }
+}
+
+export const runtimeSettingsSchema = z
+  .object({
+    providerId: runtimeProviderIdSchema,
+    modelId: z.string().trim().min(1),
+    openrouterApiKeyConfigured: z.boolean(),
+  })
+  .strict()
+  .superRefine((payload, ctx) => {
+    validateRuntimeSettingsProviderModel(payload, ctx)
+  })
+
+export const upsertRuntimeSettingsRequestSchema = z
+  .object({
+    providerId: runtimeProviderIdSchema,
+    modelId: z.string().trim().min(1),
+    openrouterApiKey: z.string().nullable().optional(),
+  })
+  .strict()
+  .superRefine((payload, ctx) => {
+    validateRuntimeSettingsProviderModel(payload, ctx)
+  })
+
 export const runtimeSessionSchema = z.object({
   projectId: z.string().trim().min(1),
   runtimeKind: z.string().trim().min(1),
@@ -2274,6 +2311,9 @@ export type ProjectUpdatedPayloadDto = z.infer<typeof projectUpdatedPayloadSchem
 export type RepositoryStatusChangedPayloadDto = z.infer<typeof repositoryStatusChangedPayloadSchema>
 export type RuntimeAuthPhaseDto = z.infer<typeof runtimeAuthPhaseSchema>
 export type RuntimeDiagnosticDto = z.infer<typeof runtimeDiagnosticSchema>
+export type RuntimeProviderIdDto = z.infer<typeof runtimeProviderIdSchema>
+export type RuntimeSettingsDto = z.infer<typeof runtimeSettingsSchema>
+export type UpsertRuntimeSettingsRequestDto = z.infer<typeof upsertRuntimeSettingsRequestSchema>
 export type RuntimeSessionDto = z.infer<typeof runtimeSessionSchema>
 export type RuntimeUpdatedPayloadDto = z.infer<typeof runtimeUpdatedPayloadSchema>
 export type RuntimeRunStatusDto = z.infer<typeof runtimeRunStatusSchema>

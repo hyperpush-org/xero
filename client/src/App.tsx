@@ -55,6 +55,11 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     pendingProjectRemovalId,
     errorMessage,
     refreshSource,
+    runtimeSettings,
+    runtimeSettingsLoadStatus,
+    runtimeSettingsLoadError,
+    runtimeSettingsSaveStatus,
+    runtimeSettingsSaveError,
     isDesktopRuntime,
     selectProject,
     importProject,
@@ -73,6 +78,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
+    refreshRuntimeSettings,
+    upsertRuntimeSettings,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   } = useCadenceDesktopState({ adapter })
@@ -213,6 +220,13 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         agent={agentView}
+        runtimeSettings={runtimeSettings}
+        runtimeSettingsLoadStatus={runtimeSettingsLoadStatus}
+        runtimeSettingsLoadError={runtimeSettingsLoadError}
+        runtimeSettingsSaveStatus={runtimeSettingsSaveStatus}
+        runtimeSettingsSaveError={runtimeSettingsSaveError}
+        onRefreshRuntimeSettings={(options) => refreshRuntimeSettings(options)}
+        onUpsertRuntimeSettings={(request) => upsertRuntimeSettings(request)}
         onStartLogin={() => startOpenAiLogin()}
         onLogout={() => logoutRuntimeSession()}
         onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}

@@ -16,6 +16,7 @@ import {
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
+  type RuntimeSettingsDto,
   type RuntimeStreamEventDto,
   type SubscribeRuntimeStreamResponseDto,
   type RuntimeUpdatedPayloadDto,
@@ -155,6 +156,15 @@ function makeRuntimeSession(
   }
 }
 
+function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): RuntimeSettingsDto {
+  return {
+    providerId: 'openai_codex',
+    modelId: 'openai_codex',
+    openrouterApiKeyConfigured: false,
+    ...overrides,
+  }
+}
+
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
@@ -282,6 +292,7 @@ function createMockAdapter(options?: {
   statuses?: Record<string, RepositoryStatusResponseDto>
   runtimeSessions?: Record<string, RuntimeSessionDto>
   runtimeRuns?: Record<string, RuntimeRunDto | null>
+  runtimeSettings?: RuntimeSettingsDto
   autonomousStates?: Record<string, AutonomousRunStateDto | null>
   notificationDispatches?: Record<string, ListNotificationDispatchesResponseDto['dispatches']>
   notificationRoutes?: Record<string, ListNotificationRoutesResponseDto['routes']>
@@ -342,6 +353,9 @@ function createMockAdapter(options?: {
     'project-1': [],
     'project-2': [],
   }
+  const currentRuntimeSettings = {
+    value: options?.runtimeSettings ?? makeRuntimeSettings(),
+  }
   const notificationDispatchErrors = options?.notificationDispatchErrors ?? {}
 
   let listedProjects = (options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'cadence')]).map((project) => ({
@@ -394,6 +408,25 @@ function createMockAdapter(options?: {
     autonomousStates[projectId] ?? { run: null, unit: null },
   )
   const getRuntimeSession = vi.fn(async (projectId: string) => runtimeSessions[projectId])
+  const getRuntimeSettings = vi.fn(async () => currentRuntimeSettings.value)
+  const upsertRuntimeSettings = vi.fn(async (request: {
+    providerId: RuntimeSettingsDto['providerId']
+    modelId: string
+    openrouterApiKey?: string | null
+  }) => {
+    const nextKeyConfigured =
+      request.openrouterApiKey === undefined || request.openrouterApiKey === null
+        ? currentRuntimeSettings.value.openrouterApiKeyConfigured
+        : request.openrouterApiKey.trim().length > 0
+
+    currentRuntimeSettings.value = {
+      providerId: request.providerId,
+      modelId: request.modelId,
+      openrouterApiKeyConfigured: nextKeyConfigured,
+    }
+
+    return currentRuntimeSettings.value
+  })
   const listNotificationDispatches = vi.fn(async (projectId: string) => {
     const error = notificationDispatchErrors[projectId]
     if (error) {
@@ -644,6 +677,7 @@ function createMockAdapter(options?: {
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
+    getRuntimeSettings,
     startOpenAiLogin,
     submitOpenAiCallback,
     startAutonomousRun,
@@ -652,6 +686,7 @@ function createMockAdapter(options?: {
     cancelAutonomousRun,
     stopRuntimeRun,
     logoutRuntimeSession,
+    upsertRuntimeSettings,
     resolveOperatorAction,
     resumeOperatorRun,
     listNotificationRoutes,
@@ -717,6 +752,8 @@ function createMockAdapter(options?: {
     getRepositoryDiff,
     getRuntimeRun,
     getRuntimeSession,
+    getRuntimeSettings,
+    upsertRuntimeSettings,
     listNotificationRoutes,
     listNotificationDispatches,
     upsertNotificationRoute,
@@ -809,6 +846,15 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="operator-action-error-message">{state.operatorActionError?.message ?? 'none'}</div>
       <div data-testid="status-count">{String(state.repositoryStatus?.statusCount ?? 0)}</div>
       <div data-testid="error">{state.errorMessage ?? 'none'}</div>
+      <div data-testid="runtime-settings-provider-id">{state.runtimeSettings?.providerId ?? 'none'}</div>
+      <div data-testid="runtime-settings-model-id">{state.runtimeSettings?.modelId ?? 'none'}</div>
+      <div data-testid="runtime-settings-key-configured">{String(state.runtimeSettings?.openrouterApiKeyConfigured ?? false)}</div>
+      <div data-testid="runtime-settings-load-status">{state.runtimeSettingsLoadStatus}</div>
+      <div data-testid="runtime-settings-load-error-code">{state.runtimeSettingsLoadError?.code ?? 'none'}</div>
+      <div data-testid="runtime-settings-load-error-message">{state.runtimeSettingsLoadError?.message ?? 'none'}</div>
+      <div data-testid="runtime-settings-save-status">{state.runtimeSettingsSaveStatus}</div>
+      <div data-testid="runtime-settings-save-error-code">{state.runtimeSettingsSaveError?.code ?? 'none'}</div>
+      <div data-testid="runtime-settings-save-error-message">{state.runtimeSettingsSaveError?.message ?? 'none'}</div>
       <div data-testid="refresh-source">{state.refreshSource ?? 'none'}</div>
       <div data-testid="project-count">{String(state.projects.length)}</div>
       <div data-testid="workflow-has-phases">{String(state.workflowView?.hasPhases ?? false)}</div>
@@ -838,6 +884,42 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       </button>
       <button onClick={() => void state.retry()} type="button">
         Retry state
+      </button>
+      <button
+        onClick={() => {
+          void state.refreshRuntimeSettings({ force: true }).catch(() => undefined)
+        }}
+        type="button"
+      >
+        Load runtime settings
+      </button>
+      <button
+        onClick={() => {
+          void state
+            .upsertRuntimeSettings({
+              providerId: 'openrouter',
+              modelId: 'openai/gpt-4.1-mini',
+              openrouterApiKey: 'sk-or-v1-test-secret',
+            })
+            .catch(() => undefined)
+        }}
+        type="button"
+      >
+        Save OpenRouter runtime settings
+      </button>
+      <button
+        onClick={() => {
+          void state
+            .upsertRuntimeSettings({
+              providerId: 'openrouter',
+              modelId: 'openai/gpt-4.1-mini',
+              openrouterApiKey: '   ',
+            })
+            .catch(() => undefined)
+        }}
+        type="button"
+      >
+        Clear OpenRouter runtime key
       </button>
       <button
         onClick={() => {

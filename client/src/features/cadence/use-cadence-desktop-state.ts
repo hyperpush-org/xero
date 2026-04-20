@@ -55,6 +55,7 @@ import {
   type RuntimeAuthPhaseDto,
   type RuntimeRunView,
   type RuntimeSessionView,
+  type RuntimeSettingsDto,
   type RuntimeStreamActionRequiredItemView,
   type RuntimeStreamActivityItemView,
   type RuntimeStreamIssueView,
@@ -64,6 +65,7 @@ import {
   type RuntimeStreamViewItem,
   type SyncNotificationAdaptersResponseDto,
   type UpsertNotificationRouteRequestDto,
+  type UpsertRuntimeSettingsRequestDto,
   type VerificationRecordView,
 } from '@/src/lib/cadence-model'
 
@@ -98,6 +100,8 @@ export interface OperatorActionErrorView {
 export type RepositoryDiffLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type NotificationRoutesLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type NotificationRouteMutationStatus = 'idle' | 'running'
+export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
+export type RuntimeSettingsSaveStatus = 'idle' | 'running'
 export type NotificationRouteHealthState = 'disabled' | 'idle' | 'pending' | 'healthy' | 'degraded'
 export type AgentTrustSignalState = 'healthy' | 'degraded' | 'unavailable'
 
@@ -302,6 +306,11 @@ export interface UseCadenceDesktopStateResult {
   projectRemovalStatus: ProjectRemovalStatus
   pendingProjectRemovalId: string | null
   errorMessage: string | null
+  runtimeSettings: RuntimeSettingsDto | null
+  runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
+  runtimeSettingsLoadError: OperatorActionErrorView | null
+  runtimeSettingsSaveStatus: RuntimeSettingsSaveStatus
+  runtimeSettingsSaveError: OperatorActionErrorView | null
   refreshSource: RefreshSource
   isDesktopRuntime: boolean
   operatorActionStatus: OperatorActionStatus
@@ -337,6 +346,8 @@ export interface UseCadenceDesktopStateResult {
     actionId: string,
     options?: { userAnswer?: string | null },
   ) => Promise<ProjectDetailView | null>
+  refreshRuntimeSettings: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
+  upsertRuntimeSettings: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
   refreshNotificationRoutes: (options?: { force?: boolean }) => Promise<NotificationRouteDto[]>
   upsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, 'projectId'>,
@@ -1259,6 +1270,11 @@ export function useCadenceDesktopState(
   const [pendingNotificationRouteId, setPendingNotificationRouteId] = useState<string | null>(null)
   const [notificationRouteMutationError, setNotificationRouteMutationError] =
     useState<OperatorActionErrorView | null>(null)
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettingsDto | null>(null)
+  const [runtimeSettingsLoadStatus, setRuntimeSettingsLoadStatus] = useState<RuntimeSettingsLoadStatus>('idle')
+  const [runtimeSettingsLoadError, setRuntimeSettingsLoadError] = useState<OperatorActionErrorView | null>(null)
+  const [runtimeSettingsSaveStatus, setRuntimeSettingsSaveStatus] = useState<RuntimeSettingsSaveStatus>('idle')
+  const [runtimeSettingsSaveError, setRuntimeSettingsSaveError] = useState<OperatorActionErrorView | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
@@ -1286,6 +1302,8 @@ export function useCadenceDesktopState(
   const notificationSyncSummariesRef = useRef<Record<string, SyncNotificationAdaptersResponseDto | null>>({})
   const notificationDispatchesRef = useRef<Record<string, NotificationDispatchDto[]>>({})
   const trustSnapshotRef = useRef<Record<string, AgentTrustSnapshotView>>({})
+  const runtimeSettingsRef = useRef<RuntimeSettingsDto | null>(null)
+  const runtimeSettingsLoadInFlightRef = useRef<Promise<RuntimeSettingsDto> | null>(null)
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockedNotificationSyncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockedNotificationSyncPollTargetRef = useRef<BlockedNotificationSyncPollTarget | null>(null)
@@ -1352,6 +1370,10 @@ export function useCadenceDesktopState(
   useEffect(() => {
     notificationSyncSummariesRef.current = notificationSyncSummaries
   }, [notificationSyncSummaries])
+
+  useEffect(() => {
+    runtimeSettingsRef.current = runtimeSettings
+  }, [runtimeSettings])
 
   const updateRuntimeStream = useCallback(
     (projectId: string, updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null) => {
@@ -2443,6 +2465,64 @@ export function useCadenceDesktopState(
     await showRepositoryDiff(activeDiffScope, { force: true })
   }, [activeDiffScope, showRepositoryDiff])
 
+  const refreshRuntimeSettings = useCallback(
+    async (options: { force?: boolean } = {}) => {
+      if (runtimeSettingsLoadInFlightRef.current) {
+        return runtimeSettingsLoadInFlightRef.current
+      }
+
+      const cachedRuntimeSettings = runtimeSettingsRef.current
+      if (!options.force && cachedRuntimeSettings && runtimeSettingsLoadStatus === 'ready') {
+        return cachedRuntimeSettings
+      }
+
+      setRuntimeSettingsLoadStatus('loading')
+      setRuntimeSettingsLoadError(null)
+
+      const loadPromise = (async () => {
+        try {
+          const response = await adapter.getRuntimeSettings()
+          setRuntimeSettings(response)
+          setRuntimeSettingsLoadStatus('ready')
+          setRuntimeSettingsLoadError(null)
+          return response
+        } catch (error) {
+          setRuntimeSettingsLoadStatus('error')
+          setRuntimeSettingsLoadError(getOperatorActionError(error, 'Cadence could not load app-global runtime settings.'))
+          throw error
+        } finally {
+          runtimeSettingsLoadInFlightRef.current = null
+        }
+      })()
+
+      runtimeSettingsLoadInFlightRef.current = loadPromise
+      return loadPromise
+    },
+    [adapter, runtimeSettingsLoadStatus],
+  )
+
+  const upsertRuntimeSettings = useCallback(
+    async (request: UpsertRuntimeSettingsRequestDto) => {
+      setRuntimeSettingsSaveStatus('running')
+      setRuntimeSettingsSaveError(null)
+
+      try {
+        const response = await adapter.upsertRuntimeSettings(request)
+        setRuntimeSettings(response)
+        setRuntimeSettingsLoadStatus('ready')
+        setRuntimeSettingsLoadError(null)
+        setRuntimeSettingsSaveError(null)
+        return response
+      } catch (error) {
+        setRuntimeSettingsSaveError(getOperatorActionError(error, 'Cadence could not save app-global runtime settings.'))
+        throw error
+      } finally {
+        setRuntimeSettingsSaveStatus('idle')
+      }
+    },
+    [adapter],
+  )
+
   const refreshNotificationRoutes = useCallback(
     async (options: { force?: boolean } = {}) => {
       const projectId = activeProjectIdRef.current
@@ -3399,6 +3479,11 @@ export function useCadenceDesktopState(
     projectRemovalStatus,
     pendingProjectRemovalId,
     errorMessage,
+    runtimeSettings,
+    runtimeSettingsLoadStatus,
+    runtimeSettingsLoadError,
+    runtimeSettingsSaveStatus,
+    runtimeSettingsSaveError,
     refreshSource,
     isDesktopRuntime: adapter.isDesktopRuntime(),
     operatorActionStatus,
@@ -3427,6 +3512,8 @@ export function useCadenceDesktopState(
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
+    refreshRuntimeSettings,
+    upsertRuntimeSettings,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   }

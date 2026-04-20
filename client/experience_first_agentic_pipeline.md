@@ -1,21 +1,24 @@
 # Experience-First Agentic Delivery Pipeline
-## Brownfield, Milestones, Smart Model Routing, and Fault-Containment Update
+## Rolling Milestone Planning, Brownfield, Smart Model Routing, and Fault-Containment Update
 
 ## Purpose
 
-This design describes a structured, fresh-agent software delivery system inspired by GSD-style orchestration, but optimized for **outside-in building**: the team gets to a usable experience early, then derives the technical architecture from the approved experience instead of forcing the user to wait through long backend-heavy implementation before seeing anything tangible.
+This design describes a structured, fresh-agent software delivery system inspired by GSD-style orchestration, but optimized for **outside-in experience design followed by rolling inside-out delivery**: the team gets to a believable experience early, then turns that approved experience into one bounded implementation milestone at a time instead of pretending an LLM can responsibly micro-plan an entire project in one pass.
 
-This revision expands the earlier design in five important ways:
+This revision expands the earlier design in six important ways:
 
 1. It adds an **optional brownfield reconnaissance stage** that can scan an existing repository, ingest project documents, map constraints, and seed reusable knowledge before planning starts.
-2. It adds a **first-class milestone model** so the initial project build becomes **Milestone 1**, and every later expansion runs as a new, delta-scoped milestone instead of re-ideating the entire product from scratch.
-3. It adds **smart model routing**, where different kinds of work can be assigned to different model capability profiles such as research, UX, architecture, coding, repair, and verification.
-4. It adds **defensive output hardening** so malformed or corrupt model output cannot directly corrupt project memory, repository state, or downstream orchestration.
-5. It tightens the overall design with **phase-skipping rules, delta planning, preservation contracts, and milestone continuation mechanics** so the system is easier to implement and cheaper to run without losing rigor.
+2. It adds a **first-class milestone model** so the system can keep extending a product after the first delivery cycle instead of treating the project as one monolithic plan.
+3. It replaces **whole-project upfront planning** with **rolling-horizon milestone partitioning**. After the early mock or experience simulation is reviewed, the system sizes scope, creates however many milestones are warranted, and deeply plans only the active milestone.
+4. It adds **smart model routing**, where different kinds of work can be assigned to different model capability profiles such as research, UX, architecture, coding, repair, and verification.
+5. It adds **defensive output hardening** so malformed or corrupt model output cannot directly corrupt project memory, repository state, or downstream orchestration.
+6. It tightens the design with **phase-skipping rules, preservation contracts, milestone-shell carry-forward, and explicit planning-depth rules** so the system is cheaper to run and less likely to over-plan.
 
 The design stays theoretical and implementation-oriented in the architectural sense: it focuses on operating model, data flow, trust boundaries, and orchestration behavior rather than code examples.
 
 A useful practical influence here is GSD’s emphasis on codebase mapping, milestone continuation, seeds, and per-agent model profiles, but this document adapts those ideas to a SQLite-native, experience-first pipeline rather than copying GSD’s file-oriented workflow.
+
+The result is a flow that can still give the user an early mock, but no longer assumes that the same model or the same planning pass should decompose the entire product roadmap upfront.
 
 ---
 
@@ -52,7 +55,7 @@ The orchestrator should keep moving without asking for confirmation after every 
 A non-empty codebase, existing product, or prior milestone should change the entry path. The system should not assume every project starts from blank-page ideation.
 
 ### 1.11 Milestones are first-class delivery units
-The program is the long-lived product. A milestone is a bounded value expansion cycle inside that product. Milestone 1 establishes the baseline. Milestones 2, 3, and later should plan only the delta.
+The program is the long-lived product. A milestone is one bounded delivery increment inside that product. Milestone count should be discovered from scope and uncertainty, not assumed up front. Milestone 1 is the first committed subset, not a promise to fully plan or build the whole program in one pass.
 
 ### 1.12 Model routing belongs to orchestration
 Choosing which model should do which job is an orchestration concern, not something every prompt re-decides independently. Routing policy should be explicit, stored, and revisable.
@@ -61,7 +64,7 @@ Choosing which model should do which job is an orchestration concern, not someth
 Agent output is a proposal, not authority. It must pass syntax, schema, semantic, scope, and policy checks before it becomes durable state or repository change.
 
 ### 1.14 Preserve stable knowledge and plan only the delta
-The system should distinguish stable program memory from milestone-scoped change. This reduces repeated thinking, reduces context bloat, and avoids unnecessary rediscovery.
+The system should distinguish stable program memory from milestone-scoped change and should not micro-plan the whole program at once. Keep a coarse program map, a ranked milestone horizon, and a deep plan only for the active milestone. This reduces repeated thinking, context bloat, and false precision.
 
 ### 1.15 Brownfield change must respect preservation contracts
 In existing systems, not every milestone changes the whole product. The system needs explicit records describing what must remain true while the milestone adds or modifies behavior.
@@ -88,42 +91,52 @@ The system has a **thin orchestrator** whose job is not to solve the project its
 
 The orchestrator should stay operationally simple. It should not become a giant reasoning agent. Meaningful work is pushed into specialized agents.
 
-### 2.1 Three nested scopes
+### 2.1 Three nested scopes and one rolling planning horizon
 
 #### Program
-The long-lived product memory. It survives across all milestones.
+The long-lived product memory. It stores the program core, the approved outer experience, stable constraints, and a coarse milestone horizon. It should not store exhaustive slice plans for the whole future product.
 
-#### Milestone
-A bounded delivery cycle inside the program. It has its own scope, contracts, slices, blockers, and readiness status.
+#### Active milestone
+The one bounded delivery increment currently promoted for detailed planning and execution. It has its own scope, contracts, blockers, readiness state, and definition of done.
 
 #### Work unit
-The smallest routable piece of work such as a research task, screen specification, technical contract, slice, repair step, verifier pass, or refactor candidate.
+The smallest routable piece of work such as a research task, screen specification, milestone partitioning pass, technical contract, slice, repair step, verifier pass, or refactor candidate.
+
+A useful planning-depth rule is:
+
+- **program** = coarse,
+- **active milestone** = medium to deep,
+- **current work unit** = precise.
+
+Future milestones should remain coarse shells until activated.
 
 ### 2.2 Entry modes
 
-#### Greenfield milestone 1
-A brand-new project with no meaningful pre-existing code or product surface. This uses full guided ideation.
+#### Greenfield program start
+A brand-new project with no meaningful pre-existing code or product surface. It uses guided ideation and early experience design, but it should not attempt whole-program micro-planning before the user has seen the outer experience.
 
-#### Brownfield milestone 1
-The system is starting from an existing product or repository. It should first map what exists, seed knowledge, and often skip global ideation in favor of bounded milestone shaping.
+#### Brownfield program start
+The system is starting from an existing product or repository. It should first map what exists, seed knowledge, and then shape the next meaningful increment against observed reality.
 
-#### Milestone N expansion
-The baseline product already exists because Milestone 1 or an earlier milestone completed. The next milestone starts from the known product state, open seeds, backlog, audit gaps, and a new user request. Ideation becomes milestone-scoped, not product-wide.
+#### Active milestone continuation
+The baseline product already exists because prior work completed. The next request may map to one milestone or may itself be split into multiple future milestones. Ideation becomes delta-scoped, not product-wide.
 
 ### 2.3 Autonomous control-loop semantics
 
 The default loop is:
 
-1. Read current program state, milestone state, locks, blockers, readiness, routing policy, and open work.
-2. If the current context is stale, refresh only the necessary brownfield or repository digest.
-3. Infer missing prerequisites from the chosen direction and existing constraints.
-4. If a work unit is blocked, pick another meaningful eligible unit when possible.
-5. Batch related missing user inputs instead of asking one question at a time.
-6. Assemble a minimal context packet.
-7. Route the task to an appropriate model profile.
-8. Stage, validate, and accept only conforming output.
-9. Recompute what is now unblocked.
-10. Continue automatically until no meaningful unblocked work remains.
+1. Read current program state, active milestone state, milestone horizon, locks, blockers, readiness, routing policy, and open work.
+2. Refresh only the brownfield or repository digests that are relevant to the current decision.
+3. If no active milestone exists, or if the last approved experience invalidated the current horizon, run milestone sizing and partitioning.
+4. Keep future milestones as shells unless and until they are promoted active.
+5. Infer missing prerequisites from the chosen direction and existing constraints.
+6. If a work unit is blocked, pick another meaningful eligible unit when possible.
+7. Batch related missing user inputs instead of asking one question at a time.
+8. Assemble a minimal context packet.
+9. Route the task to an appropriate model profile.
+10. Stage, validate, and accept only conforming output.
+11. Recompute what is now unblocked and whether the active milestone is still the right boundary.
+12. Continue automatically until no meaningful unblocked work remains.
 
 ### 2.4 Stop conditions
 
@@ -134,88 +147,121 @@ The system should stop only when at least one of the following is true and there
 - a credential, account, repository permission, or API key is genuinely needed,
 - a compliance or policy decision must come from the user,
 - output repeatedly fails validation and cannot be safely repaired automatically,
+- the active milestone boundary itself is unclear and cannot be responsibly inferred from the approved experience,
 - or the system has reached a hard external blocker it cannot responsibly infer around.
 
 A stop should be **batched and structured**. It should not drip-feed one tiny question at a time if multiple answers can be gathered together.
 
 ### 2.5 Major phases
 
-The milestone flow moves through these major phases:
+The program flow moves through these major phases:
 
 - **Phase B**: Brownfield reconnaissance and knowledge seeding (optional)
-- **Phase 0**: Guided ideation or milestone shaping
+- **Phase 0**: Guided ideation or program shaping
 - **Phase 1**: Structured intake, brownfield refresh, and execution readiness
-- **Phase 2**: Program and milestone framing
+- **Phase 2**: Program framing and horizon setup
 - **Phase 3**: Experience discovery
-- **Phase 4**: Experience research
+- **Phase 4**: Targeted experience research
 - **Phase 5**: Interaction architecture and impact mapping
 - **Phase 6**: Mock-first prototype or experience simulation
 - **Phase 7**: UX review and lock
-- **Phase 8**: Technical derivation and delta impact analysis
-- **Phase 9**: Slice planning and milestone scheduling
-- **Phase 10**: Autonomous slice execution loop
-- **Phase 11**: Milestone hardening, release readiness, and continuation planning
+- **Phase 8**: Scope sizing, milestone partitioning, and active-milestone activation
+- **Phase 9**: Milestone-scoped technical derivation and delta impact analysis
+- **Phase 10**: Active-milestone slice planning and rolling schedule
+- **Phase 11**: Autonomous slice execution loop
+- **Phase 12**: Milestone hardening, release readiness, and continuation planning
 
-Not every milestone must execute every phase in full. The entry router and skip rules decide the minimum safe path.
-
----
+Not every program or milestone must execute every phase in full. The entry router and skip rules decide the minimum safe path. The key rule is that deep planning happens only after the outer experience is concrete enough to partition responsibly.
 
 ## 3. Entry routing and milestone lifecycle
 
-### 3.1 Milestone 1 is the initial full baseline
-The first successful delivery cycle becomes **Milestone 1**. This is true even when starting from a brownfield product. What changes is the entry path, not the milestone numbering.
+### 3.1 Milestone 1 is the first committed subset, not the whole program
+The first successful delivery cycle is still called **Milestone 1**. What changes is the meaning: Milestone 1 should be the first operational subset that makes the product promise real, not an attempt to exhaustively plan or finish the whole product.
 
-### 3.2 Brownfield does not mean “skip thinking”
-Brownfield work should not blindly reuse the existing system. It should first establish what already exists, what constraints are real, what behavior must be preserved, and what parts of the current system are unstable or undocumented.
+### 3.2 The early mock comes before deep milestone partitioning
+For greenfield work, the system should first shape the outer experience, prototype or simulate it, and lock the intended user-facing contract. Only then should it decide whether the program needs one milestone or many. The mock shows the destination. Milestone partitioning decides what to build first.
 
-### 3.3 Later milestones are delta-scoped
-Milestones after Milestone 1 should not reopen whole-product ideation unless the product strategy itself has changed. They should focus on:
+Brownfield and later-milestone work can sometimes enter with a clearer increment already in hand, but the same principle still applies: do not decompose deeply until the experience or behavior change is concrete enough to reason about.
 
-- what new value is being added now,
-- which journeys are affected,
-- what existing behavior must stay stable,
-- what backlog or seed items should be activated,
-- and what contracts or architecture boundaries are impacted by the change.
+### 3.3 Milestone count is discovered, not predeclared
+The system should decide whether the work fits in one milestone or multiple based on:
 
-### 3.4 Phase-skipping rules
+- breadth of user journeys,
+- number and volatility of integrations,
+- state and edge-case complexity,
+- preservation risk in existing surfaces,
+- architectural cliff edges or migration steps,
+- irreversibility of contracts or data changes,
+- and how much real learning is still required.
+
+Small, low-risk scopes may collapse into a single milestone. Larger or riskier scopes should expand into a sequence of milestone shells.
+
+### 3.4 Rolling planning depth
+A useful operating rule is:
+
+- **Program horizon**: coarse map of capabilities, ordering hypotheses, and known risks.
+- **Active milestone**: concrete contract, technical derivation, slice plan, and definition of done.
+- **Current work unit**: exact task with precise acceptance criteria.
+
+Future milestones should contain only enough detail to preserve intent, ordering, major dependencies, and promotion conditions. They should not receive full slice planning or exhaustive technical contracts until promoted.
+
+```mermaid
+flowchart LR
+    V[Program direction + approved<br/>experience envelope] --> P[Milestone partitioner]
+    P --> A[Active milestone<br/>planned deeply]
+    P --> F1[Future milestone shell 2<br/>kept coarse]
+    P --> F2[Future milestone shell 3<br/>kept coarse]
+    A --> S[Detailed slices<br/>and work units]
+    S --> L[Milestone learnings]
+    L --> P
+```
+
+### 3.5 Phase-skipping and planning-depth rules
 
 #### Ideation
-- **Run fully** for greenfield Milestone 1.
-- **Run narrowly** for brownfield onboarding when the user goal is somewhat clear but still needs scope shaping.
-- **Skip or nearly skip** for later milestones when the request is already concrete and the program core is stable.
+- **Run fully** for greenfield starts.
+- **Run narrowly** for brownfield onboarding when the next increment still needs scope shaping.
+- **Skip or nearly skip** for later milestones when the request is already concrete.
 
 #### Prototype or experience simulation
-- **Required** when milestone scope changes user flows, UI structure, or critical behavior expectations.
-- **Targeted** when the change touches only a small set of screens or states.
-- **Skippable** when the milestone is purely infrastructural and user-visible behavior is already fully specified. In that case, the system should still create an operator-visible or behavior-visible simulation artifact at the right abstraction.
+- **Required** when the requested change affects user flows, visible behavior, or product meaning.
+- **Targeted** when the change touches only a narrow area.
+- **Skippable** only when the behavior is already fully specified and a simulation would add no decision value.
 
-#### Deep research
-- **Heavy** when the milestone introduces new domains, unusual integrations, risky UX patterns, or architecture shifts.
-- **Light** when the milestone only extends known patterns.
+#### Research
+- **Targeted only.** Research should answer the next real design or implementation question, not exhaustively map every future milestone before it is active.
+
+#### Milestone partitioning
+- **Mandatory after UX lock** for greenfield starts and any request whose true size is still unclear.
+- **Optional but recommended** when a later milestone request looks large enough to split again.
 
 #### Brownfield refresh
-- **Heavy** at the start of brownfield Milestone 1.
-- **Incremental** for Milestone N, limited to changed areas and recently touched modules.
+- **Heavy** at the start of brownfield onboarding.
+- **Incremental** later, limited to changed areas and recently touched modules.
 
-### 3.5 Milestone close-out
+#### Technical derivation and slice planning
+- **Deep only for the active milestone.**
+- **Shallow or absent** for future milestones, which should remain shells with promotion conditions.
+
+### 3.6 Milestone close-out
 At the end of every milestone, the system should do more than mark work complete. It should also:
 
 - audit milestone success against the milestone contract,
-- extract follow-on ideas that emerged during the work,
-- classify them as seeds, backlog, refactor candidates, or audit gaps,
+- extract follow-on ideas and discovered dependencies,
+- recut the milestone horizon if implementation learnings changed sequencing,
+- classify carry-forward items as future milestone shells, seeds, backlog, refactor candidates, or audit gaps,
 - update the stable program core if the milestone changed durable product truth,
-- and prepare the next milestone entry if the user wants to continue immediately.
+- and prepare the next activation if the user wants to continue immediately.
 
-### 3.6 Seeds, backlog, and continuation
-A useful continuation model has three distinct carry-forward classes:
+### 3.7 Seeds, backlog, milestone shells, and continuation
+A useful continuation model has four distinct carry-forward classes:
 
-- **Future seeds**: ideas that should surface when certain conditions become true later.
+- **Future milestone shells**: coarse future increments with value hypothesis, main dependencies, key risks, and promotion conditions.
+- **Future seeds**: ideas that should surface later when certain conditions become true.
 - **Backlog items**: known possible work that is not currently active.
 - **Threads or investigations**: ongoing cross-milestone knowledge that does not belong to one slice.
 
-This keeps Milestone N focused while preserving useful future knowledge.
-
----
+This keeps the active milestone focused while preserving useful future knowledge.
 
 ## 4. Phase-by-phase design
 
@@ -286,83 +332,87 @@ The system should not leave this phase until it can answer:
 
 ---
 
-## Phase 0: Guided ideation or milestone shaping
+## Phase 0: Guided ideation or program shaping
 
 ### Objective
-Turn either a blank-page request or a milestone expansion request into a coherent, bounded delivery brief.
+Turn either a blank-page request or a continuation request into a coherent product direction, current opportunity frame, and first-value experience target without pretending the whole program can be planned in detail yet.
 
 ### How this changes by entry mode
 
-#### Greenfield Milestone 1
-Run the full ideation flow. The system is defining the initial product direction.
+#### Greenfield program start
+Run the full ideation flow. The goal is to define the product direction and first believable experience envelope, not to micro-plan the whole roadmap.
 
-#### Brownfield Milestone 1
-Do not restart whole-product ideation unless the product direction itself is unclear. Usually the job is to shape the requested milestone against the discovered reality of the existing system.
+#### Brownfield program start
+Do not restart whole-product ideation unless the product direction itself is unclear. Usually the job is to clarify the next meaningful increment against existing system reality.
 
-#### Milestone N
-Scope the new milestone only. The product already has a baseline. The user is extending it, correcting it, or taking it in a new bounded direction.
+#### Active milestone continuation
+Scope the new request only. If the request is too large, capture it as a capability expansion idea and let Phase 8 split it into multiple milestones after experience clarification.
 
 ### Recommended substeps
 
 #### 0.1 Problem or opportunity framing
-Clarify what value this milestone should create and why now.
+Clarify what value the product or requested expansion should create and why now.
 
 #### 0.2 Impacted user and context definition
-Identify the users and situations touched by this milestone.
+Identify the users and situations that matter first.
 
 #### 0.3 Preservation boundary definition
-In brownfield or Milestone N, make explicit what must remain unchanged.
+In brownfield or continuation work, make explicit what must remain unchanged.
 
 #### 0.4 Outcome and success framing
-Define what milestone success means and how it will be recognized.
+Define what success means and how it will be recognized.
 
 #### 0.5 Constraints and givens
 Capture technical, business, compliance, operational, and timeline constraints.
 
 #### 0.6 Candidate directions
-Generate options when the request is still broad enough to benefit from alternatives.
+Generate options when the request is broad enough to benefit from alternatives.
 
-#### 0.7 Milestone selection and scope pruning
-Separate milestone scope from future ideas, seeds, backlog, and distractions.
+#### 0.7 Coarse capability mapping
+Generate a rough set of capabilities or journey areas implied by the idea, but do not decompose them into full technical plans.
 
-#### 0.8 Experience thesis or delta thesis
-Summarize the new value being added and what the user should notice quickly.
+#### 0.8 Experience thesis
+Summarize what the user should notice quickly and what first value the product or increment should deliver.
+
+#### 0.9 Scope shaping for now versus later
+Separate what must be represented in the early experience artifact from what can remain a future milestone possibility.
 
 ### Outputs
+- `program_brief`
 - `milestone_brief`
 - `problem_statement`
 - `target_users`
 - `constraints`
-- `milestone_success_metric`
+- `success_metric`
 - `scope_boundary`
-- `delta_scope_boundary`
 - `preservation_boundary`
+- `capability_map`
 - `selected_direction`
 - `experience_thesis`
 - `open_question`
 - `locked_decision`
 
 ### Minimal context
-The ideation or shaping agents need only the current milestone intent, answered questions, unresolved questions, known constraints, and—if relevant—the brownfield digest and preserved behavior hints.
+The ideation or shaping agents need only the current request, answered questions, unresolved questions, known constraints, and—if relevant—the brownfield digest and preserved behavior hints.
 
 ### Gate
 The system should not leave this phase until it has:
 
-- one clear milestone objective,
-- a version-0 or delta boundary,
+- a coherent product or increment objective,
 - success criteria,
+- a coarse capability map,
 - a preservation boundary when relevant,
-- and enough clarity to move into structured intake without reopening product-wide ambiguity.
+- and enough clarity to design an early experience artifact.
 
----
+It should not try to enumerate the whole implementation backlog here.
 
 ## Phase 1: Structured intake, brownfield refresh, and execution readiness
 
 ### Objective
-Convert milestone intent and known context into a structured requirement profile, readiness model, and early dependency plan so later phases do not stall.
+Convert program or milestone intent into a structured requirement profile, readiness model, scope-signal set, and early dependency plan so later phases do not stall.
 
 ### Why this phase matters even after brownfield mapping
-Brownfield reconnaissance tells the system what exists. This phase turns that into operational planning: preferred technologies, environment choices, credentials, access, model policy, and execution assumptions.
+Brownfield reconnaissance tells the system what exists. This phase turns that into operational planning: preferred technologies, environment choices, credentials, access, model policy, execution assumptions, and early indicators of whether the scope is likely to need multiple milestones.
 
 ### Recommended intake dimensions
 
@@ -370,7 +420,7 @@ Brownfield reconnaissance tells the system what exists. This phase turns that in
 Capture project naming, repository ownership, team reality, review expectations, and handoff assumptions.
 
 #### 1.2 Technology preferences
-Capture preferred languages, frameworks, styling systems, testing tools, package managers, infra choices, and explicit “do not use” technologies.
+Capture preferred languages, frameworks, styling systems, testing tools, package managers, infrastructure choices, and explicit “do not use” technologies.
 
 #### 1.3 Environment and deployment assumptions
 Capture local versus hosted, target cloud, runtime constraints, CI/CD expectations, environments, and data storage preferences.
@@ -379,15 +429,18 @@ Capture local versus hosted, target cloud, runtime constraints, CI/CD expectatio
 Capture third-party APIs, auth providers, data systems, messaging systems, analytics, AI providers, and internal services.
 
 #### 1.5 Credential and access forecasting
-Infer which systems require credentials, account access, repository permissions, or later validation.
+Infer which systems require credentials, account access, repository permissions, or later live validation.
 
 #### 1.6 Brownfield refresh
-If starting from an existing system, confirm whether the initial brownfield findings are sufficient or whether the current milestone needs a deeper area-specific refresh.
+If starting from an existing system, confirm whether the initial brownfield findings are sufficient or whether the current request needs a deeper area-specific refresh.
 
-#### 1.7 Model policy capture
+#### 1.7 Scope and complexity signals
+Capture or infer the signals that matter for later milestone partitioning, such as journey count, integration density, risky migrations, preservation sensitivity, and uncertainty concentration.
+
+#### 1.8 Model policy capture
 Capture cost sensitivity, provider restrictions, compliance constraints, preferred model families, and whether certain classes of work should route to specific capability profiles.
 
-#### 1.8 User-input batching
+#### 1.9 User-input batching
 Bundle all near-term missing inputs into one structured request.
 
 ### Recommended agents
@@ -397,6 +450,7 @@ Bundle all near-term missing inputs into one structured request.
 - **Integration inventory agent**
 - **Credential/access forecaster**
 - **Brownfield refresh selector**
+- **Scope signal extractor**
 - **Model policy capture agent**
 - **User-input batching agent**
 - **Readiness classifier**
@@ -409,6 +463,9 @@ Bundle all near-term missing inputs into one structured request.
 - `credential_requirement`
 - `access_requirement`
 - `brownfield_constraint`
+- `scope_signal`
+- `complexity_signal`
+- `planning_horizon_hint`
 - `model_policy_preference`
 - `input_manifest`
 - `readiness_check`
@@ -419,7 +476,7 @@ Bundle all near-term missing inputs into one structured request.
 This phase may determine that secrets are needed, but it should not store raw secrets in ordinary records. It creates the requirement, requests secure submission, and stores only secure references and readiness metadata.
 
 ### Minimal context
-This phase needs the milestone brief, locked decisions, selected direction, preference signals, brownfield digest, and any repository or vendor references already known.
+This phase needs the program brief or milestone brief, locked decisions, selected direction, capability map, preference signals, brownfield digest, and any repository or vendor references already known.
 
 ### Gate
 The phase exits only when near-term requirements are classified as:
@@ -430,21 +487,20 @@ The phase exits only when near-term requirements are classified as:
 - needed later,
 - or optional.
 
-It should also leave behind an explicit model policy input so later routing is not improvised repeatedly.
+It should also leave behind explicit scope and complexity signals for later milestone partitioning so the milestone-count decision is informed rather than improvised.
 
----
-
-## Phase 2: Program and milestone framing
+## Phase 2: Program framing and horizon setup
 
 ### Objective
-Turn ideation and readiness outputs into stable, reusable cores that later agents can rely on without reading the full history.
+Turn ideation and readiness outputs into stable program memory, a provisional planning horizon, and reusable cores that later agents can rely on without reading the full history.
 
-### Why separate program core from milestone core
-The program core is long-lived. The milestone core is temporary and scoped. Keeping them separate reduces context bloat and prevents later milestones from constantly reopening stable product truth.
+### Why this phase should stay provisional
+Before the experience is locked, the system should not pretend to know the final milestone breakdown. This phase creates stable program memory and, at most, a provisional initial milestone hint.
 
 ### Agents
 - **Program framing agent**
-- **Milestone framing agent**
+- **Provisional milestone framing agent**
+- **Horizon policy agent**
 - **Terminology agent**
 - **State initializer**
 - **Blocker summarizer**
@@ -452,6 +508,7 @@ The program core is long-lived. The milestone core is temporary and scoped. Keep
 ### Outputs
 - `program_core`
 - `milestone_core`
+- `milestone_horizon_policy`
 - `glossary`
 - `non_goals`
 - `program_state`
@@ -460,20 +517,18 @@ The program core is long-lived. The milestone core is temporary and scoped. Keep
 - `readiness_summary`
 
 ### Minimal context
-Only milestone shaping outputs, readiness outputs, brownfield findings, locked decisions, and unresolved questions should be passed in.
+Only shaping outputs, readiness outputs, brownfield findings, locked decisions, and unresolved questions should be passed in.
 
 ### Gate
-Later agents should be able to understand the product and the current milestone from these cores alone. They should not need the full raw ideation history.
-
----
+Later agents should be able to understand the product direction, the current request, and the current planning horizon from these cores alone. For greenfield work, any milestone core produced here should be treated as provisional until Phase 8 finalizes activation.
 
 ## Phase 3: Experience discovery
 
 ### Objective
-Define the impacted user journeys, moments of value, required setup touchpoints, and failure conditions before implementation planning hardens.
+Define the user journeys, moments of value, required setup touchpoints, and failure conditions that the early experience artifact must represent before milestone boundaries harden.
 
 ### Brownfield-specific requirement
-In existing products, this phase must identify both **changed journeys** and **preserved journeys**. The milestone should not accidentally redefine adjacent parts of the product.
+In existing products, this phase must identify both **changed journeys** and **preserved journeys**. The system should not accidentally redefine adjacent parts of the product.
 
 ### Agents
 - **Journey mapper**
@@ -494,17 +549,15 @@ In existing products, this phase must identify both **changed journeys** and **p
 - `preserved_experience_constraint`
 
 ### Minimal context
-This phase needs the program core, milestone core, target users, scope boundary, experience thesis, brownfield preservation hints, and readiness summary.
+This phase needs the program core, provisional milestone core, target users, scope boundary, experience thesis, brownfield preservation hints, and readiness summary.
 
 ### Gate
-The phase exits when the milestone’s primary outcome, setup or permission touchpoints, changed journey segments, and preservation expectations are explicit.
+The phase exits when the primary user outcome, setup or permission touchpoints, changed or preserved journey segments, and key boundary conditions are explicit enough to build the early experience artifact.
 
----
-
-## Phase 4: Experience research
+## Phase 4: Targeted experience research
 
 ### Objective
-Research patterns, edge cases, and risks before screen-level or behavior-level design is finalized.
+Research only the patterns, edge cases, and risks needed to justify the current experience design and the next milestone-partitioning decision.
 
 ### Recommended parallel agents
 - **Pattern research agent**
@@ -522,20 +575,18 @@ Research patterns, edge cases, and risks before screen-level or behavior-level d
 - `brownfield_conflict_note`
 
 ### Minimal context
-Research agents get a sharply scoped brief for the exact question they are answering. They do not need the whole project archive.
+Research agents get a sharply scoped brief for the exact question they are answering. They do not need the whole project archive, and they should not be asked to exhaustively research future milestones that are not yet active.
 
 ### Gate
-The milestone should exit this phase with a coherent set of recommended patterns and a clear understanding of where the existing product or codebase might resist the intended change.
-
----
+The program should exit this phase with a coherent set of recommended patterns, clear edge-case coverage, and enough confidence to build the early experience artifact without pretending every future capability has already been researched.
 
 ## Phase 5: Interaction architecture and impact mapping
 
 ### Objective
-Translate the approved direction into a screen system, interaction model, and explicit impact map for changed and preserved surfaces.
+Translate the approved direction into a screen system, interaction model, and explicit impact map that are rich enough to build a credible early experience artifact and later partition the work into milestones.
 
 ### Why impact mapping matters
-In brownfield systems and later milestones, design is not only about the new thing. It is also about what the new thing touches. The system needs an explicit record of affected screens, behaviors, APIs, and states.
+In brownfield systems and later milestones, design is not only about the new thing. It is also about what the new thing touches. The system needs an explicit record of affected screens, behaviors, APIs, and states before milestone activation becomes concrete.
 
 ### Agents
 - **Route or flow architect**
@@ -556,7 +607,7 @@ In brownfield systems and later milestones, design is not only about the new thi
 - `permission_visibility_rule`
 
 ### Minimal context
-These agents need the program core, milestone core, journeys, UX recommendations, accessibility requirements, preservation constraints, scope boundary, and readiness summary.
+These agents need the program core, provisional milestone core, journeys, UX recommendations, accessibility requirements, preservation constraints, scope boundary, and readiness summary.
 
 ### Gate
 Every important changed screen or behavior should have:
@@ -570,19 +621,19 @@ Every important changed screen or behavior should have:
 - preservation expectations,
 - and a clear impact map into existing surfaces.
 
----
+The result should be detailed enough to prototype but not yet a full implementation plan for the whole program.
 
 ## Phase 6: Mock-first prototype or experience simulation
 
 ### Objective
-Create the earliest faithful representation of the milestone experience before deep implementation hardens.
+Create the earliest faithful representation of the intended experience before milestone partitioning and deep implementation planning harden.
 
 ### Important refinement
-Not every milestone needs a screen-heavy mock. The correct artifact is the earliest useful **experience representation** for the type of change:
+Not every effort needs a screen-heavy mock. The correct artifact is the earliest useful **experience representation** for the type of change:
 
 - a navigable UI prototype for UI-heavy work,
 - a workflow simulation for operator-facing changes,
-- a state/behavior simulator for invisible but user-affecting system changes.
+- a state or behavior simulator for invisible but user-affecting system changes.
 
 ### Agents
 - **Prototype builder**
@@ -612,14 +663,12 @@ The artifact should still cover key states such as:
 The builder needs route maps, screen specs, view models, fixture scenarios, locked UX decisions, relevant technology preferences, and preservation constraints.
 
 ### Gate
-The milestone should now have a tangible experience artifact appropriate to its scope, unless the skip rules explicitly say the change is already fully determined and no simulation adds value.
-
----
+The program or milestone should now have a tangible experience artifact appropriate to its scope. For greenfield work, this artifact is a key input to milestone partitioning because it makes the outer product shape concrete before the system chooses what to build first.
 
 ## Phase 7: UX review and lock
 
 ### Objective
-Convert prototype or simulation feedback into durable experience contracts for the current milestone.
+Convert prototype or simulation feedback into durable experience contracts that later milestone partitioning and implementation work must derive from.
 
 ### Brownfield-specific requirement
 The system should explicitly lock both the new experience and the preservation boundaries around adjacent unchanged behavior.
@@ -632,7 +681,7 @@ The system should explicitly lock both the new experience and the preservation b
 
 ### Outputs
 - `ux_feedback`
-- `approved_experience_contract`
+- `approved_program_experience_contract`
 - `approved_milestone_experience_contract`
 - `preservation_contract`
 - `locked_decision`
@@ -642,17 +691,65 @@ The system should explicitly lock both the new experience and the preservation b
 These agents need the prototype or simulation result, screen specs, view models, fixture scenarios, feedback, and preservation constraints.
 
 ### Gate
-Once approved, the milestone experience becomes a contract. Later agents derive from it instead of casually redesigning it.
+Once approved, the relevant experience contract becomes binding. For greenfield work, it becomes the source document for milestone sizing and partitioning. For later or brownfield work, it becomes the contract for the active increment unless Phase 8 decides the request should be split further.
 
----
-
-## Phase 8: Technical derivation and delta impact analysis
+## Phase 8: Scope sizing, milestone partitioning, and active-milestone activation
 
 ### Objective
-Derive the technical shape from the approved experience and the existing system reality, not from abstract architecture preferences alone.
+Use the approved experience contract and current constraints to determine whether the work fits in one milestone or several, create an ordered milestone horizon, and activate only the next milestone for deep planning.
 
-### Why this phase changes in a milestone-based system
-For Milestone N, the question is rarely “what should the whole system be?” The real question is “what must change, what can stay, what must migrate, and how do we do this without breaking the preserved surface?”
+### Why this phase belongs after the mock or experience simulation
+Before the user has seen the intended outer experience, milestone boundaries are often speculative. After the experience is concrete, the system can partition around real journeys, states, dependencies, and learning points rather than abstract guesses.
+
+### Partitioning criteria
+Partition around:
+
+- independent user value steps,
+- dependency cliffs and integration boundaries,
+- uncertainty concentrations,
+- preservation risk,
+- irreversible schema or contract changes,
+- testability and release safety,
+- and where feedback from the real build is still likely to change later decisions.
+
+### Agents
+- **Scope sizing agent**
+- **Milestone partitioner**
+- **Risk-ordered scheduler**
+- **Promotion-condition writer**
+- **Active-milestone selector**
+
+### Outputs
+- `scope_assessment`
+- `milestone_shell`
+- `milestone_order`
+- `planning_horizon`
+- `milestone_activation`
+- `promotion_condition`
+- `deferred_capability`
+- `milestone_dependency`
+
+### Minimal context
+This phase needs the approved program or milestone experience contract, capability map, readiness summary, risk register, brownfield findings, constraints, and current product state.
+
+### Gate
+The phase exits only when:
+
+- the system knows whether one milestone is enough or multiple are needed,
+- the active milestone has a crisp contract,
+- future milestones exist only as coarse shells,
+- anything deferred is intentionally recorded rather than forgotten,
+- and the active milestone is ready to receive deep technical derivation.
+
+## Phase 9: Milestone-scoped technical derivation and delta impact analysis
+
+### Objective
+Derive the technical shape only for the active milestone from the approved experience and the existing system reality, not from abstract architecture preferences alone.
+
+### Why this phase changes in a rolling milestone system
+The question is not “what should the whole system be?” The real question is “what must change now, what can stay, what must migrate now versus later, and how do we preserve the future milestone horizon without over-specifying it?”
+
+Future milestones may receive boundary notes or dependency warnings, but they should not receive full technical contracts yet.
 
 ### Agents
 - **Feasibility analyst**
@@ -664,6 +761,7 @@ For Milestone N, the question is rarely “what should the whole system be?” T
 - **Delta impact analyst**
 - **Migration planner**
 - **Rollback planner**
+- **Future-boundary note writer**
 
 ### Outputs
 - `technical_shape`
@@ -677,29 +775,31 @@ For Milestone N, the question is rarely “what should the whole system be?” T
 - `delta_impact_map`
 - `migration_plan`
 - `rollback_plan`
+- `future_boundary_note`
 - `latency_budget`
 
 ### Minimal context
-These agents need approved milestone experience contracts, view models, interaction rules, preservation contracts, risk register, technology preferences, readiness summary, brownfield findings, and current technical assumptions.
+These agents need the active milestone experience contract, view models, interaction rules, preservation contracts, risk register, technology preferences, readiness summary, brownfield findings, and current technical assumptions.
 
 ### Gate
 The phase exits when the system understands:
 
-- what must be built,
-- what existing structures must be touched,
+- what must be built for the active milestone,
+- what existing structures must be touched now,
 - what live integrations are real versus fixture-backed for now,
 - what migration or compatibility boundaries exist,
-- and what rollback or protection strategy is needed if the milestone changes risky areas.
+- what rollback or protection strategy is needed if risky areas change,
+- and what boundary notes should be carried forward without fully planning future milestones.
 
----
-
-## Phase 9: Slice planning and milestone scheduling
+## Phase 10: Active-milestone slice planning and rolling schedule
 
 ### Objective
-Break the milestone into thin, end-to-end slices that produce visible value or milestone protection while maximizing autonomous forward progress.
+Break the active milestone into thin, end-to-end slices that produce visible value or milestone protection while keeping future milestones intentionally shallow.
 
 ### Important refinement
-In milestone work, not every essential slice is a net-new feature slice. Some are:
+Only the active milestone should receive deep slice planning. Future milestones should remain as shells with value hypotheses, key dependencies, and promotion conditions.
+
+Within the active milestone, not every essential slice is a net-new feature slice. Some are:
 
 - **feature slices** that add new value,
 - **migration slices** that move existing behavior safely,
@@ -715,6 +815,7 @@ In milestone work, not every essential slice is a net-new feature slice. Some ar
 - **Fixture planner**
 - **Blocker-aware scheduler**
 - **Model-routing hint generator**
+- **Horizon guard**
 
 ### Outputs
 - `slice`
@@ -728,14 +829,15 @@ In milestone work, not every essential slice is a net-new feature slice. Some ar
 - `wave`
 - `routing_class`
 - `model_route_hint`
+- `milestone_rollover_hint`
 
 ### Minimal context
-The planner needs the milestone experience contract, technical contracts, current repository map, preservation contracts, readiness state, brownfield hotspots, and what has already been built.
+The planner needs the active milestone experience contract, technical contracts, current repository map, preservation contracts, readiness state, brownfield hotspots, and what has already been built.
 
 ### Gate
 Each slice must have:
 
-- one clear milestone purpose,
+- one clear active-milestone purpose,
 - acceptance criteria,
 - required tests,
 - required fixtures,
@@ -744,23 +846,25 @@ Each slice must have:
 - blocker classification,
 - and a routing class that tells the model router what kind of work it is.
 
----
+No future milestone should receive a full slice plan at this stage.
 
-## Phase 10: Autonomous slice execution loop
+## Phase 11: Autonomous slice execution loop
 
-This is the core delivery loop. Every slice goes through the same disciplined sequence, and the orchestrator keeps selecting the next eligible slice until no meaningful unblocked work remains.
+This is the core delivery loop for the **active milestone**. Every slice goes through the same disciplined sequence, and the orchestrator keeps selecting the next eligible slice until the active milestone is complete or all meaningful unblocked work is exhausted.
 
-### 10.0 Loop controller behavior
+### 11.0 Loop controller behavior
 After each state update, the orchestrator should:
 
 - recompute eligible work,
 - prefer unblocked slices,
-- preserve milestone priorities,
+- preserve active-milestone priorities,
 - switch around blocked work when alternatives exist,
 - batch missing user inputs when all good moves depend on them,
 - and continue automatically without asking for confirmation after every successful unit.
 
-### 10.1 Model routing step
+When the active milestone is complete, the system should transition to Phase 12 rather than immediately decomposing future milestones.
+
+### 11.1 Model routing step
 Before launching each agent, a model router should classify the work and choose:
 
 - a primary model capability profile,
@@ -779,7 +883,7 @@ This should be stored as a durable decision, not treated as transient prompt tri
 
 ---
 
-### 10.2 Test design step
+### 11.2 Test design step
 Before implementation is accepted, a test planner expands the slice into explicit test cases.
 
 #### Outputs
@@ -792,7 +896,7 @@ It forces the system to define what “working” means before code is considere
 
 ---
 
-### 10.3 Implementation step
+### 11.3 Implementation step
 A fresh implementation agent builds the slice using approved contracts, allowed file scope, and fixture-backed adapters.
 
 #### Rules
@@ -811,7 +915,7 @@ A fresh implementation agent builds the slice using approved contracts, allowed 
 
 ---
 
-### 10.4 Output staging and validation step
+### 11.4 Output staging and validation step
 No implementation, refactor, or plan output should be accepted directly. It should first be staged and validated.
 
 #### Validation layers
@@ -833,7 +937,7 @@ If the output is malformed, partial, contradictory, or out of scope, it should b
 
 ---
 
-### 10.5 Test execution and completion step
+### 11.5 Test execution and completion step
 A test agent writes any missing tests and runs the slice test matrix.
 
 #### Required categories
@@ -856,7 +960,7 @@ If tests fail, a fixer agent or implementation agent receives a narrow remediati
 
 ---
 
-### 10.6 Mandatory refactoring step
+### 11.6 Mandatory refactoring step
 Once the slice is functionally correct and green under required tests, a dedicated refactoring agent runs.
 
 #### Purpose
@@ -888,8 +992,8 @@ This improves internal shape while preserving externally visible behavior and pr
 
 ---
 
-### 10.7 Regression verification step
-After refactoring, a verifier reruns relevant checks and compares the slice against acceptance criteria, the milestone experience contract, and any preservation contracts.
+### 11.7 Regression verification step
+After refactoring, a verifier reruns relevant checks and compares the slice against acceptance criteria, the active milestone experience contract, and any preservation contracts.
 
 #### Outputs
 - `verification_result`
@@ -901,7 +1005,7 @@ Only after this step passes is the slice considered complete.
 
 ---
 
-### 10.8 State update step
+### 11.8 State update step
 A state writer closes the slice, updates dependencies, records blocker changes, stores routing outcomes, and emits a digest for future reuse.
 
 #### Outputs
@@ -910,11 +1014,12 @@ A state writer closes the slice, updates dependencies, records blocker changes, 
 - `trace_link`
 - `blocker_set`
 - `routing_outcome`
+- `milestone_progress_update`
 - `next_action`
 
 ---
 
-### 10.9 Continue-or-pause decision step
+### 11.9 Continue-or-pause decision step
 A control agent evaluates remaining work.
 
 #### Rules
@@ -922,6 +1027,7 @@ A control agent evaluates remaining work.
 - If the current path is blocked but alternative valuable work exists, switch and continue.
 - If all remaining good moves are blocked by the same missing input, approval, or credential, emit one consolidated request.
 - If repeated corruption or validation failure affects a work type, escalate model route or quarantine that work class until repaired.
+- If the active milestone is complete, stop deep execution work and advance to Phase 12.
 
 #### Outputs
 - `user_input_request_batch`
@@ -931,10 +1037,10 @@ A control agent evaluates remaining work.
 
 ---
 
-## Phase 11: Milestone hardening, release readiness, and continuation planning
+## Phase 12: Milestone hardening, release readiness, and continuation planning
 
 ### Objective
-After slices accumulate, run broader checks, determine milestone readiness, and prepare the program for continuation.
+After slices accumulate, run broader checks, determine milestone readiness, refresh the milestone horizon, and prepare the program for continuation.
 
 ### Agents
 - **Wave verifier**
@@ -944,6 +1050,7 @@ After slices accumulate, run broader checks, determine milestone readiness, and 
 - **Live-readiness checker**
 - **Milestone auditor**
 - **Seed and backlog synthesizer**
+- **Horizon refresh planner**
 - **Release readiness summarizer**
 
 ### Outputs
@@ -955,11 +1062,12 @@ After slices accumulate, run broader checks, determine milestone readiness, and 
 - `milestone_audit`
 - `future_seed`
 - `backlog_candidate`
+- `milestone_horizon_update`
 - `next_milestone_option`
 - `program_digest`
 
-### Why this phase matters in a milestone system
-The system should leave each milestone with more than a yes-or-no release decision. It should also leave behind a clean continuation surface for the next milestone.
+### Why this phase matters in a rolling milestone system
+The system should leave each milestone with more than a yes-or-no release decision. It should also leave behind a clean continuation surface and an updated horizon so the next milestone can be activated without reopening the whole project.
 
 ### Gate
 The milestone should not close until the system knows:
@@ -968,9 +1076,8 @@ The milestone should not close until the system knows:
 - what unresolved risks remain,
 - what live validations are still pending,
 - what future ideas were discovered during the work,
-- and whether the next likely milestone should be proposed immediately.
-
----
+- whether the milestone horizon needs to be recut because implementation changed the program understanding,
+- and whether the next likely milestone should be proposed or activated immediately.
 
 ## 5. SQLite-native data model
 
@@ -984,6 +1091,7 @@ These track the state of the system itself.
 - `projects`
 - `program_state`
 - `milestones`
+- `milestone_horizons`
 - `milestone_state`
 - `work_units`
 - `agent_runs`
@@ -1076,12 +1184,20 @@ A typed generic record store keeps the system flexible. New agent types can emit
 ## 5.3 Recommended important record types
 Examples now include:
 
+- `program_brief`
 - `program_core`
 - `milestone_core`
+- `capability_map`
 - `brownfield_snapshot`
 - `repo_topology`
 - `knowledge_seed`
 - `milestone_brief`
+- `milestone_shell`
+- `planning_horizon`
+- `milestone_activation`
+- `promotion_condition`
+- `scope_assessment`
+- `deferred_capability`
 - `delta_scope_boundary`
 - `preservation_contract`
 - `structured_requirement_profile`
@@ -1091,8 +1207,10 @@ Examples now include:
 - `journey_delta`
 - `screen_spec`
 - `view_model`
+- `approved_program_experience_contract`
 - `approved_milestone_experience_contract`
 - `technical_shape`
+- `future_boundary_note`
 - `delta_impact_map`
 - `migration_plan`
 - `slice_plan`
@@ -1107,6 +1225,7 @@ Examples now include:
 - `verification_result`
 - `run_digest`
 - `future_seed`
+- `milestone_horizon_update`
 - `user_input_request_batch`
 
 ## 5.4 Recommended versioning behavior
@@ -1155,13 +1274,16 @@ A useful blocker model captures:
 ## 5.9 Milestone continuity records
 The system should treat continuation artifacts as first-class records:
 
+- `milestone_shell`
+- `planning_horizon`
+- `promotion_condition`
 - `future_seed`
 - `backlog_candidate`
 - `thread_reference`
 - `next_milestone_option`
 - `milestone_summary`
 
-This is what allows the program to feel continuous without dragging full history into every new milestone.
+This is what allows the program to feel continuous without dragging full history into every new milestone or forcing the system to rebuild the whole roadmap from scratch.
 
 ---
 
@@ -1177,13 +1299,14 @@ The goal is to make every fresh agent smart enough for its task without flooding
 A tiny always-on layer available to most agents:
 
 - program core,
+- milestone horizon summary,
 - glossary,
 - locked high-level decisions,
 - stable architectural constraints,
 - and durable readiness summaries.
 
 ### Layer B: Milestone core
-The current milestone’s objective, scope, success metrics, preserved behaviors, and key blockers.
+The current active milestone’s objective, scope, success metrics, preserved behaviors, and key blockers. Future milestones should appear only as short shell summaries, not as full plans.
 
 ### Layer C: Phase contract
 The contract for the current phase:
@@ -1246,16 +1369,19 @@ A small contract telling the agent what it is allowed to emit and what validatio
 6. **Limit code context to the local neighborhood.**  
    A code agent should receive only touched files, directly related interfaces, and essential tests.
 
-7. **Separate stable program memory from milestone delta.**  
-   Later milestones should not carry the full burden of Milestone 1 in every packet.
+7. **Separate stable program memory, active milestone state, and future milestone shells.**  
+   Future milestones should appear only as coarse horizon summaries unless one is being activated.
 
-8. **Batch missing user inputs.**  
+8. **Do not materialize deep future plans.**  
+   If a future milestone is not active, pass its shell, promotion conditions, and major dependencies only.
+
+9. **Batch missing user inputs.**  
    The context packer should support consolidated user requests.
 
-9. **Schema-validate all outputs.**  
-   Malformed records should be rejected, repaired, or quarantined.
+10. **Schema-validate all outputs.**  
+    Malformed records should be rejected, repaired, or quarantined.
 
-10. **Carry trust levels forward.**  
+11. **Carry trust levels forward.**  
     Agents should know whether a record is observed, inferred, validated, or locked.
 
 ## 6.3 Minimal context by agent class
@@ -1267,6 +1393,10 @@ Does not need milestone-wide research or unrelated UX artifacts.
 ### Milestone shaper
 Needs program core, current user request, active seeds or backlog options, constraints, and brownfield digest.  
 Does not need wide repository context unless the milestone directly depends on it.
+
+### Milestone partitioner
+Needs the approved experience contract, capability map, scope signals, risk register, major dependencies, and current product state.  
+Does not need full slice plans for every future milestone, because creating those too early is specifically what it is trying to avoid.
 
 ### Research agent
 Needs milestone core, selected journey or question, user type, and scope constraints.  
@@ -1656,42 +1786,48 @@ Every refactor step is followed by regression checks. Green before refactor is n
 
 ## 11. Example lifecycle patterns
 
-## 11.1 Brownfield Milestone 1 example
+## 11.1 Brownfield program-start example
 
 Imagine the system is pointed at an existing B2B dashboard product and the user says they want “a better analytics overview.”
 
 A good flow would be:
 
 1. Brownfield reconnaissance maps the current dashboard code, discovers existing auth, analytics adapters, data-fetch paths, weakly tested chart components, and a few high-risk hotspot files.
-2. The entry router decides not to run full product ideation because the product already exists. Instead it runs narrow milestone shaping.
-3. Milestone shaping defines the actual milestone as “add benchmark and trend summary cards to the existing analytics dashboard without changing reporting export behavior.”
-4. Experience discovery and research focus on the affected dashboard journey and preserved reporting flows.
-5. Interaction architecture produces changed states and a preservation contract around the existing export flow and permission model.
-6. The prototype step builds only the affected dashboard surfaces, not the whole application.
-7. Technical derivation creates a delta impact map rather than a whole-system architecture rewrite.
+2. The entry router decides not to run full product ideation because the product already exists. Instead it runs narrow shaping around the requested improvement.
+3. Experience discovery and research focus on the affected dashboard journey and preserved reporting flows.
+4. Interaction architecture produces changed states and a preservation contract around the existing export flow and permission model.
+5. The prototype step builds only the affected dashboard surfaces, not the whole application.
+6. After UX lock, scope sizing decides that the request is too large for one safe increment. It creates:
+   - **Milestone 1:** summary cards plus loading, empty, error, and degraded states,
+   - **Milestone 2:** benchmark drill-down and comparison workflows,
+   - **Milestone 3:** scheduled digest delivery.
+7. Only Milestone 1 receives technical derivation and slice planning.
 8. Slice planning adds both feature slices and preservation slices because the brownfield export path is fragile.
 9. Execution routes UI work to a UI-strong model profile, focused code edits to a code-specialist profile, and verification to a skeptical verifier profile.
 10. Invalid or out-of-scope output gets repaired or quarantined instead of corrupting state.
+11. Milestone close-out refreshes the horizon. If implementation learnings suggest the benchmark work should split again, the future milestone shells are recut without disturbing the completed milestone.
 
-The important point is that brownfield onboarding changes the starting posture of the entire system, not just the first prompt.
+The important point is that brownfield onboarding changes the starting posture of the entire system, and the new rolling-horizon model prevents the orchestrator from trying to deeply plan every dashboard enhancement upfront.
 
-## 11.2 Milestone N continuation example
+## 11.2 Later milestone continuation example
 
-Now imagine Milestone 1 is complete and the user later wants Milestone 2: “add scheduled weekly email summaries.”
+Now imagine the initial dashboard work is complete and the user later asks for “scheduled weekly email summaries.”
 
 A good continuation flow would be:
 
-1. The system reuses the program core from Milestone 1.
+1. The system reuses the program core and the current milestone horizon from earlier work.
 2. It reviews future seeds, backlog items, milestone audit outputs, and the user’s new request.
 3. It runs a small brownfield refresh only for analytics, notification, and permission-related areas.
 4. It skips full ideation because the product direction is already stable.
-5. It runs milestone shaping only for the new weekly summary capability.
-6. It performs targeted experience discovery for scheduling, opt-in settings, and delivery failure states.
-7. It derives technical changes against the existing product, keeping Milestone 1 dashboard contracts intact.
-8. It plans slices for scheduling UI, summary generation, fixture-backed email delivery, preference storage, and preservation tests.
-9. At close-out, it emits new future seeds such as digest customization or team-level distribution controls.
+5. It performs targeted experience discovery for scheduling, opt-in settings, digest content, and delivery failure states.
+6. It creates a lightweight experience simulation and gets the relevant behavior locked.
+7. Phase 8 decides the request should split into:
+   - **Active milestone:** scheduling, preference capture, and a basic fixture-backed digest delivery path,
+   - **Future milestone shell:** digest customization and team-level distribution controls.
+8. Technical derivation and slice planning happen only for the active scheduling milestone.
+9. At close-out, the system emits new future seeds, updates promotion conditions for the customization shell, and activates the next milestone only if the horizon still makes sense.
 
-This is the intended mental model for Milestone 2 and beyond: the system keeps the product continuous while making planning delta-scoped.
+This is the intended mental model for Milestone 2 and beyond: the system keeps the product continuous while staying delta-scoped and horizon-limited.
 
 ---
 
@@ -1699,34 +1835,43 @@ This is the intended mental model for Milestone 2 and beyond: the system keeps t
 
 These are the highest-leverage improvements I would bake in before starting implementation.
 
-### 12.1 Build one engine with three entry modes
-Do not build separate pipelines for greenfield, brownfield, and milestone continuation. Build one milestone engine with an entry router and phase-skip rules.
+### 12.1 Make rolling-horizon planning a first-class service
+Do not bury milestone sizing inside ad hoc prompts. Build an explicit milestone partitioner that can create, reorder, merge, or split milestone shells as scope becomes clearer.
 
-### 12.2 Separate stable program memory from milestone memory from day one
-This reduces context size, simplifies continuation, and makes Milestone N much easier to implement cleanly.
+### 12.2 Put milestone partitioning after experience lock for greenfield work
+This is the design change with the biggest leverage. Let the system shape and mock the product promise first, then decide what belongs in Milestone 1 versus later milestones.
 
-### 12.3 Add brownfield digests and incremental refresh early
+### 12.3 Build one engine with three entry modes
+Do not build separate pipelines for greenfield, brownfield, and continuation. Build one engine with an entry router, skip rules, and the same milestone-horizon semantics in every mode.
+
+### 12.4 Separate stable program memory, active milestone memory, and future milestone shells from day one
+This reduces context size, simplifies continuation, and prevents accidental whole-project replanning.
+
+### 12.5 Add brownfield digests and incremental refresh early
 A full codebase map on every milestone will become expensive and noisy. Cache brownfield findings and refresh only impacted areas.
 
-### 12.4 Make preservation contracts explicit
+### 12.6 Make preservation contracts explicit
 Brownfield safety gets dramatically better when the system can say not only what it intends to change, but also what must stay stable.
 
-### 12.5 Treat model routing as a policy layer, not a hardcoded switch
+### 12.7 Treat model routing as a policy layer, not a hardcoded switch
 The routing abstraction should be capability-based and configurable so it survives provider churn and real-world cost tuning.
 
-### 12.6 Build staged acceptance and quarantine before building many agents
+### 12.8 Build staged acceptance and quarantine before building many agents
 Validator-first architecture will save substantial cleanup later. If you postpone it, every later agent will assume it can write directly to durable state.
 
-### 12.7 Make prototype optional but principled
+### 12.9 Budget research to the next real decision
+Do not let research sprawl across the whole roadmap. Each research unit should justify the next experience, partitioning, or implementation decision.
+
+### 12.10 Make prototype optional but principled
 Do not force a full mock for every backend-only milestone. Use an experience simulation rule so the flow stays experience-first without becoming ceremonial.
 
-### 12.8 Add risk-tiered verification
+### 12.11 Add risk-tiered verification
 Not every slice needs the same verification intensity. High-risk, brownfield, migration, or user-facing slices should get heavier verification than low-risk internal cleanup.
 
-### 12.9 Promote future seeds and refactor candidates to first-class outputs
-This makes milestone continuation much smoother and prevents valuable follow-on ideas from being lost in summaries.
+### 12.12 Promote future milestone shells, seeds, and refactor candidates to first-class outputs
+This makes continuation much smoother and prevents valuable follow-on ideas from being lost in summaries.
 
-### 12.10 Tune the scheduler for “work around blockers”
+### 12.13 Tune the scheduler for “work around blockers”
 The biggest quality-of-life win in autonomous systems is not asking fewer questions once; it is staying productive when one path is blocked.
 
 ---
@@ -1735,35 +1880,38 @@ The biggest quality-of-life win in autonomous systems is not asking fewer questi
 
 If I were building this system now, I would implement it in this order:
 
-### Step 1: Milestone-aware SQLite schema and acceptance journal
-Build program and milestone state, generic record store, staged-output tables, validation journals, locks, blockers, and trace links.
+### Step 1: Milestone-aware SQLite schema, horizon state, and acceptance journal
+Build program state, milestone state, milestone-horizon tables, generic record store, staged-output tables, validation journals, locks, blockers, and trace links.
 
 ### Step 2: Brownfield mapper and knowledge seeding
 Build repository mapping, doc ingest, dependency inventory, hotspot detection, and trust-scored knowledge seeding.
 
 ### Step 3: Entry router and phase-skipping rules
-Build the logic that distinguishes greenfield Milestone 1, brownfield Milestone 1, and Milestone N continuation.
+Build the logic that distinguishes greenfield starts, brownfield starts, and continuation, and that knows when to skip or rerun phases safely.
 
-### Step 4: Readiness capture, credential tracking, and model policy capture
-Build structured intake, credential forecasting, user-input batching, and model-routing policy records.
+### Step 4: Readiness capture, credential tracking, scope signals, and model policy capture
+Build structured intake, credential forecasting, user-input batching, milestone-sizing signals, and model-routing policy records.
 
-### Step 5: Program core, milestone core, and context packer
+### Step 5: Program core, milestone shell model, and context packer
 Build the compact memory structures and the query layer that assembles narrow context packets from SQLite.
 
 ### Step 6: Experience-side agents
-Implement milestone shaping, journey mapping, research, interaction architecture, and prototype or simulation generation.
+Implement shaping, journey mapping, targeted research, interaction architecture, and prototype or simulation generation.
 
-### Step 7: Technical derivation and preservation contracts
-Derive technical contracts from approved experience and existing system reality, with delta impact and rollback planning.
+### Step 7: Milestone partitioner and activation logic
+Build the service that converts approved experience into an active milestone plus future milestone shells.
 
-### Step 8: Slice planner, scheduler, and model router
-Add thin-slice planning, blocker-aware prioritization, routing classes, and model assignment.
+### Step 8: Active-milestone technical derivation and preservation contracts
+Derive technical contracts from the approved active milestone and existing system reality, with delta impact and rollback planning.
 
-### Step 9: Execution loop with validation and repair
+### Step 9: Active-milestone slice planner, scheduler, and model router
+Add thin-slice planning, blocker-aware prioritization, routing classes, and model assignment for the active milestone only.
+
+### Step 10: Execution loop with validation and repair
 Implement test design, implementation, output staging, validation, repair, refactor, verification, and state update.
 
-### Step 10: Milestone hardening and continuation planning
-Add wave-level audits, release readiness, future-seed generation, backlog carry-forward, and next-milestone preparation.
+### Step 11: Milestone hardening, horizon refresh, and continuation planning
+Add wave-level audits, release readiness, future-seed generation, horizon updates, backlog carry-forward, and next-milestone preparation.
 
 ---
 
@@ -1772,23 +1920,26 @@ Add wave-level audits, release readiness, future-seed generation, backlog carry-
 1. **Every agent is fresh.** Memory lives in SQLite, not in the session.
 2. **Every handoff is structured.** Prefer typed records and structured payloads to narrative sprawl.
 3. **If a meaningful codebase already exists, map it first.**
-4. **Milestone 1 establishes the baseline.** Later milestones shape only the delta.
-5. **Program core and milestone core are separate.**
-6. **Brownfield work uses preservation contracts, not just change requests.**
-7. **Model selection is explicit, stored, and revisable.**
-8. **Model output is untrusted until validated and accepted atomically.**
-9. **The system continues autonomously while meaningful unblocked work exists.**
-10. **Missing user input is batched and requested early.**
-11. **Credential and access needs are inferred and tracked explicitly.**
-12. **Secrets are stored as secure references, not plaintext memory.**
-13. **The user sees a mock or equivalent experience simulation early when that reduces risk.**
-14. **Every milestone is broken into thin slices.**
-15. **Every slice is tested with fixtures, not live dependencies.**
-16. **Every slice is refactored after it works.**
-17. **Every important decision is versioned and traceable.**
-18. **Approved experience and preservation contracts are binding.**
-19. **Corrupt output is repaired or quarantined, not forced into state.**
-20. **Milestone close-out produces the next continuation surface.**
+4. **The user sees an outer experience early.** Show the mock or equivalent simulation before deep implementation planning hardens.
+5. **Milestone count is discovered from scope, not assumed.**
+6. **For greenfield work, deep milestone partitioning happens after UX lock.**
+7. **Only the active milestone gets deep planning.**
+8. **Future milestones stay as coarse shells until activated.**
+9. **Program core, active milestone core, and milestone horizon state stay separate.**
+10. **Brownfield work uses preservation contracts, not just change requests.**
+11. **Model selection is explicit, stored, and revisable.**
+12. **Model output is untrusted until validated and accepted atomically.**
+13. **The system continues autonomously while meaningful unblocked work exists.**
+14. **Missing user input is batched and requested early.**
+15. **Credential and access needs are inferred and tracked explicitly.**
+16. **Secrets are stored as secure references, not plaintext memory.**
+17. **Every active milestone is broken into thin slices.**
+18. **Every slice is tested with fixtures, not live dependencies.**
+19. **Every slice is refactored after it works.**
+20. **Every important decision is versioned and traceable.**
+21. **Approved experience and preservation contracts are binding.**
+22. **Corrupt output is repaired or quarantined, not forced into state.**
+23. **Milestone close-out refreshes the continuation surface and may recut the future horizon.**
 
 ---
 
@@ -1796,15 +1947,17 @@ Add wave-level audits, release readiness, future-seed generation, backlog carry-
 
 The updated pipeline is a **SQLite-backed, experience-first, fresh-agent delivery system** that now supports three realistic starting modes:
 
-- a greenfield Milestone 1,
-- a brownfield Milestone 1 that begins by mapping the existing product,
-- and Milestone N continuation that plans only the next delta.
+- a greenfield program start,
+- a brownfield program start that begins by mapping the existing product,
+- and milestone continuation that plans only the next justified increment.
+
+Its central change is that it no longer assumes an LLM should micro-plan the whole project upfront. Instead, it shapes the outer experience first, gets an early mock or simulation in front of the user, then partitions the work into however many milestones the scope actually warrants and deeply plans only the active milestone.
 
 It keeps the strongest part of the prior design—specialized agents with minimal context—but strengthens it with milestone continuity, optional brownfield onboarding, capability-based model routing, preservation contracts for existing systems, and a validator-first acceptance model that prevents malformed output from corrupting the orchestrator.
 
 In practical terms, the flow becomes:
 
-**entry routing -> optional brownfield reconnaissance -> guided ideation or milestone shaping -> structured intake, readiness, and model policy capture -> program and milestone framing -> experience discovery -> experience research -> interaction architecture and impact mapping -> mock-first prototype or experience simulation -> UX lock -> technical derivation and delta impact analysis -> slice planning and milestone scheduling -> autonomous implement/validate/test/refactor/verify loop -> milestone hardening -> release readiness -> seeds, backlog, and next-milestone continuation**
+**entry routing -> optional brownfield reconnaissance -> guided ideation or program shaping -> structured intake, readiness, and model policy capture -> program framing and horizon setup -> experience discovery -> targeted experience research -> interaction architecture and impact mapping -> mock-first prototype or experience simulation -> UX lock -> scope sizing, milestone partitioning, and activation -> active-milestone technical derivation -> active-milestone slice planning -> autonomous implement/validate/test/refactor/verify loop -> milestone hardening -> horizon refresh -> next milestone or stop**
 
 The result is a delivery system that can start from nothing, start from a messy real codebase, or keep evolving a product milestone after milestone without constantly losing context or re-solving the whole project.
 
@@ -1812,34 +1965,42 @@ The result is a delivery system that can start from nothing, start from a messy 
 
 ```mermaid
 flowchart TD
-    Start[Start / Resume Program] --> Entry{Existing repo,<br/>product, or docs?}
+    Start[Start / Resume Program] --> Entry{Existing repo,<br/>product, or prior milestone?}
 
-    Entry -- No --> I0[Phase 0<br/>Guided Ideation<br/>for Milestone 1]
+    Entry -- No --> I0[Phase 0<br/>Guided Ideation /<br/>Program Shaping]
     Entry -- Yes --> B0[Phase B<br/>Brownfield Reconnaissance<br/>and Knowledge Seeding]
 
-    B0 --> Scope{Need full<br/>product ideation?}
-    Scope -- No --> M0[Phase 0<br/>Milestone Shaping /<br/>Delta Ideation]
+    B0 --> Scope{Need broad<br/>experience shaping?}
     Scope -- Yes --> I0
+    Scope -- No --> P1[Phase 1<br/>Structured Intake,<br/>Readiness, and Model Policy]
 
-    I0 --> P1[Phase 1<br/>Structured Intake,<br/>Readiness, and Model Policy]
-    M0 --> P1
-    P1 --> P2[Phase 2<br/>Program and Milestone Framing]
+    I0 --> P1
+    P1 --> P2[Phase 2<br/>Program Framing and<br/>Horizon Setup]
     P2 --> P3[Phase 3<br/>Experience Discovery]
-    P3 --> P4[Phase 4<br/>Experience Research]
+    P3 --> P4[Phase 4<br/>Targeted Experience Research]
     P4 --> P5[Phase 5<br/>Interaction Architecture<br/>and Impact Mapping]
     P5 --> P6[Phase 6<br/>Mock-First Prototype or<br/>Experience Simulation]
     P6 --> P7[Phase 7<br/>UX Review and Lock]
-    P7 --> P8[Phase 8<br/>Technical Derivation and<br/>Delta Impact Analysis]
-    P8 --> P9[Phase 9<br/>Slice Planning and<br/>Milestone Scheduling]
-    P9 --> P10[Phase 10<br/>Autonomous Slice Execution Loop]
-    P10 --> P11[Phase 11<br/>Milestone Hardening,<br/>Release Readiness,<br/>and Continuation Planning]
+    P7 --> P8[Phase 8<br/>Scope Sizing,<br/>Milestone Partitioning,<br/>and Activation]
+    P8 --> P9[Phase 9<br/>Milestone-Scoped Technical<br/>Derivation]
+    P9 --> P10[Phase 10<br/>Active-Milestone Slice<br/>Planning and Rolling Schedule]
+    P10 --> P11[Phase 11<br/>Autonomous Slice<br/>Execution Loop]
+    P11 --> P12[Phase 12<br/>Milestone Hardening,<br/>Release Readiness,<br/>and Continuation Planning]
 
-    P11 --> Next{Another<br/>milestone?}
-    Next -- Yes --> Seeds[Seed Scan + Backlog Review +<br/>Brownfield Refresh]
-    Seeds --> M0
-    Next -- No --> Done[Program Complete]
+    P12 --> Next{Activate another<br/>milestone now?}
+    Next -- Yes --> Refresh[Horizon Refresh +<br/>Targeted Brownfield Refresh]
+    Refresh --> P8
+    Next -- No --> Done[Pause or Complete]
 
-    subgraph EXEC [Phase 10 Loop]
+    subgraph HORIZON [Rolling Planning Horizon]
+        H1[Program direction / north star]
+        H2[Future milestone shells<br/>kept coarse]
+        H3[Active milestone<br/>planned deeply]
+        H4[Current slice / work unit<br/>planned precisely]
+        H1 --> H2 --> H3 --> H4
+    end
+
+    subgraph EXEC [Phase 11 Loop]
         E1[Route work to<br/>model class]
         E2[Test design]
         E3[Implementation]
@@ -1848,25 +2009,25 @@ flowchart TD
         E6[Refactor]
         E7[Regression verify]
         E8[State update]
-        E9{More eligible<br/>unblocked work?}
+        E9{More eligible work<br/>in active milestone?}
         E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7 --> E8 --> E9
         E9 -- Yes --> E1
     end
 
     subgraph ORCH [Thin Orchestrator]
-        O1[Choose entry mode and<br/>current milestone state]
+        O1[Choose entry mode,<br/>active milestone, and horizon state]
         O2[Pick next best<br/>work unit]
         O3[Assemble minimal<br/>context]
         O4[Select model route]
         O5[Validate output]
         O6[Write accepted state]
-        O7[Re-rank work<br/>and blockers]
+        O7[Re-rank work,<br/>blockers, and horizon]
         O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7
     end
 
     subgraph DB [SQLite Orchestration Memory]
         D1[Projects / Program State]
-        D2[Milestones / Milestone State]
+        D2[Milestones / Horizon State]
         D3[Work Units / Dependencies]
         D4[Generic Records]
         D5[Brownfield Maps / Knowledge Seeds]
@@ -1899,6 +2060,7 @@ flowchart TD
     DB --> P9
     DB --> P10
     DB --> P11
+    DB --> P12
 ```
 
 ```mermaid
@@ -1908,116 +2070,128 @@ sequenceDiagram
     participant O as Thin Orchestrator
     participant DB as SQLite Memory
     participant B as Brownfield Mapper
+    participant A as Specialist Agent
+    participant P as Milestone Partitioner
     participant C as Context Packer
     participant M as Model Router
-    participant A as Specialist Agent
     participant G as Output Gate
     participant S as Secure Secret Channel / Vault
     participant R as Repository / Codebase
     participant T as Test Runner
     participant V as Verifier
 
-    O->>DB: Read program state, milestone state, locks,\nblockers, model policies, and prior digests
+    O->>DB: Read program state, active milestone,<br/>milestone horizon, blockers, and digests
 
-    alt Existing codebase or later milestone
-        O->>B: Refresh brownfield map, docs, hotspots,\nand preservation constraints
-        B->>DB: Write brownfield snapshot, knowledge seeds,\nimpact hints, and trust scores
-        alt Scope is already explicit
-            O->>DB: Create milestone brief from user request,\nseeds, backlog, and audit gaps
-        else Scope still needs shaping
-            O->>A: Launch milestone-shaping agent
-            A-->>O: Milestone brief, delta scope,\npreserved behaviors, and success criteria
-            O->>DB: Write milestone-scoped records
-        end
-    else Greenfield Milestone 1
+    alt Existing codebase or continuation
+        O->>B: Refresh brownfield map and preserved surfaces
+        B->>DB: Write observed constraints,<br/>hotspots, and impact hints
+    else Greenfield start
         O->>A: Launch guided ideation agents
-        A-->>O: Selected direction, scope boundary,\nand experience thesis
-        O->>DB: Write Milestone 1 ideation records
+        A-->>O: Program direction, capability map,<br/>and experience thesis
+        O->>DB: Write program-shaping records
     end
 
-    O->>C: Assemble minimal context packet
-    C->>DB: Load program core, milestone core, locked decisions,\nbrownfield digest, readiness state, and relevant records
-    DB-->>C: Structured records + file metadata + blocker state
-    C-->>O: Context packet + output contract + preservation constraints
+    O->>A: Launch experience design agents
+    A-->>O: Journeys, interaction architecture,<br/>and prototype or simulation
+    O->>DB: Write experience records
+    O-->>U: Present mock or experience simulation
+    U-->>O: Feedback / approval
+    O->>DB: Lock approved experience contract
 
-    O->>M: Select model route for this work unit
-    M->>DB: Load routing policy, prior failure history,\ncost envelope, and compliance limits
-    DB-->>M: Routing policy + run history
-    M-->>O: Primary model, fallback chain,\nand independent verifier profile
+    O->>P: Size scope and partition into milestones
+    P->>DB: Load approved experience, constraints,<br/>risk signals, and readiness state
+    DB-->>P: Program core + capability map + blockers
+    P-->>O: Active milestone + future milestone shells<br/>+ promotion conditions
+    O->>DB: Write planning horizon and activation records
 
-    O->>A: Launch fresh specialist agent with scoped context
-    A-->>O: Proposed output / code changes / records
+    O->>A: Launch active-milestone technical derivation<br/>and slice planning
+    A-->>O: Technical contracts + slice plans<br/>for active milestone only
+    O->>DB: Write active-milestone records
 
-    O->>G: Stage output for canonicalization and validation
-    G->>DB: Record staged artifact, schema version,\nprovenance, and dependency refs
-    G->>G: Run syntax, schema, semantic,\nscope, and policy checks
+    loop For each eligible slice in active milestone
+        O->>C: Assemble minimal context packet
+        C->>DB: Load active milestone records,<br/>relevant digests, and local code neighborhood
+        DB-->>C: Structured context + blocker state
+        C-->>O: Scoped context + output contract
 
-    alt Output invalid, partial, or corrupt
-        G-->>O: Reject, repair, or quarantine recommendation
-        alt Repair is feasible
-            O->>M: Escalate route or switch model family
+        O->>M: Select model route
+        M->>DB: Load routing policy,<br/>prior failures, and budgets
+        DB-->>M: Policy + run history
+        M-->>O: Primary route + fallback chain
+
+        O->>A: Launch fresh specialist agent
+        A-->>O: Proposed output / code changes / records
+
+        O->>G: Stage output for validation
+        G->>G: Run syntax, schema, semantic,<br/>scope, and policy checks
+
+        alt Output invalid or corrupt
+            G-->>O: Reject, repair, or quarantine recommendation
+            O->>M: Escalate or switch route
             M-->>O: New route
             O->>A: Launch narrow repair agent
             A-->>O: Corrected output
             O->>G: Re-stage and revalidate
-            G-->>O: Accepted or quarantined result
-        else Irrecoverable this turn
-            O->>DB: Write quarantine item,\nvalidation failure, and remediation work unit
+        else Output valid
+            G-->>O: Accepted artifact
+            O->>R: Apply accepted code or state changes
+            O->>DB: Write accepted records and run digest
         end
-    else Output valid
-        G-->>O: Accepted artifact
-        O->>R: Apply accepted code or state changes
-        O->>DB: Write accepted records,\ntouched assets, and run digest
+
+        O->>T: Run required tests with fixtures,<br/>fakes, and stubs
+        T->>R: Execute unit, component, integration,<br/>contract, and regression tests
+        T-->>O: Test results + failure report
+
+        alt Tests failed
+            O->>M: Re-route to fixer profile
+            M-->>O: Repair route
+            O->>A: Launch narrow fixer
+            A-->>O: Fixes for failing behavior
+            O->>G: Validate fixes before acceptance
+            G-->>O: Accepted fix output
+            O->>R: Apply fixes
+            O->>T: Re-run tests
+            T-->>O: Passing test results
+        end
+
+        O->>M: Route refactor step
+        M-->>O: Refactor route
+        O->>A: Launch dedicated refactor agent
+        A-->>O: Refactor proposal
+        O->>G: Validate refactor scope and safety
+        G-->>O: Accepted refactor
+        O->>R: Apply refactor changes
+        O->>DB: Write refactor records
+
+        O->>V: Verify acceptance criteria,<br/>UX conformance, and preservation contract
+        V->>T: Re-run relevant regression tests
+        T-->>V: Regression results
+        V->>DB: Load active milestone contract,<br/>preserved behaviors, blockers, and readiness rules
+        DB-->>V: Criteria + contracts + state
+        V-->>O: Verification result
+
+        alt Verification passed
+            O->>DB: Mark slice complete,<br/>update milestone progress, and recompute blockers
+        else Verification failed
+            O->>DB: Record follow-up work unit,<br/>blocker, or rollback recommendation
+        end
     end
 
-    O->>T: Run required tests using fixtures,\nfakes, and stubs
-    T->>R: Execute unit, component, integration,\ncontract, and regression tests
-    T-->>O: Test results + failure report
+    O->>A: Launch milestone auditor and continuation planner
+    A-->>O: Milestone audit, future seeds,<br/>horizon update, and next milestone options
+    O->>DB: Write milestone close-out records
 
-    alt Tests failed
-        O->>M: Re-route to fixer profile
-        M-->>O: Repair route
-        O->>A: Launch narrow fixer
-        A-->>O: Fixes for failing behavior
-        O->>G: Validate fixes before acceptance
-        G-->>O: Accepted fix output
-        O->>R: Apply fixes
-        O->>T: Re-run required tests
-        T-->>O: Passing test results
-    end
-
-    O->>M: Route refactor step to refactor profile
-    M-->>O: Refactor route
-    O->>A: Launch dedicated refactor agent
-    A-->>O: Refactor proposal
-    O->>G: Validate refactor scope and safety
-    G-->>O: Accepted refactor
-    O->>R: Apply refactor changes
-    O->>DB: Write refactor records
-
-    O->>V: Verify acceptance criteria,\nUX conformance, and preservation contract
-    V->>T: Re-run relevant regression tests
-    T-->>V: Regression results
-    V->>DB: Load milestone contract,\npreserved behaviors, blockers, and readiness rules
-    DB-->>V: Criteria + contracts + state
-    V-->>O: Verification result
-
-    alt Verification passed
-        O->>DB: Mark work unit complete,\nupdate milestone state, recompute blockers,\nand emit next action
-        alt Milestone complete
-            O->>A: Launch milestone auditor and continuation planner
-            A-->>O: Milestone audit, future seeds,\nbacklog candidates, and next milestone options
-            O->>DB: Write milestone close-out records
-        else More eligible work remains
-            O->>O: Continue autonomously
-        end
-    else Verification failed
-        O->>DB: Record follow-up work unit,\nblocker, or rollback recommendation
+    alt Another milestone should activate now
+        O->>P: Re-evaluate horizon with new learnings
+        P-->>O: Next active milestone
+        O->>DB: Update activation state
+    else Waiting for user input or natural stop
+        O-->>U: Send batched request or completion summary
     end
 
     alt Credentials or approvals become true blockers
-        O-->>U: Send one batched request for input,\napproval, or secure access
-        U->>S: Provide credentials or approvals\nthrough secure channel
+        O-->>U: Send one batched request for input,<br/>approval, or secure access
+        U->>S: Provide credentials or approvals<br/>through secure channel
         S->>DB: Store vault handles and readiness metadata only
     end
 ```

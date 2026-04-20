@@ -30,6 +30,7 @@ import {
   runtimeRunSchema,
   runtimeRunUpdatedPayloadSchema,
   runtimeSessionSchema,
+  runtimeSettingsSchema,
   runtimeStreamItemSchema,
   runtimeUpdatedPayloadSchema,
   subscribeRuntimeStreamRequestSchema,
@@ -38,6 +39,7 @@ import {
   upsertNotificationRouteResponseSchema,
   upsertNotificationRouteCredentialsRequestSchema,
   upsertNotificationRouteCredentialsResponseSchema,
+  upsertRuntimeSettingsRequestSchema,
   upsertWorkflowGraphRequestSchema,
   upsertWorkflowGraphResponseSchema,
   type ApplyWorkflowTransitionRequestDto,
@@ -60,6 +62,7 @@ import {
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
+  type RuntimeSettingsDto,
   type RuntimeStreamEventDto,
   type RuntimeStreamItemKindDto,
   type RuntimeUpdatedPayloadDto,
@@ -71,6 +74,7 @@ import {
   type UpsertNotificationRouteResponseDto,
   type UpsertNotificationRouteCredentialsRequestDto,
   type UpsertNotificationRouteCredentialsResponseDto,
+  type UpsertRuntimeSettingsRequestDto,
   type UpsertWorkflowGraphRequestDto,
   type UpsertWorkflowGraphResponseDto,
 } from '@/src/lib/cadence-model'
@@ -85,6 +89,7 @@ const COMMANDS = {
   getAutonomousRun: 'get_autonomous_run',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
+  getRuntimeSettings: 'get_runtime_settings',
   startOpenAiLogin: 'start_openai_login',
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
@@ -93,6 +98,7 @@ const COMMANDS = {
   cancelAutonomousRun: 'cancel_autonomous_run',
   stopRuntimeRun: 'stop_runtime_run',
   logoutRuntimeSession: 'logout_runtime_session',
+  upsertRuntimeSettings: 'upsert_runtime_settings',
   resolveOperatorAction: 'resolve_operator_action',
   resumeOperatorRun: 'resume_operator_run',
   listNotificationRoutes: 'list_notification_routes',
@@ -161,6 +167,7 @@ export interface CadenceDesktopAdapter {
   getAutonomousRun(projectId: string): Promise<AutonomousRunStateDto>
   getRuntimeRun(projectId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
+  getRuntimeSettings(): Promise<RuntimeSettingsDto>
   startOpenAiLogin(projectId: string, options?: { originator?: string | null }): Promise<RuntimeSessionDto>
   submitOpenAiCallback(
     projectId: string,
@@ -173,6 +180,7 @@ export interface CadenceDesktopAdapter {
   cancelAutonomousRun(projectId: string, runId: string): Promise<AutonomousRunStateDto>
   stopRuntimeRun(projectId: string, runId: string): Promise<RuntimeRunDto | null>
   logoutRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
+  upsertRuntimeSettings(request: UpsertRuntimeSettingsRequestDto): Promise<RuntimeSettingsDto>
   resolveOperatorAction(
     projectId: string,
     actionId: string,
@@ -488,6 +496,10 @@ export const cadenceDesktopAdapter: CadenceDesktopAdapter = {
     })
   },
 
+  getRuntimeSettings() {
+    return invokeTyped(COMMANDS.getRuntimeSettings, runtimeSettingsSchema)
+  },
+
   startOpenAiLogin(projectId, options) {
     return invokeTyped(COMMANDS.startOpenAiLogin, runtimeSessionSchema, {
       request: {
@@ -540,6 +552,13 @@ export const cadenceDesktopAdapter: CadenceDesktopAdapter = {
   logoutRuntimeSession(projectId) {
     return invokeTyped(COMMANDS.logoutRuntimeSession, runtimeSessionSchema, {
       request: { projectId },
+    })
+  },
+
+  upsertRuntimeSettings(request) {
+    const parsedRequest = upsertRuntimeSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.upsertRuntimeSettings, runtimeSettingsSchema, {
+      request: parsedRequest,
     })
   },
 
