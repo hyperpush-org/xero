@@ -34,8 +34,7 @@ use super::{
         SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
         SupervisorProcessStatus, SupervisorProtocolDiagnostic, SupervisorStartupMessage,
         SupervisorToolCallState, ToolResultSummary, WebToolResultSummary,
-        SUPERVISOR_KIND_DETACHED_PTY, SUPERVISOR_PROTOCOL_VERSION,
-        SUPERVISOR_TRANSPORT_KIND_TCP,
+        SUPERVISOR_KIND_DETACHED_PTY, SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_TRANSPORT_KIND_TCP,
     },
 };
 
@@ -2453,16 +2452,20 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
                     );
                 }
             };
-            if [Some(tool_call_id.as_str()), Some(tool_name.as_str()), detail.as_deref()]
-                .into_iter()
-                .flatten()
-                .chain(
-                    tool_summary
-                        .as_ref()
-                        .into_iter()
-                        .flat_map(tool_result_summary_text_fragments),
-                )
-                .any(|value| contains_prohibited_live_content(value).is_some())
+            if [
+                Some(tool_call_id.as_str()),
+                Some(tool_name.as_str()),
+                detail.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .chain(
+                tool_summary
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(tool_result_summary_text_fragments),
+            )
+            .any(|value| contains_prohibited_live_content(value).is_some())
             {
                 redacted_live_event()
             } else {
@@ -2765,9 +2768,7 @@ fn sanitize_optional_tool_summary_text(
         .map(|value| value.flatten())
 }
 
-fn sanitize_required_tool_summary_text(
-    value: String,
-) -> Result<String, ToolSummaryDecodeError> {
+fn sanitize_required_tool_summary_text(value: String) -> Result<String, ToolSummaryDecodeError> {
     match sanitize_text_fragment(&value) {
         Ok(Some(value)) => Ok(value),
         Ok(None) => Err(ToolSummaryDecodeError::Invalid),

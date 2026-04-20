@@ -15,6 +15,7 @@ use crate::{
 pub const REGISTRY_FILE_NAME: &str = "project-registry.json";
 pub const RUNTIME_SETTINGS_FILE_NAME: &str = "runtime-settings.json";
 pub const OPENROUTER_CREDENTIAL_FILE_NAME: &str = "openrouter-credentials.json";
+pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportFailpoints {
@@ -37,6 +38,7 @@ pub struct DesktopState {
     notification_credential_store_file_override: Option<PathBuf>,
     runtime_settings_file_override: Option<PathBuf>,
     openrouter_credential_file_override: Option<PathBuf>,
+    autonomous_skill_cache_dir_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
     openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
     openrouter_auth_config_override: Option<OpenRouterAuthConfig>,
@@ -71,6 +73,11 @@ impl DesktopState {
 
     pub fn with_openrouter_credential_file_override(mut self, path: PathBuf) -> Self {
         self.openrouter_credential_file_override = Some(path);
+        self
+    }
+
+    pub fn with_autonomous_skill_cache_dir_override(mut self, path: PathBuf) -> Self {
+        self.autonomous_skill_cache_dir_override = Some(path);
         self
     }
 
@@ -144,6 +151,28 @@ impl DesktopState {
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {
         &self.active_auth_flows
+    }
+
+    pub fn app_data_dir<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {
+        app.path().app_data_dir().map_err(|error| {
+            CommandError::system_fault(
+                "app_data_dir_unavailable",
+                format!("Cadence could not resolve the app-data directory: {error}"),
+            )
+        })
+    }
+
+    pub fn autonomous_skill_cache_dir<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<PathBuf, CommandError> {
+        if let Some(path) = &self.autonomous_skill_cache_dir_override {
+            return Ok(path.clone());
+        }
+
+        Ok(self
+            .app_data_dir(app)?
+            .join(AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME))
     }
 
     pub fn registry_file<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {

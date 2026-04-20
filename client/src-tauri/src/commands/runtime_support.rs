@@ -15,16 +15,15 @@ use crate::{
         AutonomousToolResultPayloadDto, AutonomousUnitArtifactDto, AutonomousUnitArtifactStatusDto,
         AutonomousUnitAttemptDto, AutonomousUnitDto, AutonomousUnitHistoryEntryDto,
         AutonomousUnitKindDto, AutonomousUnitStatusDto, AutonomousVerificationEvidencePayloadDto,
-        AutonomousVerificationOutcomeDto, AutonomousWorkflowLinkageDto,
-        CommandToolResultSummaryDto, CommandError, CommandErrorClass, CommandResult,
-        FileToolResultSummaryDto, GitToolResultScopeDto, GitToolResultSummaryDto,
-        ProjectUpdateReason, ProjectUpdatedPayloadDto, RuntimeDiagnosticDto,
-        RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto, RuntimeRunDiagnosticDto,
-        RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportDto,
-        RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto, RuntimeSessionDto,
-        RuntimeUpdatedPayloadDto, ToolResultSummaryDto, WebToolResultContentKindDto,
-        WebToolResultSummaryDto, PROJECT_UPDATED_EVENT, RUNTIME_RUN_UPDATED_EVENT,
-        RUNTIME_UPDATED_EVENT,
+        AutonomousVerificationOutcomeDto, AutonomousWorkflowLinkageDto, CommandError,
+        CommandErrorClass, CommandResult, CommandToolResultSummaryDto, FileToolResultSummaryDto,
+        GitToolResultScopeDto, GitToolResultSummaryDto, ProjectUpdateReason,
+        ProjectUpdatedPayloadDto, RuntimeDiagnosticDto, RuntimeRunCheckpointDto,
+        RuntimeRunCheckpointKindDto, RuntimeRunDiagnosticDto, RuntimeRunDto, RuntimeRunStatusDto,
+        RuntimeRunTransportDto, RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto,
+        RuntimeSessionDto, RuntimeUpdatedPayloadDto, ToolResultSummaryDto,
+        WebToolResultContentKindDto, WebToolResultSummaryDto, PROJECT_UPDATED_EVENT,
+        RUNTIME_RUN_UPDATED_EVENT, RUNTIME_UPDATED_EVENT,
     },
     db::project_store::{
         self, AutonomousArtifactCommandResultRecord, AutonomousArtifactPayloadRecord,
@@ -39,9 +38,9 @@ use crate::{
     runtime::{
         autonomous_orchestrator::{reconcile_runtime_snapshot, AutonomousRuntimeReconcileIntent},
         autonomous_workflow_progression::persist_autonomous_workflow_progression,
-        default_runtime_provider, probe_runtime_run, resolve_runtime_provider_identity,
+        default_runtime_provider, probe_runtime_run,
         protocol::{GitToolResultScope, ToolResultSummary, WebToolResultContentKind},
-        RuntimeSupervisorProbeRequest,
+        resolve_runtime_provider_identity, RuntimeSupervisorProbeRequest,
     },
     state::DesktopState,
 };
@@ -717,9 +716,7 @@ fn git_tool_result_scope_dto(scope: GitToolResultScope) -> GitToolResultScopeDto
     }
 }
 
-fn web_tool_result_content_kind_dto(
-    kind: WebToolResultContentKind,
-) -> WebToolResultContentKindDto {
+fn web_tool_result_content_kind_dto(kind: WebToolResultContentKind) -> WebToolResultContentKindDto {
     match kind {
         WebToolResultContentKind::Html => WebToolResultContentKindDto::Html,
         WebToolResultContentKind::PlainText => WebToolResultContentKindDto::PlainText,

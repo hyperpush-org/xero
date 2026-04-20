@@ -18,8 +18,7 @@ use cadence_desktop_lib::{
         ProjectIdRequestDto, ProjectSummaryDto, ProjectUpdateReason, ProjectUpdatedPayloadDto,
         RuntimeAuthPhase, RuntimeRunCheckpointKindDto, RuntimeRunTransportLivenessDto,
         RuntimeSessionDto, RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
-        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto,
-        SUBSCRIBE_RUNTIME_STREAM_COMMAND,
+        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto, SUBSCRIBE_RUNTIME_STREAM_COMMAND,
     },
     configure_builder_with_state,
     db::{

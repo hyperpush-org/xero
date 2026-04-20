@@ -13371,8 +13371,10 @@ fn validate_autonomous_tool_result_summary(
     tool_summary: Option<&ToolResultSummary>,
 ) -> Result<(), CommandError> {
     if let Some(command_result) = command_result {
-        if matches!(tool_state, AutonomousToolCallStateRecord::Pending | AutonomousToolCallStateRecord::Running)
-        {
+        if matches!(
+            tool_state,
+            AutonomousToolCallStateRecord::Pending | AutonomousToolCallStateRecord::Running
+        ) {
             return Err(CommandError::user_fixable(
                 "autonomous_run_request_invalid",
                 "Cadence only persists command_result metadata after a tool reaches a terminal state.",
@@ -13395,8 +13397,10 @@ fn validate_autonomous_tool_result_summary(
 
     match tool_summary {
         ToolResultSummary::Command(summary) => {
-            if matches!(tool_state, AutonomousToolCallStateRecord::Pending | AutonomousToolCallStateRecord::Running)
-            {
+            if matches!(
+                tool_state,
+                AutonomousToolCallStateRecord::Pending | AutonomousToolCallStateRecord::Running
+            ) {
                 return Err(CommandError::user_fixable(
                     "autonomous_run_request_invalid",
                     "Cadence only persists command tool_summary metadata after a tool reaches a terminal state.",
@@ -13446,11 +13450,19 @@ fn validate_autonomous_tool_result_summary(
                 ));
             }
             if let Some(path) = summary.path.as_deref() {
-                validate_non_empty_text(path, "tool_summary_file_path", "autonomous_run_request_invalid")?;
+                validate_non_empty_text(
+                    path,
+                    "tool_summary_file_path",
+                    "autonomous_run_request_invalid",
+                )?;
                 validate_autonomous_artifact_text(path, "tool_summary_file_path")?;
             }
             if let Some(scope) = summary.scope.as_deref() {
-                validate_non_empty_text(scope, "tool_summary_file_scope", "autonomous_run_request_invalid")?;
+                validate_non_empty_text(
+                    scope,
+                    "tool_summary_file_scope",
+                    "autonomous_run_request_invalid",
+                )?;
                 validate_autonomous_artifact_text(scope, "tool_summary_file_scope")?;
             }
         }

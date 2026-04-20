@@ -1,4 +1,5 @@
 pub mod autonomous_orchestrator;
+pub mod autonomous_skill_runtime;
 pub mod autonomous_tool_runtime;
 pub mod autonomous_web_runtime;
 pub mod autonomous_workflow_progression;
@@ -8,6 +9,21 @@ pub mod provider;
 pub mod stream;
 pub mod supervisor;
 
+pub use autonomous_skill_runtime::{
+    AutonomousSkillCacheError, AutonomousSkillCacheInstallFile, AutonomousSkillCacheManifest,
+    AutonomousSkillCacheManifestFile, AutonomousSkillCacheStatus, AutonomousSkillCacheStore,
+    AutonomousSkillDiscoverOutput, AutonomousSkillDiscoverRequest,
+    AutonomousSkillDiscoveryCandidate, AutonomousSkillInstallOutput, AutonomousSkillInstallRequest,
+    AutonomousSkillInvocationAsset, AutonomousSkillInvokeOutput, AutonomousSkillInvokeRequest,
+    AutonomousSkillResolveOutput, AutonomousSkillResolveRequest, AutonomousSkillRuntime,
+    AutonomousSkillRuntimeConfig, AutonomousSkillRuntimeLimits, AutonomousSkillSource,
+    AutonomousSkillSourceEntryKind, AutonomousSkillSourceError, AutonomousSkillSourceFileRequest,
+    AutonomousSkillSourceFileResponse, AutonomousSkillSourceMetadata,
+    AutonomousSkillSourceTreeEntry, AutonomousSkillSourceTreeRequest,
+    AutonomousSkillSourceTreeResponse, FilesystemAutonomousSkillCacheStore,
+    GithubAutonomousSkillSource, AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO,
+    AUTONOMOUS_SKILL_SOURCE_ROOT,
+};
 pub use autonomous_tool_runtime::{
     resolve_imported_repo_root, resolve_imported_repo_root_from_registry, AutonomousCommandOutput,
     AutonomousCommandRequest, AutonomousEditOutput, AutonomousEditRequest, AutonomousFindOutput,

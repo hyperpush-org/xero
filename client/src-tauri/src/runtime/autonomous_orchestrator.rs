@@ -9,13 +9,13 @@ use crate::{
     commands::CommandError,
     db::project_store::{
         self, AutonomousArtifactCommandResultRecord, AutonomousArtifactPayloadRecord,
-        AutonomousPolicyDeniedPayloadRecord, AutonomousRunRecord,
-        AutonomousRunSnapshotRecord, AutonomousRunStatus, AutonomousRunUpsertRecord,
-        AutonomousToolCallStateRecord, AutonomousToolResultPayloadRecord,
-        AutonomousUnitArtifactRecord, AutonomousUnitArtifactStatus, AutonomousUnitAttemptRecord,
-        AutonomousUnitKind, AutonomousUnitRecord, AutonomousUnitStatus,
-        AutonomousVerificationEvidencePayloadRecord, AutonomousVerificationOutcomeRecord,
-        RuntimeRunDiagnosticRecord, RuntimeRunSnapshotRecord, RuntimeRunStatus,
+        AutonomousPolicyDeniedPayloadRecord, AutonomousRunRecord, AutonomousRunSnapshotRecord,
+        AutonomousRunStatus, AutonomousRunUpsertRecord, AutonomousToolCallStateRecord,
+        AutonomousToolResultPayloadRecord, AutonomousUnitArtifactRecord,
+        AutonomousUnitArtifactStatus, AutonomousUnitAttemptRecord, AutonomousUnitKind,
+        AutonomousUnitRecord, AutonomousUnitStatus, AutonomousVerificationEvidencePayloadRecord,
+        AutonomousVerificationOutcomeRecord, RuntimeRunDiagnosticRecord, RuntimeRunSnapshotRecord,
+        RuntimeRunStatus,
     },
     runtime::protocol::{
         CommandToolResultSummary, SupervisorLiveEventPayload, SupervisorToolCallState,
@@ -318,9 +318,9 @@ pub fn persist_supervisor_event(
             );
             let timestamp = existing_artifact_timestamp(existing.as_ref(), &artifact_id)
                 .unwrap_or_else(now_timestamp);
-            let command_result = tool_summary
-                .as_ref()
-                .and_then(|summary| command_result_record_for_tool_summary(summary, detail.as_deref()));
+            let command_result = tool_summary.as_ref().and_then(|summary| {
+                command_result_record_for_tool_summary(summary, detail.as_deref())
+            });
             upsert_artifact(
                 &mut payload.artifacts,
                 AutonomousUnitArtifactRecord {
