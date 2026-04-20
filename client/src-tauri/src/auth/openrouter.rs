@@ -114,18 +114,24 @@ pub(crate) fn reconcile_openrouter_runtime_session<R: Runtime>(
         }));
     };
 
-    validate_openrouter_models_probe(api_key, &settings.settings.model_id, &state.openrouter_auth_config())?;
     let expected = synthetic_binding(settings, api_key);
-
     let account_id = normalized(account_id);
     let session_id = normalized(session_id);
-    if account_id != Some(expected.account_id.as_str()) || session_id != Some(expected.session_id.as_str()) {
+    if account_id != Some(expected.account_id.as_str())
+        || session_id != Some(expected.session_id.as_str())
+    {
         return Ok(OpenRouterReconcileOutcome::SignedOut(AuthDiagnostic {
             code: "openrouter_binding_stale".into(),
             message: "Cadence rejected the persisted OpenRouter runtime binding because the saved app-global provider settings or API key changed. Rebind the runtime session from Settings.".into(),
             retryable: false,
         }));
     }
+
+    validate_openrouter_models_probe(
+        api_key,
+        &settings.settings.model_id,
+        &state.openrouter_auth_config(),
+    )?;
 
     Ok(OpenRouterReconcileOutcome::Authenticated(expected))
 }

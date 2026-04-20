@@ -498,6 +498,38 @@ fn builder_boots_and_registered_commands_return_expected_contract_shapes() {
     tauri::test::assert_ipc_response(
         &webview,
         invoke_request(
+            cadence_desktop_lib::commands::GET_RUNTIME_SETTINGS_COMMAND,
+            json!({}),
+        ),
+        Ok(cadence_desktop_lib::commands::RuntimeSettingsDto {
+            provider_id: "openai_codex".into(),
+            model_id: "openai_codex".into(),
+            openrouter_api_key_configured: false,
+        }),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            cadence_desktop_lib::commands::UPSERT_RUNTIME_SETTINGS_COMMAND,
+            json!({
+                "request": {
+                    "providerId": "openrouter",
+                    "modelId": "openai/gpt-4o-mini",
+                    "openrouterApiKey": "credential-value-1"
+                }
+            }),
+        ),
+        Ok(cadence_desktop_lib::commands::RuntimeSettingsDto {
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o-mini".into(),
+            openrouter_api_key_configured: true,
+        }),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
             START_OPENAI_CODEX_AUTH_COMMAND,
             json!({ "request": { "projectId": "project-1", "originator": "tests" } }),
         ),
@@ -1353,6 +1385,40 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "class": "retryable",
             "message": "Cadence could not connect to the detached supervisor control endpoint.",
             "retryable": true
+        })
+    );
+
+    let runtime_settings_request = serde_json::to_value(
+        cadence_desktop_lib::commands::UpsertRuntimeSettingsRequestDto {
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o-mini".into(),
+            openrouter_api_key: Some("credential-value-1".into()),
+        },
+    )
+    .expect("runtime settings request should serialize");
+    assert_eq!(
+        runtime_settings_request,
+        json!({
+            "providerId": "openrouter",
+            "modelId": "openai/gpt-4o-mini",
+            "openrouterApiKey": "credential-value-1"
+        })
+    );
+
+    let runtime_settings_response = serde_json::to_value(
+        cadence_desktop_lib::commands::RuntimeSettingsDto {
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-4o-mini".into(),
+            openrouter_api_key_configured: true,
+        },
+    )
+    .expect("runtime settings response should serialize");
+    assert_eq!(
+        runtime_settings_response,
+        json!({
+            "providerId": "openrouter",
+            "modelId": "openai/gpt-4o-mini",
+            "openrouterApiKeyConfigured": true
         })
     );
 
@@ -2897,8 +2963,16 @@ fn serialization_stays_camel_case_for_responses_events_and_errors() {
     assert_eq!(CANCEL_OPENAI_CODEX_AUTH_COMMAND, "cancel_openai_codex_auth");
     assert_eq!(GET_RUNTIME_AUTH_STATUS_COMMAND, "get_runtime_session");
     assert_eq!(GET_RUNTIME_RUN_COMMAND, "get_runtime_run");
+    assert_eq!(
+        cadence_desktop_lib::commands::GET_RUNTIME_SETTINGS_COMMAND,
+        "get_runtime_settings"
+    );
     assert_eq!(REFRESH_OPENAI_CODEX_AUTH_COMMAND, "start_runtime_session");
     assert_eq!(START_RUNTIME_RUN_COMMAND, "start_runtime_run");
+    assert_eq!(
+        cadence_desktop_lib::commands::UPSERT_RUNTIME_SETTINGS_COMMAND,
+        "upsert_runtime_settings"
+    );
     assert_eq!(STOP_RUNTIME_RUN_COMMAND, "stop_runtime_run");
     assert_eq!(SUBSCRIBE_RUNTIME_STREAM_COMMAND, "subscribe_runtime_stream");
     assert_eq!(RESOLVE_OPERATOR_ACTION_COMMAND, "resolve_operator_action");

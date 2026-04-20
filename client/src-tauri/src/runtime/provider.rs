@@ -114,7 +114,7 @@ pub fn resolve_runtime_provider_identity(
     }
 }
 
-pub fn bind_provider_runtime_session<R: Runtime>(
+pub(crate) fn bind_provider_runtime_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     provider: ResolvedRuntimeProvider,
@@ -146,7 +146,7 @@ pub fn bind_provider_runtime_session<R: Runtime>(
     }
 }
 
-pub fn reconcile_provider_runtime_session<R: Runtime>(
+pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     provider: ResolvedRuntimeProvider,

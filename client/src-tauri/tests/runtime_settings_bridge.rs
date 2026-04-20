@@ -10,6 +10,7 @@ use cadence_desktop_lib::{
     state::DesktopState,
 };
 use serde_json::{json, Value};
+use tauri::Manager;
 use tempfile::TempDir;
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
@@ -216,6 +217,44 @@ fn get_runtime_settings_rejects_invalid_settings_json() {
     let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
         .expect_err("malformed settings json should fail");
     assert_eq!(error.code, "runtime_settings_decode_failed");
+}
+
+#[test]
+fn get_runtime_settings_rejects_invalid_openrouter_credentials_json() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _settings_path, credentials_path) = create_state(&root);
+    let app = build_mock_app(state);
+
+    let parent = credentials_path.parent().expect("credentials parent");
+    std::fs::create_dir_all(parent).expect("create credentials parent");
+    std::fs::write(&credentials_path, "{not-json").expect("write malformed credentials");
+
+    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
+        .expect_err("malformed credentials json should fail");
+    assert_eq!(error.code, "openrouter_credentials_decode_failed");
+}
+
+#[test]
+fn get_runtime_settings_rejects_credentials_without_matching_settings_file() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _settings_path, credentials_path) = create_state(&root);
+    let app = build_mock_app(state);
+
+    let parent = credentials_path.parent().expect("credentials parent");
+    std::fs::create_dir_all(parent).expect("create credentials parent");
+    std::fs::write(
+        &credentials_path,
+        serde_json::to_vec_pretty(&json!({
+            "apiKey": "credential-value-1",
+            "updatedAt": "2026-04-19T21:00:00Z"
+        }))
+        .expect("serialize credentials json"),
+    )
+    .expect("write credentials file");
+
+    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
+        .expect_err("credentials without settings should fail closed");
+    assert_eq!(error.code, "runtime_settings_contract_failed");
 }
 
 #[test]
