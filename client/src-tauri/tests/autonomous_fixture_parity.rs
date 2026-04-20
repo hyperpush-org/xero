@@ -1762,46 +1762,6 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
     });
     let progressed_shape = history_shape(&progressed);
 
-    thread::sleep(Duration::from_secs(3));
-    let boundary_id = "boundary-openrouter".to_string();
-    let persisted_boundary = project_store::upsert_runtime_action_required(
-        &repo_root,
-        &project_store::RuntimeActionRequiredUpsertRecord {
-            project_id: project_id.clone(),
-            run_id: launched.run.run_id.clone(),
-            runtime_kind: launched.run.runtime_kind.clone(),
-            session_id: runtime_session_id.clone(),
-            flow_id: runtime_session.flow_id.clone(),
-            transport_endpoint: launched.run.transport.endpoint.clone(),
-            started_at: launched.run.started_at.clone(),
-            last_heartbeat_at: launched.run.last_heartbeat_at.clone(),
-            last_error: None,
-            boundary_id: boundary_id.clone(),
-            action_type: "terminal_input_required".into(),
-            title: "Terminal input required".into(),
-            detail: "Detached runtime is blocked on terminal input. Approve and resume with a coarse operator answer to continue the same supervised run.".into(),
-            checkpoint_summary:
-                "Detached runtime blocked on terminal input and is awaiting operator approval."
-                    .into(),
-            created_at: "2026-04-18T19:00:00Z".into(),
-        },
-    )
-    .expect("persist runtime action-required boundary for openrouter parity proof");
-    let action_id = persisted_boundary.approval_request.action_id.clone();
-    persist_supervisor_event(
-        &repo_root,
-        &project_id,
-        &SupervisorLiveEventPayload::ActionRequired {
-            action_id: action_id.clone(),
-            boundary_id: boundary_id.clone(),
-            action_type: "terminal_input_required".into(),
-            title: "Terminal input required".into(),
-            detail: "Detached runtime is blocked on terminal input. Approve and resume with a coarse operator answer to continue the same supervised run.".into(),
-        },
-    )
-    .expect("persist autonomous action-required event for openrouter parity proof")
-    .expect("autonomous action-required persistence should return a snapshot");
-
     let paused = wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
         let Some(run) = autonomous_state.run.as_ref() else {
             return false;
@@ -1864,6 +1824,10 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
         .attempt
         .as_ref()
         .expect("paused autonomous attempt should exist");
+    let boundary_id = paused_attempt
+        .boundary_id
+        .clone()
+        .expect("paused autonomous attempt should carry the runtime boundary id");
     let paused_shape = history_shape(&paused);
     assert_eq!(paused_shape, progressed_shape);
 
@@ -1877,7 +1841,8 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
     .expect("load project snapshot after openrouter autonomous boundary pause");
     assert_eq!(pending_snapshot.approval_requests.len(), 1);
     assert!(pending_snapshot.resume_history.is_empty());
-    assert_eq!(pending_snapshot.approval_requests[0].action_id, action_id);
+    let action_id = pending_snapshot.approval_requests[0].action_id.clone();
+    assert!(action_id.contains(&format!(":boundary:{boundary_id}:")));
     assert_eq!(
         pending_snapshot.approval_requests[0].status,
         OperatorApprovalStatus::Pending
@@ -2153,14 +2118,11 @@ fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_
         &root,
         format!("{replay_models_base_url}/api/v1/models"),
     ));
-    let replay_runtime = start_runtime_session(
-        replay_app.handle().clone(),
-        replay_app.state::<DesktopState>(),
-        ProjectIdRequestDto {
-            project_id: project_id.clone(),
-        },
-    )
-    .expect("rebind openrouter runtime session after reload");
+    let replay_runtime = seed_openrouter_runtime(
+        &replay_app,
+        &project_id,
+        "sk-or-v1-openrouter-deterministic-proof",
+    );
     assert_eq!(replay_runtime.phase, RuntimeAuthPhase::Authenticated);
     assert_eq!(replay_runtime.provider_id, "openrouter");
     assert_eq!(replay_runtime.runtime_kind, "openrouter");
