@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { EditorView, basicSetup } from 'codemirror'
 import { Compartment, EditorState, type Extension } from '@codemirror/state'
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import {
+  HighlightStyle,
+  StreamLanguage,
+  syntaxHighlighting,
+} from '@codemirror/language'
+import type { StreamParser } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
 import { indentWithTab } from '@codemirror/commands'
 import { highlightSelectionMatches } from '@codemirror/search'
@@ -15,6 +20,18 @@ import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
+import { rust } from '@codemirror/lang-rust'
+import { cpp } from '@codemirror/lang-cpp'
+import { java } from '@codemirror/lang-java'
+import { go } from '@codemirror/lang-go'
+import { sql } from '@codemirror/lang-sql'
+import { yaml } from '@codemirror/lang-yaml'
+import { xml } from '@codemirror/lang-xml'
+import { php } from '@codemirror/lang-php'
+import { vue } from '@codemirror/lang-vue'
+import { sass } from '@codemirror/lang-sass'
+import { less } from '@codemirror/lang-less'
+import { angular } from '@codemirror/lang-angular'
 import { cn } from '@/lib/utils'
 import { getLangFromPath } from '@/lib/shiki'
 
@@ -204,35 +221,159 @@ const appEditorTheme = EditorView.theme(
 // Language resolution
 // ---------------------------------------------------------------------------
 
-function languageExtension(filePath: string): Extension[] {
-  const lang = getLangFromPath(filePath)
-  if (!lang) return []
+// Legacy-mode parsers are heavy / numerous — load lazily so the editor's
+// initial chunk only pulls in what the active file actually needs.
+const streamParserLoaders: Record<string, () => Promise<StreamParser<unknown>>> = {
+  shell: () => import('@codemirror/legacy-modes/mode/shell').then((m) => m.shell),
+  ruby: () => import('@codemirror/legacy-modes/mode/ruby').then((m) => m.ruby),
+  toml: () => import('@codemirror/legacy-modes/mode/toml').then((m) => m.toml),
+  swift: () => import('@codemirror/legacy-modes/mode/swift').then((m) => m.swift),
+  kotlin: () => import('@codemirror/legacy-modes/mode/clike').then((m) => m.kotlin),
+  scala: () => import('@codemirror/legacy-modes/mode/clike').then((m) => m.scala),
+  csharp: () => import('@codemirror/legacy-modes/mode/clike').then((m) => m.csharp),
+  dart: () => import('@codemirror/legacy-modes/mode/clike').then((m) => m.dart),
+  objectivec: () => import('@codemirror/legacy-modes/mode/clike').then((m) => m.objectiveC),
+  dockerfile: () => import('@codemirror/legacy-modes/mode/dockerfile').then((m) => m.dockerFile),
+  nginx: () => import('@codemirror/legacy-modes/mode/nginx').then((m) => m.nginx),
+  properties: () => import('@codemirror/legacy-modes/mode/properties').then((m) => m.properties),
+  diff: () => import('@codemirror/legacy-modes/mode/diff').then((m) => m.diff),
+  lua: () => import('@codemirror/legacy-modes/mode/lua').then((m) => m.lua),
+  perl: () => import('@codemirror/legacy-modes/mode/perl').then((m) => m.perl),
+  r: () => import('@codemirror/legacy-modes/mode/r').then((m) => m.r),
+  powershell: () => import('@codemirror/legacy-modes/mode/powershell').then((m) => m.powerShell),
+  haskell: () => import('@codemirror/legacy-modes/mode/haskell').then((m) => m.haskell),
+  clojure: () => import('@codemirror/legacy-modes/mode/clojure').then((m) => m.clojure),
+  erlang: () => import('@codemirror/legacy-modes/mode/erlang').then((m) => m.erlang),
+  elm: () => import('@codemirror/legacy-modes/mode/elm').then((m) => m.elm),
+  julia: () => import('@codemirror/legacy-modes/mode/julia').then((m) => m.julia),
+  fsharp: () => import('@codemirror/legacy-modes/mode/mllike').then((m) => m.fSharp),
+  ocaml: () => import('@codemirror/legacy-modes/mode/mllike').then((m) => m.oCaml),
+  groovy: () => import('@codemirror/legacy-modes/mode/groovy').then((m) => m.groovy),
+  stylus: () => import('@codemirror/legacy-modes/mode/stylus').then((m) => m.stylus),
+  tcl: () => import('@codemirror/legacy-modes/mode/tcl').then((m) => m.tcl),
+  protobuf: () => import('@codemirror/legacy-modes/mode/protobuf').then((m) => m.protobuf),
+  cmake: () => import('@codemirror/legacy-modes/mode/cmake').then((m) => m.cmake),
+}
 
+// Cache resolved stream parsers so re-opening the same language is synchronous.
+const resolvedStreamParsers: Record<string, StreamParser<unknown>> = {}
+
+function cachedStreamExtension(key: string): Extension | null {
+  const cached = resolvedStreamParsers[key]
+  return cached ? StreamLanguage.define(cached) : null
+}
+
+function loadStreamExtension(key: string): Promise<Extension | null> {
+  const cached = resolvedStreamParsers[key]
+  if (cached) return Promise.resolve(StreamLanguage.define(cached))
+  const loader = streamParserLoaders[key]
+  if (!loader) return Promise.resolve(null)
+  return loader().then((parser) => {
+    resolvedStreamParsers[key] = parser
+    return StreamLanguage.define(parser)
+  })
+}
+
+function streamKeyForLang(lang: string): string | null {
+  switch (lang) {
+    case 'bash':
+      return 'shell'
+    default:
+      return lang in streamParserLoaders ? lang : null
+  }
+}
+
+/**
+ * Resolve a first-party (synchronous) CodeMirror grammar for a given lang id.
+ * Returns null when the language is served by a legacy StreamLanguage parser,
+ * which must be loaded asynchronously via {@link resolveLanguageAsync}.
+ */
+function firstPartyExtension(lang: string): Extension | null {
   switch (lang) {
     case 'typescript':
-      return [javascript({ typescript: true })]
+      return javascript({ typescript: true })
     case 'tsx':
-      return [javascript({ jsx: true, typescript: true })]
+      return javascript({ jsx: true, typescript: true })
     case 'jsx':
-      return [javascript({ jsx: true })]
+      return javascript({ jsx: true })
     case 'javascript':
-      return [javascript()]
+      return javascript()
     case 'python':
-      return [python()]
+      return python()
     case 'json':
     case 'jsonc':
-      return [json()]
+      return json()
     case 'markdown':
     case 'mdx':
-      return [markdown()]
+      return markdown()
     case 'css':
+      return css()
     case 'scss':
-      return [css()]
+      return sass({ indented: false })
+    case 'sass':
+      return sass({ indented: true })
+    case 'less':
+      return less()
     case 'html':
-      return [html()]
+      return html()
+    case 'xml':
+      return xml()
+    case 'rust':
+      return rust()
+    case 'c':
+    case 'cpp':
+      return cpp()
+    case 'java':
+      return java()
+    case 'go':
+      return go()
+    case 'sql':
+      return sql()
+    case 'yaml':
+      return yaml()
+    case 'php':
+      return php()
+    case 'vue':
+      return vue()
+    case 'angular':
+      return angular()
+    // GraphQL has no official CM6 grammar; JS tokenization is a fair approximation.
+    case 'graphql':
+      return javascript()
     default:
-      return []
+      return null
   }
+}
+
+/**
+ * Best-effort synchronous resolution — used for the initial editor state.
+ * Falls back to an empty extension for legacy-mode langs that haven't been
+ * loaded yet; {@link resolveLanguageAsync} then upgrades the compartment.
+ */
+function languageExtension(filePath: string): Extension {
+  const lang = getLangFromPath(filePath)
+  if (!lang) return []
+  const firstParty = firstPartyExtension(lang)
+  if (firstParty) return firstParty
+  const streamKey = streamKeyForLang(lang)
+  if (streamKey) {
+    const cached = cachedStreamExtension(streamKey)
+    if (cached) return cached
+  }
+  return []
+}
+
+/** Full async resolution — resolves the correct grammar for any supported lang. */
+function resolveLanguageAsync(filePath: string): Promise<Extension> {
+  const lang = getLangFromPath(filePath)
+  if (!lang) return Promise.resolve([])
+  const firstParty = firstPartyExtension(lang)
+  if (firstParty) return Promise.resolve(firstParty)
+  const streamKey = streamKeyForLang(lang)
+  if (streamKey) {
+    return loadStreamExtension(streamKey).then((ext) => ext ?? [])
+  }
+  return Promise.resolve([])
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +451,21 @@ export function CodeEditor({
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
+    // Synchronous best-effort: first-party grammars resolve immediately,
+    // legacy-mode grammars fall back to an empty extension here.
     view.dispatch({ effects: langCompartment.reconfigure(languageExtension(filePath)) })
+    // Async upgrade: resolves the real grammar for legacy-mode languages
+    // (lazy import) and swaps it in if the editor and path are still live.
+    let cancelled = false
+    resolveLanguageAsync(filePath).then((ext) => {
+      if (cancelled) return
+      const current = viewRef.current
+      if (!current) return
+      current.dispatch({ effects: langCompartment.reconfigure(ext) })
+    })
+    return () => {
+      cancelled = true
+    }
   }, [filePath, langCompartment])
 
   useEffect(() => {
