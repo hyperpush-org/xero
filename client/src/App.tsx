@@ -249,7 +249,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onUpsertRuntimeSettings={(request) => upsertRuntimeSettings(request)}
         onStartLogin={() => startOpenAiLogin()}
         onLogout={() => logoutRuntimeSession()}
-        onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
         onUpsertNotificationRoute={(request) => upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })}
         platformOverride={platformOverride}
         onPlatformOverrideChange={setPlatformOverride}
