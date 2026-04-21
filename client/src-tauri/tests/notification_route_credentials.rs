@@ -311,6 +311,56 @@ fn list_notification_routes_marks_missing_store_as_fail_closed_with_typed_diagno
 }
 
 #[test]
+fn list_notification_routes_marks_unreadable_store_as_unavailable_with_typed_diagnostics() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(&root);
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, &app, project_id, "cadence");
+
+    upsert_route(
+        &repo_root,
+        project_id,
+        "telegram-primary",
+        "telegram",
+        "telegram:@ops-room",
+    );
+
+    let credential_store_path = app
+        .state::<DesktopState>()
+        .notification_credential_store_file(&app.handle())
+        .expect("credential store path");
+    fs::create_dir_all(&credential_store_path).expect("create unreadable credential store path");
+
+    let response = list_notification_routes(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ListNotificationRoutesRequestDto {
+            project_id: project_id.into(),
+        },
+    )
+    .expect("list notification routes");
+
+    assert_eq!(response.routes.len(), 1);
+
+    let readiness = response.routes[0]
+        .credential_readiness
+        .as_ref()
+        .expect("readiness should be projected");
+    assert!(!readiness.ready);
+    assert_eq!(
+        readiness.status,
+        NotificationRouteCredentialReadinessStatusDto::Unavailable
+    );
+    assert_eq!(
+        readiness
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.as_str()),
+        Some("notification_adapter_credentials_read_failed")
+    );
+}
+
+#[test]
 fn list_notification_routes_marks_malformed_store_as_fail_closed_with_typed_diagnostics() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
