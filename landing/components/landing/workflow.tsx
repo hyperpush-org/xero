@@ -55,21 +55,23 @@ export function Workflow() {
         </div>
 
         <ol className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border/70 bg-border/70 md:grid-cols-2 lg:grid-cols-3">
-          {steps.map((s) => (
+          {steps.map((s, i) => (
             <li
               key={s.n}
-              className="group relative flex flex-col gap-3 bg-card p-6 transition-colors hover:bg-card/80"
+              className="group relative flex flex-col gap-3 bg-card p-6 transition-colors hover:bg-card/60"
             >
-              <div className="flex items-baseline justify-between">
+              <div className="flex items-center gap-3">
                 <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-primary">
                   {s.n}
                 </span>
-                <span className="h-px flex-1 translate-y-[-1px] bg-border/80 mx-3" />
-                <span className="font-mono text-[11px] text-muted-foreground">step</span>
+                <span aria-hidden className="h-px flex-1 bg-gradient-to-r from-border/80 via-border/50 to-transparent" />
+                <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                  {i === steps.length - 1 ? "ship" : "step"}
+                </span>
               </div>
               <h3 className="text-lg font-medium tracking-tight">{s.title}</h3>
               <p className="text-sm leading-relaxed text-muted-foreground">{s.copy}</p>
-              <div className="mt-auto rounded-md border border-border/60 bg-background/60 px-3 py-2 font-mono text-[11px] text-muted-foreground">
+              <div className="mt-auto rounded-md border border-border/60 bg-background/60 px-3 py-2 font-mono text-[11px] text-muted-foreground transition-colors group-hover:border-border/80">
                 {s.sample}
               </div>
             </li>

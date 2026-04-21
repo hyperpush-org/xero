@@ -17,14 +17,26 @@ const social = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border/60">
-      <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
-          <span className="text-xs text-muted-foreground/60">
-            © {new Date().getFullYear()} Xero Labs
-          </span>
+    <footer className="relative">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-border/80 to-transparent"
+      />
+      <div className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+        <div className="flex flex-col items-center justify-between gap-6 sm:flex-row">
+          <div className="flex items-center gap-3">
+            <span
+              aria-hidden
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 bg-secondary/40 font-mono text-[11px] font-semibold tracking-tighter text-primary"
+            >
+              X
+            </span>
+            <span className="text-xs text-muted-foreground/70">
+              © {new Date().getFullYear()} Xero Labs · Built in Rust
+            </span>
+          </div>
 
-          <nav className="flex items-center gap-5">
+          <nav className="flex items-center gap-5" aria-label="Footer">
             {links.map((l) => (
               <Link
                 key={l.label}
@@ -36,13 +48,13 @@ export function SiteFooter() {
             ))}
           </nav>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             {social.map(({ icon: Icon, label, href }) => (
               <Link
                 key={label}
                 href={href}
                 aria-label={label}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:text-foreground"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-secondary/40 hover:text-foreground"
               >
                 <Icon className="h-3.5 w-3.5" />
               </Link>

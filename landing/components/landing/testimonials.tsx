@@ -84,8 +84,8 @@ export function Testimonials() {
         </div>
 
         <div className="mt-14 grid grid-cols-1 gap-4 md:grid-cols-6 md:grid-rows-[auto_auto] lg:gap-5">
-          {testimonials.map((t, i) => (
-            <TestimonialCard key={t.name} t={t} i={i} />
+          {testimonials.map((t) => (
+            <TestimonialCard key={t.name} t={t} />
           ))}
         </div>
       </div>
@@ -93,7 +93,7 @@ export function Testimonials() {
   )
 }
 
-function TestimonialCard({ t, i }: { t: Testimonial; i: number }) {
+function TestimonialCard({ t }: { t: Testimonial }) {
   // Bento span classes
   const span =
     t.size === "lg"
@@ -104,8 +104,12 @@ function TestimonialCard({ t, i }: { t: Testimonial; i: number }) {
 
   return (
     <figure
-      className={`group relative flex h-full flex-col gap-4 overflow-hidden rounded-2xl border border-border/70 bg-card p-6 transition-colors hover:border-border ${span}`}
+      className={`group relative flex h-full flex-col gap-4 overflow-hidden rounded-2xl border border-border/70 bg-card p-6 transition-all hover:-translate-y-0.5 hover:border-border hover:shadow-[0_20px_50px_-30px_rgba(0,0,0,0.6)] ${span}`}
     >
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent opacity-0 transition-opacity group-hover:opacity-100"
+      />
       <Quote
         className="h-5 w-5 shrink-0 text-primary/70"
         aria-hidden
@@ -119,7 +123,7 @@ function TestimonialCard({ t, i }: { t: Testimonial; i: number }) {
       </blockquote>
       <figcaption className="mt-auto flex items-center gap-3 border-t border-border/60 pt-4">
         <span
-          className={`inline-flex h-9 w-9 items-center justify-center rounded-full font-mono text-xs font-semibold ${t.colorClass}`}
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-full font-mono text-xs font-semibold ring-1 ring-inset ring-border/50 ${t.colorClass}`}
           aria-hidden
         >
           {t.initials}
@@ -128,9 +132,6 @@ function TestimonialCard({ t, i }: { t: Testimonial; i: number }) {
           <div className="truncate text-sm font-medium">{t.name}</div>
           <div className="truncate text-xs text-muted-foreground">{t.role}</div>
         </div>
-        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-          #{String(i + 1).padStart(2, "0")}
-        </span>
       </figcaption>
     </figure>
   )

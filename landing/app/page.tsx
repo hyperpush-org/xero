@@ -15,7 +15,10 @@ export default function Page() {
       <SiteHeader />
       <main>
         <Hero />
-        <div aria-hidden className="border-t border-border/60" />
+        <div
+          aria-hidden
+          className="mx-auto h-px w-full max-w-7xl bg-gradient-to-r from-transparent via-border/80 to-transparent"
+        />
         <Features />
         <Models />
         <Integrations />

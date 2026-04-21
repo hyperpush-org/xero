@@ -6,7 +6,7 @@ const tiers = [
   {
     name: "Free",
     price: "$0",
-    Xero: "forever",
+    period: "forever",
     icon: Laptop,
     description: "Runs entirely on your machine. Bring your own API keys and ship immediately.",
     cta: "Download Xero",
@@ -27,7 +27,7 @@ const tiers = [
   {
     name: "Pro",
     price: "$20",
-    Xero: "/ month",
+    period: "/ month",
     icon: Cloud,
     description: "Everything in Free, running in the cloud. Same keys, no token markup — just your work, anywhere.",
     cta: "Notify me",
@@ -72,20 +72,29 @@ export function Pricing() {
             return (
               <div
                 key={t.name}
-                className={`relative flex flex-col rounded-2xl border p-7 transition-colors ${
+                className={`relative flex flex-col rounded-2xl border p-7 transition-all ${
                   t.highlight
-                    ? "border-primary/40 bg-card ring-1 ring-primary/20"
-                    : "border-border/60 bg-card"
+                    ? "border-primary/40 bg-card shadow-[0_30px_80px_-30px_color-mix(in_oklab,var(--primary)_35%,transparent)] ring-1 ring-primary/25"
+                    : "border-border/60 bg-card hover:border-border"
                 }`}
               >
+                {t.highlight && (
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/60 to-transparent"
+                  />
+                )}
                 {t.badge && (
                   <span
-                    className={`absolute -top-2.5 right-6 rounded-full px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
+                    className={`absolute -top-2.5 right-6 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
                       t.comingSoon
-                        ? "bg-muted text-muted-foreground"
-                        : "bg-primary text-primary-foreground"
+                        ? "border-border/70 bg-background text-muted-foreground"
+                        : "border-primary bg-primary text-primary-foreground"
                     }`}
                   >
+                    {t.comingSoon && (
+                      <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
+                    )}
                     {t.badge}
                   </span>
                 )}
@@ -107,8 +116,8 @@ export function Pricing() {
                 {/* Price */}
                 <div className="mt-5 flex items-baseline gap-1.5">
                   <span className="text-5xl font-medium tracking-tight">{t.price}</span>
-                  {t.Xero && (
-                    <span className="text-sm text-muted-foreground">{t.Xero}</span>
+                  {t.period && (
+                    <span className="text-sm text-muted-foreground">{t.period}</span>
                   )}
                 </div>
 
@@ -122,9 +131,9 @@ export function Pricing() {
                   size="lg"
                   className={`mt-6 w-full ${
                     t.comingSoon
-                      ? "cursor-not-allowed opacity-40"
+                      ? "cursor-not-allowed border border-border/70 bg-transparent text-muted-foreground hover:bg-transparent"
                       : t.highlight
-                        ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                        ? "bg-primary text-primary-foreground shadow-[0_8px_24px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] hover:bg-primary/90"
                         : "bg-secondary text-foreground hover:bg-secondary/80"
                   }`}
                 >

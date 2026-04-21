@@ -6,6 +6,7 @@ use tempfile::NamedTempFile;
 
 use crate::{
     commands::{CommandError, CommandResult, RuntimeSettingsDto},
+    provider_profiles::{load_or_migrate_provider_profiles_from_paths, ProviderProfilesSnapshot},
     runtime::{
         resolve_runtime_provider_identity, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
     },
@@ -60,9 +61,23 @@ pub(crate) fn load_runtime_settings_snapshot<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<RuntimeSettingsSnapshot> {
+    let provider_profiles_path = state.provider_profiles_file(app)?;
+    let provider_profile_credentials_path = state.provider_profile_credential_store_file(app)?;
     let settings_path = state.runtime_settings_file(app)?;
-    let credentials_path = state.openrouter_credential_file(app)?;
-    load_runtime_settings_snapshot_from_paths(&settings_path, &credentials_path)
+    let legacy_openrouter_credentials_path = state.openrouter_credential_file(app)?;
+    let legacy_openai_auth_path = state
+        .auth_store_file(app)
+        .map_err(map_auth_store_error_to_command_error)?;
+
+    let provider_profiles = load_or_migrate_provider_profiles_from_paths(
+        &provider_profiles_path,
+        &provider_profile_credentials_path,
+        &settings_path,
+        &legacy_openrouter_credentials_path,
+        &legacy_openai_auth_path,
+    )?;
+
+    runtime_settings_snapshot_from_provider_profiles(&provider_profiles)
 }
 
 pub(crate) fn load_runtime_settings_snapshot_from_paths(
@@ -368,6 +383,41 @@ fn validate_runtime_settings_contract(
             .map(|credentials| credentials.api_key.clone()),
         openrouter_credentials_updated_at: credentials.map(|credentials| credentials.updated_at),
     })
+}
+
+fn runtime_settings_snapshot_from_provider_profiles(
+    provider_profiles: &ProviderProfilesSnapshot,
+) -> CommandResult<RuntimeSettingsSnapshot> {
+    let active_profile = provider_profiles.active_profile().ok_or_else(|| {
+        CommandError::user_fixable(
+            "provider_profiles_invalid",
+            "Cadence could not project runtime settings because the active provider profile was missing.",
+        )
+    })?;
+
+    let preferred_openrouter_credential = provider_profiles.preferred_openrouter_credential();
+
+    Ok(RuntimeSettingsSnapshot {
+        settings: RuntimeSettingsFile {
+            provider_id: active_profile.provider_id.clone(),
+            model_id: active_profile.model_id.clone(),
+            openrouter_api_key_configured: provider_profiles.any_openrouter_api_key_configured(),
+            updated_at: active_profile.updated_at.clone(),
+        },
+        openrouter_api_key: preferred_openrouter_credential.map(|entry| entry.api_key.clone()),
+        openrouter_credentials_updated_at: preferred_openrouter_credential
+            .map(|entry| entry.updated_at.clone()),
+    })
+}
+
+fn map_auth_store_error_to_command_error(
+    error: crate::auth::AuthFlowError,
+) -> CommandError {
+    if error.retryable {
+        CommandError::retryable(error.code, error.message)
+    } else {
+        CommandError::user_fixable(error.code, error.message)
+    }
 }
 
 fn normalize_updated_at(value: String) -> String {

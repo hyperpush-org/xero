@@ -1,4 +1,4 @@
-import { Github, KeyRound, Route, Sparkles, Webhook } from "lucide-react"
+import { Check, Github, KeyRound, Route, Sparkles, Webhook } from "lucide-react"
 import {
   AnthropicIcon,
   GoogleIcon,
@@ -104,7 +104,7 @@ export function Models() {
               {providers.map((p) => (
                 <li
                   key={p.name}
-                  className="group flex items-center gap-3 rounded-xl border border-border/70 bg-card p-4 transition-colors hover:border-border"
+                  className="group relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card p-4 transition-all hover:-translate-y-0.5 hover:border-border hover:shadow-[0_10px_30px_-18px_rgba(0,0,0,0.6)]"
                 >
                   <span
                     className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${p.badgeClass}`}
@@ -118,8 +118,12 @@ export function Models() {
                       {p.plan}
                     </p>
                   </div>
-                  <span className="rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary">
-                    ready
+                  <span
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-inset ring-primary/20"
+                    aria-label="Supported"
+                    title="Supported"
+                  >
+                    <Check className="h-3 w-3" strokeWidth={2.5} />
                   </span>
                 </li>
               ))}

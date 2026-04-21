@@ -1,5 +1,4 @@
 import Link from "next/link"
-import { Terminal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AppleIcon, WindowsIcon } from "@/components/landing/brand-icons"
 
@@ -29,7 +28,7 @@ export function CTA() {
           <Button
             asChild
             size="lg"
-            className="h-11 gap-2 bg-primary px-5 text-primary-foreground hover:bg-primary/90"
+            className="h-11 gap-2 bg-primary px-5 text-primary-foreground shadow-[0_10px_30px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] transition-all hover:bg-primary/90 hover:shadow-[0_12px_36px_-10px_color-mix(in_oklab,var(--primary)_75%,transparent)]"
           >
             <Link href="#">
               <AppleIcon className="h-4 w-4" />
@@ -48,6 +47,10 @@ export function CTA() {
             </Link>
           </Button>
         </div>
+
+        <p className="mt-6 font-mono text-[11px] text-muted-foreground/70">
+          macOS 13+ · Windows 10+ · Universal binary · Apple silicon &amp; Intel
+        </p>
       </div>
     </section>
   )

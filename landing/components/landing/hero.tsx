@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { ArrowRight, Terminal } from "lucide-react"
+import { ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AppWindowMock } from "@/components/landing/app-window-mock"
 import { AppleIcon, WindowsIcon } from "@/components/landing/brand-icons"
@@ -21,7 +21,7 @@ export function Hero() {
         <div className="mx-auto max-w-3xl text-center">
           <Link
             href="#"
-            className="group inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur transition-colors hover:bg-secondary/70 hover:text-foreground"
+            className="group inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur transition-colors hover:border-border hover:bg-secondary/70 hover:text-foreground"
           >
             <span className="relative inline-flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
@@ -46,7 +46,7 @@ export function Hero() {
             <Button
               asChild
               size="lg"
-              className="h-11 gap-2 bg-primary px-5 text-primary-foreground hover:bg-primary/90"
+              className="h-11 gap-2 bg-primary px-5 text-primary-foreground shadow-[0_8px_24px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] transition-all hover:bg-primary/90 hover:shadow-[0_10px_28px_-10px_color-mix(in_oklab,var(--primary)_75%,transparent)]"
             >
               <Link href="#download">
                 <AppleIcon className="h-4 w-4" />

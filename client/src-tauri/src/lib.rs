@@ -2,6 +2,7 @@ pub mod auth;
 pub mod commands;
 pub mod db;
 pub mod notifications;
+pub mod provider_profiles;
 pub mod registry;
 pub mod runtime;
 pub mod state;

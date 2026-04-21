@@ -1,9 +1,6 @@
 import {
   Cpu,
   Database,
-  Lock,
-  GitBranch,
-  Gauge,
   Workflow as WorkflowIcon,
 } from "lucide-react"
 
@@ -115,12 +112,12 @@ function FeatureRow({ row, reverse }: { row: Row; reverse: boolean }) {
       </div>
 
       <div className={`lg:col-span-7 ${reverse ? "lg:order-1" : "lg:order-2"}`}>
-        <div className="relative">
+        <div className="group relative">
           <div
             aria-hidden
-            className="pointer-events-none absolute -inset-6 -z-10 rounded-[2rem] bg-gradient-to-br from-primary/10 via-transparent to-transparent blur-2xl"
+            className="pointer-events-none absolute -inset-6 -z-10 rounded-[2rem] bg-gradient-to-br from-primary/10 via-transparent to-transparent blur-2xl transition-opacity duration-500 group-hover:opacity-80"
           />
-          <div className="overflow-hidden rounded-2xl border border-border/70 bg-card p-4 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.5)]">
+          <div className="overflow-hidden rounded-2xl border border-border/70 bg-card p-4 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.5)] transition-colors group-hover:border-border">
             {row.visual}
           </div>
         </div>
@@ -286,87 +283,3 @@ function WorkflowVisual() {
   )
 }
 
-function ThroughputVisual() {
-  const bars = [
-    { label: "Xero (Rust)", value: 100, highlight: true, time: "3m 12s" },
-    { label: "Web agent A", value: 38, time: "8m 24s" },
-    { label: "Web agent B", value: 27, time: "11m 48s" },
-    { label: "IDE plugin", value: 22, time: "14m 30s" },
-  ]
-  return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-      <div className="rounded-lg border border-border/60 bg-background/70 p-4 md:col-span-3">
-        <div className="mb-3 flex items-center justify-between text-[11px] text-muted-foreground">
-          <span className="font-mono">benchmark · ship SaaS starter</span>
-          <span className="font-mono">lower is faster</span>
-        </div>
-        <ul className="space-y-3">
-          {bars.map((b) => (
-            <li key={b.label} className="grid grid-cols-12 items-center gap-3 text-[12px]">
-              <span
-                className={`col-span-4 truncate font-mono ${
-                  b.highlight ? "text-foreground" : "text-muted-foreground"
-                }`}
-              >
-                {b.label}
-              </span>
-              <div className="col-span-6 h-2 overflow-hidden rounded-full bg-secondary">
-                <div
-                  className={`h-full rounded-full ${
-                    b.highlight ? "bg-primary" : "bg-muted-foreground/40"
-                  }`}
-                  style={{ width: `${b.value}%` }}
-                />
-              </div>
-              <span
-                className={`col-span-2 text-right font-mono ${
-                  b.highlight ? "text-primary" : "text-muted-foreground"
-                }`}
-              >
-                {b.time}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 md:col-span-2">
-        <div className="rounded-lg border border-border/60 bg-background/70 p-3 font-mono text-[12px]">
-          <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <Lock className="h-3 w-3 text-primary" /> sandbox.toml
-          </div>
-          <div className="space-y-1 text-muted-foreground">
-            <div>
-              <span className="text-primary">allow</span> = [&quot;fs:./project&quot;]
-            </div>
-            <div>
-              <span className="text-primary">deny</span> = [&quot;net:*&quot;, &quot;fs:/&quot;]
-            </div>
-            <div>
-              <span className="text-primary">secrets</span> = keychain
-            </div>
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/60 bg-background/70 p-3">
-          <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <GitBranch className="h-3 w-3 text-primary" />
-            <span className="font-mono">feature/billing</span>
-          </div>
-          <ul className="space-y-1 font-mono text-[11px]">
-            <li className="flex items-center gap-2 rounded border border-border/60 bg-background/40 px-2 py-1 text-muted-foreground">
-              <span className="w-12 opacity-80">a1c3f0</span>
-              <span className="truncate">feat: stripe checkout</span>
-            </li>
-            <li className="flex items-center gap-2 rounded border border-primary/40 bg-primary/[0.06] px-2 py-1 text-foreground">
-              <span className="w-12 opacity-80">—</span>
-              <span className="truncate">open PR → main</span>
-              <span className="ml-auto rounded bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">
-                open
-              </span>
-            </li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  )
-}

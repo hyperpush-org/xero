@@ -6,6 +6,9 @@ use crate::{
     auth::{ActiveAuthFlowRegistry, AuthFlowError, OpenAiCodexAuthConfig, OpenRouterAuthConfig},
     commands::CommandError,
     notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
+    provider_profiles::{
+        PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME, PROVIDER_PROFILES_FILE_NAME,
+    },
     runtime::{
         openai_codex_provider, AutonomousWebConfig, ResolvedRuntimeProvider,
         RuntimeStreamController, RuntimeSupervisorController,
@@ -36,6 +39,8 @@ pub struct DesktopState {
     registry_file_override: Option<PathBuf>,
     auth_store_file_override: Option<PathBuf>,
     notification_credential_store_file_override: Option<PathBuf>,
+    provider_profiles_file_override: Option<PathBuf>,
+    provider_profile_credential_store_file_override: Option<PathBuf>,
     runtime_settings_file_override: Option<PathBuf>,
     openrouter_credential_file_override: Option<PathBuf>,
     autonomous_skill_cache_dir_override: Option<PathBuf>,
@@ -63,6 +68,19 @@ impl DesktopState {
 
     pub fn with_notification_credential_store_file_override(mut self, path: PathBuf) -> Self {
         self.notification_credential_store_file_override = Some(path);
+        self
+    }
+
+    pub fn with_provider_profiles_file_override(mut self, path: PathBuf) -> Self {
+        self.provider_profiles_file_override = Some(path);
+        self
+    }
+
+    pub fn with_provider_profile_credential_store_file_override(
+        mut self,
+        path: PathBuf,
+    ) -> Self {
+        self.provider_profile_credential_store_file_override = Some(path);
         self
     }
 
@@ -216,14 +234,31 @@ impl DesktopState {
             return Ok(path.clone());
         }
 
-        let app_data_dir = app.path().app_data_dir().map_err(|error| {
-            CommandError::system_fault(
-                "app_data_dir_unavailable",
-                format!("Cadence could not resolve the app-data directory: {error}"),
-            )
-        })?;
+        Ok(self.app_data_dir(app)?.join(RUNTIME_SETTINGS_FILE_NAME))
+    }
 
-        Ok(app_data_dir.join(RUNTIME_SETTINGS_FILE_NAME))
+    pub fn provider_profiles_file<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<PathBuf, CommandError> {
+        if let Some(path) = &self.provider_profiles_file_override {
+            return Ok(path.clone());
+        }
+
+        Ok(self.app_data_dir(app)?.join(PROVIDER_PROFILES_FILE_NAME))
+    }
+
+    pub fn provider_profile_credential_store_file<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<PathBuf, CommandError> {
+        if let Some(path) = &self.provider_profile_credential_store_file_override {
+            return Ok(path.clone());
+        }
+
+        Ok(self
+            .app_data_dir(app)?
+            .join(PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME))
     }
 
     pub fn openrouter_credential_file<R: Runtime>(
