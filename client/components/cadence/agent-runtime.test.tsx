@@ -1000,6 +1000,56 @@ describe('AgentRuntime current UI', () => {
     ).toBeVisible()
   })
 
+  it('keeps recent run replacement and live-feed issue diagnostics visible while the new stream catches up', async () => {
+    const replacementIssue = {
+      code: 'runtime_stream_subscribe_failed',
+      message: 'Cadence could not subscribe to the replacement run stream yet.',
+      retryable: true,
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', phase: 'authenticated', phaseLabel: 'Authenticated' }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-1' }),
+          runtimeStream: makeRuntimeStream({
+            status: 'error',
+            runId: 'run-1',
+            lastIssue: replacementIssue,
+          }),
+          runtimeStreamStatus: 'error',
+          runtimeStreamStatusLabel: 'Live feed failed',
+          runtimeStreamError: replacementIssue,
+          messagesUnavailableReason: 'Cadence is waiting for the replacement stream to recover before new live rows can appear.',
+        })}
+      />,
+    )
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', phase: 'authenticated', phaseLabel: 'Authenticated' }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStream: makeRuntimeStream({
+            status: 'error',
+            runId: 'run-1',
+            lastIssue: replacementIssue,
+          }),
+          runtimeStreamStatus: 'error',
+          runtimeStreamStatusLabel: 'Live feed failed',
+          runtimeStreamError: replacementIssue,
+          messagesUnavailableReason: 'Cadence is waiting for the replacement stream to recover before new live rows can appear.',
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByText('Switched to a new supervised run')).toBeVisible())
+    expect(screen.getByText('run-1 → run-2')).toBeVisible()
+    expect(screen.getByText('Live feed issue')).toBeVisible()
+    expect(screen.getByText('Cadence could not subscribe to the replacement run stream yet.')).toBeVisible()
+    expect(screen.getByText('code: runtime_stream_subscribe_failed')).toBeVisible()
+  })
+
   it('renders a centered agent runtime setup state and opens settings', () => {
     const onOpenSettings = vi.fn()
 
