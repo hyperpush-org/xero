@@ -57,7 +57,7 @@ export function AppShell({ children, activeView, onViewChange }: AppShellProps) 
           />
           <NavButton
             icon={Play}
-            label="Execution"
+            label="Editor"
             active={activeView === "execution"}
             onClick={() => onViewChange("execution")}
             shortcut="3"

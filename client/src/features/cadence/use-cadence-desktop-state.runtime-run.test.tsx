@@ -13,6 +13,7 @@ import type {
   RepositoryStatusResponseDto,
   ResumeOperatorRunResponseDto,
   AutonomousRunStateDto,
+  AutonomousUnitHistoryEntryDto,
   RuntimeRunDto,
   RuntimeRunUpdatedPayloadDto,
   RuntimeSessionDto,
@@ -454,16 +455,18 @@ function makeAutonomousHistoryEntry(options: {
   handoffTransitionId?: string
   handoffPackageHash?: string
   artifactSummary?: string
-}) {
+}): AutonomousUnitHistoryEntryDto {
   const runId = `auto-${options.projectId}`
   const attemptId = `${options.unitId}:attempt:1`
+  const artifactId = `${attemptId}:artifact:1`
   const workflowLinkage = options.workflowNodeId
     ? {
         workflowNodeId: options.workflowNodeId,
         transitionId: `${options.unitId}:transition:1`,
         causalTransitionId: `${options.unitId}:causal:1`,
         handoffTransitionId: options.handoffTransitionId ?? `${options.unitId}:handoff:1`,
-        handoffPackageHash: options.handoffPackageHash ?? `${options.unitId}:hash:1`,
+        handoffPackageHash:
+          options.handoffPackageHash ?? '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       }
     : null
 
@@ -510,27 +513,32 @@ function makeAutonomousHistoryEntry(options: {
             runId,
             unitId: options.unitId,
             attemptId,
-            artifactId: `${attemptId}:artifact:1`,
+            artifactId,
             artifactKind: 'tool_result',
             status: 'recorded',
             summary: options.artifactSummary,
             contentHash: 'hash',
-            payload: null,
+            payload: {
+              kind: 'tool_result',
+              projectId: options.projectId,
+              runId,
+              unitId: options.unitId,
+              attemptId,
+              artifactId,
+              toolCallId: `${attemptId}:tool:1`,
+              toolName: 'read',
+              toolState: 'succeeded',
+              commandResult: {
+                exitCode: 0,
+                timedOut: false,
+                summary: 'read completed',
+              },
+              toolSummary: null,
+              actionId: null,
+              boundaryId: null,
+            },
             createdAt: options.unitUpdatedAt,
             updatedAt: options.unitUpdatedAt,
-            detail: 'Tool output recorded.',
-            commandResult: {
-              exitCode: 0,
-              timedOut: false,
-              summary: 'read completed',
-            },
-            toolName: 'read',
-            toolState: 'succeeded',
-            evidenceKind: null,
-            verificationOutcome: null,
-            diagnosticCode: null,
-            actionId: null,
-            boundaryId: null,
           },
         ]
       : [],
@@ -777,6 +785,11 @@ function createMockAdapter(options?: {
   )
 
   const getProjectSnapshot = vi.fn(async (projectId: string) => snapshots[projectId])
+  const runtimeSettings = {
+    providerId: 'openai_codex' as const,
+    modelId: 'openai_codex',
+    openrouterApiKeyConfigured: false,
+  }
   const upsertNotificationRouteCredentials = vi.fn(
     async (
       request: UpsertNotificationRouteCredentialsRequestDto,
@@ -811,9 +824,33 @@ function createMockAdapter(options?: {
     getRepositoryDiff: vi.fn(async (projectId: string, scope: 'staged' | 'unstaged' | 'worktree') =>
       makeDiff(projectId, scope),
     ),
+    listProjectFiles: vi.fn(async (projectId: string) => ({
+      projectId,
+      root: {
+        name: 'root',
+        path: '/',
+        type: 'folder' as const,
+        children: [],
+      },
+    })),
+    readProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path, content: '' })),
+    writeProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path })),
+    createProjectEntry: vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,
+    })),
+    renameProjectEntry: vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: request.path.split('/').slice(0, -1).filter(Boolean).length
+        ? `/${request.path.split('/').slice(0, -1).filter(Boolean).join('/')}/${request.newName}`
+        : `/${request.newName}`,
+    })),
+    deleteProjectEntry: vi.fn(async (projectId: string, path: string) => ({ projectId, path })),
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
+    getRuntimeSettings: vi.fn(async () => runtimeSettings),
+    upsertRuntimeSettings: vi.fn(async () => runtimeSettings),
     startOpenAiLogin: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     submitOpenAiCallback: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     startAutonomousRun: vi.fn(async (projectId: string) => {

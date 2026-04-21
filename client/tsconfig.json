@@ -35,7 +35,6 @@
   "exclude": [
     "node_modules",
     "dist",
-    "app/**/*",
     "components/cadence/agent-panel.tsx",
     "components/cadence/project-sidebar.tsx",
     "components/cadence/workflow-panel.tsx",

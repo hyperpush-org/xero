@@ -19,6 +19,7 @@ import type {
   ImportRepositoryResponseDto,
   ListNotificationDispatchesResponseDto,
   ListNotificationRoutesResponseDto,
+  ListProjectFilesResponseDto,
   ListProjectsResponseDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
@@ -113,6 +114,36 @@ function makeDiff(projectId = 'project-1', scope: RepositoryDiffResponseDto['sco
   }
 }
 
+function makeProjectFiles(projectId = 'project-1'): ListProjectFilesResponseDto {
+  return {
+    projectId,
+    root: {
+      name: 'root',
+      path: '/',
+      type: 'folder',
+      children: [
+        {
+          name: 'README.md',
+          path: '/README.md',
+          type: 'file',
+        },
+        {
+          name: 'src',
+          path: '/src',
+          type: 'folder',
+          children: [
+            {
+              name: 'App.tsx',
+              path: '/src/App.tsx',
+              type: 'file',
+            },
+          ],
+        },
+      ],
+    },
+  }
+}
+
 function makeRuntimeSession(projectId = 'project-1', overrides: Partial<RuntimeSessionDto> = {}): RuntimeSessionDto {
   return {
     projectId,
@@ -142,10 +173,11 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
 }
 
 function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
-  return {
+  const runtimeRun: RuntimeRunDto = {
     projectId,
     runId: 'run-1',
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     supervisorKind: 'detached_pty',
     status: 'running',
     transport: {
@@ -171,6 +203,8 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
     ],
     ...overrides,
   }
+
+  return runtimeRun
 }
 
 function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): AutonomousRunStateDto {
@@ -179,6 +213,7 @@ function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): 
       projectId,
       runId,
       runtimeKind: 'openai_codex',
+      providerId: 'openai_codex',
       supervisorKind: 'detached_pty',
       status: 'running',
       recoveryState: 'healthy',
@@ -210,6 +245,7 @@ function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): 
       status: 'active',
       summary: 'Recovered the current autonomous unit boundary.',
       boundaryId: 'checkpoint:1',
+      workflowLinkage: null,
       startedAt: '2026-04-16T20:00:01Z',
       finishedAt: null,
       updatedAt: '2026-04-16T20:00:06Z',
@@ -227,8 +263,9 @@ function createAdapter(options?: {
   runtimeSession?: RuntimeSessionDto
   runtimeSettings?: RuntimeSettingsDto
   runtimeRun?: RuntimeRunDto | null
-  autonomousState?: AutonomousRunStateDto
+  autonomousState?: AutonomousRunStateDto | null
   notificationRoutes?: ListNotificationRoutesResponseDto['routes']
+  projectFiles?: ListProjectFilesResponseDto
 }) {
   let currentSnapshot = options?.snapshot ?? makeSnapshot()
   let currentStatus = options?.status ?? makeStatus()
@@ -239,6 +276,11 @@ function createAdapter(options?: {
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
   let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'Cadence')]
+  let currentProjectFiles = options?.projectFiles ?? makeProjectFiles()
+  const currentFileContents: Record<string, string> = {
+    '/README.md': '# Cadence\n',
+    '/src/App.tsx': 'export default function App() {\n  return <main>Cadence</main>\n}\n',
+  }
 
   const upsertNotificationRoute = vi.fn(async (request: UpsertNotificationRouteRequestDto) => {
     const route = {
@@ -286,6 +328,30 @@ function createAdapter(options?: {
     getProjectSnapshot: async () => currentSnapshot,
     getRepositoryStatus: async () => currentStatus,
     getRepositoryDiff: async (_projectId, scope) => ({ ...currentDiff, scope }),
+    listProjectFiles: async () => currentProjectFiles,
+    readProjectFile: async (projectId, path) => ({
+      projectId,
+      path,
+      content: currentFileContents[path] ?? '',
+    }),
+    writeProjectFile: async (projectId, path, content) => {
+      currentFileContents[path] = content
+      return { projectId, path }
+    },
+    createProjectEntry: async (request) => {
+      currentFileContents[request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`] = ''
+      return {
+        projectId: request.projectId,
+        path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,
+      }
+    },
+    renameProjectEntry: async (request) => ({
+      projectId: request.projectId,
+      path: request.path.split('/').slice(0, -1).filter(Boolean).length
+        ? `/${request.path.split('/').slice(0, -1).filter(Boolean).join('/')}/${request.newName}`
+        : `/${request.newName}`,
+    }),
+    deleteProjectEntry: async (projectId, path) => ({ projectId, path }),
     getAutonomousRun: async () => currentAutonomousState ?? { run: null, unit: null },
     getRuntimeRun: async () => currentRuntimeRun,
     getRuntimeSettings: async () => currentRuntimeSettings,
@@ -309,11 +375,9 @@ function createAdapter(options?: {
         modelId: request.modelId,
         openrouterApiKeyConfigured:
           request.providerId === 'openrouter'
-            ? request.openrouterApiKey === ''
-              ? false
-              : request.openrouterApiKey !== undefined
-                ? request.openrouterApiKey.trim().length > 0
-                : currentRuntimeSettings.openrouterApiKeyConfigured
+            ? request.openrouterApiKey == null
+              ? currentRuntimeSettings.openrouterApiKeyConfigured
+              : request.openrouterApiKey.trim().length > 0
             : false,
       }
       return currentRuntimeSettings
@@ -546,6 +610,48 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByRole('button', { name: /cadence/i })).toBeVisible()
   })
 
+  it('auto-collapses the project rail in Editor and restores it when leaving if it started expanded', async () => {
+    const { adapter } = createAdapter()
+
+    render(<CadenceApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
+  })
+
+  it('keeps the project rail collapsed after leaving Editor when it was already collapsed', async () => {
+    const { adapter } = createAdapter()
+
+    render(<CadenceApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse project sidebar' }))
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
+  })
+
   it('switches to Agent without rendering the removed debug panels', async () => {
     const { adapter } = createAdapter({ runtimeRun: null, autonomousState: null })
 
@@ -583,7 +689,6 @@ describe('CadenceApp current UI', () => {
       lastError: {
         code: 'runtime_supervisor_connect_failed',
         message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
-        retryable: true,
       },
       updatedAt: '2026-04-16T20:03:00Z',
     }
@@ -628,7 +733,6 @@ describe('CadenceApp current UI', () => {
         lastError: {
           code: 'runtime_supervisor_connect_failed',
           message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
-          retryable: true,
         },
       }),
       autonomousState: recoveredAutonomousState,
@@ -677,9 +781,9 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByLabelText('Settings'))
     expect(await screen.findByRole('heading', { name: 'Providers' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await waitFor(() => expect(openUrlMock).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
@@ -699,7 +803,7 @@ describe('CadenceApp current UI', () => {
     })
   })
 
-  it('switches to Execution and shows only the changes surface', async () => {
+  it('switches to Editor and loads the selected project files', async () => {
     const { adapter } = createAdapter()
 
     render(<CadenceApp adapter={adapter} />)
@@ -708,8 +812,9 @@ describe('CadenceApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Execution' }))
-    expect(await screen.findByRole('button', { name: 'Unstaged' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+    expect(await screen.findByText('README.md')).toBeVisible()
+    expect(screen.getByText('Select a file to start editing')).toBeVisible()
     expect(screen.queryByText('No execution activity yet')).not.toBeInTheDocument()
   })
 })

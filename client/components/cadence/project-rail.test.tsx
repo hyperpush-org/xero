@@ -54,7 +54,28 @@ describe('ProjectRail', () => {
     expect(onRemoveProject).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps a compact icon rail when collapsed', () => {
+  it('removes milestone text from the expanded project row', () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    expect(screen.getByText('mesh-lang')).toBeVisible()
+    expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
+    expect(screen.getByText('0%')).toBeVisible()
+  })
+
+  it('keeps a compact monogram rail when collapsed', () => {
     render(
       <ProjectRail
         activeProjectId="project-1"
@@ -71,9 +92,13 @@ describe('ProjectRail', () => {
       />,
     )
 
+    const rail = screen.getByRole('complementary')
+
     expect(screen.getByRole('button', { name: 'Import repository' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'mesh-lang' })).toBeVisible()
+    expect(screen.getByText('M')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Project actions for mesh-lang' })).not.toBeInTheDocument()
-    expect(screen.getByRole('complementary')).toHaveAttribute('data-collapsed', 'true')
+    expect(rail).toHaveAttribute('data-collapsed', 'true')
+    expect(rail).toHaveClass('w-11')
   })
 })

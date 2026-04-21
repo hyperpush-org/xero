@@ -284,6 +284,7 @@ fn skill_runtime_discovers_candidates_from_source_tree() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn skill_runtime_installs_into_Cadence_owned_cache_and_reuses_existing_tree() {
     let source = FixtureSkillSource::default();
     source.set_tree_response(Ok(standard_skill_tree(

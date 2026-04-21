@@ -790,6 +790,7 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean() {
     let _guard = supervisor_test_lock::lock_supervisor_test_process();
     let root = tempfile::tempdir().expect("temp dir");

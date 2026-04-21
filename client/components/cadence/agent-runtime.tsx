@@ -15,6 +15,7 @@ import type {
   RuntimeRunCheckpointView,
   RuntimeRunView,
   RuntimeSessionView,
+  RuntimeStreamIssueView,
   RuntimeStreamSkillItemView,
   RuntimeStreamStatus,
   RuntimeStreamToolItemView,
@@ -30,26 +31,35 @@ import {
 import {
   AlertCircle,
   Bot,
-  ChevronRight,
   ExternalLink,
-  GitBranch,
   LoaderCircle,
   LogIn,
   LogOut,
   Play,
   Send,
   ShieldCheck,
-  Terminal,
   XCircle,
 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { CenteredEmptyState } from '@/components/cadence/centered-empty-state'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 interface AgentRuntimeProps {
   agent: AgentPaneView
+  onOpenSettings?: () => void
   onStartLogin?: () => Promise<RuntimeSessionView | null>
   onStartAutonomousRun?: () => Promise<unknown>
   onInspectAutonomousRun?: () => Promise<unknown>
@@ -320,6 +330,126 @@ const NOTIFICATION_ROUTE_KIND_OPTIONS: Array<{
     targetHelp: 'Use the Discord channel id where route notifications should be delivered.',
   },
 ]
+
+interface ComposerModelOption {
+  value: string
+  label: string
+}
+
+interface ComposerModelGroup {
+  id: string
+  label: string
+  items: ComposerModelOption[]
+}
+
+interface ComposerThinkingLevelOption {
+  value: string
+  label: string
+}
+
+const composerInlineSelectTriggerClassName =
+  'h-8 max-w-full gap-1.5 border-0 bg-transparent px-1 text-[13px] font-normal text-muted-foreground shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent dark:hover:bg-transparent [&_svg]:text-muted-foreground/80'
+
+const composerInlineSelectContentClassName =
+  'max-h-72 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90'
+
+const SAMPLE_COMPOSER_THINKING_LEVELS: ComposerThinkingLevelOption[] = [
+  { value: 'low', label: 'Thinking · low' },
+  { value: 'medium', label: 'Thinking · medium' },
+  { value: 'high', label: 'Thinking · high' },
+]
+
+const SAMPLE_COMPOSER_MODEL_GROUPS: ComposerModelGroup[] = [
+  {
+    id: 'openai_codex',
+    label: 'OpenAI Codex',
+    items: [
+      { value: 'openai_codex', label: 'openai_codex' },
+      { value: 'codex-mini-latest', label: 'codex-mini-latest' },
+    ],
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    items: [
+      { value: 'gpt-4.1', label: 'gpt-4.1' },
+      { value: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
+      { value: 'o4-mini', label: 'o4-mini' },
+      { value: 'o3', label: 'o3' },
+      { value: 'o3-mini', label: 'o3-mini' },
+    ],
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    items: [
+      { value: 'anthropic/claude-3.7-sonnet', label: 'claude-3.7-sonnet' },
+      { value: 'anthropic/claude-3.5-sonnet', label: 'claude-3.5-sonnet' },
+      { value: 'anthropic/claude-3.5-haiku', label: 'claude-3.5-haiku' },
+    ],
+  },
+  {
+    id: 'google',
+    label: 'Google',
+    items: [
+      { value: 'google/gemini-2.5-pro-preview', label: 'gemini-2.5-pro-preview' },
+      { value: 'google/gemini-2.5-flash-preview', label: 'gemini-2.5-flash-preview' },
+      { value: 'google/gemini-2.0-flash', label: 'gemini-2.0-flash' },
+    ],
+  },
+  {
+    id: 'meta',
+    label: 'Meta',
+    items: [
+      { value: 'meta-llama/llama-4-maverick', label: 'llama-4-maverick' },
+      { value: 'meta-llama/llama-4-scout', label: 'llama-4-scout' },
+      { value: 'meta-llama/llama-3.3-70b-instruct', label: 'llama-3.3-70b-instruct' },
+    ],
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral',
+    items: [
+      { value: 'mistralai/mistral-large', label: 'mistral-large' },
+      { value: 'mistralai/ministral-8b', label: 'ministral-8b' },
+      { value: 'mistralai/pixtral-large', label: 'pixtral-large' },
+    ],
+  },
+  {
+    id: 'xai',
+    label: 'xAI',
+    items: [
+      { value: 'x-ai/grok-3-beta', label: 'grok-3-beta' },
+      { value: 'x-ai/grok-3-mini-beta', label: 'grok-3-mini-beta' },
+    ],
+  },
+]
+
+function getComposerModelGroups(selectedProviderId: string, selectedProviderLabel: string, currentModelId: string): ComposerModelGroup[] {
+  const groups = SAMPLE_COMPOSER_MODEL_GROUPS.map((group) => ({
+    ...group,
+    items: [...group.items],
+  }))
+
+  const currentExists = groups.some((group) => group.items.some((item) => item.value === currentModelId))
+  if (currentExists) {
+    return groups
+  }
+
+  const fallbackLabel = selectedProviderLabel.trim().length > 0 ? selectedProviderLabel : 'Selected provider'
+  const fallbackGroupIndex = groups.findIndex((group) => group.id === selectedProviderId)
+  const fallbackItem = { value: currentModelId, label: currentModelId }
+
+  if (fallbackGroupIndex >= 0) {
+    groups[fallbackGroupIndex] = {
+      ...groups[fallbackGroupIndex],
+      items: [fallbackItem, ...groups[fallbackGroupIndex].items],
+    }
+    return groups
+  }
+
+  return [{ id: selectedProviderId, label: fallbackLabel, items: [fallbackItem] }, ...groups]
+}
 
 function getRouteTargetDisplayValue(routeKind: NotificationRouteKindDto, routeTarget: string): string {
   try {
@@ -1279,6 +1409,7 @@ function CountCard({
 
 export function AgentRuntime({
   agent,
+  onOpenSettings,
   onStartLogin,
   onStartAutonomousRun,
   onInspectAutonomousRun,
@@ -1329,7 +1460,7 @@ export function AgentRuntime({
     [renderableRuntimeRun],
   )
   const streamStatusLabel = displayValue(agent.runtimeStreamStatusLabel, getRuntimeStreamStatusLabel(streamStatus))
-  const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
+  const streamIssue: RuntimeStreamIssueView | null = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
   const approvalRequests = agent.approvalRequests ?? []
   const resumeHistory = agent.resumeHistory ?? []
   const notificationRoutes = agent.notificationRoutes ?? []
@@ -1478,11 +1609,16 @@ export function AgentRuntime({
   const selectedProviderId = getSelectedProviderId(agent, runtimeSession)
   const selectedProviderLabel = getSelectedProviderLabel(agent, runtimeSession)
   const selectedModelId = displayValue(agent.selectedModelId, selectedProviderId === 'openrouter' ? 'Model not configured' : 'openai_codex')
+  const composerModelGroups = useMemo(
+    () => getComposerModelGroups(selectedProviderId, selectedProviderLabel, selectedModelId),
+    [selectedModelId, selectedProviderId, selectedProviderLabel],
+  )
+  const [composerModelId, setComposerModelId] = useState(selectedModelId)
+  const [composerThinkingLevel, setComposerThinkingLevel] = useState<ComposerThinkingLevelOption['value']>('medium')
   const isOpenRouterSelected = selectedProviderId === 'openrouter'
   const isOpenAiSelected = selectedProviderId === 'openai_codex'
   const openrouterApiKeyConfigured = agent.openrouterApiKeyConfigured ?? false
   const providerMismatch = agent.providerMismatch ?? false
-  const statusMeta = useMemo(() => getStatusMeta(runtimeSession, agent), [agent, runtimeSession])
   const streamStatusMeta = useMemo(() => getStreamStatusMeta(agent, runtimeSession), [agent, runtimeSession])
   const repositoryPath = displayValue(agent.repositoryPath, 'No repository path available')
   const repositoryLabel = displayValue(agent.repositoryLabel, agent.project.name)
@@ -1534,6 +1670,9 @@ export function AgentRuntime({
     openrouterApiKeyConfigured,
     providerMismatch,
   })
+  const showAgentSetupEmptyState = Boolean(
+    !providerMismatch && (!runtimeSession || runtimeSession.isSignedOut || runtimeSession.phase === 'idle'),
+  )
   const liveFeedCount = runtimeStreamItems.length
   const latestCompletion = runtimeStream?.completion ?? null
   const latestFailure = runtimeStream?.failure ?? null
@@ -1754,7 +1893,7 @@ export function AgentRuntime({
       return {
         title: 'Live feed needs attention',
         message: trustSnapshot.streamReason,
-        code: streamIssue?.code ?? null,
+        code: trustPrimaryErrorCode,
         destructive: false,
       }
     }
@@ -1870,6 +2009,10 @@ export function AgentRuntime({
   const latestSyncTimestampLabel = notificationSyncSummary
     ? formatTimestamp(notificationSyncSummary.syncedAt)
     : 'No successful sync recorded yet.'
+
+  useEffect(() => {
+    setComposerModelId(selectedModelId)
+  }, [selectedModelId, selectedProviderId])
 
   useEffect(() => {
     setActionMessage(null)
@@ -2402,149 +2545,30 @@ export function AgentRuntime({
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="shrink-0 border-b border-border bg-card/30 px-4 py-[10px]">
-          <div className="flex items-center gap-3 text-[12px]">
-            <span className="text-muted-foreground">Phase</span>
-            <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
-            <span className="font-medium text-foreground/80">{agent.activePhase?.name ?? 'None active'}</span>
-            <div className="ml-auto flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
-              <div className="flex items-center gap-1">
-                <GitBranch className="h-3.5 w-3.5" />
-                <span>{agent.branchLabel}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <Terminal className="h-3.5 w-3.5" />
-                <span>{agent.runtimeLabel}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4">
+        <div
+          className={
+            showAgentSetupEmptyState
+              ? 'flex flex-1 items-center justify-center overflow-y-auto scrollbar-thin px-6 py-5'
+              : 'flex-1 overflow-y-auto scrollbar-thin px-4 py-4'
+          }
+        >
+          {showAgentSetupEmptyState ? (
+            <CenteredEmptyState
+              description="Open Settings to choose a provider and model before using the agent tab for this imported project."
+              icon={Bot}
+              title="Configure agent runtime"
+              action={
+                onOpenSettings ? (
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <Button onClick={onOpenSettings} type="button">
+                      Configure
+                    </Button>
+                  </div>
+                ) : undefined
+              }
+            />
+          ) : (
           <div className="mx-auto flex max-w-4xl flex-col gap-4">
-            <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">{statusMeta.eyebrow}</p>
-                    <h2 className="mt-2 text-lg font-semibold text-foreground">{statusMeta.title}</h2>
-                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{statusMeta.body}</p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={statusMeta.badgeVariant}>{selectedProviderLabel}</Badge>
-                    <Badge variant="outline">Model · {selectedModelId}</Badge>
-                    {isOpenRouterSelected ? (
-                      <Badge variant={openrouterApiKeyConfigured ? 'default' : 'secondary'}>
-                        {openrouterApiKeyConfigured ? 'App-local key configured' : 'Key required in Settings'}
-                      </Badge>
-                    ) : null}
-                    {providerMismatch ? <Badge variant="destructive">Provider mismatch</Badge> : null}
-                    {runtimeSession ? <Badge variant="outline">{runtimeSession.phaseLabel}</Badge> : null}
-                  </div>
-                </div>
-
-                {actionMessage ? (
-                  <Alert variant="destructive">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Runtime action failed</AlertTitle>
-                    <AlertDescription>{actionMessage}</AlertDescription>
-                  </Alert>
-                ) : null}
-
-                {browserMessage ? (
-                  <Alert>
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Browser handoff needs attention</AlertTitle>
-                    <AlertDescription>{browserMessage}</AlertDescription>
-                  </Alert>
-                ) : null}
-
-                {runtimeSession?.lastErrorCode ? (
-                  <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-3 text-[11px] text-muted-foreground">
-                    <span className="font-medium text-foreground">Typed diagnostic</span>
-                    <span className="ml-2 font-mono">{runtimeSession.lastErrorCode}</span>
-                  </div>
-                ) : null}
-
-                <div className="flex flex-wrap gap-2">
-                  {canStartLogin ? (
-                    <Button
-                      disabled={pendingAction === 'login'}
-                      onClick={() => void handleStartLogin()}
-                      type="button"
-                    >
-                      {pendingAction === 'login' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
-                      Start OpenAI login
-                    </Button>
-                  ) : null}
-
-                  {canResumeRuntimeSession && (isOpenRouterSelected || showReuseButton) ? (
-                    <Button
-                      disabled={pendingAction === 'reuse'}
-                      onClick={() => void handleResumeRuntimeSession()}
-                      type="button"
-                      variant={isOpenRouterSelected ? 'default' : 'secondary'}
-                    >
-                      {pendingAction === 'reuse' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
-                      {runtimeSessionActionLabel}
-                    </Button>
-                  ) : null}
-
-                  {isOpenAiSelected && hasAuthorizationUrl ? (
-                    <Button
-                      disabled={pendingAction === 'browser'}
-                      onClick={() => void handleOpenBrowserAgain()}
-                      type="button"
-                      variant="outline"
-                    >
-                      {pendingAction === 'browser' ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <ExternalLink className="h-4 w-4" />
-                      )}
-                      Open browser again
-                    </Button>
-                  ) : null}
-
-                  {showLogoutButton ? (
-                    <Button
-                      disabled={pendingAction === 'logout'}
-                      onClick={() => void handleLogout()}
-                      type="button"
-                      variant="outline"
-                    >
-                      {pendingAction === 'logout' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
-                      {isOpenRouterSelected ? 'Clear runtime binding' : 'Sign out runtime'}
-                    </Button>
-                  ) : null}
-                </div>
-
-                {showManualFallback ? (
-                  <div className="space-y-3 rounded-xl border border-border/70 bg-background/70 p-4">
-                    <div className="space-y-1">
-                      <h3 className="text-sm font-semibold text-foreground">Manual callback fallback</h3>
-                      <p className="text-sm leading-6 text-muted-foreground">
-                        Use this only for the OpenAI browser-login path when the system opener or callback listener does not complete automatically.
-                      </p>
-                    </div>
-                    <Textarea
-                      onChange={(event) => setManualInput(event.currentTarget.value)}
-                      placeholder="Paste the full OpenAI redirect URL"
-                      value={manualInput}
-                    />
-                    <Button
-                      disabled={pendingAction === 'manual' || !hasActiveFlow}
-                      onClick={() => void handleSubmitManualCallback()}
-                      type="button"
-                      variant="secondary"
-                    >
-                      {pendingAction === 'manual' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                      Submit manual callback
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-            </section>
 
             {showAutonomousLedgerPanel ? (
               <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
@@ -3307,278 +3331,6 @@ export function AgentRuntime({
             </section>
             ) : null}
 
-            {showTrustSurface ? (
-              <section aria-labelledby="agent-trust-heading" className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Trust surface</p>
-                      <h2 className="mt-2 text-lg font-semibold text-foreground" id="agent-trust-heading">Run trust and recovery</h2>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={getTrustSignalBadgeVariant(trustSnapshot.state)}>{trustSnapshot.stateLabel}</Badge>
-                      <Badge variant={getRuntimeRunBadgeVariant(renderableRuntimeRun)}>{runtimeRunStatusText}</Badge>
-                      <Badge variant={getStreamBadgeVariant(streamStatus)}>{streamStatusLabel}</Badge>
-                      {trustSnapshot.projectionError ? <Badge variant="destructive">Last-known-good snapshot</Badge> : null}
-                    </div>
-                  </div>
-
-                  <p className="text-sm leading-6 text-muted-foreground">
-                    Cadence keeps this trust surface bound to selected-project runtime, live-feed, approval, and route truth. When the projection degrades, the last truthful snapshot stays visible until the hook refreshes.
-                  </p>
-
-                  {trustPrimaryIssue ? (
-                    <Alert variant={trustPrimaryIssue.destructive ? 'destructive' : 'default'}>
-                      {trustPrimaryIssue.destructive ? (
-                        <AlertCircle className="h-4 w-4" />
-                      ) : (
-                        <ShieldCheck className="h-4 w-4" />
-                      )}
-                      <AlertTitle>{trustPrimaryIssue.title}</AlertTitle>
-                      <AlertDescription>
-                        <p>{trustPrimaryIssue.message}</p>
-                        {trustPrimaryIssue.code ? (
-                          <p className={`mt-1 font-mono text-[11px] ${trustPrimaryIssue.destructive ? 'text-destructive/80' : 'text-muted-foreground'}`}>
-                            code: {trustPrimaryIssue.code}
-                          </p>
-                        ) : null}
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
-
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                    {trustSignalCards.map((card) => (
-                      <div key={card.id} className="rounded-xl border border-border/70 bg-card/70 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-sm font-semibold text-foreground">{card.title}</p>
-                          <Badge variant={getTrustSignalBadgeVariant(card.state)}>{getTrustSignalLabel(card.state)}</Badge>
-                        </div>
-                        <p className="mt-3 text-sm leading-6 text-foreground/90">{card.summary}</p>
-                        <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{card.reason}</p>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <h3 className="text-base font-semibold text-foreground">Recovery controls</h3>
-                      <Badge variant="outline">Backend-wired actions</Badge>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {canResumeRuntimeSession && (providerMismatch || trustSnapshot.runtimeState !== 'healthy') ? (
-                        <Button
-                          disabled={pendingAction === 'reuse'}
-                          onClick={() => void handleResumeRuntimeSession()}
-                          type="button"
-                          variant={isOpenRouterSelected ? 'default' : 'secondary'}
-                        >
-                          {pendingAction === 'reuse' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
-                          {runtimeSessionActionLabel}
-                        </Button>
-                      ) : null}
-
-                      {canStartRuntimeRun && (!renderableRuntimeRun || renderableRuntimeRun.isStale || renderableRuntimeRun.isFailed || hasStreamRunMismatch) ? (
-                        <Button disabled={runtimeRunActionStatus === 'running'} onClick={() => void handleStartRuntimeRun()} type="button">
-                          {runtimeRunActionStatus === 'running' && pendingRuntimeRunAction !== 'stop' ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Play className="h-4 w-4" />
-                          )}
-                          {primaryRuntimeRunActionLabel}
-                        </Button>
-                      ) : null}
-
-                      {canRetryStream && (trustSnapshot.streamState !== 'healthy' || hasStreamRunMismatch) ? (
-                        <Button
-                          disabled={pendingAction === 'retry_stream'}
-                          onClick={() => void handleRetryStream()}
-                          type="button"
-                          variant="outline"
-                        >
-                          {pendingAction === 'retry_stream' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                          Retry live feed
-                        </Button>
-                      ) : null}
-
-                      {canRefreshNotificationRoutes && (trustSnapshot.routesState !== 'healthy' || trustSnapshot.credentialsState !== 'healthy' || trustSnapshot.syncState !== 'healthy' || notificationSyncPollingActive) ? (
-                        <Button
-                          disabled={pendingAction === 'refresh_routes'}
-                          onClick={() => void handleRefreshNotificationRoutes({ force: true })}
-                          type="button"
-                          variant="outline"
-                        >
-                          {pendingAction === 'refresh_routes' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                          Refresh route health
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {trustActionApprovals.length > 0 ? (
-                    <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-base font-semibold text-foreground">Approval controls</h3>
-                        <Badge variant={pendingApprovals.length > 0 ? 'secondary' : 'outline'}>
-                          {trustActionApprovals.length} visible action{trustActionApprovals.length === 1 ? '' : 's'}
-                        </Badge>
-                      </div>
-                      <div className="mt-3 space-y-3">
-                        {trustActionApprovals.map((approval) => {
-                          const answerValue = operatorAnswers[approval.actionId] ?? approval.userAnswer ?? ''
-                          const normalizedAnswer = normalizeAnswerInput(answerValue)
-                          const requiresAnswer = approval.requiresUserAnswer ?? false
-                          const actionPending = pendingOperatorIntent?.actionId === approval.actionId
-                          const showAnswerError = requiresAnswer && answerValue.length > 0 && normalizedAnswer.length === 0
-
-                          return (
-                            <div key={`trust-${approval.actionId}`} className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-medium text-foreground">{approval.title}</p>
-                                <Badge variant={getApprovalBadgeVariant(approval.status)}>{approval.statusLabel}</Badge>
-                                {approval.canResume ? <Badge variant="outline">Resume ready</Badge> : null}
-                              </div>
-                              <p className="mt-2 text-muted-foreground">{approval.detail}</p>
-                              {approval.gateNodeId || approval.gateKey ? (
-                                <p className="mt-2 text-[11px] text-muted-foreground">{formatGateLinkage(approval)}</p>
-                              ) : null}
-                              {approval.isPending || approval.canResume ? (
-                                <label className="mt-3 grid gap-2 text-[12px] text-muted-foreground">
-                                  <span>Operator answer</span>
-                                  <Textarea
-                                    aria-label={`Trust answer for ${approval.actionId}`}
-                                    className="min-h-24"
-                                    onChange={(event) =>
-                                      setOperatorAnswers((currentAnswers) => ({
-                                        ...currentAnswers,
-                                        [approval.actionId]: event.target.value,
-                                      }))
-                                    }
-                                    placeholder={approval.answerPlaceholder ?? 'Provide operator input for this action.'}
-                                    value={answerValue}
-                                  />
-                                  {showAnswerError ? (
-                                    <span className="text-destructive">A non-empty user answer is required before approving or resuming this action.</span>
-                                  ) : null}
-                                </label>
-                              ) : null}
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                {approval.isPending ? (
-                                  <Button
-                                    disabled={actionPending || (requiresAnswer && normalizedAnswer.length === 0)}
-                                    onClick={() =>
-                                      void handleResolveOperatorAction(approval.actionId, 'approve', {
-                                        userAnswer: normalizedAnswer.length > 0 ? normalizedAnswer : null,
-                                      })
-                                    }
-                                    type="button"
-                                  >
-                                    {actionPending && pendingOperatorIntent?.kind === 'approve' ? (
-                                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                                    ) : null}
-                                    Approve
-                                  </Button>
-                                ) : null}
-
-                                {approval.isPending ? (
-                                  <Button
-                                    disabled={actionPending}
-                                    onClick={() =>
-                                      void handleResolveOperatorAction(approval.actionId, 'reject', {
-                                        userAnswer: normalizedAnswer.length > 0 ? normalizedAnswer : null,
-                                      })
-                                    }
-                                    type="button"
-                                    variant="outline"
-                                  >
-                                    Reject
-                                  </Button>
-                                ) : null}
-
-                                {approval.canResume ? (
-                                  <Button
-                                    disabled={actionPending}
-                                    onClick={() =>
-                                      void handleResumeOperatorRun(approval.actionId, {
-                                        userAnswer: normalizedAnswer.length > 0 ? normalizedAnswer : approval.userAnswer ?? null,
-                                      })
-                                    }
-                                    type="button"
-                                    variant="secondary"
-                                  >
-                                    {actionPending && pendingOperatorIntent?.kind === 'resume' ? (
-                                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                                    ) : null}
-                                    Resume run
-                                  </Button>
-                                ) : null}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                      {trustHiddenActionCount > 0 ? (
-                        <p className="mt-3 text-[12px] text-muted-foreground">+{trustHiddenActionCount} more action{trustHiddenActionCount === 1 ? '' : 's'} remain visible in the checkpoint control loop below.</p>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {hasNotificationTrustSurface ? (
-                    <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
-                        <h3 className="text-base font-semibold text-foreground">Latest sync truth</h3>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <CountCard label="Last successful sync" value={latestSyncTimestampLabel} />
-                          <CountCard label="Pending approvals" value={String(trustSnapshot.pendingApprovalCount)} />
-                          <CountCard label="Dispatch failures" tone={trustSnapshot.syncDispatchFailedCount > 0 ? 'danger' : 'default'} value={String(trustSnapshot.syncDispatchFailedCount)} />
-                          <CountCard label="Rejected replies" tone={trustSnapshot.syncReplyRejectedCount > 0 ? 'danger' : 'default'} value={String(trustSnapshot.syncReplyRejectedCount)} />
-                        </div>
-                      </div>
-
-                      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <h3 className="text-base font-semibold text-foreground">Channel health</h3>
-                          <Badge variant="outline">{notificationRoutes.length} route{notificationRoutes.length === 1 ? '' : 's'}</Badge>
-                        </div>
-                        {notificationChannelHealth.length > 0 ? (
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            {notificationChannelHealth.map((channel) => (
-                              <div key={channel.routeKind} className="rounded-lg border border-border/70 bg-background/70 px-3 py-3 text-sm">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <p className="font-medium text-foreground">{channel.routeKindLabel}</p>
-                                  <Badge variant={getNotificationHealthBadgeVariant(channel.health)}>{channel.healthLabel}</Badge>
-                                </div>
-                                <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
-                                  <InfoRow label="Enabled routes" value={String(channel.enabledCount)} />
-                                  <InfoRow label="Pending dispatches" value={String(channel.pendingCount)} />
-                                  <InfoRow label="Failed dispatches" value={String(channel.failedCount)} />
-                                  <InfoRow label="Claimed replies" value={String(channel.claimedCount)} />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <FeedEmptyState
-                            body="No Telegram or Discord routes are configured for the selected project yet."
-                            title="No remote routes configured"
-                          />
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {hasTrustRecoveryActions ? (
-                    <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                      <h3 className="text-base font-semibold text-foreground">Recommended next steps</h3>
-                      <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-muted-foreground">
-                        {trustRecoveryActions.map((action) => (
-                          <li key={action}>{action}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
 
             {hasCheckpointControlLoopSurface ? (
               <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
@@ -3877,26 +3629,80 @@ export function AgentRuntime({
             ) : null}
 
           </div>
+          )}
         </div>
 
-        <div className="shrink-0 px-4 py-4">
-          <div className="flex items-end gap-2">
-            <div className="flex flex-1 items-end gap-2 rounded-lg bg-secondary/50 px-2 py-2">
-              <textarea
-                aria-label="Agent input unavailable"
-                className="max-h-32 flex-1 ml-1 mb-0.5 resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 outline-none"
-                disabled
-                placeholder={composerPlaceholder}
-                rows={1}
-                value=""
-              />
-              <button className="shrink-0 rounded-md bg-foreground/90 p-1.5 text-background opacity-40" disabled type="button">
-                <Send className="h-3.5 w-3.5" />
-              </button>
+        <div className="relative shrink-0 px-4 pb-7 pt-10">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 -top-14 h-24 bg-gradient-to-b from-background/0 via-background/86 to-background"
+          />
+          <div className="relative mx-auto flex w-full max-w-[880px] items-end justify-center gap-3">
+            <div className="w-full max-w-[620px]">
+              <div className="relative overflow-hidden rounded-xl border border-border/70 bg-card/95 shadow-[0_18px_50px_rgba(0,0,0,0.2)] backdrop-blur supports-[backdrop-filter]:bg-card/80">
+                <Textarea
+                  aria-label="Agent input unavailable"
+                  className="max-h-56 min-h-[120px] resize-none border-0 bg-transparent px-4 pb-12 pt-4 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/55 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
+                  disabled
+                  placeholder={composerPlaceholder}
+                  rows={4}
+                  value=""
+                />
+                <div className="absolute bottom-2 left-3 right-14 flex max-w-[calc(100%-5rem)] flex-wrap items-center gap-3">
+                  <Select value={composerModelId} onValueChange={setComposerModelId}>
+                    <SelectTrigger
+                      aria-label="Model selector"
+                      className={composerInlineSelectTriggerClassName}
+                      size="sm"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className={composerInlineSelectContentClassName}>
+                      {composerModelGroups.map((group, index) => (
+                        <div key={group.id}>
+                          {index > 0 ? <SelectSeparator /> : null}
+                          <SelectGroup>
+                            <SelectLabel>{group.label}</SelectLabel>
+                            {group.items.map((model) => (
+                              <SelectItem key={model.value} value={model.value}>
+                                {model.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </div>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={composerThinkingLevel} onValueChange={setComposerThinkingLevel}>
+                    <SelectTrigger
+                      aria-label="Thinking level selector"
+                      className={composerInlineSelectTriggerClassName}
+                      size="sm"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className={composerInlineSelectContentClassName}>
+                      {SAMPLE_COMPOSER_THINKING_LEVELS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <button
+                  aria-label="Send message unavailable"
+                  className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-foreground/90 text-background opacity-40 shadow-sm"
+                  disabled
+                  type="button"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
             {canStartRuntimeRun && !renderableRuntimeRun && (
               <button
-                className="shrink-0 flex items-center gap-1.5 rounded-lg border border-border bg-card/80 px-3 py-2 text-[12px] font-medium text-foreground hover:bg-card hover:border-border/80 transition-colors disabled:opacity-50"
+                className="shrink-0 flex items-center gap-1.5 rounded-lg border border-border bg-card/80 px-3 py-2 text-[12px] font-medium text-foreground transition-colors hover:border-border/80 hover:bg-card disabled:opacity-50"
                 disabled={runtimeRunActionStatus === 'running'}
                 onClick={() => void handleStartRuntimeRun()}
                 type="button"

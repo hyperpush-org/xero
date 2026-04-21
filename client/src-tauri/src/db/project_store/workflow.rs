@@ -120,6 +120,7 @@ pub struct WorkflowHandoffPackageUpsertRecord {
     pub created_at: String,
 }
 
+#[allow(dead_code)]
 pub(crate) fn map_workflow_handoff_package_record(
     record: WorkflowHandoffPackageRecord,
 ) -> WorkflowHandoffPackageDto {

@@ -19,13 +19,11 @@ import { PhaseView } from '@/components/cadence/phase-view'
 import type {
   AgentPaneView,
   ExecutionPaneView,
-  RepositoryDiffState,
   WorkflowPaneView,
 } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   PlanningLifecycleView,
   ProjectDetailView,
-  RepositoryStatusEntryView,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeStreamView,
@@ -104,11 +102,16 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     },
     runtimeSession: null,
     runtimeRun: null,
+    autonomousRun: null,
+    autonomousUnit: null,
+    autonomousAttempt: null,
+    autonomousHistory: [],
+    autonomousRecentArtifacts: [],
     ...overrides,
   }
 }
 
-function makeWorkflow(project = makeProject()): WorkflowPaneView {
+function makeWorkflow(project = makeProject(), overrides: Partial<WorkflowPaneView> = {}): WorkflowPaneView {
   const lifecycle = project.lifecycle ?? makeLifecycle()
 
   return {
@@ -121,6 +124,33 @@ function makeWorkflow(project = makeProject()): WorkflowPaneView {
     actionRequiredLifecycleCount: lifecycle.actionRequiredCount,
     overallPercent: project.phaseProgressPercent,
     hasPhases: project.phases.length > 0,
+    runtimeSession: overrides.runtimeSession ?? project.runtimeSession ?? null,
+    selectedProviderId: overrides.selectedProviderId ?? 'openai_codex',
+    selectedProviderLabel: overrides.selectedProviderLabel ?? 'OpenAI Codex',
+    selectedModelId: overrides.selectedModelId ?? 'openai_codex',
+    openrouterApiKeyConfigured: overrides.openrouterApiKeyConfigured ?? false,
+    providerMismatch: overrides.providerMismatch ?? false,
+    ...overrides,
+  }
+}
+
+function makeExecution(project = makeProject(), overrides: Partial<ExecutionPaneView> = {}): ExecutionPaneView {
+  return {
+    project,
+    activePhase: project.phases.find((phase) => phase.status === 'active') ?? null,
+    branchLabel: project.branchLabel,
+    headShaLabel: project.repository?.headShaLabel ?? 'No HEAD',
+    statusEntries: [],
+    statusCount: 0,
+    hasChanges: false,
+    diffScopes: [],
+    verificationRecords: project.verificationRecords,
+    resumeHistory: project.resumeHistory,
+    latestDecisionOutcome: project.latestDecisionOutcome,
+    notificationBroker: project.notificationBroker,
+    operatorActionError: null,
+    verificationUnavailableReason: 'Verification details will appear here once the backend exposes run and wave results.',
+    ...overrides,
   }
 }
 
@@ -161,6 +191,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     projectId: 'project-1',
     runId: 'run-1',
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     runtimeLabel: 'Openai Codex · Supervisor running',
     supervisorKind: 'detached_pty',
     supervisorLabel: 'Detached Pty',
@@ -213,11 +244,14 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
   }
 }
 
-function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['autonomousRun']>> = {}) {
+function makeAutonomousRun(
+  overrides: Partial<NonNullable<ProjectDetailView['autonomousRun']>> = {},
+): NonNullable<ProjectDetailView['autonomousRun']> {
   return {
     projectId: 'project-1',
     runId: 'auto-run-1',
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     runtimeLabel: 'Openai Codex · Autonomous run active',
     supervisorKind: 'detached_pty',
     supervisorLabel: 'Detached Pty',
@@ -226,6 +260,7 @@ function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['aut
     recoveryState: 'recovery_required' as const,
     recoveryLabel: 'Recovery required',
     activeUnitId: 'auto-run-1:checkpoint:2',
+    activeAttemptId: 'auto-run-1:checkpoint:2:attempt:1',
     duplicateStartDetected: false,
     duplicateStartRunId: null,
     duplicateStartReason: null,
@@ -247,7 +282,6 @@ function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['aut
     lastError: {
       code: 'runtime_supervisor_connect_failed',
       message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
-      retryable: true,
     },
     updatedAt: '2026-04-16T20:03:00Z',
     isActive: true,
@@ -258,7 +292,9 @@ function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['aut
   }
 }
 
-function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['autonomousUnit']>> = {}) {
+function makeAutonomousUnit(
+  overrides: Partial<NonNullable<ProjectDetailView['autonomousUnit']>> = {},
+): NonNullable<ProjectDetailView['autonomousUnit']> {
   return {
     projectId: 'project-1',
     runId: 'auto-run-1',
@@ -270,6 +306,7 @@ function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['au
     statusLabel: 'Active',
     summary: 'Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.',
     boundaryId: 'checkpoint:2',
+    workflowLinkage: null,
     startedAt: '2026-04-16T20:00:01Z',
     finishedAt: null,
     updatedAt: '2026-04-16T20:03:00Z',
@@ -466,6 +503,12 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     runtimeRun,
     runtimeErrorMessage: null,
     runtimeRunErrorMessage: null,
+    autonomousRunErrorMessage: null,
+    autonomousRun: overrides.autonomousRun ?? project.autonomousRun ?? null,
+    autonomousUnit: overrides.autonomousUnit ?? project.autonomousUnit ?? null,
+    autonomousAttempt: overrides.autonomousAttempt ?? project.autonomousAttempt ?? null,
+    autonomousHistory: overrides.autonomousHistory ?? project.autonomousHistory,
+    autonomousRecentArtifacts: overrides.autonomousRecentArtifacts ?? project.autonomousRecentArtifacts,
     authPhase: runtimeSession?.phase ?? null,
     authPhaseLabel: runtimeSession?.phaseLabel ?? 'Signed out',
     runtimeStream,
@@ -484,6 +527,9 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     operatorActionStatus: overrides.operatorActionStatus ?? 'idle',
     pendingOperatorActionId: overrides.pendingOperatorActionId ?? null,
     operatorActionError: overrides.operatorActionError ?? null,
+    autonomousRunActionStatus: overrides.autonomousRunActionStatus ?? 'idle',
+    pendingAutonomousRunAction: overrides.pendingAutonomousRunAction ?? null,
+    autonomousRunActionError: overrides.autonomousRunActionError ?? null,
     runtimeRunActionStatus: overrides.runtimeRunActionStatus ?? 'idle',
     pendingRuntimeRunAction: overrides.pendingRuntimeRunAction ?? null,
     runtimeRunActionError: overrides.runtimeRunActionError ?? null,
@@ -497,6 +543,9 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     notificationSyncSummary: overrides.notificationSyncSummary ?? null,
     notificationSyncError: overrides.notificationSyncError ?? null,
     notificationRouteIsRefreshing: overrides.notificationRouteIsRefreshing ?? false,
+    notificationSyncPollingActive: overrides.notificationSyncPollingActive ?? false,
+    notificationSyncPollingActionId: overrides.notificationSyncPollingActionId ?? null,
+    notificationSyncPollingBoundaryId: overrides.notificationSyncPollingBoundaryId ?? null,
     trustSnapshot: overrides.trustSnapshot ?? undefined,
     sessionUnavailableReason:
       runtimeSession?.lastError?.message ??
@@ -515,53 +564,42 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
   }
 }
 
-function makeExecution(project = makeProject(), statusEntries: RepositoryStatusEntryView[] = []): ExecutionPaneView {
-  return {
-    project,
-    activePhase: null,
-    branchLabel: project.branchLabel,
-    headShaLabel: project.repository?.headShaLabel ?? 'No HEAD',
-    statusEntries,
-    statusCount: statusEntries.length,
-    hasChanges: statusEntries.length > 0,
-    diffScopes: [
-      { scope: 'staged', label: 'Staged', count: statusEntries.filter((entry) => entry.staged !== null).length },
-      { scope: 'unstaged', label: 'Unstaged', count: statusEntries.filter((entry) => entry.unstaged !== null).length },
-      { scope: 'worktree', label: 'Worktree', count: statusEntries.length },
-    ],
-    verificationRecords: project.verificationRecords,
-    resumeHistory: project.resumeHistory,
-    latestDecisionOutcome: project.latestDecisionOutcome,
-    notificationBroker: project.notificationBroker,
-    operatorActionError: null,
-    verificationUnavailableReason: 'Verification results will appear here once this project records durable verification outcomes or resume history.',
-  }
-}
-
-function makeDiffState(overrides: Partial<RepositoryDiffState> = {}): RepositoryDiffState {
-  return {
-    status: 'ready',
-    diff: {
-      projectId: 'project-1',
-      repositoryId: 'repo-1',
-      scope: 'unstaged',
-      patch: '',
-      isEmpty: true,
-      truncated: false,
-      baseRevisionLabel: 'Working tree',
-    },
-    errorMessage: null,
-    projectId: 'project-1',
-    ...overrides,
-  }
-}
-
 describe('live views', () => {
-  it('renders the current empty workflow state', () => {
-    render(<PhaseView workflow={makeWorkflow()} />)
+  it('renders workflow runtime setup state when runtime is not configured', () => {
+    const onOpenSettings = vi.fn()
+
+    render(<PhaseView onOpenSettings={onOpenSettings} workflow={makeWorkflow()} />)
 
     expect(screen.getByText('Milestone')).toBeVisible()
     expect(screen.getByText('M001')).toBeVisible()
+    expect(screen.getByText('Configure agent runtime')).toBeVisible()
+    expect(
+      screen.getByText('Open Settings to choose a provider and model before using the workflow tab for this imported project.'),
+    ).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Configure' }))
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the milestone empty state once runtime is configured', () => {
+    render(
+      <PhaseView
+        workflow={makeWorkflow(makeProject(), {
+          runtimeSession: makeRuntimeSession({
+            phase: 'authenticated',
+            phaseLabel: 'Authenticated',
+            runtimeLabel: 'Openai Codex · Authenticated',
+            accountLabel: 'acct@example.com',
+            sessionLabel: 'session-1',
+            lastErrorCode: null,
+            lastError: null,
+            isAuthenticated: true,
+            isSignedOut: false,
+          }),
+        })}
+      />,
+    )
+
     expect(screen.getByText('No milestone assigned')).toBeVisible()
     expect(
       screen.getByText('Assign a milestone to this project to start tracking planning lifecycle stages.'),
@@ -648,7 +686,10 @@ describe('live views', () => {
   it('renders the current signed-out agent shell truthfully', () => {
     render(<AgentRuntime agent={makeAgent()} />)
 
-    expect(screen.queryByRole('heading', { name: 'Authenticate to view live agent activity' })).not.toBeInTheDocument()
+    expect(screen.getByText('Configure agent runtime')).toBeVisible()
+    expect(
+      screen.getByText('Open Settings to choose a provider and model before using the agent tab for this imported project.'),
+    ).toBeVisible()
     expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute('placeholder', 'Connect a provider to start.')
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
     expect(screen.queryByText('Signed out')).not.toBeInTheDocument()
@@ -786,7 +827,6 @@ describe('live views', () => {
               lastError: {
                 code: 'runtime_supervisor_connect_failed',
                 message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
-                retryable: true,
               },
               isActive: false,
               isStale: true,
@@ -824,7 +864,6 @@ describe('live views', () => {
               lastError: {
                 code: 'runtime_supervisor_connect_failed',
                 message: 'Cadence restored the same autonomous run after reload without starting a duplicate continuation.',
-                retryable: true,
               },
               isActive: false,
               isStale: true,
@@ -1036,38 +1075,54 @@ describe('live views', () => {
     )
   })
 
-  it('renders the changes-only execution surface and error state', async () => {
-    const onSelectDiffScope = vi.fn()
-    const onRetryDiff = vi.fn()
+  it('renders the editor against the selected project tree', async () => {
+    const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
+      projectId,
+      path,
+      content: '# Cadence\n',
+    }))
 
-    const { rerender } = render(
+    render(
       <ExecutionView
-        activeDiff={makeDiffState()}
-        activeDiffScope="unstaged"
         execution={makeExecution()}
-        onRetryDiff={onRetryDiff}
-        onSelectDiffScope={onSelectDiffScope}
+        listProjectFiles={async () => ({
+          projectId: 'project-1',
+          root: {
+            name: 'root',
+            path: '/',
+            type: 'folder',
+            children: [
+              { name: 'README.md', path: '/README.md', type: 'file' },
+              {
+                name: 'src',
+                path: '/src',
+                type: 'folder',
+                children: [{ name: 'App.tsx', path: '/src/App.tsx', type: 'file' }],
+              },
+            ],
+          },
+        })}
+        readProjectFile={readProjectFile}
+        writeProjectFile={async (projectId: string, path: string) => ({ projectId, path })}
+        createProjectEntry={async (request) => ({
+          projectId: request.projectId,
+          path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,
+        })}
+        renameProjectEntry={async (request) => ({
+          projectId: request.projectId,
+          path: request.path.split('/').slice(0, -1).filter(Boolean).length
+            ? `/${request.path.split('/').slice(0, -1).filter(Boolean).join('/')}/${request.newName}`
+            : `/${request.newName}`,
+        })}
+        deleteProjectEntry={async (projectId: string, path: string) => ({ projectId, path })}
       />,
     )
 
-    expect(screen.getByText('Changes')).toBeVisible()
-    expect(screen.getByText('No unstaged changes')).toBeVisible()
-    expect(screen.getByText('Working tree is clean for this scope.')).toBeVisible()
-    await waitFor(() => expect(onSelectDiffScope).toHaveBeenCalledWith('unstaged'))
-
-    rerender(
-      <ExecutionView
-        activeDiff={makeDiffState({ status: 'error', diff: null, errorMessage: 'diff failed', projectId: 'project-1' })}
-        activeDiffScope="worktree"
-        execution={makeExecution(makeProject(), [
-          { path: 'client/src/App.tsx', staged: null, unstaged: 'modified', untracked: false },
-        ])}
-        onRetryDiff={onRetryDiff}
-        onSelectDiffScope={onSelectDiffScope}
-      />,
-    )
-
-    expect(screen.getByText('Failed to load diff')).toBeVisible()
-    expect(screen.getByText('diff failed')).toBeVisible()
+    expect(await screen.findByText('README.md')).toBeVisible()
+    expect(screen.getByText('Select a file to start editing')).toBeVisible()
+    fireEvent.click(screen.getByText('README.md'))
+    await waitFor(() => expect(readProjectFile).toHaveBeenCalledWith('project-1', '/README.md'))
+    expect(screen.queryByText('Changes')).not.toBeInTheDocument()
+    expect(screen.queryByText('No unstaged changes')).not.toBeInTheDocument()
   })
 })

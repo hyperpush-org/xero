@@ -7,12 +7,14 @@ import {
   type PlanningLifecycleStageView,
 } from '@/src/lib/cadence-model'
 import type { WorkflowPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
-import { LoaderCircle, Milestone, Play, ChevronRight } from 'lucide-react'
+import { Bot, LoaderCircle, Milestone, Play, ChevronRight } from 'lucide-react'
 import { CenteredEmptyState } from '@/components/cadence/centered-empty-state'
+import { Button } from '@/components/ui/button'
 
 interface PhaseViewProps {
   workflow: WorkflowPaneView
   onStartRun?: () => Promise<unknown>
+  onOpenSettings?: () => void
   canStartRun?: boolean
   isStartingRun?: boolean
 }
@@ -93,7 +95,7 @@ function LifecycleStageCard({ card }: { card: LifecycleStageCardModel }) {
   )
 }
 
-export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: PhaseViewProps) {
+export function PhaseView({ workflow, onStartRun, onOpenSettings, canStartRun, isStartingRun }: PhaseViewProps) {
   const lifecycle = workflow.lifecycle ?? {
     stages: [],
     byStage: createEmptyLifecycleByStage(),
@@ -143,6 +145,11 @@ export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: 
 
   const milestoneLabel = workflow.project.milestone
   const hasStarted = hasLifecycle && lifecyclePercent > 0
+  const runtimeSession = workflow.runtimeSession ?? null
+  const selectedProviderId = workflow.selectedProviderId ?? 'openai_codex'
+  const providerMismatch = workflow.providerMismatch ?? false
+  const showRuntimeSetupEmptyState =
+    !hasLifecycle && !providerMismatch && (!runtimeSession || runtimeSession.isSignedOut || runtimeSession.phase === 'idle')
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -208,6 +215,19 @@ export function PhaseView({ workflow, onStartRun, canStartRun, isStartingRun }: 
                 </div>
               </section>
             </div>
+          ) : showRuntimeSetupEmptyState ? (
+            <CenteredEmptyState
+              description="Open Settings to choose a provider and model before using the workflow tab for this imported project."
+              icon={Bot}
+              title="Configure agent runtime"
+              action={
+                onOpenSettings ? (
+                  <Button onClick={onOpenSettings} type="button">
+                    Configure
+                  </Button>
+                ) : undefined
+              }
+            />
           ) : (
             <CenteredEmptyState
               description="Assign a milestone to this project to start tracking planning lifecycle stages."

@@ -8,8 +8,8 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        31,
-        "expected thirty-one desktop commands"
+        37,
+        "expected thirty-seven desktop commands"
     );
 
     tauri::test::assert_ipc_response(
@@ -63,6 +63,67 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         invoke_request(
             GET_REPOSITORY_DIFF_COMMAND,
             json!({ "request": { "projectId": "project-1", "scope": "unstaged" } }),
+        ),
+        Err(CommandError::project_not_found()),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            LIST_PROJECT_FILES_COMMAND,
+            json!({ "request": { "projectId": "project-1" } }),
+        ),
+        Err(CommandError::project_not_found()),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            READ_PROJECT_FILE_COMMAND,
+            json!({ "request": { "projectId": "project-1", "path": "/README.md" } }),
+        ),
+        Err(CommandError::project_not_found()),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            WRITE_PROJECT_FILE_COMMAND,
+            json!({ "request": { "projectId": "project-1", "path": "/README.md", "content": "Cadence" } }),
+        ),
+        Err(CommandError::project_not_found()),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            CREATE_PROJECT_ENTRY_COMMAND,
+            json!({
+                "request": {
+                    "projectId": "project-1",
+                    "parentPath": "/",
+                    "name": "notes.md",
+                    "entryType": "file"
+                }
+            }),
+        ),
+        Err(CommandError::project_not_found()),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            RENAME_PROJECT_ENTRY_COMMAND,
+            json!({ "request": { "projectId": "project-1", "path": "/README.md", "newName": "README-2.md" } }),
+        ),
+        Err(CommandError::project_not_found()),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            DELETE_PROJECT_ENTRY_COMMAND,
+            json!({ "request": { "projectId": "project-1", "path": "/README.md" } }),
         ),
         Err(CommandError::project_not_found()),
     );

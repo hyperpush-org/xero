@@ -12,6 +12,7 @@ pub mod list_notification_dispatches;
 pub mod list_notification_routes;
 pub mod list_projects;
 pub mod logout_runtime_session;
+pub mod project_files;
 pub mod record_notification_dispatch_outcome;
 pub mod remove_project;
 pub mod resolve_operator_action;
@@ -47,6 +48,10 @@ pub use list_notification_dispatches::list_notification_dispatches;
 pub use list_notification_routes::list_notification_routes;
 pub use list_projects::list_projects;
 pub use logout_runtime_session::logout_runtime_session;
+pub use project_files::{
+    create_project_entry, delete_project_entry, list_project_files, read_project_file,
+    rename_project_entry, write_project_file,
+};
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
 pub use remove_project::remove_project;
 pub use resolve_operator_action::resolve_operator_action;

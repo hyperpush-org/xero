@@ -6,16 +6,24 @@ import {
   applyWorkflowTransitionRequestSchema,
   applyWorkflowTransitionResponseSchema,
   autonomousRunStateSchema,
+  createProjectEntryRequestSchema,
+  createProjectEntryResponseSchema,
+  deleteProjectEntryResponseSchema,
   importRepositoryResponseSchema,
   listNotificationDispatchesRequestSchema,
   listNotificationDispatchesResponseSchema,
   listNotificationRoutesRequestSchema,
   listNotificationRoutesResponseSchema,
+  listProjectFilesResponseSchema,
   listProjectsResponseSchema,
+  projectFileRequestSchema,
   projectSnapshotResponseSchema,
   projectUpdatedPayloadSchema,
+  readProjectFileResponseSchema,
   recordNotificationDispatchOutcomeRequestSchema,
   recordNotificationDispatchOutcomeResponseSchema,
+  renameProjectEntryRequestSchema,
+  renameProjectEntryResponseSchema,
   repositoryDiffResponseSchema,
   repositoryStatusChangedPayloadSchema,
   repositoryStatusResponseSchema,
@@ -42,17 +50,27 @@ import {
   upsertRuntimeSettingsRequestSchema,
   upsertWorkflowGraphRequestSchema,
   upsertWorkflowGraphResponseSchema,
+  writeProjectFileRequestSchema,
+  writeProjectFileResponseSchema,
   type ApplyWorkflowTransitionRequestDto,
   type ApplyWorkflowTransitionResponseDto,
   type AutonomousRunStateDto,
+  type CreateProjectEntryRequestDto,
+  type CreateProjectEntryResponseDto,
+  type DeleteProjectEntryResponseDto,
   type ImportRepositoryResponseDto,
   type ListNotificationDispatchesResponseDto,
   type ListNotificationRoutesResponseDto,
+  type ListProjectFilesResponseDto,
   type ListProjectsResponseDto,
+  type ProjectFileRequestDto,
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
+  type ReadProjectFileResponseDto,
   type RecordNotificationDispatchOutcomeRequestDto,
   type RecordNotificationDispatchOutcomeResponseDto,
+  type RenameProjectEntryRequestDto,
+  type RenameProjectEntryResponseDto,
   type RepositoryDiffResponseDto,
   type RepositoryDiffScope,
   type RepositoryStatusChangedPayloadDto,
@@ -77,6 +95,8 @@ import {
   type UpsertRuntimeSettingsRequestDto,
   type UpsertWorkflowGraphRequestDto,
   type UpsertWorkflowGraphResponseDto,
+  type WriteProjectFileRequestDto,
+  type WriteProjectFileResponseDto,
 } from '@/src/lib/cadence-model'
 
 const COMMANDS = {
@@ -86,6 +106,12 @@ const COMMANDS = {
   getProjectSnapshot: 'get_project_snapshot',
   getRepositoryStatus: 'get_repository_status',
   getRepositoryDiff: 'get_repository_diff',
+  listProjectFiles: 'list_project_files',
+  readProjectFile: 'read_project_file',
+  writeProjectFile: 'write_project_file',
+  createProjectEntry: 'create_project_entry',
+  renameProjectEntry: 'rename_project_entry',
+  deleteProjectEntry: 'delete_project_entry',
   getAutonomousRun: 'get_autonomous_run',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
@@ -164,6 +190,12 @@ export interface CadenceDesktopAdapter {
   getProjectSnapshot(projectId: string): Promise<ProjectSnapshotResponseDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
+  listProjectFiles(projectId: string): Promise<ListProjectFilesResponseDto>
+  readProjectFile(projectId: string, path: string): Promise<ReadProjectFileResponseDto>
+  writeProjectFile(projectId: string, path: string, content: string): Promise<WriteProjectFileResponseDto>
+  createProjectEntry(request: CreateProjectEntryRequestDto): Promise<CreateProjectEntryResponseDto>
+  renameProjectEntry(request: RenameProjectEntryRequestDto): Promise<RenameProjectEntryResponseDto>
+  deleteProjectEntry(projectId: string, path: string): Promise<DeleteProjectEntryResponseDto>
   getAutonomousRun(projectId: string): Promise<AutonomousRunStateDto>
   getRuntimeRun(projectId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
@@ -475,6 +507,47 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   getRepositoryDiff(projectId, scope) {
     return invokeTyped(COMMANDS.getRepositoryDiff, repositoryDiffResponseSchema, {
       request: { projectId, scope },
+    })
+  },
+
+  listProjectFiles(projectId) {
+    return invokeTyped(COMMANDS.listProjectFiles, listProjectFilesResponseSchema, {
+      request: { projectId },
+    })
+  },
+
+  readProjectFile(projectId, path) {
+    const request = projectFileRequestSchema.parse({ projectId, path })
+    return invokeTyped(COMMANDS.readProjectFile, readProjectFileResponseSchema, {
+      request,
+    })
+  },
+
+  writeProjectFile(projectId, path, content) {
+    const request = writeProjectFileRequestSchema.parse({ projectId, path, content })
+    return invokeTyped(COMMANDS.writeProjectFile, writeProjectFileResponseSchema, {
+      request,
+    })
+  },
+
+  createProjectEntry(request) {
+    const parsedRequest = createProjectEntryRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.createProjectEntry, createProjectEntryResponseSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  renameProjectEntry(request) {
+    const parsedRequest = renameProjectEntryRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.renameProjectEntry, renameProjectEntryResponseSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  deleteProjectEntry(projectId, path) {
+    const request = projectFileRequestSchema.parse({ projectId, path })
+    return invokeTyped(COMMANDS.deleteProjectEntry, deleteProjectEntryResponseSchema, {
+      request,
     })
   },
 

@@ -1,606 +1,846 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRight, FileCode, FilePlus, FolderPlus, RotateCcw, Search, X } from 'lucide-react'
+import { getDesktopErrorMessage } from '@/src/lib/cadence-desktop'
 import type {
-  ExecutionPaneView,
-  RepositoryDiffState,
-} from '@/src/features/cadence/use-cadence-desktop-state'
-import type { RepositoryDiffScope } from '@/src/lib/cadence-model'
+  CreateProjectEntryRequestDto,
+  CreateProjectEntryResponseDto,
+  DeleteProjectEntryResponseDto,
+  ListProjectFilesResponseDto,
+  ReadProjectFileResponseDto,
+  RenameProjectEntryRequestDto,
+  RenameProjectEntryResponseDto,
+  WriteProjectFileResponseDto,
+} from '@/src/lib/cadence-model'
 import {
-  AlertCircle,
-  Check,
-  FileCode,
-  FileMinus,
-  FilePlus,
-  FileSymlink,
-  FileWarning,
-  GitBranch,
-  Hash,
-  Loader2,
-  RefreshCw,
-  ChevronRight,
-} from 'lucide-react'
-import { getLangFromPath, tokenizeCode, type TokenizedLine } from '@/lib/shiki'
+  createEmptyFileSystem,
+  findNode,
+  listAllFolderPaths,
+  mapProjectFileTree,
+  type FileSystemNode,
+} from '@/src/lib/file-system-tree'
+import { getLangFromPath } from '@/lib/shiki'
+import { cn } from '@/lib/utils'
+import type { ExecutionPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
+import { CodeEditor } from './code-editor'
+import { FileTree, getFileIcon as getFileIconForName } from './file-tree'
+import { RenameFileDialog } from './rename-file-dialog'
+import { DeleteFileDialog } from './delete-file-dialog'
+import { NewFileDialog } from './new-file-dialog'
+import { Input } from '@/components/ui/input'
 
-// ---------------------------------------------------------------------------
-// Props
-// ---------------------------------------------------------------------------
+interface CursorPosition {
+  line: number
+  column: number
+}
 
 interface ExecutionViewProps {
   execution: ExecutionPaneView
-  activeDiffScope: RepositoryDiffScope
-  activeDiff: RepositoryDiffState
-  onSelectDiffScope: (scope: RepositoryDiffScope) => void
-  onRetryDiff: () => void
+  listProjectFiles: (projectId: string) => Promise<ListProjectFilesResponseDto>
+  readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
+  writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
+  createProjectEntry: (request: CreateProjectEntryRequestDto) => Promise<CreateProjectEntryResponseDto>
+  renameProjectEntry: (request: RenameProjectEntryRequestDto) => Promise<RenameProjectEntryResponseDto>
+  deleteProjectEntry: (projectId: string, path: string) => Promise<DeleteProjectEntryResponseDto>
 }
 
-// ---------------------------------------------------------------------------
-// Diff parsing — unified patch → per-file structures
-// ---------------------------------------------------------------------------
+function defaultExpandedFolders(root: FileSystemNode): Set<string> {
+  const folders = new Set<string>(['/'])
 
-type DiffLineKind = 'add' | 'del' | 'hunk' | 'context'
-
-interface DiffLine {
-  kind: DiffLineKind
-  content: string
-  /** Line number in the new file (null for deletions and hunk headers) */
-  newNum: number | null
-  /** Line number in the old file (null for additions and hunk headers) */
-  oldNum: number | null
-}
-
-interface FileDiff {
-  path: string
-  name: string
-  changeKind: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'unknown'
-  additions: number
-  deletions: number
-  lines: DiffLine[]
-}
-
-const HUNK_HEADER_RE = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/
-
-function parseUnifiedPatch(patch: string): FileDiff[] {
-  if (!patch.trim()) return []
-
-  const files: FileDiff[] = []
-  let current: {
-    path: string
-    changeKind: FileDiff['changeKind']
-    lines: DiffLine[]
-    adds: number
-    dels: number
-  } | null = null
-
-  let oldLine = 0
-  let newLine = 0
-
-  function flush() {
-    if (!current) return
-    const parts = current.path.split('/')
-    files.push({
-      path: current.path,
-      name: parts[parts.length - 1],
-      changeKind: current.changeKind,
-      additions: current.adds,
-      deletions: current.dels,
-      lines: current.lines,
-    })
-    current = null
+  for (const candidate of ['/src', '/app', '/components']) {
+    if (findNode(root, candidate)?.type === 'folder') {
+      folders.add(candidate)
+    }
   }
 
-  const rawLines = patch.split('\n')
+  if (folders.size === 1 && root.children?.length === 1 && root.children[0]?.type === 'folder') {
+    folders.add(root.children[0].path)
+  }
 
-  for (let i = 0; i < rawLines.length; i++) {
-    const line = rawLines[i]
+  return folders
+}
 
-    if (line.startsWith('diff --git ')) {
-      flush()
-      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/)
-      const filePath = match ? match[2] : 'unknown'
+function EditorView({
+  execution,
+  listProjectFiles,
+  readProjectFile,
+  writeProjectFile,
+  createProjectEntry,
+  renameProjectEntry,
+  deleteProjectEntry,
+}: ExecutionViewProps) {
+  const projectId = execution.project.id
+  const projectLabel = execution.project.repository?.displayName ?? execution.project.name
+  const repositoryPath = execution.project.repository?.rootPath ?? null
+  const loadEpochRef = useRef(0)
 
-      let changeKind: FileDiff['changeKind'] = 'modified'
-      let j = i + 1
-      while (j < rawLines.length && !rawLines[j].startsWith('diff --git ') && !rawLines[j].startsWith('@@')) {
-        if (rawLines[j].startsWith('new file mode')) changeKind = 'added'
-        else if (rawLines[j].startsWith('deleted file mode')) changeKind = 'deleted'
-        else if (rawLines[j].startsWith('rename from') || rawLines[j].startsWith('similarity index')) changeKind = 'renamed'
-        else if (rawLines[j].startsWith('copy from')) changeKind = 'copied'
-        j++
+  const [tree, setTree] = useState<FileSystemNode>(createEmptyFileSystem)
+  const [savedContents, setSavedContents] = useState<Record<string, string>>({})
+  const [fileContents, setFileContents] = useState<Record<string, string>>({})
+  const [openTabs, setOpenTabs] = useState<string[]>([])
+  const [activePath, setActivePath] = useState<string | null>(null)
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['/']))
+  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
+  const [cursor, setCursor] = useState<CursorPosition>({ line: 1, column: 1 })
+  const [isTreeLoading, setIsTreeLoading] = useState(false)
+  const [pendingFilePath, setPendingFilePath] = useState<string | null>(null)
+  const [savingPath, setSavingPath] = useState<string | null>(null)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+
+  const [renameTarget, setRenameTarget] = useState<{ path: string; type: 'file' | 'folder' } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{ path: string; type: 'file' | 'folder' } | null>(null)
+  const [newChildTarget, setNewChildTarget] = useState<{ parentPath: string; type: 'file' | 'folder' } | null>(null)
+
+  const openFile = useCallback((path: string) => {
+    setOpenTabs((current) => (current.includes(path) ? current : [...current, path]))
+    setActivePath(path)
+  }, [])
+
+  const refreshTree = useCallback(
+    async (options: { preserveExpandedFolders?: boolean } = {}) => {
+      const requestEpoch = loadEpochRef.current
+      setIsTreeLoading(true)
+      setWorkspaceError(null)
+
+      try {
+        const response = await listProjectFiles(projectId)
+        if (requestEpoch !== loadEpochRef.current) {
+          return
+        }
+
+        const nextTree = mapProjectFileTree(response)
+        setTree(nextTree)
+        setExpandedFolders((current) => {
+          if (!options.preserveExpandedFolders || current.size === 0) {
+            return defaultExpandedFolders(nextTree)
+          }
+
+          const next = new Set(Array.from(current).filter((path) => findNode(nextTree, path)?.type === 'folder'))
+          if (next.size === 0) {
+            return defaultExpandedFolders(nextTree)
+          }
+          next.add('/')
+          return next
+        })
+        setOpenTabs((current) => current.filter((path) => findNode(nextTree, path)?.type === 'file'))
+        setActivePath((current) => (current && findNode(nextTree, current)?.type === 'file' ? current : null))
+      } catch (error) {
+        if (requestEpoch !== loadEpochRef.current) {
+          return
+        }
+
+        setTree(createEmptyFileSystem())
+        setOpenTabs([])
+        setActivePath(null)
+        setExpandedFolders(new Set(['/']))
+        setWorkspaceError(getDesktopErrorMessage(error))
+      } finally {
+        if (requestEpoch === loadEpochRef.current) {
+          setIsTreeLoading(false)
+        }
       }
-
-      current = { path: filePath, changeKind, lines: [], adds: 0, dels: 0 }
-      continue
-    }
-
-    if (!current) continue
-
-    if (
-      line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ') ||
-      line.startsWith('old mode') || line.startsWith('new mode') ||
-      line.startsWith('new file mode') || line.startsWith('deleted file mode') ||
-      line.startsWith('rename from') || line.startsWith('rename to') ||
-      line.startsWith('copy from') || line.startsWith('copy to') ||
-      line.startsWith('similarity index') || line.startsWith('dissimilarity index')
-    ) {
-      continue
-    }
-
-    const hunkMatch = line.match(HUNK_HEADER_RE)
-    if (hunkMatch) {
-      oldLine = parseInt(hunkMatch[1], 10)
-      newLine = parseInt(hunkMatch[2], 10)
-      current.lines.push({ kind: 'hunk', content: line, oldNum: null, newNum: null })
-      continue
-    }
-
-    if (line.startsWith('+')) {
-      current.lines.push({ kind: 'add', content: line.slice(1), oldNum: null, newNum: newLine })
-      current.adds++
-      newLine++
-    } else if (line.startsWith('-')) {
-      current.lines.push({ kind: 'del', content: line.slice(1), oldNum: oldLine, newNum: null })
-      current.dels++
-      oldLine++
-    } else if (line.startsWith('\\')) {
-      continue
-    } else {
-      const text = line.startsWith(' ') ? line.slice(1) : line
-      current.lines.push({ kind: 'context', content: text, oldNum: oldLine, newNum: newLine })
-      oldLine++
-      newLine++
-    }
-  }
-
-  flush()
-  return files
-}
-
-// ---------------------------------------------------------------------------
-// Syntax highlighting — reconstruct old/new code, tokenize, map back
-// ---------------------------------------------------------------------------
-
-/**
- * For each diff line, build a mapping to the token array from either
- * the "new" tokenization (context + adds) or the "old" tokenization (context + dels).
- */
-function useHighlightedDiff(file: FileDiff | null): Map<number, TokenizedLine> {
-  const [tokenMap, setTokenMap] = useState<Map<number, TokenizedLine>>(new Map())
-  const filePathRef = useRef<string | null>(null)
+    },
+    [listProjectFiles, projectId],
+  )
 
   useEffect(() => {
-    if (!file) {
-      setTokenMap(new Map())
+    loadEpochRef.current += 1
+    setTree(createEmptyFileSystem())
+    setSavedContents({})
+    setFileContents({})
+    setOpenTabs([])
+    setActivePath(null)
+    setExpandedFolders(new Set(['/']))
+    setDirtyPaths(new Set())
+    setSearchQuery('')
+    setCursor({ line: 1, column: 1 })
+    setPendingFilePath(null)
+    setSavingPath(null)
+    setWorkspaceError(null)
+    void refreshTree({ preserveExpandedFolders: false })
+  }, [projectId, refreshTree])
+
+  const closeTab = useCallback(
+    (path: string) => {
+      setOpenTabs((current) => {
+        const next = current.filter((candidate) => candidate !== path)
+        if (activePath === path) {
+          const index = current.indexOf(path)
+          const neighbor = next[index] ?? next[index - 1] ?? null
+          setActivePath(neighbor)
+        }
+        return next
+      })
+      setDirtyPaths((current) => {
+        if (!current.has(path)) return current
+        const next = new Set(current)
+        next.delete(path)
+        return next
+      })
+    },
+    [activePath],
+  )
+
+  const handleSelectFile = useCallback(
+    async (path: string) => {
+      const node = findNode(tree, path)
+      if (!node || node.type !== 'file') {
+        return
+      }
+
+      if (fileContents[path] !== undefined) {
+        openFile(path)
+        return
+      }
+
+      const requestEpoch = loadEpochRef.current
+      setPendingFilePath(path)
+      setWorkspaceError(null)
+
+      try {
+        const response = await readProjectFile(projectId, path)
+        if (requestEpoch !== loadEpochRef.current) {
+          return
+        }
+
+        setSavedContents((current) => ({ ...current, [path]: response.content }))
+        setFileContents((current) => ({ ...current, [path]: response.content }))
+        openFile(path)
+      } catch (error) {
+        if (requestEpoch !== loadEpochRef.current) {
+          return
+        }
+
+        setWorkspaceError(getDesktopErrorMessage(error))
+      } finally {
+        if (requestEpoch === loadEpochRef.current) {
+          setPendingFilePath((current) => (current === path ? null : current))
+        }
+      }
+    },
+    [fileContents, openFile, projectId, readProjectFile, tree],
+  )
+
+  const handleToggleFolder = useCallback((path: string) => {
+    setExpandedFolders((current) => {
+      const next = new Set(current)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }, [])
+
+  const handleChange = useCallback(
+    (value: string) => {
+      if (!activePath) {
+        return
+      }
+
+      setFileContents((current) => {
+        if (current[activePath] === value) {
+          return current
+        }
+        return { ...current, [activePath]: value }
+      })
+
+      setDirtyPaths((current) => {
+        const savedValue = savedContents[activePath] ?? ''
+        const isDirty = value !== savedValue
+        if (isDirty === current.has(activePath)) {
+          return current
+        }
+
+        const next = new Set(current)
+        if (isDirty) next.add(activePath)
+        else next.delete(activePath)
+        return next
+      })
+    },
+    [activePath, savedContents],
+  )
+
+  const saveActive = useCallback(async () => {
+    if (!activePath) {
       return
     }
 
-    // Reset immediately on file change to avoid stale tokens
-    if (filePathRef.current !== file.path) {
-      filePathRef.current = file.path
-      setTokenMap(new Map())
-    }
+    const requestEpoch = loadEpochRef.current
+    const content = fileContents[activePath] ?? ''
+    setSavingPath(activePath)
+    setWorkspaceError(null)
 
-    // Capture non-null file for use inside closures (TS narrowing doesn't cross async boundaries)
-    const currentFile = file
-
-    const lang = getLangFromPath(currentFile.path)
-    if (!lang) return
-
-    let cancelled = false
-
-    const newCodeLines: string[] = []
-    const newDiffIndices: number[] = []
-    const oldCodeLines: string[] = []
-    const oldDiffIndices: number[] = []
-
-    for (let i = 0; i < currentFile.lines.length; i++) {
-      const line = currentFile.lines[i]
-      if (line.kind === 'hunk') continue
-      if (line.kind === 'context' || line.kind === 'add') {
-        newCodeLines.push(line.content)
-        newDiffIndices.push(i)
+    try {
+      await writeProjectFile(projectId, activePath, content)
+      if (requestEpoch !== loadEpochRef.current) {
+        return
       }
-      if (line.kind === 'context' || line.kind === 'del') {
-        oldCodeLines.push(line.content)
-        oldDiffIndices.push(i)
+
+      setSavedContents((current) => ({ ...current, [activePath]: content }))
+      setDirtyPaths((current) => {
+        if (!current.has(activePath)) return current
+        const next = new Set(current)
+        next.delete(activePath)
+        return next
+      })
+    } catch (error) {
+      if (requestEpoch !== loadEpochRef.current) {
+        return
+      }
+
+      setWorkspaceError(getDesktopErrorMessage(error))
+    } finally {
+      if (requestEpoch === loadEpochRef.current) {
+        setSavingPath((current) => (current === activePath ? null : current))
       }
     }
+  }, [activePath, fileContents, projectId, writeProjectFile])
 
-    async function run() {
-      const results = new Map<number, TokenizedLine>()
+  const revertActive = useCallback(() => {
+    if (!activePath) {
+      return
+    }
 
-      const newTokens = await tokenizeCode(newCodeLines.join('\n'), lang!)
-      if (cancelled) return
-      if (newTokens) {
-        for (let i = 0; i < newTokens.length && i < newDiffIndices.length; i++) {
-          results.set(newDiffIndices[i], newTokens[i])
-        }
+    const savedValue = savedContents[activePath] ?? ''
+    setFileContents((current) => ({ ...current, [activePath]: savedValue }))
+    setDirtyPaths((current) => {
+      if (!current.has(activePath)) return current
+      const next = new Set(current)
+      next.delete(activePath)
+      return next
+    })
+  }, [activePath, savedContents])
+
+  const reloadProjectTree = useCallback(() => {
+    void refreshTree({ preserveExpandedFolders: true })
+  }, [refreshTree])
+
+  const collapseAll = useCallback(() => {
+    setExpandedFolders(new Set(['/']))
+  }, [])
+
+  const handleRequestRename = useCallback((path: string, type: 'file' | 'folder') => {
+    setRenameTarget({ path, type })
+  }, [])
+
+  const handleRequestDelete = useCallback((path: string, type: 'file' | 'folder') => {
+    setDeleteTarget({ path, type })
+  }, [])
+
+  const handleRequestNewFile = useCallback((parentPath: string) => {
+    setNewChildTarget({ parentPath, type: 'file' })
+  }, [])
+
+  const handleRequestNewFolder = useCallback((parentPath: string) => {
+    setNewChildTarget({ parentPath, type: 'folder' })
+  }, [])
+
+  const handleCopyPath = useCallback((path: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(path).catch(() => {})
+    }
+  }, [])
+
+  const handleRenameSubmit = useCallback(
+    async (newName: string): Promise<string | null> => {
+      if (!renameTarget) {
+        return null
       }
 
-      const oldTokens = await tokenizeCode(oldCodeLines.join('\n'), lang!)
-      if (cancelled) return
-      if (oldTokens) {
-        for (let i = 0; i < oldTokens.length && i < oldDiffIndices.length; i++) {
-          const diffIdx = oldDiffIndices[i]
-          if (currentFile.lines[diffIdx].kind === 'del') {
-            results.set(diffIdx, oldTokens[i])
+      try {
+        const response = await renameProjectEntry({
+          projectId,
+          path: renameTarget.path,
+          newName,
+        })
+        const { path: oldPath } = renameTarget
+        const newPath = response.path
+
+        setSavedContents((current) => remapKeys(current, oldPath, newPath))
+        setFileContents((current) => remapKeys(current, oldPath, newPath))
+        setOpenTabs((current) => current.map((path) => remapPath(path, oldPath, newPath)))
+        setDirtyPaths((current) => new Set(Array.from(current).map((path) => remapPath(path, oldPath, newPath))))
+        setExpandedFolders((current) =>
+          new Set(Array.from(current).map((path) => remapPath(path, oldPath, newPath))),
+        )
+        setActivePath((current) => (current ? remapPath(current, oldPath, newPath) : null))
+        setWorkspaceError(null)
+        await refreshTree({ preserveExpandedFolders: true })
+        return null
+      } catch (error) {
+        return getDesktopErrorMessage(error)
+      }
+    },
+    [projectId, refreshTree, renameProjectEntry, renameTarget],
+  )
+
+  const handleDeleteSubmit = useCallback(async () => {
+    if (!deleteTarget) {
+      return
+    }
+
+    const deletedPath = deleteTarget.path
+    const deletedPrefix = deletedPath.endsWith('/') ? deletedPath : `${deletedPath}/`
+
+    try {
+      await deleteProjectEntry(projectId, deletedPath)
+      setSavedContents((current) => filterByPathNotWithin(current, deletedPath, deletedPrefix))
+      setFileContents((current) => filterByPathNotWithin(current, deletedPath, deletedPrefix))
+      setOpenTabs((current) => current.filter((path) => path !== deletedPath && !path.startsWith(deletedPrefix)))
+      setDirtyPaths((current) => {
+        const next = new Set<string>()
+        for (const path of current) {
+          if (path !== deletedPath && !path.startsWith(deletedPrefix)) {
+            next.add(path)
           }
         }
+        return next
+      })
+      setActivePath((current) =>
+        current === deletedPath || current?.startsWith(deletedPrefix) ? null : current,
+      )
+      setWorkspaceError(null)
+      setDeleteTarget(null)
+      await refreshTree({ preserveExpandedFolders: true })
+    } catch (error) {
+      setWorkspaceError(getDesktopErrorMessage(error))
+    }
+  }, [deleteProjectEntry, deleteTarget, projectId, refreshTree])
+
+  const handleCreateSubmit = useCallback(
+    async (name: string): Promise<string | null> => {
+      if (!newChildTarget) {
+        return null
       }
 
-      if (!cancelled) setTokenMap(results)
+      const { parentPath, type } = newChildTarget
+
+      try {
+        const response = await createProjectEntry({
+          projectId,
+          parentPath,
+          name,
+          entryType: type,
+        })
+
+        if (type === 'file') {
+          setSavedContents((current) => ({ ...current, [response.path]: '' }))
+          setFileContents((current) => ({ ...current, [response.path]: '' }))
+          openFile(response.path)
+        }
+
+        setExpandedFolders((current) => {
+          const next = new Set(current)
+          next.add(parentPath)
+          if (type === 'folder') {
+            next.add(response.path)
+          }
+          return next
+        })
+        setWorkspaceError(null)
+        await refreshTree({ preserveExpandedFolders: true })
+        return null
+      } catch (error) {
+        return getDesktopErrorMessage(error)
+      }
+    },
+    [createProjectEntry, newChildTarget, openFile, projectId, refreshTree],
+  )
+
+  const activeNode = activePath ? findNode(tree, activePath) : null
+  const activeContent = activePath ? fileContents[activePath] ?? '' : ''
+  const activeLang = activePath ? getLangFromPath(activePath) ?? 'plaintext' : 'plaintext'
+  const activeLineCount = activePath ? (fileContents[activePath]?.split('\n').length ?? 0) : 0
+  const isActiveDirty = activePath ? dirtyPaths.has(activePath) : false
+  const isActiveSaving = activePath ? savingPath === activePath : false
+  const isActiveLoading = activePath ? pendingFilePath === activePath : false
+  const explorerSubtitle = useMemo(() => {
+    if (!repositoryPath) {
+      return execution.branchLabel
     }
 
-    run()
-    return () => { cancelled = true }
-  }, [file])
-
-  return tokenMap
-}
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-function getKindBadge(changeKind: FileDiff['changeKind']): { label: string; cls: string } {
-  switch (changeKind) {
-    case 'added': return { label: 'A', cls: 'bg-success/15 text-success' }
-    case 'deleted': return { label: 'D', cls: 'bg-destructive/15 text-destructive-foreground' }
-    case 'renamed': return { label: 'R', cls: 'bg-chart-4/15 text-chart-4' }
-    case 'copied': return { label: 'C', cls: 'bg-chart-2/15 text-chart-2' }
-    case 'modified': return { label: 'M', cls: 'bg-chart-1/15 text-chart-1' }
-    default: return { label: '?', cls: 'bg-muted text-muted-foreground' }
-  }
-}
-
-function getFileIcon(kind: FileDiff['changeKind']) {
-  switch (kind) {
-    case 'added': return FilePlus
-    case 'deleted': return FileMinus
-    case 'renamed': case 'copied': return FileSymlink
-    default: return FileCode
-  }
-}
-
-/** Render a line's code content with syntax tokens when available, or plain text. */
-function TokenizedContent({ content, tokens }: { content: string; tokens?: TokenizedLine }) {
-  if (!tokens || tokens.length === 0) {
-    return <>{content || ' '}</>
-  }
+    return repositoryPath
+  }, [execution.branchLabel, repositoryPath])
 
   return (
-    <>
-      {tokens.map((tok, i) => (
-        <span key={i} style={tok.color ? { color: tok.color } : undefined}>
-          {tok.content}
-        </span>
-      ))}
-    </>
-  )
-}
+    <div className="flex min-h-0 w-full flex-1 min-w-0">
+      <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-sidebar">
+        <div className="flex shrink-0 items-start justify-between gap-2 px-3 pt-2.5 pb-2">
+          <div className="min-w-0">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Explorer
+            </span>
+            <p className="truncate text-[11px] text-foreground/85">{projectLabel}</p>
+            <p className="truncate text-[10px] text-muted-foreground">{explorerSubtitle}</p>
+          </div>
+          <div className="flex items-center gap-0.5">
+            <IconButton label="New file" onClick={() => handleRequestNewFile('/')}>
+              <FilePlus className="h-3.5 w-3.5" />
+            </IconButton>
+            <IconButton label="New folder" onClick={() => handleRequestNewFolder('/')}>
+              <FolderPlus className="h-3.5 w-3.5" />
+            </IconButton>
+            <IconButton label="Collapse all" onClick={collapseAll}>
+              <ChevronRight className="h-3.5 w-3.5 rotate-90" />
+            </IconButton>
+            <IconButton label="Reload project" onClick={reloadProjectTree}>
+              <RotateCcw className={cn('h-3.5 w-3.5', isTreeLoading && 'animate-spin')} />
+            </IconButton>
+          </div>
+        </div>
 
-// ---------------------------------------------------------------------------
-// Diff viewer table
-// ---------------------------------------------------------------------------
+        <div className="shrink-0 px-2 pb-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/70" />
+            <Input
+              aria-label="Search files"
+              className="h-7 pl-6 pr-6 text-[11px]"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search files…"
+              value={searchQuery}
+            />
+            {searchQuery ? (
+              <button
+                aria-label="Clear search"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={() => setSearchQuery('')}
+                type="button"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+        </div>
 
-function DiffViewer({ file, baseLabel }: { file: FileDiff; baseLabel: string }) {
-  const tokenMap = useHighlightedDiff(file)
+        {workspaceError ? (
+          <div className="mx-2 mb-2 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+            {workspaceError}
+          </div>
+        ) : null}
 
-  return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      {/* File path header */}
-      <div className="flex items-center gap-2 border-b border-border bg-secondary/20 px-3 py-1.5 shrink-0">
-        {(() => {
-          const Icon = getFileIcon(file.changeKind)
-          return <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        })()}
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/80">
-          {file.path}
-        </span>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {baseLabel}
-        </span>
-      </div>
+        {isTreeLoading && !tree.children?.length ? (
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-[11px] text-muted-foreground">
+            Loading selected project files…
+          </div>
+        ) : (
+          <FileTree
+            root={tree}
+            selectedPath={activePath}
+            expandedFolders={expandedFolders}
+            dirtyPaths={dirtyPaths}
+            searchQuery={searchQuery}
+            onSelectFile={(path) => {
+              void handleSelectFile(path)
+            }}
+            onToggleFolder={handleToggleFolder}
+            onRequestRename={handleRequestRename}
+            onRequestDelete={handleRequestDelete}
+            onRequestNewFile={handleRequestNewFile}
+            onRequestNewFolder={handleRequestNewFolder}
+            onCopyPath={handleCopyPath}
+          />
+        )}
+      </aside>
 
-      {/* Diff lines */}
-      <div className="flex-1 overflow-auto scrollbar-thin">
-        <table className="w-full border-collapse font-mono text-[11px] leading-[18px]">
-          <tbody>
-            {file.lines.map((line, idx) => {
-              if (line.kind === 'hunk') {
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-stretch border-b border-border bg-secondary/10">
+          {openTabs.length === 0 ? (
+            <div className="flex h-9 items-center px-3 text-[11px] text-muted-foreground/70">
+              {pendingFilePath ? `Opening ${pendingFilePath.split('/').pop() ?? pendingFilePath}…` : 'No files open'}
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto scrollbar-thin">
+              {openTabs.map((tabPath) => {
+                const isActive = activePath === tabPath
+                const isDirty = dirtyPaths.has(tabPath)
+                const name = tabPath.split('/').pop() ?? tabPath
                 return (
-                  <tr key={idx} className="bg-chart-1/[0.04]">
-                    <td className="w-[1px] whitespace-nowrap border-r border-border select-none">
-                      <span className="block px-2 py-px text-right text-[10px] text-chart-1/40">···</span>
-                    </td>
-                    <td className="py-px pl-3 pr-4 text-chart-1/60 select-none">{line.content}</td>
-                  </tr>
-                )
-              }
-
-              // Single gutter: show new-file line number for context/add, old-file for del
-              const lineNum = line.kind === 'del' ? line.oldNum : line.newNum
-
-              const rowBg =
-                line.kind === 'add'
-                  ? 'bg-success/[0.06]'
-                  : line.kind === 'del'
-                    ? 'bg-destructive/[0.08]'
-                    : ''
-
-              const gutterColor =
-                line.kind === 'add'
-                  ? 'text-success/30'
-                  : line.kind === 'del'
-                    ? 'text-destructive-foreground/30'
-                    : 'text-muted-foreground/40'
-
-              // Prefix indicator
-              const prefix = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '
-
-              // For add/del with no syntax tokens, tint the text; for context + highlighted, use token colors
-              const hasTokens = tokenMap.has(idx)
-              const plainColor =
-                line.kind === 'add'
-                  ? 'text-success/90'
-                  : line.kind === 'del'
-                    ? 'text-destructive-foreground/90'
-                    : 'text-foreground/70'
-
-              return (
-                <tr key={idx} className={rowBg}>
-                  <td className={`w-[1px] whitespace-nowrap border-r border-border px-2 py-px text-right select-none tabular-nums ${gutterColor}`}>
-                    {lineNum ?? ''}
-                  </td>
-                  <td className="whitespace-pre py-px pl-3 pr-4">
-                    <span className={line.kind === 'add' ? 'text-success/50' : line.kind === 'del' ? 'text-destructive-foreground/50' : 'text-transparent'} aria-hidden>
-                      {prefix}
-                    </span>
-                    {hasTokens ? (
-                      <TokenizedContent content={line.content} tokens={tokenMap.get(idx)} />
-                    ) : (
-                      <span className={plainColor}>{line.content || ' '}</span>
+                  <div
+                    key={tabPath}
+                    className={cn(
+                      'group relative flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-2 text-[12px] transition-colors',
+                      isActive
+                        ? 'bg-background text-foreground'
+                        : 'bg-secondary/10 text-muted-foreground hover:bg-secondary/30 hover:text-foreground',
                     )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Changes tab
-// ---------------------------------------------------------------------------
-
-function ChangesView({
-  execution,
-  activeDiffScope,
-  activeDiff,
-  onSelectDiffScope,
-  onRetryDiff,
-}: Omit<ExecutionViewProps, 'execution'> & { execution: ExecutionPaneView }) {
-  const fileDiffs = useMemo(() => parseUnifiedPatch(activeDiff.diff?.patch ?? ''), [activeDiff.diff?.patch])
-  const [selectedIdx, setSelectedIdx] = useState(0)
-
-  const selectedFile = fileDiffs[selectedIdx] ?? fileDiffs[0] ?? null
-  const totalAdds = fileDiffs.reduce((s, f) => s + f.additions, 0)
-  const totalDels = fileDiffs.reduce((s, f) => s + f.deletions, 0)
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 shrink-0 bg-secondary/20">
-        <div className="flex items-center gap-1">
-          {execution.diffScopes.map((ds) => (
-            <button
-              className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                activeDiffScope === ds.scope
-                  ? 'bg-secondary text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
-              }`}
-              key={ds.scope}
-              onClick={() => { onSelectDiffScope(ds.scope); setSelectedIdx(0) }}
-              type="button"
-            >
-              {ds.label}
-              {ds.count > 0 ? <span className="ml-1.5 tabular-nums opacity-60">{ds.count}</span> : null}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <GitBranch className="h-3 w-3" />
-            {execution.branchLabel}
-          </span>
-          <span className="flex items-center gap-1 font-mono">
-            <Hash className="h-3 w-3" />
-            {execution.headShaLabel.slice(0, 8)}
-          </span>
-          <button
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-secondary/50 hover:text-foreground"
-            onClick={onRetryDiff}
-            type="button"
-          >
-            <RefreshCw className="h-3 w-3" />
-          </button>
-        </div>
-      </div>
-
-      {/* Loading */}
-      {activeDiff.status === 'loading' ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>Loading {activeDiffScope} diff…</span>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Error */}
-      {activeDiff.status === 'error' ? (
-        <div className="flex flex-1 items-center justify-center p-6">
-          <div className="max-w-sm rounded-lg border border-destructive/20 bg-destructive/5 p-4">
-            <div className="flex items-start gap-2.5">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive-foreground" />
-              <div className="flex-1">
-                <p className="text-[13px] font-medium text-destructive-foreground">Failed to load diff</p>
-                <p className="mt-1 text-[12px] leading-5 text-destructive-foreground/70">
-                  {activeDiff.errorMessage ?? 'Unknown error.'}
-                </p>
-                <button
-                  className="mt-3 rounded border border-destructive/30 px-2.5 py-1 text-[11px] font-medium text-destructive-foreground transition-colors hover:bg-destructive/10"
-                  onClick={onRetryDiff}
-                  type="button"
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Empty */}
-      {activeDiff.status === 'ready' && activeDiff.diff?.isEmpty ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-success/10">
-              <Check className="h-5 w-5 text-success" />
-            </div>
-            <p className="text-[13px] font-medium text-foreground/80">No {activeDiffScope} changes</p>
-            <p className="max-w-xs text-[12px] leading-5 text-muted-foreground">Working tree is clean for this scope.</p>
-          </div>
-        </div>
-      ) : null}
-
-      {/* File list + diff viewer */}
-      {activeDiff.status === 'ready' && activeDiff.diff && !activeDiff.diff.isEmpty && fileDiffs.length > 0 ? (
-        <div className="flex min-h-0 flex-1">
-          {/* File sidebar */}
-          <div className="flex w-64 shrink-0 flex-col border-r border-border">
-            <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-              <span className="text-[11px] text-muted-foreground">
-                {fileDiffs.length} {fileDiffs.length === 1 ? 'file' : 'files'}
-              </span>
-              <div className="flex items-center gap-2 font-mono text-[11px]">
-                {totalAdds > 0 ? <span className="text-success">+{totalAdds}</span> : null}
-                {totalDels > 0 ? <span className="text-destructive-foreground">−{totalDels}</span> : null}
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto scrollbar-thin">
-              {fileDiffs.map((file, i) => {
-                const badge = getKindBadge(file.changeKind)
-                const selected = i === selectedIdx || (selectedIdx >= fileDiffs.length && i === 0)
-                return (
-                  <button
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-                      selected
-                        ? 'bg-secondary text-foreground'
-                        : 'text-foreground/70 hover:bg-secondary/40 hover:text-foreground'
-                    }`}
-                    key={`${file.path}-${i}`}
-                    onClick={() => setSelectedIdx(i)}
-                    type="button"
                   >
-                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[9px] font-bold ${badge.cls}`}>
-                      {badge.label}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={file.path}>
-                      {file.path}
-                    </span>
-                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
-                      {file.additions > 0 ? `+${file.additions}` : ''}
-                      {file.additions > 0 && file.deletions > 0 ? ' ' : ''}
-                      {file.deletions > 0 ? `−${file.deletions}` : ''}
-                    </span>
-                  </button>
+                    <button type="button" onClick={() => setActivePath(tabPath)} className="flex items-center gap-1.5 py-1.5">
+                      {getFileIconForName(name)}
+                      <span className="font-mono">{name}</span>
+                    </button>
+                    <button
+                      aria-label={`Close ${name}`}
+                      className={cn(
+                        'ml-0.5 flex h-4 w-4 items-center justify-center rounded-sm transition-colors',
+                        isDirty
+                          ? 'text-primary hover:bg-muted hover:text-foreground'
+                          : 'text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100',
+                        isActive && 'opacity-100',
+                      )}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        closeTab(tabPath)
+                      }}
+                      type="button"
+                    >
+                      {isDirty ? <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden /> : <X className="h-3 w-3" />}
+                    </button>
+                    {isActive ? <span className="absolute inset-x-0 -bottom-px h-px bg-primary" aria-hidden /> : null}
+                  </div>
                 )
               })}
             </div>
-
-            {activeDiff.diff.truncated ? (
-              <div className="border-t border-border px-3 py-1.5">
-                <span className="text-[10px] text-muted-foreground">
-                  <FileWarning className="mr-1 inline h-3 w-3" />
-                  Output was truncated
-                </span>
-              </div>
-            ) : null}
-          </div>
-
-          {/* Diff viewer */}
-          {selectedFile ? (
-            <DiffViewer file={selectedFile} baseLabel={activeDiff.diff.baseRevisionLabel} />
-          ) : null}
+          )}
         </div>
-      ) : null}
 
-      {/* Malformed patch fallback */}
-      {activeDiff.status === 'ready' && activeDiff.diff && !activeDiff.diff.isEmpty && fileDiffs.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <FileWarning className="h-5 w-5 text-muted-foreground" />
-            <p className="text-[13px] font-medium text-foreground/80">Could not parse diff</p>
-            <p className="max-w-xs text-[12px] leading-5 text-muted-foreground">
-              The patch was not empty but contained no parseable file diffs.
-            </p>
+        {activePath ? (
+          <div className="flex shrink-0 items-center justify-between border-b border-border bg-background px-3 py-1.5">
+            <Breadcrumb path={activePath} />
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              {isActiveDirty ? (
+                <button
+                  className="rounded px-1.5 py-0.5 transition-colors hover:bg-secondary/50 hover:text-foreground"
+                  onClick={revertActive}
+                  type="button"
+                >
+                  Revert
+                </button>
+              ) : null}
+              <button
+                className={cn(
+                  'rounded px-2 py-0.5 font-medium transition-colors',
+                  isActiveDirty && !isActiveSaving
+                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                    : 'text-muted-foreground',
+                )}
+                disabled={!isActiveDirty || isActiveSaving}
+                onClick={() => {
+                  void saveActive()
+                }}
+                type="button"
+                title="Save (⌘S)"
+              >
+                {isActiveSaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
           </div>
+        ) : null}
+
+        <div className="flex min-h-0 flex-1 flex-col bg-background">
+          {activePath && activeNode?.type === 'file' ? (
+            isActiveLoading ? (
+              <LoadingState path={activePath} />
+            ) : (
+              <>
+                <div className="flex-1 overflow-hidden">
+                  <CodeEditor
+                    value={activeContent}
+                    filePath={activePath}
+                    onChange={handleChange}
+                    onSave={() => {
+                      void saveActive()
+                    }}
+                    onCursorChange={setCursor}
+                  />
+                </div>
+                <StatusBar
+                  cursor={cursor}
+                  lang={activeLang}
+                  lineCount={activeLineCount}
+                  isDirty={isActiveDirty}
+                  isSaving={isActiveSaving}
+                />
+              </>
+            )
+          ) : (
+            <EditorEmptyState loadingPath={pendingFilePath} projectLabel={projectLabel} />
+          )}
         </div>
-      ) : null}
+      </section>
+
+      <RenameFileDialog
+        open={!!renameTarget}
+        onOpenChange={(open) => {
+          if (!open) setRenameTarget(null)
+        }}
+        currentPath={renameTarget?.path ?? ''}
+        type={renameTarget?.type ?? 'file'}
+        onRename={(newName) => handleRenameSubmit(newName)}
+      />
+      <DeleteFileDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+        path={deleteTarget?.path ?? ''}
+        type={deleteTarget?.type ?? 'file'}
+        onDelete={() => {
+          void handleDeleteSubmit()
+        }}
+      />
+      <NewFileDialog
+        open={!!newChildTarget}
+        onOpenChange={(open) => {
+          if (!open) setNewChildTarget(null)
+        }}
+        parentPath={newChildTarget?.parentPath ?? '/'}
+        type={newChildTarget?.type ?? 'file'}
+        onCreate={(name) => handleCreateSubmit(name)}
+      />
     </div>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Top-level ExecutionView
-// ---------------------------------------------------------------------------
-
-export function ExecutionView({
-  execution,
-  activeDiffScope,
-  activeDiff,
-  onSelectDiffScope,
-  onRetryDiff,
-}: ExecutionViewProps) {
-  const initialDiffRequestedRef = useRef(false)
-
-  useEffect(() => {
-    if (initialDiffRequestedRef.current) return
-    initialDiffRequestedRef.current = true
-    onSelectDiffScope(activeDiffScope)
-  }, [activeDiffScope, onSelectDiffScope])
-
+function IconButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  children: React.ReactNode
+}) {
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex items-center border-b border-border bg-card/30 shrink-0">
-        <div className="border-r border-border px-4 py-[10px]">
-          <div className="flex items-center gap-3 text-[12px]">
-            <span className="text-muted-foreground">Phase</span>
-            <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
-            <h2 className="font-medium text-foreground/80">{execution.activePhase?.name ?? 'None active'}</h2>
-          </div>
-        </div>
+    <button
+      aria-label={label}
+      className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      {children}
+    </button>
+  )
+}
 
-        <nav className="flex h-full items-center">
-          <div className="-mb-0.5 border-b-2 border-foreground px-4 py-[10px] text-[12px] font-medium text-foreground">
-            Changes
-          </div>
-        </nav>
+function Breadcrumb({ path }: { path: string }) {
+  const segments = path.split('/').filter(Boolean)
+  return (
+    <div className="flex min-w-0 items-center gap-1 truncate font-mono text-[11px] text-muted-foreground">
+      {segments.map((segment, index) => (
+        <span key={`${segment}-${index}`} className="flex items-center gap-1">
+          {index > 0 ? <ChevronRight className="h-3 w-3 text-muted-foreground/40" /> : null}
+          <span className={cn(index === segments.length - 1 && 'text-foreground/85')}>{segment}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function StatusBar({
+  cursor,
+  lang,
+  lineCount,
+  isDirty,
+  isSaving,
+}: {
+  cursor: CursorPosition
+  lang: string
+  lineCount: number
+  isDirty: boolean
+  isSaving: boolean
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-between border-t border-border bg-secondary/20 px-3 py-1 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-3">
+        <span className="tabular-nums">Ln {cursor.line}, Col {cursor.column}</span>
+        <span className="text-muted-foreground/40">·</span>
+        <span className="tabular-nums">{lineCount} lines</span>
+        <span className="text-muted-foreground/40">·</span>
+        <span>Spaces: 2</span>
       </div>
+      <div className="flex items-center gap-3">
+        {isSaving ? <span className="text-primary">Saving…</span> : isDirty ? <span className="text-primary">● Unsaved</span> : <span>Saved</span>}
+        <span className="text-muted-foreground/40">·</span>
+        <span>UTF-8</span>
+        <span className="text-muted-foreground/40">·</span>
+        <span>LF</span>
+        <span className="text-muted-foreground/40">·</span>
+        <span className="capitalize">{lang}</span>
+      </div>
+    </div>
+  )
+}
 
-      <ChangesView
-        activeDiff={activeDiff}
-        activeDiffScope={activeDiffScope}
-        execution={execution}
-        onRetryDiff={onRetryDiff}
-        onSelectDiffScope={onSelectDiffScope}
-      />
+function LoadingState({ path }: { path: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center bg-background">
+      <div className="text-center text-[12px] text-muted-foreground">Opening {path.split('/').pop() ?? path}…</div>
+    </div>
+  )
+}
+
+function EditorEmptyState({ loadingPath, projectLabel }: { loadingPath: string | null; projectLabel: string }) {
+  return (
+    <div className="flex flex-1 items-center justify-center bg-background">
+      <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-card">
+          <FileCode className="h-6 w-6 text-muted-foreground" />
+        </div>
+        <div>
+          <p className="text-[14px] font-medium text-foreground">
+            {loadingPath ? 'Opening file…' : 'Select a file to start editing'}
+          </p>
+          <p className="mt-1 text-[12px] leading-5 text-muted-foreground">
+            {loadingPath
+              ? `Cadence is loading ${loadingPath.split('/').pop() ?? loadingPath} from ${projectLabel}.`
+              : `Pick a file from the selected project explorer. Edits save directly back to ${projectLabel}.`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70">
+          <Shortcut keys={['⌘', 'S']} label="Save" />
+          <span>·</span>
+          <Shortcut keys={['⌘', 'W']} label="Close tab" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Shortcut({ keys, label }: { keys: string[]; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      {keys.map((key, index) => (
+        <kbd
+          key={`${key}-${index}`}
+          className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[10px] text-foreground/70"
+        >
+          {key}
+        </kbd>
+      ))}
+      <span>{label}</span>
+    </span>
+  )
+}
+
+function remapPath(candidate: string, oldBase: string, newBase: string): string {
+  if (candidate === oldBase) return newBase
+  if (candidate.startsWith(`${oldBase}/`)) return newBase + candidate.slice(oldBase.length)
+  return candidate
+}
+
+function remapKeys<T>(record: Record<string, T>, oldBase: string, newBase: string): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [key, value] of Object.entries(record)) {
+    next[remapPath(key, oldBase, newBase)] = value
+  }
+  return next
+}
+
+function filterByPathNotWithin<T>(record: Record<string, T>, path: string, prefix: string): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (key === path || key.startsWith(prefix)) continue
+    next[key] = value
+  }
+  return next
+}
+
+export function ExecutionView(props: ExecutionViewProps) {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <EditorView {...props} />
     </div>
   )
 }

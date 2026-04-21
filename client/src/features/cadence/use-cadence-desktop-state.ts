@@ -35,6 +35,10 @@ import {
   type AutonomousUnitArtifactView,
   type AutonomousUnitHistoryEntryView,
   type AutonomousWorkflowContextView,
+  type CreateProjectEntryRequestDto,
+  type CreateProjectEntryResponseDto,
+  type DeleteProjectEntryResponseDto,
+  type ListProjectFilesResponseDto,
   type NotificationDispatchDto,
   type NotificationDispatchView,
   type NotificationRouteCredentialReadinessDto,
@@ -46,6 +50,9 @@ import {
   type PlanningLifecycleView,
   type ProjectDetailView,
   type ProjectListItem,
+  type ReadProjectFileResponseDto,
+  type RenameProjectEntryRequestDto,
+  type RenameProjectEntryResponseDto,
   type RepositoryDiffScope,
   type RepositoryDiffView,
   type RepositoryStatusEntryView,
@@ -67,6 +74,7 @@ import {
   type UpsertNotificationRouteRequestDto,
   type UpsertRuntimeSettingsRequestDto,
   type VerificationRecordView,
+  type WriteProjectFileResponseDto,
 } from '@/src/lib/cadence-model'
 
 export type RefreshSource =
@@ -202,6 +210,12 @@ export interface WorkflowPaneView {
   actionRequiredLifecycleCount: number
   overallPercent: number
   hasPhases: boolean
+  runtimeSession?: RuntimeSessionView | null
+  selectedProviderId?: RuntimeSettingsDto['providerId'] | null
+  selectedProviderLabel?: string
+  selectedModelId?: string | null
+  openrouterApiKeyConfigured?: boolean
+  providerMismatch?: boolean
 }
 
 export interface AgentPaneView {
@@ -334,6 +348,12 @@ export interface UseCadenceDesktopStateResult {
   retry: () => Promise<void>
   showRepositoryDiff: (scope: RepositoryDiffScope, options?: { force?: boolean }) => Promise<void>
   retryActiveRepositoryDiff: () => Promise<void>
+  listProjectFiles: (projectId: string) => Promise<ListProjectFilesResponseDto>
+  readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
+  writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
+  createProjectEntry: (request: CreateProjectEntryRequestDto) => Promise<CreateProjectEntryResponseDto>
+  renameProjectEntry: (request: RenameProjectEntryRequestDto) => Promise<RenameProjectEntryResponseDto>
+  deleteProjectEntry: (projectId: string, path: string) => Promise<DeleteProjectEntryResponseDto>
   startOpenAiLogin: () => Promise<RuntimeSessionView | null>
   submitOpenAiCallback: (flowId: string, options?: { manualInput?: string | null }) => Promise<RuntimeSessionView | null>
   startAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
@@ -2625,6 +2645,48 @@ export function useCadenceDesktopState(
     await showRepositoryDiff(activeDiffScope, { force: true })
   }, [activeDiffScope, showRepositoryDiff])
 
+  const listProjectFiles = useCallback(
+    async (projectId: string) => {
+      return await adapter.listProjectFiles(projectId)
+    },
+    [adapter],
+  )
+
+  const readProjectFile = useCallback(
+    async (projectId: string, path: string) => {
+      return await adapter.readProjectFile(projectId, path)
+    },
+    [adapter],
+  )
+
+  const writeProjectFile = useCallback(
+    async (projectId: string, path: string, content: string) => {
+      return await adapter.writeProjectFile(projectId, path, content)
+    },
+    [adapter],
+  )
+
+  const createProjectEntry = useCallback(
+    async (request: CreateProjectEntryRequestDto) => {
+      return await adapter.createProjectEntry(request)
+    },
+    [adapter],
+  )
+
+  const renameProjectEntry = useCallback(
+    async (request: RenameProjectEntryRequestDto) => {
+      return await adapter.renameProjectEntry(request)
+    },
+    [adapter],
+  )
+
+  const deleteProjectEntry = useCallback(
+    async (projectId: string, path: string) => {
+      return await adapter.deleteProjectEntry(projectId, path)
+    },
+    [adapter],
+  )
+
   const refreshRuntimeSettings = useCallback(
     async (options: { force?: boolean } = {}) => {
       if (runtimeSettingsLoadInFlightRef.current) {
@@ -3394,6 +3456,8 @@ export function useCadenceDesktopState(
     }
 
     const lifecycle = getPlanningLifecycleView(activeProject)
+    const selectedProvider = resolveSelectedRuntimeProvider(runtimeSettings, activeRuntimeSession)
+    const providerMismatch = hasProviderMismatch(selectedProvider, activeRuntimeSession)
 
     return {
       project: activeProject,
@@ -3405,8 +3469,14 @@ export function useCadenceDesktopState(
       actionRequiredLifecycleCount: lifecycle.actionRequiredCount,
       overallPercent: activeProject.phaseProgressPercent,
       hasPhases: activeProject.phases.length > 0,
+      runtimeSession: activeRuntimeSession,
+      selectedProviderId: selectedProvider.providerId,
+      selectedProviderLabel: selectedProvider.providerLabel,
+      selectedModelId: selectedProvider.modelId,
+      openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
+      providerMismatch,
     }
-  }, [activePhase, activeProject])
+  }, [activePhase, activeProject, activeRuntimeSession, runtimeSettings])
 
   const agentView = useMemo<AgentPaneView | null>(() => {
     if (!activeProject) {
@@ -3685,6 +3755,12 @@ export function useCadenceDesktopState(
     retry,
     showRepositoryDiff,
     retryActiveRepositoryDiff,
+    listProjectFiles,
+    readProjectFile,
+    writeProjectFile,
+    createProjectEntry,
+    renameProjectEntry,
+    deleteProjectEntry,
     startOpenAiLogin,
     submitOpenAiCallback,
     startAutonomousRun,

@@ -54,14 +54,14 @@ export function ProjectRail({
     <aside
       className={cn(
         'flex shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar transition-[width] duration-300 ease-in-out',
-        collapsed ? 'w-12' : 'w-56',
+        collapsed ? 'w-11' : 'w-56',
       )}
       data-collapsed={collapsed ? 'true' : 'false'}
     >
       <div
         className={cn(
           'flex h-10 items-center border-b border-border transition-[padding,justify-content] duration-300 ease-in-out',
-          collapsed ? 'justify-center px-1.5' : 'justify-between px-3',
+          collapsed ? 'justify-center px-1' : 'justify-between px-3',
         )}
       >
         <span
@@ -155,6 +155,7 @@ function ProjectRailItem({
   onRemoveProject,
 }: ProjectRailItemProps) {
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const projectInitial = Array.from(project.name.trim())[0]?.toUpperCase() ?? '?'
 
   return (
     <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -163,15 +164,23 @@ function ProjectRailItem({
           className={cn(
             'w-full transition-[padding,background-color] duration-200',
             isActive ? 'bg-secondary' : 'hover:bg-secondary/40',
-            collapsed ? 'flex justify-center px-0 py-2' : 'px-3 py-2.5 text-left',
+            collapsed ? 'flex justify-center px-0 py-1.5' : 'px-3 py-2.5 text-left',
           )}
           onClick={() => onSelectProject(project.id)}
           title={collapsed ? project.name : undefined}
           type="button"
         >
           {collapsed ? (
-            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg border border-transparent transition-colors group-hover:border-border/80">
-              <Folder className={cn('h-4 w-4 shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')} />
+            <div className="relative flex h-[1.875rem] w-[1.875rem] items-center justify-center transition-colors">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'text-[12px] font-semibold uppercase leading-none',
+                  isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground',
+                )}
+              >
+                {projectInitial}
+              </span>
               <span className="sr-only">{project.name}</span>
             </div>
           ) : (
@@ -183,11 +192,7 @@ function ProjectRailItem({
                 </span>
               </div>
 
-              <p className="mb-2 ml-[22px] truncate text-[11px] text-muted-foreground">
-                {project.milestone || 'No milestone'}
-              </p>
-
-              <div className="ml-[22px] flex items-center gap-2">
+              <div className="mt-1 ml-[22px] flex items-center gap-2">
                 <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
                   <div
                     className="h-full rounded-full bg-primary/60 transition-all"

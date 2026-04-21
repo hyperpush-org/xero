@@ -21,9 +21,13 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 800,
-    rolldownOptions: {
-      checks: {
-        pluginTimings: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          return /[\\/]node_modules[\\/](?:@codemirror|codemirror)[\\/]/.test(id)
+            ? 'codemirror'
+            : undefined
+        },
       },
     },
   },

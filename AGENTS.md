@@ -1,3 +1,4 @@
 - Use ShadCN for all UI where possible
 - NEVER add temporary debug or test UI during development. Use unit/e2e test only
 - When executing python commands, ALWAYS use python3
+- You CANNOT open this app in a browers, this is a Tauri app

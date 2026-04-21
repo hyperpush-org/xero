@@ -2224,7 +2224,10 @@ describe('cadence-model', () => {
     const mappedArtifact = mapAutonomousArtifact(artifactWithSummary)
     expect(mappedArtifact.toolSummary).toEqual(gitSummary)
     expect(mappedArtifact.toolSummary?.kind).toBe('git')
-    expect(mappedArtifact.toolSummary?.baseRevision).toBe('main~1')
+    if (mappedArtifact.toolSummary?.kind !== 'git') {
+      throw new Error('Expected a git tool summary for the mapped artifact.')
+    }
+    expect(mappedArtifact.toolSummary.baseRevision).toBe('main~1')
 
     const legacyArtifact = mapAutonomousArtifact({
       ...artifactWithSummary,

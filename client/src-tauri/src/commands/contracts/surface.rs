@@ -15,6 +15,12 @@ pub const GET_AUTONOMOUS_RUN_COMMAND: &str = "get_autonomous_run";
 pub const GET_PROJECT_SNAPSHOT_COMMAND: &str = "get_project_snapshot";
 pub const GET_REPOSITORY_STATUS_COMMAND: &str = "get_repository_status";
 pub const GET_REPOSITORY_DIFF_COMMAND: &str = "get_repository_diff";
+pub const LIST_PROJECT_FILES_COMMAND: &str = "list_project_files";
+pub const READ_PROJECT_FILE_COMMAND: &str = "read_project_file";
+pub const WRITE_PROJECT_FILE_COMMAND: &str = "write_project_file";
+pub const CREATE_PROJECT_ENTRY_COMMAND: &str = "create_project_entry";
+pub const RENAME_PROJECT_ENTRY_COMMAND: &str = "rename_project_entry";
+pub const DELETE_PROJECT_ENTRY_COMMAND: &str = "delete_project_entry";
 pub const GET_RUNTIME_RUN_COMMAND: &str = "get_runtime_run";
 pub const GET_RUNTIME_SESSION_COMMAND: &str = "get_runtime_session";
 pub const GET_RUNTIME_SETTINGS_COMMAND: &str = "get_runtime_settings";
@@ -50,6 +56,12 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     GET_PROJECT_SNAPSHOT_COMMAND,
     GET_REPOSITORY_STATUS_COMMAND,
     GET_REPOSITORY_DIFF_COMMAND,
+    LIST_PROJECT_FILES_COMMAND,
+    READ_PROJECT_FILE_COMMAND,
+    WRITE_PROJECT_FILE_COMMAND,
+    CREATE_PROJECT_ENTRY_COMMAND,
+    RENAME_PROJECT_ENTRY_COMMAND,
+    DELETE_PROJECT_ENTRY_COMMAND,
     GET_RUNTIME_RUN_COMMAND,
     GET_RUNTIME_SESSION_COMMAND,
     GET_RUNTIME_SETTINGS_COMMAND,
@@ -132,6 +144,55 @@ pub struct ProjectIdRequestDto {
 pub struct RepositoryDiffRequestDto {
     pub project_id: String,
     pub scope: RepositoryDiffScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectEntryKindDto {
+    File,
+    Folder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectFileRequestDto {
+    pub project_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteProjectFileRequestDto {
+    pub project_id: String,
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateProjectEntryRequestDto {
+    pub project_id: String,
+    pub parent_path: String,
+    pub name: String,
+    pub entry_type: ProjectEntryKindDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenameProjectEntryRequestDto {
+    pub project_id: String,
+    pub path: String,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectFileNodeDto {
+    pub name: String,
+    pub path: String,
+    pub r#type: ProjectEntryKindDto,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<ProjectFileNodeDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +288,49 @@ pub struct RepositoryDiffResponseDto {
     pub patch: String,
     pub truncated: bool,
     pub base_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListProjectFilesResponseDto {
+    pub project_id: String,
+    pub root: ProjectFileNodeDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadProjectFileResponseDto {
+    pub project_id: String,
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteProjectFileResponseDto {
+    pub project_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateProjectEntryResponseDto {
+    pub project_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenameProjectEntryResponseDto {
+    pub project_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteProjectEntryResponseDto {
+    pub project_id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

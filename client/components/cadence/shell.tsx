@@ -41,7 +41,7 @@ type WindowAction = "close" | "minimize" | "toggle-maximize"
 const NAV_ITEMS: { id: View; label: string }[] = [
   { id: "phases", label: "Workflow" },
   { id: "agent", label: "Agent" },
-  { id: "execution", label: "Execution" },
+  { id: "execution", label: "Editor" },
 ]
 
 // ---------------------------------------------------------------------------

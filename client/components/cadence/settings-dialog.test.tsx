@@ -166,7 +166,7 @@ describe('SettingsDialog', () => {
 
     await waitFor(() => expect(onRefreshRuntimeSettings).toHaveBeenCalledWith({ force: true }))
     expect(
-      screen.getByText('Configure the app-global runtime provider, model, and OpenRouter key without requiring a selected project.'),
+      screen.getByText('Configure AI model providers for Cadence'),
     ).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
@@ -181,7 +181,6 @@ describe('SettingsDialog', () => {
 
   it('keeps an OpenRouter-specific model draft and never echoes a saved API key back into the dialog state', async () => {
     const secret = 'sk-or-v1-test-secret'
-    const onRefreshRuntimeSettings = vi.fn(async () => makeRuntimeSettings({ providerId: 'openai_codex', modelId: 'openai_codex' }))
 
     let nextRuntimeSettings = makeRuntimeSettings({
       providerId: 'openai_codex',
@@ -209,27 +208,28 @@ describe('SettingsDialog', () => {
         runtimeSettingsLoadError={null}
         runtimeSettingsSaveStatus="idle"
         runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={onRefreshRuntimeSettings}
+        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
         onUpsertRuntimeSettings={onUpsertRuntimeSettings}
       />,
     )
 
-    await waitFor(() => expect(onRefreshRuntimeSettings).toHaveBeenCalledWith({ force: true }))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Use provider' }))
+    // Click Configure button on OpenRouter card
+    const configureButton = screen.getAllByRole('button', { name: 'Configure' })[0]
+    fireEvent.click(configureButton)
 
     const modelInput = screen.getByLabelText('Model ID') as HTMLInputElement
-    const keyInput = screen.getByLabelText('OpenRouter API key') as HTMLInputElement
+    const keyInput = screen.getByLabelText('API Key') as HTMLInputElement
 
     expect(modelInput).toHaveValue('')
-    expect(screen.getByText('OpenRouter needs a saved key')).toBeVisible()
+    expect(keyInput).toHaveValue('')
 
     fireEvent.change(modelInput, { target: { value: 'openrouter/anthropic/claude-3.5-sonnet' } })
     fireEvent.change(keyInput, { target: { value: secret } })
 
-    await waitFor(() => expect(screen.queryByText('OpenRouter needs a saved key')).not.toBeInTheDocument())
+    expect(modelInput).toHaveValue('openrouter/anthropic/claude-3.5-sonnet')
+    expect(keyInput).toHaveValue(secret)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save provider settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(onUpsertRuntimeSettings).toHaveBeenCalledWith({
@@ -238,9 +238,12 @@ describe('SettingsDialog', () => {
         openrouterApiKey: secret,
       }),
     )
-    await waitFor(() => expect(keyInput).toHaveValue(''))
+
+    // After save, the configuration form closes - key input is no longer in DOM
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument()
 
+    // Rerender with updated settings
     rerender(
       <SettingsDialog
         open
@@ -251,18 +254,29 @@ describe('SettingsDialog', () => {
         runtimeSettingsLoadError={null}
         runtimeSettingsSaveStatus="idle"
         runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={onRefreshRuntimeSettings}
+        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
         onUpsertRuntimeSettings={onUpsertRuntimeSettings}
       />,
     )
 
-    await waitFor(() => expect(screen.getByDisplayValue('openrouter/anthropic/claude-3.5-sonnet')).toBeVisible())
+    // OpenRouter should now show as Configured
     expect(screen.getByText('Configured')).toBeVisible()
+    expect(screen.getByText('Active')).toBeVisible()
+
+    // Open Configure form again to verify model ID is saved and secret is not echoed
+    const configureButtonAfter = screen.getAllByRole('button', { name: 'Configure' })[0]
+    fireEvent.click(configureButtonAfter)
+
+    const modelInputAfter = screen.getByLabelText('Model ID') as HTMLInputElement
+    const keyInputAfter = screen.getByLabelText('API Key') as HTMLInputElement
+
+    await waitFor(() => expect(modelInputAfter).toHaveValue('openrouter/anthropic/claude-3.5-sonnet'))
+    expect(keyInputAfter).toHaveValue('')
     expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument()
     expect(screen.queryByText(secret)).not.toBeInTheDocument()
   })
 
-  it('keeps the last truthful provider snapshot visible when a typed load error is present', () => {
+  it('keeps last truthful provider snapshot visible when a typed load error is present', () => {
     render(
       <SettingsDialog
         open
@@ -284,9 +298,17 @@ describe('SettingsDialog', () => {
       />,
     )
 
-    expect(screen.getByText('Settings load failed')).toBeVisible()
     expect(screen.getByText('Cadence timed out while loading app-global runtime settings.')).toBeVisible()
+
+    // Provider cards should still be visible showing the snapshot
+    expect(screen.getByText('OpenRouter')).toBeVisible()
+    expect(screen.getByText('OpenAI Codex')).toBeVisible()
+
+    // Click Configure to verify the model ID is preserved
+    const configureButton = screen.getByRole('button', { name: 'Configure' })
+    fireEvent.click(configureButton)
+
     expect(screen.getByDisplayValue('openrouter/meta-llama/llama-3.1-8b-instruct')).toBeVisible()
-    expect(screen.getByText('Configured')).toBeVisible()
+    expect(screen.getByText('Key saved')).toBeVisible()
   })
 })

@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AgentRuntime } from '@/components/cadence/agent-runtime'
 import { type View } from '@/components/cadence/data'
+import { EmptyPanel } from '@/components/cadence/empty-panel'
 import { ExecutionView } from '@/components/cadence/execution-view'
 import { PhaseView } from '@/components/cadence/phase-view'
 import { ProjectRail } from '@/components/cadence/project-rail'
@@ -13,29 +14,6 @@ export interface CadenceAppProps {
   adapter?: CadenceDesktopAdapter
 }
 
-function EmptyPanel({
-  eyebrow,
-  title,
-  body,
-  action,
-}: {
-  eyebrow: string
-  title: string
-  body: string
-  action?: React.ReactNode
-}) {
-  return (
-    <div className="flex flex-1 items-center justify-center bg-background p-6">
-      <div className="max-w-md rounded-xl border border-border bg-card px-6 py-8 text-center shadow-sm">
-        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">{eyebrow}</p>
-        <h1 className="mt-3 text-2xl font-semibold text-foreground">{title}</h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">{body}</p>
-        {action ? <div className="mt-5">{action}</div> : null}
-      </div>
-    </div>
-  )
-}
-
 export function CadenceApp({ adapter }: CadenceAppProps) {
   const [activeView, setActiveView] = useState<View>('phases')
   const {
@@ -46,8 +24,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     workflowView,
     agentView,
     executionView,
-    activeDiffScope,
-    activeRepositoryDiff,
     isLoading,
     isProjectLoading,
     isImporting,
@@ -65,8 +41,12 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     importProject,
     removeProject,
     retry,
-    showRepositoryDiff,
-    retryActiveRepositoryDiff,
+    listProjectFiles,
+    readProjectFile,
+    writeProjectFile,
+    createProjectEntry,
+    renameProjectEntry,
+    deleteProjectEntry,
     startOpenAiLogin,
     submitOpenAiCallback,
     startAutonomousRun,
@@ -87,6 +67,32 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
+  const shouldRestoreSidebarFromEditorRef = useRef(false)
+  const previousViewRef = useRef<View>(activeView)
+
+  useEffect(() => {
+    const previousView = previousViewRef.current
+
+    if (activeView === 'execution' && previousView !== 'execution') {
+      shouldRestoreSidebarFromEditorRef.current = !sidebarCollapsed
+      if (!sidebarCollapsed) {
+        setSidebarCollapsed(true)
+      }
+    }
+
+    if (activeView !== 'execution' && previousView === 'execution' && shouldRestoreSidebarFromEditorRef.current) {
+      shouldRestoreSidebarFromEditorRef.current = false
+      if (sidebarCollapsed) {
+        setSidebarCollapsed(false)
+      }
+    }
+
+    if (activeView !== 'execution' && previousView !== 'execution') {
+      shouldRestoreSidebarFromEditorRef.current = false
+    }
+
+    previousViewRef.current = activeView
+  }, [activeView, sidebarCollapsed])
 
   const renderBody = () => {
     if (isLoading && !activeProject) {
@@ -149,6 +155,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         <AgentRuntime
           agent={agentView}
           onLogout={() => logoutRuntimeSession()}
+          onOpenSettings={() => setSettingsOpen(true)}
           onResolveOperatorAction={(actionId, decision, options) =>
             resolveOperatorAction(actionId, decision, { userAnswer: options?.userAnswer ?? null })
           }
@@ -175,11 +182,13 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     if (activeView === 'execution' && executionView) {
       return (
         <ExecutionView
-          activeDiff={activeRepositoryDiff}
-          activeDiffScope={activeDiffScope}
           execution={executionView}
-          onRetryDiff={() => void retryActiveRepositoryDiff()}
-          onSelectDiffScope={(scope) => void showRepositoryDiff(scope)}
+          listProjectFiles={listProjectFiles}
+          readProjectFile={readProjectFile}
+          writeProjectFile={writeProjectFile}
+          createProjectEntry={createProjectEntry}
+          renameProjectEntry={renameProjectEntry}
+          deleteProjectEntry={deleteProjectEntry}
         />
       )
     }
@@ -194,6 +203,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
             agentView.runtimeSession?.isAuthenticated,
           )}
           isStartingRun={agentView?.runtimeRunActionStatus === 'running'}
+          onOpenSettings={() => setSettingsOpen(true)}
           onStartRun={() => startRuntimeRun()}
         />
       )

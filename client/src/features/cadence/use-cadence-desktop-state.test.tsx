@@ -674,6 +674,28 @@ function createMockAdapter(options?: {
     getProjectSnapshot,
     getRepositoryStatus,
     getRepositoryDiff,
+    listProjectFiles: vi.fn(async (projectId: string) => ({
+      projectId,
+      root: {
+        name: 'root',
+        path: '/',
+        type: 'folder' as const,
+        children: [],
+      },
+    })),
+    readProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path, content: '' })),
+    writeProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path })),
+    createProjectEntry: vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,
+    })),
+    renameProjectEntry: vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: request.path.split('/').slice(0, -1).filter(Boolean).length
+        ? `/${request.path.split('/').slice(0, -1).filter(Boolean).join('/')}/${request.newName}`
+        : `/${request.newName}`,
+    })),
+    deleteProjectEntry: vi.fn(async (projectId: string, path: string) => ({ projectId, path })),
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,

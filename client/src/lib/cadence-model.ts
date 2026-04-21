@@ -120,6 +120,64 @@ export const repositorySummarySchema = z.object({
 
 export const repositoryDiffScopeSchema = z.enum(['staged', 'unstaged', 'worktree'])
 
+const projectTreePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => value === '/' || value.startsWith('/'), 'Project file paths must start with `/`.')
+
+export const projectEntryKindSchema = z.enum(['file', 'folder'])
+
+export interface ProjectFileNodeDto {
+  name: string
+  path: string
+  type: z.infer<typeof projectEntryKindSchema>
+  children?: ProjectFileNodeDto[]
+}
+
+export const projectFileNodeSchema: z.ZodType<ProjectFileNodeDto> = z.lazy(() =>
+  z
+    .object({
+      name: z.string().trim().min(1),
+      path: projectTreePathSchema,
+      type: projectEntryKindSchema,
+      children: z.array(projectFileNodeSchema).optional(),
+    })
+    .strict(),
+)
+
+export const projectFileRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+  })
+  .strict()
+
+export const writeProjectFileRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    content: z.string(),
+  })
+  .strict()
+
+export const createProjectEntryRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    parentPath: projectTreePathSchema,
+    name: z.string().trim().min(1),
+    entryType: projectEntryKindSchema,
+  })
+  .strict()
+
+export const renameProjectEntryRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    newName: z.string().trim().min(1),
+  })
+  .strict()
+
 export const importRepositoryResponseSchema = z.object({
   project: projectSummarySchema,
   repository: repositorySummarySchema,
@@ -1386,6 +1444,49 @@ export const repositoryDiffResponseSchema = z.object({
   baseRevision: nullableTextSchema,
 })
 
+export const listProjectFilesResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    root: projectFileNodeSchema,
+  })
+  .strict()
+
+export const readProjectFileResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    content: z.string(),
+  })
+  .strict()
+
+export const writeProjectFileResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+  })
+  .strict()
+
+export const createProjectEntryResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+  })
+  .strict()
+
+export const renameProjectEntryResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+  })
+  .strict()
+
+export const deleteProjectEntryResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+  })
+  .strict()
+
 export const workflowGateStateSchema = z.enum(['pending', 'satisfied', 'blocked', 'skipped'])
 export const workflowTransitionGateDecisionSchema = z.enum(['approved', 'rejected', 'blocked', 'not_applicable'])
 
@@ -2563,6 +2664,17 @@ export type ResumeOperatorRunResponseDto = z.infer<typeof resumeOperatorRunRespo
 export type ProjectSnapshotResponseDto = z.infer<typeof projectSnapshotResponseSchema>
 export type RepositoryStatusResponseDto = z.infer<typeof repositoryStatusResponseSchema>
 export type RepositoryDiffResponseDto = z.infer<typeof repositoryDiffResponseSchema>
+export type ProjectEntryKindDto = z.infer<typeof projectEntryKindSchema>
+export type ProjectFileRequestDto = z.infer<typeof projectFileRequestSchema>
+export type WriteProjectFileRequestDto = z.infer<typeof writeProjectFileRequestSchema>
+export type CreateProjectEntryRequestDto = z.infer<typeof createProjectEntryRequestSchema>
+export type RenameProjectEntryRequestDto = z.infer<typeof renameProjectEntryRequestSchema>
+export type ListProjectFilesResponseDto = z.infer<typeof listProjectFilesResponseSchema>
+export type ReadProjectFileResponseDto = z.infer<typeof readProjectFileResponseSchema>
+export type WriteProjectFileResponseDto = z.infer<typeof writeProjectFileResponseSchema>
+export type CreateProjectEntryResponseDto = z.infer<typeof createProjectEntryResponseSchema>
+export type RenameProjectEntryResponseDto = z.infer<typeof renameProjectEntryResponseSchema>
+export type DeleteProjectEntryResponseDto = z.infer<typeof deleteProjectEntryResponseSchema>
 export type WorkflowGateStateDto = z.infer<typeof workflowGateStateSchema>
 export type WorkflowTransitionGateDecisionDto = z.infer<typeof workflowTransitionGateDecisionSchema>
 export type WorkflowAutomaticDispatchStatusDto = z.infer<typeof workflowAutomaticDispatchStatusSchema>
@@ -3641,6 +3753,8 @@ export function getAutonomousUnitStatusLabel(status: AutonomousUnitStatusDto): s
       return 'Pending'
     case 'active':
       return 'Active'
+    case 'blocked':
+      return 'Blocked'
     case 'paused':
       return 'Paused'
     case 'completed':
@@ -4824,6 +4938,8 @@ function getAutonomousArtifactStatusLabel(status: AutonomousUnitArtifactStatusDt
       return 'Recorded'
     case 'rejected':
       return 'Rejected'
+    case 'redacted':
+      return 'Redacted'
   }
 }
 
@@ -4905,7 +5021,12 @@ function getAutonomousArtifactDetail(
 
 export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): AutonomousUnitArtifactView {
   const payload = artifact.payload ?? null
-  const commandResult = payload?.commandResult ? mapAutonomousCommandResult(payload.commandResult) : null
+  const commandResult =
+    payload != null
+      && (payload.kind === 'tool_result' || payload.kind === 'verification_evidence')
+      && payload.commandResult
+      ? mapAutonomousCommandResult(payload.commandResult)
+      : null
 
   let toolSummary: ToolResultSummaryDto | null = null
   let toolName: string | null = null

@@ -169,6 +169,7 @@ function makeArtifact(overrides: Partial<AutonomousUnitArtifactView> = {}): Auto
       timedOut: false,
       summary: 'read completed',
     },
+    toolSummary: null,
     toolName: 'read',
     toolState: 'succeeded',
     toolStateLabel: 'Succeeded',

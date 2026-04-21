@@ -13,6 +13,18 @@ afterEach(() => {
   openUrlMock.mockReset()
 })
 
+if (!HTMLElement.prototype.hasPointerCapture) {
+  HTMLElement.prototype.hasPointerCapture = () => false
+}
+
+if (!HTMLElement.prototype.setPointerCapture) {
+  HTMLElement.prototype.setPointerCapture = () => {}
+}
+
+if (!HTMLElement.prototype.releasePointerCapture) {
+  HTMLElement.prototype.releasePointerCapture = () => {}
+}
+
 import { AgentRuntime } from '@/components/cadence/agent-runtime'
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
@@ -22,6 +34,8 @@ import type {
   RuntimeSessionView,
   RuntimeStreamView,
 } from '@/src/lib/cadence-model'
+
+type CheckpointControlLoopCard = NonNullable<AgentPaneView['checkpointControlLoop']>['items'][number]
 
 function makeLifecycle(overrides: Partial<PlanningLifecycleView> = {}): PlanningLifecycleView {
   return {
@@ -132,10 +146,11 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
 }
 
 function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView {
-  return {
+  const runtimeRun: RuntimeRunView = {
     projectId: 'project-1',
     runId: 'run-1',
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     runtimeLabel: 'Openai Codex · Supervisor running',
     supervisorKind: 'detached_pty',
     supervisorLabel: 'Detached Pty',
@@ -179,13 +194,18 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     isFailed: false,
     ...overrides,
   }
+
+  return runtimeRun
 }
 
-function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['autonomousRun']>> = {}) {
+function makeAutonomousRun(
+  overrides: Partial<NonNullable<ProjectDetailView['autonomousRun']>> = {},
+): NonNullable<ProjectDetailView['autonomousRun']> {
   return {
     projectId: 'project-1',
     runId: 'auto-run-1',
     runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
     runtimeLabel: 'Openai Codex · Autonomous run active',
     supervisorKind: 'detached_pty',
     supervisorLabel: 'Detached Pty',
@@ -194,6 +214,7 @@ function makeAutonomousRun(overrides: Partial<NonNullable<ProjectDetailView['aut
     recoveryState: 'recovery_required' as const,
     recoveryLabel: 'Recovery required',
     activeUnitId: 'auto-run-1:checkpoint:2',
+    activeAttemptId: 'auto-run-1:checkpoint:2:attempt:1',
     duplicateStartDetected: false,
     duplicateStartRunId: null,
     duplicateStartReason: null,
@@ -234,6 +255,7 @@ function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['au
     statusLabel: 'Active',
     summary: 'Recovered the current autonomous unit boundary.',
     boundaryId: 'checkpoint:2',
+    workflowLinkage: null,
     startedAt: '2026-04-16T20:00:01Z',
     finishedAt: null,
     updatedAt: '2026-04-16T20:03:00Z',
@@ -246,7 +268,9 @@ function makeAutonomousUnit(overrides: Partial<NonNullable<ProjectDetailView['au
   }
 }
 
-function makeAutonomousAttempt(overrides: Partial<NonNullable<ProjectDetailView['autonomousAttempt']>> = {}) {
+function makeAutonomousAttempt(
+  overrides: Partial<NonNullable<ProjectDetailView['autonomousAttempt']>> = {},
+): NonNullable<ProjectDetailView['autonomousAttempt']> {
   return {
     projectId: 'project-1',
     runId: 'auto-run-1',
@@ -257,6 +281,7 @@ function makeAutonomousAttempt(overrides: Partial<NonNullable<ProjectDetailView[
     status: 'active' as const,
     statusLabel: 'Active',
     boundaryId: 'checkpoint:2',
+    workflowLinkage: null,
     startedAt: '2026-04-16T20:00:02Z',
     finishedAt: null,
     updatedAt: '2026-04-16T20:03:00Z',
@@ -525,6 +550,11 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     repositoryLabel: project.repository?.displayName ?? project.name,
     repositoryPath: project.repository?.rootPath ?? null,
     runtimeSession,
+    selectedProviderId: overrides.selectedProviderId ?? 'openai_codex',
+    selectedProviderLabel: overrides.selectedProviderLabel ?? 'OpenAI Codex',
+    selectedModelId: overrides.selectedModelId ?? 'openai_codex',
+    openrouterApiKeyConfigured: overrides.openrouterApiKeyConfigured ?? false,
+    providerMismatch: overrides.providerMismatch ?? false,
     runtimeRun,
     autonomousRun: overrides.autonomousRun ?? project.autonomousRun ?? null,
     autonomousUnit: overrides.autonomousUnit ?? project.autonomousUnit ?? null,
@@ -568,6 +598,9 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     notificationSyncSummary: null,
     notificationSyncError: null,
     notificationRouteIsRefreshing: false,
+    notificationSyncPollingActive: false,
+    notificationSyncPollingActionId: null,
+    notificationSyncPollingBoundaryId: null,
     trustSnapshot: undefined,
     sessionUnavailableReason: overrides.sessionUnavailableReason ?? 'Current session status for this project.',
     runtimeRunUnavailableReason:
@@ -782,9 +815,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Durable approval pending refresh')).toBeVisible()
   })
 
-  it('renders OpenRouter-first runtime setup without OpenAI login affordances', async () => {
-    const onStartRuntimeSession = vi.fn(async () => null)
-
+  it('keeps OpenRouter provider mismatch truthful without rendering runtime setup affordances', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
@@ -804,27 +835,22 @@ describe('AgentRuntime current UI', () => {
           }),
         })}
         onStartLogin={vi.fn(async () => null)}
-        onStartRuntimeSession={onStartRuntimeSession}
+        onStartRuntimeSession={vi.fn(async () => null)}
       />,
     )
 
-    expect(screen.getByRole('heading', { name: 'OpenRouter is selected in Settings' })).toBeVisible()
-    const runtimeSetupSection = screen.getByRole('heading', { name: 'OpenRouter is selected in Settings' }).closest('section')
-    expect(runtimeSetupSection).not.toBeNull()
-    const runtimeSetupQueries = within(runtimeSetupSection as HTMLElement)
-    expect(screen.getByText('Provider mismatch')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'OpenRouter is selected in Settings' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Provider mismatch')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rebind OpenRouter runtime' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start OpenAI login' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Manual callback fallback' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
       'placeholder',
       'Rebind OpenRouter before trusting new live activity.',
     )
-
-    fireEvent.click(runtimeSetupQueries.getByRole('button', { name: 'Rebind OpenRouter runtime' }))
-    await waitFor(() => expect(onStartRuntimeSession).toHaveBeenCalledTimes(1))
   })
 
-  it('shows Settings guidance when OpenRouter is selected without a saved key', () => {
+  it('renders OpenRouter setup guidance in the centered agent empty state', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
@@ -841,10 +867,11 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('heading', { name: 'Configure OpenRouter in Settings' })).toBeVisible()
-    expect(screen.getByText('Key required in Settings')).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Bind OpenRouter runtime' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Start OpenAI login' })).not.toBeInTheDocument()
+    expect(screen.getByText('Configure agent runtime')).toBeVisible()
+    expect(
+      screen.getByText('Open Settings to choose a provider and model before using the agent tab for this imported project.'),
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Configure' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
       'placeholder',
       'Configure an OpenRouter API key in Settings to start.',
@@ -973,12 +1000,64 @@ describe('AgentRuntime current UI', () => {
     ).toBeVisible()
   })
 
-  it('keeps the signed-out shell minimal and truthful', () => {
-    render(<AgentRuntime agent={makeAgent()} />)
+  it('renders a centered agent runtime setup state and opens settings', () => {
+    const onOpenSettings = vi.fn()
 
-    expect(screen.queryByRole('heading', { name: 'Authenticate to view live agent activity' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute('placeholder', 'Connect a provider to start.')
+    render(<AgentRuntime agent={makeAgent()} onOpenSettings={onOpenSettings} />)
+
+    const composer = screen.getByLabelText('Agent input unavailable')
+    const modelSelector = screen.getByRole('combobox', { name: 'Model selector' })
+    const thinkingLevelSelector = screen.getByRole('combobox', { name: 'Thinking level selector' })
+
+    expect(screen.getByText('Configure agent runtime')).toBeVisible()
+    expect(
+      screen.getByText('Open Settings to choose a provider and model before using the agent tab for this imported project.'),
+    ).toBeVisible()
+    expect(composer).toHaveAttribute('placeholder', 'Connect a provider to start.')
+    expect(composer).toHaveAttribute('rows', '4')
+    expect(modelSelector).toHaveTextContent('openai_codex')
+    expect(thinkingLevelSelector).toHaveTextContent('Thinking · medium')
+    expect(screen.getByRole('button', { name: 'Configure' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled()
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start run' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Configure' }))
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets the local model selector switch between grouped sample models', async () => {
+    render(<AgentRuntime agent={makeAgent()} />)
+
+    const modelSelector = screen.getByRole('combobox', { name: 'Model selector' })
+
+    expect(modelSelector).toHaveTextContent('openai_codex')
+
+    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
+
+    expect(await screen.findByText('OpenAI Codex')).toBeVisible()
+    expect(screen.getByText('Anthropic')).toBeVisible()
+    expect(screen.getByText('Mistral')).toBeVisible()
+
+    fireEvent.click(await screen.findByRole('option', { name: 'claude-3.5-haiku' }))
+
+    await waitFor(() => expect(modelSelector).toHaveTextContent('claude-3.5-haiku'))
+  })
+
+  it('lets the mock thinking level selector switch between sample levels', async () => {
+    render(<AgentRuntime agent={makeAgent()} />)
+
+    const thinkingLevelSelector = screen.getByRole('combobox', { name: 'Thinking level selector' })
+
+    expect(thinkingLevelSelector).toHaveTextContent('Thinking · medium')
+
+    fireEvent.keyDown(thinkingLevelSelector, { key: 'ArrowDown' })
+
+    expect(await screen.findByRole('option', { name: 'Thinking · low' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Thinking · high' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('option', { name: 'Thinking · high' }))
+
+    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking · high'))
   })
 })

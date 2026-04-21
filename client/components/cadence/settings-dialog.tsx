@@ -301,41 +301,30 @@ function ProjectBoundEmptyState({ title, body }: { title: string; body: string }
 }
 
 // ===========================================================================
-// Providers Section — app-global provider settings plus selected-project auth
+// Providers Section — card-based UI matching notifications pattern
 // ===========================================================================
 
-type AuthPending = "login" | "logout" | null
+type AuthPending = "login" | "logout" | "configure" | null
 type RuntimeProviderId = RuntimeSettingsDto["providerId"]
 
-const PROVIDER_OPTIONS: Array<{
-  value: RuntimeProviderId
+const PROVIDERS: Array<{
+  id: RuntimeProviderId
   label: string
   description: string
   Icon: React.ElementType
-  fixedModelId?: string
 }> = [
   {
-    value: "openrouter",
+    id: "openrouter",
     label: "OpenRouter",
-    description: "App-global API key with configurable model routing.",
+    description: "App-global API key provider",
     Icon: KeyRound,
   },
   {
-    value: "openai_codex",
+    id: "openai_codex",
     label: "OpenAI Codex",
-    description: "Project-bound browser login for the desktop runtime.",
+    description: "Browser-based OAuth for desktop runtime",
     Icon: OpenAIIcon,
-    fixedModelId: "openai_codex",
   },
-]
-
-const COMING_SOON_PROVIDERS: Array<{
-  label: string
-  description: string
-  Icon: React.ElementType
-}> = [
-  { label: "Anthropic", description: "Claude agent runtime", Icon: AnthropicIcon },
-  { label: "Google", description: "Gemini agent runtime", Icon: GoogleIcon },
 ]
 
 function ProvidersSection({
@@ -361,50 +350,39 @@ function ProvidersSection({
   onStartLogin?: () => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
 }) {
-  const [providerId, setProviderId] = useState<RuntimeProviderId>("openrouter")
+  // Per-provider state
+  const [configuringId, setConfiguringId] = useState<RuntimeProviderId | null>(null)
   const [openrouterModelId, setOpenrouterModelId] = useState("")
   const [openrouterApiKey, setOpenrouterApiKey] = useState("")
   const [clearOpenrouterApiKey, setClearOpenrouterApiKey] = useState(false)
-  const [formError, setFormError] = useState<string | null>(null)
   const [pending, setPending] = useState<AuthPending>(null)
-  const [authError, setAuthError] = useState<string | null>(null)
+  const [formError, setFormError] = useState<string | null>(null)
 
-  const providerOption = PROVIDER_OPTIONS.find((option) => option.value === providerId) ?? PROVIDER_OPTIONS[0]
   const hasSelectedProject = Boolean(agent?.repositoryPath?.trim())
   const runtimeSession = agent?.runtimeSession ?? null
-  const isConnected = Boolean(runtimeSession?.isAuthenticated)
-  const isInProgress = Boolean(runtimeSession?.isLoginInProgress)
+  const isOpenaiConnected = Boolean(runtimeSession?.isAuthenticated)
+  const isOpenaiInProgress = Boolean(runtimeSession?.isLoginInProgress)
   const isSaving = runtimeSettingsSaveStatus === "running"
+
+  const isProviderActive = runtimeSettings?.providerId
+
+  // OpenRouter state
+  const isOpenrouterActive = isProviderActive === "openrouter"
   const openrouterConfigured = runtimeSettings?.openrouterApiKeyConfigured ?? false
-  const needsOpenrouterKey =
-    providerId === "openrouter" && !openrouterConfigured && openrouterApiKey.trim().length === 0 && !clearOpenrouterApiKey
+
+  // OpenAI state
+  const isOpenaiActive = isProviderActive === "openai_codex"
 
   useEffect(() => {
-    if (!runtimeSettings) {
-      return
-    }
-
-    setProviderId(runtimeSettings.providerId)
+    if (!runtimeSettings) return
     setOpenrouterModelId(runtimeSettings.providerId === "openrouter" ? runtimeSettings.modelId : "")
-    setOpenrouterApiKey("")
-    setClearOpenrouterApiKey(false)
     setFormError(null)
   }, [runtimeSettings])
 
-  useEffect(() => {
-    setAuthError(null)
-  }, [runtimeSession?.isAuthenticated, runtimeSession?.updatedAt])
-
-  function selectProvider(nextProviderId: RuntimeProviderId) {
-    setProviderId(nextProviderId)
-    setFormError(null)
-  }
-
-  async function handleSave() {
+  async function handleOpenrouterSave() {
     if (!onUpsertRuntimeSettings) return
 
-    const normalizedModelId = providerOption.fixedModelId ?? openrouterModelId.trim()
-    if (!normalizedModelId) {
+    if (!openrouterModelId.trim()) {
       setFormError("Model ID is required.")
       return
     }
@@ -412,8 +390,8 @@ function ProvidersSection({
     setFormError(null)
 
     const request: UpsertRuntimeSettingsRequestDto = {
-      providerId,
-      modelId: normalizedModelId,
+      providerId: "openrouter",
+      modelId: openrouterModelId.trim(),
       ...(clearOpenrouterApiKey
         ? { openrouterApiKey: "" }
         : openrouterApiKey.length > 0
@@ -423,6 +401,7 @@ function ProvidersSection({
 
     try {
       await onUpsertRuntimeSettings(request)
+      setConfiguringId(null)
       setClearOpenrouterApiKey(false)
     } catch {
       // Hook state surfaces the typed error while the form preserves the last-known-good snapshot.
@@ -431,10 +410,9 @@ function ProvidersSection({
     }
   }
 
-  async function handleConnect() {
+  async function handleOpenaiConnect() {
     if (!hasSelectedProject || !onStartLogin) return
     setPending("login")
-    setAuthError(null)
     try {
       const next = await onStartLogin()
       if (next?.authorizationUrl) {
@@ -444,21 +422,24 @@ function ProvidersSection({
           // Browser open failed — the login flow still started in the desktop runtime.
         }
       }
+      // Switch to OpenAI as active provider on successful connect
+      if (onUpsertRuntimeSettings) {
+        await onUpsertRuntimeSettings({ providerId: "openai_codex", modelId: "openai_codex" })
+      }
     } catch (error) {
-      setAuthError(errMsg(error, "Could not start login."))
+      setFormError(errMsg(error, "Could not start login."))
     } finally {
       setPending(null)
     }
   }
 
-  async function handleDisconnect() {
+  async function handleOpenaiDisconnect() {
     if (!onLogout) return
     setPending("logout")
-    setAuthError(null)
     try {
       await onLogout()
     } catch (error) {
-      setAuthError(errMsg(error, "Could not sign out."))
+      setFormError(errMsg(error, "Could not sign out."))
     } finally {
       setPending(null)
     }
@@ -469,328 +450,225 @@ function ProvidersSection({
       <div>
         <h3 className="text-sm font-semibold text-foreground">Providers</h3>
         <p className="mt-1 text-[12px] text-muted-foreground">
-          Configure the app-global runtime provider, model, and OpenRouter key without requiring a selected project.
+          Configure AI model providers for Cadence
         </p>
       </div>
 
       {runtimeSettingsLoadError && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Settings load failed</AlertTitle>
-          <AlertDescription className="space-y-3">
-            <p>{errorViewMessage(runtimeSettingsLoadError, "Cadence could not load app-global runtime settings.")}</p>
-            <div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-[11px]"
-                onClick={() => void onRefreshRuntimeSettings?.({ force: true }).catch(() => undefined)}
-              >
-                Retry
-              </Button>
-            </div>
+          <AlertDescription className="text-[12px]">
+            {errorViewMessage(runtimeSettingsLoadError, "Failed to load provider settings.")}
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-6 text-[10px]"
+              onClick={() => void onRefreshRuntimeSettings?.({ force: true }).catch(() => undefined)}
+            >
+              Retry
+            </Button>
           </AlertDescription>
         </Alert>
       )}
 
       {runtimeSettingsSaveError && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Settings save failed</AlertTitle>
-          <AlertDescription>{errorViewMessage(runtimeSettingsSaveError, "Cadence could not save app-global runtime settings.")}</AlertDescription>
+          <AlertDescription className="text-[12px]">
+            {errorViewMessage(runtimeSettingsSaveError, "Failed to save provider settings.")}
+          </AlertDescription>
         </Alert>
       )}
 
-      {authError && (
-        <Alert variant="destructive">
+      {formError && (
+        <Alert variant="destructive" className="py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Connection error</AlertTitle>
-          <AlertDescription>{authError}</AlertDescription>
+          <AlertDescription className="text-[12px]">{formError}</AlertDescription>
         </Alert>
       )}
 
-      {runtimeSettingsLoadStatus === "loading" && !runtimeSettings ? (
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-[12px] text-muted-foreground">
-          <LoaderCircle className="h-4 w-4 animate-spin" />
-          Loading app-global provider settings…
-        </div>
-      ) : null}
+      <div className="grid gap-2">
+        {PROVIDERS.map(({ id, label, description, Icon }) => {
+          const isOpenrouter = id === "openrouter"
+          const isOpenai = id === "openai_codex"
+          const configOpen = configuringId === id
 
-      {!runtimeSettings && runtimeSettingsLoadStatus === "error" ? null : !runtimeSettings ? (
-        <div className="rounded-lg border border-border bg-card px-4 py-3 text-[12px] text-muted-foreground">
-          Open the dialog to load the app-global provider settings.
-        </div>
-      ) : (
-        <>
-          <div className="grid gap-2">
-            {PROVIDER_OPTIONS.map(({ value, label, description, Icon }) => {
-              const selected = providerId === value
-              const openrouterCard = value === "openrouter"
+          // OpenRouter: configured if API key is set
+          const isConfigured = isOpenrouter
+            ? openrouterConfigured
+            : isOpenai
+              ? isOpenaiConnected
+              : false
 
-              return (
-                <div key={value} className="rounded-lg border border-border bg-card px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
-                      <Icon className="h-4 w-4 text-foreground/70" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="text-[13px] font-medium text-foreground">{label}</p>
-                        {selected ? <Badge variant="default" className="text-[10px]">Selected</Badge> : null}
-                      </div>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">{description}</p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {openrouterCard ? (
-                        <Badge variant={openrouterConfigured ? "default" : "outline"} className="text-[10px]">
-                          {openrouterConfigured ? "Key configured" : "Key missing"}
-                        </Badge>
-                      ) : hasSelectedProject ? (
-                        isConnected ? (
-                          <Badge variant="default" className="gap-1 text-[10px]">
-                            <Check className="h-3 w-3" />
-                            Connected
-                          </Badge>
-                        ) : isInProgress ? (
-                          <Badge variant="secondary" className="gap-1 text-[10px]">
-                            <LoaderCircle className="h-3 w-3 animate-spin" />
-                            Connecting…
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-[10px]">Not connected</Badge>
-                        )
-                      ) : (
-                        <Badge variant="outline" className="text-[10px]">Select project</Badge>
-                      )}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={selected ? "secondary" : "outline"}
-                        className="h-7 text-[11px]"
-                        onClick={() => selectProvider(value)}
-                      >
-                        {selected ? "Selected" : "Use provider"}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+          const isActive = isProviderActive === id
 
-          <div className="rounded-lg border border-border bg-card px-4 py-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[13px] font-medium text-foreground">Selected provider settings</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  {providerId === "openrouter"
-                    ? "Choose the OpenRouter model Cadence should bind against and manage the saved app-global API key state."
-                    : "OpenAI Codex uses the fixed modelId `openai_codex`; browser login remains project-bound."}
-                </p>
-              </div>
-              <Badge variant="outline" className="text-[10px]">App-global</Badge>
-            </div>
-
-            <div className="mt-4 grid gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="runtime-model-id" className="text-[11px]">Model ID</Label>
-                <Input
-                  id="runtime-model-id"
-                  className="h-8 text-[12px]"
-                  disabled={Boolean(providerOption.fixedModelId) || isSaving}
-                  onChange={(event) => setOpenrouterModelId(event.target.value)}
-                  placeholder={providerOption.fixedModelId ?? "openai/gpt-4.1-mini"}
-                  value={providerOption.fixedModelId ?? openrouterModelId}
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  {providerOption.fixedModelId
-                    ? "OpenAI Codex keeps a fixed model identifier so the desktop adapter never drifts from the closed provider catalog."
-                    : "Use the exact OpenRouter model slug that Cadence should validate during runtime bind/reconcile."}
-                </p>
-              </div>
-
-              <div className="space-y-2 rounded-lg border border-border/70 bg-secondary/20 px-3 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <Label htmlFor="openrouter-api-key" className="text-[11px]">OpenRouter API key</Label>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
-                      Cadence only stores the app-global key in app-local Tauri storage and only projects configured-state back into the UI.
-                    </p>
-                  </div>
-                  <Badge variant={openrouterConfigured ? "default" : "outline"} className="text-[10px]">
-                    {openrouterConfigured ? "Configured" : "Not configured"}
-                  </Badge>
-                </div>
-                <Input
-                  id="openrouter-api-key"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="h-8 text-[12px]"
-                  disabled={isSaving}
-                  onChange={(event) => {
-                    setOpenrouterApiKey(event.target.value)
-                    if (event.target.value.trim().length > 0) {
-                      setClearOpenrouterApiKey(false)
-                    }
-                  }}
-                  placeholder={openrouterConfigured ? "Leave blank to keep the saved key" : "Paste a new OpenRouter API key"}
-                  value={openrouterApiKey}
-                />
-                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                  <span>
-                    {clearOpenrouterApiKey
-                      ? "The saved OpenRouter key will be cleared on the next save."
-                      : openrouterConfigured
-                        ? "Leaving this blank preserves the saved key."
-                        : "Saving without a key leaves OpenRouter unconfigured until a key is added."}
-                  </span>
-                  {openrouterConfigured ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-[11px]"
-                      disabled={isSaving}
-                      onClick={() => {
-                        setClearOpenrouterApiKey((current) => !current)
-                        setOpenrouterApiKey("")
-                      }}
-                    >
-                      {clearOpenrouterApiKey ? "Keep saved key" : "Clear saved key"}
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-
-              {needsOpenrouterKey ? (
-                <Alert>
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>OpenRouter needs a saved key</AlertTitle>
-                  <AlertDescription>
-                    Add an OpenRouter API key before expecting Cadence to start or reconcile an OpenRouter runtime session.
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-
-              {providerId === "openrouter" ? (
-                <Alert>
-                  <KeyRound className="h-4 w-4" />
-                  <AlertTitle>OpenRouter uses saved app-global credentials</AlertTitle>
-                  <AlertDescription>
-                    Selecting OpenRouter changes the provider/model truth immediately after save, but it does not rewrite the selected project runtime session optimistically.
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-
-              {(formError || runtimeSettingsSaveError) ? (
-                <p className="text-[12px] text-destructive">{formError ?? runtimeSettingsSaveError?.message}</p>
-              ) : null}
-
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-7 text-[11px]"
-                  disabled={!onUpsertRuntimeSettings || isSaving}
-                  onClick={() => void handleSave()}
-                >
-                  {isSaving ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                  Save provider settings
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-[11px]"
-                  disabled={!onRefreshRuntimeSettings || runtimeSettingsLoadStatus === "loading"}
-                  onClick={() => void onRefreshRuntimeSettings?.({ force: true }).catch(() => undefined)}
-                >
-                  Refresh
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-border bg-card px-4 py-4">
-            <div>
-              <p className="text-[13px] font-medium text-foreground">Selected project runtime</p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                Provider settings are global, but runtime auth and notification routes stay grounded in the selected project.
-              </p>
-            </div>
-
-            {providerId === "openai_codex" ? (
-              <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-secondary/20 px-3 py-3">
-                <div>
-                  <p className="text-[12px] font-medium text-foreground">OpenAI login</p>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    {hasSelectedProject
-                      ? "Use browser-based OpenAI auth for the currently selected project runtime session."
-                      : "Select a project before starting or signing out of an OpenAI runtime session."}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {isConnected ? (
-                    <>
-                      <Badge variant="default" className="gap-1 text-[10px]">
-                        <Check className="h-3 w-3" />
-                        Connected
-                      </Badge>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-[11px]"
-                        disabled={pending !== null}
-                        onClick={() => void handleDisconnect()}
-                      >
-                        {pending === "logout" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
-                        Disconnect
-                      </Button>
-                    </>
-                  ) : isInProgress ? (
-                    <Badge variant="secondary" className="gap-1 text-[10px]">
-                      <LoaderCircle className="h-3 w-3 animate-spin" />
-                      Connecting…
-                    </Badge>
-                  ) : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="h-7 text-[11px]"
-                      disabled={!hasSelectedProject || pending !== null || !onStartLogin}
-                      onClick={() => void handleConnect()}
-                    >
-                      {pending === "login" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogIn className="h-3 w-3" />}
-                      Connect
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="mt-4 rounded-lg border border-border/70 bg-secondary/20 px-3 py-3 text-[11px] text-muted-foreground">
-                OpenRouter runtime sessions bind from the saved app-global provider settings, so there is no project-specific browser login action here.
-              </div>
-            )}
-          </div>
-
-          <div className="grid gap-2">
-            {COMING_SOON_PROVIDERS.map(({ label, description, Icon }) => (
-              <div key={label} className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 opacity-45">
+          return (
+            <div key={id} className="rounded-lg border border-border bg-card px-4 py-3">
+              <div className="flex items-center gap-3">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
                   <Icon className="h-4 w-4 text-foreground/70" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium text-foreground">{label}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-[13px] font-medium text-foreground">{label}</p>
+                    {isActive && (
+                      <Badge variant="default" className="h-4 px-1 text-[9px]">Active</Badge>
+                    )}
+                  </div>
                   <p className="text-[11px] text-muted-foreground">{description}</p>
                 </div>
-                <Badge variant="outline" className="text-[10px]">Coming soon</Badge>
+                <div className="flex items-center gap-2 shrink-0">
+                  {!isConfigured && !configOpen ? (
+                    <Badge variant="outline" className="text-[10px]">Not configured</Badge>
+                  ) : !configOpen ? (
+                    <Badge variant="secondary" className="text-[10px]">Configured</Badge>
+                  ) : null}
+
+                  {isOpenrouter ? (
+                    !configOpen ? (
+                      <Button
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        disabled={isSaving}
+                        onClick={() => {
+                          setConfiguringId(id)
+                          setFormError(null)
+                        }}
+                      >
+                        Configure
+                      </Button>
+                    ) : null
+                  ) : isOpenai ? (
+                    !configOpen ? (
+                      isOpenaiConnected ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          disabled={pending !== null}
+                          onClick={() => void handleOpenaiDisconnect()}
+                        >
+                          {pending === "logout" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
+                          Sign out
+                        </Button>
+                      ) : isOpenaiInProgress ? (
+                        <Badge variant="secondary" className="gap-1 text-[10px]">
+                          <LoaderCircle className="h-3 w-3 animate-spin" />
+                          Connecting…
+                        </Badge>
+                      ) : !hasSelectedProject ? (
+                        <Badge variant="outline" className="text-[10px]">Select a project</Badge>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          disabled={pending !== null || !onStartLogin}
+                          onClick={() => void handleOpenaiConnect()}
+                        >
+                          {pending === "login" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogIn className="h-3 w-3" />}
+                          Sign in
+                        </Button>
+                      )
+                    ) : null
+                  ) : null}
+                </div>
               </div>
-            ))}
-          </div>
-        </>
-      )}
+
+              {/* OpenRouter Configuration Form */}
+              {isOpenrouter && configOpen && (
+                <div className="border-t border-border pt-3 mt-3">
+                  <div className="grid gap-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor={`or-model-${id}`} className="text-[11px]">Model ID</Label>
+                      <Input
+                        id={`or-model-${id}`}
+                        className="h-8 text-[12px]"
+                        disabled={isSaving}
+                        onChange={(e) => setOpenrouterModelId(e.target.value)}
+                        placeholder="openai/gpt-4.1-mini"
+                        value={openrouterModelId}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Use the exact OpenRouter model slug
+                      </p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label htmlFor={`or-key-${id}`} className="text-[11px]">API Key</Label>
+                        {openrouterConfigured && (
+                          <Badge variant="secondary" className="text-[10px]">Key saved</Badge>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          id={`or-key-${id}`}
+                          type="password"
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="flex-1 h-8 text-[12px]"
+                          disabled={isSaving}
+                          onChange={(e) => {
+                            setOpenrouterApiKey(e.target.value)
+                            if (e.target.value.trim().length > 0) setClearOpenrouterApiKey(false)
+                          }}
+                          placeholder={openrouterConfigured ? "Leave blank to keep current" : "Paste API key"}
+                          value={openrouterApiKey}
+                        />
+                        {openrouterConfigured && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 px-2 text-[11px]"
+                            disabled={isSaving}
+                            onClick={() => {
+                              setClearOpenrouterApiKey((v) => !v)
+                              setOpenrouterApiKey("")
+                            }}
+                          >
+                            {clearOpenrouterApiKey ? "Keep" : "Clear"}
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        {clearOpenrouterApiKey
+                          ? "Saved key will be removed"
+                          : openrouterConfigured
+                            ? "Blank keeps current key"
+                            : "Required for OpenRouter"}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        disabled={!onUpsertRuntimeSettings || isSaving}
+                        onClick={() => void handleOpenrouterSave()}
+                      >
+                        {isSaving ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                        Save
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-[11px]"
+                        onClick={() => {
+                          setConfiguringId(null)
+                          setFormError(null)
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
