@@ -376,6 +376,9 @@ describe('ExecutionView', () => {
     const { workspace } = renderExecutionView()
 
     expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    expect(screen.getByText('Explorer')).toBeVisible()
+    expect(screen.getByLabelText('Search files')).toHaveValue('')
+    expect(screen.getByText('No files open')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
 

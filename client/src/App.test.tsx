@@ -814,6 +814,8 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
     expect(await screen.findByText('README.md')).toBeVisible()
+    expect(screen.getByText('Explorer')).toBeVisible()
+    expect(screen.getByLabelText('Search files')).toBeVisible()
     expect(screen.getByText('Select a file to start editing')).toBeVisible()
     expect(screen.queryByText('No execution activity yet')).not.toBeInTheDocument()
   })
