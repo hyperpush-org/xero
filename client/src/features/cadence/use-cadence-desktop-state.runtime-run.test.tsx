@@ -1549,6 +1549,8 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     autoDispatched = true
     const snapshotCallsBeforeEvent = vi.mocked(setup.getProjectSnapshot).mock.calls.length
+    const routeRefreshesBeforeEvent = vi.mocked(setup.listNotificationRoutes).mock.calls.length
+    const syncRefreshesBeforeEvent = vi.mocked(setup.syncNotificationAdapters).mock.calls.length
 
     act(() => {
       setup.emitRuntimeRunUpdated({
@@ -1568,6 +1570,8 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('workflow-lifecycle-action-required')).toHaveTextContent('1')
     expect(screen.getByTestId('handoff-package-count')).toHaveTextContent('1')
     expect(vi.mocked(setup.getProjectSnapshot).mock.calls.length).toBeGreaterThan(snapshotCallsBeforeEvent)
+    expect(vi.mocked(setup.listNotificationRoutes).mock.calls.length).toBe(routeRefreshesBeforeEvent)
+    expect(vi.mocked(setup.syncNotificationAdapters).mock.calls.length).toBe(syncRefreshesBeforeEvent)
   })
 
   it('advances lifecycle and handoff continuity to terminal roadmap state from runtime_run:updated refreshes', async () => {

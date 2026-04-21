@@ -778,6 +778,7 @@ function createMockAdapter(options?: {
     upsertRuntimeSettings,
     listNotificationRoutes,
     listNotificationDispatches,
+    syncNotificationAdapters: adapter.syncNotificationAdapters,
     upsertNotificationRoute,
     startOpenAiLogin,
     submitOpenAiCallback,
@@ -990,6 +991,8 @@ describe('useCadenceDesktopState', () => {
     expect(setup.getProjectSnapshot).toHaveBeenCalledWith('project-1')
     expect(setup.getRepositoryStatus).toHaveBeenCalledWith('project-1')
     expect(setup.getRuntimeSession).toHaveBeenCalledWith('project-1')
+    expect(setup.listNotificationRoutes).toHaveBeenCalledWith('project-1')
+    expect(setup.syncNotificationAdapters).toHaveBeenCalledWith('project-1')
   })
 
   it('reloads the full active snapshot after project:updated so durable operator-loop state stays fresh', async () => {
@@ -1047,6 +1050,8 @@ describe('useCadenceDesktopState', () => {
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
     expect(screen.getByTestId('approval-count')).toHaveTextContent('0')
     await waitFor(() => expect(setup.onProjectUpdated).toHaveBeenCalledTimes(1))
+    const routeRefreshesBeforeEvent = setup.listNotificationRoutes.mock.calls.length
+    const syncRefreshesBeforeEvent = setup.syncNotificationAdapters.mock.calls.length
 
     act(() => {
       refreshed = true
@@ -1067,6 +1072,8 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('verification-count')).toHaveTextContent('1')
     expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1')
     expect(screen.getByTestId('branch')).toHaveTextContent('release/verified')
+    expect(setup.listNotificationRoutes.mock.calls.length).toBeGreaterThan(routeRefreshesBeforeEvent)
+    expect(setup.syncNotificationAdapters.mock.calls.length).toBeGreaterThan(syncRefreshesBeforeEvent)
   })
 
   it('ignores wrong-project update callbacks so one project cannot overwrite another project\'s operator history', async () => {
@@ -1586,6 +1593,8 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
     expect(screen.getByTestId('error')).toHaveTextContent('runtime failed')
     expect(screen.getByTestId('runtime-label')).toHaveTextContent('Runtime unavailable')
+    expect(setup.listNotificationRoutes).toHaveBeenLastCalledWith('project-2')
+    expect(setup.syncNotificationAdapters).toHaveBeenLastCalledWith('project-2')
   })
 
   it('resolves operator actions by invoking the adapter and reloading the active project snapshot', async () => {

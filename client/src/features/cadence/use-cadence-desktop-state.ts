@@ -12,7 +12,6 @@ import {
   applyRuntimeStreamIssue,
   createRuntimeStreamFromSubscription,
   createRuntimeStreamView,
-  mapProjectSnapshot,
   mapProjectSummary,
   mapRepositoryDiff,
   mapRepositoryStatus,
@@ -74,6 +73,14 @@ import {
   getBlockedNotificationSyncPollTarget,
   type BlockedNotificationSyncPollTarget,
 } from './use-cadence-desktop-state/notification-health'
+import {
+  applyAutonomousRunState,
+  applyRuntimeToProjectList,
+  loadNotificationRoutesForProject,
+  loadProjectState,
+  removeProjectRecord,
+  type ProjectLoadSource,
+} from './use-cadence-desktop-state/project-loaders'
 import {
   buildAgentView,
   buildExecutionView,
@@ -190,42 +197,6 @@ function getActivePhase(project: ProjectDetailView | null): Phase | null {
   )
 }
 
-function applyRuntimeToProjectList(project: ProjectListItem, runtimeSession: RuntimeSessionView): ProjectListItem {
-  return {
-    ...project,
-    runtime: runtimeSession.runtimeLabel,
-    runtimeLabel: runtimeSession.runtimeLabel,
-  }
-}
-
-function applyAutonomousRunState(
-  project: ProjectDetailView,
-  autonomousRun: ProjectDetailView['autonomousRun'],
-  autonomousUnit: ProjectDetailView['autonomousUnit'],
-  autonomousAttempt: ProjectDetailView['autonomousAttempt'],
-  autonomousHistory: ProjectDetailView['autonomousHistory'],
-  autonomousRecentArtifacts: ProjectDetailView['autonomousRecentArtifacts'],
-): ProjectDetailView {
-  return {
-    ...project,
-    autonomousRun: autonomousRun ?? null,
-    autonomousUnit: autonomousUnit ?? null,
-    autonomousAttempt: autonomousAttempt ?? null,
-    autonomousHistory,
-    autonomousRecentArtifacts,
-  }
-}
-
-function removeProjectRecord<T>(records: Record<string, T>, projectId: string): Record<string, T> {
-  if (!(projectId in records)) {
-    return records
-  }
-
-  const nextRecords = { ...records }
-  delete nextRecords[projectId]
-  return nextRecords
-}
-
 function getRuntimeStreamIssue(error: unknown, fallback: { code: string; message: string; retryable: boolean }) {
   if (error instanceof CadenceDesktopError) {
     return {
@@ -268,22 +239,6 @@ function getOperatorActionError(error: unknown, fallback: string): OperatorActio
     message: fallback,
     retryable: false,
   }
-}
-
-function combineLoadErrors(...errors: Array<string | null | undefined>): string | null {
-  const messages = Array.from(
-    new Set(
-      errors
-        .map((error) => (typeof error === 'string' ? error.trim() : ''))
-        .filter((error) => error.length > 0),
-    ),
-  )
-
-  if (messages.length === 0) {
-    return null
-  }
-
-  return messages.join(' ')
 }
 
 export function useCadenceDesktopState(
@@ -648,475 +603,77 @@ export function useCadenceDesktopState(
   )
 
   const loadNotificationRoutes = useCallback(
-    async (projectId: string, options: { force?: boolean } = {}): Promise<NotificationRoutesLoadResult> => {
-      const force = options.force ?? false
-      const inFlightRequest = notificationRouteLoadInFlightRef.current[projectId]
-      if (!force && inFlightRequest) {
-        return inFlightRequest
-      }
-
-      const cachedRoutes = notificationRoutesRef.current[projectId] ?? []
-      const cachedLoadError = notificationRouteLoadErrorsRef.current[projectId] ?? null
-      const nextRequestId = (notificationRouteLoadRequestRef.current[projectId] ?? 0) + 1
-      notificationRouteLoadRequestRef.current[projectId] = nextRequestId
-
-      setNotificationRouteLoadStatuses((currentStatuses) => ({
-        ...currentStatuses,
-        [projectId]: 'loading',
-      }))
-      setNotificationRouteLoadErrors((currentErrors) => ({
-        ...currentErrors,
-        [projectId]: null,
-      }))
-
-      const requestPromise: Promise<NotificationRoutesLoadResult> = adapter
-        .listNotificationRoutes(projectId)
-        .then((response) => {
-          if (notificationRouteLoadRequestRef.current[projectId] !== nextRequestId) {
-            return {
-              routes: notificationRoutesRef.current[projectId] ?? cachedRoutes,
-              loadError: notificationRouteLoadErrorsRef.current[projectId] ?? cachedLoadError,
-            }
-          }
-
-          const inScopeRoutes = response.routes.filter(
-            (route) => route.projectId === projectId && route.routeId.trim().length > 0,
-          )
-
-          setNotificationRoutes((currentRoutes) => ({
-            ...currentRoutes,
-            [projectId]: inScopeRoutes,
-          }))
-          setNotificationRouteLoadStatuses((currentStatuses) => ({
-            ...currentStatuses,
-            [projectId]: 'ready',
-          }))
-          setNotificationRouteLoadErrors((currentErrors) => ({
-            ...currentErrors,
-            [projectId]: null,
-          }))
-
-          return {
-            routes: inScopeRoutes,
-            loadError: null,
-          }
-        })
-        .catch((error) => {
-          if (notificationRouteLoadRequestRef.current[projectId] !== nextRequestId) {
-            return {
-              routes: notificationRoutesRef.current[projectId] ?? cachedRoutes,
-              loadError: notificationRouteLoadErrorsRef.current[projectId] ?? cachedLoadError,
-            }
-          }
-
-          const loadError = getOperatorActionError(error, 'Cadence could not load notification routes for this project.')
-          setNotificationRouteLoadStatuses((currentStatuses) => ({
-            ...currentStatuses,
-            [projectId]: 'error',
-          }))
-          setNotificationRouteLoadErrors((currentErrors) => ({
-            ...currentErrors,
-            [projectId]: loadError,
-          }))
-
-          return {
-            routes: notificationRoutesRef.current[projectId] ?? cachedRoutes,
-            loadError,
-          }
-        })
-        .finally(() => {
-          if (notificationRouteLoadInFlightRef.current[projectId] === requestPromise) {
-            delete notificationRouteLoadInFlightRef.current[projectId]
-          }
-        })
-
-      notificationRouteLoadInFlightRef.current[projectId] = requestPromise
-      return requestPromise
-    },
+    async (projectId: string, options: { force?: boolean } = {}): Promise<NotificationRoutesLoadResult> =>
+      loadNotificationRoutesForProject({
+        adapter,
+        projectId,
+        force: options.force,
+        notificationRoutesRef,
+        notificationRouteLoadErrorsRef,
+        notificationRouteLoadRequestRef,
+        notificationRouteLoadInFlightRef,
+        setNotificationRoutes,
+        setNotificationRouteLoadStatuses,
+        setNotificationRouteLoadErrors,
+        getOperatorActionError,
+      }),
     [adapter],
   )
 
   const loadProject = useCallback(
-    async (
-      projectId: string,
-      source: Exclude<RefreshSource, 'repository:status_changed' | 'runtime:updated' | null>,
-    ) => {
-      const requestId = latestLoadRequestRef.current + 1
-      latestLoadRequestRef.current = requestId
-      setIsProjectLoading(true)
-      setRefreshSource(source)
-      setErrorMessage(null)
-
-      if (source !== 'operator:resolve' && source !== 'operator:resume') {
-        setOperatorActionError(null)
-        setPendingOperatorActionId(null)
-        setOperatorActionStatus('idle')
-      }
-
-      setRuntimeRunActionError(null)
-      setPendingRuntimeRunAction(null)
-      setRuntimeRunActionStatus('idle')
-      setAutonomousRunActionError(null)
-      setPendingAutonomousRunAction(null)
-      setAutonomousRunActionStatus('idle')
-      setNotificationRouteMutationError(null)
-
-      const runtimePromise = adapter
-        .getRuntimeSession(projectId)
-        .then((response) => ({
-          ok: true as const,
-          runtime: mapRuntimeSession(response),
-          error: null as string | null,
-        }))
-        .catch((error) => ({
-          ok: false as const,
-          runtime: runtimeSessionsRef.current[projectId] ?? null,
-          error: getDesktopErrorMessage(error),
-        }))
-
-      const runtimeRunPromise = adapter
-        .getRuntimeRun(projectId)
-        .then((response) => ({
-          ok: true as const,
-          runtimeRun: response ? mapRuntimeRun(response) : null,
-          error: null as string | null,
-        }))
-        .catch((error) => ({
-          ok: false as const,
-          runtimeRun: runtimeRunsRef.current[projectId] ?? null,
-          error: getDesktopErrorMessage(error),
-        }))
-
-      const autonomousRunPromise = adapter
-        .getAutonomousRun(projectId)
-        .then((response) => ({
-          ok: true as const,
-          inspection: mapAutonomousRunInspection(response),
-          error: null as string | null,
-        }))
-        .catch((error) => ({
-          ok: false as const,
-          inspection: {
-            autonomousRun: autonomousRunsRef.current[projectId] ?? null,
-            autonomousUnit: autonomousUnitsRef.current[projectId] ?? null,
-            autonomousAttempt: autonomousAttemptsRef.current[projectId] ?? null,
-            autonomousHistory: autonomousHistoriesRef.current[projectId] ?? [],
-            autonomousRecentArtifacts: autonomousRecentArtifactsRef.current[projectId] ?? [],
-          },
-          error: getDesktopErrorMessage(error),
-        }))
-
-      const shouldSyncNotificationAdapters = source !== 'runtime_run:updated'
-      const syncResult = shouldSyncNotificationAdapters
-        ? await adapter
-            .syncNotificationAdapters(projectId)
-            .then((summary) => ({
-              attempted: true as const,
-              summary,
-              error: null as OperatorActionErrorView | null,
-              errorMessage: null as string | null,
-            }))
-            .catch((error) => {
-              const metadata = getOperatorActionError(
-                error,
-                'Cadence could not sync notification adapters for this project.',
-              )
-              return {
-                attempted: true as const,
-                summary: notificationSyncSummariesRef.current[projectId] ?? null,
-                error: metadata,
-                errorMessage: metadata.message,
-              }
-            })
-        : {
-            attempted: false as const,
-            summary: notificationSyncSummariesRef.current[projectId] ?? null,
-            error: null as OperatorActionErrorView | null,
-            errorMessage: null as string | null,
-          }
-
-      const brokerPromise = adapter
-        .listNotificationDispatches(projectId)
-        .then((response) => ({
-          ok: true as const,
-          dispatches: response.dispatches,
-          error: null as string | null,
-        }))
-        .catch((error) => ({
-          ok: false as const,
-          dispatches: notificationDispatchesRef.current[projectId] ?? [],
-          error: getDesktopErrorMessage(error),
-        }))
-
-      const shouldRefreshRoutes = source !== 'runtime_run:updated' && source !== 'runtime_stream:action_required'
-      const routePromise = shouldRefreshRoutes
-        ? loadNotificationRoutes(projectId, {
-            force: source === 'startup' || source === 'selection' || source === 'import',
-          }).then((result) => ({
-            ok: result.loadError === null,
-            routes: result.routes,
-            error: result.loadError?.message ?? null,
-          }))
-        : Promise.resolve({
-            ok: true as const,
-            routes: notificationRoutesRef.current[projectId] ?? [],
-            error: null as string | null,
-          })
-
-      try {
-        const [snapshotResponse, statusResponse, brokerResult, routeResult] = await Promise.all([
-          adapter.getProjectSnapshot(projectId),
-          adapter.getRepositoryStatus(projectId),
-          brokerPromise,
-          routePromise,
-        ])
-
-        if (latestLoadRequestRef.current !== requestId) {
-          return null
-        }
-
-        if (syncResult.attempted) {
-          if (syncResult.summary) {
-            setNotificationSyncSummaries((currentSummaries) => ({
-              ...currentSummaries,
-              [projectId]: syncResult.summary,
-            }))
-          }
-
-          setNotificationSyncErrors((currentErrors) => ({
-            ...currentErrors,
-            [projectId]: syncResult.error,
-          }))
-        }
-
-        notificationDispatchesRef.current[projectId] = brokerResult.dispatches
-        const snapshotProject = mapProjectSnapshot(snapshotResponse, {
-          notificationDispatches: brokerResult.dispatches,
-        })
-        const status = mapRepositoryStatus(statusResponse)
-        const cachedRuntime = runtimeSessionsRef.current[projectId] ?? null
-        const cachedRuntimeRun = runtimeRunsRef.current[projectId] ?? null
-        const cachedAutonomousRun = autonomousRunsRef.current[projectId] ?? snapshotProject.autonomousRun ?? null
-        const cachedAutonomousUnit = autonomousUnitsRef.current[projectId] ?? snapshotProject.autonomousUnit ?? null
-        const cachedAutonomousAttempt = autonomousAttemptsRef.current[projectId] ?? snapshotProject.autonomousAttempt ?? null
-        const cachedAutonomousHistory = autonomousHistoriesRef.current[projectId] ?? snapshotProject.autonomousHistory
-        const cachedAutonomousRecentArtifacts =
-          autonomousRecentArtifactsRef.current[projectId] ?? snapshotProject.autonomousRecentArtifacts
-        const nextProject = applyAutonomousRunState(
-          applyRuntimeRun(
-            applyRuntimeSession(applyRepositoryStatus(snapshotProject, status), cachedRuntime),
-            cachedRuntimeRun,
-          ),
-          cachedAutonomousRun,
-          cachedAutonomousUnit,
-          cachedAutonomousAttempt,
-          cachedAutonomousHistory,
-          cachedAutonomousRecentArtifacts,
-        )
-        const nextSummary = mapProjectSummary(snapshotResponse.project)
-
-        setProjects((currentProjects) =>
-          upsertProjectListItem(
-            currentProjects,
-            cachedRuntime ? applyRuntimeToProjectList(nextSummary, cachedRuntime) : nextSummary,
-          ),
-        )
-        setRepositoryStatus(status)
-        setActiveProjectId(projectId)
-        setActiveProject(nextProject)
-        resetRepositoryDiffs(status)
-
-        const [runtimeResult, runtimeRunResult, autonomousRunResult] = await Promise.all([
-          runtimePromise,
-          runtimeRunPromise,
-          autonomousRunPromise,
-        ])
-        if (latestLoadRequestRef.current !== requestId) {
-          return nextProject
-        }
-
-        if (runtimeResult.runtime) {
-          setRuntimeSessions((currentRuntimeSessions) => ({
-            ...currentRuntimeSessions,
-            [projectId]: runtimeResult.runtime,
-          }))
-          setProjects((currentProjects) =>
-            currentProjects.map((project) =>
-              project.id === projectId ? applyRuntimeToProjectList(project, runtimeResult.runtime as RuntimeSessionView) : project,
-            ),
-          )
-        }
-
-        if (runtimeRunResult.ok) {
-          setRuntimeRuns((currentRuntimeRuns) => {
-            if (!runtimeRunResult.runtimeRun) {
-              return removeProjectRecord(currentRuntimeRuns, projectId)
-            }
-
-            return {
-              ...currentRuntimeRuns,
-              [projectId]: runtimeRunResult.runtimeRun,
-            }
-          })
-        } else if (runtimeRunResult.runtimeRun) {
-          setRuntimeRuns((currentRuntimeRuns) => ({
-            ...currentRuntimeRuns,
-            [projectId]: runtimeRunResult.runtimeRun,
-          }))
-        }
-
-        if (autonomousRunResult.ok) {
-          setAutonomousRuns((currentRuns) => {
-            if (!autonomousRunResult.inspection.autonomousRun) {
-              return removeProjectRecord(currentRuns, projectId)
-            }
-
-            return {
-              ...currentRuns,
-              [projectId]: autonomousRunResult.inspection.autonomousRun,
-            }
-          })
-          setAutonomousUnits((currentUnits) => {
-            if (!autonomousRunResult.inspection.autonomousUnit) {
-              return removeProjectRecord(currentUnits, projectId)
-            }
-
-            return {
-              ...currentUnits,
-              [projectId]: autonomousRunResult.inspection.autonomousUnit,
-            }
-          })
-          setAutonomousAttempts((currentAttempts) => {
-            if (!autonomousRunResult.inspection.autonomousAttempt) {
-              return removeProjectRecord(currentAttempts, projectId)
-            }
-
-            return {
-              ...currentAttempts,
-              [projectId]: autonomousRunResult.inspection.autonomousAttempt,
-            }
-          })
-          setAutonomousHistories((currentHistories) => ({
-            ...currentHistories,
-            [projectId]: autonomousRunResult.inspection.autonomousHistory,
-          }))
-          setAutonomousRecentArtifacts((currentArtifacts) => ({
-            ...currentArtifacts,
-            [projectId]: autonomousRunResult.inspection.autonomousRecentArtifacts,
-          }))
-        } else {
-          if (autonomousRunResult.inspection.autonomousRun) {
-            setAutonomousRuns((currentRuns) => ({
-              ...currentRuns,
-              [projectId]: autonomousRunResult.inspection.autonomousRun,
-            }))
-          }
-
-          if (autonomousRunResult.inspection.autonomousUnit) {
-            setAutonomousUnits((currentUnits) => ({
-              ...currentUnits,
-              [projectId]: autonomousRunResult.inspection.autonomousUnit,
-            }))
-          }
-
-          if (autonomousRunResult.inspection.autonomousAttempt) {
-            setAutonomousAttempts((currentAttempts) => ({
-              ...currentAttempts,
-              [projectId]: autonomousRunResult.inspection.autonomousAttempt,
-            }))
-          }
-
-          setAutonomousHistories((currentHistories) => ({
-            ...currentHistories,
-            [projectId]: autonomousRunResult.inspection.autonomousHistory,
-          }))
-          setAutonomousRecentArtifacts((currentArtifacts) => ({
-            ...currentArtifacts,
-            [projectId]: autonomousRunResult.inspection.autonomousRecentArtifacts,
-          }))
-        }
-
-        setRuntimeLoadErrors((currentErrors) => ({
-          ...currentErrors,
-          [projectId]: runtimeResult.error,
-        }))
-        setRuntimeRunLoadErrors((currentErrors) => ({
-          ...currentErrors,
-          [projectId]: runtimeRunResult.error,
-        }))
-        setAutonomousRunLoadErrors((currentErrors) => ({
-          ...currentErrors,
-          [projectId]: autonomousRunResult.error,
-        }))
-
-        const finalRuntime = runtimeResult.runtime ?? cachedRuntime
-        const finalRuntimeRun = runtimeRunResult.ok ? runtimeRunResult.runtimeRun : runtimeRunResult.runtimeRun ?? cachedRuntimeRun
-        const finalAutonomousRun = autonomousRunResult.ok
-          ? autonomousRunResult.inspection.autonomousRun
-          : autonomousRunResult.inspection.autonomousRun ?? cachedAutonomousRun
-        const finalAutonomousUnit = autonomousRunResult.ok
-          ? autonomousRunResult.inspection.autonomousUnit
-          : autonomousRunResult.inspection.autonomousUnit ?? cachedAutonomousUnit
-        const finalAutonomousAttempt = autonomousRunResult.ok
-          ? autonomousRunResult.inspection.autonomousAttempt
-          : autonomousRunResult.inspection.autonomousAttempt ?? cachedAutonomousAttempt
-        const finalAutonomousHistory = autonomousRunResult.ok
-          ? autonomousRunResult.inspection.autonomousHistory
-          : autonomousRunResult.inspection.autonomousHistory.length > 0
-            ? autonomousRunResult.inspection.autonomousHistory
-            : cachedAutonomousHistory
-        const finalAutonomousRecentArtifacts = autonomousRunResult.ok
-          ? autonomousRunResult.inspection.autonomousRecentArtifacts
-          : autonomousRunResult.inspection.autonomousRecentArtifacts.length > 0
-            ? autonomousRunResult.inspection.autonomousRecentArtifacts
-            : cachedAutonomousRecentArtifacts
-        const finalizedProject = applyAutonomousRunState(
-          applyRuntimeRun(
-            finalRuntime ? applyRuntimeSession(nextProject, finalRuntime) : nextProject,
-            finalRuntimeRun,
-          ),
-          finalAutonomousRun,
-          finalAutonomousUnit,
-          finalAutonomousAttempt,
-          finalAutonomousHistory,
-          finalAutonomousRecentArtifacts,
-        )
-        setActiveProject((currentProject) => {
-          if (!currentProject || currentProject.id !== projectId) {
-            return currentProject
-          }
-
-          return finalizedProject
-        })
-        setErrorMessage(
-          combineLoadErrors(
-            syncResult.errorMessage,
-            brokerResult.error,
-            routeResult.error,
-            runtimeResult.error,
-            runtimeRunResult.error,
-            autonomousRunResult.error,
-          ),
-        )
-
-        return finalizedProject
-      } catch (error) {
-        if (latestLoadRequestRef.current === requestId) {
-          const nextMessage = getDesktopErrorMessage(error)
-          setErrorMessage(nextMessage)
-
-          if (source === 'operator:resolve' || source === 'operator:resume') {
-            setOperatorActionError(getOperatorActionError(error, nextMessage))
-          }
-        }
-
-        return null
-      } finally {
-        if (latestLoadRequestRef.current === requestId) {
-          setIsProjectLoading(false)
-        }
-      }
-    },
+    async (projectId: string, source: ProjectLoadSource) =>
+      loadProjectState({
+        adapter,
+        projectId,
+        source,
+        refs: {
+          latestLoadRequestRef,
+          runtimeSessionsRef,
+          runtimeRunsRef,
+          autonomousRunsRef,
+          autonomousUnitsRef,
+          autonomousAttemptsRef,
+          autonomousHistoriesRef,
+          autonomousRecentArtifactsRef,
+          notificationSyncSummariesRef,
+          notificationDispatchesRef,
+          notificationRoutesRef,
+        },
+        setters: {
+          setProjects,
+          setActiveProject,
+          setActiveProjectId,
+          setRepositoryStatus,
+          setRuntimeSessions,
+          setRuntimeRuns,
+          setAutonomousRuns,
+          setAutonomousUnits,
+          setAutonomousAttempts,
+          setAutonomousHistories,
+          setAutonomousRecentArtifacts,
+          setNotificationSyncSummaries,
+          setNotificationSyncErrors,
+          setRuntimeLoadErrors,
+          setRuntimeRunLoadErrors,
+          setAutonomousRunLoadErrors,
+          setIsProjectLoading,
+          setRefreshSource,
+          setErrorMessage,
+          setOperatorActionError,
+          setPendingOperatorActionId,
+          setOperatorActionStatus,
+          setRuntimeRunActionError,
+          setPendingRuntimeRunAction,
+          setRuntimeRunActionStatus,
+          setAutonomousRunActionError,
+          setPendingAutonomousRunAction,
+          setAutonomousRunActionStatus,
+          setNotificationRouteMutationError,
+        },
+        resetRepositoryDiffs,
+        loadNotificationRoutes,
+        getOperatorActionError,
+      }),
     [adapter, loadNotificationRoutes, resetRepositoryDiffs],
   )
 
