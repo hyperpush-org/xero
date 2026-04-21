@@ -1,13 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { ProjectRail } from '@/components/cadence/project-rail'
-import type { ProjectListItem } from '@/src/lib/cadence-model'
+import { ProjectRail } from './project-rail'
 
-const projects: ProjectListItem[] = [
+const projects = [
   {
     id: 'project-1',
-    name: 'cadence',
+    name: 'mesh-lang',
     description: 'Cadence desktop shell',
     milestone: 'No milestone assigned',
     totalPhases: 1,
@@ -40,18 +39,41 @@ describe('ProjectRail', () => {
       />,
     )
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Project actions for cadence' }), {
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Project actions for mesh-lang' }), {
       button: 0,
       ctrlKey: false,
     })
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }))
 
-    expect(screen.getByText('Remove cadence from the sidebar?')).toBeInTheDocument()
+    expect(screen.getByText('Remove mesh-lang from the sidebar?')).toBeInTheDocument()
     expect(screen.getByText(/You can import the same folder again any time/i)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
 
     expect(onRemoveProject).toHaveBeenCalledWith('project-1')
     expect(onRemoveProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a compact icon rail when collapsed', () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        collapsed
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Import repository' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'mesh-lang' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Project actions for mesh-lang' })).not.toBeInTheDocument()
+    expect(screen.getByRole('complementary')).toHaveAttribute('data-collapsed', 'true')
   })
 })

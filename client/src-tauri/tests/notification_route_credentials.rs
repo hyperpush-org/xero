@@ -157,7 +157,7 @@ fn list_notification_routes_projects_redacted_readiness_for_present_and_partial_
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Cadence");
 
     upsert_route(
         &repo_root,
@@ -268,7 +268,7 @@ fn list_notification_routes_marks_missing_store_as_fail_closed_with_typed_diagno
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Cadence");
 
     upsert_route(
         &repo_root,
@@ -315,7 +315,7 @@ fn list_notification_routes_marks_unreadable_store_as_unavailable_with_typed_dia
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Cadence");
 
     upsert_route(
         &repo_root,
@@ -365,7 +365,7 @@ fn list_notification_routes_marks_malformed_store_as_fail_closed_with_typed_diag
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Cadence");
 
     upsert_route(
         &repo_root,
@@ -419,7 +419,7 @@ fn list_notification_routes_rejects_unsupported_persisted_route_kinds() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Cadence");
 
     insert_raw_route(
         &repo_root,

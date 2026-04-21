@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CadenceDesktopError,
-  cadenceDesktopAdapter,
+  CadenceDesktopAdapter,
   getDesktopErrorMessage,
-  type CadenceDesktopAdapter,
 } from '@/src/lib/cadence-desktop'
 import {
   projectCheckpointControlLoops,
@@ -1379,7 +1378,7 @@ function getAgentMessagesUnavailableReason(
 export function useCadenceDesktopState(
   options: UseCadenceDesktopStateOptions = {},
 ): UseCadenceDesktopStateResult {
-  const adapter = options.adapter ?? cadenceDesktopAdapter
+  const adapter = options.adapter ?? CadenceDesktopAdapter
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetailView | null>(null)
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)

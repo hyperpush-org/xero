@@ -2,7 +2,7 @@
 
 import { isTauri } from "@tauri-apps/api/core"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Maximize2, Minus, Settings, X } from "lucide-react"
+import { Maximize2, Minus, PanelLeftClose, PanelLeftOpen, Settings, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { View } from "./data"
 
@@ -30,6 +30,8 @@ interface CadenceShellProps {
   children: React.ReactNode
   projectName?: string
   onOpenSettings?: () => void
+  sidebarCollapsed?: boolean
+  onToggleSidebar?: () => void
   /** Dev override — null means auto-detect */
   platformOverride?: PlatformVariant | null
 }
@@ -51,6 +53,8 @@ export function CadenceShell({
   onViewChange,
   children,
   onOpenSettings,
+  sidebarCollapsed = false,
+  onToggleSidebar,
   platformOverride,
 }: CadenceShellProps) {
   const desktopRuntime = isTauri()
@@ -120,6 +124,18 @@ export function CadenceShell({
       type="button"
     >
       <Settings className="h-4 w-4" />
+    </button>
+  )
+
+  const SidebarToggleBtn = (
+    <button
+      aria-label={sidebarCollapsed ? "Expand project sidebar" : "Collapse project sidebar"}
+      aria-pressed={!sidebarCollapsed}
+      className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+      onClick={onToggleSidebar}
+      type="button"
+    >
+      {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
     </button>
   )
 
@@ -215,7 +231,7 @@ export function CadenceShell({
   let titlebar: React.ReactNode
 
   if (platform === "macos") {
-    // macOS: [traffic-lights] [logo] ← drag zone → [nav] [|] [settings]
+    // macOS: [traffic-lights] [logo] [|] [sidebar-toggle] ← drag zone → [nav] [|] [settings]
     titlebar = (
       <header
         className="titlebar-drag-region flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3"
@@ -224,6 +240,10 @@ export function CadenceShell({
       >
         {TrafficLights}
         {Logo}
+        <div className="titlebar-no-drag ml-3 flex items-center gap-3" data-titlebar-no-drag="true">
+          {Divider}
+          {SidebarToggleBtn}
+        </div>
         {/* center is pure drag zone */}
         <div
           className="titlebar-no-drag ml-auto flex items-center gap-2"
@@ -236,7 +256,7 @@ export function CadenceShell({
       </header>
     )
   } else {
-    // Windows / Linux: [logo] [|] [nav] ← drag zone → [settings] [|] [min][max][close]
+    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [settings] [|] [min][max][close]
     titlebar = (
       <header
         className="titlebar-drag-region flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3"
@@ -248,6 +268,8 @@ export function CadenceShell({
           data-titlebar-no-drag="true"
         >
           {Logo}
+          <div className="mx-4 h-4 w-px bg-border" />
+          {SidebarToggleBtn}
           <div className="mx-4 h-4 w-px bg-border" />
           {NavButtons}
         </div>

@@ -2,13 +2,13 @@ const steps = [
   {
     n: "01",
     title: "Describe what to build",
-    copy: "A sentence or a 10-page spec. Cadence asks a handful of clarifying questions up front — then stops interrupting until it actually needs you.",
+    copy: "A sentence or a 10-page spec. Xero asks a handful of clarifying questions up front — then stops interrupting until it actually needs you.",
     sample: "“Build a B2B invoicing SaaS with Stripe, SSO, and a usage dashboard.”",
   },
   {
     n: "02",
     title: "The planner decomposes",
-    copy: "Cadence drafts a milestone tree, picks a stack, and commits to a plan you can edit before a single file is written.",
+    copy: "Xero drafts a milestone tree, picks a stack, and commits to a plan you can edit before a single file is written.",
     sample: "plan.md · 14 milestones · 6 integrations",
   },
   {
@@ -26,13 +26,13 @@ const steps = [
   {
     n: "05",
     title: "You get pinged, only when needed",
-    copy: "Ambiguous tradeoff? Missing secret? Cadence messages Discord or Telegram with the context and pauses cleanly.",
+    copy: "Ambiguous tradeoff? Missing secret? Xero messages Discord or Telegram with the context and pauses cleanly.",
     sample: "→ @you: “use Postgres or SQLite?”",
   },
   {
     n: "06",
     title: "Ship — preview, PR, deploy",
-    copy: "Cadence opens a PR, deploys a preview, and hands you a short changelog. Merge when you're happy.",
+    copy: "Xero opens a PR, deploys a preview, and hands you a short changelog. Merge when you're happy.",
     sample: "preview: acme-saas.vercel.app",
   },
 ]

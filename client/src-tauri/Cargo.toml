@@ -11,8 +11,8 @@ name = "cadence-desktop"
 path = "src/main.rs"
 
 [[bin]]
-name = "cadence-runtime-supervisor"
-path = "src/bin/cadence-runtime-supervisor.rs"
+name = "Cadence-runtime-supervisor"
+path = "src/bin/Cadence-runtime-supervisor.rs"
 
 [lib]
 name = "cadence_desktop_lib"

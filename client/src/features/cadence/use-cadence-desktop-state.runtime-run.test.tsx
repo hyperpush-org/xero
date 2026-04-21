@@ -610,7 +610,7 @@ function createMockAdapter(options?: {
   let runtimeRunUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
 
   const snapshots = options?.snapshots ?? {
-    'project-1': makeSnapshot('project-1', 'cadence'),
+    'project-1': makeSnapshot('project-1', 'Cadence'),
     'project-2': makeSnapshot('project-2', 'orchestra'),
   }
   const statuses = options?.statuses ?? {
@@ -800,11 +800,11 @@ function createMockAdapter(options?: {
     }) as unknown as (path: string) => Promise<ImportRepositoryResponseDto>,
     listProjects: vi.fn(async () =>
       options?.listProjects ?? {
-        projects: [makeProjectSummary('project-1', 'cadence')],
+        projects: [makeProjectSummary('project-1', 'Cadence')],
       },
     ),
     removeProject: vi.fn(async () => ({
-      projects: options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'cadence')],
+      projects: options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'Cadence')],
     })),
     getProjectSnapshot,
     getRepositoryStatus: vi.fn(async (projectId: string) => statuses[projectId]),
@@ -1437,7 +1437,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     let autoDispatched = false
 
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'cadence' : 'orchestra')
+      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Cadence' : 'orchestra')
       if (projectId !== 'project-1') {
         return snapshot
       }
@@ -1676,7 +1676,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     let snapshotIndex = 0
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'cadence' : 'orchestra')
+      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Cadence' : 'orchestra')
       if (projectId !== 'project-1') {
         return snapshot
       }
@@ -1769,12 +1769,12 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
   it('hydrates gate-linked pending approvals from durable snapshot truth on project:updated refresh', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     let includeGatePause = false
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'cadence' : 'orchestra')
+      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Cadence' : 'orchestra')
 
       if (projectId === 'project-1' && includeGatePause) {
         return {
@@ -1796,7 +1796,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     includeGatePause = true
     act(() => {
       setup.emitProjectUpdated({
-        project: makeProjectSummary('project-1', 'cadence'),
+        project: makeProjectSummary('project-1', 'Cadence'),
         reason: 'metadata_changed',
       })
     })
@@ -1816,12 +1816,12 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
   it('keeps gate pauses visible until resume succeeds, then clears pending state from refreshed snapshot truth', async () => {
     const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     let snapshotStage: 'pending' | 'cleared' = 'pending'
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'cadence' : 'orchestra')
+      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Cadence' : 'orchestra')
 
       if (projectId === 'project-1' && snapshotStage === 'pending') {
         return {
@@ -1898,10 +1898,10 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
   it('projects broker dispatch metadata alongside gate-linked approvals while filtering cross-project rows', async () => {
     const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           approvalRequests: [makeGateLinkedPendingApproval(actionId)],
         },
       },
@@ -1957,10 +1957,10 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
   it('surfaces broker command failures without clearing pending approvals or resume history', async () => {
     const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           approvalRequests: [makeGateLinkedPendingApproval(actionId)],
           resumeHistory: [
             makeResumeHistoryEntry({
@@ -2026,11 +2026,11 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
     const setup = createMockAdapter({
       listProjects: {
-        projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')],
+        projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')],
       },
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           approvalRequests: [makeGateLinkedPendingApproval(actionId)],
           resumeHistory: [
             makeResumeHistoryEntry({
@@ -2401,7 +2401,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const actionId = 'flow:flow-1:run:run-project-1:boundary:boundary-1:terminal_input_required'
     let snapshotMode: 'base' | 'blocked' | 'resolved' = 'base'
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'cadence' : 'orchestra')
+      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Cadence' : 'orchestra')
 
       if (projectId !== 'project-1') {
         return snapshot
@@ -2570,7 +2570,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
   it('stops blocked-checkpoint sync polling when the active project changes', async () => {
     const setup = createMockAdapter({
       listProjects: {
-        projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')],
+        projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')],
       },
       runtimeSessions: {
         'project-1': makeRuntimeSession('project-1', {
@@ -2599,7 +2599,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const actionId = 'flow:flow-1:run:run-project-1:boundary:boundary-1:terminal_input_required'
     let project1Blocked = false
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'cadence' : 'orchestra')
+      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Cadence' : 'orchestra')
 
       if (projectId === 'project-1' && project1Blocked) {
         return {
@@ -2696,7 +2696,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const setup = createMockAdapter({
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           approvalRequests: [makeGateLinkedPendingApproval(actionId)],
           resumeHistory: [
             makeResumeHistoryEntry({
@@ -3016,7 +3016,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const setup = createMockAdapter({
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           approvalRequests: [makeGateLinkedPendingApproval(actionId)],
         },
       },
@@ -3064,11 +3064,11 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
     const setup = createMockAdapter({
       listProjects: {
-        projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')],
+        projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')],
       },
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           approvalRequests: [makeGateLinkedApprovedApproval(actionId)],
           resumeHistory: [
             makeResumeHistoryEntry({

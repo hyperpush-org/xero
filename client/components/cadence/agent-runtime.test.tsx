@@ -45,7 +45,7 @@ function makeLifecycle(overrides: Partial<PlanningLifecycleView> = {}): Planning
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
   return {
     id: 'project-1',
-    name: 'cadence',
+    name: 'Cadence',
     description: 'Desktop shell',
     milestone: 'M001',
     totalPhases: 0,
@@ -61,8 +61,8 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     repository: {
       id: 'repo-1',
       projectId: 'project-1',
-      rootPath: '/tmp/cadence',
-      displayName: 'cadence',
+      rootPath: '/tmp/Cadence',
+      displayName: 'Cadence',
       branch: null,
       branchLabel: 'No branch',
       headSha: null,
@@ -943,7 +943,7 @@ describe('AgentRuntime current UI', () => {
                 runId: 'run-1',
                 sequence: 1,
                 createdAt: '2026-04-18T14:10:00Z',
-                text: 'Connected to cadence.',
+                text: 'Connected to Cadence.',
               },
             ],
             transcriptItems: [
@@ -953,7 +953,7 @@ describe('AgentRuntime current UI', () => {
                 runId: 'run-1',
                 sequence: 1,
                 createdAt: '2026-04-18T14:10:00Z',
-                text: 'Connected to cadence.',
+                text: 'Connected to Cadence.',
               },
             ],
             skillItems: [],

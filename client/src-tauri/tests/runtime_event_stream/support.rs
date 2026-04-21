@@ -53,7 +53,7 @@ pub(crate) use tempfile::TempDir;
 #[path = "../support/runtime_shell.rs"]
 pub(crate) mod runtime_shell;
 
-pub(crate) const STRUCTURED_EVENT_PREFIX: &str = "__CADENCE_EVENT__ ";
+pub(crate) const STRUCTURED_EVENT_PREFIX: &str = "__Cadence_EVENT__ ";
 pub(crate) const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn supervisor_test_guard() -> MutexGuard<'static, ()> {
@@ -84,7 +84,7 @@ pub(crate) fn create_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
 }
 
 pub(crate) fn supervisor_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cadence-runtime-supervisor"))
+    PathBuf::from(env!("CARGO_BIN_EXE_Cadence-runtime-supervisor"))
 }
 
 pub(crate) fn invoke_request(command: &str, payload: Value) -> tauri::webview::InvokeRequest {

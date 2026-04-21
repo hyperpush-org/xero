@@ -138,7 +138,7 @@ fn init_git_repo() -> TempDir {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let repository = Repository::init(temp_dir.path()).expect("git repo");
 
-    fs::write(temp_dir.path().join("README.md"), "cadence\n").expect("write README");
+    fs::write(temp_dir.path().join("README.md"), "Cadence\n").expect("write README");
     commit_all(&repository, "initial commit");
 
     temp_dir
@@ -150,7 +150,7 @@ fn init_git_worktree() -> (TempDir, PathBuf, PathBuf) {
     let worktree_root = temp_dir.path().join("linked-worktree");
     let repository = Repository::init(&main_repo_root).expect("git repo");
 
-    fs::write(main_repo_root.join("README.md"), "cadence\n").expect("write README");
+    fs::write(main_repo_root.join("README.md"), "Cadence\n").expect("write README");
     commit_all(&repository, "initial commit");
 
     let output = Command::new("git")
@@ -159,7 +159,7 @@ fn init_git_worktree() -> (TempDir, PathBuf, PathBuf) {
         .arg("worktree")
         .arg("add")
         .arg("-b")
-        .arg("cadence-worktree")
+        .arg("Cadence-worktree")
         .arg(&worktree_root)
         .output()
         .expect("git worktree add");
@@ -182,7 +182,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "cadence@example.com").expect("signature");
+    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -432,7 +432,7 @@ fn import_repository_bootstraps_repo_local_state_and_registry_idempotently() {
         .count();
     assert_eq!(
         cadence_entries, 1,
-        "cadence exclude entry should be deduplicated"
+        "Cadence exclude entry should be deduplicated"
     );
 
     let registry = read_registry(&registry_path(&registry_root));
@@ -601,7 +601,7 @@ fn import_repository_reuses_preexisting_repo_local_database() {
     let registry_root = tempfile::tempdir().expect("registry temp dir");
     let repository_root = init_git_repo();
     let cadence_dir = repository_root.path().join(".cadence");
-    fs::create_dir_all(&cadence_dir).expect("create cadence dir");
+    fs::create_dir_all(&cadence_dir).expect("create Cadence dir");
 
     let mut connection =
         Connection::open(database_path(repository_root.path())).expect("open sqlite db");
@@ -684,7 +684,7 @@ fn import_repository_keeps_git_worktrees_clean_via_common_exclude() {
         .count();
     assert_eq!(
         cadence_entries, 1,
-        "cadence exclude entry should live in the common git dir"
+        "Cadence exclude entry should live in the common git dir"
     );
 
     let git_status_paths = repository_status_paths(&worktree_root);

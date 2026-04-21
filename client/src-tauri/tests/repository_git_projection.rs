@@ -80,7 +80,7 @@ fn init_git_repo() -> TempDir {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let repository = Repository::init(temp_dir.path()).expect("git repo");
 
-    fs::write(temp_dir.path().join("README.md"), "cadence\n").expect("write README");
+    fs::write(temp_dir.path().join("README.md"), "Cadence\n").expect("write README");
     commit_all(&repository, "initial commit");
 
     temp_dir
@@ -95,7 +95,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "cadence@example.com").expect("signature");
+    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -231,7 +231,7 @@ fn repository_status_and_diffs_surface_real_staged_unstaged_and_untracked_truth(
 
     fs::write(
         repository_root.path().join("README.md"),
-        "cadence\nupdated\n",
+        "Cadence\nupdated\n",
     )
     .expect("modify tracked file");
     fs::write(repository_root.path().join("staged.txt"), "staged change\n")

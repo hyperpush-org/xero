@@ -14,7 +14,7 @@ const WINDOWS_DEFAULT_SHELL: &str = "cmd.exe";
 const UNIX_DEFAULT_SHELL: &str = "/bin/sh";
 const WINDOWS_DEFAULT_SHELL_ARGS: [&str; 1] = ["/Q"];
 const UNIX_DEFAULT_SHELL_ARGS: [&str; 1] = ["-i"];
-const SUPERVISOR_BINARY_PREFIX: &str = "cadence-runtime-supervisor";
+const SUPERVISOR_BINARY_PREFIX: &str = "Cadence-runtime-supervisor";
 const MAX_SUPERVISOR_SIBLINGS_PER_DIRECTORY: usize = 8;
 const MAX_INSPECTED_SUPERVISOR_PATHS_IN_ERROR: usize = 12;
 

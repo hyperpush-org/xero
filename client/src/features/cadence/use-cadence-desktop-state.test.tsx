@@ -312,7 +312,7 @@ function createMockAdapter(options?: {
   let runtimeRunUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
 
   const snapshots = options?.snapshots ?? {
-    'project-1': makeSnapshot('project-1', 'cadence'),
+    'project-1': makeSnapshot('project-1', 'Cadence'),
     'project-2': makeSnapshot('project-2', 'orchestra'),
   }
   const statuses = options?.statuses ?? {
@@ -358,7 +358,7 @@ function createMockAdapter(options?: {
   }
   const notificationDispatchErrors = options?.notificationDispatchErrors ?? {}
 
-  let listedProjects = (options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'cadence')]).map((project) => ({
+  let listedProjects = (options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'Cadence')]).map((project) => ({
     ...project,
   }))
 
@@ -955,7 +955,7 @@ describe('useCadenceDesktopState', () => {
 
     render(<Harness adapter={setup.adapter} />)
 
-    await waitFor(() => expect(screen.getByTestId('active-project')).toHaveTextContent('cadence'))
+    await waitFor(() => expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence'))
 
     expect(screen.getByTestId('status-count')).toHaveTextContent('1')
     expect(screen.getByTestId('branch')).toHaveTextContent('main')
@@ -972,14 +972,14 @@ describe('useCadenceDesktopState', () => {
 
   it('reloads the full active snapshot after project:updated so durable operator-loop state stays fresh', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     let refreshed = false
     setup.getProjectSnapshot.mockImplementation(async () =>
       refreshed
         ? {
-            ...makeSnapshot('project-1', 'cadence'),
+            ...makeSnapshot('project-1', 'Cadence'),
             approvalRequests: [
               {
                 actionId: 'flow-1:review_worktree',
@@ -1016,7 +1016,7 @@ describe('useCadenceDesktopState', () => {
               },
             ],
           }
-        : makeSnapshot('project-1', 'cadence'),
+        : makeSnapshot('project-1', 'Cadence'),
     )
     setup.getRepositoryStatus.mockImplementation(async () => (refreshed ? makeStatus('project-1', 'release/verified') : makeStatus('project-1', 'main')))
 
@@ -1030,7 +1030,7 @@ describe('useCadenceDesktopState', () => {
       refreshed = true
       setup.emitProjectUpdated({
         project: {
-          ...makeProjectSummary('project-1', 'cadence'),
+          ...makeProjectSummary('project-1', 'Cadence'),
           branch: 'release/verified',
           runtime: 'openai_codex',
         },
@@ -1049,7 +1049,7 @@ describe('useCadenceDesktopState', () => {
 
   it('ignores wrong-project update callbacks so one project cannot overwrite another project\'s operator history', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
     })
 
     render(<Harness adapter={setup.adapter} />)
@@ -1076,7 +1076,7 @@ describe('useCadenceDesktopState', () => {
         projects: [
           {
             id: 'project-1',
-            name: 'cadence',
+            name: 'Cadence',
             description: 'Desktop shell',
             milestone: 'M001',
             totalPhases: 3,
@@ -1091,7 +1091,7 @@ describe('useCadenceDesktopState', () => {
         'project-1': {
           project: {
             id: 'project-1',
-            name: 'cadence',
+            name: 'Cadence',
             description: 'Desktop shell',
             milestone: 'M001',
             totalPhases: 3,
@@ -1103,8 +1103,8 @@ describe('useCadenceDesktopState', () => {
           repository: {
             id: 'repo-project-1',
             projectId: 'project-1',
-            rootPath: '/tmp/cadence',
-            displayName: 'cadence',
+            rootPath: '/tmp/Cadence',
+            displayName: 'Cadence',
             branch: null,
             headSha: null,
             isGitRepo: true,
@@ -1176,8 +1176,8 @@ describe('useCadenceDesktopState', () => {
           repository: {
             id: 'repo-project-1',
             projectId: 'project-1',
-            rootPath: '/tmp/cadence',
-            displayName: 'cadence',
+            rootPath: '/tmp/Cadence',
+            displayName: 'Cadence',
             branch: null,
             headSha: null,
             isGitRepo: true,
@@ -1233,7 +1233,7 @@ describe('useCadenceDesktopState', () => {
         projects: [
           {
             id: 'project-1',
-            name: 'cadence',
+            name: 'Cadence',
             description: '',
             milestone: '',
             totalPhases: 0,
@@ -1248,7 +1248,7 @@ describe('useCadenceDesktopState', () => {
         'project-1': {
           project: {
             id: 'project-1',
-            name: 'cadence',
+            name: 'Cadence',
             description: '',
             milestone: '',
             totalPhases: 0,
@@ -1260,8 +1260,8 @@ describe('useCadenceDesktopState', () => {
           repository: {
             id: 'repo-project-1',
             projectId: 'project-1',
-            rootPath: '/tmp/cadence',
-            displayName: 'cadence',
+            rootPath: '/tmp/Cadence',
+            displayName: 'Cadence',
             branch: null,
             headSha: null,
             isGitRepo: true,
@@ -1280,8 +1280,8 @@ describe('useCadenceDesktopState', () => {
           repository: {
             id: 'repo-project-1',
             projectId: 'project-1',
-            rootPath: '/tmp/cadence',
-            displayName: 'cadence',
+            rootPath: '/tmp/Cadence',
+            displayName: 'Cadence',
             branch: null,
             headSha: null,
             isGitRepo: true,
@@ -1335,7 +1335,7 @@ describe('useCadenceDesktopState', () => {
         projects: [
           {
             id: 'project-1',
-            name: 'cadence',
+            name: 'Cadence',
             description: 'Desktop shell',
             milestone: 'M001',
             totalPhases: 0,
@@ -1348,10 +1348,10 @@ describe('useCadenceDesktopState', () => {
       },
       snapshots: {
         'project-1': {
-          ...makeSnapshot('project-1', 'cadence'),
+          ...makeSnapshot('project-1', 'Cadence'),
           project: {
             id: 'project-1',
-            name: 'cadence',
+            name: 'Cadence',
             description: 'Desktop shell',
             milestone: 'M001',
             totalPhases: 0,
@@ -1386,8 +1386,8 @@ describe('useCadenceDesktopState', () => {
           repository: {
             id: 'repo-project-1',
             projectId: 'project-1',
-            rootPath: '/tmp/cadence',
-            displayName: 'cadence',
+            rootPath: '/tmp/Cadence',
+            displayName: 'Cadence',
             branch: null,
             headSha: null,
             isGitRepo: true,
@@ -1426,7 +1426,7 @@ describe('useCadenceDesktopState', () => {
 
   it('supports cancelled imports and successful imports without duplicating project rows', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     render(<Harness adapter={setup.adapter} />)
@@ -1446,7 +1446,7 @@ describe('useCadenceDesktopState', () => {
   it('removes the active project from the sidebar list and loads the next available project', async () => {
     const setup = createMockAdapter({
       listProjects: {
-        projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')],
+        projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')],
       },
     })
 
@@ -1465,7 +1465,7 @@ describe('useCadenceDesktopState', () => {
 
   it('keeps the current selection intact when snapshot loading fails', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
     })
 
     setup.getProjectSnapshot.mockImplementation(async (projectId: string) => {
@@ -1473,7 +1473,7 @@ describe('useCadenceDesktopState', () => {
         throw new Error('snapshot failed')
       }
 
-      return makeSnapshot(projectId, 'cadence')
+      return makeSnapshot(projectId, 'Cadence')
     })
 
     render(<Harness adapter={setup.adapter} />)
@@ -1484,12 +1484,12 @@ describe('useCadenceDesktopState', () => {
 
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('snapshot failed'))
     expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('active-project')).toHaveTextContent('cadence')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence')
   })
 
   it('keeps the prior snapshot when the adapter rejects a mixed-version snapshot missing lifecycle', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
     })
 
     setup.getProjectSnapshot.mockImplementation(async (projectId: string): Promise<ProjectSnapshotResponseDto> => {
@@ -1499,7 +1499,7 @@ describe('useCadenceDesktopState', () => {
         return legacySnapshot as unknown as ProjectSnapshotResponseDto
       }
 
-      return makeSnapshot(projectId, 'cadence')
+      return makeSnapshot(projectId, 'Cadence')
     })
 
     render(<Harness adapter={setup.adapter} />)
@@ -1512,13 +1512,13 @@ describe('useCadenceDesktopState', () => {
       expect(screen.getByTestId('error')).toHaveTextContent('without the required lifecycle projection'),
     )
     expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('active-project')).toHaveTextContent('cadence')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence')
     expect(screen.getByTestId('workflow-active-lifecycle-stage')).toHaveTextContent('research')
   })
 
   it('keeps the current selection intact when repository status loading fails', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
     })
 
     setup.getRepositoryStatus.mockImplementation(async (projectId: string) => {
@@ -1537,13 +1537,13 @@ describe('useCadenceDesktopState', () => {
 
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('status failed'))
     expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('active-project')).toHaveTextContent('cadence')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence')
     expect(screen.getByTestId('branch')).toHaveTextContent('main')
   })
 
   it('preserves the newly selected project when runtime loading fails after project selection', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
     })
 
     setup.getRuntimeSession.mockImplementation(async (projectId: string) => {
@@ -1568,14 +1568,14 @@ describe('useCadenceDesktopState', () => {
 
   it('resolves operator actions by invoking the adapter and reloading the active project snapshot', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     let resolved = false
     setup.getProjectSnapshot.mockImplementation(async () =>
       resolved
         ? {
-            ...makeSnapshot('project-1', 'cadence'),
+            ...makeSnapshot('project-1', 'Cadence'),
             approvalRequests: [
               {
                 actionId: 'flow-1:review_worktree',
@@ -1604,7 +1604,7 @@ describe('useCadenceDesktopState', () => {
             resumeHistory: [],
           }
         : {
-            ...makeSnapshot('project-1', 'cadence'),
+            ...makeSnapshot('project-1', 'Cadence'),
             approvalRequests: [
               {
                 actionId: 'flow-1:review_worktree',
@@ -1671,7 +1671,7 @@ describe('useCadenceDesktopState', () => {
 
   it('surfaces operator mutation failures and keeps the last truthful project view', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     setup.resolveOperatorAction.mockRejectedValueOnce(
@@ -1695,7 +1695,7 @@ describe('useCadenceDesktopState', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve operator action' }))
 
     await waitFor(() => expect(screen.getByTestId('operator-action-error-code')).toHaveTextContent('operator_action_not_found'))
-    expect(screen.getByTestId('active-project')).toHaveTextContent('cadence')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence')
     expect(screen.getByTestId('pending-operator-action-id')).toHaveTextContent('none')
   })
 
@@ -1728,7 +1728,7 @@ describe('useCadenceDesktopState', () => {
 
   it('subscribes to authenticated runtime streams and exposes normalized stream state in the agent view', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     render(<Harness adapter={setup.adapter} />)
@@ -1750,7 +1750,7 @@ describe('useCadenceDesktopState', () => {
           kind: 'transcript',
           sessionId: 'session-1',
           flowId: 'flow-1',
-          text: 'Connected to cadence.',
+          text: 'Connected to Cadence.',
           toolCallId: null,
           toolName: null,
           toolState: null,
@@ -1841,7 +1841,7 @@ describe('useCadenceDesktopState', () => {
 
   it('clears stale stream cache on project switch and ignores callbacks from the old subscription', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
       runtimeSessions: {
         'project-1': makeRuntimeSession('project-1'),
         'project-2': makeRuntimeSession('project-2', {
@@ -1868,7 +1868,7 @@ describe('useCadenceDesktopState', () => {
           kind: 'transcript',
           sessionId: 'session-1',
           flowId: 'flow-1',
-          text: 'Connected to cadence.',
+          text: 'Connected to Cadence.',
           toolCallId: null,
           toolName: null,
           toolState: null,
@@ -1920,7 +1920,7 @@ describe('useCadenceDesktopState', () => {
 
   it('surfaces subscribe failures and malformed stream payloads without clearing the selected project', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       subscribeErrors: {
         'project-1': new CadenceDesktopError({
           code: 'runtime_stream_not_ready',
@@ -1933,7 +1933,7 @@ describe('useCadenceDesktopState', () => {
 
     render(<Harness adapter={setup.adapter} />)
 
-    await waitFor(() => expect(screen.getByTestId('active-project')).toHaveTextContent('cadence'))
+    await waitFor(() => expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence'))
     await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('stale'))
     expect(screen.getByTestId('stream-error')).toHaveTextContent(
       'Cadence cannot start a runtime stream until the selected project finishes auth.',
@@ -1976,12 +1976,12 @@ describe('useCadenceDesktopState', () => {
         'Command subscribe_runtime_stream channel returned an unexpected payload shape.',
       ),
     )
-    expect(screen.getByTestId('active-project')).toHaveTextContent('cadence')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Cadence')
   })
 
   it('rejects wrong-project stream items and clears stream state when runtime auth logs out', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
     })
 
     render(<Harness adapter={setup.adapter} />)
@@ -2038,7 +2038,7 @@ describe('useCadenceDesktopState', () => {
 
   it('applies runtime update events and surfaces contract mismatches without clearing selection', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence'), makeProjectSummary('project-2', 'orchestra')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')] },
     })
 
     const { unmount } = render(<Harness adapter={setup.adapter} />)
@@ -2118,7 +2118,7 @@ describe('useCadenceDesktopState', () => {
 
   it('eager-loads app-global runtime settings and keeps selected-project runtime truth separate after save', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       runtimeSettings: makeRuntimeSettings({
         providerId: 'openai_codex',
         modelId: 'openai_codex',
@@ -2159,7 +2159,7 @@ describe('useCadenceDesktopState', () => {
 
   it('preserves the last-known-good runtime settings snapshot when refresh or save fails', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       runtimeSettings: makeRuntimeSettings({
         providerId: 'openrouter',
         modelId: 'meta-llama/llama-3.1-8b-instruct',
@@ -2218,7 +2218,7 @@ describe('useCadenceDesktopState', () => {
 
   it('derives OpenRouter-first guidance and mismatch recovery from app-global settings', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       runtimeSettings: makeRuntimeSettings({
         providerId: 'openrouter',
         modelId: 'openai/gpt-4.1-mini',
@@ -2244,7 +2244,7 @@ describe('useCadenceDesktopState', () => {
 
   it('derives missing-key OpenRouter guidance without OpenAI login copy', async () => {
     const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'cadence')] },
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
       runtimeSettings: makeRuntimeSettings({
         providerId: 'openrouter',
         modelId: 'openai/gpt-4.1-mini',

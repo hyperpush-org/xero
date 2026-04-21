@@ -12,7 +12,7 @@ type Testimonial = {
 const testimonials: Testimonial[] = [
   {
     quote:
-      "I kicked off a Stripe-powered SaaS before a flight. Landed, opened my laptop, and Cadence was waiting with a green PR and a deploy preview. It had pinged me on Telegram twice mid-air — I just hadn't replied yet.",
+      "I kicked off a Stripe-powered SaaS before a flight. Landed, opened my laptop, and Xero was waiting with a green PR and a deploy preview. It had pinged me on Telegram twice mid-air — I just hadn't replied yet.",
     name: "Maya Chen",
     role: "Founder, Northwind",
     initials: "MC",
@@ -48,7 +48,7 @@ const testimonials: Testimonial[] = [
   },
   {
     quote:
-      "We replaced three web-based agent seats with Cadence and a shared OpenRouter key. Same output, a third of the bill, and no more stale browser sessions.",
+      "We replaced three web-based agent seats with Xero and a shared OpenRouter key. Same output, a third of the bill, and no more stale browser sessions.",
     name: "Eve Okafor",
     role: "Head of Eng, Cobalt",
     initials: "EO",
@@ -78,7 +78,7 @@ export function Testimonials() {
             Loved by people who actually ship.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            Founders, staff engineers, and indie devs use Cadence to turn briefs into
+            Founders, staff engineers, and indie devs use Xero to turn briefs into
             shipped product while they sleep, commute, and go outside.
           </p>
         </div>

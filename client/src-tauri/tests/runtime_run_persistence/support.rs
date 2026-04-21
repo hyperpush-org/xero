@@ -430,7 +430,7 @@ pub(crate) fn seed_autonomous_workflow_linkage_rows(repo_root: &Path, project_id
 
 pub(crate) fn create_legacy_state_db(repo_root: &Path, project_id: &str) -> PathBuf {
     let cadence_dir = repo_root.join(".cadence");
-    std::fs::create_dir_all(&cadence_dir).expect("create cadence dir");
+    std::fs::create_dir_all(&cadence_dir).expect("create Cadence dir");
     let database_path = cadence_dir.join("state.db");
     let connection = Connection::open(&database_path).expect("open legacy database");
 

@@ -117,7 +117,7 @@ pub(crate) fn channel_string() -> String {
 pub(crate) fn sample_project() -> ProjectSummaryDto {
     ProjectSummaryDto {
         id: "project-1".into(),
-        name: "cadence".into(),
+        name: "Cadence".into(),
         description: "Desktop shell".into(),
         milestone: "M001".into(),
         total_phases: 5,
@@ -132,8 +132,8 @@ pub(crate) fn sample_repository() -> RepositorySummaryDto {
     RepositorySummaryDto {
         id: "repo-1".into(),
         project_id: "project-1".into(),
-        root_path: "/tmp/cadence".into(),
-        display_name: "cadence".into(),
+        root_path: "/tmp/Cadence".into(),
+        display_name: "Cadence".into(),
         branch: Some("main".into()),
         head_sha: Some("abc123".into()),
         is_git_repo: true,
@@ -327,9 +327,9 @@ pub(crate) fn sample_git_tool_summary() -> ToolResultSummaryDto {
 
 pub(crate) fn sample_web_tool_summary() -> ToolResultSummaryDto {
     ToolResultSummaryDto::Web(WebToolResultSummaryDto {
-        target: "https://example.com/search?q=cadence".into(),
+        target: "https://example.com/search?q=Cadence".into(),
         result_count: Some(5),
-        final_url: Some("https://example.com/search?q=cadence".into()),
+        final_url: Some("https://example.com/search?q=Cadence".into()),
         content_kind: Some(WebToolResultContentKindDto::Html),
         content_type: Some("text/html".into()),
         truncated: false,
@@ -440,7 +440,7 @@ pub(crate) fn sample_snapshot() -> ProjectSnapshotResponseDto {
             flow_id: Some("flow-1".into()),
             action_type: "review_worktree".into(),
             title: "Repository has local changes".into(),
-            detail: "cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.".into(),
+            detail: "Cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.".into(),
             gate_node_id: None,
             gate_key: None,
             transition_from_node_id: None,

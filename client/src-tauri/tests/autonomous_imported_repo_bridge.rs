@@ -67,7 +67,7 @@ fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
 }
 
 fn supervisor_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cadence-runtime-supervisor"))
+    PathBuf::from(env!("CARGO_BIN_EXE_Cadence-runtime-supervisor"))
 }
 
 fn current_unix_timestamp() -> i64 {
@@ -88,7 +88,7 @@ fn commit_all(repo_root: &Path, message: &str) {
     let tree_id = index.write_tree().expect("write tree");
     let tree = repo.find_tree(tree_id).expect("find tree");
     let signature =
-        git2::Signature::now("Cadence Test", "cadence@example.com").expect("create test signature");
+        git2::Signature::now("Cadence Test", "Cadence@example.com").expect("create test signature");
 
     let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
     match parent.as_ref() {
@@ -790,7 +790,7 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
 }
 
 #[test]
-fn imported_repo_skill_runtime_uses_cadence_cache_boundary_and_keeps_repo_clean() {
+fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean() {
     let _guard = supervisor_test_lock::lock_supervisor_test_process();
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _auth_store_path) = create_state(&root);

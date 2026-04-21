@@ -12,7 +12,7 @@ use url::Url;
 use crate::commands::CommandError;
 
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
-const GITHUB_USER_AGENT_VALUE: &str = "cadence-autonomous-skill-runtime";
+const GITHUB_USER_AGENT_VALUE: &str = "Cadence-autonomous-skill-runtime";
 const MAX_REDIRECTS: usize = 5;
 const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "GH_TOKEN"];
 

@@ -126,7 +126,7 @@ fn runtime_supervisor_binary_resolves_bundled_candidates_deterministically() {
         .expect("current exe parent")
         .join("resources")
         .join("binaries")
-        .join(format!("cadence-runtime-supervisor{EXE_SUFFIX}"));
+        .join(format!("Cadence-runtime-supervisor{EXE_SUFFIX}"));
     std::fs::create_dir_all(bundled.parent().expect("bundled parent"))
         .expect("create bundled parent");
     std::fs::write(&bundled, "#!/bin/sh\nexit 0\n").expect("write bundled supervisor");
@@ -175,7 +175,7 @@ fn runtime_supervisor_binary_missing_error_includes_inspected_candidates() {
             .expect_err("missing binary should fail");
     assert_eq!(error.code, "runtime_supervisor_binary_missing");
     assert!(error.message.contains("Inspected candidates"));
-    assert!(error.message.contains("cadence-runtime-supervisor"));
+    assert!(error.message.contains("Cadence-runtime-supervisor"));
 }
 
 #[test]

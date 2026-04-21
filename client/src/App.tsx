@@ -85,6 +85,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   } = useCadenceDesktopState({ adapter })
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
 
   const renderBody = () => {
@@ -202,9 +203,18 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   }
 
   return (
-    <CadenceShell activeView={activeView} onViewChange={setActiveView} projectName={activeProject?.name} onOpenSettings={() => setSettingsOpen(true)} platformOverride={platformOverride}>
+    <CadenceShell
+      activeView={activeView}
+      onViewChange={setActiveView}
+      projectName={activeProject?.name}
+      onOpenSettings={() => setSettingsOpen(true)}
+      sidebarCollapsed={sidebarCollapsed}
+      onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
+      platformOverride={platformOverride}
+    >
       <ProjectRail
         activeProjectId={activeProjectId}
+        collapsed={sidebarCollapsed}
         errorMessage={errorMessage}
         isImporting={isImporting}
         isLoading={isLoading || isProjectLoading}

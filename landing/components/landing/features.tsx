@@ -35,7 +35,7 @@ const rows: Row[] = [
     icon: <Database className="h-3.5 w-3.5" />,
     title: "Pick up any run, days or weeks later.",
     description:
-      "Every plan, diff, tool call, and decision is journaled to a local SQLite database. Close your laptop mid-build, reopen tomorrow, and Cadence resumes from the exact step it left on.",
+      "Every plan, diff, tool call, and decision is journaled to a local SQLite database. Close your laptop mid-build, reopen tomorrow, and Xero resumes from the exact step it left on.",
     bullets: [
       "Append-only journal per project",
       "Branch and fork runs to explore alternatives",
@@ -70,7 +70,7 @@ export function Features() {
             A real desktop app. Not a browser tab with ambitions.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            Every layer of Cadence — the agent loop, the tool executor, persistence,
+            Every layer of Xero — the agent loop, the tool executor, persistence,
             sandboxing — is written in Rust for speed, predictability, and a memory
             footprint your laptop won&apos;t notice.
           </p>
@@ -177,7 +177,7 @@ function PersistenceVisual() {
   return (
     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
       <div className="mb-3 flex items-center justify-between text-[11px] text-muted-foreground">
-        <span className="font-mono">~/.cadence/runs/acme-saas.db</span>
+        <span className="font-mono">~/.Xero/runs/acme-saas.db</span>
         <span className="font-mono text-primary">SQLite · journal</span>
       </div>
       <ul className="space-y-1.5 text-[12px]">
@@ -288,7 +288,7 @@ function WorkflowVisual() {
 
 function ThroughputVisual() {
   const bars = [
-    { label: "Cadence (Rust)", value: 100, highlight: true, time: "3m 12s" },
+    { label: "Xero (Rust)", value: 100, highlight: true, time: "3m 12s" },
     { label: "Web agent A", value: 38, time: "8m 24s" },
     { label: "Web agent B", value: 27, time: "11m 48s" },
     { label: "IDE plugin", value: 22, time: "14m 30s" },

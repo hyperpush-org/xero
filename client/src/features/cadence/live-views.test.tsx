@@ -55,7 +55,7 @@ function makeLifecycle(overrides: Partial<PlanningLifecycleView> = {}): Planning
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
   return {
     id: 'project-1',
-    name: 'cadence',
+    name: 'Cadence',
     description: 'Desktop shell',
     milestone: 'M001',
     totalPhases: 0,
@@ -71,8 +71,8 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     repository: {
       id: 'repo-1',
       projectId: 'project-1',
-      rootPath: '/tmp/cadence',
-      displayName: 'cadence',
+      rootPath: '/tmp/Cadence',
+      displayName: 'Cadence',
       branch: null,
       branchLabel: 'No branch',
       headSha: null,
@@ -1036,7 +1036,7 @@ describe('live views', () => {
     )
   })
 
-  it('renders the current execution empty and error states', () => {
+  it('renders the changes-only execution surface and error state', async () => {
     const onSelectDiffScope = vi.fn()
     const onRetryDiff = vi.fn()
 
@@ -1050,18 +1050,10 @@ describe('live views', () => {
       />,
     )
 
-    expect(screen.getByText('No execution activity yet')).toBeVisible()
-    expect(
-      screen.getByText('Execution activity will appear here once this project records live run output or backend execution views become available.'),
-    ).toBeVisible()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Changes' }))
-    expect(onSelectDiffScope).toHaveBeenCalledWith('unstaged')
+    expect(screen.getByText('Changes')).toBeVisible()
     expect(screen.getByText('No unstaged changes')).toBeVisible()
     expect(screen.getByText('Working tree is clean for this scope.')).toBeVisible()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
-    expect(screen.getByText('No verification activity yet')).toBeVisible()
+    await waitFor(() => expect(onSelectDiffScope).toHaveBeenCalledWith('unstaged'))
 
     rerender(
       <ExecutionView
@@ -1075,7 +1067,6 @@ describe('live views', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Changes' }))
     expect(screen.getByText('Failed to load diff')).toBeVisible()
     expect(screen.getByText('diff failed')).toBeVisible()
   })

@@ -43,9 +43,9 @@ pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_
         serde_json::to_value(sample_web_tool_summary()).expect("web tool summary should serialize"),
         json!({
             "kind": "web",
-            "target": "https://example.com/search?q=cadence",
+            "target": "https://example.com/search?q=Cadence",
             "resultCount": 5,
-            "finalUrl": "https://example.com/search?q=cadence",
+            "finalUrl": "https://example.com/search?q=Cadence",
             "contentKind": "html",
             "contentType": "text/html",
             "truncated": false
@@ -110,9 +110,9 @@ pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_
         runtime_stream_tool_item["toolSummary"],
         json!({
             "kind": "web",
-            "target": "https://example.com/search?q=cadence",
+            "target": "https://example.com/search?q=Cadence",
             "resultCount": 5,
-            "finalUrl": "https://example.com/search?q=cadence",
+            "finalUrl": "https://example.com/search?q=Cadence",
             "contentKind": "html",
             "contentType": "text/html",
             "truncated": false
@@ -258,7 +258,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         json!({
             "project": {
                 "id": "project-1",
-                "name": "cadence",
+                "name": "Cadence",
                 "description": "Desktop shell",
                 "milestone": "M001",
                 "totalPhases": 5,
@@ -270,8 +270,8 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "repository": {
                 "id": "repo-1",
                 "projectId": "project-1",
-                "rootPath": "/tmp/cadence",
-                "displayName": "cadence",
+                "rootPath": "/tmp/Cadence",
+                "displayName": "Cadence",
                 "branch": "main",
                 "headSha": "abc123",
                 "isGitRepo": true
@@ -286,7 +286,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         json!({
             "project": {
                 "id": "project-1",
-                "name": "cadence",
+                "name": "Cadence",
                 "description": "Desktop shell",
                 "milestone": "M001",
                 "totalPhases": 5,
@@ -298,8 +298,8 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "repository": {
                 "id": "repo-1",
                 "projectId": "project-1",
-                "rootPath": "/tmp/cadence",
-                "displayName": "cadence",
+                "rootPath": "/tmp/Cadence",
+                "displayName": "Cadence",
                 "branch": "main",
                 "headSha": "abc123",
                 "isGitRepo": true
@@ -334,7 +334,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                     "flowId": "flow-1",
                     "actionType": "review_worktree",
                     "title": "Repository has local changes",
-                    "detail": "cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.",
+                    "detail": "Cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.",
                     "gateNodeId": null,
                     "gateKey": null,
                     "transitionFromNodeId": null,
@@ -454,7 +454,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         json!({
             "project": {
                 "id": "project-1",
-                "name": "cadence",
+                "name": "Cadence",
                 "description": "Desktop shell",
                 "milestone": "M001",
                 "totalPhases": 5,
@@ -498,8 +498,8 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "repository": {
                     "id": "repo-1",
                     "projectId": "project-1",
-                    "rootPath": "/tmp/cadence",
-                    "displayName": "cadence",
+                    "rootPath": "/tmp/Cadence",
+                    "displayName": "Cadence",
                     "branch": "main",
                     "headSha": "abc123",
                     "isGitRepo": true
@@ -538,8 +538,8 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "repository": {
                 "id": "repo-1",
                 "projectId": "project-1",
-                "rootPath": "/tmp/cadence",
-                "displayName": "cadence",
+                "rootPath": "/tmp/Cadence",
+                "displayName": "Cadence",
                 "branch": "main",
                 "headSha": "abc123",
                 "isGitRepo": true
@@ -1012,12 +1012,12 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
 
     let start_request = serde_json::to_value(StartOpenAiLoginRequestDto {
         project_id: "project-1".into(),
-        originator: Some("cadence-tests".into()),
+        originator: Some("Cadence-tests".into()),
     })
     .expect("auth start request should serialize");
     assert_eq!(
         start_request,
-        json!({ "projectId": "project-1", "originator": "cadence-tests" })
+        json!({ "projectId": "project-1", "originator": "Cadence-tests" })
     );
 
     let complete_request = serde_json::to_value(SubmitOpenAiCallbackRequestDto {
@@ -1118,7 +1118,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             flow_id: Some("flow-1".into()),
             action_type: "review_worktree".into(),
             title: "Repository has local changes".into(),
-            detail: "cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.".into(),
+            detail: "Cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.".into(),
             gate_node_id: None,
             gate_key: None,
             transition_from_node_id: None,
@@ -1150,7 +1150,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "flowId": "flow-1",
                 "actionType": "review_worktree",
                 "title": "Repository has local changes",
-                "detail": "cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.",
+                "detail": "Cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.",
                 "gateNodeId": null,
                 "gateKey": null,
                 "transitionFromNodeId": null,
@@ -1196,7 +1196,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             flow_id: Some("flow-1".into()),
             action_type: "review_worktree".into(),
             title: "Repository has local changes".into(),
-            detail: "cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.".into(),
+            detail: "Cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.".into(),
             gate_node_id: None,
             gate_key: None,
             transition_from_node_id: None,
@@ -1229,7 +1229,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "flowId": "flow-1",
                 "actionType": "review_worktree",
                 "title": "Repository has local changes",
-                "detail": "cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.",
+                "detail": "Cadence currently has 3 changed file(s). Review the worktree before trusting subsequent agent actions.",
                 "gateNodeId": null,
                 "gateKey": null,
                 "transitionFromNodeId": null,

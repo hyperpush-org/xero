@@ -21,7 +21,7 @@ export function SiteFooter() {
       <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
           <span className="text-xs text-muted-foreground/60">
-            © {new Date().getFullYear()} Cadence Labs
+            © {new Date().getFullYear()} Xero Labs
           </span>
 
           <nav className="flex items-center gap-5">

@@ -43,7 +43,7 @@ export function AppWindowMock() {
         </div>
         <div className="mx-auto flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-3 py-1 text-xs text-muted-foreground">
           <GitBranch className="h-3 w-3" />
-          <span className="font-mono">cadence / acme-saas</span>
+          <span className="font-mono">Xero / acme-saas</span>
           <span className="mx-1 text-border">·</span>
           <span className="font-mono text-primary">main</span>
         </div>

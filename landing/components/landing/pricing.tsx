@@ -6,10 +6,10 @@ const tiers = [
   {
     name: "Free",
     price: "$0",
-    cadence: "forever",
+    Xero: "forever",
     icon: Laptop,
     description: "Runs entirely on your machine. Bring your own API keys and ship immediately.",
-    cta: "Download Cadence",
+    cta: "Download Xero",
     ctaHref: "#download",
     highlight: false,
     badge: null,
@@ -27,7 +27,7 @@ const tiers = [
   {
     name: "Pro",
     price: "$20",
-    cadence: "/ month",
+    Xero: "/ month",
     icon: Cloud,
     description: "Everything in Free, running in the cloud. Same keys, no token markup — just your work, anywhere.",
     cta: "Notify me",
@@ -60,7 +60,7 @@ export function Pricing() {
             Pay for the studio, not the tokens.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            Cadence never marks up AI models. Every plan runs on the subscriptions
+            Xero never marks up AI models. Every plan runs on the subscriptions
             you already have — we just charge for the tool.
           </p>
         </div>
@@ -107,8 +107,8 @@ export function Pricing() {
                 {/* Price */}
                 <div className="mt-5 flex items-baseline gap-1.5">
                   <span className="text-5xl font-medium tracking-tight">{t.price}</span>
-                  {t.cadence && (
-                    <span className="text-sm text-muted-foreground">{t.cadence}</span>
+                  {t.Xero && (
+                    <span className="text-sm text-muted-foreground">{t.Xero}</span>
                   )}
                 </div>
 
@@ -169,7 +169,7 @@ export function Pricing() {
         {/* Footer note */}
         <p className="mt-8 text-center text-xs text-muted-foreground/60">
           Need a team plan?{" "}
-          <Link href="mailto:team@cadence.sh" className="underline underline-offset-2 hover:text-muted-foreground transition-colors">
+          <Link href="mailto:team@Xero.sh" className="underline underline-offset-2 hover:text-muted-foreground transition-colors">
             Talk to us
           </Link>
           .

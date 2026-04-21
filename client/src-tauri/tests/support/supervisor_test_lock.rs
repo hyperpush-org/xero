@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SUPERVISOR_TEST_LOCK_FILE: &str = "cadence-runtime-supervisor-test.lock";
+const SUPERVISOR_TEST_LOCK_FILE: &str = "Cadence-runtime-supervisor-test.lock";
 const SUPERVISOR_TEST_LOCK_TIMEOUT: Duration = Duration::from_secs(120);
 const SUPERVISOR_TEST_LOCK_POLL: Duration = Duration::from_millis(50);
 

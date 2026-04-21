@@ -58,7 +58,7 @@ function makeSnapshot(overrides: Partial<ProjectSnapshotResponseDto> = {}): Proj
   return {
     project: {
       id: 'project-1',
-      name: 'cadence',
+      name: 'Cadence',
       description: 'Desktop shell',
       milestone: 'M001',
       totalPhases: 3,
@@ -70,8 +70,8 @@ function makeSnapshot(overrides: Partial<ProjectSnapshotResponseDto> = {}): Proj
     repository: {
       id: 'repo-1',
       projectId: 'project-1',
-      rootPath: '/tmp/cadence',
-      displayName: 'cadence',
+      rootPath: '/tmp/Cadence',
+      displayName: 'Cadence',
       branch: 'main',
       headSha: 'abc123',
       isGitRepo: true,
@@ -259,7 +259,7 @@ function makeNotificationRoute(overrides: {
     projectId: overrides.projectId ?? 'project-1',
     routeId: overrides.routeId ?? 'telegram-primary',
     routeKind,
-    routeTarget: overrides.routeTarget ?? 'telegram:@cadence_ops',
+    routeTarget: overrides.routeTarget ?? 'telegram:@Cadence_ops',
     enabled: overrides.enabled ?? true,
     metadataJson: overrides.metadataJson ?? '{"channel":"ops"}',
     credentialReadiness:
@@ -291,8 +291,8 @@ function makeStatus(overrides: Partial<RepositoryStatusResponseDto> = {}): Repos
     repository: {
       id: 'repo-1',
       projectId: 'project-1',
-      rootPath: '/tmp/cadence',
-      displayName: 'cadence',
+      rootPath: '/tmp/Cadence',
+      displayName: 'Cadence',
       branch: null,
       headSha: null,
       isGitRepo: true,
@@ -385,7 +385,7 @@ describe('cadence-model', () => {
   it('maps nullable and blank project summary fields into UI-safe values', () => {
     const summary = mapProjectSummary({
       id: 'project-1',
-      name: 'cadence',
+      name: 'Cadence',
       description: '   ',
       milestone: '   ',
       totalPhases: 0,
@@ -1579,7 +1579,7 @@ describe('cadence-model', () => {
       makeSnapshot({
         project: {
           id: 'project-1',
-          name: 'cadence',
+          name: 'Cadence',
           description: '',
           milestone: 'M001',
           totalPhases: 0,
@@ -1617,7 +1617,7 @@ describe('cadence-model', () => {
       makeSnapshot({
         project: {
           id: 'project-1',
-          name: 'cadence',
+          name: 'Cadence',
           description: 'Desktop shell',
           milestone: 'M001',
           totalPhases: 0,
@@ -1976,7 +1976,7 @@ describe('cadence-model', () => {
         kind: 'transcript',
         sessionId: 'session-1',
         flowId: 'flow-1',
-        text: 'Connected to cadence.',
+        text: 'Connected to Cadence.',
         toolCallId: null,
         toolName: null,
         toolState: null,
@@ -2120,7 +2120,7 @@ describe('cadence-model', () => {
     expect(withTranscript.status).toBe('live')
     expect(withTranscript.transcriptItems[0]).toMatchObject({
       runId: 'run-1',
-      text: 'Connected to cadence.',
+      text: 'Connected to Cadence.',
     })
     expect(withTool.toolCalls[0]).toMatchObject({
       runId: 'run-1',
@@ -2178,9 +2178,9 @@ describe('cadence-model', () => {
     })
     const webSummary = toolResultSummarySchema.parse({
       kind: 'web',
-      target: 'https://example.com/search?q=cadence',
+      target: 'https://example.com/search?q=Cadence',
       resultCount: 5,
-      finalUrl: 'https://example.com/search?q=cadence',
+      finalUrl: 'https://example.com/search?q=Cadence',
       contentKind: 'html',
       contentType: 'text/html',
       truncated: false,
@@ -2336,7 +2336,7 @@ describe('cadence-model', () => {
           kind: 'transcript',
           sessionId: 'session-1',
           flowId: 'flow-1',
-          text: 'Connected to cadence.',
+          text: 'Connected to Cadence.',
           toolCallId: null,
           toolName: null,
           toolState: null,
@@ -2364,7 +2364,7 @@ describe('cadence-model', () => {
           kind: 'transcript',
           sessionId: 'session-1',
           flowId: 'flow-1',
-          text: 'Connected to cadence.',
+          text: 'Connected to Cadence.',
           toolCallId: null,
           toolName: null,
           toolState: null,
@@ -2417,7 +2417,7 @@ describe('cadence-model', () => {
           kind: 'transcript',
           sessionId: 'session-1',
           flowId: 'flow-1',
-          text: 'Connected to cadence.',
+          text: 'Connected to Cadence.',
           toolCallId: null,
           toolName: null,
           toolState: null,
@@ -2440,7 +2440,7 @@ describe('cadence-model', () => {
           kind: 'transcript',
           sessionId: 'session-1',
           flowId: 'flow-1',
-          text: 'Connected to cadence.',
+          text: 'Connected to Cadence.',
           toolCallId: null,
           toolName: null,
           toolState: null,
@@ -2568,7 +2568,7 @@ describe('cadence-model', () => {
         kind: 'transcript',
         sessionId: 'session-1',
         flowId: 'flow-1',
-        text: 'Connected to cadence.',
+        text: 'Connected to Cadence.',
         toolCallId: null,
         toolName: null,
         toolState: null,

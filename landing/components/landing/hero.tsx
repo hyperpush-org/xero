@@ -37,7 +37,7 @@ export function Hero() {
           </h1>
 
           <p className="mx-auto mt-6 max-w-2xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Cadence ships production software end-to-end — scaffold, build, test, deploy.
+            Xero ships production software end-to-end — scaffold, build, test, deploy.
             Written from the ground up in Rust, it runs agents locally with a persistent
             harness and pings you on Discord or Telegram the moment it needs a decision.
           </p>

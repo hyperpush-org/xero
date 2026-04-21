@@ -3,7 +3,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Dark-first landing theme for Cadence.
+/* Dark-first landing theme for Xero.
    - background: cool near-black with a faint blue tint
    - foreground: off-white
    - primary (accent): electric mint / aqua — rhythmic, technical, modern

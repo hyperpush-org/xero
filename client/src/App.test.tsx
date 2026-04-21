@@ -53,7 +53,7 @@ function makeProjectSummary(id: string, name: string): ListProjectsResponseDto['
   }
 }
 
-function makeSnapshot(projectId = 'project-1', name = 'cadence'): ProjectSnapshotResponseDto {
+function makeSnapshot(projectId = 'project-1', name = 'Cadence'): ProjectSnapshotResponseDto {
   return {
     project: makeProjectSummary(projectId, name),
     repository: {
@@ -76,7 +76,7 @@ function makeSnapshot(projectId = 'project-1', name = 'cadence'): ProjectSnapsho
   }
 }
 
-function makeStatus(projectId = 'project-1', name = 'cadence'): RepositoryStatusResponseDto {
+function makeStatus(projectId = 'project-1', name = 'Cadence'): RepositoryStatusResponseDto {
   return {
     repository: {
       id: `repo-${projectId}`,
@@ -100,8 +100,8 @@ function makeDiff(projectId = 'project-1', scope: RepositoryDiffResponseDto['sco
     repository: {
       id: `repo-${projectId}`,
       projectId,
-      rootPath: '/tmp/cadence',
-      displayName: 'cadence',
+      rootPath: '/tmp/Cadence',
+      displayName: 'Cadence',
       branch: null,
       headSha: null,
       isGitRepo: true,
@@ -238,7 +238,7 @@ function createAdapter(options?: {
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
-  let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'cadence')]
+  let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'Cadence')]
 
   const upsertNotificationRoute = vi.fn(async (request: UpsertNotificationRouteRequestDto) => {
     const route = {
@@ -275,7 +275,7 @@ function createAdapter(options?: {
     isDesktopRuntime: () => true,
     pickRepositoryFolder: async () => null,
     importRepository: async (_path: string): Promise<ImportRepositoryResponseDto> => ({
-      project: makeProjectSummary('project-1', 'cadence'),
+      project: makeProjectSummary('project-1', 'Cadence'),
       repository: makeStatus().repository,
     }),
     listProjects: async () => ({ projects: currentProjects }),
@@ -528,6 +528,24 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByText('No milestone assigned')).toBeVisible()
   })
 
+  it('collapses the project rail into a compact icon strip from the titlebar toggle', async () => {
+    const { adapter } = createAdapter()
+
+    render(<CadenceApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const collapseButton = screen.getByRole('button', { name: 'Collapse project sidebar' })
+    fireEvent.click(collapseButton)
+
+    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
+    expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Project actions for cadence' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /cadence/i })).toBeVisible()
+  })
+
   it('switches to Agent without rendering the removed debug panels', async () => {
     const { adapter } = createAdapter({ runtimeRun: null, autonomousState: null })
 
@@ -681,7 +699,7 @@ describe('CadenceApp current UI', () => {
     })
   })
 
-  it('switches to Execution and shows the current empty state', async () => {
+  it('switches to Execution and shows only the changes surface', async () => {
     const { adapter } = createAdapter()
 
     render(<CadenceApp adapter={adapter} />)
@@ -691,12 +709,7 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Execution' }))
-    expect(await screen.findByText('No execution activity yet')).toBeVisible()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Changes' }))
     expect(await screen.findByRole('button', { name: 'Unstaged' })).toBeVisible()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
-    expect(screen.getByText('No verification activity yet')).toBeVisible()
+    expect(screen.queryByText('No execution activity yet')).not.toBeInTheDocument()
   })
 })

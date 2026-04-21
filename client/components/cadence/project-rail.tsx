@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Folder, Loader2, MoreHorizontal, Plus, RefreshCw, Trash2 } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,6 +24,7 @@ import type { ProjectListItem } from '@/src/lib/cadence-model'
 interface ProjectRailProps {
   projects: ProjectListItem[]
   activeProjectId: string | null
+  collapsed?: boolean
   isLoading: boolean
   isImporting: boolean
   projectRemovalStatus: 'idle' | 'running'
@@ -36,6 +38,7 @@ interface ProjectRailProps {
 export function ProjectRail({
   projects,
   activeProjectId,
+  collapsed = false,
   isLoading,
   isImporting,
   projectRemovalStatus,
@@ -48,9 +51,27 @@ export function ProjectRail({
   const isRemovingProject = projectRemovalStatus === 'running'
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-sidebar">
-      <div className="flex h-10 items-center justify-between border-b border-border px-3">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Projects</span>
+    <aside
+      className={cn(
+        'flex shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar transition-[width] duration-300 ease-in-out',
+        collapsed ? 'w-12' : 'w-56',
+      )}
+      data-collapsed={collapsed ? 'true' : 'false'}
+    >
+      <div
+        className={cn(
+          'flex h-10 items-center border-b border-border transition-[padding,justify-content] duration-300 ease-in-out',
+          collapsed ? 'justify-center px-1.5' : 'justify-between px-3',
+        )}
+      >
+        <span
+          className={cn(
+            'overflow-hidden text-[11px] font-medium uppercase tracking-wider text-muted-foreground transition-[max-width,opacity] duration-200 ease-in-out',
+            collapsed ? 'max-w-0 opacity-0' : 'max-w-24 opacity-100',
+          )}
+        >
+          Projects
+        </span>
         <button
           aria-label="Import repository"
           className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground disabled:opacity-50"
@@ -63,16 +84,24 @@ export function ProjectRail({
       </div>
 
       {errorMessage ? (
-        <div className="border-b border-border px-3 py-2 text-[11px] text-destructive">{errorMessage}</div>
+        <div
+          className={cn(
+            'border-b border-border text-[11px] text-destructive transition-[padding,opacity,max-height] duration-200 ease-in-out',
+            collapsed ? 'max-h-0 px-0 py-0 opacity-0' : 'max-h-16 px-3 py-2 opacity-100',
+          )}
+        >
+          {errorMessage}
+        </div>
       ) : null}
 
       <div className="flex-1 overflow-y-auto scrollbar-thin pb-1">
         {projects.length === 0 ? (
-          <div className="px-3 py-4 text-[12px] text-muted-foreground">No projects imported yet.</div>
+          collapsed ? null : <div className="px-3 py-4 text-[12px] text-muted-foreground">No projects imported yet.</div>
         ) : (
           projects.map((project) => (
             <ProjectRailItem
               key={project.id}
+              collapsed={collapsed}
               project={project}
               isActive={project.id === activeProjectId}
               isRemovalPending={project.id === pendingProjectRemovalId}
@@ -85,9 +114,21 @@ export function ProjectRail({
       </div>
 
       {(isLoading || isImporting || isRemovingProject) && (
-        <div className="flex items-center gap-2 border-t border-border px-3 py-2.5 text-[11px] text-muted-foreground">
+        <div
+          className={cn(
+            'flex items-center border-t border-border text-[11px] text-muted-foreground transition-[padding,gap] duration-300 ease-in-out',
+            collapsed ? 'justify-center gap-0 px-1.5 py-2.5' : 'gap-2 px-3 py-2.5',
+          )}
+        >
           <RefreshCw className="h-3 w-3 animate-spin" />
-          <span>{isImporting ? 'Importing…' : isRemovingProject ? 'Removing…' : 'Refreshing…'}</span>
+          <span
+            className={cn(
+              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out',
+              collapsed ? 'max-w-0 opacity-0' : 'max-w-24 opacity-100',
+            )}
+          >
+            {isImporting ? 'Importing…' : isRemovingProject ? 'Removing…' : 'Refreshing…'}
+          </span>
         </div>
       )}
     </aside>
@@ -96,6 +137,7 @@ export function ProjectRail({
 
 interface ProjectRailItemProps {
   project: ProjectListItem
+  collapsed: boolean
   isActive: boolean
   isRemovalPending: boolean
   isRemovalLocked: boolean
@@ -105,6 +147,7 @@ interface ProjectRailItemProps {
 
 function ProjectRailItem({
   project,
+  collapsed,
   isActive,
   isRemovalPending,
   isRemovalLocked,
@@ -117,60 +160,76 @@ function ProjectRailItem({
     <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
       <div className="group relative">
         <button
-          className={`w-full px-3 py-2.5 text-left transition-colors ${isActive ? 'bg-secondary' : 'hover:bg-secondary/40'}`}
+          className={cn(
+            'w-full transition-[padding,background-color] duration-200',
+            isActive ? 'bg-secondary' : 'hover:bg-secondary/40',
+            collapsed ? 'flex justify-center px-0 py-2' : 'px-3 py-2.5 text-left',
+          )}
           onClick={() => onSelectProject(project.id)}
+          title={collapsed ? project.name : undefined}
           type="button"
         >
-          <div className="mb-1 flex items-center gap-2">
-            <Folder className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-primary' : 'text-muted-foreground'}`} />
-            <span className={`truncate text-[13px] font-medium ${isActive ? 'text-foreground' : 'text-foreground/80'}`}>
-              {project.name}
-            </span>
-          </div>
-
-          <p className="mb-2 ml-[22px] truncate text-[11px] text-muted-foreground">
-            {project.milestone || 'No milestone'}
-          </p>
-
-          <div className="ml-[22px] flex items-center gap-2">
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
-              <div
-                className="h-full rounded-full bg-primary/60 transition-all"
-                style={{ width: `${project.phaseProgressPercent}%` }}
-              />
+          {collapsed ? (
+            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg border border-transparent transition-colors group-hover:border-border/80">
+              <Folder className={cn('h-4 w-4 shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')} />
+              <span className="sr-only">{project.name}</span>
             </div>
-            <span className="w-8 text-[10px] font-mono tabular-nums text-muted-foreground">
-              {project.phaseProgressPercent}%
-            </span>
-          </div>
+          ) : (
+            <>
+              <div className="mb-1 flex items-center gap-2">
+                <Folder className={cn('h-3.5 w-3.5 shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')} />
+                <span className={cn('truncate text-[13px] font-medium', isActive ? 'text-foreground' : 'text-foreground/80')}>
+                  {project.name}
+                </span>
+              </div>
+
+              <p className="mb-2 ml-[22px] truncate text-[11px] text-muted-foreground">
+                {project.milestone || 'No milestone'}
+              </p>
+
+              <div className="ml-[22px] flex items-center gap-2">
+                <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
+                  <div
+                    className="h-full rounded-full bg-primary/60 transition-all"
+                    style={{ width: `${project.phaseProgressPercent}%` }}
+                  />
+                </div>
+                <span className="w-8 text-[10px] font-mono tabular-nums text-muted-foreground">
+                  {project.phaseProgressPercent}%
+                </span>
+              </div>
+            </>
+          )}
         </button>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label={`Project actions for ${project.name}`}
-              className={`absolute top-2 right-2 z-10 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary/80 hover:text-foreground disabled:opacity-50 ${
-                isActive || isRemovalPending ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-              }`}
-              disabled={isRemovalLocked}
-              type="button"
-            >
-              {isRemovalPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreHorizontal className="h-3.5 w-3.5" />}
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              onSelect={(event) => {
-                event.preventDefault()
-                setConfirmOpen(true)
-              }}
-              variant="destructive"
-            >
-              <Trash2 className="h-4 w-4" />
-              Remove
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {collapsed ? null : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label={`Project actions for ${project.name}`}
+                className={`absolute top-2 right-2 z-10 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary/80 hover:text-foreground disabled:opacity-50 ${
+                  isActive || isRemovalPending ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                }`}
+                disabled={isRemovalLocked}
+                type="button"
+              >
+                {isRemovalPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreHorizontal className="h-3.5 w-3.5" />}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault()
+                  setConfirmOpen(true)
+                }}
+                variant="destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+                Remove
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
 
       <AlertDialogContent>

@@ -386,7 +386,7 @@ pub(crate) fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_
     let project_updated = serde_json::to_value(ProjectUpdatedPayloadDto {
         project: ProjectSummaryDto {
             id: "project-1".into(),
-            name: "cadence".into(),
+            name: "Cadence".into(),
             description: "Desktop shell".into(),
             milestone: "M004".into(),
             total_phases: 4,

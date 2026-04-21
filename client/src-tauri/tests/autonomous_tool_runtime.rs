@@ -101,7 +101,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "cadence@example.com").expect("signature");
+    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -284,7 +284,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     let written = runtime
         .write(AutonomousWriteRequest {
             path: "notes/output.txt".into(),
-            content: "hello from cadence\n".into(),
+            content: "hello from Cadence\n".into(),
         })
         .expect("write file inside repo");
     assert_eq!(written.tool_name, "write");
@@ -295,7 +295,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             assert_eq!(
                 fs::read_to_string(repo_root.join("notes").join("output.txt"))
                     .expect("read written file"),
-                "hello from cadence\n"
+                "hello from Cadence\n"
             );
         }
         other => panic!("unexpected write output: {other:?}"),

@@ -67,7 +67,7 @@ export function Models() {
               Works with the subscriptions you already pay for.
             </h2>
             <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
-              Cadence is model-agnostic. Sign in with your ChatGPT, Claude, or Copilot
+              Xero is model-agnostic. Sign in with your ChatGPT, Claude, or Copilot
               plan, paste an OpenRouter key, or point it at a self-hosted endpoint. Your
               keys live in the OS keychain — never on our servers.
             </p>
@@ -126,7 +126,7 @@ export function Models() {
             </ul>
 
             <div className="mt-4 rounded-xl border border-dashed border-border/70 bg-background/40 p-4 font-mono text-[12px] text-muted-foreground">
-              <span className="text-primary">$</span> cadence auth add anthropic
+              <span className="text-primary">$</span> Xero auth add anthropic
               <span className="text-primary"> --plan=max</span>
               <span className="ml-2 text-foreground/70">
                 # stored securely in macOS keychain

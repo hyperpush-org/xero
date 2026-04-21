@@ -20,7 +20,7 @@ export function CTA() {
           <span className="text-muted-foreground">Ship while you&apos;re AFK.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-pretty text-muted-foreground">
-          Cadence is a free download. No credit card. Sign in with the ChatGPT,
+          Xero is a free download. No credit card. Sign in with the ChatGPT,
           Claude, or Copilot plan you already have and start a build in under two
           minutes.
         </p>

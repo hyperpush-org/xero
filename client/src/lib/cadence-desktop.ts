@@ -419,7 +419,7 @@ async function createRuntimeStreamSubscription(
   }
 }
 
-export const cadenceDesktopAdapter: CadenceDesktopAdapter = {
+export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   isDesktopRuntime() {
     return isTauri()
   },

@@ -160,7 +160,7 @@ pub(crate) fn attach_event_recorders(app: &tauri::App<tauri::test::MockRuntime>)
 }
 
 pub(crate) fn supervisor_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cadence-runtime-supervisor"))
+    PathBuf::from(env!("CARGO_BIN_EXE_Cadence-runtime-supervisor"))
 }
 
 pub(crate) fn jwt_with_account_id(account_id: &str) -> String {

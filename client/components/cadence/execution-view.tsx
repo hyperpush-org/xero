@@ -18,10 +18,8 @@ import {
   Hash,
   Loader2,
   RefreshCw,
-  Terminal,
   ChevronRight,
 } from 'lucide-react'
-import { CenteredEmptyState } from '@/components/cadence/centered-empty-state'
 import { getLangFromPath, tokenizeCode, type TokenizedLine } from '@/lib/shiki'
 
 // ---------------------------------------------------------------------------
@@ -34,14 +32,6 @@ interface ExecutionViewProps {
   activeDiff: RepositoryDiffState
   onSelectDiffScope: (scope: RepositoryDiffScope) => void
   onRetryDiff: () => void
-}
-
-type ExecutionTab = 'waves' | 'changes' | 'verify'
-
-const TAB_LABELS: Record<ExecutionTab, string> = {
-  waves: 'Execution',
-  changes: 'Changes',
-  verify: 'Verify',
 }
 
 // ---------------------------------------------------------------------------
@@ -578,12 +568,13 @@ export function ExecutionView({
   onSelectDiffScope,
   onRetryDiff,
 }: ExecutionViewProps) {
-  const [activeTab, setActiveTab] = useState<ExecutionTab>('waves')
+  const initialDiffRequestedRef = useRef(false)
 
-  const handleSelectTab = (tab: ExecutionTab) => {
-    setActiveTab(tab)
-    if (tab === 'changes') onSelectDiffScope(activeDiffScope)
-  }
+  useEffect(() => {
+    if (initialDiffRequestedRef.current) return
+    initialDiffRequestedRef.current = true
+    onSelectDiffScope(activeDiffScope)
+  }, [activeDiffScope, onSelectDiffScope])
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -597,52 +588,19 @@ export function ExecutionView({
         </div>
 
         <nav className="flex h-full items-center">
-          {(['waves', 'changes', 'verify'] as const).map((tab) => (
-            <button
-              className={`-mb-0.5 border-b-2 px-4 py-[10px] text-[12px] font-medium transition-colors ${
-                activeTab === tab
-                  ? 'border-foreground text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground/70'
-              }`}
-              key={tab}
-              onClick={() => handleSelectTab(tab)}
-              type="button"
-            >
-              {TAB_LABELS[tab]}
-            </button>
-          ))}
+          <div className="-mb-0.5 border-b-2 border-foreground px-4 py-[10px] text-[12px] font-medium text-foreground">
+            Changes
+          </div>
         </nav>
       </div>
 
-      {activeTab === 'waves' ? (
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
-          <CenteredEmptyState
-            description="Execution activity will appear here once this project records live run output or backend execution views become available."
-            icon={Terminal}
-            title="No execution activity yet"
-          />
-        </div>
-      ) : null}
-
-      {activeTab === 'changes' ? (
-        <ChangesView
-          activeDiff={activeDiff}
-          activeDiffScope={activeDiffScope}
-          execution={execution}
-          onRetryDiff={onRetryDiff}
-          onSelectDiffScope={onSelectDiffScope}
-        />
-      ) : null}
-
-      {activeTab === 'verify' ? (
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
-          <CenteredEmptyState
-            description="Verification results will appear here once this project records durable verification outcomes or resume history."
-            icon={Check}
-            title="No verification activity yet"
-          />
-        </div>
-      ) : null}
+      <ChangesView
+        activeDiff={activeDiff}
+        activeDiffScope={activeDiffScope}
+        execution={execution}
+        onRetryDiff={onRetryDiff}
+        onSelectDiffScope={onSelectDiffScope}
+      />
     </div>
   )
 }

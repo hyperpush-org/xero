@@ -16,11 +16,11 @@ export function Integrations() {
             Notifications
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Go for a walk. Cadence will message you when it matters.
+            Go for a walk. Xero will message you when it matters.
           </h2>
           <p className="mt-4 max-w-xl text-pretty text-muted-foreground">
             Most agents either stop cold or hallucinate forward when they hit ambiguity.
-            Cadence pauses, states the tradeoff clearly, and pings you on{" "}
+            Xero pauses, states the tradeoff clearly, and pings you on{" "}
             <span className="text-foreground">Discord</span> or{" "}
             <span className="text-foreground">Telegram</span>. Reply in a sentence —
             it picks up exactly where it left off.
@@ -38,7 +38,7 @@ export function Integrations() {
               },
               {
                 title: "Smart batching & quiet hours",
-                copy: "Cadence groups minor decisions and respects your focus time. No 3am pings.",
+                copy: "Xero groups minor decisions and respects your focus time. No 3am pings.",
               },
             ].map((f) => (
               <li key={f.title} className="flex gap-3">
@@ -63,9 +63,9 @@ export function Integrations() {
             <ChatMock
               platform="Discord"
               platformIcon={<DiscordIcon className="h-3 w-3 text-white" />}
-              channelLabel="#cadence-alerts"
+              channelLabel="#Xero-alerts"
               accent="#5865F2"
-              username="cadence-bot"
+              username="Xero-bot"
               tag="APP"
               messages={[
                 {
@@ -109,7 +109,7 @@ export function Integrations() {
               platformIcon={<TelegramIcon className="h-3 w-3 text-white" />}
               channelLabel="direct chat"
               accent="#26A5E4"
-              username="Cadence"
+              username="Xero"
               tag="BOT"
               messages={[
                 {

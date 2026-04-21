@@ -105,7 +105,7 @@ fn auth_config(server: &TestHttpServer) -> OpenAiCodexAuthConfig {
     let mut config = OpenAiCodexAuthConfig::default();
     config.token_url = server.url("/oauth/token");
     config.callback_port = 0;
-    config.originator = "cadence-tests".into();
+    config.originator = "Cadence-tests".into();
     config.timeout = Duration::from_secs(5);
     config
 }
@@ -177,7 +177,7 @@ fn callback_flow_persists_tokens_only_to_app_local_store_and_exposes_redacted_sn
     let started = start_openai_codex_flow(
         &app.state::<DesktopState>(),
         config.clone(),
-        Some("cadence-tests"),
+        Some("Cadence-tests"),
     )
     .expect("start auth flow");
     assert!(started.callback_bound);
@@ -190,7 +190,7 @@ fn callback_flow_persists_tokens_only_to_app_local_store_and_exposes_redacted_sn
         .contains("codex_cli_simplified_flow=true"));
     assert!(started
         .authorization_url
-        .contains("originator=cadence-tests"));
+        .contains("originator=Cadence-tests"));
 
     let initial_snapshot = app
         .state::<DesktopState>()
@@ -626,7 +626,7 @@ fn start_openai_login_reuses_in_flight_flow_and_exposes_redacted_snapshot() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
-            originator: Some("cadence-tests".into()),
+            originator: Some("Cadence-tests".into()),
         },
     )
     .expect("start wrapper login");
@@ -638,7 +638,7 @@ fn start_openai_login_reuses_in_flight_flow_and_exposes_redacted_snapshot() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
-            originator: Some("cadence-tests".into()),
+            originator: Some("Cadence-tests".into()),
         },
     )
     .expect("repeat wrapper login should reuse active flow");
@@ -686,7 +686,7 @@ fn wrapper_commands_complete_browser_callback_without_repo_secret_leakage() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
-            originator: Some("cadence-tests".into()),
+            originator: Some("Cadence-tests".into()),
         },
     )
     .expect("start wrapper login");
@@ -766,7 +766,7 @@ fn wrapper_submit_supports_manual_fallback_and_preserves_redaction() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
-            originator: Some("cadence-tests".into()),
+            originator: Some("Cadence-tests".into()),
         },
     )
     .expect("start wrapper login");

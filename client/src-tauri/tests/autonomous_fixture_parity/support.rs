@@ -52,7 +52,7 @@ pub(crate) mod runtime_shell;
 #[path = "../support/supervisor_test_lock.rs"]
 pub(crate) mod supervisor_test_lock;
 
-pub(crate) const STRUCTURED_EVENT_PREFIX: &str = "__CADENCE_EVENT__ ";
+pub(crate) const STRUCTURED_EVENT_PREFIX: &str = "__Cadence_EVENT__ ";
 
 pub(crate) struct SupervisorTestGuard {
     _in_process: MutexGuard<'static, ()>,
@@ -163,7 +163,7 @@ pub(crate) fn spawn_static_http_server_with_requests(
 }
 
 pub(crate) fn supervisor_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cadence-runtime-supervisor"))
+    PathBuf::from(env!("CARGO_BIN_EXE_Cadence-runtime-supervisor"))
 }
 
 pub(crate) fn seed_project(

@@ -54,17 +54,17 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
   return {
     project: {
       id: 'project-1',
-      name: 'cadence',
+      name: 'Cadence',
       repository: {
-        rootPath: '/tmp/cadence',
+        rootPath: '/tmp/Cadence',
       },
     } as AgentPaneView['project'],
     activePhase: null,
     branchLabel: 'main',
     headShaLabel: 'abc123',
     runtimeLabel: 'Openai Codex · Signed out',
-    repositoryLabel: 'cadence',
-    repositoryPath: '/tmp/cadence',
+    repositoryLabel: 'Cadence',
+    repositoryPath: '/tmp/Cadence',
     runtimeSession: makeRuntimeSession(),
     runtimeRun: null,
     autonomousRun: null,

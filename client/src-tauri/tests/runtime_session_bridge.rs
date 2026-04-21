@@ -198,7 +198,7 @@ fn auth_config_with_token_url(token_url: String) -> OpenAiCodexAuthConfig {
     let mut config = OpenAiCodexAuthConfig::default();
     config.token_url = token_url;
     config.callback_port = 0;
-    config.originator = "cadence-tests".into();
+    config.originator = "Cadence-tests".into();
     config.timeout = Duration::from_secs(5);
     config
 }
@@ -581,7 +581,7 @@ fn get_runtime_session_returns_failed_when_transient_flow_snapshot_is_missing_af
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
-            originator: Some("cadence-tests".into()),
+            originator: Some("Cadence-tests".into()),
         },
     )
     .expect("start login flow");
