@@ -66,12 +66,7 @@ pub use upsert_runtime_settings::upsert_runtime_settings;
 pub use upsert_workflow_graph::upsert_workflow_graph;
 
 pub use contracts::{
-    autonomous::*,
-    error::*,
-    notifications::*,
-    runtime::*,
-    surface::*,
-    workflow::*,
+    autonomous::*, error::*, notifications::*, runtime::*, surface::*, workflow::*,
 };
 
 pub(crate) use contracts::{

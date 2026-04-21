@@ -5,9 +5,8 @@ use rusqlite::{Connection, Error as SqlError};
 use crate::{
     commands::{
         map_workflow_handoff_package_record, CommandError, PhaseStatus, PhaseSummaryDto,
-        PlanningLifecycleProjectionDto, PlanningLifecycleStageDto,
-        PlanningLifecycleStageKindDto, ProjectSnapshotResponseDto, ProjectSummaryDto,
-        RepositorySummaryDto,
+        PlanningLifecycleProjectionDto, PlanningLifecycleStageDto, PlanningLifecycleStageKindDto,
+        ProjectSnapshotResponseDto, ProjectSummaryDto, RepositorySummaryDto,
     },
     db::database_path_for_repo,
 };
