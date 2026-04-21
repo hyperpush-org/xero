@@ -9,16 +9,10 @@ import {
   applyRuntimeRun,
   applyRuntimeSession,
   mapAutonomousRunInspection,
-  applyRuntimeStreamIssue,
-  createRuntimeStreamFromSubscription,
-  createRuntimeStreamView,
   mapProjectSummary,
   mapRepositoryDiff,
-  mapRepositoryStatus,
   mapRuntimeRun,
   mapRuntimeSession,
-  mergeRuntimeStreamEvent,
-  mergeRuntimeUpdated,
   upsertProjectListItem,
   notificationRouteCredentialReadinessSchema,
   type AutonomousUnitAttemptView,
@@ -56,7 +50,6 @@ import {
   type RuntimeStreamActivityItemView,
   type RuntimeStreamIssueView,
   type RuntimeStreamSkillItemView,
-  type RuntimeStreamItemKindDto,
   type RuntimeStreamStatus,
   type RuntimeStreamView,
   type RuntimeStreamViewItem,
@@ -68,7 +61,6 @@ import {
 } from '@/src/lib/cadence-model'
 
 import {
-  BLOCKED_NOTIFICATION_SYNC_POLL_MS,
   getBlockedNotificationSyncPollKey,
   getBlockedNotificationSyncPollTarget,
   type BlockedNotificationSyncPollTarget,
@@ -81,6 +73,15 @@ import {
   removeProjectRecord,
   type ProjectLoadSource,
 } from './use-cadence-desktop-state/project-loaders'
+import {
+  attachDesktopRuntimeListeners,
+  attachRuntimeStreamSubscription,
+  clearBlockedNotificationSyncPoll as clearBlockedNotificationSyncPollHelper,
+  clearRuntimeMetadataRefresh,
+  scheduleBlockedNotificationSyncPoll as scheduleBlockedNotificationSyncPollHelper,
+  scheduleRuntimeMetadataRefresh as scheduleRuntimeMetadataRefreshHelper,
+  type RuntimeMetadataRefreshSource,
+} from './use-cadence-desktop-state/runtime-stream'
 import {
   buildAgentView,
   buildExecutionView,
@@ -141,16 +142,6 @@ export type {
 } from './use-cadence-desktop-state/types'
 export { BLOCKED_NOTIFICATION_SYNC_POLL_MS } from './use-cadence-desktop-state/notification-health'
 
-const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
-  'transcript',
-  'tool',
-  'skill',
-  'activity',
-  'action_required',
-  'complete',
-  'failure',
-]
-
 function createEmptyRepositoryDiffState(): RepositoryDiffState {
   return {
     status: 'idle',
@@ -195,26 +186,6 @@ function getActivePhase(project: ProjectDetailView | null): Phase | null {
     project.phases[0] ??
     null
   )
-}
-
-function getRuntimeStreamIssue(error: unknown, fallback: { code: string; message: string; retryable: boolean }) {
-  if (error instanceof CadenceDesktopError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-    }
-  }
-
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return {
-      code: fallback.code,
-      message: error.message,
-      retryable: fallback.retryable,
-    }
-  }
-
-  return fallback
 }
 
 function getOperatorActionError(error: unknown, fallback: string): OperatorActionErrorView {
@@ -678,90 +649,47 @@ export function useCadenceDesktopState(
   )
 
   const scheduleRuntimeMetadataRefresh = useCallback(
-    (projectId: string, source: Extract<RefreshSource, 'runtime_run:updated' | 'runtime_stream:action_required'>) => {
-      if (activeProjectIdRef.current !== projectId) {
-        return
-      }
-
-      pendingRuntimeRefreshRef.current = { projectId, source }
-      if (runtimeRefreshTimeoutRef.current) {
-        return
-      }
-
-      runtimeRefreshTimeoutRef.current = setTimeout(() => {
-        runtimeRefreshTimeoutRef.current = null
-        const pendingRefresh = pendingRuntimeRefreshRef.current
-        pendingRuntimeRefreshRef.current = null
-        if (!pendingRefresh) {
-          return
-        }
-
-        if (activeProjectIdRef.current !== pendingRefresh.projectId) {
-          return
-        }
-
-        void loadProject(pendingRefresh.projectId, pendingRefresh.source)
-      }, 120)
+    (projectId: string, source: RuntimeMetadataRefreshSource) => {
+      scheduleRuntimeMetadataRefreshHelper({
+        projectId,
+        source,
+        refs: {
+          activeProjectIdRef,
+          pendingRuntimeRefreshRef,
+          runtimeRefreshTimeoutRef,
+        },
+        loadProject,
+      })
     },
     [loadProject],
   )
 
   const clearBlockedNotificationSyncPoll = useCallback(() => {
-    if (blockedNotificationSyncPollTimeoutRef.current) {
-      clearTimeout(blockedNotificationSyncPollTimeoutRef.current)
-      blockedNotificationSyncPollTimeoutRef.current = null
-    }
+    clearBlockedNotificationSyncPollHelper(blockedNotificationSyncPollTimeoutRef)
   }, [])
 
   const scheduleBlockedNotificationSyncPoll = useCallback(
     (expectedPollKey: string) => {
-      if (blockedNotificationSyncPollTimeoutRef.current) {
-        return
-      }
-
-      blockedNotificationSyncPollTimeoutRef.current = setTimeout(() => {
-        blockedNotificationSyncPollTimeoutRef.current = null
-
-        const pollTarget = blockedNotificationSyncPollTargetRef.current
-        if (!pollTarget || getBlockedNotificationSyncPollKey(pollTarget) !== expectedPollKey) {
-          return
-        }
-
-        if (activeProjectIdRef.current !== pollTarget.projectId) {
-          return
-        }
-
-        if (blockedNotificationSyncPollInFlightRef.current) {
-          scheduleBlockedNotificationSyncPoll(expectedPollKey)
-          return
-        }
-
-        blockedNotificationSyncPollInFlightRef.current = true
-        void loadProject(pollTarget.projectId, 'runtime_stream:action_required').finally(() => {
-          blockedNotificationSyncPollInFlightRef.current = false
-          const nextTarget = blockedNotificationSyncPollTargetRef.current
-          if (!nextTarget || getBlockedNotificationSyncPollKey(nextTarget) !== expectedPollKey) {
-            return
-          }
-
-          if (activeProjectIdRef.current !== nextTarget.projectId) {
-            return
-          }
-
-          scheduleBlockedNotificationSyncPoll(expectedPollKey)
-        })
-      }, BLOCKED_NOTIFICATION_SYNC_POLL_MS)
+      scheduleBlockedNotificationSyncPollHelper({
+        expectedPollKey,
+        refs: {
+          activeProjectIdRef,
+          blockedNotificationSyncPollTimeoutRef,
+          blockedNotificationSyncPollTargetRef,
+          blockedNotificationSyncPollInFlightRef,
+        },
+        loadProject,
+      })
     },
     [loadProject],
   )
 
   useEffect(() => {
     return () => {
-      if (runtimeRefreshTimeoutRef.current) {
-        clearTimeout(runtimeRefreshTimeoutRef.current)
-        runtimeRefreshTimeoutRef.current = null
-      }
-      pendingRuntimeRefreshRef.current = null
+      clearRuntimeMetadataRefresh({
+        pendingRuntimeRefreshRef,
+        runtimeRefreshTimeoutRef,
+      })
       clearBlockedNotificationSyncPoll()
       blockedNotificationSyncPollTargetRef.current = null
       blockedNotificationSyncPollInFlightRef.current = false
@@ -820,137 +748,47 @@ export function useCadenceDesktopState(
   }, [adapter, loadProject, resetRepositoryDiffs])
 
   useEffect(() => {
-    let projectUnlisten: (() => void) | null = null
-    let repositoryUnlisten: (() => void) | null = null
-    let runtimeUnlisten: (() => void) | null = null
-    let runtimeRunUnlisten: (() => void) | null = null
-    let disposed = false
+    let disposeListeners = () => undefined
+    let effectDisposed = false
 
     void bootstrap()
 
-    const attachListeners = async () => {
-      projectUnlisten = await adapter.onProjectUpdated(
-        (payload) => {
-          if (disposed) {
-            return
-          }
+    void attachDesktopRuntimeListeners({
+      adapter,
+      refs: {
+        activeProjectIdRef,
+        runtimeSessionsRef,
+        runtimeRunRefreshKeyRef,
+      },
+      setters: {
+        setProjects,
+        setRefreshSource,
+        setRepositoryStatus,
+        setActiveProject,
+        setRuntimeSessions,
+        setRuntimeLoadErrors,
+        setRuntimeStreams,
+        setErrorMessage,
+      },
+      handleAdapterEventError,
+      applyRuntimeRunUpdate,
+      loadProject,
+      resetRepositoryDiffs,
+      scheduleRuntimeMetadataRefresh,
+    }).then((nextDispose) => {
+      if (effectDisposed) {
+        nextDispose()
+        return
+      }
 
-          const summary = mapProjectSummary(payload.project)
-          const cachedRuntime = runtimeSessionsRef.current[summary.id] ?? null
-          setProjects((currentProjects) =>
-            upsertProjectListItem(currentProjects, cachedRuntime ? applyRuntimeToProjectList(summary, cachedRuntime) : summary),
-          )
-
-          if (activeProjectIdRef.current !== summary.id) {
-            return
-          }
-
-          void loadProject(summary.id, 'project:updated')
-        },
-        handleAdapterEventError,
-      )
-
-      repositoryUnlisten = await adapter.onRepositoryStatusChanged(
-        (payload) => {
-          if (disposed || activeProjectIdRef.current !== payload.projectId) {
-            return
-          }
-
-          const nextStatus = mapRepositoryStatus(payload.status)
-          setRefreshSource('repository:status_changed')
-          setRepositoryStatus(nextStatus)
-          setActiveProject((currentProject) => {
-            if (!currentProject) {
-              return currentProject
-            }
-
-            const nextProject = applyRepositoryStatus(currentProject, nextStatus)
-            const withRuntime = currentProject.runtimeSession ? applyRuntimeSession(nextProject, currentProject.runtimeSession) : nextProject
-            return applyRuntimeRun(withRuntime, currentProject.runtimeRun ?? null)
-          })
-          resetRepositoryDiffs(nextStatus)
-        },
-        handleAdapterEventError,
-      )
-
-      runtimeUnlisten = await adapter.onRuntimeUpdated(
-        (payload) => {
-          if (disposed) {
-            return
-          }
-
-          const currentRuntime = runtimeSessionsRef.current[payload.projectId] ?? null
-          const nextRuntime = mergeRuntimeUpdated(currentRuntime, payload)
-
-          setRuntimeSessions((currentRuntimeSessions) => ({
-            ...currentRuntimeSessions,
-            [payload.projectId]: nextRuntime,
-          }))
-          setRuntimeLoadErrors((currentErrors) => ({
-            ...currentErrors,
-            [payload.projectId]: null,
-          }))
-          setProjects((currentProjects) =>
-            currentProjects.map((project) =>
-              project.id === payload.projectId ? applyRuntimeToProjectList(project, nextRuntime) : project,
-            ),
-          )
-
-          if (!nextRuntime.isAuthenticated) {
-            setRuntimeStreams((currentStreams) => removeProjectRecord(currentStreams, payload.projectId))
-          }
-
-          if (activeProjectIdRef.current !== payload.projectId) {
-            return
-          }
-
-          setRefreshSource('runtime:updated')
-          setErrorMessage(null)
-          setActiveProject((currentProject) =>
-            currentProject ? applyRuntimeSession(currentProject, nextRuntime) : currentProject,
-          )
-        },
-        handleAdapterEventError,
-      )
-
-      runtimeRunUnlisten = await adapter.onRuntimeRunUpdated(
-        (payload) => {
-          if (disposed) {
-            return
-          }
-
-          const nextRuntimeRun = payload.run ? mapRuntimeRun(payload.run) : null
-          applyRuntimeRunUpdate(payload.projectId, nextRuntimeRun)
-
-          if (activeProjectIdRef.current !== payload.projectId) {
-            return
-          }
-
-          const refreshKey = payload.run
-            ? `${payload.run.runId}:${payload.run.lastCheckpointSequence}:${payload.run.updatedAt}:${payload.run.status}`
-            : 'none'
-          if (runtimeRunRefreshKeyRef.current[payload.projectId] !== refreshKey) {
-            runtimeRunRefreshKeyRef.current[payload.projectId] = refreshKey
-            scheduleRuntimeMetadataRefresh(payload.projectId, 'runtime_run:updated')
-          }
-
-          setRefreshSource('runtime_run:updated')
-          setErrorMessage(null)
-        },
-        handleAdapterEventError,
-      )
-    }
-
-    void attachListeners()
+      disposeListeners = nextDispose
+    })
 
     return () => {
-      disposed = true
-      projectUnlisten?.()
-      repositoryUnlisten?.()
-      runtimeUnlisten?.()
-      runtimeRunUnlisten?.()
+      effectDisposed = true
+      disposeListeners()
     }
-  }, [adapter, applyRuntimeRunUpdate, bootstrap, handleAdapterEventError, scheduleRuntimeMetadataRefresh])
+  }, [adapter, applyRuntimeRunUpdate, bootstrap, handleAdapterEventError, loadProject, resetRepositoryDiffs, scheduleRuntimeMetadataRefresh])
 
   const showRepositoryDiff = useCallback(
     async (scope: RepositoryDiffScope, options: { force?: boolean } = {}) => {
@@ -1625,212 +1463,15 @@ export function useCadenceDesktopState(
       : null
 
   useEffect(() => {
-    const projectId = activeProjectId
-    const runtimeSession = activeRuntimeSession
-    const runId = activeRuntimeRunId
-
-    if (!projectId) {
-      return
-    }
-
-    if (!runtimeSession?.isAuthenticated || !runtimeSession.sessionId) {
-      updateRuntimeStream(projectId, () => null)
-      return
-    }
-
-    if (!runId) {
-      updateRuntimeStream(projectId, () => null)
-      return
-    }
-
-    const seenActionKeys = runtimeActionRefreshKeysRef.current[projectId] ?? new Set<string>()
-    runtimeActionRefreshKeysRef.current[projectId] = seenActionKeys
-    for (const key of Array.from(seenActionKeys)) {
-      if (!key.startsWith(`${runId}:`)) {
-        seenActionKeys.delete(key)
-      }
-    }
-
-    let disposed = false
-    let unsubscribe: () => void = () => {}
-
-    if (typeof adapter.subscribeRuntimeStream !== 'function') {
-      updateRuntimeStream(projectId, (currentStream) =>
-        applyRuntimeStreamIssue(currentStream, {
-          projectId,
-          runtimeKind: runtimeSession.runtimeKind,
-          runId,
-          sessionId: runtimeSession.sessionId,
-          flowId: runtimeSession.flowId,
-          subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-          code: 'runtime_stream_adapter_missing',
-          message: 'Cadence desktop adapter does not expose runtime stream subscriptions for this environment.',
-          retryable: false,
-        }),
-      )
-
-      return
-    }
-
-    updateRuntimeStream(projectId, (currentStream) => {
-      if (currentStream?.runId === runId) {
-        return {
-          ...currentStream,
-          runtimeKind: runtimeSession.runtimeKind,
-          sessionId: runtimeSession.sessionId,
-          flowId: runtimeSession.flowId,
-          subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-          status: currentStream.items.length > 0 ? 'replaying' : 'subscribing',
-        }
-      }
-
-      return createRuntimeStreamView({
-        projectId,
-        runtimeKind: runtimeSession.runtimeKind,
-        runId,
-        sessionId: runtimeSession.sessionId,
-        flowId: runtimeSession.flowId,
-        subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-        status: 'subscribing',
-      })
+    return attachRuntimeStreamSubscription({
+      projectId: activeProjectId,
+      runtimeSession: activeRuntimeSession,
+      runId: activeRuntimeRunId,
+      adapter,
+      runtimeActionRefreshKeysRef,
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh,
     })
-
-    void adapter
-      .subscribeRuntimeStream(
-        projectId,
-        ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-        (payload) => {
-          if (disposed) {
-            return
-          }
-
-          if (payload.projectId !== projectId) {
-            updateRuntimeStream(projectId, (currentStream) =>
-              applyRuntimeStreamIssue(currentStream, {
-                projectId,
-                runtimeKind: runtimeSession.runtimeKind,
-                runId,
-                sessionId: runtimeSession.sessionId,
-                flowId: runtimeSession.flowId,
-                subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-                code: 'runtime_stream_project_mismatch',
-                message: `Cadence received a runtime stream item for ${payload.projectId} while ${projectId} is active.`,
-                retryable: false,
-              }),
-            )
-            return
-          }
-
-          updateRuntimeStream(projectId, (currentStream) => {
-            try {
-              return mergeRuntimeStreamEvent(currentStream, payload)
-            } catch (error) {
-              const issue = getRuntimeStreamIssue(error, {
-                code: 'runtime_stream_contract_mismatch',
-                message: 'Cadence ignored a malformed runtime stream item to preserve the last truthful stream state.',
-                retryable: false,
-              })
-
-              return applyRuntimeStreamIssue(currentStream, {
-                projectId,
-                runtimeKind: payload.runtimeKind,
-                runId: payload.runId,
-                sessionId: payload.sessionId,
-                flowId: payload.flowId,
-                subscribedItemKinds: payload.subscribedItemKinds,
-                code: issue.code,
-                message: issue.message,
-                retryable: issue.retryable,
-              })
-            }
-          })
-
-          if (payload.item.kind === 'action_required') {
-            const actionId = payload.item.actionId?.trim()
-            if (actionId) {
-              const refreshKey = `${payload.runId}:${actionId}`
-              const knownKeys = runtimeActionRefreshKeysRef.current[projectId] ?? new Set<string>()
-              runtimeActionRefreshKeysRef.current[projectId] = knownKeys
-
-              if (!knownKeys.has(refreshKey)) {
-                knownKeys.add(refreshKey)
-                scheduleRuntimeMetadataRefresh(projectId, 'runtime_stream:action_required')
-              }
-            }
-          }
-        },
-        (error) => {
-          if (disposed) {
-            return
-          }
-
-          updateRuntimeStream(projectId, (currentStream) =>
-            applyRuntimeStreamIssue(currentStream, {
-              projectId,
-              runtimeKind: runtimeSession.runtimeKind,
-              runId,
-              sessionId: runtimeSession.sessionId,
-              flowId: runtimeSession.flowId,
-              subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-              code: error.code,
-              message: error.message,
-              retryable: error.retryable,
-            }),
-          )
-        },
-      )
-      .then((subscription) => {
-        if (disposed) {
-          subscription.unsubscribe()
-          return
-        }
-
-        unsubscribe = subscription.unsubscribe
-        updateRuntimeStream(projectId, (currentStream) => {
-          if (currentStream?.runId === subscription.response.runId) {
-            return {
-              ...currentStream,
-              runtimeKind: subscription.response.runtimeKind,
-              runId: subscription.response.runId,
-              sessionId: subscription.response.sessionId,
-              flowId: subscription.response.flowId ?? null,
-              subscribedItemKinds: subscription.response.subscribedItemKinds,
-            }
-          }
-
-          return createRuntimeStreamFromSubscription(subscription.response, 'subscribing')
-        })
-      })
-      .catch((error) => {
-        if (disposed) {
-          return
-        }
-
-        const issue = getRuntimeStreamIssue(error, {
-          code: 'runtime_stream_subscribe_failed',
-          message: 'Cadence could not subscribe to the selected project runtime stream.',
-          retryable: true,
-        })
-
-        updateRuntimeStream(projectId, (currentStream) =>
-          applyRuntimeStreamIssue(currentStream, {
-            projectId,
-            runtimeKind: runtimeSession.runtimeKind,
-            runId,
-            sessionId: runtimeSession.sessionId,
-            flowId: runtimeSession.flowId,
-            subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-            code: issue.code,
-            message: issue.message,
-            retryable: issue.retryable,
-          }),
-        )
-      })
-
-    return () => {
-      disposed = true
-      unsubscribe()
-    }
   }, [
     activeProjectId,
     activeRuntimeRunId,
