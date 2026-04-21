@@ -168,26 +168,31 @@ pub(super) fn emit_interactive_boundary_if_detected(
         )
     };
 
-    let persisted = project_store::upsert_runtime_action_required(
-        repo_root,
-        &RuntimeActionRequiredUpsertRecord {
-            project_id,
-            run_id,
-            runtime_kind,
-            session_id,
-            flow_id,
-            transport_endpoint,
-            started_at,
-            last_heartbeat_at,
-            last_error,
-            boundary_id: boundary.boundary_id.clone(),
-            action_type: boundary.action_type.clone(),
-            title: boundary.title.clone(),
-            detail: boundary.detail.clone(),
-            checkpoint_summary: candidate.checkpoint_summary.clone(),
-            created_at: boundary.detected_at.clone(),
-        },
-    );
+    let persisted = {
+        let _guard = persistence_lock
+            .lock()
+            .expect("runtime supervisor persistence lock poisoned");
+        project_store::upsert_runtime_action_required(
+            repo_root,
+            &RuntimeActionRequiredUpsertRecord {
+                project_id,
+                run_id,
+                runtime_kind,
+                session_id,
+                flow_id,
+                transport_endpoint,
+                started_at,
+                last_heartbeat_at,
+                last_error,
+                boundary_id: boundary.boundary_id.clone(),
+                action_type: boundary.action_type.clone(),
+                title: boundary.title.clone(),
+                detail: boundary.detail.clone(),
+                checkpoint_summary: candidate.checkpoint_summary.clone(),
+                created_at: boundary.detected_at.clone(),
+            },
+        )
+    };
 
     match persisted {
         Ok(persisted) => {
