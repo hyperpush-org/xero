@@ -977,7 +977,7 @@ describe('AgentRuntime current UI', () => {
     render(<AgentRuntime agent={makeAgent()} />)
 
     expect(screen.queryByRole('heading', { name: 'Authenticate to view live agent activity' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute('placeholder', 'Sign in with OpenAI to start.')
+    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute('placeholder', 'Connect a provider to start.')
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start run' })).not.toBeInTheDocument()
   })

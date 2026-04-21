@@ -850,7 +850,14 @@ pub(crate) fn autonomous_fixture_repo_parity_replays_fixture_driven_skill_lifecy
             .as_deref()
             .expect("authenticated runtime session id"),
         runtime_session.flow_id.as_deref(),
-        &runtime_shell::script_print_lines_and_sleep(&skill_lines, 3),
+        &runtime_shell::script_join_steps(&[
+            runtime_shell::script_print_line(&skill_lines[0]),
+            runtime_shell::script_sleep(1),
+            runtime_shell::script_print_line(&skill_lines[1]),
+            runtime_shell::script_sleep(1),
+            runtime_shell::script_print_line(&skill_lines[2]),
+            runtime_shell::script_sleep(3),
+        ]),
     );
 
     let observed = wait_for_autonomous_run(&app, &project_id, |autonomous_state| {

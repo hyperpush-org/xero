@@ -1068,7 +1068,7 @@ function getComposerPlaceholder(
         : 'Configure an OpenRouter API key in Settings to start.'
     }
 
-    return 'Sign in with OpenAI to start.'
+    return 'Connect a provider to start.'
   }
 
   if (options.providerMismatch) {
@@ -1086,7 +1086,7 @@ function getComposerPlaceholder(
       ? options.openrouterApiKeyConfigured
         ? 'Bind OpenRouter from the Agent tab to start.'
         : 'Configure an OpenRouter API key in Settings to start.'
-      : 'Sign in with OpenAI to start.'
+      : 'Connect a provider to start'
   }
 
   if (!hasUsableRuntimeRunId(runtimeRun)) {
@@ -3881,10 +3881,10 @@ export function AgentRuntime({
 
         <div className="shrink-0 px-4 py-4">
           <div className="flex items-end gap-2">
-            <div className="flex flex-1 items-end gap-2 rounded-lg bg-secondary/50 px-3 py-2">
+            <div className="flex flex-1 items-end gap-2 rounded-lg bg-secondary/50 px-2 py-2">
               <textarea
                 aria-label="Agent input unavailable"
-                className="max-h-32 flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 outline-none"
+                className="max-h-32 flex-1 ml-1 mb-0.5 resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 outline-none"
                 disabled
                 placeholder={composerPlaceholder}
                 rows={1}

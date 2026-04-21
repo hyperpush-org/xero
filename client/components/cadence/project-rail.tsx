@@ -167,7 +167,7 @@ function ProjectRailItem({
               variant="destructive"
             >
               <Trash2 className="h-4 w-4" />
-              Remove from sidebar
+              Remove
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

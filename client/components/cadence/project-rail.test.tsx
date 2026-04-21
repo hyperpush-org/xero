@@ -44,7 +44,7 @@ describe('ProjectRail', () => {
       button: 0,
       ctrlKey: false,
     })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove from sidebar' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }))
 
     expect(screen.getByText('Remove cadence from the sidebar?')).toBeInTheDocument()
     expect(screen.getByText(/You can import the same folder again any time/i)).toBeInTheDocument()

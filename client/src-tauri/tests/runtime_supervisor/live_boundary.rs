@@ -263,15 +263,22 @@ pub(crate) fn detached_supervisor_persists_matching_autonomous_boundary_once_bef
             project_id,
             &repo_root,
             "run-interactive-autonomous",
-            &runtime_shell::script_prompt_read_echo_and_sleep(
-                "Enter deployment code: ",
-                "value",
-                "value=",
-                5,
-            ),
+            &runtime_shell::script_join_steps(&[
+                runtime_shell::script_sleep(1),
+                runtime_shell::script_prompt_read_echo_and_sleep(
+                    "Enter deployment code: ",
+                    "value",
+                    "value=",
+                    5,
+                ),
+            ]),
         ),
     )
     .expect("launch interactive runtime supervisor for autonomous persistence");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+    });
     seed_active_autonomous_run(&repo_root, project_id, &launched.run.run_id);
 
     wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
