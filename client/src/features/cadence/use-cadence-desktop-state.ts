@@ -5,22 +5,13 @@ import {
   getDesktopErrorMessage,
 } from '@/src/lib/cadence-desktop'
 import {
-  projectCheckpointControlLoops,
-  projectRecentAutonomousUnits,
-  type CheckpointControlLoopProjectionView,
-  type RecentAutonomousUnitsProjectionView,
-} from './agent-runtime-projections'
-import {
   applyRepositoryStatus,
   applyRuntimeRun,
   applyRuntimeSession,
   mapAutonomousRunInspection,
   applyRuntimeStreamIssue,
-  createEmptyPlanningLifecycle,
   createRuntimeStreamFromSubscription,
   createRuntimeStreamView,
-  deriveAutonomousWorkflowContext,
-  getRuntimeStreamStatusLabel,
   mapProjectSnapshot,
   mapProjectSummary,
   mapRepositoryDiff,
@@ -79,20 +70,15 @@ import {
 
 import {
   BLOCKED_NOTIFICATION_SYNC_POLL_MS,
-  composeAgentTrustSnapshot,
-  createUnavailableTrustSnapshot,
   getBlockedNotificationSyncPollKey,
   getBlockedNotificationSyncPollTarget,
-  mapNotificationChannelHealth,
-  mapNotificationRouteViews,
+  type BlockedNotificationSyncPollTarget,
 } from './use-cadence-desktop-state/notification-health'
 import {
-  getAgentMessagesUnavailableReason,
-  getAgentRuntimeRunUnavailableReason,
-  getAgentSessionUnavailableReason,
-  hasProviderMismatch,
-  resolveSelectedRuntimeProvider,
-} from './use-cadence-desktop-state/runtime-provider'
+  buildAgentView,
+  buildExecutionView,
+  buildWorkflowView,
+} from './use-cadence-desktop-state/view-builders'
 import type {
   AgentPaneView,
   AgentTrustSnapshotView,
@@ -148,12 +134,6 @@ export type {
 } from './use-cadence-desktop-state/types'
 export { BLOCKED_NOTIFICATION_SYNC_POLL_MS } from './use-cadence-desktop-state/notification-health'
 
-const REPOSITORY_DIFF_SCOPE_LABELS: Record<RepositoryDiffScope, string> = {
-  staged: 'Staged',
-  unstaged: 'Unstaged',
-  worktree: 'Worktree',
-}
-
 const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'transcript',
   'tool',
@@ -208,10 +188,6 @@ function getActivePhase(project: ProjectDetailView | null): Phase | null {
     project.phases[0] ??
     null
   )
-}
-
-function getPlanningLifecycleView(project: ProjectDetailView | null): PlanningLifecycleView {
-  return project?.lifecycle ?? createEmptyPlanningLifecycle()
 }
 
 function applyRuntimeToProjectList(project: ProjectListItem, runtimeSession: RuntimeSessionView): ProjectListItem {
@@ -2365,271 +2341,111 @@ export function useCadenceDesktopState(
     scheduleBlockedNotificationSyncPoll,
   ])
 
-  const workflowView = useMemo<WorkflowPaneView | null>(() => {
-    if (!activeProject) {
-      return null
-    }
-
-    const lifecycle = getPlanningLifecycleView(activeProject)
-    const selectedProvider = resolveSelectedRuntimeProvider(runtimeSettings, activeRuntimeSession)
-    const providerMismatch = hasProviderMismatch(selectedProvider, activeRuntimeSession)
-
-    return {
-      project: activeProject,
-      activePhase,
-      lifecycle,
-      activeLifecycleStage: lifecycle.activeStage,
-      lifecyclePercent: lifecycle.percentComplete,
-      hasLifecycle: lifecycle.hasStages,
-      actionRequiredLifecycleCount: lifecycle.actionRequiredCount,
-      overallPercent: activeProject.phaseProgressPercent,
-      hasPhases: activeProject.phases.length > 0,
-      runtimeSession: activeRuntimeSession,
-      selectedProviderId: selectedProvider.providerId,
-      selectedProviderLabel: selectedProvider.providerLabel,
-      selectedModelId: selectedProvider.modelId,
-      openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
-      providerMismatch,
-    }
-  }, [activePhase, activeProject, activeRuntimeSession, runtimeSettings])
-
-  const agentView = useMemo<AgentPaneView | null>(() => {
-    if (!activeProject) {
-      return null
-    }
-
-    const notificationRouteViews = mapNotificationRouteViews(
-      activeProject.id,
-      activeNotificationRoutes,
-      activeProject.notificationBroker.dispatches,
-    )
-    const notificationChannelHealth = mapNotificationChannelHealth(notificationRouteViews)
-    const previousTrustSnapshot = trustSnapshotRef.current[activeProject.id] ?? null
-
-    let trustSnapshot: AgentTrustSnapshotView
-    try {
-      trustSnapshot = composeAgentTrustSnapshot({
+  const workflowView = useMemo<WorkflowPaneView | null>(
+    () =>
+      buildWorkflowView({
+        project: activeProject,
+        activePhase,
         runtimeSession: activeRuntimeSession,
+        runtimeSettings,
+      }),
+    [activePhase, activeProject, activeRuntimeSession, runtimeSettings],
+  )
+
+  const agentViewProjection = useMemo(
+    () =>
+      buildAgentView({
+        project: activeProject,
+        activePhase,
+        repositoryStatus,
+        runtimeSession: activeRuntimeSession,
+        runtimeSettings,
         runtimeRun: activeRuntimeRun,
+        autonomousRun: activeAutonomousRun,
+        autonomousUnit: activeAutonomousUnit,
+        autonomousAttempt: activeAutonomousAttempt,
+        autonomousHistory: activeAutonomousHistory,
+        autonomousRecentArtifacts: activeAutonomousRecentArtifacts,
+        runtimeErrorMessage: activeRuntimeErrorMessage,
+        runtimeRunErrorMessage: activeRuntimeRunErrorMessage,
+        autonomousRunErrorMessage: activeAutonomousRunErrorMessage,
         runtimeStream: activeRuntimeStream,
-        approvalRequests: activeProject.approvalRequests,
-        routeViews: notificationRouteViews,
+        notificationRoutes: activeNotificationRoutes,
+        notificationRouteLoadStatus: activeNotificationRouteLoadStatus,
         notificationRouteError: activeNotificationRouteLoadError,
         notificationSyncSummary: activeNotificationSyncSummary,
         notificationSyncError: activeNotificationSyncError,
-      })
-      trustSnapshotRef.current[activeProject.id] = trustSnapshot
-    } catch (error) {
-      const projectionError = getOperatorActionError(
-        error,
-        'Cadence could not compose trust snapshot details from notification/runtime projection data.',
-      )
-      trustSnapshot = previousTrustSnapshot
-        ? {
-            ...previousTrustSnapshot,
-            routeError: activeNotificationRouteLoadError,
-            syncError: activeNotificationSyncError,
-            projectionError,
-          }
-        : createUnavailableTrustSnapshot({
-            routeCount: notificationRouteViews.length,
-            enabledRouteCount: notificationRouteViews.filter((route) => route.enabled).length,
-            pendingApprovalCount: activeProject.pendingApprovalCount,
-            notificationRouteError: activeNotificationRouteLoadError,
-            notificationSyncError: activeNotificationSyncError,
-            projectionError,
-          })
-      trustSnapshotRef.current[activeProject.id] = trustSnapshot
-    }
-
-    const autonomousWorkflowContext = deriveAutonomousWorkflowContext({
-      lifecycle: activeProject.lifecycle,
-      handoffPackages: activeProject.handoffPackages,
-      approvalRequests: activeProject.approvalRequests,
-      autonomousUnit: activeAutonomousUnit,
-      autonomousAttempt: activeAutonomousAttempt,
-    })
-    const recentAutonomousUnits = projectRecentAutonomousUnits({
-      autonomousHistory: activeAutonomousHistory,
-      autonomousRecentArtifacts: activeAutonomousRecentArtifacts,
-      lifecycle: activeProject.lifecycle,
-      handoffPackages: activeProject.handoffPackages,
-      approvalRequests: activeProject.approvalRequests,
-    })
-    const checkpointControlLoop = projectCheckpointControlLoops({
-      actionRequiredItems: activeRuntimeStream?.actionRequired ?? [],
-      approvalRequests: activeProject.approvalRequests,
-      resumeHistory: activeProject.resumeHistory,
-      notificationBroker: activeProject.notificationBroker,
-      autonomousHistory: activeAutonomousHistory,
-      autonomousRecentArtifacts: activeAutonomousRecentArtifacts,
-    })
-
-    const selectedProvider = resolveSelectedRuntimeProvider(runtimeSettings, activeRuntimeSession)
-    const providerMismatch = hasProviderMismatch(selectedProvider, activeRuntimeSession)
-
-    return {
-      project: activeProject,
+        blockedNotificationSyncPollTarget: activeBlockedNotificationSyncPollTarget,
+        notificationRouteMutationStatus,
+        pendingNotificationRouteId,
+        notificationRouteMutationError,
+        previousTrustSnapshot: activeProject ? trustSnapshotRef.current[activeProject.id] ?? null : null,
+        operatorActionStatus,
+        pendingOperatorActionId,
+        operatorActionError,
+        autonomousRunActionStatus,
+        pendingAutonomousRunAction,
+        autonomousRunActionError,
+        runtimeRunActionStatus,
+        pendingRuntimeRunAction,
+        runtimeRunActionError,
+      }),
+    [
+      activeNotificationRouteLoadError,
+      activeNotificationRouteLoadStatus,
+      activeNotificationRoutes,
+      activeNotificationSyncError,
+      activeNotificationSyncSummary,
       activePhase,
-      branchLabel: repositoryStatus?.branchLabel ?? activeProject.branchLabel,
-      headShaLabel: repositoryStatus?.headShaLabel ?? activeProject.repository?.headShaLabel ?? 'No HEAD',
-      runtimeLabel: activeRuntimeSession?.runtimeLabel ?? activeProject.runtimeLabel,
-      repositoryLabel: activeProject.repository?.displayName ?? activeProject.name,
-      repositoryPath: activeProject.repository?.rootPath ?? null,
-      runtimeSession: activeRuntimeSession,
-      selectedProviderId: selectedProvider.providerId,
-      selectedProviderLabel: selectedProvider.providerLabel,
-      selectedModelId: selectedProvider.modelId,
-      openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
-      providerMismatch,
-      runtimeRun: activeRuntimeRun,
-      autonomousRun: activeAutonomousRun,
-      autonomousUnit: activeAutonomousUnit,
-      autonomousAttempt: activeAutonomousAttempt,
-      autonomousWorkflowContext,
-      autonomousHistory: activeAutonomousHistory,
-      autonomousRecentArtifacts: activeAutonomousRecentArtifacts,
-      recentAutonomousUnits,
-      checkpointControlLoop,
-      runtimeErrorMessage: activeRuntimeErrorMessage,
-      runtimeRunErrorMessage: activeRuntimeRunErrorMessage,
-      autonomousRunErrorMessage: activeAutonomousRunErrorMessage,
-      authPhase: activeRuntimeSession?.phase ?? null,
-      authPhaseLabel: activeRuntimeSession?.phaseLabel ?? 'Runtime unavailable',
-      runtimeStream: activeRuntimeStream,
-      runtimeStreamStatus: activeRuntimeStream?.status ?? 'idle',
-      runtimeStreamStatusLabel: getRuntimeStreamStatusLabel(activeRuntimeStream?.status ?? 'idle'),
-      runtimeStreamError: activeRuntimeStream?.lastIssue ?? null,
-      runtimeStreamItems: activeRuntimeStream?.items ?? [],
-      skillItems: activeRuntimeStream?.skillItems ?? [],
-      activityItems: activeRuntimeStream?.activityItems ?? [],
-      actionRequiredItems: activeRuntimeStream?.actionRequired ?? [],
-      notificationBroker: activeProject.notificationBroker,
-      notificationRoutes: notificationRouteViews,
-      notificationChannelHealth,
-      notificationRouteLoadStatus: activeNotificationRouteLoadStatus,
-      notificationRouteIsRefreshing:
-        activeNotificationRouteLoadStatus === 'loading' && notificationRouteViews.length > 0,
-      notificationRouteError: activeNotificationRouteLoadError,
-      notificationSyncSummary: activeNotificationSyncSummary,
-      notificationSyncError: activeNotificationSyncError,
-      notificationSyncPollingActive: Boolean(activeBlockedNotificationSyncPollTarget),
-      notificationSyncPollingActionId: activeBlockedNotificationSyncPollTarget?.actionId ?? null,
-      notificationSyncPollingBoundaryId: activeBlockedNotificationSyncPollTarget?.boundaryId ?? null,
-      notificationRouteMutationStatus,
-      pendingNotificationRouteId,
+      activeProject,
+      activeAutonomousAttempt,
+      activeAutonomousHistory,
+      activeAutonomousRecentArtifacts,
+      activeAutonomousRun,
+      activeAutonomousRunErrorMessage,
+      activeAutonomousUnit,
+      activeBlockedNotificationSyncPollTarget,
+      activeRuntimeErrorMessage,
+      activeRuntimeRun,
+      activeRuntimeRunErrorMessage,
+      activeRuntimeSession,
+      activeRuntimeStream,
       notificationRouteMutationError,
-      trustSnapshot,
-      approvalRequests: activeProject.approvalRequests,
-      pendingApprovalCount: activeProject.pendingApprovalCount,
-      latestDecisionOutcome: activeProject.latestDecisionOutcome,
-      resumeHistory: activeProject.resumeHistory,
+      notificationRouteMutationStatus,
+      operatorActionError,
       operatorActionStatus,
-      pendingOperatorActionId,
-      operatorActionError,
-      autonomousRunActionStatus,
       pendingAutonomousRunAction,
-      autonomousRunActionError,
-      runtimeRunActionStatus,
+      pendingNotificationRouteId,
+      pendingOperatorActionId,
       pendingRuntimeRunAction,
+      repositoryStatus,
+      autonomousRunActionError,
+      autonomousRunActionStatus,
       runtimeRunActionError,
-      sessionUnavailableReason: getAgentSessionUnavailableReason(
-        activeRuntimeSession,
-        activeRuntimeErrorMessage,
-        selectedProvider,
-      ),
-      runtimeRunUnavailableReason: getAgentRuntimeRunUnavailableReason(
-        activeRuntimeRun,
-        activeRuntimeRunErrorMessage,
-        activeRuntimeSession,
-        selectedProvider,
-      ),
-      messagesUnavailableReason: getAgentMessagesUnavailableReason(
-        activeRuntimeSession,
-        activeRuntimeStream,
-        activeRuntimeRun,
-        selectedProvider,
-      ),
-    }
-  }, [
-    activeNotificationRouteLoadError,
-    activeNotificationRouteLoadStatus,
-    activeNotificationRoutes,
-    activeNotificationSyncError,
-    activeNotificationSyncSummary,
-    activePhase,
-    activeProject,
-    activeAutonomousAttempt,
-    activeAutonomousHistory,
-    activeAutonomousRecentArtifacts,
-    activeAutonomousRun,
-    activeAutonomousRunErrorMessage,
-    activeAutonomousUnit,
-    activeRuntimeErrorMessage,
-    activeRuntimeRun,
-    activeRuntimeRunErrorMessage,
-    activeRuntimeSession,
-    activeRuntimeStream,
-    notificationRouteMutationError,
-    notificationRouteMutationStatus,
-    operatorActionError,
-    operatorActionStatus,
-    pendingAutonomousRunAction,
-    pendingNotificationRouteId,
-    pendingOperatorActionId,
-    pendingRuntimeRunAction,
-    repositoryStatus,
-    autonomousRunActionError,
-    autonomousRunActionStatus,
-    runtimeRunActionError,
-    runtimeRunActionStatus,
-    runtimeSettings,
-  ])
+      runtimeRunActionStatus,
+      runtimeSettings,
+    ],
+  )
+  const agentView = agentViewProjection.view
 
-  const executionView = useMemo<ExecutionPaneView | null>(() => {
-    if (!activeProject) {
-      return null
+  useEffect(() => {
+    if (!activeProject || !agentViewProjection.trustSnapshot) {
+      return
     }
 
-    const statusEntries = repositoryStatus?.entries ?? []
-    const diffScopes: DiffScopeSummary[] = [
-      {
-        scope: 'staged',
-        label: REPOSITORY_DIFF_SCOPE_LABELS.staged,
-        count: repositoryStatus?.stagedCount ?? 0,
-      },
-      {
-        scope: 'unstaged',
-        label: REPOSITORY_DIFF_SCOPE_LABELS.unstaged,
-        count: repositoryStatus?.unstagedCount ?? 0,
-      },
-      {
-        scope: 'worktree',
-        label: REPOSITORY_DIFF_SCOPE_LABELS.worktree,
-        count: repositoryStatus?.statusCount ?? 0,
-      },
-    ]
+    trustSnapshotRef.current[activeProject.id] = agentViewProjection.trustSnapshot
+  }, [activeProject, agentViewProjection.trustSnapshot])
 
-    return {
-      project: activeProject,
-      activePhase,
-      branchLabel: repositoryStatus?.branchLabel ?? activeProject.branchLabel,
-      headShaLabel: repositoryStatus?.headShaLabel ?? activeProject.repository?.headShaLabel ?? 'No HEAD',
-      statusEntries,
-      statusCount: repositoryStatus?.statusCount ?? 0,
-      hasChanges: repositoryStatus?.hasChanges ?? false,
-      diffScopes,
-      verificationRecords: activeProject.verificationRecords,
-      resumeHistory: activeProject.resumeHistory,
-      latestDecisionOutcome: activeProject.latestDecisionOutcome,
-      notificationBroker: activeProject.notificationBroker,
-      operatorActionError,
-      verificationUnavailableReason:
-        activeProject.verificationRecords.length > 0 || activeProject.resumeHistory.length > 0
-          ? 'Durable operator verification and resume history are loaded from the selected project snapshot.'
-          : 'Verification details will appear here once the backend exposes run and wave results.',
-    }
-  }, [activePhase, activeProject, operatorActionError, repositoryStatus])
+  const executionView = useMemo<ExecutionPaneView | null>(
+    () =>
+      buildExecutionView({
+        project: activeProject,
+        activePhase,
+        repositoryStatus,
+        operatorActionError,
+      }),
+    [activePhase, activeProject, operatorActionError, repositoryStatus],
+  )
 
   return {
     projects,

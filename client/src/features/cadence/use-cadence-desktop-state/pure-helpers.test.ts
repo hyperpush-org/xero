@@ -171,8 +171,15 @@ describe('notification-health helpers', () => {
       runtimeStream: makeRuntimeStream({
         actionRequired: [
           {
+            id: 'action-required-1',
+            kind: 'action_required',
+            runId: 'run-1',
+            sequence: 1,
             actionId,
             boundaryId: 'boundary-1',
+            actionType: 'terminal_input_required',
+            title: 'Terminal input required',
+            detail: 'Cadence is waiting for terminal input.',
             createdAt: '2026-04-16T13:00:01Z',
           },
         ],
