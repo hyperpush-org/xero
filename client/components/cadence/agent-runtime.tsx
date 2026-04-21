@@ -1,15 +1,11 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { z } from 'zod'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import type {
   AgentPaneView,
-  AgentTrustSignalState,
   AgentTrustSnapshotView,
 } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
-  NotificationRouteKindDto,
   OperatorApprovalView,
   ResumeHistoryEntryView,
   RuntimeRunCheckpointView,
@@ -22,19 +18,13 @@ import type {
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/cadence-model'
 import {
-  composeNotificationRouteTarget,
-  decomposeNotificationRouteTarget,
   getRuntimeRunStatusLabel,
   getRuntimeStreamStatusLabel,
-  notificationRouteKindSchema,
 } from '@/src/lib/cadence-model'
 import {
   AlertCircle,
   Bot,
-  ExternalLink,
   LoaderCircle,
-  LogIn,
-  LogOut,
   Play,
   Send,
   ShieldCheck,
@@ -56,6 +46,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import * as runtimeHelpers from './agent-runtime/helpers'
 
 interface AgentRuntimeProps {
   agent: AgentPaneView
@@ -163,173 +154,6 @@ function normalizeAnswerInput(value: string): string {
   return trimmed.length > 0 ? trimmed : ''
 }
 
-const notificationRouteFormSchema = z
-  .object({
-    routeId: z.string().trim().min(1, 'Route ID is required.'),
-    routeKind: notificationRouteKindSchema,
-    routeTarget: z.string().trim().min(1, 'Route target is required.'),
-    enabled: z.boolean(),
-    metadataJson: z.string().optional().default(''),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    try {
-      composeNotificationRouteTarget(value.routeKind, value.routeTarget)
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['routeTarget'],
-        message: getErrorMessage(
-          error,
-          'Route target must resolve to the `<kind>:<channel-target>` storage contract before saving.',
-        ),
-      })
-    }
-
-    const metadataText = value.metadataJson.trim()
-    if (!metadataText) {
-      return
-    }
-
-    let parsedMetadata: unknown
-    try {
-      parsedMetadata = JSON.parse(metadataText)
-    } catch {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['metadataJson'],
-        message: 'Metadata must be valid JSON.',
-      })
-      return
-    }
-
-    if (typeof parsedMetadata !== 'object' || parsedMetadata === null || Array.isArray(parsedMetadata)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['metadataJson'],
-        message: 'Metadata JSON must be an object.',
-      })
-    }
-  })
-
-type NotificationRouteFormValues = z.input<typeof notificationRouteFormSchema>
-type NotificationRouteFieldErrorKey = 'routeId' | 'routeKind' | 'routeTarget' | 'metadataJson'
-type NotificationRouteFormErrors = Partial<Record<NotificationRouteFieldErrorKey | 'form', string>>
-
-function isNotificationRouteFieldErrorKey(value: unknown): value is NotificationRouteFieldErrorKey {
-  return value === 'routeId' || value === 'routeKind' || value === 'routeTarget' || value === 'metadataJson'
-}
-
-function getNotificationHealthBadgeVariant(health: AgentPaneView['notificationRoutes'][number]['health']): BadgeVariant {
-  switch (health) {
-    case 'healthy':
-      return 'default'
-    case 'pending':
-      return 'secondary'
-    case 'degraded':
-      return 'destructive'
-    case 'idle':
-    case 'disabled':
-      return 'outline'
-  }
-}
-
-function getTrustSignalBadgeVariant(state: AgentTrustSignalState): BadgeVariant {
-  switch (state) {
-    case 'healthy':
-      return 'default'
-    case 'degraded':
-      return 'destructive'
-    case 'unavailable':
-      return 'outline'
-  }
-}
-
-function getTrustSignalLabel(state: AgentTrustSignalState): string {
-  switch (state) {
-    case 'healthy':
-      return 'Healthy'
-    case 'degraded':
-      return 'Needs attention'
-    case 'unavailable':
-      return 'Unavailable'
-  }
-}
-
-const TRUST_PERMISSION_SCOPE_DETAIL =
-  'Packaged desktop permissions stay least-privilege: core runtime, native dialog access, and an auth opener scope limited to https://auth.openai.com/*.'
-const TRUST_STORAGE_BOUNDARY_DETAIL =
-  'Durable runtime + operator state stays bound to the selected repository, while notification credentials remain app-local and never render raw secret values here.'
-
-function parseRouteFormErrors(error: unknown): NotificationRouteFormErrors {
-  if (!(error instanceof z.ZodError)) {
-    return {
-      form: getErrorMessage(error, 'Cadence could not validate the notification route form.'),
-    }
-  }
-
-  const nextErrors: NotificationRouteFormErrors = {}
-  for (const issue of error.issues) {
-    const path = issue.path[0]
-    if (isNotificationRouteFieldErrorKey(path)) {
-      if (!nextErrors[path]) {
-        nextErrors[path] = issue.message
-      }
-      continue
-    }
-
-    if (!nextErrors.form) {
-      nextErrors.form = issue.message
-    }
-  }
-
-  return nextErrors
-}
-
-function toNotificationRouteRequest(formValues: NotificationRouteFormValues): Omit<UpsertNotificationRouteRequestDto, 'projectId'> {
-  const parsedForm = notificationRouteFormSchema.parse(formValues)
-  const metadataText = parsedForm.metadataJson.trim()
-  const routeTarget = composeNotificationRouteTarget(parsedForm.routeKind, parsedForm.routeTarget)
-
-  return {
-    routeId: parsedForm.routeId,
-    routeKind: parsedForm.routeKind,
-    routeTarget,
-    enabled: parsedForm.enabled,
-    metadataJson: metadataText.length > 0 ? metadataText : null,
-    updatedAt: new Date().toISOString(),
-  }
-}
-
-function createDefaultRouteFormValues(routeKind: NotificationRouteKindDto = 'telegram'): NotificationRouteFormValues {
-  return {
-    routeId: '',
-    routeKind,
-    routeTarget: '',
-    enabled: true,
-    metadataJson: '',
-  }
-}
-
-const NOTIFICATION_ROUTE_KIND_OPTIONS: Array<{
-  value: NotificationRouteKindDto
-  label: string
-  targetPlaceholder: string
-  targetHelp: string
-}> = [
-  {
-    value: 'telegram',
-    label: 'Telegram',
-    targetPlaceholder: '@channel_or_chat_id',
-    targetHelp: 'Use a Telegram chat id (for example -100123...) or a channel handle.',
-  },
-  {
-    value: 'discord',
-    label: 'Discord',
-    targetPlaceholder: 'channel-id',
-    targetHelp: 'Use the Discord channel id where route notifications should be delivered.',
-  },
-]
 
 interface ComposerModelOption {
   value: string
@@ -483,8 +307,8 @@ function getSelectedProviderLabel(agent: AgentPaneView, runtimeSession: RuntimeS
 }
 
 function getStatusMeta(runtimeSession: RuntimeSessionView | null, agent: AgentPaneView) {
-  const selectedProviderId = getSelectedProviderId(agent, runtimeSession)
-  const selectedProviderLabel = getSelectedProviderLabel(agent, runtimeSession)
+  const selectedProviderId = runtimeHelpers.getSelectedProviderId(agent, runtimeSession)
+  const selectedProviderLabel = runtimeHelpers.getSelectedProviderLabel(agent, runtimeSession)
   const providerMismatch = agent.providerMismatch ?? false
   const openrouterApiKeyConfigured = agent.openrouterApiKeyConfigured ?? false
 
@@ -1436,13 +1260,13 @@ export function AgentRuntime({
     [agent.autonomousRecentArtifacts],
   )
   const recentAutonomousUnits = agent.recentAutonomousUnits ?? createEmptyRecentAutonomousUnits()
-  const checkpointControlLoop = agent.checkpointControlLoop ?? createEmptyCheckpointControlLoop()
+  const checkpointControlLoop = agent.checkpointControlLoop ?? runtimeHelpers.createEmptyCheckpointControlLoop()
   const recentAutonomousUnitsAlert = getRecentAutonomousUnitsAlertMeta({
     recentUnits: recentAutonomousUnits,
     runtimeStream: agent.runtimeStream ?? null,
     messagesUnavailableReason: agent.messagesUnavailableReason,
   })
-  const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
+  const renderableRuntimeRun = runtimeHelpers.hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
   const hasIncompleteRuntimeRunPayload = Boolean(runtimeRun && !renderableRuntimeRun)
   const runtimeStream = agent.runtimeStream ?? null
   const streamStatus = agent.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
@@ -1456,145 +1280,38 @@ export function AgentRuntime({
   const autonomousRunErrorMessage = agent.autonomousRunErrorMessage ?? null
   const latestAutonomousLifecycleReason = getLatestAutonomousLifecycleReason(autonomousRun)
   const runtimeRunCheckpoints = useMemo<RuntimeRunCheckpointView[]>(
-    () => sortByNewest(renderableRuntimeRun?.checkpoints ?? [], (checkpoint) => checkpoint.createdAt).slice(0, 4),
+    () => runtimeHelpers.sortByNewest(renderableRuntimeRun?.checkpoints ?? [], (checkpoint) => checkpoint.createdAt).slice(0, 4),
     [renderableRuntimeRun],
   )
-  const streamStatusLabel = displayValue(agent.runtimeStreamStatusLabel, getRuntimeStreamStatusLabel(streamStatus))
+  const streamStatusLabel = runtimeHelpers.displayValue(agent.runtimeStreamStatusLabel, getRuntimeStreamStatusLabel(streamStatus))
   const streamIssue: RuntimeStreamIssueView | null = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
   const approvalRequests = agent.approvalRequests ?? []
   const resumeHistory = agent.resumeHistory ?? []
-  const notificationRoutes = agent.notificationRoutes ?? []
-  const notificationChannelHealth = agent.notificationChannelHealth ?? []
-  const notificationRouteLoadStatus = agent.notificationRouteLoadStatus ?? 'idle'
-  const notificationRouteError = agent.notificationRouteError ?? null
   const notificationSyncSummary = agent.notificationSyncSummary ?? null
   const notificationSyncError = agent.notificationSyncError ?? null
   const notificationSyncPollingActive = agent.notificationSyncPollingActive ?? false
   const notificationSyncPollingActionId = agent.notificationSyncPollingActionId ?? null
   const notificationSyncPollingBoundaryId = agent.notificationSyncPollingBoundaryId ?? null
-  const notificationRouteMutationStatus = agent.notificationRouteMutationStatus ?? 'idle'
-  const pendingNotificationRouteId = agent.pendingNotificationRouteId ?? null
-  const notificationRouteMutationError = agent.notificationRouteMutationError ?? null
-  const trustSnapshot = useMemo<AgentTrustSnapshotView>(() => {
-    if (agent.trustSnapshot) {
-      return agent.trustSnapshot
-    }
-
-    const enabledRoutes = notificationRoutes.filter((route) => route.enabled)
-    const degradedRouteCount = notificationRoutes.filter(
-      (route) => route.health === 'degraded' || route.health === 'pending',
-    ).length
-    const pendingApprovalCount = agent.pendingApprovalCount ?? approvalRequests.filter((approval) => approval.isPending).length
-
-    let readyCredentialRouteCount = 0
-    let missingCredentialRouteCount = 0
-    let malformedCredentialRouteCount = 0
-    let unavailableCredentialRouteCount = 0
-
-    for (const route of enabledRoutes) {
-      const readinessStatus = route.credentialReadiness?.status ?? 'unavailable'
-      switch (readinessStatus) {
-        case 'ready':
-          readyCredentialRouteCount += 1
-          break
-        case 'missing':
-          missingCredentialRouteCount += 1
-          break
-        case 'malformed':
-          malformedCredentialRouteCount += 1
-          break
-        case 'unavailable':
-        default:
-          unavailableCredentialRouteCount += 1
-      }
-    }
-
-    const syncDispatchFailedCount = notificationSyncSummary?.dispatch.failedCount ?? 0
-    const syncReplyRejectedCount = notificationSyncSummary?.replies.rejectedCount ?? 0
-    const approvalsState: AgentTrustSignalState = pendingApprovalCount > 0 ? 'degraded' : 'healthy'
-    const routesState: AgentTrustSignalState = notificationRouteError ? 'degraded' : 'unavailable'
-    const syncState: AgentTrustSignalState = notificationSyncError ? 'degraded' : 'unavailable'
-    const state: AgentTrustSignalState =
-      notificationRouteError || notificationSyncError || pendingApprovalCount > 0 ? 'degraded' : 'unavailable'
-
-    return {
-      state,
-      stateLabel: getTrustSignalLabel(state),
-      runtimeState: 'unavailable',
-      runtimeReason: agent.runtimeRunUnavailableReason,
-      streamState: 'unavailable',
-      streamReason: agent.messagesUnavailableReason,
-      approvalsState,
-      approvalsReason:
-        pendingApprovalCount > 0
-          ? `There are ${pendingApprovalCount} pending operator approval gate(s) waiting for action.`
-          : 'No pending operator approvals are blocking autonomous continuation.',
-      routesState,
-      routesReason: notificationRouteError
-        ? notificationRouteError.message
-        : notificationRoutes.length === 0
-          ? 'No notification routes are configured for the selected project.'
-          : 'Cadence is keeping route counts visible, but hook-owned trust projection is unavailable.',
-      credentialsState: enabledRoutes.length === 0 ? 'unavailable' : 'degraded',
-      credentialsReason: enabledRoutes.length === 0
-        ? 'No enabled routes require app-local credential readiness checks.'
-        : 'Cadence is keeping credential-readiness counts visible, but hook-owned trust projection is unavailable.',
-      syncState,
-      syncReason: notificationSyncError
-        ? notificationSyncError.message
-        : notificationSyncSummary
-          ? 'Cadence is keeping the last observed sync counts visible, but hook-owned trust projection is unavailable.'
-          : 'No notification adapter sync summary is available yet.',
-      routeCount: notificationRoutes.length,
-      enabledRouteCount: enabledRoutes.length,
-      degradedRouteCount,
-      readyCredentialRouteCount,
-      missingCredentialRouteCount,
-      malformedCredentialRouteCount,
-      unavailableCredentialRouteCount,
-      pendingApprovalCount,
-      syncDispatchFailedCount,
-      syncReplyRejectedCount,
-      routeError: notificationRouteError,
-      syncError: notificationSyncError,
-      projectionError: {
-        code: 'trust_snapshot_missing',
-        message:
-          'Cadence did not receive a hook-composed trust snapshot for this view. Showing fail-closed trust state until the selected-project projection recovers.',
-        retryable: true,
-      },
-    }
-  }, [
-    agent.messagesUnavailableReason,
-    agent.pendingApprovalCount,
-    agent.runtimeRunUnavailableReason,
-    agent.trustSnapshot,
-    approvalRequests,
-    notificationRouteError,
-    notificationRoutes,
-    notificationSyncError,
-    notificationSyncSummary,
-  ])
-  const checkpointControlLoopRecoveryAlert = getCheckpointControlLoopRecoveryAlertMeta({
+  const checkpointTrustSnapshot = agent.trustSnapshot ?? {
+    syncState: notificationSyncError ? 'degraded' : 'unavailable',
+    syncReason: notificationSyncError
+      ? notificationSyncError.message
+      : notificationSyncSummary
+        ? 'Cadence is keeping the last observed sync counts visible, but hook-owned trust projection is unavailable.'
+        : 'No notification adapter sync summary is available yet.',
+  }
+  const checkpointControlLoopRecoveryAlert = runtimeHelpers.getCheckpointControlLoopRecoveryAlertMeta({
     controlLoop: checkpointControlLoop,
-    trustSnapshot,
+    trustSnapshot: checkpointTrustSnapshot,
     autonomousRunErrorMessage,
     notificationSyncPollingActive,
     notificationSyncPollingActionId,
     notificationSyncPollingBoundaryId,
   })
-  const checkpointControlLoopCoverageAlert = getCheckpointControlLoopCoverageAlertMeta(checkpointControlLoop)
-  const [manualInput, setManualInput] = useState('')
-  const [pendingAction, setPendingAction] = useState<PendingAction>(null)
-  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const checkpointControlLoopCoverageAlert = runtimeHelpers.getCheckpointControlLoopCoverageAlertMeta(checkpointControlLoop)
   const [autonomousRunActionMessage, setAutonomousRunActionMessage] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
-  const [routePanelMessage, setRoutePanelMessage] = useState<string | null>(null)
-  const [browserMessage, setBrowserMessage] = useState<string | null>(null)
   const [operatorAnswers, setOperatorAnswers] = useState<Record<string, string>>({})
-  const [routeFormValues, setRouteFormValues] = useState<NotificationRouteFormValues>(() => createDefaultRouteFormValues())
-  const [routeFormErrors, setRouteFormErrors] = useState<NotificationRouteFormErrors>({})
-  const [editingRouteId, setEditingRouteId] = useState<string | null>(null)
   const [pendingOperatorIntent, setPendingOperatorIntent] = useState<{
     actionId: string
     kind: OperatorIntentKind
@@ -1606,31 +1323,29 @@ export function AgentRuntime({
   const lastSeenProjectIdRef = useRef(agent.project.id)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
 
-  const selectedProviderId = getSelectedProviderId(agent, runtimeSession)
-  const selectedProviderLabel = getSelectedProviderLabel(agent, runtimeSession)
+  const selectedProviderId = runtimeHelpers.getSelectedProviderId(agent, runtimeSession)
+  const selectedProviderLabel = runtimeHelpers.getSelectedProviderLabel(agent, runtimeSession)
   const selectedModelId = displayValue(agent.selectedModelId, selectedProviderId === 'openrouter' ? 'Model not configured' : 'openai_codex')
   const composerModelGroups = useMemo(
-    () => getComposerModelGroups(selectedProviderId, selectedProviderLabel, selectedModelId),
+    () => runtimeHelpers.getComposerModelGroups(selectedProviderId, selectedProviderLabel, selectedModelId),
     [selectedModelId, selectedProviderId, selectedProviderLabel],
   )
   const [composerModelId, setComposerModelId] = useState(selectedModelId)
   const [composerThinkingLevel, setComposerThinkingLevel] = useState<ComposerThinkingLevelOption['value']>('medium')
   const isOpenRouterSelected = selectedProviderId === 'openrouter'
-  const isOpenAiSelected = selectedProviderId === 'openai_codex'
   const openrouterApiKeyConfigured = agent.openrouterApiKeyConfigured ?? false
   const providerMismatch = agent.providerMismatch ?? false
-  const streamStatusMeta = useMemo(() => getStreamStatusMeta(agent, runtimeSession), [agent, runtimeSession])
+  const streamStatusMeta = useMemo(() => runtimeHelpers.getStreamStatusMeta(agent, runtimeSession), [agent, runtimeSession])
   const repositoryPath = displayValue(agent.repositoryPath, 'No repository path available')
   const repositoryLabel = displayValue(agent.repositoryLabel, agent.project.name)
   const sessionLabel = displayValue(runtimeSession?.sessionLabel, 'No session')
-  const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
+  const streamRunId = runtimeHelpers.getStreamRunId(runtimeStream, renderableRuntimeRun)
   const streamSequenceLabel = formatSequence(runtimeStream?.lastSequence ?? null)
   const streamSessionLabel = displayValue(runtimeStream?.sessionId, runtimeSession?.sessionLabel ?? 'No session')
   const hasStreamRunMismatch = Boolean(runtimeStream?.runId && renderableRuntimeRun && runtimeStream.runId !== renderableRuntimeRun.runId)
   const hasAttachedRun = Boolean(renderableRuntimeRun)
   const showNoRunStreamBanner = Boolean(runtimeSession?.isAuthenticated && !hasAttachedRun)
   const hasRepositoryBinding = Boolean(agent.repositoryPath?.trim())
-  const canStartLogin = hasRepositoryBinding && isOpenAiSelected && typeof onStartLogin === 'function'
   const canStartAutonomousRun = Boolean(
     hasRepositoryBinding && typeof onStartAutonomousRun === 'function' && runtimeSession?.isAuthenticated && runtimeSession.sessionId,
   )
@@ -1641,31 +1356,12 @@ export function AgentRuntime({
   const canStartRuntimeRun = Boolean(
     hasRepositoryBinding && typeof onStartRuntimeRun === 'function' && (runtimeSession?.isAuthenticated || renderableRuntimeRun),
   )
-  const canResumeRuntimeSession =
-    hasRepositoryBinding && typeof onStartRuntimeSession === 'function' && (!isOpenRouterSelected || openrouterApiKeyConfigured)
-  const canSubmitManualInput = hasRepositoryBinding && isOpenAiSelected && typeof onSubmitManualCallback === 'function'
   const canStopRuntimeRun = Boolean(
     hasRepositoryBinding && renderableRuntimeRun && !renderableRuntimeRun.isTerminal && typeof onStopRuntimeRun === 'function',
   )
-  const canLogout = hasRepositoryBinding && typeof onLogout === 'function'
-  const canRetryStream = Boolean(hasRepositoryBinding && runtimeSession?.isAuthenticated && typeof onRetryStream === 'function')
   const canResolveOperatorActions = hasRepositoryBinding && typeof onResolveOperatorAction === 'function'
   const canResumeOperatorRuns = hasRepositoryBinding && typeof onResumeOperatorRun === 'function'
-  const canRefreshNotificationRoutes = hasRepositoryBinding && typeof onRefreshNotificationRoutes === 'function'
-  const canMutateNotificationRoutes = hasRepositoryBinding && typeof onUpsertNotificationRoute === 'function'
-  const hasAuthorizationUrl = Boolean(runtimeSession?.authorizationUrl)
-  const hasActiveFlow = Boolean(runtimeSession?.flowId)
-  const showManualFallback = Boolean(
-    isOpenAiSelected && (runtimeSession?.isLoginInProgress || hasAuthorizationUrl || browserMessage || runtimeSession?.needsManualInput),
-  )
-  const showReuseButton = !runtimeSession || runtimeSession.isSignedOut || runtimeSession.isFailed || providerMismatch
-  const showLogoutButton = Boolean(runtimeSession && !runtimeSession.isLoginInProgress && !runtimeSession.isSignedOut)
-  const runtimeSessionActionLabel = isOpenRouterSelected
-    ? providerMismatch || runtimeSession?.isAuthenticated
-      ? 'Rebind OpenRouter runtime'
-      : 'Bind OpenRouter runtime'
-    : 'Reuse app-local runtime session'
-  const composerPlaceholder = getComposerPlaceholder(runtimeSession, streamStatus, renderableRuntimeRun, streamRunId, {
+  const composerPlaceholder = runtimeHelpers.getComposerPlaceholder(runtimeSession, streamStatus, renderableRuntimeRun, streamRunId, {
     selectedProviderId,
     openrouterApiKeyConfigured,
     providerMismatch,
@@ -1718,14 +1414,13 @@ export function AgentRuntime({
   )
   // The Agent tab no longer renders these debug-oriented panels.
   const showAutonomousLedgerPanel = false
-  const showRemoteEscalationPanel = false
   const sortedApprovals = useMemo(
     () => sortByNewest(approvalRequests, (approval) => approval.updatedAt ?? approval.createdAt).slice(0, 6),
     [approvalRequests],
   )
   const pendingApprovals = useMemo(() => sortedApprovals.filter((approval) => approval.isPending), [sortedApprovals])
-  const runtimeRunStatusText = getRuntimeRunStatusText(renderableRuntimeRun)
-  const primaryRuntimeRunActionLabel = getPrimaryRuntimeRunActionLabel(renderableRuntimeRun)
+  const runtimeRunStatusText = runtimeHelpers.getRuntimeRunStatusText(renderableRuntimeRun)
+  const primaryRuntimeRunActionLabel = runtimeHelpers.getPrimaryRuntimeRunActionLabel(renderableRuntimeRun)
   const autonomousRunActionErrorTitle =
     autonomousRunActionError?.retryable || autonomousRunActionError?.code.includes('timeout')
       ? 'Autonomous run control needs retry'
@@ -1734,13 +1429,6 @@ export function AgentRuntime({
     runtimeRunActionError?.retryable || runtimeRunActionError?.code.includes('timeout')
       ? 'Run control needs retry'
       : 'Run control failed'
-  const routeKindOption =
-    NOTIFICATION_ROUTE_KIND_OPTIONS.find((option) => option.value === routeFormValues.routeKind) ??
-    NOTIFICATION_ROUTE_KIND_OPTIONS[0]
-  const isRouteListLoading = notificationRouteLoadStatus === 'loading' && notificationRoutes.length === 0
-  const isRouteListRefreshing = agent.notificationRouteIsRefreshing || (notificationRouteLoadStatus === 'loading' && notificationRoutes.length > 0)
-  const isRouteMutationRunning = notificationRouteMutationStatus === 'running'
-  const trustSignalCards = useMemo(
     () => [
       {
         id: 'runtime',
@@ -1787,228 +1475,6 @@ export function AgentRuntime({
     ],
     [streamStatusLabel, trustSnapshot, runtimeRunStatusText],
   )
-  const trustPrimaryErrorCode =
-    trustSnapshot.projectionError?.code ??
-    trustSnapshot.routeError?.code ??
-    trustSnapshot.syncError?.code ??
-    runtimeRunActionError?.code ??
-    streamIssue?.code ??
-    runtimeSession?.lastErrorCode ??
-    renderableRuntimeRun?.lastErrorCode ??
-    null
-  const trustActionApprovals = useMemo(
-    () => sortedApprovals.filter((approval) => approval.isPending || approval.canResume).slice(0, 2),
-    [sortedApprovals],
-  )
-  const trustHiddenActionCount = Math.max(
-    sortedApprovals.filter((approval) => approval.isPending || approval.canResume).length - trustActionApprovals.length,
-    0,
-  )
-  const trustPrimaryIssue = useMemo(() => {
-    if (trustSnapshot.projectionError) {
-      return {
-        title: 'Showing last truthful trust snapshot',
-        message: trustSnapshot.projectionError.message,
-        code: trustSnapshot.projectionError.code,
-        destructive: true,
-      }
-    }
-
-    if (providerMismatch) {
-      return {
-        title: 'Provider mismatch',
-        message: agent.sessionUnavailableReason,
-        code: null,
-        destructive: true,
-      }
-    }
-
-    if (runtimeRunActionError) {
-      return {
-        title: runtimeRunActionErrorTitle,
-        message: runtimeRunActionError.message,
-        code: runtimeRunActionError.code,
-        destructive: true,
-      }
-    }
-
-    if (streamIssue) {
-      return {
-        title: 'Live feed failed',
-        message: streamIssue.message,
-        code: streamIssue.code,
-        destructive: true,
-      }
-    }
-
-    if (runtimeSession?.lastError) {
-      return {
-        title: 'Runtime session needs attention',
-        message: runtimeSession.lastError.message,
-        code: runtimeSession.lastErrorCode,
-        destructive: true,
-      }
-    }
-
-    if (renderableRuntimeRun?.lastError) {
-      return {
-        title: 'Recovered run needs attention',
-        message: renderableRuntimeRun.lastError.message,
-        code: renderableRuntimeRun.lastErrorCode,
-        destructive: true,
-      }
-    }
-
-    if (trustSnapshot.approvalsState === 'degraded') {
-      return {
-        title: 'Operator approval required',
-        message: trustSnapshot.approvalsReason,
-        code: null,
-        destructive: false,
-      }
-    }
-
-    if (notificationSyncPollingActive) {
-      return {
-        title: trustSnapshot.syncState === 'degraded' ? 'Showing last truthful route sync' : 'Route sync polling active',
-        message:
-          trustSnapshot.syncState === 'degraded'
-            ? `Cadence is still polling configured routes for blocked boundary ${displayValue(notificationSyncPollingBoundaryId, 'unknown')} and action ${displayValue(notificationSyncPollingActionId, 'unknown')} while preserving the last truthful sync summary. ${trustSnapshot.syncReason}`
-            : `Cadence is polling configured routes for blocked boundary ${displayValue(notificationSyncPollingBoundaryId, 'unknown')} and pending operator action ${displayValue(notificationSyncPollingActionId, 'unknown')}.`,
-        code: trustSnapshot.syncError?.code ?? null,
-        destructive: trustSnapshot.syncState === 'degraded',
-      }
-    }
-
-    if (trustSnapshot.runtimeState !== 'healthy') {
-      return {
-        title: 'Run status needs attention',
-        message: trustSnapshot.runtimeReason,
-        code: trustPrimaryErrorCode,
-        destructive: false,
-      }
-    }
-
-    if (trustSnapshot.streamState !== 'healthy') {
-      return {
-        title: 'Live feed needs attention',
-        message: trustSnapshot.streamReason,
-        code: trustPrimaryErrorCode,
-        destructive: false,
-      }
-    }
-
-    if (trustSnapshot.routesState !== 'healthy') {
-      return {
-        title: 'Route health needs attention',
-        message: trustSnapshot.routesReason,
-        code: trustSnapshot.routeError?.code ?? null,
-        destructive: false,
-      }
-    }
-
-    if (trustSnapshot.credentialsState !== 'healthy') {
-      return {
-        title: 'Credential readiness needs attention',
-        message: trustSnapshot.credentialsReason,
-        code: null,
-        destructive: false,
-      }
-    }
-
-    if (trustSnapshot.syncState !== 'healthy') {
-      return {
-        title: 'Route sync needs attention',
-        message: trustSnapshot.syncReason,
-        code: trustSnapshot.syncError?.code ?? null,
-        destructive: false,
-      }
-    }
-
-    return null
-  }, [
-    agent.sessionUnavailableReason,
-    notificationSyncPollingActionId,
-    notificationSyncPollingActive,
-    notificationSyncPollingBoundaryId,
-    providerMismatch,
-    renderableRuntimeRun?.lastError,
-    renderableRuntimeRun?.lastErrorCode,
-    runtimeRunActionError,
-    runtimeRunActionErrorTitle,
-    runtimeSession?.lastError,
-    runtimeSession?.lastErrorCode,
-    streamIssue,
-    trustPrimaryErrorCode,
-    trustSnapshot,
-  ])
-  const trustRecoveryActions = useMemo(() => {
-    const nextActions: string[] = []
-
-    if (trustSnapshot.runtimeState !== 'healthy') {
-      if (isOpenRouterSelected) {
-        if (!openrouterApiKeyConfigured) {
-          nextActions.push('Configure the OpenRouter API key in Settings before trusting autonomous execution.')
-        } else if (!runtimeSession?.isAuthenticated || providerMismatch) {
-          nextActions.push('Bind or rebind OpenRouter so provider identity and diagnostics reflect the selected Settings provider.')
-        }
-      } else if (!runtimeSession?.isAuthenticated) {
-        nextActions.push('Sign in with OpenAI before trusting autonomous execution.')
-      }
-
-      if (!renderableRuntimeRun || renderableRuntimeRun.isStale || renderableRuntimeRun.isFailed) {
-        nextActions.push('Start or reconnect the supervised run so runtime liveness is durable and current.')
-      }
-    }
-
-    if (trustSnapshot.streamState !== 'healthy') {
-      nextActions.push('Retry the live feed after runtime reconnection so run-scoped telemetry is current.')
-    }
-
-    if (trustSnapshot.approvalsState === 'degraded') {
-      nextActions.push('Resolve pending operator approvals so autonomous continuation is no longer blocked.')
-    }
-
-    if (trustSnapshot.credentialsState === 'degraded') {
-      nextActions.push('Configure missing or malformed app-local route credentials in Settings before dispatch.')
-    }
-
-    if (trustSnapshot.routesState !== 'healthy' || trustSnapshot.syncState !== 'healthy') {
-      nextActions.push('Refresh route health from the Agent tab after credential updates.')
-    }
-
-    if (trustPrimaryErrorCode) {
-      nextActions.push(`Inspect error code ${trustPrimaryErrorCode} before considering this project trust state healthy.`)
-    }
-
-    return Array.from(new Set(nextActions))
-  }, [
-    isOpenRouterSelected,
-    openrouterApiKeyConfigured,
-    providerMismatch,
-    renderableRuntimeRun,
-    runtimeSession?.isAuthenticated,
-    trustPrimaryErrorCode,
-    trustSnapshot,
-  ])
-  const hasTrustRecoveryActions = trustRecoveryActions.length > 0
-  const hasNotificationTrustSurface =
-    notificationSyncPollingActive ||
-    notificationRoutes.length > 0 ||
-    notificationChannelHealth.length > 0 ||
-    notificationSyncSummary !== null ||
-    notificationSyncError !== null ||
-    trustSnapshot.pendingApprovalCount > 0
-  const showTrustSurface =
-    runtimeSession !== null ||
-    renderableRuntimeRun !== null ||
-    streamIssue !== null ||
-    providerMismatch ||
-    trustSnapshot.projectionError !== null ||
-    hasNotificationTrustSurface
-  const latestSyncTimestampLabel = notificationSyncSummary
-    ? formatTimestamp(notificationSyncSummary.syncedAt)
-    : 'No successful sync recorded yet.'
 
   useEffect(() => {
     setComposerModelId(selectedModelId)
@@ -2128,239 +1594,6 @@ export function AgentRuntime({
     }
   }, [recentRunReplacement, renderableRuntimeRun?.runId, runtimeStream?.runId, runtimeStreamItems])
 
-  async function openAuthorizationUrl(url: string) {
-    try {
-      await openUrl(url)
-      setBrowserMessage(null)
-    } catch (error) {
-      setBrowserMessage(
-        getErrorMessage(
-          error,
-          'Cadence could not open the system browser automatically. Use the authorization URL below and finish login with the pasted redirect fallback.',
-        ),
-      )
-    }
-  }
-
-  async function handleStartLogin() {
-    if (!canStartLogin || !onStartLogin) {
-      return
-    }
-
-    setPendingAction('login')
-    setActionMessage(null)
-    setBrowserMessage(null)
-
-    try {
-      const nextRuntime = await onStartLogin()
-      if (!nextRuntime?.authorizationUrl) {
-        setBrowserMessage(
-          'Cadence started the OpenAI login flow, but the authorization URL was missing. Start login again to create a fresh flow.',
-        )
-        return
-      }
-
-      await openAuthorizationUrl(nextRuntime.authorizationUrl)
-    } catch (error) {
-      setActionMessage(getErrorMessage(error, 'Cadence could not start the OpenAI login flow for this project.'))
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  async function handleOpenBrowserAgain() {
-    const url = runtimeSession?.authorizationUrl
-    if (!url) {
-      setBrowserMessage('Cadence no longer has an authorization URL for this login flow. Start login again.')
-      return
-    }
-
-    setPendingAction('browser')
-    setActionMessage(null)
-
-    try {
-      await openAuthorizationUrl(url)
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  async function handleResumeRuntimeSession() {
-    if (!canResumeRuntimeSession || !onStartRuntimeSession) {
-      return
-    }
-
-    setPendingAction('reuse')
-    setActionMessage(null)
-
-    try {
-      await onStartRuntimeSession()
-    } catch (error) {
-      setActionMessage(
-        getErrorMessage(
-          error,
-          isOpenRouterSelected
-            ? 'Cadence could not bind or rebind the OpenRouter runtime for this project.'
-            : 'Cadence could not reuse the app-local runtime session for this project.',
-        ),
-      )
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  async function handleStartAutonomousRun() {
-    if (!canStartAutonomousRun || !onStartAutonomousRun) {
-      return
-    }
-
-    setAutonomousRunActionMessage(null)
-
-    try {
-      await onStartAutonomousRun()
-    } catch (error) {
-      setAutonomousRunActionMessage(
-        getErrorMessage(error, 'Cadence could not start the autonomous run for this project.'),
-      )
-    }
-  }
-
-  async function handleInspectAutonomousRun() {
-    if (!canInspectAutonomousRun || !onInspectAutonomousRun) {
-      return
-    }
-
-    setAutonomousRunActionMessage(null)
-
-    try {
-      await onInspectAutonomousRun()
-    } catch (error) {
-      setAutonomousRunActionMessage(
-        getErrorMessage(error, 'Cadence could not inspect the autonomous run truth for this project.'),
-      )
-    }
-  }
-
-  async function handleCancelAutonomousRun() {
-    if (!canCancelAutonomousRun || !onCancelAutonomousRun || !autonomousRun) {
-      return
-    }
-
-    setAutonomousRunActionMessage(null)
-
-    try {
-      await onCancelAutonomousRun(autonomousRun.runId)
-    } catch (error) {
-      setAutonomousRunActionMessage(
-        getErrorMessage(error, 'Cadence could not cancel the autonomous run for this project.'),
-      )
-    }
-  }
-
-  async function handleStartRuntimeRun() {
-    if (!canStartRuntimeRun || !onStartRuntimeRun) {
-      return
-    }
-
-    setRuntimeRunActionMessage(null)
-
-    try {
-      await onStartRuntimeRun()
-    } catch (error) {
-      setRuntimeRunActionMessage(
-        getErrorMessage(error, 'Cadence could not start or reconnect the supervised runtime run for this project.'),
-      )
-    }
-  }
-
-  async function handleStopRuntimeRun() {
-    if (!canStopRuntimeRun || !onStopRuntimeRun || !renderableRuntimeRun) {
-      return
-    }
-
-    setRuntimeRunActionMessage(null)
-
-    try {
-      await onStopRuntimeRun(renderableRuntimeRun.runId)
-    } catch (error) {
-      setRuntimeRunActionMessage(
-        getErrorMessage(error, 'Cadence could not stop the supervised runtime run for this project.'),
-      )
-    }
-  }
-
-  async function handleSubmitManualCallback() {
-    if (!canSubmitManualInput || !onSubmitManualCallback) {
-      return
-    }
-
-    const trimmedInput = manualInput.trim()
-    if (!trimmedInput) {
-      setActionMessage('Paste the full OpenAI redirect URL before submitting the manual fallback.')
-      return
-    }
-
-    if (!runtimeSession?.flowId) {
-      setActionMessage('Cadence no longer has an active OpenAI login flow for this project. Start login again.')
-      return
-    }
-
-    setPendingAction('manual')
-    setActionMessage(null)
-
-    try {
-      await onSubmitManualCallback(runtimeSession.flowId, trimmedInput)
-      setManualInput('')
-      setBrowserMessage(null)
-    } catch (error) {
-      setActionMessage(getErrorMessage(error, 'Cadence could not complete the pasted OpenAI redirect URL.'))
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  async function handleLogout() {
-    if (!canLogout || !onLogout) {
-      return
-    }
-
-    setPendingAction('logout')
-    setActionMessage(null)
-    setBrowserMessage(null)
-
-    try {
-      await onLogout()
-    } catch (error) {
-      setActionMessage(
-        getErrorMessage(
-          error,
-          isOpenRouterSelected
-            ? 'Cadence could not clear the OpenRouter runtime binding for this project.'
-            : 'Cadence could not remove the OpenAI runtime session for this project.',
-        ),
-      )
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  async function handleRetryStream() {
-    if (!canRetryStream || !onRetryStream) {
-      return
-    }
-
-    setPendingAction('retry_stream')
-    setActionMessage(null)
-
-    try {
-      await onRetryStream()
-    } catch (error) {
-      setActionMessage(getErrorMessage(error, 'Cadence could not retry the live runtime stream for this project.'))
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
   async function handleResolveOperatorAction(
     actionId: string,
     decision: 'approve' | 'reject',
@@ -2398,147 +1631,6 @@ export function AgentRuntime({
       // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
     } finally {
       setPendingOperatorIntent(null)
-    }
-  }
-
-  async function handleRefreshNotificationRoutes(options: { force?: boolean } = {}) {
-    if (!canRefreshNotificationRoutes || !onRefreshNotificationRoutes) {
-      return
-    }
-
-    setPendingAction('refresh_routes')
-    setRoutePanelMessage(null)
-
-    try {
-      await onRefreshNotificationRoutes({ force: options.force ?? true })
-    } catch (error) {
-      setRoutePanelMessage(getErrorMessage(error, 'Cadence could not refresh notification route health for this project.'))
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  function handleRouteFieldChange<Field extends keyof NotificationRouteFormValues>(
-    field: Field,
-    value: NotificationRouteFormValues[Field],
-  ) {
-    setRouteFormValues((currentValues) => ({
-      ...currentValues,
-      [field]: value,
-    }))
-
-    setRouteFormErrors((currentErrors) => {
-      const errorField: NotificationRouteFieldErrorKey | null = isNotificationRouteFieldErrorKey(field) ? field : null
-
-      if ((!errorField || !currentErrors[errorField]) && !currentErrors.form) {
-        return currentErrors
-      }
-
-      const nextErrors = { ...currentErrors }
-      if (errorField) {
-        delete nextErrors[errorField]
-      }
-      delete nextErrors.form
-      return nextErrors
-    })
-  }
-
-  function handleRouteKindChange(nextRouteKind: string) {
-    const routeKind = NOTIFICATION_ROUTE_KIND_OPTIONS.find((option) => option.value === nextRouteKind)?.value
-
-    if (!routeKind) {
-      setRouteFormErrors((currentErrors) => ({
-        ...currentErrors,
-        routeKind: 'Route kind must be Telegram or Discord.',
-      }))
-      return
-    }
-
-    handleRouteFieldChange('routeKind', routeKind)
-  }
-
-  function handleEditRoute(route: AgentPaneView['notificationRoutes'][number]) {
-    let routeTargetValue = route.routeTarget
-    let routeTargetError: string | null = null
-
-    try {
-      routeTargetValue = decomposeNotificationRouteTarget(route.routeKind, route.routeTarget).channelTarget
-    } catch (error) {
-      routeTargetError = getErrorMessage(
-        error,
-        'Saved route target is malformed. Provide a channel target so Cadence can persist canonical `<kind>:<channel-target>` values.',
-      )
-    }
-
-    setEditingRouteId(route.routeId)
-    setRouteFormValues({
-      routeId: route.routeId,
-      routeKind: route.routeKind,
-      routeTarget: routeTargetValue,
-      enabled: route.enabled,
-      metadataJson: route.metadataJson ?? '',
-    })
-    setRouteFormErrors(routeTargetError ? { routeTarget: routeTargetError } : {})
-    setRoutePanelMessage(null)
-  }
-
-  function handleStartNewRoute(routeKind: NotificationRouteKindDto = routeFormValues.routeKind) {
-    setEditingRouteId(null)
-    setRouteFormValues(createDefaultRouteFormValues(routeKind))
-    setRouteFormErrors({})
-    setRoutePanelMessage(null)
-  }
-
-  async function handleSaveNotificationRoute() {
-    if (!canMutateNotificationRoutes || !onUpsertNotificationRoute) {
-      return
-    }
-
-    let request: Omit<UpsertNotificationRouteRequestDto, 'projectId'>
-    try {
-      request = toNotificationRouteRequest(routeFormValues)
-      setRouteFormErrors({})
-    } catch (error) {
-      setRouteFormErrors(parseRouteFormErrors(error))
-      return
-    }
-
-    setPendingAction('save_route')
-    setRoutePanelMessage(null)
-
-    try {
-      await onUpsertNotificationRoute(request)
-      setEditingRouteId(request.routeId)
-      setRoutePanelMessage(`Saved route ${request.routeId} (${request.routeKind}).`)
-    } catch (error) {
-      setRoutePanelMessage(getErrorMessage(error, 'Cadence could not save this notification route.'))
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  async function handleToggleRoute(route: AgentPaneView['notificationRoutes'][number]) {
-    if (!canMutateNotificationRoutes || !onUpsertNotificationRoute) {
-      return
-    }
-
-    setPendingAction('toggle_route')
-    setRoutePanelMessage(null)
-
-    try {
-      await onUpsertNotificationRoute({
-        routeId: route.routeId,
-        routeKind: route.routeKind,
-        routeTarget: route.routeTarget,
-        enabled: !route.enabled,
-        metadataJson: route.metadataJson ?? null,
-        updatedAt: new Date().toISOString(),
-      })
-      setRoutePanelMessage(`${route.routeId} ${route.enabled ? 'disabled' : 'enabled'}.`)
-    } catch (error) {
-      setRoutePanelMessage(getErrorMessage(error, `Cadence could not update route ${route.routeId}.`))
-    } finally {
-      setPendingAction(null)
     }
   }
 
@@ -3401,7 +2493,7 @@ export function AgentRuntime({
                         const showAnswerError =
                           Boolean(approval) && requiresAnswer && answerValue.length > 0 && normalizedAnswer.length === 0
                         const actionPending = pendingOperatorIntent?.actionId === card.actionId
-                        const resumeMeta = getPerActionResumeStateMeta({
+                        const resumeMeta = runtimeHelpers.getPerActionResumeStateMeta({
                           card,
                           operatorActionStatus,
                           pendingOperatorActionId,
