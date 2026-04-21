@@ -46,7 +46,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { ComposerDock } from './agent-runtime/composer-dock'
 import * as runtimeHelpers from './agent-runtime/helpers'
+import { RecoveredRuntimeSection } from './agent-runtime/recovered-runtime-section'
+import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 
 interface AgentRuntimeProps {
   agent: AgentPaneView
@@ -1429,71 +1432,10 @@ export function AgentRuntime({
     runtimeRunActionError?.retryable || runtimeRunActionError?.code.includes('timeout')
       ? 'Run control needs retry'
       : 'Run control failed'
-    () => [
-      {
-        id: 'runtime',
-        title: 'Run status',
-        state: trustSnapshot.runtimeState,
-        summary: runtimeRunStatusText,
-        reason: trustSnapshot.runtimeReason,
-      },
-      {
-        id: 'stream',
-        title: 'Live feed',
-        state: trustSnapshot.streamState,
-        summary: streamStatusLabel,
-        reason: trustSnapshot.streamReason,
-      },
-      {
-        id: 'approvals',
-        title: 'Approval backlog',
-        state: trustSnapshot.approvalsState,
-        summary: `${trustSnapshot.pendingApprovalCount} pending gate${trustSnapshot.pendingApprovalCount === 1 ? '' : 's'}`,
-        reason: trustSnapshot.approvalsReason,
-      },
-      {
-        id: 'routes',
-        title: 'Route health',
-        state: trustSnapshot.routesState,
-        summary: `${trustSnapshot.routeCount} total · ${trustSnapshot.degradedRouteCount} degraded/pending`,
-        reason: trustSnapshot.routesReason,
-      },
-      {
-        id: 'credentials',
-        title: 'Credential readiness',
-        state: trustSnapshot.credentialsState,
-        summary: `${trustSnapshot.readyCredentialRouteCount} ready · ${trustSnapshot.missingCredentialRouteCount} missing · ${trustSnapshot.malformedCredentialRouteCount} malformed`,
-        reason: trustSnapshot.credentialsReason,
-      },
-      {
-        id: 'sync',
-        title: 'Route sync',
-        state: trustSnapshot.syncState,
-        summary: `${trustSnapshot.syncDispatchFailedCount} dispatch failures · ${trustSnapshot.syncReplyRejectedCount} rejected replies`,
-        reason: trustSnapshot.syncReason,
-      },
-    ],
-    [streamStatusLabel, trustSnapshot, runtimeRunStatusText],
-  )
 
   useEffect(() => {
     setComposerModelId(selectedModelId)
   }, [selectedModelId, selectedProviderId])
-
-  useEffect(() => {
-    setActionMessage(null)
-
-    if (runtimeSession?.isAuthenticated) {
-      setManualInput('')
-      setBrowserMessage(null)
-      return
-    }
-
-    if (!runtimeSession?.flowId) {
-      setManualInput('')
-      setBrowserMessage(null)
-    }
-  }, [runtimeSession?.flowId, runtimeSession?.isAuthenticated, runtimeSession?.updatedAt])
 
   useEffect(() => {
     if (agent.runtimeRunActionError) {
@@ -1572,13 +1514,6 @@ export function AgentRuntime({
   }, [agent.project.id, renderableRuntimeRun?.runId])
 
   useEffect(() => {
-    setRouteFormValues(createDefaultRouteFormValues())
-    setRouteFormErrors({})
-    setRoutePanelMessage(null)
-    setEditingRouteId(null)
-  }, [agent.project.id])
-
-  useEffect(() => {
     if (!recentRunReplacement) {
       return
     }
@@ -1593,6 +1528,76 @@ export function AgentRuntime({
       setRecentRunReplacement(null)
     }
   }, [recentRunReplacement, renderableRuntimeRun?.runId, runtimeStream?.runId, runtimeStreamItems])
+
+  async function handleStartAutonomousRun() {
+    if (!canStartAutonomousRun || !onStartAutonomousRun) {
+      return
+    }
+
+    setAutonomousRunActionMessage(null)
+
+    try {
+      await onStartAutonomousRun()
+    } catch (error) {
+      setAutonomousRunActionMessage(getErrorMessage(error, 'Cadence could not start the autonomous run.'))
+    }
+  }
+
+  async function handleInspectAutonomousRun() {
+    if (!canInspectAutonomousRun || !onInspectAutonomousRun) {
+      return
+    }
+
+    setAutonomousRunActionMessage(null)
+
+    try {
+      await onInspectAutonomousRun()
+    } catch (error) {
+      setAutonomousRunActionMessage(getErrorMessage(error, 'Cadence could not inspect autonomous run truth.'))
+    }
+  }
+
+  async function handleCancelAutonomousRun() {
+    if (!canCancelAutonomousRun || !onCancelAutonomousRun || !autonomousRun?.runId) {
+      return
+    }
+
+    setAutonomousRunActionMessage(null)
+
+    try {
+      await onCancelAutonomousRun(autonomousRun.runId)
+    } catch (error) {
+      setAutonomousRunActionMessage(getErrorMessage(error, 'Cadence could not cancel the autonomous run.'))
+    }
+  }
+
+  async function handleStartRuntimeRun() {
+    if (!canStartRuntimeRun || !onStartRuntimeRun) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      await onStartRuntimeRun()
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not start the supervised run.'))
+    }
+  }
+
+  async function handleStopRuntimeRun() {
+    if (!canStopRuntimeRun || !onStopRuntimeRun || !renderableRuntimeRun) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      await onStopRuntimeRun(renderableRuntimeRun.runId)
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not stop the supervised run.'))
+    }
+  }
 
   async function handleResolveOperatorAction(
     actionId: string,
@@ -1645,20 +1650,7 @@ export function AgentRuntime({
           }
         >
           {showAgentSetupEmptyState ? (
-            <CenteredEmptyState
-              description="Open Settings to choose a provider and model before using the agent tab for this imported project."
-              icon={Bot}
-              title="Configure agent runtime"
-              action={
-                onOpenSettings ? (
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                    <Button onClick={onOpenSettings} type="button">
-                      Configure
-                    </Button>
-                  </div>
-                ) : undefined
-              }
-            />
+            <SetupEmptyState onOpenSettings={onOpenSettings} />
           ) : (
           <div className="mx-auto flex max-w-4xl flex-col gap-4">
 
@@ -2144,103 +2136,22 @@ export function AgentRuntime({
             ) : null}
 
             {hasIncompleteRuntimeRunPayload || renderableRuntimeRun ? (
-              <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
-                <div className="flex flex-col gap-4">
-                  {hasIncompleteRuntimeRunPayload ? (
-                    <>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-lg font-semibold text-foreground">Durable run snapshot unavailable</h2>
-                        <Badge variant="destructive">Unavailable</Badge>
-                      </div>
-                      <p className="text-sm leading-6 text-muted-foreground">Durable run snapshot is incomplete</p>
-                    </>
-                  ) : renderableRuntimeRun ? (
-                    <>
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Durable runtime</p>
-                          <h2 className="mt-2 text-lg font-semibold text-foreground">Recovered run snapshot</h2>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant={getRuntimeRunBadgeVariant(renderableRuntimeRun)}>{runtimeRunStatusText}</Badge>
-                          <Badge variant="outline">{displayValue(renderableRuntimeRun.statusLabel, runtimeRunStatusText)}</Badge>
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-border/70 bg-card/70 p-4">
-                        <h3 className="text-base font-semibold text-foreground">
-                          {renderableRuntimeRun.isStale
-                            ? 'Supervisor heartbeat is stale'
-                            : renderableRuntimeRun.isTerminal
-                              ? 'Supervisor stopped cleanly'
-                              : 'Recovered run snapshot'}
-                        </h3>
-                        <p className="mt-2 text-sm leading-6 text-muted-foreground">{agent.runtimeRunUnavailableReason}</p>
-                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                          <CountCard label="Run ID" value={renderableRuntimeRun.runId} />
-                          <CountCard label="Checkpoint count" value={String(renderableRuntimeRun.checkpointCount)} />
-                        </div>
-                      </div>
-
-                      {runtimeRunActionError ? (
-                        <Alert variant="destructive">
-                          <AlertCircle className="h-4 w-4" />
-                          <AlertTitle>{runtimeRunActionErrorTitle}</AlertTitle>
-                          <AlertDescription>
-                            <p>{runtimeRunActionError.message}</p>
-                            {runtimeRunActionError.code ? (
-                              <p className="font-mono text-[11px] text-destructive/80">code: {runtimeRunActionError.code}</p>
-                            ) : null}
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
-
-                      <div className="flex flex-wrap gap-2">
-                        {canStartRuntimeRun ? (
-                          <Button disabled={runtimeRunActionStatus === 'running'} onClick={() => void handleStartRuntimeRun()} type="button">
-                            {runtimeRunActionStatus === 'running' && pendingRuntimeRunAction !== 'stop' ? (
-                              <LoaderCircle className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Play className="h-4 w-4" />
-                            )}
-                            {primaryRuntimeRunActionLabel}
-                          </Button>
-                        ) : null}
-
-                        {canStopRuntimeRun ? (
-                          <Button disabled={runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'stop'} onClick={() => void handleStopRuntimeRun()} type="button" variant="outline">
-                            {runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'stop' ? (
-                              <LoaderCircle className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <XCircle className="h-4 w-4" />
-                            )}
-                            Stop run
-                          </Button>
-                        ) : null}
-                      </div>
-
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                        {runtimeRunCheckpoints.length > 0 ? (
-                          runtimeRunCheckpoints.map((checkpoint) => (
-                            <div key={`${checkpoint.kind}-${checkpoint.sequence}-${checkpoint.createdAt}`} className="rounded-xl border border-border/70 bg-card/70 p-4">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant="outline">{formatSequence(checkpoint.sequence)}</Badge>
-                                <Badge variant="outline">{checkpoint.kindLabel}</Badge>
-                              </div>
-                              <p className="mt-3 text-sm leading-6 text-foreground/90">
-                                {displayValue(checkpoint.summary, 'Durable checkpoint recorded.')}
-                              </p>
-                              <p className="mt-2 text-[11px] text-muted-foreground">{formatTimestamp(checkpoint.createdAt)}</p>
-                            </div>
-                          ))
-                        ) : (
-                          <FeedEmptyState body="Cadence has not recorded a durable checkpoint for this run yet." title="No checkpoints recorded" />
-                        )}
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-              </section>
+              <RecoveredRuntimeSection
+                canStartRuntimeRun={canStartRuntimeRun}
+                canStopRuntimeRun={canStopRuntimeRun}
+                hasIncompleteRuntimeRunPayload={hasIncompleteRuntimeRunPayload}
+                onStartRuntimeRun={() => void handleStartRuntimeRun()}
+                onStopRuntimeRun={() => void handleStopRuntimeRun()}
+                pendingRuntimeRunAction={pendingRuntimeRunAction}
+                primaryRuntimeRunActionLabel={primaryRuntimeRunActionLabel}
+                renderableRuntimeRun={renderableRuntimeRun}
+                runtimeRunActionError={runtimeRunActionError}
+                runtimeRunActionErrorTitle={runtimeRunActionErrorTitle}
+                runtimeRunActionStatus={runtimeRunActionStatus}
+                runtimeRunCheckpoints={runtimeRunCheckpoints}
+                runtimeRunStatusText={runtimeRunStatusText}
+                runtimeRunUnavailableReason={agent.runtimeRunUnavailableReason}
+              />
             ) : null}
 
             {hasAgentFeedSurface ? (
@@ -2724,91 +2635,17 @@ export function AgentRuntime({
           )}
         </div>
 
-        <div className="relative shrink-0 px-4 pb-7 pt-10">
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 -top-14 h-24 bg-gradient-to-b from-background/0 via-background/86 to-background"
-          />
-          <div className="relative mx-auto flex w-full max-w-[880px] items-end justify-center gap-3">
-            <div className="w-full max-w-[620px]">
-              <div className="relative overflow-hidden rounded-xl border border-border/70 bg-card/95 shadow-[0_18px_50px_rgba(0,0,0,0.2)] backdrop-blur supports-[backdrop-filter]:bg-card/80">
-                <Textarea
-                  aria-label="Agent input unavailable"
-                  className="max-h-56 min-h-[120px] resize-none border-0 bg-transparent px-4 pb-12 pt-4 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/55 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
-                  disabled
-                  placeholder={composerPlaceholder}
-                  rows={4}
-                  value=""
-                />
-                <div className="absolute bottom-2 left-3 right-14 flex max-w-[calc(100%-5rem)] flex-wrap items-center gap-3">
-                  <Select value={composerModelId} onValueChange={setComposerModelId}>
-                    <SelectTrigger
-                      aria-label="Model selector"
-                      className={composerInlineSelectTriggerClassName}
-                      size="sm"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className={composerInlineSelectContentClassName}>
-                      {composerModelGroups.map((group, index) => (
-                        <div key={group.id}>
-                          {index > 0 ? <SelectSeparator /> : null}
-                          <SelectGroup>
-                            <SelectLabel>{group.label}</SelectLabel>
-                            {group.items.map((model) => (
-                              <SelectItem key={model.value} value={model.value}>
-                                {model.label}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </div>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={composerThinkingLevel} onValueChange={setComposerThinkingLevel}>
-                    <SelectTrigger
-                      aria-label="Thinking level selector"
-                      className={composerInlineSelectTriggerClassName}
-                      size="sm"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className={composerInlineSelectContentClassName}>
-                      {SAMPLE_COMPOSER_THINKING_LEVELS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <button
-                  aria-label="Send message unavailable"
-                  className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-foreground/90 text-background opacity-40 shadow-sm"
-                  disabled
-                  type="button"
-                >
-                  <Send className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-            {canStartRuntimeRun && !renderableRuntimeRun && (
-              <button
-                className="shrink-0 flex items-center gap-1.5 rounded-lg border border-border bg-card/80 px-3 py-2 text-[12px] font-medium text-foreground transition-colors hover:border-border/80 hover:bg-card disabled:opacity-50"
-                disabled={runtimeRunActionStatus === 'running'}
-                onClick={() => void handleStartRuntimeRun()}
-                type="button"
-              >
-                {runtimeRunActionStatus === 'running' ? (
-                  <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                Start run
-              </button>
-            )}
-          </div>
-        </div>
+        <ComposerDock
+          composerModelGroups={composerModelGroups}
+          composerModelId={composerModelId}
+          composerThinkingLevel={composerThinkingLevel as 'low' | 'medium' | 'high'}
+          onComposerModelChange={setComposerModelId}
+          onComposerThinkingLevelChange={setComposerThinkingLevel}
+          onStartRuntimeRun={() => void handleStartRuntimeRun()}
+          placeholder={composerPlaceholder}
+          runtimeRunActionStatus={runtimeRunActionStatus}
+          showStartRunButton={canStartRuntimeRun && !renderableRuntimeRun}
+        />
       </div>
     </div>
   )

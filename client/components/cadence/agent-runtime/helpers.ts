@@ -66,8 +66,9 @@ const SAMPLE_COMPOSER_MODEL_GROUPS: ComposerModelGroup[] = [
     id: 'anthropic',
     label: 'Anthropic',
     items: [
-      { value: 'claude-3-7-sonnet-latest', label: 'claude-3-7-sonnet-latest' },
-      { value: 'claude-3-5-haiku-latest', label: 'claude-3-5-haiku-latest' },
+      { value: 'anthropic/claude-3.7-sonnet', label: 'claude-3.7-sonnet' },
+      { value: 'anthropic/claude-3.5-sonnet', label: 'claude-3.5-sonnet' },
+      { value: 'anthropic/claude-3.5-haiku', label: 'claude-3.5-haiku' },
     ],
   },
   {
