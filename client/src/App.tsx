@@ -36,6 +36,7 @@ function resolveFooterRuntimeState(status: {
 
 export function CadenceApp({ adapter }: CadenceAppProps) {
   const [activeView, setActiveView] = useState<View>('phases')
+  const [mountedExecutionProjectIds, setMountedExecutionProjectIds] = useState<Set<string>>(() => new Set())
   const {
     projects,
     activeProject,
@@ -122,6 +123,22 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   }
 
   useEffect(() => {
+    if (activeView !== 'execution' || !activeProjectId) {
+      return
+    }
+
+    setMountedExecutionProjectIds((current) => {
+      if (current.has(activeProjectId)) {
+        return current
+      }
+
+      const next = new Set(current)
+      next.add(activeProjectId)
+      return next
+    })
+  }, [activeProjectId, activeView])
+
+  useEffect(() => {
     const previousView = previousViewRef.current
 
     if (activeView === 'execution' && previousView !== 'execution') {
@@ -176,8 +193,14 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       )
     }
 
-    if (activeView === 'agent' && agentView) {
-      return (
+    const shouldRenderExecutionPanel = Boolean(
+      executionView &&
+        activeProjectId &&
+        (activeView === 'execution' || mountedExecutionProjectIds.has(activeProjectId)),
+    )
+
+    const primaryBody =
+      activeView === 'agent' && agentView ? (
         <AgentRuntime
           agent={agentView}
           onLogout={() => logoutRuntimeSession()}
@@ -203,25 +226,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           }
           onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
         />
-      )
-    }
-
-    if (activeView === 'execution' && executionView) {
-      return (
-        <ExecutionView
-          execution={executionView}
-          listProjectFiles={listProjectFiles}
-          readProjectFile={readProjectFile}
-          writeProjectFile={writeProjectFile}
-          createProjectEntry={createProjectEntry}
-          renameProjectEntry={renameProjectEntry}
-          deleteProjectEntry={deleteProjectEntry}
-        />
-      )
-    }
-
-    if (workflowView) {
-      return (
+      ) : activeView === 'execution' && executionView ? null : workflowView ? (
         <PhaseView
           workflow={workflowView}
           canStartRun={Boolean(
@@ -233,10 +238,30 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           onOpenSettings={() => setSettingsOpen(true)}
           onStartRun={() => startRuntimeRun()}
         />
-      )
-    }
+      ) : null
 
-    return null
+    return (
+      <>
+        {shouldRenderExecutionPanel ? (
+          <div
+            hidden={activeView !== 'execution'}
+            aria-hidden={activeView !== 'execution'}
+            className="flex min-h-0 min-w-0 flex-1"
+          >
+            <ExecutionView
+              execution={executionView}
+              listProjectFiles={listProjectFiles}
+              readProjectFile={readProjectFile}
+              writeProjectFile={writeProjectFile}
+              createProjectEntry={createProjectEntry}
+              renameProjectEntry={renameProjectEntry}
+              deleteProjectEntry={deleteProjectEntry}
+            />
+          </div>
+        ) : null}
+        {primaryBody}
+      </>
+    )
   }
 
   const onboardingProject = activeProject

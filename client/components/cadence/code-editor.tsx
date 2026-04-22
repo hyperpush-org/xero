@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef } from 'react'
 import { EditorView, basicSetup } from 'codemirror'
-import { Compartment, EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state'
 import {
   HighlightStyle,
   StreamLanguage,
@@ -47,6 +47,8 @@ interface CodeEditorProps {
   readOnly?: boolean
   onSave?: () => void
   onCursorChange?: (position: { line: number; column: number }) => void
+  onOpenFind?: (options: { withReplace: boolean; initialQuery: string }) => void
+  onViewReady?: (view: EditorView | null) => void
   className?: string
 }
 
@@ -370,6 +372,8 @@ export function CodeEditor({
   readOnly = false,
   onSave,
   onCursorChange,
+  onOpenFind,
+  onViewReady,
   className,
 }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -377,6 +381,8 @@ export function CodeEditor({
   const onChangeRef = useRef(onChange)
   const onSaveRef = useRef(onSave)
   const onCursorChangeRef = useRef(onCursorChange)
+  const onOpenFindRef = useRef(onOpenFind)
+  const onViewReadyRef = useRef(onViewReady)
   const langCompartment = useMemo(() => new Compartment(), [])
   const readOnlyCompartment = useMemo(() => new Compartment(), [])
   const themeCompartment = useMemo(() => new Compartment(), [])
@@ -385,6 +391,8 @@ export function CodeEditor({
   onChangeRef.current = onChange
   onSaveRef.current = onSave
   onCursorChangeRef.current = onCursorChange
+  onOpenFindRef.current = onOpenFind
+  onViewReadyRef.current = onViewReady
 
   useEffect(() => {
     if (!hostRef.current) return
@@ -396,6 +404,34 @@ export function CodeEditor({
         themeCompartment.of(buildThemeExtension(theme)),
         highlightSelectionMatches(),
         autocompletion(),
+        Prec.highest(
+          keymap.of([
+            {
+              key: 'Mod-f',
+              preventDefault: true,
+              run: (view) => {
+                const sel = view.state.selection.main
+                const initial = sel.empty
+                  ? ''
+                  : view.state.sliceDoc(sel.from, sel.to)
+                onOpenFindRef.current?.({ withReplace: false, initialQuery: initial })
+                return true
+              },
+            },
+            {
+              key: 'Mod-Alt-f',
+              preventDefault: true,
+              run: (view) => {
+                const sel = view.state.selection.main
+                const initial = sel.empty
+                  ? ''
+                  : view.state.sliceDoc(sel.from, sel.to)
+                onOpenFindRef.current?.({ withReplace: true, initialQuery: initial })
+                return true
+              },
+            },
+          ]),
+        ),
         keymap.of([
           indentWithTab,
           {
@@ -425,8 +461,10 @@ export function CodeEditor({
 
     const view = new EditorView({ state, parent: hostRef.current })
     viewRef.current = view
+    onViewReadyRef.current?.(view)
 
     return () => {
+      onViewReadyRef.current?.(null)
       view.destroy()
       viewRef.current = null
     }

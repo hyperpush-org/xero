@@ -9,6 +9,24 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: openUrlMock,
 }))
 
+vi.mock('../components/cadence/code-editor', () => ({
+  CodeEditor: ({ filePath, onChange, onSave, value }: any) => (
+    <div>
+      <label>
+        <span className="sr-only">Editor for {filePath}</span>
+        <textarea
+          aria-label={`Editor for ${filePath}`}
+          onChange={(event) => onChange(event.target.value)}
+          value={value}
+        />
+      </label>
+      <button onClick={onSave} type="button">
+        Trigger save
+      </button>
+    </div>
+  ),
+}))
+
 afterEach(() => {
   openUrlMock.mockReset()
 })
@@ -2341,5 +2359,31 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByLabelText('Search files')).toBeVisible()
     expect(screen.getByText('Select a file to start editing')).toBeVisible()
     expect(screen.queryByText('No execution activity yet')).not.toBeInTheDocument()
+  })
+
+  it('keeps open editor tabs and unsaved edits when switching away from Editor and back', async () => {
+    const { adapter } = createAdapter()
+
+    render(<CadenceApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'README.md' }))
+
+    const editor = await screen.findByLabelText('Editor for /README.md')
+    fireEvent.change(editor, { target: { value: '# Draft changes\n' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+    expect(await screen.findByText('No milestone assigned')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+
+    const restoredEditor = await screen.findByLabelText('Editor for /README.md')
+    expect(restoredEditor).toBeVisible()
+    expect(restoredEditor).toHaveValue('# Draft changes\n')
+    expect(screen.getByRole('button', { name: 'Close README.md' })).toBeVisible()
   })
 })
