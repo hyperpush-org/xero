@@ -89,10 +89,10 @@ fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewW
         None => default_window_bounds(window),
     };
 
-    if let Some(bounds) = startup_bounds
-        && let Err(error) = apply_window_bounds(window, bounds)
-    {
-        eprintln!("Cadence failed to apply startup window bounds: {error}");
+    if let Some(bounds) = startup_bounds {
+        if let Err(error) = apply_window_bounds(window, bounds) {
+            eprintln!("Cadence failed to apply startup window bounds: {error}");
+        }
     }
 }
 
