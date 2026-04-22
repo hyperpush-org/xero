@@ -5,11 +5,12 @@ use std::{
 
 use git2::{Repository, Status, StatusOptions};
 use sha2::{Digest, Sha256};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     commands::{
-        BranchSummaryDto, ChangeKind, CommandError, CommandResult, RepositoryStatusEntryDto,
-        RepositoryStatusResponseDto, RepositorySummaryDto,
+        BranchSummaryDto, ChangeKind, CommandError, CommandResult, LastCommitSummaryDto,
+        RepositoryStatusEntryDto, RepositoryStatusResponseDto, RepositorySummaryDto,
     },
     state::ImportFailpoints,
 };
@@ -27,6 +28,7 @@ pub struct CanonicalRepository {
     pub branch_name: Option<String>,
     pub head_sha: Option<String>,
     pub branch: Option<BranchSummaryDto>,
+    pub last_commit: Option<LastCommitSummaryDto>,
     pub status_entries: Vec<RepositoryStatusEntryDto>,
     pub has_staged_changes: bool,
     pub has_unstaged_changes: bool,

@@ -250,6 +250,14 @@ pub struct RepositoryStatusEntryDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LastCommitSummaryDto {
+    pub sha: String,
+    pub summary: String,
+    pub committed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportRepositoryResponseDto {
     pub project: ProjectSummaryDto,
     pub repository: RepositorySummaryDto,
@@ -284,6 +292,8 @@ pub struct ProjectSnapshotResponseDto {
 pub struct RepositoryStatusResponseDto {
     pub repository: RepositorySummaryDto,
     pub branch: Option<BranchSummaryDto>,
+    #[serde(default)]
+    pub last_commit: Option<LastCommitSummaryDto>,
     pub entries: Vec<RepositoryStatusEntryDto>,
     pub has_staged_changes: bool,
     pub has_unstaged_changes: bool,
