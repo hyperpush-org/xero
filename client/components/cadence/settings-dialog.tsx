@@ -4,14 +4,14 @@ import { useEffect, useState } from "react"
 import type {
   AgentPaneView,
   OperatorActionErrorView,
-  RuntimeSettingsLoadStatus,
-  RuntimeSettingsSaveStatus,
+  ProviderProfilesLoadStatus,
+  ProviderProfilesSaveStatus,
 } from "@/src/features/cadence/use-cadence-desktop-state"
 import type {
+  ProviderProfilesDto,
   RuntimeSessionView,
-  RuntimeSettingsDto,
   UpsertNotificationRouteRequestDto,
-  UpsertRuntimeSettingsRequestDto,
+  UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
 import type { PlatformVariant } from "@/components/cadence/shell"
 import { Bell, Code2, KeyRound } from "lucide-react"
@@ -42,13 +42,14 @@ export interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agent: AgentPaneView | null
-  runtimeSettings: RuntimeSettingsDto | null
-  runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
-  runtimeSettingsLoadError: OperatorActionErrorView | null
-  runtimeSettingsSaveStatus: RuntimeSettingsSaveStatus
-  runtimeSettingsSaveError: OperatorActionErrorView | null
-  onRefreshRuntimeSettings?: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
-  onUpsertRuntimeSettings?: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
+  providerProfiles: ProviderProfilesDto | null
+  providerProfilesLoadStatus: ProviderProfilesLoadStatus
+  providerProfilesLoadError: OperatorActionErrorView | null
+  providerProfilesSaveStatus: ProviderProfilesSaveStatus
+  providerProfilesSaveError: OperatorActionErrorView | null
+  onRefreshProviderProfiles?: (options?: { force?: boolean }) => Promise<ProviderProfilesDto>
+  onUpsertProviderProfile?: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
+  onSetActiveProviderProfile?: (profileId: string) => Promise<ProviderProfilesDto>
   onStartLogin?: () => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
@@ -61,13 +62,14 @@ export function SettingsDialog({
   open,
   onOpenChange,
   agent,
-  runtimeSettings,
-  runtimeSettingsLoadStatus,
-  runtimeSettingsLoadError,
-  runtimeSettingsSaveStatus,
-  runtimeSettingsSaveError,
-  onRefreshRuntimeSettings,
-  onUpsertRuntimeSettings,
+  providerProfiles,
+  providerProfilesLoadStatus,
+  providerProfilesLoadError,
+  providerProfilesSaveStatus,
+  providerProfilesSaveError,
+  onRefreshProviderProfiles,
+  onUpsertProviderProfile,
+  onSetActiveProviderProfile,
   onStartLogin,
   onLogout,
   onUpsertNotificationRoute,
@@ -82,12 +84,12 @@ export function SettingsDialog({
   }, [open])
 
   useEffect(() => {
-    if (!open || !onRefreshRuntimeSettings) {
+    if (!open || !onRefreshProviderProfiles) {
       return
     }
 
-    void onRefreshRuntimeSettings({ force: true }).catch(() => undefined)
-  }, [open, onRefreshRuntimeSettings])
+    void onRefreshProviderProfiles({ force: true }).catch(() => undefined)
+  }, [open, onRefreshProviderProfiles])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -143,38 +145,39 @@ export function SettingsDialog({
               key={section}
               className="flex flex-1 flex-col px-6 py-5 animate-in fade-in-0 slide-in-from-right-2 duration-200 ease-out"
             >
-            {section === "providers" ? (
-              <ProvidersSection
-                agent={agent}
-                runtimeSettings={runtimeSettings}
-                runtimeSettingsLoadStatus={runtimeSettingsLoadStatus}
-                runtimeSettingsLoadError={runtimeSettingsLoadError}
-                runtimeSettingsSaveStatus={runtimeSettingsSaveStatus}
-                runtimeSettingsSaveError={runtimeSettingsSaveError}
-                onRefreshRuntimeSettings={onRefreshRuntimeSettings}
-                onUpsertRuntimeSettings={onUpsertRuntimeSettings}
-                onStartLogin={onStartLogin}
-                onLogout={onLogout}
-              />
-            ) : section === "notifications" ? (
-              agent ? (
-                <NotificationsSection
+              {section === "providers" ? (
+                <ProvidersSection
                   agent={agent}
-                  onUpsertNotificationRoute={onUpsertNotificationRoute}
+                  providerProfiles={providerProfiles}
+                  providerProfilesLoadStatus={providerProfilesLoadStatus}
+                  providerProfilesLoadError={providerProfilesLoadError}
+                  providerProfilesSaveStatus={providerProfilesSaveStatus}
+                  providerProfilesSaveError={providerProfilesSaveError}
+                  onRefreshProviderProfiles={onRefreshProviderProfiles}
+                  onUpsertProviderProfile={onUpsertProviderProfile}
+                  onSetActiveProviderProfile={onSetActiveProviderProfile}
+                  onStartLogin={onStartLogin}
+                  onLogout={onLogout}
                 />
-              ) : (
-                <ProjectBoundEmptyState
-                  title="Notifications require a selected project"
-                  body="Provider settings are app-global, but notification routes stay project-bound so Cadence never writes cross-project delivery state into the wrong repository view."
+              ) : section === "notifications" ? (
+                agent ? (
+                  <NotificationsSection
+                    agent={agent}
+                    onUpsertNotificationRoute={onUpsertNotificationRoute}
+                  />
+                ) : (
+                  <ProjectBoundEmptyState
+                    title="Notifications require a selected project"
+                    body="Provider settings are app-global, but notification routes stay project-bound so Cadence never writes cross-project delivery state into the wrong repository view."
+                  />
+                )
+              ) : section === "development" ? (
+                <DevelopmentSection
+                  platformOverride={platformOverride}
+                  onPlatformOverrideChange={onPlatformOverrideChange}
+                  onStartOnboarding={onStartOnboarding}
                 />
-              )
-            ) : section === "development" ? (
-              <DevelopmentSection
-                platformOverride={platformOverride}
-                onPlatformOverrideChange={onPlatformOverrideChange}
-                onStartOnboarding={onStartOnboarding}
-              />
-            ) : null}
+              ) : null}
             </div>
           </div>
         </div>

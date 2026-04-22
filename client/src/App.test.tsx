@@ -335,6 +335,30 @@ function createAdapter(options?: {
     return currentRuntimeSettings
   })
 
+  const upsertProviderProfile = vi.fn(async (request: {
+    profileId: string
+    providerId: 'openai_codex' | 'openrouter'
+    label: string
+    modelId: string
+    openrouterApiKey?: string | null
+    activate?: boolean
+  }) => {
+    currentRuntimeSettings = {
+      providerId: request.providerId,
+      modelId: request.modelId,
+      openrouterApiKeyConfigured:
+        request.providerId === 'openrouter'
+          ? request.openrouterApiKey == null
+            ? currentRuntimeSettings.openrouterApiKeyConfigured
+            : request.openrouterApiKey.trim().length > 0
+          : currentRuntimeSettings.openrouterApiKeyConfigured,
+    }
+    currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
+    return currentProviderProfiles
+  })
+
+  const setActiveProviderProfile = vi.fn(async (_profileId: string) => currentProviderProfiles)
+
   const upsertNotificationRoute = vi.fn(async (request: UpsertNotificationRouteRequestDto) => {
     const route = {
       projectId: request.projectId,
@@ -431,21 +455,8 @@ function createAdapter(options?: {
     startAutonomousRun,
     startRuntimeRun,
     upsertRuntimeSettings,
-    upsertProviderProfile: async (request) => {
-      currentRuntimeSettings = {
-        providerId: request.providerId,
-        modelId: request.modelId,
-        openrouterApiKeyConfigured:
-          request.providerId === 'openrouter'
-            ? request.openrouterApiKey == null
-              ? currentRuntimeSettings.openrouterApiKeyConfigured
-              : request.openrouterApiKey.trim().length > 0
-            : currentRuntimeSettings.openrouterApiKeyConfigured,
-      }
-      currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
-      return currentProviderProfiles
-    },
-    setActiveProviderProfile: async (_profileId) => currentProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     startRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1')
       return currentRuntimeSession
@@ -631,7 +642,7 @@ function createAdapter(options?: {
     onRuntimeRunUpdated: async (_handler: (payload: RuntimeRunUpdatedPayloadDto) => void) => () => {},
   }
 
-  return { adapter, upsertNotificationRoute, upsertRuntimeSettings, importRepository, pickRepositoryFolder, startRuntimeRun, startAutonomousRun }
+  return { adapter, upsertNotificationRoute, upsertRuntimeSettings, upsertProviderProfile, importRepository, pickRepositoryFolder, startRuntimeRun, startAutonomousRun }
 }
 
 describe('CadenceApp current UI', () => {
@@ -685,19 +696,11 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
 
     expect(await screen.findByRole('heading', { name: 'Configure providers' })).toBeVisible()
-    expect(screen.getByText('Provider setup is app-wide. Projects stay separate, and OpenAI sign-in only happens when you start a runtime session.')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Use OpenAI' })).toBeVisible()
-    expect(screen.queryByText('Browser sign-in happens later, when you start a runtime session.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Save an API key and model for runtime sessions.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Not wired into Cadence yet.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Using this')).not.toBeInTheDocument()
-    expect(screen.queryByText('Used for new sessions')).not.toBeInTheDocument()
-    expect(screen.queryByText('Active')).not.toBeInTheDocument()
-    expect(screen.queryByText('Configured')).not.toBeInTheDocument()
-
-    const unavailableButtons = screen.getAllByRole('button', { name: 'Unavailable' })
-    expect(unavailableButtons).toHaveLength(2)
-    unavailableButtons.forEach((button) => expect(button).toBeDisabled())
+    expect(screen.getByText('Provider setup is app-wide. Choose the active profile for new runtime binds without rewriting project runtime history.')).toBeVisible()
+    expect(screen.getByText('Active profile')).toBeVisible()
+    expect(screen.getByText('Using this')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeVisible()
+    expect(screen.getAllByText('Unavailable')).toHaveLength(2)
   })
 
   it('keeps onboarding provider review truthful before OpenAI is connected', async () => {
@@ -718,11 +721,11 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
 
     expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
-    expect(screen.getByText('No provider set up yet')).toBeVisible()
+    expect(screen.getByText('OpenAI Codex · active profile')).toBeVisible()
   })
 
   it('saves OpenRouter provider settings from onboarding', async () => {
-    const { adapter, upsertRuntimeSettings } = createAdapter({
+    const { adapter, upsertProviderProfile } = createAdapter({
       projects: [],
       runtimeSession: makeRuntimeSession('project-1', {
         phase: 'idle',
@@ -736,14 +739,17 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
     fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'openai/gpt-4.1-mini' } })
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-or-v1-test-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save setup' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-or-v1-test-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(upsertRuntimeSettings).toHaveBeenCalledTimes(1))
-    expect(upsertRuntimeSettings).toHaveBeenCalledWith({
+    await waitFor(() => expect(upsertProviderProfile).toHaveBeenCalledTimes(1))
+    expect(upsertProviderProfile).toHaveBeenCalledWith({
+      profileId: 'openrouter-default',
       providerId: 'openrouter',
+      label: 'OpenRouter',
       modelId: 'openai/gpt-4.1-mini',
       openrouterApiKey: 'sk-or-v1-test-secret',
+      activate: true,
     })
   })
 

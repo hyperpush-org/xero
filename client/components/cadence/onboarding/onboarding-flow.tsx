@@ -13,15 +13,16 @@ import type {
   NotificationRouteHealthView,
   NotificationRouteMutationStatus,
   OperatorActionErrorView,
-  RuntimeSettingsSaveStatus,
+  ProviderProfilesLoadStatus,
+  ProviderProfilesSaveStatus,
 } from "@/src/features/cadence/use-cadence-desktop-state"
-import type {
-  RuntimeSessionView,
-  RuntimeSettingsDto,
-  UpsertNotificationRouteRequestDto,
-  UpsertRuntimeSettingsRequestDto,
+import {
+  getActiveProviderProfile,
+  type ProviderProfilesDto,
+  type RuntimeSessionView,
+  type UpsertNotificationRouteRequestDto,
+  type UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
-import { getRuntimeProviderLabel } from "@/src/features/cadence/use-cadence-desktop-state/runtime-provider"
 import { type OnboardingStepId } from "./types"
 
 const STEP_ORDER: Array<{ id: OnboardingStepId; showIndicator: boolean }> = [
@@ -39,19 +40,24 @@ interface ImportedProjectView {
   path: string
 }
 
-function getProviderReview(runtimeSettings: RuntimeSettingsDto | null, runtimeSession: RuntimeSessionView | null) {
-  const providerId = runtimeSettings?.providerId ?? "openai_codex"
-  const providerLabel = getRuntimeProviderLabel(providerId)
+function getProviderReview(providerProfiles: ProviderProfilesDto | null, runtimeSession: RuntimeSessionView | null) {
+  const activeProfile = getActiveProviderProfile(providerProfiles)
+  if (!activeProfile) {
+    return {
+      ready: false,
+      value: "No provider set up yet",
+    }
+  }
 
-  if (providerId === "openrouter") {
-    return runtimeSettings?.openrouterApiKeyConfigured
+  if (activeProfile.providerId === "openrouter") {
+    return activeProfile.readiness.ready
       ? {
           ready: true,
-          value: `${providerLabel} · API key saved`,
+          value: `${activeProfile.label} · API key saved`,
         }
       : {
           ready: false,
-          value: "No provider set up yet",
+          value: `${activeProfile.label} · API key required`,
         }
   }
 
@@ -60,19 +66,21 @@ function getProviderReview(runtimeSettings: RuntimeSettingsDto | null, runtimeSe
   return isOpenAiConnected
     ? {
         ready: true,
-        value: `${providerLabel} · connected`,
+        value: `${activeProfile.label} · connected`,
       }
     : {
-        ready: false,
-        value: "No provider set up yet",
+        ready: true,
+        value: `${activeProfile.label} · active profile`,
       }
 }
 
 export interface OnboardingFlowProps {
-  runtimeSettings: RuntimeSettingsDto | null
+  providerProfiles: ProviderProfilesDto | null
+  providerProfilesLoadStatus: ProviderProfilesLoadStatus
+  providerProfilesLoadError: OperatorActionErrorView | null
+  providerProfilesSaveStatus: ProviderProfilesSaveStatus
+  providerProfilesSaveError: OperatorActionErrorView | null
   runtimeSession: RuntimeSessionView | null
-  runtimeSettingsSaveStatus: RuntimeSettingsSaveStatus
-  runtimeSettingsSaveError: OperatorActionErrorView | null
   project: ImportedProjectView | null
   isImporting: boolean
   isProjectLoading: boolean
@@ -82,7 +90,9 @@ export interface OnboardingFlowProps {
   pendingNotificationRouteId: string | null
   notificationRouteMutationError: OperatorActionErrorView | null
   onImportProject: () => Promise<void>
-  onUpsertRuntimeSettings: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
+  onRefreshProviderProfiles?: (options?: { force?: boolean }) => Promise<ProviderProfilesDto>
+  onUpsertProviderProfile: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
+  onSetActiveProviderProfile: (profileId: string) => Promise<ProviderProfilesDto>
   onUpsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, "projectId">,
   ) => Promise<unknown>
@@ -91,10 +101,12 @@ export interface OnboardingFlowProps {
 }
 
 export function OnboardingFlow({
-  runtimeSettings,
+  providerProfiles,
+  providerProfilesLoadStatus,
+  providerProfilesLoadError,
+  providerProfilesSaveStatus,
+  providerProfilesSaveError,
   runtimeSession,
-  runtimeSettingsSaveStatus,
-  runtimeSettingsSaveError,
   project,
   isImporting,
   isProjectLoading,
@@ -104,7 +116,9 @@ export function OnboardingFlow({
   pendingNotificationRouteId,
   notificationRouteMutationError,
   onImportProject,
-  onUpsertRuntimeSettings,
+  onRefreshProviderProfiles,
+  onUpsertProviderProfile,
+  onSetActiveProviderProfile,
   onUpsertNotificationRoute,
   onComplete,
   onDismiss,
@@ -113,7 +127,7 @@ export function OnboardingFlow({
   const directionRef = useRef<1 | -1>(1)
 
   const currentStep = STEP_ORDER[stepIndex]
-  const providerReview = getProviderReview(runtimeSettings, runtimeSession)
+  const providerReview = getProviderReview(providerProfiles, runtimeSession)
 
   const goTo = useCallback((target: number) => {
     setStepIndex((current) => {
@@ -167,11 +181,14 @@ export function OnboardingFlow({
           ) : null}
           {currentStep.id === "providers" ? (
             <ProvidersStep
-              runtimeSettings={runtimeSettings}
-              runtimeSession={runtimeSession}
-              runtimeSettingsSaveStatus={runtimeSettingsSaveStatus}
-              runtimeSettingsSaveError={runtimeSettingsSaveError}
-              onUpsertRuntimeSettings={onUpsertRuntimeSettings}
+              providerProfiles={providerProfiles}
+              providerProfilesLoadStatus={providerProfilesLoadStatus}
+              providerProfilesLoadError={providerProfilesLoadError}
+              providerProfilesSaveStatus={providerProfilesSaveStatus}
+              providerProfilesSaveError={providerProfilesSaveError}
+              onRefreshProviderProfiles={onRefreshProviderProfiles}
+              onUpsertProviderProfile={onUpsertProviderProfile}
+              onSetActiveProviderProfile={onSetActiveProviderProfile}
             />
           ) : null}
           {currentStep.id === "project" ? (

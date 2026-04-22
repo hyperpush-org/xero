@@ -23,7 +23,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     projects,
     activeProject,
     activeProjectId,
-    repositoryStatus,
     workflowView,
     agentView,
     executionView,
@@ -33,12 +32,11 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     projectRemovalStatus,
     pendingProjectRemovalId,
     errorMessage,
-    refreshSource,
-    runtimeSettings,
-    runtimeSettingsLoadStatus,
-    runtimeSettingsLoadError,
-    runtimeSettingsSaveStatus,
-    runtimeSettingsSaveError,
+    providerProfiles,
+    providerProfilesLoadStatus,
+    providerProfilesLoadError,
+    providerProfilesSaveStatus,
+    providerProfilesSaveError,
     isDesktopRuntime,
     selectProject,
     importProject,
@@ -61,8 +59,9 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
-    refreshRuntimeSettings,
-    upsertRuntimeSettings,
+    refreshProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   } = useCadenceDesktopState({ adapter })
@@ -179,8 +178,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           workflow={workflowView}
           canStartRun={Boolean(
             agentView?.runtimeRunActionStatus !== undefined &&
-            !agentView.runtimeRun &&
-            agentView.runtimeSession?.isAuthenticated,
+              !agentView.runtimeRun &&
+              agentView.runtimeSession?.isAuthenticated,
           )}
           isStartingRun={agentView?.runtimeRunActionStatus === 'running'}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -213,10 +212,12 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         chromeOnly
       >
         <OnboardingFlow
-          runtimeSettings={runtimeSettings}
+          providerProfiles={providerProfiles}
+          providerProfilesLoadStatus={providerProfilesLoadStatus}
+          providerProfilesLoadError={providerProfilesLoadError}
+          providerProfilesSaveStatus={providerProfilesSaveStatus}
+          providerProfilesSaveError={providerProfilesSaveError}
           runtimeSession={agentView?.runtimeSession ?? null}
-          runtimeSettingsSaveStatus={runtimeSettingsSaveStatus}
-          runtimeSettingsSaveError={runtimeSettingsSaveError}
           project={onboardingProject}
           isImporting={isImporting}
           isProjectLoading={isProjectLoading}
@@ -226,7 +227,9 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           pendingNotificationRouteId={agentView?.pendingNotificationRouteId ?? null}
           notificationRouteMutationError={agentView?.notificationRouteMutationError ?? null}
           onImportProject={() => importProject()}
-          onUpsertRuntimeSettings={(request) => upsertRuntimeSettings(request)}
+          onRefreshProviderProfiles={(options) => refreshProviderProfiles(options)}
+          onUpsertProviderProfile={(request) => upsertProviderProfile(request)}
+          onSetActiveProviderProfile={(profileId) => setActiveProviderProfile(profileId)}
           onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
           onComplete={() => {
             setOnboardingDismissed(true)
@@ -269,16 +272,19 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         agent={agentView}
-        runtimeSettings={runtimeSettings}
-        runtimeSettingsLoadStatus={runtimeSettingsLoadStatus}
-        runtimeSettingsLoadError={runtimeSettingsLoadError}
-        runtimeSettingsSaveStatus={runtimeSettingsSaveStatus}
-        runtimeSettingsSaveError={runtimeSettingsSaveError}
-        onRefreshRuntimeSettings={(options) => refreshRuntimeSettings(options)}
-        onUpsertRuntimeSettings={(request) => upsertRuntimeSettings(request)}
+        providerProfiles={providerProfiles}
+        providerProfilesLoadStatus={providerProfilesLoadStatus}
+        providerProfilesLoadError={providerProfilesLoadError}
+        providerProfilesSaveStatus={providerProfilesSaveStatus}
+        providerProfilesSaveError={providerProfilesSaveError}
+        onRefreshProviderProfiles={(options) => refreshProviderProfiles(options)}
+        onUpsertProviderProfile={(request) => upsertProviderProfile(request)}
+        onSetActiveProviderProfile={(profileId) => setActiveProviderProfile(profileId)}
         onStartLogin={() => startOpenAiLogin()}
         onLogout={() => logoutRuntimeSession()}
-        onUpsertNotificationRoute={(request) => upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })}
+        onUpsertNotificationRoute={(request) =>
+          upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
+        }
         platformOverride={platformOverride}
         onPlatformOverrideChange={setPlatformOverride}
         onStartOnboarding={() => {

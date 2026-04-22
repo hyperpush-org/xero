@@ -321,6 +321,7 @@ describe('view builders', () => {
       project,
       activePhase: project.phases[0] ?? null,
       repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: null,
       runtimeSession: makeRuntimeSession(),
       runtimeSettings: makeRuntimeSettings(),
       runtimeRun: makeRuntimeRun(),

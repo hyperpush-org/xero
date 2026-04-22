@@ -790,6 +790,26 @@ function createMockAdapter(options?: {
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
   }
+  const providerProfiles = {
+    activeProfileId: 'openai_codex-default',
+    profiles: [
+      {
+        profileId: 'openai_codex-default',
+        providerId: 'openai_codex' as const,
+        label: 'OpenAI Codex',
+        modelId: 'openai_codex',
+        active: true,
+        readiness: {
+          ready: false,
+          status: 'missing' as const,
+          credentialUpdatedAt: null,
+        },
+        migratedFromLegacy: false,
+        migratedAt: null,
+      },
+    ],
+    migration: null,
+  }
   const upsertNotificationRouteCredentials = vi.fn(
     async (
       request: UpsertNotificationRouteCredentialsRequestDto,
@@ -850,7 +870,10 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings: vi.fn(async () => runtimeSettings),
+    getProviderProfiles: vi.fn(async () => providerProfiles),
     upsertRuntimeSettings: vi.fn(async () => runtimeSettings),
+    upsertProviderProfile: vi.fn(async () => providerProfiles),
+    setActiveProviderProfile: vi.fn(async () => providerProfiles),
     startOpenAiLogin: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     submitOpenAiCallback: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     startAutonomousRun: vi.fn(async (projectId: string) => {

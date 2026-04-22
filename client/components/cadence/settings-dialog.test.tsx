@@ -11,16 +11,65 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 
 import { SettingsDialog, type SettingsDialogProps } from '@/components/cadence/settings-dialog'
 import type { AgentPaneView, OperatorActionErrorView } from '@/src/features/cadence/use-cadence-desktop-state'
-import type { RuntimeSessionView, RuntimeSettingsDto, UpsertRuntimeSettingsRequestDto } from '@/src/lib/cadence-model'
+import type {
+  ProviderProfileDto,
+  ProviderProfilesDto,
+  RuntimeSessionView,
+  UpsertProviderProfileRequestDto,
+} from '@/src/lib/cadence-model'
 
 type NotificationRouteRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertNotificationRoute']>>[0]
 
-function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): RuntimeSettingsDto {
+function makeOpenAiProfile(overrides: Partial<ProviderProfileDto> = {}): ProviderProfileDto {
   return {
-    providerId: 'openrouter',
-    modelId: 'openai/gpt-4.1-mini',
-    openrouterApiKeyConfigured: false,
+    profileId: 'openai_codex-default',
+    providerId: 'openai_codex',
+    label: 'OpenAI Codex',
+    modelId: 'openai_codex',
+    active: true,
+    readiness: {
+      ready: false,
+      status: 'missing',
+      credentialUpdatedAt: null,
+    },
+    migratedFromLegacy: false,
+    migratedAt: null,
     ...overrides,
+  }
+}
+
+function makeOpenRouterProfile(overrides: Partial<ProviderProfileDto> = {}): ProviderProfileDto {
+  const ready = overrides.readiness?.ready ?? false
+
+  return {
+    profileId: 'openrouter-default',
+    providerId: 'openrouter',
+    label: 'OpenRouter',
+    modelId: 'openai/gpt-4.1-mini',
+    active: false,
+    readiness: ready
+      ? {
+          ready: true,
+          status: 'ready',
+          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+        }
+      : {
+          ready: false,
+          status: 'missing',
+          credentialUpdatedAt: null,
+        },
+    migratedFromLegacy: false,
+    migratedAt: null,
+    ...overrides,
+  }
+}
+
+function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): ProviderProfilesDto {
+  return {
+    activeProfileId: overrides.activeProfileId ?? 'openai_codex-default',
+    profiles:
+      overrides.profiles ?? [makeOpenAiProfile(), makeOpenRouterProfile({ active: false })],
+    migration: overrides.migration ?? null,
   }
 }
 
@@ -170,35 +219,51 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
 
 function makeError(overrides: Partial<OperatorActionErrorView> = {}): OperatorActionErrorView {
   return {
-    code: 'runtime_settings_failed',
-    message: 'Cadence could not load app-global runtime settings.',
+    code: 'provider_profiles_failed',
+    message: 'Cadence could not load app-local provider profiles.',
     retryable: true,
     ...overrides,
   }
 }
 
+function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> = {}): SettingsDialogProps {
+  return {
+    open: true,
+    onOpenChange: vi.fn(),
+    agent: makeAgent(),
+    providerProfiles: makeProviderProfiles(),
+    providerProfilesLoadStatus: 'ready',
+    providerProfilesLoadError: null,
+    providerProfilesSaveStatus: 'idle',
+    providerProfilesSaveError: null,
+    onRefreshProviderProfiles: vi.fn(async () => makeProviderProfiles()),
+    onUpsertProviderProfile: vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles()),
+    onSetActiveProviderProfile: vi.fn(async (_profileId: string) => makeProviderProfiles()),
+    onStartLogin: vi.fn(async () => makeRuntimeSession()),
+    onLogout: vi.fn(async () => makeRuntimeSession({ sessionId: null, accountId: null })),
+    ...overrides,
+  }
+}
+
 describe('SettingsDialog', () => {
-  it('refreshes app-global settings on open and keeps notifications project-bound when no project is selected', async () => {
-    const onRefreshRuntimeSettings = vi.fn(async () => makeRuntimeSettings())
+  it('refreshes app-local provider profiles on open and keeps notifications project-bound when no project is selected', async () => {
+    const onRefreshProviderProfiles = vi.fn(async () => makeProviderProfiles())
 
     render(
       <SettingsDialog
-        open
-        onOpenChange={vi.fn()}
-        agent={null}
-        runtimeSettings={makeRuntimeSettings()}
-        runtimeSettingsLoadStatus="ready"
-        runtimeSettingsLoadError={null}
-        runtimeSettingsSaveStatus="idle"
-        runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={onRefreshRuntimeSettings}
+        {...makeSettingsDialogProps({
+          agent: null,
+          onRefreshProviderProfiles,
+        })}
       />,
     )
 
-    await waitFor(() => expect(onRefreshRuntimeSettings).toHaveBeenCalledWith({ force: true }))
-    expect(screen.getByText('Manage provider credentials and models. Projects are not assigned to a provider here.')).toBeVisible()
-    expect(screen.queryByText('Saved API key and model for runtime sessions.')).not.toBeInTheDocument()
-    expect(screen.queryByText('Browser sign-in for runtime sessions.')).not.toBeInTheDocument()
+    await waitFor(() => expect(onRefreshProviderProfiles).toHaveBeenCalledWith({ force: true }))
+    expect(
+      screen.getByText(
+        'Manage app-local provider profiles, readiness, and active selection. Projects are not assigned to a provider here.',
+      ),
+    ).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
 
@@ -215,16 +280,9 @@ describe('SettingsDialog', () => {
 
     render(
       <SettingsDialog
-        open
-        onOpenChange={vi.fn()}
-        agent={makeAgent()}
-        runtimeSettings={makeRuntimeSettings()}
-        runtimeSettingsLoadStatus="ready"
-        runtimeSettingsLoadError={null}
-        runtimeSettingsSaveStatus="idle"
-        runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
-        onUpsertNotificationRoute={onUpsertNotificationRoute}
+        {...makeSettingsDialogProps({
+          onUpsertNotificationRoute,
+        })}
       />,
     )
 
@@ -245,16 +303,13 @@ describe('SettingsDialog', () => {
 
     await waitFor(() => expect(onUpsertNotificationRoute).toHaveBeenCalledTimes(1))
 
-    const request = onUpsertNotificationRoute.mock.calls[0][0]
-    expect(request).toEqual({
+    expect(onUpsertNotificationRoute.mock.calls[0][0]).toEqual({
       routeId: 'ops-alerts',
       routeKind: 'telegram',
       routeTarget: 'telegram:@ops-room',
       enabled: true,
       metadataJson: null,
     })
-    expect(request).not.toHaveProperty('projectId')
-    expect(request).not.toHaveProperty('updatedAt')
   })
 
   it('keeps truthful stored targets for edit fallback and toggles existing routes', async () => {
@@ -262,23 +317,17 @@ describe('SettingsDialog', () => {
 
     render(
       <SettingsDialog
-        open
-        onOpenChange={vi.fn()}
-        agent={makeAgent({
-          notificationRoutes: [
-            makeNotificationRoute({
-              routeTarget: 'ops-room',
-              enabled: false,
-            }),
-          ],
+        {...makeSettingsDialogProps({
+          agent: makeAgent({
+            notificationRoutes: [
+              makeNotificationRoute({
+                routeTarget: 'ops-room',
+                enabled: false,
+              }),
+            ],
+          }),
+          onUpsertNotificationRoute,
         })}
-        runtimeSettings={makeRuntimeSettings()}
-        runtimeSettingsLoadStatus="ready"
-        runtimeSettingsLoadError={null}
-        runtimeSettingsSaveStatus="idle"
-        runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
-        onUpsertNotificationRoute={onUpsertNotificationRoute}
       />,
     )
 
@@ -313,128 +362,152 @@ describe('SettingsDialog', () => {
     })
   })
 
-  it('keeps an OpenRouter-specific model draft and never echoes a saved API key back into the dialog state', async () => {
+  it('keeps provider profile secrets blank on re-open and switches the active profile explicitly', async () => {
     const secret = 'sk-or-v1-test-secret'
 
-    let nextRuntimeSettings = makeRuntimeSettings({
-      providerId: 'openai_codex',
-      modelId: 'openai_codex',
-      openrouterApiKeyConfigured: false,
+    let nextProviderProfiles = makeProviderProfiles({
+      activeProfileId: 'openai_codex-default',
+      profiles: [makeOpenAiProfile({ active: true }), makeOpenRouterProfile({ active: false })],
     })
 
-    const onUpsertRuntimeSettings = vi.fn(async (request: UpsertRuntimeSettingsRequestDto) => {
-      nextRuntimeSettings = {
-        providerId: request.providerId,
-        modelId: request.modelId,
-        openrouterApiKeyConfigured: Boolean(request.openrouterApiKey?.trim()),
-      }
+    const onUpsertProviderProfile = vi.fn(async (request: UpsertProviderProfileRequestDto) => {
+      nextProviderProfiles = makeProviderProfiles({
+        activeProfileId: 'openai_codex-default',
+        profiles: [
+          makeOpenAiProfile({ active: true }),
+          makeOpenRouterProfile({
+            active: false,
+            modelId: request.modelId,
+            label: request.label,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+          }),
+        ],
+      })
 
-      return nextRuntimeSettings
+      return nextProviderProfiles
+    })
+
+    const onSetActiveProviderProfile = vi.fn(async (_profileId: string) => {
+      nextProviderProfiles = makeProviderProfiles({
+        activeProfileId: 'openrouter-default',
+        profiles: [makeOpenAiProfile({ active: false }), makeOpenRouterProfile({ active: true, readiness: { ready: true, status: 'ready', credentialUpdatedAt: '2026-04-20T12:00:00Z' } })],
+      })
+
+      return nextProviderProfiles
     })
 
     const { rerender } = render(
       <SettingsDialog
-        open
-        onOpenChange={vi.fn()}
-        agent={makeAgent()}
-        runtimeSettings={nextRuntimeSettings}
-        runtimeSettingsLoadStatus="ready"
-        runtimeSettingsLoadError={null}
-        runtimeSettingsSaveStatus="idle"
-        runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
-        onUpsertRuntimeSettings={onUpsertRuntimeSettings}
+        {...makeSettingsDialogProps({
+          providerProfiles: nextProviderProfiles,
+          onUpsertProviderProfile,
+          onSetActiveProviderProfile,
+        })}
       />,
     )
 
-    const configureButton = screen.getAllByRole('button', { name: 'Set up' })[0]
-    fireEvent.click(configureButton)
+    fireEvent.click(screen.getByRole('button', { name: 'Set up' }))
 
     const modelInput = screen.getByLabelText('Model ID') as HTMLInputElement
     const keyInput = screen.getByLabelText('API Key') as HTMLInputElement
 
-    expect(modelInput).toHaveValue('')
+    expect(modelInput).toHaveValue('openai/gpt-4.1-mini')
     expect(keyInput).toHaveValue('')
 
     fireEvent.change(modelInput, { target: { value: 'openrouter/anthropic/claude-3.5-sonnet' } })
     fireEvent.change(keyInput, { target: { value: secret } })
-
-    expect(modelInput).toHaveValue('openrouter/anthropic/claude-3.5-sonnet')
-    expect(keyInput).toHaveValue(secret)
-
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
-      expect(onUpsertRuntimeSettings).toHaveBeenCalledWith({
+      expect(onUpsertProviderProfile).toHaveBeenCalledWith({
+        profileId: 'openrouter-default',
         providerId: 'openrouter',
+        label: 'OpenRouter',
         modelId: 'openrouter/anthropic/claude-3.5-sonnet',
         openrouterApiKey: secret,
+        activate: false,
       }),
     )
 
-    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
-    expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument()
-
     rerender(
       <SettingsDialog
-        open
-        onOpenChange={vi.fn()}
-        agent={makeAgent()}
-        runtimeSettings={nextRuntimeSettings}
-        runtimeSettingsLoadStatus="ready"
-        runtimeSettingsLoadError={null}
-        runtimeSettingsSaveStatus="idle"
-        runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
-        onUpsertRuntimeSettings={onUpsertRuntimeSettings}
+        {...makeSettingsDialogProps({
+          providerProfiles: nextProviderProfiles,
+          onUpsertProviderProfile,
+          onSetActiveProviderProfile,
+        })}
       />,
     )
 
-    expect(screen.getByText('Key saved')).toBeVisible()
-    expect(screen.queryByText('Active')).not.toBeInTheDocument()
-
-    const configureButtonAfter = screen.getAllByRole('button', { name: 'Edit setup' })[0]
-    fireEvent.click(configureButtonAfter)
+    expect(screen.getByText('Ready')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit setup' }))
 
     const modelInputAfter = screen.getByLabelText('Model ID') as HTMLInputElement
     const keyInputAfter = screen.getByLabelText('API Key') as HTMLInputElement
 
-    await waitFor(() => expect(modelInputAfter).toHaveValue('openrouter/anthropic/claude-3.5-sonnet'))
+    expect(modelInputAfter).toHaveValue('openrouter/anthropic/claude-3.5-sonnet')
     expect(keyInputAfter).toHaveValue('')
     expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument()
     expect(screen.queryByText(secret)).not.toBeInTheDocument()
-  })
 
-  it('keeps last truthful provider snapshot visible when a typed load error is present', () => {
-    render(
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use this profile' }))
+
+    await waitFor(() => expect(onSetActiveProviderProfile).toHaveBeenCalledWith('openrouter-default'))
+
+    rerender(
       <SettingsDialog
-        open
-        onOpenChange={vi.fn()}
-        agent={makeAgent()}
-        runtimeSettings={makeRuntimeSettings({
-          providerId: 'openrouter',
-          modelId: 'openrouter/meta-llama/llama-3.1-8b-instruct',
-          openrouterApiKeyConfigured: true,
+        {...makeSettingsDialogProps({
+          providerProfiles: nextProviderProfiles,
+          onUpsertProviderProfile,
+          onSetActiveProviderProfile,
         })}
-        runtimeSettingsLoadStatus="error"
-        runtimeSettingsLoadError={makeError({
-          code: 'runtime_settings_timeout',
-          message: 'Cadence timed out while loading app-global runtime settings.',
-        })}
-        runtimeSettingsSaveStatus="idle"
-        runtimeSettingsSaveError={null}
-        onRefreshRuntimeSettings={vi.fn(async () => makeRuntimeSettings())}
       />,
     )
 
-    expect(screen.getByText('Cadence timed out while loading app-global runtime settings.')).toBeVisible()
+    expect(screen.getByText('Active profile')).toBeVisible()
+    expect(screen.getByText('Using this')).toBeVisible()
+  })
+
+  it('keeps the last truthful provider snapshot visible when a typed load error is present', () => {
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          providerProfiles: makeProviderProfiles({
+            activeProfileId: 'openrouter-default',
+            profiles: [
+              makeOpenAiProfile({ active: false }),
+              makeOpenRouterProfile({
+                active: true,
+                modelId: 'openrouter/meta-llama/llama-3.1-8b-instruct',
+                readiness: {
+                  ready: true,
+                  status: 'ready',
+                  credentialUpdatedAt: '2026-04-20T00:00:00Z',
+                },
+              }),
+            ],
+          }),
+          providerProfilesLoadStatus: 'error',
+          providerProfilesLoadError: makeError({
+            code: 'provider_profiles_timeout',
+            message: 'Cadence timed out while loading app-local provider profiles.',
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Cadence timed out while loading app-local provider profiles.')).toBeVisible()
     expect(screen.getByText('OpenRouter')).toBeVisible()
     expect(screen.getByText('OpenAI Codex')).toBeVisible()
 
-    const configureButton = screen.getByRole('button', { name: 'Edit setup' })
-    fireEvent.click(configureButton)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit setup' }))
 
     expect(screen.getByDisplayValue('openrouter/meta-llama/llama-3.1-8b-instruct')).toBeVisible()
-    expect(screen.getByText('Key saved')).toBeVisible()
+    expect(screen.getByText('Ready')).toBeVisible()
   })
 })
