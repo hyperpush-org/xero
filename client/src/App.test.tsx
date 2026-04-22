@@ -23,6 +23,7 @@ import type {
   ListProjectsResponseDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
+  ProviderProfilesDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
@@ -173,6 +174,38 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
   }
 }
 
+function makeProviderProfilesFromRuntimeSettings(runtimeSettings: RuntimeSettingsDto): ProviderProfilesDto {
+  const activeProfileId = runtimeSettings.providerId === 'openrouter' ? 'openrouter-default' : 'openai_codex-default'
+
+  return {
+    activeProfileId,
+    profiles: [
+      {
+        profileId: activeProfileId,
+        providerId: runtimeSettings.providerId,
+        label: runtimeSettings.providerId === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex',
+        modelId: runtimeSettings.modelId,
+        active: true,
+        readiness:
+          runtimeSettings.providerId === 'openrouter'
+            ? {
+                ready: runtimeSettings.openrouterApiKeyConfigured,
+                status: runtimeSettings.openrouterApiKeyConfigured ? 'ready' : 'missing',
+                credentialUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+              }
+            : {
+                ready: false,
+                status: 'missing',
+                credentialUpdatedAt: null,
+              },
+        migratedFromLegacy: false,
+        migratedAt: null,
+      },
+    ],
+    migration: null,
+  }
+}
+
 function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   const runtimeRun: RuntimeRunDto = {
     projectId,
@@ -263,6 +296,7 @@ function createAdapter(options?: {
   diff?: RepositoryDiffResponseDto
   runtimeSession?: RuntimeSessionDto
   runtimeSettings?: RuntimeSettingsDto
+  providerProfiles?: ProviderProfilesDto
   runtimeRun?: RuntimeRunDto | null
   autonomousState?: AutonomousRunStateDto | null
   notificationRoutes?: ListNotificationRoutesResponseDto['routes']
@@ -274,6 +308,7 @@ function createAdapter(options?: {
   let currentDiff = options?.diff ?? makeDiff()
   let currentRuntimeSession = options?.runtimeSession ?? makeRuntimeSession()
   let currentRuntimeSettings = options?.runtimeSettings ?? makeRuntimeSettings()
+  let currentProviderProfiles = options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
@@ -296,6 +331,7 @@ function createAdapter(options?: {
             : request.openrouterApiKey.trim().length > 0
           : false,
     }
+    currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
     return currentRuntimeSettings
   })
 
@@ -379,6 +415,7 @@ function createAdapter(options?: {
     getAutonomousRun: async () => currentAutonomousState ?? { run: null, unit: null },
     getRuntimeRun: async () => currentRuntimeRun,
     getRuntimeSettings: async () => currentRuntimeSettings,
+    getProviderProfiles: async () => currentProviderProfiles,
     getRuntimeSession: async () => currentRuntimeSession,
     startOpenAiLogin: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1', {
@@ -394,6 +431,21 @@ function createAdapter(options?: {
     startAutonomousRun,
     startRuntimeRun,
     upsertRuntimeSettings,
+    upsertProviderProfile: async (request) => {
+      currentRuntimeSettings = {
+        providerId: request.providerId,
+        modelId: request.modelId,
+        openrouterApiKeyConfigured:
+          request.providerId === 'openrouter'
+            ? request.openrouterApiKey == null
+              ? currentRuntimeSettings.openrouterApiKeyConfigured
+              : request.openrouterApiKey.trim().length > 0
+            : currentRuntimeSettings.openrouterApiKeyConfigured,
+      }
+      currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
+      return currentProviderProfiles
+    },
+    setActiveProviderProfile: async (_profileId) => currentProviderProfiles,
     startRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1')
       return currentRuntimeSession

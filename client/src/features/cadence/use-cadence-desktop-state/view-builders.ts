@@ -20,6 +20,7 @@ import {
 import {
   type Phase,
   type ProjectDetailView,
+  type ProviderProfilesDto,
 } from '@/src/lib/cadence-model'
 import { projectCheckpointControlLoops } from '../agent-runtime-projections/checkpoint-control-loops'
 import { projectRecentAutonomousUnits } from '../agent-runtime-projections/recent-autonomous-units'
@@ -67,6 +68,7 @@ interface SelectedProviderProjection {
 export interface BuildWorkflowViewDependencies {
   project: ProjectDetailView | null
   activePhase: Phase | null
+  providerProfiles: ProviderProfilesDto | null
   runtimeSession: RuntimeSessionView | null
   runtimeSettings: RuntimeSettingsDto | null
 }
@@ -75,6 +77,7 @@ export interface BuildAgentViewDependencies {
   project: ProjectDetailView | null
   activePhase: Phase | null
   repositoryStatus: RepositoryStatusView | null
+  providerProfiles: ProviderProfilesDto | null
   runtimeSession: RuntimeSessionView | null
   runtimeSettings: RuntimeSettingsDto | null
   runtimeRun: RuntimeRunView | null
@@ -125,10 +128,11 @@ function getPlanningLifecycleView(project: ProjectDetailView): PlanningLifecycle
 }
 
 function getSelectedProviderProjection(
+  providerProfiles: ProviderProfilesDto | null,
   runtimeSettings: RuntimeSettingsDto | null,
   runtimeSession: RuntimeSessionView | null,
 ): SelectedProviderProjection {
-  const selectedProvider = resolveSelectedRuntimeProvider(runtimeSettings, runtimeSession)
+  const selectedProvider = resolveSelectedRuntimeProvider(providerProfiles, runtimeSettings, runtimeSession)
 
   return {
     selectedProvider,
@@ -187,6 +191,7 @@ function getProjectionError(error: unknown, fallback: string): OperatorActionErr
 export function buildWorkflowView({
   project,
   activePhase,
+  providerProfiles,
   runtimeSession,
   runtimeSettings,
 }: BuildWorkflowViewDependencies): WorkflowPaneView | null {
@@ -195,7 +200,11 @@ export function buildWorkflowView({
   }
 
   const lifecycle = getPlanningLifecycleView(project)
-  const { selectedProvider, providerMismatch } = getSelectedProviderProjection(runtimeSettings, runtimeSession)
+  const { selectedProvider, providerMismatch } = getSelectedProviderProjection(
+    providerProfiles,
+    runtimeSettings,
+    runtimeSession,
+  )
 
   return {
     project,
@@ -208,9 +217,11 @@ export function buildWorkflowView({
     overallPercent: project.phaseProgressPercent,
     hasPhases: project.phases.length > 0,
     runtimeSession,
+    selectedProfileId: selectedProvider.profileId,
     selectedProviderId: selectedProvider.providerId,
     selectedProviderLabel: selectedProvider.providerLabel,
     selectedModelId: selectedProvider.modelId,
+    selectedProfileReadiness: selectedProvider.readiness,
     openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
     providerMismatch,
   }
@@ -220,6 +231,7 @@ export function buildAgentView({
   project,
   activePhase,
   repositoryStatus,
+  providerProfiles,
   runtimeSession,
   runtimeSettings,
   runtimeRun,
@@ -311,7 +323,11 @@ export function buildAgentView({
     autonomousHistory,
     autonomousRecentArtifacts,
   })
-  const { selectedProvider, providerMismatch } = getSelectedProviderProjection(runtimeSettings, runtimeSession)
+  const { selectedProvider, providerMismatch } = getSelectedProviderProjection(
+    providerProfiles,
+    runtimeSettings,
+    runtimeSession,
+  )
 
   return {
     trustSnapshot,
@@ -324,9 +340,11 @@ export function buildAgentView({
       repositoryLabel: project.repository?.displayName ?? project.name,
       repositoryPath: project.repository?.rootPath ?? null,
       runtimeSession,
+      selectedProfileId: selectedProvider.profileId,
       selectedProviderId: selectedProvider.providerId,
       selectedProviderLabel: selectedProvider.providerLabel,
       selectedModelId: selectedProvider.modelId,
+      selectedProfileReadiness: selectedProvider.readiness,
       openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
       providerMismatch,
       runtimeRun,

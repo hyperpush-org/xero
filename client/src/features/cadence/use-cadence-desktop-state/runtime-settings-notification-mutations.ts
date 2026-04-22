@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 
+import { projectRuntimeSettingsFromProviderProfiles } from '@/src/lib/cadence-model/provider-profiles'
 import type {
   CadenceDesktopMutationActions,
   UseCadenceDesktopMutationsArgs,
@@ -14,9 +15,13 @@ export function useRuntimeSettingsNotificationMutations({
   refs,
   setters,
   operations,
+  providerProfilesLoadStatus,
   runtimeSettingsLoadStatus,
 }: UseCadenceDesktopMutationsArgs): Pick<
   CadenceDesktopMutationActions,
+  | 'refreshProviderProfiles'
+  | 'upsertProviderProfile'
+  | 'setActiveProviderProfile'
   | 'refreshRuntimeSettings'
   | 'upsertRuntimeSettings'
   | 'refreshNotificationRoutes'
@@ -24,6 +29,8 @@ export function useRuntimeSettingsNotificationMutations({
 > {
   const {
     activeProjectIdRef,
+    providerProfilesRef,
+    providerProfilesLoadInFlightRef,
     runtimeSettingsRef,
     runtimeSettingsLoadInFlightRef,
   } = refs
@@ -34,6 +41,11 @@ export function useRuntimeSettingsNotificationMutations({
     setNotificationRouteMutationStatus,
     setPendingNotificationRouteId,
     setNotificationRouteMutationError,
+    setProviderProfiles,
+    setProviderProfilesLoadStatus,
+    setProviderProfilesLoadError,
+    setProviderProfilesSaveStatus,
+    setProviderProfilesSaveError,
     setRuntimeSettings,
     setRuntimeSettingsLoadStatus,
     setRuntimeSettingsLoadError,
@@ -41,6 +53,145 @@ export function useRuntimeSettingsNotificationMutations({
     setRuntimeSettingsSaveError,
   } = setters
   const { loadNotificationRoutes } = operations
+
+  const applyProviderProfilesSnapshot = useCallback(
+    (response: Awaited<ReturnType<typeof adapter.getProviderProfiles>>) => {
+      setProviderProfiles(response)
+      setProviderProfilesLoadStatus('ready')
+      setProviderProfilesLoadError(null)
+
+      const projectedRuntimeSettings = projectRuntimeSettingsFromProviderProfiles(response)
+      if (projectedRuntimeSettings) {
+        setRuntimeSettings(projectedRuntimeSettings)
+        setRuntimeSettingsLoadStatus('ready')
+        setRuntimeSettingsLoadError(null)
+      }
+
+      return response
+    },
+    [
+      adapter,
+      setProviderProfiles,
+      setProviderProfilesLoadError,
+      setProviderProfilesLoadStatus,
+      setRuntimeSettings,
+      setRuntimeSettingsLoadError,
+      setRuntimeSettingsLoadStatus,
+    ],
+  )
+
+  const refreshProviderProfiles = useCallback(
+    async (options: { force?: boolean } = {}) => {
+      if (providerProfilesLoadInFlightRef.current) {
+        return providerProfilesLoadInFlightRef.current
+      }
+
+      const cachedProviderProfiles = providerProfilesRef.current
+      if (!options.force && cachedProviderProfiles && providerProfilesLoadStatus === 'ready') {
+        return cachedProviderProfiles
+      }
+
+      setProviderProfilesLoadStatus('loading')
+      setProviderProfilesLoadError(null)
+
+      const loadPromise = (async () => {
+        try {
+          const response = await adapter.getProviderProfiles()
+          return applyProviderProfilesSnapshot(response)
+        } catch (error) {
+          setProviderProfilesLoadStatus('error')
+          setProviderProfilesLoadError(
+            getOperatorActionError(error, 'Cadence could not load app-local provider profiles.'),
+          )
+          throw error
+        } finally {
+          providerProfilesLoadInFlightRef.current = null
+        }
+      })()
+
+      providerProfilesLoadInFlightRef.current = loadPromise
+      return loadPromise
+    },
+    [
+      adapter,
+      applyProviderProfilesSnapshot,
+      providerProfilesLoadInFlightRef,
+      providerProfilesLoadStatus,
+      providerProfilesRef,
+      setProviderProfilesLoadError,
+      setProviderProfilesLoadStatus,
+    ],
+  )
+
+  const upsertProviderProfile = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['upsertProviderProfile']>[0]) => {
+      setProviderProfilesSaveStatus('running')
+      setProviderProfilesSaveError(null)
+
+      try {
+        const response = await adapter.upsertProviderProfile(request)
+        applyProviderProfilesSnapshot(response)
+        setProviderProfilesSaveError(null)
+        return response
+      } catch (error) {
+        setProviderProfilesSaveError(
+          getOperatorActionError(error, 'Cadence could not save the selected provider profile.'),
+        )
+
+        try {
+          await refreshProviderProfiles({ force: true })
+        } catch {
+          // Preserve the last truthful profile snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setProviderProfilesSaveStatus('idle')
+      }
+    },
+    [
+      adapter,
+      applyProviderProfilesSnapshot,
+      refreshProviderProfiles,
+      setProviderProfilesSaveError,
+      setProviderProfilesSaveStatus,
+    ],
+  )
+
+  const setActiveProviderProfile = useCallback(
+    async (profileId: string) => {
+      setProviderProfilesSaveStatus('running')
+      setProviderProfilesSaveError(null)
+
+      try {
+        const response = await adapter.setActiveProviderProfile(profileId)
+        applyProviderProfilesSnapshot(response)
+        setProviderProfilesSaveError(null)
+        return response
+      } catch (error) {
+        setProviderProfilesSaveError(
+          getOperatorActionError(error, 'Cadence could not switch the active provider profile.'),
+        )
+
+        try {
+          await refreshProviderProfiles({ force: true })
+        } catch {
+          // Preserve the last truthful profile snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setProviderProfilesSaveStatus('idle')
+      }
+    },
+    [
+      adapter,
+      applyProviderProfilesSnapshot,
+      refreshProviderProfiles,
+      setProviderProfilesSaveError,
+      setProviderProfilesSaveStatus,
+    ],
+  )
 
   const refreshRuntimeSettings = useCallback(
     async (options: { force?: boolean } = {}) => {
@@ -99,11 +250,25 @@ export function useRuntimeSettingsNotificationMutations({
         setRuntimeSettingsLoadStatus('ready')
         setRuntimeSettingsLoadError(null)
         setRuntimeSettingsSaveError(null)
+
+        try {
+          await refreshProviderProfiles({ force: true })
+        } catch {
+          // Keep the truthful compatibility snapshot even if the profile refresh fails.
+        }
+
         return response
       } catch (error) {
         setRuntimeSettingsSaveError(
           getOperatorActionError(error, 'Cadence could not save app-global runtime settings.'),
         )
+
+        try {
+          await refreshProviderProfiles({ force: true })
+        } catch {
+          // Preserve the last truthful provider-profile snapshot when refresh-after-failure also fails.
+        }
+
         throw error
       } finally {
         setRuntimeSettingsSaveStatus('idle')
@@ -111,6 +276,7 @@ export function useRuntimeSettingsNotificationMutations({
     },
     [
       adapter,
+      refreshProviderProfiles,
       setRuntimeSettings,
       setRuntimeSettingsLoadError,
       setRuntimeSettingsLoadStatus,
@@ -223,6 +389,9 @@ export function useRuntimeSettingsNotificationMutations({
   )
 
   return {
+    refreshProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
     refreshNotificationRoutes,

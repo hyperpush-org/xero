@@ -14,6 +14,8 @@ import type {
   PlanningLifecycleView,
   ProjectDetailView,
   ProjectListItem,
+  ProviderProfileReadinessDto,
+  ProviderProfilesDto,
   ReadProjectFileResponseDto,
   RenameProjectEntryRequestDto,
   RenameProjectEntryResponseDto,
@@ -35,6 +37,7 @@ import type {
   RuntimeStreamViewItem,
   SyncNotificationAdaptersResponseDto,
   UpsertNotificationRouteRequestDto,
+  UpsertProviderProfileRequestDto,
   UpsertRuntimeSettingsRequestDto,
   VerificationRecordView,
   WriteProjectFileResponseDto,
@@ -75,6 +78,8 @@ export interface OperatorActionErrorView {
 export type RepositoryDiffLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type NotificationRoutesLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type NotificationRouteMutationStatus = 'idle' | 'running'
+export type ProviderProfilesLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
+export type ProviderProfilesSaveStatus = 'idle' | 'running'
 export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsSaveStatus = 'idle' | 'running'
 export type NotificationRouteHealthState = 'disabled' | 'idle' | 'pending' | 'healthy' | 'degraded'
@@ -178,9 +183,11 @@ export interface WorkflowPaneView {
   overallPercent: number
   hasPhases: boolean
   runtimeSession?: RuntimeSessionView | null
+  selectedProfileId?: string | null
   selectedProviderId?: RuntimeSettingsDto['providerId'] | null
   selectedProviderLabel?: string
   selectedModelId?: string | null
+  selectedProfileReadiness?: ProviderProfileReadinessDto | null
   openrouterApiKeyConfigured?: boolean
   providerMismatch?: boolean
 }
@@ -194,9 +201,11 @@ export interface AgentPaneView {
   repositoryLabel: string
   repositoryPath: string | null
   runtimeSession?: RuntimeSessionView | null
+  selectedProfileId?: string | null
   selectedProviderId?: RuntimeSettingsDto['providerId'] | null
   selectedProviderLabel?: string
   selectedModelId?: string | null
+  selectedProfileReadiness?: ProviderProfileReadinessDto | null
   openrouterApiKeyConfigured?: boolean
   providerMismatch?: boolean
   runtimeRun?: RuntimeRunView | null
@@ -293,6 +302,11 @@ export interface UseCadenceDesktopStateResult {
   projectRemovalStatus: ProjectRemovalStatus
   pendingProjectRemovalId: string | null
   errorMessage: string | null
+  providerProfiles: ProviderProfilesDto | null
+  providerProfilesLoadStatus: ProviderProfilesLoadStatus
+  providerProfilesLoadError: OperatorActionErrorView | null
+  providerProfilesSaveStatus: ProviderProfilesSaveStatus
+  providerProfilesSaveError: OperatorActionErrorView | null
   runtimeSettings: RuntimeSettingsDto | null
   runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
   runtimeSettingsLoadError: OperatorActionErrorView | null
@@ -339,6 +353,9 @@ export interface UseCadenceDesktopStateResult {
     actionId: string,
     options?: { userAnswer?: string | null },
   ) => Promise<ProjectDetailView | null>
+  refreshProviderProfiles: (options?: { force?: boolean }) => Promise<ProviderProfilesDto>
+  upsertProviderProfile: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
+  setActiveProviderProfile: (profileId: string) => Promise<ProviderProfilesDto>
   refreshRuntimeSettings: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
   upsertRuntimeSettings: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
   refreshNotificationRoutes: (options?: { force?: boolean }) => Promise<NotificationRouteDto[]>

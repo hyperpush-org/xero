@@ -68,6 +68,7 @@ export * from './cadence-model/operator-actions'
 export * from './cadence-model/notifications'
 export * from './cadence-model/workflow'
 export * from './cadence-model/runtime'
+export * from './cadence-model/provider-profiles'
 export * from './cadence-model/autonomous'
 export * from './cadence-model/runtime-stream'
 

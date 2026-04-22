@@ -272,6 +272,7 @@ describe('view builders', () => {
     const view = buildWorkflowView({
       project,
       activePhase,
+      providerProfiles: null,
       runtimeSession: makeRuntimeSession(),
       runtimeSettings: makeRuntimeSettings(),
     })

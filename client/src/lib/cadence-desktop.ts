@@ -88,6 +88,13 @@ import {
   type UpsertRuntimeSettingsRequestDto,
 } from '@/src/lib/cadence-model/runtime'
 import {
+  providerProfilesSchema,
+  setActiveProviderProfileRequestSchema,
+  upsertProviderProfileRequestSchema,
+  type ProviderProfilesDto,
+  type UpsertProviderProfileRequestDto,
+} from '@/src/lib/cadence-model/provider-profiles'
+import {
   runtimeStreamItemSchema,
   subscribeRuntimeStreamRequestSchema,
   subscribeRuntimeStreamResponseSchema,
@@ -124,6 +131,9 @@ const COMMANDS = {
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
   getRuntimeSettings: 'get_runtime_settings',
+  listProviderProfiles: 'list_provider_profiles',
+  upsertProviderProfile: 'upsert_provider_profile',
+  setActiveProviderProfile: 'set_active_provider_profile',
   startOpenAiLogin: 'start_openai_login',
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
@@ -208,6 +218,7 @@ export interface CadenceDesktopAdapter {
   getRuntimeRun(projectId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   getRuntimeSettings(): Promise<RuntimeSettingsDto>
+  getProviderProfiles(): Promise<ProviderProfilesDto>
   startOpenAiLogin(projectId: string, options?: { originator?: string | null }): Promise<RuntimeSessionDto>
   submitOpenAiCallback(
     projectId: string,
@@ -221,6 +232,8 @@ export interface CadenceDesktopAdapter {
   stopRuntimeRun(projectId: string, runId: string): Promise<RuntimeRunDto | null>
   logoutRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   upsertRuntimeSettings(request: UpsertRuntimeSettingsRequestDto): Promise<RuntimeSettingsDto>
+  upsertProviderProfile(request: UpsertProviderProfileRequestDto): Promise<ProviderProfilesDto>
+  setActiveProviderProfile(profileId: string): Promise<ProviderProfilesDto>
   resolveOperatorAction(
     projectId: string,
     actionId: string,
@@ -581,6 +594,10 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     return invokeTyped(COMMANDS.getRuntimeSettings, runtimeSettingsSchema)
   },
 
+  getProviderProfiles() {
+    return invokeTyped(COMMANDS.listProviderProfiles, providerProfilesSchema)
+  },
+
   startOpenAiLogin(projectId, options) {
     return invokeTyped(COMMANDS.startOpenAiLogin, runtimeSessionSchema, {
       request: {
@@ -640,6 +657,20 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     const parsedRequest = upsertRuntimeSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.upsertRuntimeSettings, runtimeSettingsSchema, {
       request: parsedRequest,
+    })
+  },
+
+  upsertProviderProfile(request) {
+    const parsedRequest = upsertProviderProfileRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.upsertProviderProfile, providerProfilesSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  setActiveProviderProfile(profileId) {
+    const request = setActiveProviderProfileRequestSchema.parse({ profileId })
+    return invokeTyped(COMMANDS.setActiveProviderProfile, providerProfilesSchema, {
+      request,
     })
   },
 

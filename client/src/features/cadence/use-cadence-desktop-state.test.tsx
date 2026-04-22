@@ -7,6 +7,7 @@ import {
   type ListProjectsResponseDto,
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
+  type ProviderProfilesDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
@@ -165,6 +166,88 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
   }
 }
 
+function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): ProviderProfilesDto {
+  const activeProfileId = overrides.activeProfileId ?? 'openai_codex-default'
+  const profiles = overrides.profiles ?? [
+    {
+      profileId: 'openai_codex-default',
+      providerId: 'openai_codex',
+      label: 'OpenAI Codex',
+      modelId: 'openai_codex',
+      active: activeProfileId === 'openai_codex-default',
+      readiness: {
+        ready: false,
+        status: 'missing',
+        credentialUpdatedAt: null,
+      },
+      migratedFromLegacy: false,
+      migratedAt: null,
+    },
+  ]
+
+  return {
+    activeProfileId,
+    profiles,
+    migration: overrides.migration ?? null,
+  }
+}
+
+function makeProviderProfilesFromRuntimeSettings(
+  runtimeSettings: RuntimeSettingsDto,
+  options: { profileId?: string; label?: string } = {},
+): ProviderProfilesDto {
+  const profileId =
+    options.profileId ?? (runtimeSettings.providerId === 'openrouter' ? 'openrouter-default' : 'openai_codex-default')
+  const providerLabel = options.label ?? (runtimeSettings.providerId === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex')
+
+  const activeProfile: ProviderProfilesDto['profiles'][number] = {
+    profileId,
+    providerId: runtimeSettings.providerId,
+    label: providerLabel,
+    modelId: runtimeSettings.modelId,
+    active: true,
+    readiness:
+      runtimeSettings.providerId === 'openrouter'
+        ? {
+            ready: runtimeSettings.openrouterApiKeyConfigured,
+            status: runtimeSettings.openrouterApiKeyConfigured ? 'ready' : 'missing',
+            credentialUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+          }
+        : {
+            ready: false,
+            status: 'missing',
+            credentialUpdatedAt: null,
+          },
+    migratedFromLegacy: false,
+    migratedAt: null,
+  }
+
+  const inactiveOpenRouterProfile: ProviderProfilesDto['profiles'] =
+    runtimeSettings.providerId === 'openrouter'
+      ? []
+      : [
+          {
+            profileId: 'openrouter-default',
+            providerId: 'openrouter',
+            label: 'OpenRouter',
+            modelId: 'openai/gpt-4.1-mini',
+            active: false,
+            readiness: {
+              ready: runtimeSettings.openrouterApiKeyConfigured,
+              status: runtimeSettings.openrouterApiKeyConfigured ? 'ready' : 'missing',
+              credentialUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ]
+
+  return makeProviderProfiles({
+    activeProfileId: profileId,
+    profiles: [activeProfile, ...inactiveOpenRouterProfile],
+  })
+}
+
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
@@ -293,6 +376,7 @@ function createMockAdapter(options?: {
   runtimeSessions?: Record<string, RuntimeSessionDto>
   runtimeRuns?: Record<string, RuntimeRunDto | null>
   runtimeSettings?: RuntimeSettingsDto
+  providerProfiles?: ProviderProfilesDto
   autonomousStates?: Record<string, AutonomousRunStateDto | null>
   notificationDispatches?: Record<string, ListNotificationDispatchesResponseDto['dispatches']>
   notificationRoutes?: Record<string, ListNotificationRoutesResponseDto['routes']>
@@ -356,6 +440,9 @@ function createMockAdapter(options?: {
   const currentRuntimeSettings = {
     value: options?.runtimeSettings ?? makeRuntimeSettings(),
   }
+  const currentProviderProfiles = {
+    value: options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value),
+  }
   const notificationDispatchErrors = options?.notificationDispatchErrors ?? {}
 
   let listedProjects = (options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'Cadence')]).map((project) => ({
@@ -409,6 +496,7 @@ function createMockAdapter(options?: {
   )
   const getRuntimeSession = vi.fn(async (projectId: string) => runtimeSessions[projectId])
   const getRuntimeSettings = vi.fn(async () => currentRuntimeSettings.value)
+  const getProviderProfiles = vi.fn(async () => currentProviderProfiles.value)
   const upsertRuntimeSettings = vi.fn(async (request: {
     providerId: RuntimeSettingsDto['providerId']
     modelId: string
@@ -424,8 +512,96 @@ function createMockAdapter(options?: {
       modelId: request.modelId,
       openrouterApiKeyConfigured: nextKeyConfigured,
     }
+    currentProviderProfiles.value = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value)
 
     return currentRuntimeSettings.value
+  })
+  const upsertProviderProfile = vi.fn(async (request: {
+    profileId: string
+    providerId: RuntimeSettingsDto['providerId']
+    label: string
+    modelId: string
+    openrouterApiKey?: string | null
+    activate?: boolean
+  }) => {
+    const existingProfiles = currentProviderProfiles.value.profiles.filter(
+      (profile) => profile.profileId !== request.profileId,
+    )
+    const openrouterApiKeyConfigured =
+      request.providerId === 'openrouter'
+        ? request.openrouterApiKey == null
+          ? currentRuntimeSettings.value.openrouterApiKeyConfigured
+          : request.openrouterApiKey.trim().length > 0
+        : currentRuntimeSettings.value.openrouterApiKeyConfigured
+
+    const nextActiveProfileId = request.activate
+      ? request.profileId
+      : currentProviderProfiles.value.activeProfileId
+    const nextProfile: ProviderProfilesDto['profiles'][number] = {
+      profileId: request.profileId,
+      providerId: request.providerId,
+      label: request.label,
+      modelId: request.modelId,
+      active: nextActiveProfileId === request.profileId,
+      readiness:
+        request.providerId === 'openrouter'
+          ? {
+              ready: openrouterApiKeyConfigured,
+              status: openrouterApiKeyConfigured ? 'ready' : 'missing',
+              credentialUpdatedAt: openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+            }
+          : {
+              ready: false,
+              status: 'missing',
+              credentialUpdatedAt: null,
+            },
+      migratedFromLegacy: false,
+      migratedAt: null,
+    }
+
+    currentProviderProfiles.value = {
+      activeProfileId: nextActiveProfileId,
+      profiles: [nextProfile, ...existingProfiles].map<ProviderProfilesDto['profiles'][number]>((profile) => ({
+        ...profile,
+        active: profile.profileId === nextActiveProfileId,
+      })),
+      migration: currentProviderProfiles.value.migration ?? null,
+    }
+    currentRuntimeSettings.value = {
+      providerId:
+        currentProviderProfiles.value.profiles.find((profile) => profile.profileId === nextActiveProfileId)?.providerId ??
+        currentRuntimeSettings.value.providerId,
+      modelId:
+        currentProviderProfiles.value.profiles.find((profile) => profile.profileId === nextActiveProfileId)?.modelId ??
+        currentRuntimeSettings.value.modelId,
+      openrouterApiKeyConfigured: currentProviderProfiles.value.profiles.some(
+        (profile) => profile.providerId === 'openrouter' && profile.readiness.ready,
+      ),
+    }
+
+    return currentProviderProfiles.value
+  })
+  const setActiveProviderProfile = vi.fn(async (profileId: string) => {
+    currentProviderProfiles.value = {
+      ...currentProviderProfiles.value,
+      activeProfileId: profileId,
+      profiles: currentProviderProfiles.value.profiles.map((profile) => ({
+        ...profile,
+        active: profile.profileId === profileId,
+      })),
+    }
+    const activeProfile = currentProviderProfiles.value.profiles.find((profile) => profile.profileId === profileId)
+    if (activeProfile) {
+      currentRuntimeSettings.value = {
+        providerId: activeProfile.providerId,
+        modelId: activeProfile.modelId,
+        openrouterApiKeyConfigured: currentProviderProfiles.value.profiles.some(
+          (profile) => profile.providerId === 'openrouter' && profile.readiness.ready,
+        ),
+      }
+    }
+
+    return currentProviderProfiles.value
   })
   const listNotificationDispatches = vi.fn(async (projectId: string) => {
     const error = notificationDispatchErrors[projectId]
@@ -707,6 +883,7 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings,
+    getProviderProfiles,
     startOpenAiLogin,
     submitOpenAiCallback,
     startAutonomousRun,
@@ -716,6 +893,8 @@ function createMockAdapter(options?: {
     stopRuntimeRun,
     logoutRuntimeSession,
     upsertRuntimeSettings,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     resolveOperatorAction,
     resumeOperatorRun,
     listNotificationRoutes,
@@ -782,6 +961,7 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings,
+    getProviderProfiles,
     listProjectFiles,
     readProjectFile,
     writeProjectFile,
@@ -789,6 +969,8 @@ function createMockAdapter(options?: {
     renameProjectEntry,
     deleteProjectEntry,
     upsertRuntimeSettings,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     listNotificationRoutes,
     listNotificationDispatches,
     syncNotificationAdapters: adapter.syncNotificationAdapters,
@@ -893,6 +1075,16 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="runtime-settings-provider-id">{state.runtimeSettings?.providerId ?? 'none'}</div>
       <div data-testid="runtime-settings-model-id">{state.runtimeSettings?.modelId ?? 'none'}</div>
       <div data-testid="runtime-settings-key-configured">{String(state.runtimeSettings?.openrouterApiKeyConfigured ?? false)}</div>
+      <div data-testid="provider-profiles-active-profile-id">{state.providerProfiles?.activeProfileId ?? 'none'}</div>
+      <div data-testid="provider-profiles-count">{String(state.providerProfiles?.profiles.length ?? 0)}</div>
+      <div data-testid="provider-profiles-selected-profile-id">{state.agentView?.selectedProfileId ?? 'none'}</div>
+      <div data-testid="provider-profiles-selected-readiness-status">{state.agentView?.selectedProfileReadiness?.status ?? 'none'}</div>
+      <div data-testid="provider-profiles-load-status">{state.providerProfilesLoadStatus}</div>
+      <div data-testid="provider-profiles-load-error-code">{state.providerProfilesLoadError?.code ?? 'none'}</div>
+      <div data-testid="provider-profiles-load-error-message">{state.providerProfilesLoadError?.message ?? 'none'}</div>
+      <div data-testid="provider-profiles-save-status">{state.providerProfilesSaveStatus}</div>
+      <div data-testid="provider-profiles-save-error-code">{state.providerProfilesSaveError?.code ?? 'none'}</div>
+      <div data-testid="provider-profiles-save-error-message">{state.providerProfilesSaveError?.message ?? 'none'}</div>
       <div data-testid="runtime-settings-load-status">{state.runtimeSettingsLoadStatus}</div>
       <div data-testid="runtime-settings-load-error-code">{state.runtimeSettingsLoadError?.code ?? 'none'}</div>
       <div data-testid="runtime-settings-load-error-message">{state.runtimeSettingsLoadError?.message ?? 'none'}</div>
@@ -1059,6 +1251,39 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
         type="button"
       >
         Clear OpenRouter runtime key
+      </button>
+      <button
+        onClick={() => {
+          void state.refreshProviderProfiles({ force: true }).catch(() => undefined)
+        }}
+        type="button"
+      >
+        Load provider profiles
+      </button>
+      <button
+        onClick={() => {
+          void state
+            .upsertProviderProfile({
+              profileId: 'openrouter-default',
+              providerId: 'openrouter',
+              label: 'OpenRouter',
+              modelId: 'openai/gpt-4.1-mini',
+              openrouterApiKey: 'sk-or-v1-test-secret',
+              activate: true,
+            })
+            .catch(() => undefined)
+        }}
+        type="button"
+      >
+        Save OpenRouter provider profile
+      </button>
+      <button
+        onClick={() => {
+          void state.setActiveProviderProfile('openai_codex-default').catch(() => undefined)
+        }}
+        type="button"
+      >
+        Activate OpenAI provider profile
       </button>
       <button
         onClick={() => {
@@ -2446,6 +2671,122 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter')
     expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('meta-llama/llama-3.1-8b-instruct')
     expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
+  })
+
+  it('projects active provider-profile identity without mutating repo-local runtime truth', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'openai_codex',
+        modelId: 'openai_codex',
+        openrouterApiKeyConfigured: false,
+      }),
+      providerProfiles: makeProviderProfilesFromRuntimeSettings(
+        makeRuntimeSettings({
+          providerId: 'openai_codex',
+          modelId: 'openai_codex',
+          openrouterApiKeyConfigured: false,
+        }),
+      ),
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          providerId: 'openai_codex',
+          runtimeKind: 'openai_codex',
+          phase: 'authenticated',
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openai_codex-default'))
+    expect(screen.getByTestId('provider-profiles-selected-profile-id')).toHaveTextContent('openai_codex-default')
+    expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save OpenRouter provider profile' }))
+
+    await waitFor(() =>
+      expect(setup.upsertProviderProfile).toHaveBeenCalledWith({
+        profileId: 'openrouter-default',
+        providerId: 'openrouter',
+        label: 'OpenRouter',
+        modelId: 'openai/gpt-4.1-mini',
+        openrouterApiKey: 'sk-or-v1-test-secret',
+        activate: true,
+      }),
+    )
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default'))
+    expect(screen.getByTestId('provider-profiles-count')).toHaveTextContent('2')
+    expect(screen.getByTestId('provider-profiles-selected-profile-id')).toHaveTextContent('openrouter-default')
+    expect(screen.getByTestId('provider-profiles-selected-readiness-status')).toHaveTextContent('ready')
+    expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openrouter')
+    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai/gpt-4.1-mini')
+    expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter')
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('auth-phase')).toHaveTextContent('authenticated')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Activate OpenAI provider profile' }))
+
+    await waitFor(() => expect(setup.setActiveProviderProfile).toHaveBeenCalledWith('openai_codex-default'))
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openai_codex-default'))
+    expect(screen.getByTestId('provider-profiles-selected-profile-id')).toHaveTextContent('openai_codex-default')
+    expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
+  })
+
+  it('preserves the last truthful provider-profile snapshot when refresh or save fails', async () => {
+    const initialRuntimeSettings = makeRuntimeSettings({
+      providerId: 'openrouter',
+      modelId: 'openai/gpt-4.1-mini',
+      openrouterApiKeyConfigured: true,
+    })
+    const initialProviderProfiles = makeProviderProfilesFromRuntimeSettings(initialRuntimeSettings)
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSettings: initialRuntimeSettings,
+      providerProfiles: initialProviderProfiles,
+    })
+
+    setup.getProviderProfiles
+      .mockResolvedValueOnce(initialProviderProfiles)
+      .mockRejectedValueOnce(
+        new CadenceDesktopError({
+          code: 'provider_profiles_timeout',
+          errorClass: 'retryable',
+          message: 'Cadence timed out while loading app-local provider profiles.',
+          retryable: true,
+        }),
+      )
+
+    setup.upsertProviderProfile.mockRejectedValueOnce(
+      new CadenceDesktopError({
+        code: 'provider_profiles_write_failed',
+        errorClass: 'retryable',
+        message: 'Cadence could not save the selected provider profile.',
+        retryable: true,
+      }),
+    )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default'))
+    expect(screen.getByTestId('provider-profiles-selected-readiness-status')).toHaveTextContent('ready')
+    expect(screen.getByTestId('provider-profiles-count')).toHaveTextContent('1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load provider profiles' }))
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-load-status')).toHaveTextContent('error'))
+    expect(screen.getByTestId('provider-profiles-load-error-code')).toHaveTextContent('provider_profiles_timeout')
+    expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default')
+    expect(screen.getByTestId('provider-profiles-selected-readiness-status')).toHaveTextContent('ready')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save OpenRouter provider profile' }))
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-save-error-code')).toHaveTextContent('provider_profiles_write_failed'))
+    expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default')
+    expect(screen.getByTestId('provider-profiles-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openrouter')
   })
 
   it('derives OpenRouter-first guidance and mismatch recovery from app-global settings', async () => {

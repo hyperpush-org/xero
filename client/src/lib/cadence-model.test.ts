@@ -26,12 +26,14 @@ import {
   mergeRuntimeStreamEvent,
   mergeRuntimeUpdated,
   projectSnapshotResponseSchema,
+  providerProfilesSchema,
   resolveOperatorActionRequestSchema,
   runtimeRunSchema,
   runtimeSessionSchema,
   runtimeSettingsSchema,
   runtimeStreamItemSchema,
   runtimeUpdatedPayloadSchema,
+  setActiveProviderProfileRequestSchema,
   resumeOperatorRunRequestSchema,
   resumeOperatorRunResponseSchema,
   safePercent,
@@ -43,6 +45,7 @@ import {
   upsertNotificationRouteCredentialsRequestSchema,
   upsertNotificationRouteCredentialsResponseSchema,
   upsertNotificationRouteRequestSchema,
+  upsertProviderProfileRequestSchema,
   upsertRuntimeSettingsRequestSchema,
   upsertWorkflowGraphRequestSchema,
   upsertWorkflowGraphResponseSchema,
@@ -338,6 +341,51 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionDto> = {}): Runtime
     lastErrorCode: null,
     lastError: null,
     updatedAt: '2026-04-13T19:33:32Z',
+    ...overrides,
+  }
+}
+
+function makeProviderProfiles(overrides: Record<string, unknown> = {}) {
+  return {
+    activeProfileId: 'openrouter-default',
+    profiles: [
+      {
+        profileId: 'openrouter-default',
+        providerId: 'openrouter',
+        label: 'OpenRouter',
+        modelId: 'openai/gpt-4.1-mini',
+        active: true,
+        readiness: {
+          ready: true,
+          status: 'ready',
+          credentialUpdatedAt: '2026-04-16T14:05:00Z',
+        },
+        migratedFromLegacy: true,
+        migratedAt: '2026-04-16T14:06:00Z',
+      },
+      {
+        profileId: 'openai_codex-default',
+        providerId: 'openai_codex',
+        label: 'OpenAI Codex',
+        modelId: 'openai_codex',
+        active: false,
+        readiness: {
+          ready: false,
+          status: 'missing',
+          credentialUpdatedAt: null,
+        },
+        migratedFromLegacy: false,
+        migratedAt: null,
+      },
+    ],
+    migration: {
+      source: 'legacy_runtime_settings',
+      migratedAt: '2026-04-16T14:06:00Z',
+      runtimeSettingsUpdatedAt: '2026-04-16T14:05:00Z',
+      openrouterCredentialsUpdatedAt: '2026-04-16T14:05:00Z',
+      openaiAuthUpdatedAt: null,
+      openrouterModelInferred: false,
+    },
     ...overrides,
   }
 }
@@ -2771,6 +2819,112 @@ describe('cadence-model', () => {
         }),
       ),
     ).toThrow(/toolCallId/)
+  })
+
+  it('accepts strict redacted provider-profile payloads and rejects malformed profile contracts', () => {
+    expect(() => providerProfilesSchema.parse(makeProviderProfiles())).not.toThrow()
+
+    expect(() =>
+      providerProfilesSchema.parse({
+        ...makeProviderProfiles(),
+        activeProfileId: 'missing-profile',
+      }),
+    ).toThrow(/active provider profile/)
+
+    expect(() =>
+      providerProfilesSchema.parse({
+        ...makeProviderProfiles(),
+        profiles: [
+          {
+            ...makeProviderProfiles().profiles[0],
+            providerId: 'azure_openai',
+          },
+        ],
+      }),
+    ).toThrow()
+
+    expect(() =>
+      providerProfilesSchema.parse({
+        ...makeProviderProfiles(),
+        profiles: [
+          {
+            ...makeProviderProfiles().profiles[0],
+            profileId: '   ',
+          },
+        ],
+      }),
+    ).toThrow()
+
+    expect(() =>
+      providerProfilesSchema.parse({
+        ...makeProviderProfiles(),
+        profiles: [
+          {
+            ...makeProviderProfiles().profiles[0],
+            label: '   ',
+          },
+        ],
+      }),
+    ).toThrow()
+
+    expect(() =>
+      providerProfilesSchema.parse({
+        ...makeProviderProfiles(),
+        profiles: [
+          {
+            ...makeProviderProfiles().profiles[0],
+            readiness: {
+              ready: false,
+              status: 'ready',
+              credentialUpdatedAt: null,
+            },
+          },
+        ],
+      }),
+    ).toThrow(/status=ready/)
+
+    expect(() =>
+      providerProfilesSchema.parse({
+        ...makeProviderProfiles(),
+        profiles: [
+          {
+            ...makeProviderProfiles().profiles[0],
+            openrouterApiKey: 'sk-or-v1-should-never-cross-the-boundary',
+          },
+        ],
+      }),
+    ).toThrow()
+
+    expect(() =>
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'openrouter-default',
+        providerId: 'openrouter',
+        label: 'OpenRouter',
+        modelId: 'openai/gpt-4.1-mini',
+        activate: true,
+      }),
+    ).not.toThrow()
+
+    expect(() =>
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'openrouter-default',
+        providerId: 'openrouter',
+        label: 'OpenRouter',
+        modelId: '   ',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      setActiveProviderProfileRequestSchema.parse({
+        profileId: 'openrouter-default',
+      }),
+    ).not.toThrow()
+
+    expect(() =>
+      setActiveProviderProfileRequestSchema.parse({
+        profileId: '   ',
+      }),
+    ).toThrow()
   })
 
   it('rejects malformed runtime payloads at the TypeScript boundary', () => {

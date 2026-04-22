@@ -38,6 +38,9 @@ export function useCadenceDesktopMutations(
     stopRuntimeRun,
   } = useRunControlMutations(args)
   const {
+    refreshProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
     refreshNotificationRoutes,
@@ -64,6 +67,9 @@ export function useCadenceDesktopMutations(
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
+    refreshProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
     refreshNotificationRoutes,

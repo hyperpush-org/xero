@@ -34,6 +34,7 @@ import {
   type PlanningLifecycleView,
   type ProjectDetailView,
   type ProjectListItem,
+  type ProviderProfilesDto,
   type ReadProjectFileResponseDto,
   type RenameProjectEntryRequestDto,
   type RenameProjectEntryResponseDto,
@@ -55,6 +56,7 @@ import {
   type RuntimeStreamViewItem,
   type SyncNotificationAdaptersResponseDto,
   type UpsertNotificationRouteRequestDto,
+  type UpsertProviderProfileRequestDto,
   type UpsertRuntimeSettingsRequestDto,
   type VerificationRecordView,
   type WriteProjectFileResponseDto,
@@ -102,6 +104,8 @@ import type {
   OperatorActionErrorView,
   OperatorActionStatus,
   ProjectRemovalStatus,
+  ProviderProfilesLoadStatus,
+  ProviderProfilesSaveStatus,
   RefreshSource,
   RepositoryDiffState,
   RuntimeRunActionKind,
@@ -130,6 +134,8 @@ export type {
   OperatorActionErrorView,
   OperatorActionStatus,
   ProjectRemovalStatus,
+  ProviderProfilesLoadStatus,
+  ProviderProfilesSaveStatus,
   RefreshSource,
   RepositoryDiffLoadStatus,
   RepositoryDiffState,
@@ -268,6 +274,15 @@ export function useCadenceDesktopState(
   const [pendingNotificationRouteId, setPendingNotificationRouteId] = useState<string | null>(null)
   const [notificationRouteMutationError, setNotificationRouteMutationError] =
     useState<OperatorActionErrorView | null>(null)
+  const [providerProfiles, setProviderProfiles] = useState<ProviderProfilesDto | null>(null)
+  const [providerProfilesLoadStatus, setProviderProfilesLoadStatus] =
+    useState<ProviderProfilesLoadStatus>('idle')
+  const [providerProfilesLoadError, setProviderProfilesLoadError] =
+    useState<OperatorActionErrorView | null>(null)
+  const [providerProfilesSaveStatus, setProviderProfilesSaveStatus] =
+    useState<ProviderProfilesSaveStatus>('idle')
+  const [providerProfilesSaveError, setProviderProfilesSaveError] =
+    useState<OperatorActionErrorView | null>(null)
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettingsDto | null>(null)
   const [runtimeSettingsLoadStatus, setRuntimeSettingsLoadStatus] = useState<RuntimeSettingsLoadStatus>('idle')
   const [runtimeSettingsLoadError, setRuntimeSettingsLoadError] = useState<OperatorActionErrorView | null>(null)
@@ -300,6 +315,8 @@ export function useCadenceDesktopState(
   const notificationSyncSummariesRef = useRef<Record<string, SyncNotificationAdaptersResponseDto | null>>({})
   const notificationDispatchesRef = useRef<Record<string, NotificationDispatchDto[]>>({})
   const trustSnapshotRef = useRef<Record<string, AgentTrustSnapshotView>>({})
+  const providerProfilesRef = useRef<ProviderProfilesDto | null>(null)
+  const providerProfilesLoadInFlightRef = useRef<Promise<ProviderProfilesDto> | null>(null)
   const runtimeSettingsRef = useRef<RuntimeSettingsDto | null>(null)
   const runtimeSettingsLoadInFlightRef = useRef<Promise<RuntimeSettingsDto> | null>(null)
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -368,6 +385,10 @@ export function useCadenceDesktopState(
   useEffect(() => {
     notificationSyncSummariesRef.current = notificationSyncSummaries
   }, [notificationSyncSummaries])
+
+  useEffect(() => {
+    providerProfilesRef.current = providerProfiles
+  }, [providerProfiles])
 
   useEffect(() => {
     runtimeSettingsRef.current = runtimeSettings
@@ -906,6 +927,9 @@ export function useCadenceDesktopState(
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
+    refreshProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
     refreshNotificationRoutes,
@@ -915,6 +939,8 @@ export function useCadenceDesktopState(
     refs: {
       activeProjectIdRef,
       activeProjectRef,
+      providerProfilesRef,
+      providerProfilesLoadInFlightRef,
       runtimeSettingsRef,
       runtimeSettingsLoadInFlightRef,
     },
@@ -940,6 +966,11 @@ export function useCadenceDesktopState(
       setNotificationRouteMutationStatus,
       setPendingNotificationRouteId,
       setNotificationRouteMutationError,
+      setProviderProfiles,
+      setProviderProfilesLoadStatus,
+      setProviderProfilesLoadError,
+      setProviderProfilesSaveStatus,
+      setProviderProfilesSaveError,
       setRuntimeSettings,
       setRuntimeSettingsLoadStatus,
       setRuntimeSettingsLoadError,
@@ -957,16 +988,25 @@ export function useCadenceDesktopState(
       applyRuntimeRunUpdate,
       applyAutonomousRunStateUpdate,
     },
+    providerProfilesLoadStatus,
     runtimeSettingsLoadStatus,
   })
 
   useEffect(() => {
-    if (runtimeSettings || runtimeSettingsLoadStatus !== 'idle') {
+    if (providerProfilesLoadStatus !== 'idle') {
+      return
+    }
+
+    void refreshProviderProfiles().catch(() => undefined)
+  }, [providerProfilesLoadStatus, refreshProviderProfiles])
+
+  useEffect(() => {
+    if (runtimeSettingsLoadStatus !== 'idle') {
       return
     }
 
     void refreshRuntimeSettings().catch(() => undefined)
-  }, [refreshRuntimeSettings, runtimeSettings, runtimeSettingsLoadStatus])
+  }, [refreshRuntimeSettings, runtimeSettingsLoadStatus])
 
   const activeRuntimeSession = activeProjectId
     ? runtimeSessions[activeProjectId] ?? activeProject?.runtimeSession ?? null
@@ -1076,10 +1116,11 @@ export function useCadenceDesktopState(
       buildWorkflowView({
         project: activeProject,
         activePhase,
+        providerProfiles,
         runtimeSession: activeRuntimeSession,
         runtimeSettings,
       }),
-    [activePhase, activeProject, activeRuntimeSession, runtimeSettings],
+    [activePhase, activeProject, activeRuntimeSession, providerProfiles, runtimeSettings],
   )
 
   const agentViewProjection = useMemo(
@@ -1088,6 +1129,7 @@ export function useCadenceDesktopState(
         project: activeProject,
         activePhase,
         repositoryStatus,
+        providerProfiles,
         runtimeSession: activeRuntimeSession,
         runtimeSettings,
         runtimeRun: activeRuntimeRun,
@@ -1153,6 +1195,7 @@ export function useCadenceDesktopState(
       autonomousRunActionStatus,
       runtimeRunActionError,
       runtimeRunActionStatus,
+      providerProfiles,
       runtimeSettings,
     ],
   )
@@ -1194,6 +1237,11 @@ export function useCadenceDesktopState(
     projectRemovalStatus,
     pendingProjectRemovalId,
     errorMessage,
+    providerProfiles,
+    providerProfilesLoadStatus,
+    providerProfilesLoadError,
+    providerProfilesSaveStatus,
+    providerProfilesSaveError,
     runtimeSettings,
     runtimeSettingsLoadStatus,
     runtimeSettingsLoadError,
@@ -1233,6 +1281,9 @@ export function useCadenceDesktopState(
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
+    refreshProviderProfiles,
+    upsertProviderProfile,
+    setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
     refreshNotificationRoutes,

@@ -8,6 +8,9 @@ import { mapAutonomousRunInspection } from '@/src/lib/cadence-model/autonomous'
 import { type NotificationRouteDto } from '@/src/lib/cadence-model/notifications'
 import { type ProjectListItem } from '@/src/lib/cadence-model/project'
 import {
+  type ProviderProfilesDto,
+} from '@/src/lib/cadence-model/provider-profiles'
+import {
   type RuntimeRunView,
   type RuntimeSessionView,
   type RuntimeSettingsDto,
@@ -24,6 +27,8 @@ import type {
   OperatorActionErrorView,
   OperatorActionStatus,
   ProjectRemovalStatus,
+  ProviderProfilesLoadStatus,
+  ProviderProfilesSaveStatus,
   RefreshSource,
   RuntimeRunActionKind,
   RuntimeRunActionStatus,
@@ -59,6 +64,9 @@ export type CadenceDesktopMutationActions = Pick<
   | 'logoutRuntimeSession'
   | 'resolveOperatorAction'
   | 'resumeOperatorRun'
+  | 'refreshProviderProfiles'
+  | 'upsertProviderProfile'
+  | 'setActiveProviderProfile'
   | 'refreshRuntimeSettings'
   | 'upsertRuntimeSettings'
   | 'refreshNotificationRoutes'
@@ -68,6 +76,8 @@ export type CadenceDesktopMutationActions = Pick<
 export interface UseCadenceDesktopMutationsRefs {
   activeProjectIdRef: MutableRefObject<string | null>
   activeProjectRef: MutableRefObject<ProjectDetailView | null>
+  providerProfilesRef: MutableRefObject<ProviderProfilesDto | null>
+  providerProfilesLoadInFlightRef: MutableRefObject<Promise<ProviderProfilesDto> | null>
   runtimeSettingsRef: MutableRefObject<RuntimeSettingsDto | null>
   runtimeSettingsLoadInFlightRef: MutableRefObject<Promise<RuntimeSettingsDto> | null>
 }
@@ -94,6 +104,11 @@ export interface UseCadenceDesktopMutationsSetters {
   setNotificationRouteMutationStatus: SetState<NotificationRouteMutationStatus>
   setPendingNotificationRouteId: SetState<string | null>
   setNotificationRouteMutationError: SetState<OperatorActionErrorView | null>
+  setProviderProfiles: SetState<ProviderProfilesDto | null>
+  setProviderProfilesLoadStatus: SetState<ProviderProfilesLoadStatus>
+  setProviderProfilesLoadError: SetState<OperatorActionErrorView | null>
+  setProviderProfilesSaveStatus: SetState<ProviderProfilesSaveStatus>
+  setProviderProfilesSaveError: SetState<OperatorActionErrorView | null>
   setRuntimeSettings: SetState<RuntimeSettingsDto | null>
   setRuntimeSettingsLoadStatus: SetState<RuntimeSettingsLoadStatus>
   setRuntimeSettingsLoadError: SetState<OperatorActionErrorView | null>
@@ -132,6 +147,7 @@ export interface UseCadenceDesktopMutationsArgs {
   refs: UseCadenceDesktopMutationsRefs
   setters: UseCadenceDesktopMutationsSetters
   operations: UseCadenceDesktopMutationsOperations
+  providerProfilesLoadStatus: ProviderProfilesLoadStatus
   runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
 }
 

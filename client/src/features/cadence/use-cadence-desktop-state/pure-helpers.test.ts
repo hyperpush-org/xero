@@ -317,6 +317,7 @@ describe('runtime-provider helpers', () => {
       openrouterApiKeyConfigured: true,
     } satisfies RuntimeSettingsDto
     const selectedProvider = resolveSelectedRuntimeProvider(
+      null,
       runtimeSettings,
       makeRuntimeSession({ providerId: 'openai_codex', runtimeKind: 'openai_codex' }),
     )
@@ -337,6 +338,7 @@ describe('runtime-provider helpers', () => {
 
   it('derives OpenRouter-first guidance without falling back to OpenAI copy', () => {
     const selectedProvider = resolveSelectedRuntimeProvider(
+      null,
       {
         providerId: 'openrouter',
         modelId: 'openai/gpt-4.1-mini',
