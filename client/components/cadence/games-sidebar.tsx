@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useRef, useState } from "react"
 import { ChevronRight, Play, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SpaceInvaders } from "./games/space-invaders"
 import { Tetris } from "./games/tetris"
 
 const MIN_WIDTH = 200
@@ -134,36 +135,6 @@ const GAMES: Game[] = [
     },
   },
   {
-    id: "pong",
-    title: "Pong",
-    tagline: "The duel that started it all",
-    glyph: {
-      palette: { W: "#e5e7eb" },
-      rows: [
-        "W......W",
-        "W......W",
-        "W......W",
-        "W..WW..W",
-        "W..WW..W",
-        "W......W",
-        "W......W",
-        "W......W",
-      ],
-    },
-    stats: {
-      personalBest: "21 – 14",
-      runs: 5,
-      timePlayed: "12m",
-      leaderboard: [
-        { name: "Joel", score: "21 – 8" },
-        { name: "Andrew", score: "21 – 14", you: true },
-        { name: "Maya", score: "21 – 17" },
-        { name: "Priya", score: "21 – 18" },
-        { name: "Sam", score: "21 – 19" },
-      ],
-    },
-  },
-  {
     id: "snake",
     title: "Snake",
     tagline: "Grow long, don't bite",
@@ -280,36 +251,6 @@ const GAMES: Game[] = [
         { name: "Joel", score: "4,210" },
         { name: "Rin", score: "3,680" },
         { name: "Maya", score: "3,080" },
-      ],
-    },
-  },
-  {
-    id: "minesweeper",
-    title: "Minesweeper",
-    tagline: "Tile by tile, avoid the boom",
-    glyph: {
-      palette: { G: "#64748b", L: "#cbd5e1", B: "#0f172a", R: "#ef4444" },
-      rows: [
-        "GLGLGLGL",
-        "LGLGLGLG",
-        "GL.BB.LG",
-        "LGBBBBGL",
-        "GLBBBBLG",
-        "LG.BB.GL",
-        "GLGLGLGL",
-        "LGLGLRLG",
-      ],
-    },
-    stats: {
-      personalBest: "128s",
-      runs: 31,
-      timePlayed: "1h 12m",
-      leaderboard: [
-        { name: "Andrew", score: "128s", you: true },
-        { name: "Joel", score: "149s" },
-        { name: "Rin", score: "167s" },
-        { name: "Maya", score: "198s" },
-        { name: "Priya", score: "212s" },
       ],
     },
   },
@@ -690,7 +631,13 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
         <div className="flex shrink-0 items-center justify-center border-b border-border/70 bg-background/40 px-6 py-7">
-          {game.id === "tetris" ? <Tetris active /> : <GameCanvas glyph={game.glyph} />}
+          {game.id === "tetris" ? (
+            <Tetris active />
+          ) : game.id === "space-invaders" ? (
+            <SpaceInvaders active />
+          ) : (
+            <GameCanvas glyph={game.glyph} />
+          )}
         </div>
 
         <div className="grid grid-cols-3 gap-px border-b border-border/70 bg-border/60">

@@ -162,6 +162,32 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       liveness: 'reachable',
       livenessLabel: 'Control reachable',
     },
+    controls: {
+      active: {
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        thinkingEffortLabel: 'Medium',
+        approvalMode: 'suggest',
+        approvalModeLabel: 'Suggest',
+        revision: 1,
+        appliedAt: '2026-04-15T20:00:00Z',
+      },
+      pending: null,
+      selected: {
+        source: 'active',
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        thinkingEffortLabel: 'Medium',
+        approvalMode: 'suggest',
+        approvalModeLabel: 'Suggest',
+        revision: 1,
+        effectiveAt: '2026-04-15T20:00:00Z',
+        queuedPrompt: null,
+        queuedPromptAt: null,
+        hasQueuedPrompt: false,
+      },
+      hasPendingControls: false,
+    },
     startedAt: '2026-04-15T20:00:00Z',
     lastHeartbeatAt: '2026-04-15T20:00:05Z',
     lastCheckpointSequence: 1,
@@ -617,7 +643,19 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     selectedProviderId,
     selectedProviderLabel,
     selectedProviderSource: overrides.selectedProviderSource ?? 'provider_profiles',
+    controlTruthSource: overrides.controlTruthSource ?? (runtimeRun ? 'runtime_run' : 'fallback'),
     selectedModelId,
+    selectedThinkingEffort: overrides.selectedThinkingEffort ?? selectedModelOption?.defaultThinkingEffort ?? null,
+    selectedApprovalMode: overrides.selectedApprovalMode ?? 'suggest',
+    selectedPrompt:
+      overrides.selectedPrompt ??
+      ({
+        text: null,
+        queuedAt: null,
+        hasQueuedPrompt: false,
+      } as AgentPaneView['selectedPrompt']),
+    runtimeRunActiveControls: overrides.runtimeRunActiveControls ?? null,
+    runtimeRunPendingControls: overrides.runtimeRunPendingControls ?? null,
     providerModelCatalog,
     selectedModelOption,
     selectedModelThinkingEffortOptions:
@@ -1246,178 +1284,194 @@ describe('AgentRuntime current UI', () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('renders discovered model groups from the active provider catalog instead of sample lists', async () => {
-    const liveCatalog = makeProviderModelCatalog({
-      profileId: 'openrouter-work',
-      profileLabel: 'OpenRouter Work',
-      providerId: 'openrouter',
-      providerLabel: 'OpenRouter',
-      source: 'live',
-      loadStatus: 'ready',
-      state: 'live',
-      stateLabel: 'Live catalog',
-      detail: 'Showing 3 discovered models for OpenRouter Work.',
-      fetchedAt: '2026-04-20T12:00:00Z',
-      lastSuccessAt: '2026-04-20T12:00:00Z',
-      models: [
-        makeAgentModel({
-          modelId: 'openai/gpt-5-mini',
-          label: 'openai/gpt-5-mini',
-          displayName: 'openai/gpt-5-mini',
-          groupId: 'openai',
-          groupLabel: 'OpenAI',
-          availability: 'available',
-          availabilityLabel: 'Available',
-          thinkingSupported: true,
-          thinkingEffortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
-          defaultThinkingEffort: 'high',
-        }),
-        makeAgentModel({
-          modelId: 'anthropic/claude-3.5-haiku',
-          label: 'anthropic/claude-3.5-haiku',
-          displayName: 'anthropic/claude-3.5-haiku',
-          groupId: 'anthropic',
-          groupLabel: 'Anthropic',
-          availability: 'available',
-          availabilityLabel: 'Available',
-          thinkingSupported: true,
-          thinkingEffortOptions: ['low'],
-          defaultThinkingEffort: 'low',
-        }),
-        makeAgentModel({
-          modelId: 'mistral/devstral-medium',
-          label: 'mistral/devstral-medium',
-          displayName: 'mistral/devstral-medium',
-          groupId: 'mistral',
-          groupLabel: 'Mistral',
-          availability: 'available',
-          availabilityLabel: 'Available',
-          thinkingSupported: false,
-          thinkingEffortOptions: [],
-          defaultThinkingEffort: null,
-        }),
-      ],
-    })
-
+  it('renders pending-versus-active model, thinking, approval, and queued prompt truth from the runtime run', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
-          selectedProviderId: 'openrouter',
-          selectedProviderLabel: 'OpenRouter',
-          selectedProfileId: 'openrouter-work',
-          selectedProfileLabel: 'OpenRouter Work',
-          selectedModelId: 'openai/gpt-5-mini',
-          providerModelCatalog: liveCatalog,
-          openrouterApiKeyConfigured: true,
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          controlTruthSource: 'runtime_run',
+          selectedModelId: 'anthropic/claude-3.5-haiku',
+          selectedThinkingEffort: 'low',
+          selectedApprovalMode: 'auto_edit',
+          selectedPrompt: {
+            text: 'Review the diff before continuing.',
+            queuedAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeRunActiveControls: {
+            modelId: 'openai_codex',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'suggest',
+            approvalModeLabel: 'Suggest',
+            revision: 1,
+            appliedAt: '2026-04-20T12:00:00Z',
+          },
+          runtimeRunPendingControls: {
+            modelId: 'anthropic/claude-3.5-haiku',
+            thinkingEffort: 'low',
+            thinkingEffortLabel: 'Low',
+            approvalMode: 'auto_edit',
+            approvalModeLabel: 'Auto edit',
+            revision: 2,
+            queuedAt: '2026-04-20T12:05:00Z',
+            queuedPrompt: 'Review the diff before continuing.',
+            queuedPromptAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+          providerModelCatalog: makeProviderModelCatalog({
+            models: [
+              makeAgentModel({
+                modelId: 'openai_codex',
+                label: 'openai_codex',
+                displayName: 'openai_codex',
+                groupId: 'openai',
+                groupLabel: 'OpenAI',
+                availability: 'available',
+                availabilityLabel: 'Available',
+                thinkingSupported: true,
+                thinkingEffortOptions: ['medium'],
+                defaultThinkingEffort: 'medium',
+              }),
+              makeAgentModel({
+                modelId: 'anthropic/claude-3.5-haiku',
+                label: 'anthropic/claude-3.5-haiku',
+                displayName: 'anthropic/claude-3.5-haiku',
+                groupId: 'anthropic',
+                groupLabel: 'Anthropic',
+                availability: 'available',
+                availabilityLabel: 'Available',
+                thinkingSupported: true,
+                thinkingEffortOptions: ['low'],
+                defaultThinkingEffort: 'low',
+              }),
+            ],
+          }),
         })}
       />,
     )
 
-    const modelSelector = screen.getByRole('combobox', { name: 'Model selector' })
-
-    expect(modelSelector).toHaveTextContent('openai/gpt-5-mini')
-    expect(screen.getByText('Live catalog')).toBeVisible()
-    expect(
-      screen.getByText((content) => content.includes('Showing 3 discovered models for OpenRouter Work.')),
-    ).toBeVisible()
-
-    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
-
-    expect(await screen.findByText('OpenAI')).toBeVisible()
-    expect(screen.getByText('Anthropic')).toBeVisible()
-    expect(screen.getByText('Mistral')).toBeVisible()
-    expect(screen.getByRole('option', { name: 'anthropic/claude-3.5-haiku' })).toBeVisible()
-    expect(screen.getByRole('option', { name: 'mistral/devstral-medium' })).toBeVisible()
+    expect(screen.getByText('Queued prompt pending the next model-call boundary.')).toBeVisible()
+    expect(screen.getByText('Model pending · anthropic/claude-3.5-haiku')).toBeVisible()
+    expect(screen.getByText('Thinking pending · Low')).toBeVisible()
+    expect(screen.getByText('Approval pending · Auto edit')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Model selector' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
   })
 
-  it('clamps thinking to the selected model capabilities and disables it when a model exposes none', async () => {
-    const liveCatalog = makeProviderModelCatalog({
-      profileId: 'openrouter-work',
-      profileLabel: 'OpenRouter Work',
-      providerId: 'openrouter',
-      providerLabel: 'OpenRouter',
-      source: 'live',
-      loadStatus: 'ready',
-      state: 'live',
-      stateLabel: 'Live catalog',
-      detail: 'Showing 3 discovered models for OpenRouter Work.',
-      fetchedAt: '2026-04-20T12:00:00Z',
-      lastSuccessAt: '2026-04-20T12:00:00Z',
-      models: [
-        makeAgentModel({
-          modelId: 'openai/gpt-5-mini',
-          label: 'openai/gpt-5-mini',
-          displayName: 'openai/gpt-5-mini',
-          groupId: 'openai',
-          groupLabel: 'OpenAI',
-          availability: 'available',
-          availabilityLabel: 'Available',
-          thinkingSupported: true,
-          thinkingEffortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
-          defaultThinkingEffort: 'high',
-        }),
-        makeAgentModel({
-          modelId: 'anthropic/claude-3.5-haiku',
-          label: 'anthropic/claude-3.5-haiku',
-          displayName: 'anthropic/claude-3.5-haiku',
-          groupId: 'anthropic',
-          groupLabel: 'Anthropic',
-          availability: 'available',
-          availabilityLabel: 'Available',
-          thinkingSupported: true,
-          thinkingEffortOptions: ['low'],
-          defaultThinkingEffort: 'low',
-        }),
-        makeAgentModel({
-          modelId: 'mistral/devstral-medium',
-          label: 'mistral/devstral-medium',
-          displayName: 'mistral/devstral-medium',
-          groupId: 'mistral',
-          groupLabel: 'Mistral',
-          availability: 'available',
-          availabilityLabel: 'Available',
-          thinkingSupported: false,
-          thinkingEffortOptions: [],
-          defaultThinkingEffort: null,
-        }),
-      ],
+  it('starts a run with the draft prompt and current projected controls, then clears the draft after acknowledgement', async () => {
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun())
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+          selectedModelId: 'openai_codex',
+          selectedThinkingEffort: 'medium',
+          selectedApprovalMode: 'suggest',
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Kick off the first run.' },
     })
+    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+
+    await waitFor(() =>
+      expect(onStartRuntimeRun).toHaveBeenCalledWith({
+        controls: {
+          modelId: 'openai_codex',
+          thinkingEffort: null,
+          approvalMode: 'suggest',
+        },
+        prompt: 'Kick off the first run.',
+      }),
+    )
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          controlTruthSource: 'runtime_run',
+          selectedModelId: 'openai_codex',
+          selectedThinkingEffort: 'medium',
+          selectedApprovalMode: 'suggest',
+          selectedPrompt: {
+            text: 'Kick off the first run.',
+            queuedAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeRunActiveControls: {
+            modelId: 'openai_codex',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'suggest',
+            approvalModeLabel: 'Suggest',
+            revision: 1,
+            appliedAt: '2026-04-20T12:00:00Z',
+          },
+          runtimeRunPendingControls: {
+            modelId: 'openai_codex',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'suggest',
+            approvalModeLabel: 'Suggest',
+            revision: 2,
+            queuedAt: '2026-04-20T12:05:00Z',
+            queuedPrompt: 'Kick off the first run.',
+            queuedPromptAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Agent input')).toHaveValue(''))
+  })
+
+  it('queues the next prompt against the active run while preserving truthful selected controls', async () => {
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
 
     render(
       <AgentRuntime
         agent={makeAgent({
-          selectedProviderId: 'openrouter',
-          selectedProviderLabel: 'OpenRouter',
-          selectedProfileId: 'openrouter-work',
-          selectedProfileLabel: 'OpenRouter Work',
-          selectedModelId: 'openai/gpt-5-mini',
-          providerModelCatalog: liveCatalog,
-          openrouterApiKeyConfigured: true,
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          controlTruthSource: 'runtime_run',
+          selectedModelId: 'openai_codex',
+          selectedThinkingEffort: 'medium',
+          selectedApprovalMode: 'yolo',
+          runtimeRunActiveControls: {
+            modelId: 'openai_codex',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'yolo',
+            approvalModeLabel: 'YOLO',
+            revision: 3,
+            appliedAt: '2026-04-20T12:00:00Z',
+          },
         })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
       />,
     )
 
-    const modelSelector = screen.getByRole('combobox', { name: 'Model selector' })
-    const thinkingLevelSelector = screen.getByRole('combobox', { name: 'Thinking level selector' })
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Queue the next prompt.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    expect(thinkingLevelSelector).toHaveTextContent('Thinking · high')
-
-    fireEvent.keyDown(thinkingLevelSelector, { key: 'ArrowDown' })
-    expect(await screen.findByRole('option', { name: 'Thinking · very high' })).toBeVisible()
-    fireEvent.click(screen.getByRole('option', { name: 'Thinking · very high' }))
-    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking · very high'))
-
-    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
-    fireEvent.click(await screen.findByRole('option', { name: 'anthropic/claude-3.5-haiku' }))
-    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking · low'))
-    expect(screen.getByText('Thinking supports Low. Default: Low.')).toBeVisible()
-
-    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
-    fireEvent.click(await screen.findByRole('option', { name: 'mistral/devstral-medium' }))
-    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking unavailable'))
-    expect(thinkingLevelSelector).toBeDisabled()
-    expect(
-      screen.getByText('mistral/devstral-medium does not expose configurable thinking for this provider catalog.'),
-    ).toBeVisible()
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Queue the next prompt.',
+      }),
+    )
+    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('Approval · yolo')
   })
 })

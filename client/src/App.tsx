@@ -58,6 +58,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     inspectAutonomousRun,
     cancelAutonomousRun,
     startRuntimeRun,
+    updateRuntimeRunControls,
     startRuntimeSession,
     stopRuntimeRun,
     logoutRuntimeSession,
@@ -153,7 +154,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           onStartAutonomousRun={() => startAutonomousRun()}
           onInspectAutonomousRun={() => inspectAutonomousRun()}
           onCancelAutonomousRun={(runId) => cancelAutonomousRun(runId)}
-          onStartRuntimeRun={() => startRuntimeRun()}
+          onStartRuntimeRun={(options) => startRuntimeRun(options)}
+          onUpdateRuntimeRunControls={(request) => updateRuntimeRunControls(request)}
           onStartRuntimeSession={() => startRuntimeSession()}
           onStopRuntimeRun={(runId) => stopRuntimeRun(runId)}
           onSubmitManualCallback={(flowId, manualInput) =>

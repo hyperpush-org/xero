@@ -1,11 +1,23 @@
+import type {
+  AgentRunControlTruthSource,
+  AgentRunPromptView,
+  OperatorActionErrorView,
+  RuntimeRunActionKind,
+  RuntimeRunActionStatus,
+} from '@/src/features/cadence/use-cadence-desktop-state/types'
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   ProviderModelThinkingEffortDto,
+  RuntimeRunApprovalModeDto,
+  RuntimeRunControlInputDto,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeStreamStatus,
 } from '@/src/lib/cadence-model'
-import { getProviderModelThinkingEffortLabel } from '@/src/lib/cadence-model'
+import {
+  getProviderModelThinkingEffortLabel,
+  getRuntimeRunApprovalModeLabel,
+} from '@/src/lib/cadence-model'
 
 import { displayValue } from './shared-helpers'
 import { hasUsableRuntimeRunId } from './runtime-stream-helpers'
@@ -26,10 +38,33 @@ export interface ComposerThinkingOption {
   label: string
 }
 
+export interface ComposerApprovalOption {
+  value: RuntimeRunApprovalModeDto
+  label: string
+}
+
 export interface ComposerCatalogStatusCopy {
   catalogLabel: string
   catalogDetail: string
   thinkingDetail: string
+}
+
+export interface ComposerStatusCopy {
+  tone: 'start' | 'ready' | 'active' | 'pending'
+  badgeLabel: string
+  summary: string
+  detail: string
+}
+
+const composerApprovalModes: RuntimeRunApprovalModeDto[] = ['suggest', 'auto_edit', 'yolo']
+
+function formatComposerTimestamp(value: string | null | undefined, fallback: string): string {
+  const trimmedValue = value?.trim() ?? ''
+  return trimmedValue.length > 0 ? trimmedValue : fallback
+}
+
+function formatComposerRevision(value: number | null | undefined): string {
+  return Number.isFinite(value) && typeof value === 'number' && value > 0 ? `revision ${value}` : 'revision unavailable'
 }
 
 export function getComposerModelGroups(
@@ -103,6 +138,13 @@ export function getComposerThinkingOptions(
   }))
 }
 
+export function getComposerApprovalOptions(): ComposerApprovalOption[] {
+  return composerApprovalModes.map((mode) => ({
+    value: mode,
+    label: `Approval · ${getRuntimeRunApprovalModeLabel(mode).toLowerCase()}`,
+  }))
+}
+
 export function resolveComposerThinkingSelection(
   model: AgentPaneView['selectedModelOption'],
   currentThinkingEffort: ProviderModelThinkingEffortDto | null | undefined,
@@ -120,6 +162,24 @@ export function resolveComposerThinkingSelection(
   }
 
   return model.thinkingEffortOptions[0] ?? null
+}
+
+export function getComposerControlInput(options: {
+  models: AgentPaneView['providerModelCatalog']['models']
+  modelId: string | null | undefined
+  thinkingEffort: ProviderModelThinkingEffortDto | null | undefined
+  approvalMode: RuntimeRunApprovalModeDto
+}): RuntimeRunControlInputDto | null {
+  const model = getComposerModelOption(options.models, options.modelId)
+  if (!model) {
+    return null
+  }
+
+  return {
+    modelId: model.modelId,
+    thinkingEffort: resolveComposerThinkingSelection(model, options.thinkingEffort),
+    approvalMode: options.approvalMode,
+  }
 }
 
 export function getComposerCatalogStatusCopy(
@@ -162,6 +222,95 @@ export function getComposerCatalogStatusCopy(
       ? `Thinking supports ${supportedEfforts.join(', ')}. Default: ${defaultEffort}.`
       : `Thinking supports ${supportedEfforts.join(', ')}.`,
   }
+}
+
+export function getComposerControlStatusCopy(options: {
+  label: string
+  selectedLabel: string
+  truthSource: AgentRunControlTruthSource
+  activeLabel: string | null
+  activeRevision: number | null
+  activeAt: string | null
+  pendingLabel: string | null
+  pendingRevision: number | null
+  pendingAt: string | null
+}): ComposerStatusCopy {
+  if (options.pendingLabel && options.pendingRevision && options.pendingAt) {
+    return {
+      tone: 'pending',
+      badgeLabel: 'Pending',
+      summary: `${options.label} pending · ${options.pendingLabel}`,
+      detail: `Queued ${formatComposerRevision(options.pendingRevision)} at ${formatComposerTimestamp(options.pendingAt, 'an unknown time')}. Active ${options.label.toLowerCase()}: ${displayValue(options.activeLabel, 'Unavailable')} (${formatComposerRevision(options.activeRevision)} at ${formatComposerTimestamp(options.activeAt, 'an unknown time')}).`,
+    }
+  }
+
+  if (options.truthSource === 'runtime_run' && options.activeLabel) {
+    return {
+      tone: 'active',
+      badgeLabel: 'Active',
+      summary: `${options.label} active · ${options.activeLabel}`,
+      detail: `Using ${formatComposerRevision(options.activeRevision)} applied at ${formatComposerTimestamp(options.activeAt, 'an unknown time')}.`,
+    }
+  }
+
+  return {
+    tone: 'start',
+    badgeLabel: 'Start',
+    summary: `Next run ${options.label.toLowerCase()} · ${options.selectedLabel}`,
+    detail: 'This value will seed the next supervised run until run-scoped control truth exists.',
+  }
+}
+
+export function getComposerPromptStatusCopy(options: {
+  selectedPrompt: AgentRunPromptView
+  runtimeRun: RuntimeRunView | null
+  canStartRuntimeRun: boolean
+  runtimeRunActionStatus: RuntimeRunActionStatus
+  pendingRuntimeRunAction: RuntimeRunActionKind | null
+  runtimeRunActionError: OperatorActionErrorView | null
+}): ComposerStatusCopy | null {
+  if (options.selectedPrompt.hasQueuedPrompt) {
+    return {
+      tone: 'pending',
+      badgeLabel: 'Queued',
+      summary: 'Queued prompt pending the next model-call boundary.',
+      detail: `Queued at ${formatComposerTimestamp(options.selectedPrompt.queuedAt, 'an unknown time')}. ${displayValue(options.selectedPrompt.text, 'Prompt text unavailable.')}`,
+    }
+  }
+
+  if (
+    options.runtimeRunActionStatus === 'running' &&
+    (options.pendingRuntimeRunAction === 'start' || options.pendingRuntimeRunAction === 'update_controls')
+  ) {
+    return {
+      tone: 'pending',
+      badgeLabel: 'Applying',
+      summary: 'Waiting for runtime control acknowledgement.',
+      detail: 'Cadence is waiting for the supervised run snapshot to confirm the latest prompt or control queue request.',
+    }
+  }
+
+  if (options.runtimeRun) {
+    return {
+      tone: 'ready',
+      badgeLabel: 'Ready',
+      summary: 'No queued prompt is waiting at the boundary.',
+      detail: options.runtimeRunActionError
+        ? 'The last mutation failed, but the previous truthful run state is still shown below.'
+        : 'Type the next prompt, then send when the current boundary is clear.',
+    }
+  }
+
+  if (options.canStartRuntimeRun) {
+    return {
+      tone: 'start',
+      badgeLabel: 'Start',
+      summary: 'Draft the first prompt before starting the supervised run.',
+      detail: 'Cadence will pass this draft as the initial queued run input once the run starts.',
+    }
+  }
+
+  return null
 }
 
 export function getSelectedProviderId(agent: AgentPaneView, runtimeSession: RuntimeSessionView | null): string {
@@ -209,23 +358,25 @@ export function getComposerPlaceholder(
   }
 
   if (!hasUsableRuntimeRunId(runtimeRun)) {
-    return 'Start or reconnect a supervised run to create the run-scoped live feed for this imported project.'
+    return 'Draft the first prompt, then start the supervised run for this imported project.'
+  }
+
+  if (runtimeRun.isTerminal) {
+    return 'This supervised run is terminal. Start or reconnect a run to queue the next prompt.'
   }
 
   switch (streamStatus) {
-    case 'live':
-      return 'Live activity streaming. Composer is read-only.'
-    case 'complete':
-      return 'Run completed.'
     case 'stale':
-      return 'Stream went stale — retry to refresh.'
+      return 'Live activity is stale, but run-scoped control truth is still durable here.'
     case 'error':
-      return 'Stream failed — retry to restore.'
+      return 'Live activity failed to refresh, but you can still inspect durable run control truth here.'
     case 'subscribing':
-      return 'Connecting to the live transcript.'
+      return 'Connecting to the live transcript while supervised run controls stay available.'
     case 'replaying':
       return `Cadence is replaying recent run-scoped activity for ${displayValue(streamRunId, runtimeRun.runId)} while the live feed catches up.`
+    case 'complete':
     case 'idle':
-      return 'Waiting for first event…'
+    case 'live':
+      return 'Queue the next prompt for this supervised run.'
   }
 }

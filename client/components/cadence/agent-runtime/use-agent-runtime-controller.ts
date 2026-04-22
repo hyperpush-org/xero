@@ -3,9 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
-import type { ProviderModelThinkingEffortDto, RuntimeRunView } from '@/src/lib/cadence-model'
+import type {
+  ProviderModelThinkingEffortDto,
+  RuntimeRunApprovalModeDto,
+  RuntimeRunControlInputDto,
+  RuntimeRunView,
+} from '@/src/lib/cadence-model'
 
-import { getComposerModelOption, resolveComposerThinkingSelection } from './composer-helpers'
+import { getComposerControlInput, getComposerModelOption } from './composer-helpers'
 
 export type OperatorIntentKind = 'approve' | 'reject' | 'resume'
 export type ComposerThinkingLevel = ProviderModelThinkingEffortDto | null
@@ -18,17 +23,30 @@ export interface PendingOperatorIntent {
 interface UseAgentRuntimeControllerOptions {
   projectId: string
   selectedModelId: string | null
+  selectedThinkingEffort: ComposerThinkingLevel
+  selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedPrompt: AgentPaneView['selectedPrompt']
   availableModels: AgentPaneView['providerModelCatalog']['models']
   approvalRequests: AgentPaneView['approvalRequests']
   operatorActionStatus: AgentPaneView['operatorActionStatus']
   pendingOperatorActionId: string | null
+  pendingRuntimeRunAction: AgentPaneView['pendingRuntimeRunAction']
   renderableRuntimeRun: RuntimeRunView | null
+  runtimeRunPendingControls: AgentPaneView['runtimeRunPendingControls']
   runtimeStream: AgentPaneView['runtimeStream'] | null
   runtimeStreamItems: NonNullable<AgentPaneView['runtimeStreamItems']>
+  runtimeRunActionStatus: AgentPaneView['runtimeRunActionStatus']
   runtimeRunActionError: AgentPaneView['runtimeRunActionError']
   canStartRuntimeRun: boolean
   canStopRuntimeRun: boolean
-  onStartRuntimeRun?: () => Promise<RuntimeRunView | null>
+  onStartRuntimeRun?: (options?: {
+    controls?: RuntimeRunControlInputDto | null
+    prompt?: string | null
+  }) => Promise<RuntimeRunView | null>
+  onUpdateRuntimeRunControls?: (request?: {
+    controls?: RuntimeRunControlInputDto | null
+    prompt?: string | null
+  }) => Promise<RuntimeRunView | null>
   onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
   onResolveOperatorAction?: (
     actionId: string,
@@ -53,32 +71,30 @@ function getErrorMessage(error: unknown, fallback: string): string {
 export function useAgentRuntimeController({
   projectId,
   selectedModelId,
+  selectedThinkingEffort,
+  selectedApprovalMode,
+  selectedPrompt,
   availableModels,
   approvalRequests,
   operatorActionStatus,
   pendingOperatorActionId,
+  pendingRuntimeRunAction,
   renderableRuntimeRun,
+  runtimeRunPendingControls,
   runtimeStream,
   runtimeStreamItems,
+  runtimeRunActionStatus,
   runtimeRunActionError,
   canStartRuntimeRun,
   canStopRuntimeRun,
   onStartRuntimeRun,
+  onUpdateRuntimeRunControls,
   onStopRuntimeRun,
   onResolveOperatorAction,
   onResumeOperatorRun,
 }: UseAgentRuntimeControllerOptions) {
-  const normalizedSelectedModelId = selectedModelId?.trim() || null
-  const externalSelectionKey = `${projectId}::${normalizedSelectedModelId ?? ''}`
-  const externalSelectedModel = useMemo(
-    () => getComposerModelOption(availableModels, normalizedSelectedModelId),
-    [availableModels, normalizedSelectedModelId],
-  )
-
-  const [composerModelId, setComposerModelId] = useState<string | null>(normalizedSelectedModelId)
-  const [composerThinkingLevel, setComposerThinkingLevel] = useState<ComposerThinkingLevel>(() =>
-    resolveComposerThinkingSelection(externalSelectedModel, null),
-  )
+  const [draftPrompt, setDraftPrompt] = useState('')
+  const [queuedDraftAcknowledgement, setQueuedDraftAcknowledgement] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
   const [operatorAnswers, setOperatorAnswers] = useState<Record<string, string>>({})
   const [pendingOperatorIntent, setPendingOperatorIntent] = useState<PendingOperatorIntent | null>(null)
@@ -89,28 +105,39 @@ export function useAgentRuntimeController({
 
   const lastSeenProjectIdRef = useRef(projectId)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
-  const lastExternalSelectionKeyRef = useRef<string | null>(null)
 
-  const selectedComposerModel = useMemo(
-    () => getComposerModelOption(availableModels, composerModelId),
-    [availableModels, composerModelId],
+  const selectedControlInput = useMemo(
+    () =>
+      getComposerControlInput({
+        models: availableModels,
+        modelId: selectedModelId,
+        thinkingEffort: selectedThinkingEffort,
+        approvalMode: selectedApprovalMode,
+      }),
+    [availableModels, selectedApprovalMode, selectedModelId, selectedThinkingEffort],
   )
 
-  useEffect(() => {
-    if (lastExternalSelectionKeyRef.current === externalSelectionKey) {
-      return
-    }
-
-    lastExternalSelectionKeyRef.current = externalSelectionKey
-    setComposerModelId(normalizedSelectedModelId)
-    setComposerThinkingLevel(resolveComposerThinkingSelection(externalSelectedModel, null))
-  }, [externalSelectionKey, externalSelectedModel, normalizedSelectedModelId])
-
-  useEffect(() => {
-    setComposerThinkingLevel((currentThinkingLevel) =>
-      resolveComposerThinkingSelection(selectedComposerModel, currentThinkingLevel),
-    )
-  }, [selectedComposerModel])
+  const trimmedDraftPrompt = draftPrompt.trim()
+  const hasQueuedPrompt = selectedPrompt.hasQueuedPrompt
+  const promptInputAvailable = Boolean(
+    (!renderableRuntimeRun && canStartRuntimeRun) || (renderableRuntimeRun && !renderableRuntimeRun.isTerminal),
+  )
+  const isPromptDisabled = !promptInputAvailable || runtimeRunActionStatus === 'running'
+  const areControlsDisabled = Boolean(
+    !renderableRuntimeRun ||
+      renderableRuntimeRun.isTerminal ||
+      !onUpdateRuntimeRunControls ||
+      runtimeRunActionStatus === 'running' ||
+      runtimeRunPendingControls,
+  )
+  const canSubmitPrompt = Boolean(
+    renderableRuntimeRun &&
+      !renderableRuntimeRun.isTerminal &&
+      onUpdateRuntimeRunControls &&
+      runtimeRunActionStatus !== 'running' &&
+      !hasQueuedPrompt &&
+      trimmedDraftPrompt.length > 0,
+  )
 
   useEffect(() => {
     if (runtimeRunActionError) {
@@ -122,6 +149,17 @@ export function useAgentRuntimeController({
       setRuntimeRunActionMessage(null)
     }
   }, [renderableRuntimeRun?.runId, renderableRuntimeRun?.updatedAt, runtimeRunActionError])
+
+  useEffect(() => {
+    if (!queuedDraftAcknowledgement) {
+      return
+    }
+
+    if (selectedPrompt.hasQueuedPrompt && selectedPrompt.text === queuedDraftAcknowledgement) {
+      setDraftPrompt((currentDraft) => (currentDraft === queuedDraftAcknowledgement ? '' : currentDraft))
+      setQueuedDraftAcknowledgement(null)
+    }
+  }, [queuedDraftAcknowledgement, selectedPrompt])
 
   useEffect(() => {
     if (operatorActionStatus === 'idle' && !pendingOperatorActionId) {
@@ -162,6 +200,8 @@ export function useAgentRuntimeController({
     if (lastSeenProjectIdRef.current !== projectId) {
       lastSeenProjectIdRef.current = projectId
       lastSeenRuntimeRunIdRef.current = renderableRuntimeRun?.runId ?? null
+      setDraftPrompt('')
+      setQueuedDraftAcknowledgement(null)
       setRecentRunReplacement(null)
       return
     }
@@ -207,6 +247,24 @@ export function useAgentRuntimeController({
       ? 'Run control needs retry'
       : 'Run control failed'
 
+  async function queueRuntimeRunControls(nextControls: RuntimeRunControlInputDto | null) {
+    if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal || !onUpdateRuntimeRunControls || !nextControls) {
+      return
+    }
+
+    if (runtimeRunActionStatus === 'running' || runtimeRunPendingControls) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      await onUpdateRuntimeRunControls({ controls: nextControls })
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not queue the requested run control change.'))
+    }
+  }
+
   async function handleStartRuntimeRun() {
     if (!canStartRuntimeRun || !onStartRuntimeRun) {
       return
@@ -215,9 +273,36 @@ export function useAgentRuntimeController({
     setRuntimeRunActionMessage(null)
 
     try {
-      await onStartRuntimeRun()
+      await onStartRuntimeRun({
+        controls: selectedControlInput,
+        prompt: trimmedDraftPrompt.length > 0 ? trimmedDraftPrompt : null,
+      })
+      if (trimmedDraftPrompt.length > 0) {
+        setQueuedDraftAcknowledgement(trimmedDraftPrompt)
+      }
     } catch (error) {
+      setQueuedDraftAcknowledgement(null)
       setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not start the supervised run.'))
+    }
+  }
+
+  async function handleSubmitDraftPrompt() {
+    if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal || !onUpdateRuntimeRunControls) {
+      return
+    }
+
+    if (trimmedDraftPrompt.length === 0 || hasQueuedPrompt || runtimeRunActionStatus === 'running') {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      await onUpdateRuntimeRunControls({ prompt: trimmedDraftPrompt })
+      setQueuedDraftAcknowledgement(trimmedDraftPrompt)
+    } catch (error) {
+      setQueuedDraftAcknowledgement(null)
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not queue the next prompt for this supervised run.'))
     }
   }
 
@@ -233,6 +318,48 @@ export function useAgentRuntimeController({
     } catch (error) {
       setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not stop the supervised run.'))
     }
+  }
+
+  function handleDraftPromptChange(value: string) {
+    setDraftPrompt(value)
+  }
+
+  function handleComposerModelChange(value: string) {
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        models: availableModels,
+        modelId: value,
+        thinkingEffort: selectedThinkingEffort,
+        approvalMode: selectedApprovalMode,
+      }),
+    )
+  }
+
+  function handleComposerThinkingLevelChange(value: ProviderModelThinkingEffortDto) {
+    const selectedModel = getComposerModelOption(availableModels, selectedModelId)
+    if (!selectedModel?.thinkingSupported || !selectedModel.thinkingEffortOptions.includes(value)) {
+      return
+    }
+
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        models: availableModels,
+        modelId: selectedModelId,
+        thinkingEffort: value,
+        approvalMode: selectedApprovalMode,
+      }),
+    )
+  }
+
+  function handleComposerApprovalModeChange(value: RuntimeRunApprovalModeDto) {
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        models: availableModels,
+        modelId: selectedModelId,
+        thinkingEffort: selectedThinkingEffort,
+        approvalMode: value,
+      }),
+    )
   }
 
   async function handleResolveOperatorAction(
@@ -287,15 +414,21 @@ export function useAgentRuntimeController({
   }
 
   return {
-    composerModelId,
-    composerThinkingLevel,
-    setComposerModelId,
-    setComposerThinkingLevel,
+    draftPrompt,
+    promptInputAvailable,
+    isPromptDisabled,
+    areControlsDisabled,
+    canSubmitPrompt,
     operatorAnswers,
     pendingOperatorIntent,
     recentRunReplacement,
     runtimeRunActionError: resolvedRuntimeRunActionError,
     runtimeRunActionErrorTitle,
+    handleDraftPromptChange,
+    handleSubmitDraftPrompt,
+    handleComposerModelChange,
+    handleComposerThinkingLevelChange,
+    handleComposerApprovalModeChange,
     handleOperatorAnswerChange,
     handleStartRuntimeRun,
     handleStopRuntimeRun,

@@ -1,7 +1,17 @@
 import { ArrowUp, LoaderCircle, Play } from 'lucide-react'
+import type { KeyboardEvent } from 'react'
 
-import type { RuntimeRunActionStatus } from '@/src/features/cadence/use-cadence-desktop-state'
-import type { ProviderModelThinkingEffortDto } from '@/src/lib/cadence-model'
+import type {
+  OperatorActionErrorView,
+  RuntimeRunActionKind,
+  RuntimeRunActionStatus,
+} from '@/src/features/cadence/use-cadence-desktop-state/types'
+import type {
+  ProviderModelThinkingEffortDto,
+  RuntimeRunApprovalModeDto,
+} from '@/src/lib/cadence-model'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
@@ -14,22 +24,45 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
-import type { ComposerModelGroup, ComposerThinkingOption } from './composer-helpers'
+import type {
+  ComposerApprovalOption,
+  ComposerModelGroup,
+  ComposerStatusCopy,
+  ComposerThinkingOption,
+} from './composer-helpers'
 
 interface ComposerDockProps {
   placeholder: string
+  draftPrompt: string
+  promptInputLabel: string
+  sendButtonLabel: string
+  isPromptDisabled: boolean
+  isSendDisabled: boolean
   composerModelId: string | null
   composerModelGroups: ComposerModelGroup[]
+  composerModelStatus: ComposerStatusCopy
   composerThinkingLevel: ProviderModelThinkingEffortDto | null
   composerThinkingOptions: ComposerThinkingOption[]
+  composerThinkingStatus: ComposerStatusCopy
   composerThinkingPlaceholder: string
+  composerApprovalMode: RuntimeRunApprovalModeDto
+  composerApprovalOptions: ComposerApprovalOption[]
+  composerApprovalStatus: ComposerStatusCopy
+  promptStatus: ComposerStatusCopy | null
+  controlsDisabled: boolean
   catalogStatusLabel: string
   catalogStatusDetail: string
   thinkingStatusDetail: string
+  runtimeRunActionStatus: RuntimeRunActionStatus
+  pendingRuntimeRunAction: RuntimeRunActionKind | null
+  runtimeRunActionError: OperatorActionErrorView | null
+  runtimeRunActionErrorTitle: string
+  onDraftPromptChange: (value: string) => void
+  onSubmitDraftPrompt: () => void
   onComposerModelChange: (value: string) => void
   onComposerThinkingLevelChange: (value: ProviderModelThinkingEffortDto) => void
+  onComposerApprovalModeChange: (value: RuntimeRunApprovalModeDto) => void
   showStartRunButton: boolean
-  runtimeRunActionStatus: RuntimeRunActionStatus
   onStartRuntimeRun?: () => void
 }
 
@@ -39,24 +72,74 @@ const composerInlineSelectTriggerClassName =
 const composerInlineSelectContentClassName =
   'max-h-72 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90'
 
+function getBadgeVariant(tone: ComposerStatusCopy['tone']): 'outline' | 'secondary' {
+  return tone === 'pending' ? 'secondary' : 'outline'
+}
+
+function ComposerStatusRow({ status }: { status: ComposerStatusCopy }) {
+  return (
+    <div className="flex items-start gap-2 text-[10px] leading-relaxed text-muted-foreground">
+      <Badge className="mt-0.5 px-1.5 py-0 text-[9px] uppercase tracking-[0.18em]" variant={getBadgeVariant(status.tone)}>
+        {status.badgeLabel}
+      </Badge>
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-foreground/85">{status.summary}</p>
+        <p>{status.detail}</p>
+      </div>
+    </div>
+  )
+}
+
 export function ComposerDock({
   placeholder,
+  draftPrompt,
+  promptInputLabel,
+  sendButtonLabel,
+  isPromptDisabled,
+  isSendDisabled,
   composerModelId,
   composerModelGroups,
+  composerModelStatus,
   composerThinkingLevel,
   composerThinkingOptions,
+  composerThinkingStatus,
   composerThinkingPlaceholder,
+  composerApprovalMode,
+  composerApprovalOptions,
+  composerApprovalStatus,
+  promptStatus,
+  controlsDisabled,
   catalogStatusLabel,
   catalogStatusDetail,
   thinkingStatusDetail,
+  runtimeRunActionStatus,
+  pendingRuntimeRunAction,
+  runtimeRunActionError,
+  runtimeRunActionErrorTitle,
+  onDraftPromptChange,
+  onSubmitDraftPrompt,
   onComposerModelChange,
   onComposerThinkingLevelChange,
+  onComposerApprovalModeChange,
   showStartRunButton,
-  runtimeRunActionStatus,
   onStartRuntimeRun,
 }: ComposerDockProps) {
   const hasComposerModelOptions = composerModelGroups.length > 0
   const hasThinkingOptions = composerThinkingOptions.length > 0
+  const isUpdatingControls = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'update_controls'
+  const isStartingRun = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'start'
+
+  function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey) {
+      return
+    }
+
+    event.preventDefault()
+
+    if (!isSendDisabled) {
+      onSubmitDraftPrompt()
+    }
+  }
 
   return (
     <div className="relative shrink-0 px-4 pb-6 pt-10">
@@ -65,20 +148,22 @@ export function ComposerDock({
         className="pointer-events-none absolute inset-x-0 -top-14 h-24 bg-gradient-to-b from-background/0 via-background/86 to-background"
       />
       <div className="relative mx-auto flex w-full max-w-[880px] items-end justify-center gap-3">
-        <div className="w-full max-w-[680px]">
+        <div className="w-full max-w-[720px]">
           <div className="group/composer relative overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)] ring-1 ring-inset ring-white/[0.02] backdrop-blur transition-colors supports-[backdrop-filter]:bg-card/75 hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20">
             <Textarea
-              aria-label="Agent input unavailable"
+              aria-label={promptInputLabel}
               className="max-h-56 min-h-[92px] resize-none border-0 bg-transparent px-4 pb-3 pt-3.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
-              disabled
+              disabled={isPromptDisabled}
+              onChange={(event) => onDraftPromptChange(event.target.value)}
+              onKeyDown={handlePromptKeyDown}
               placeholder={placeholder}
               rows={3}
-              value=""
+              value={draftPrompt}
             />
             <div className="border-t border-border/40 bg-background/20 px-2 py-1.5">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-0.5">
-                  <Select disabled={!hasComposerModelOptions} value={composerModelId ?? ''} onValueChange={onComposerModelChange}>
+                <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
+                  <Select disabled={!hasComposerModelOptions || controlsDisabled} value={composerModelId ?? ''} onValueChange={onComposerModelChange}>
                     <SelectTrigger aria-label="Model selector" className={composerInlineSelectTriggerClassName} size="sm">
                       <SelectValue placeholder="Model not configured" />
                     </SelectTrigger>
@@ -100,7 +185,7 @@ export function ComposerDock({
                   </Select>
                   <span aria-hidden="true" className="h-3.5 w-px bg-border/60" />
                   <Select
-                    disabled={!hasThinkingOptions}
+                    disabled={!hasThinkingOptions || controlsDisabled}
                     value={composerThinkingLevel ?? ''}
                     onValueChange={(value) => onComposerThinkingLevelChange(value as ProviderModelThinkingEffortDto)}
                   >
@@ -109,6 +194,19 @@ export function ComposerDock({
                     </SelectTrigger>
                     <SelectContent className={composerInlineSelectContentClassName}>
                       {composerThinkingOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span aria-hidden="true" className="h-3.5 w-px bg-border/60" />
+                  <Select disabled={controlsDisabled} value={composerApprovalMode} onValueChange={(value) => onComposerApprovalModeChange(value as RuntimeRunApprovalModeDto)}>
+                    <SelectTrigger aria-label="Approval mode selector" className={composerInlineSelectTriggerClassName} size="sm">
+                      <SelectValue placeholder="Approval unavailable" />
+                    </SelectTrigger>
+                    <SelectContent className={composerInlineSelectContentClassName}>
+                      {composerApprovalOptions.map((option) => (
                         <SelectItem key={option.value} value={option.value}>
                           {option.label}
                         </SelectItem>
@@ -126,41 +224,63 @@ export function ComposerDock({
                     </kbd>
                     <span>to send</span>
                   </span>
-                  <button
-                    aria-label="Send message unavailable"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted/60 text-muted-foreground/60 transition-colors disabled:cursor-not-allowed"
-                    disabled
+                  <Button
+                    aria-label={sendButtonLabel}
+                    className="h-8 w-8 rounded-md px-0"
+                    disabled={isSendDisabled}
+                    onClick={onSubmitDraftPrompt}
+                    size="icon-sm"
                     type="button"
+                    variant="secondary"
                   >
-                    <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
-                  </button>
+                    {isUpdatingControls ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
+                    ) : (
+                      <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
+                    )}
+                  </Button>
                 </div>
               </div>
-              <div className="px-2 pb-1 pt-1 text-[10px] leading-relaxed text-muted-foreground">
-                <p>
-                  <span className="font-medium text-foreground/80">{catalogStatusLabel}</span>
-                  {' · '}
-                  {catalogStatusDetail}
-                </p>
-                <p className="mt-0.5">{thinkingStatusDetail}</p>
+              <div className="space-y-2 px-2 pb-1 pt-2">
+                {promptStatus ? <ComposerStatusRow status={promptStatus} /> : null}
+                <ComposerStatusRow status={composerModelStatus} />
+                <ComposerStatusRow status={composerThinkingStatus} />
+                <ComposerStatusRow status={composerApprovalStatus} />
+                <div className="space-y-0.5 text-[10px] leading-relaxed text-muted-foreground">
+                  <p>
+                    <span className="font-medium text-foreground/80">{catalogStatusLabel}</span>
+                    {' · '}
+                    {catalogStatusDetail}
+                  </p>
+                  <p>{thinkingStatusDetail}</p>
+                </div>
+                {runtimeRunActionError ? (
+                  <div className="rounded-md border border-destructive/35 bg-destructive/5 px-2.5 py-2 text-[10px] leading-relaxed text-destructive/90" role="alert">
+                    <p className="font-medium">{runtimeRunActionErrorTitle}</p>
+                    <p>{runtimeRunActionError.message}</p>
+                    {runtimeRunActionError.code ? <p className="font-mono text-[10px]">code: {runtimeRunActionError.code}</p> : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
         </div>
         {showStartRunButton ? (
-          <button
-            className="shrink-0 flex items-center gap-1.5 rounded-lg border border-border bg-card/80 px-3 py-2 text-[12px] font-medium text-foreground transition-colors hover:border-border/80 hover:bg-card disabled:opacity-50"
+          <Button
+            className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-[12px]"
             disabled={runtimeRunActionStatus === 'running'}
             onClick={onStartRuntimeRun}
+            size="sm"
             type="button"
+            variant="outline"
           >
-            {runtimeRunActionStatus === 'running' ? (
+            {isStartingRun ? (
               <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}
             Start run
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>

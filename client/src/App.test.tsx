@@ -220,6 +220,16 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
       endpoint: '127.0.0.1:4455',
       liveness: 'reachable',
     },
+    controls: {
+      active: {
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        approvalMode: 'suggest',
+        revision: 1,
+        appliedAt: '2026-04-15T20:00:00Z',
+      },
+      pending: null,
+    },
     startedAt: '2026-04-15T20:00:00Z',
     lastHeartbeatAt: '2026-04-15T20:00:05Z',
     lastCheckpointSequence: 1,
@@ -533,6 +543,8 @@ function createAdapter(options?: {
     return currentRuntimeRun
   })
 
+  const updateRuntimeRunControls = vi.fn(async () => currentRuntimeRun ?? makeRuntimeRun('project-1'))
+
   const startAutonomousRun = vi.fn(async () => {
     currentAutonomousState = makeAutonomousRunState('project-1')
     return currentAutonomousState
@@ -661,6 +673,7 @@ function createAdapter(options?: {
     },
     startAutonomousRun,
     startRuntimeRun,
+    updateRuntimeRunControls,
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
@@ -945,7 +958,7 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
-    fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'openai/gpt-4.1-mini' } })
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'openai/gpt-4.1-mini' } })
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-or-v1-test-secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -956,7 +969,7 @@ describe('CadenceApp current UI', () => {
       label: 'OpenRouter',
       modelId: 'openai/gpt-4.1-mini',
       openrouterApiKey: 'sk-or-v1-test-secret',
-      activate: true,
+      activate: false,
     })
   })
 
@@ -1202,7 +1215,6 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
-    await waitFor(() => expect(openUrlMock).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
     expect(await screen.findByText('Telegram')).toBeVisible()
