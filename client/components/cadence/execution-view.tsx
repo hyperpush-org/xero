@@ -1,5 +1,7 @@
 "use client"
 
+import { useCallback, useState } from 'react'
+import type { EditorView as CodeMirrorView } from '@codemirror/view'
 import type {
   CreateProjectEntryRequestDto,
   CreateProjectEntryResponseDto,
@@ -17,6 +19,7 @@ import { NewFileDialog } from './new-file-dialog'
 import { RenameFileDialog } from './rename-file-dialog'
 import { EditorEmptyState, LoadingState } from './execution-view/editor-empty-state'
 import { ExplorerPane } from './execution-view/explorer-pane'
+import { FindReplacePane } from './execution-view/find-replace-pane'
 import { EditorStatusBar, EditorToolbar } from './execution-view/editor-status-bar'
 import { EditorTabs } from './execution-view/editor-tabs'
 import { useExecutionWorkspaceController } from './execution-view/use-execution-workspace-controller'
@@ -96,29 +99,64 @@ function EditorView({
     deleteProjectEntry,
   })
 
+  const [editorView, setEditorView] = useState<CodeMirrorView | null>(null)
+  const [findState, setFindState] = useState<{
+    open: boolean
+    query: string
+    showReplace: boolean
+    token: number
+  }>({ open: false, query: '', showReplace: false, token: 0 })
+
+  const handleOpenFind = useCallback(
+    ({ withReplace, initialQuery }: { withReplace: boolean; initialQuery: string }) => {
+      setFindState((prev) => ({
+        open: true,
+        query: initialQuery || prev.query,
+        showReplace: withReplace || prev.showReplace,
+        token: prev.token + 1,
+      }))
+    },
+    [],
+  )
+
+  const handleCloseFind = useCallback(() => {
+    setFindState((prev) => ({ ...prev, open: false }))
+    editorView?.focus()
+  }, [editorView])
+
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1">
-      <ExplorerPane
-        projectLabel={projectLabel}
-        subtitle={explorerSubtitle}
-        searchQuery={searchQuery}
-        isTreeLoading={isTreeLoading}
-        workspaceError={workspaceError}
-        tree={tree}
-        activePath={activePath}
-        expandedFolders={expandedFolders}
-        dirtyPaths={dirtyPaths}
-        onSearchQueryChange={setSearchQuery}
-        onSelectFile={handleSelectFile}
-        onToggleFolder={handleToggleFolder}
-        onRequestRename={handleRequestRename}
-        onRequestDelete={handleRequestDelete}
-        onRequestNewFile={handleRequestNewFile}
-        onRequestNewFolder={handleRequestNewFolder}
-        onCopyPath={handleCopyPath}
-        onCollapseAll={collapseAll}
-        onReload={reloadProjectTree}
-      />
+      {findState.open ? (
+        <FindReplacePane
+          view={editorView}
+          onClose={handleCloseFind}
+          initialQuery={findState.query}
+          showReplace={findState.showReplace}
+          openToken={findState.token}
+        />
+      ) : (
+        <ExplorerPane
+          projectLabel={projectLabel}
+          subtitle={explorerSubtitle}
+          searchQuery={searchQuery}
+          isTreeLoading={isTreeLoading}
+          workspaceError={workspaceError}
+          tree={tree}
+          activePath={activePath}
+          expandedFolders={expandedFolders}
+          dirtyPaths={dirtyPaths}
+          onSearchQueryChange={setSearchQuery}
+          onSelectFile={handleSelectFile}
+          onToggleFolder={handleToggleFolder}
+          onRequestRename={handleRequestRename}
+          onRequestDelete={handleRequestDelete}
+          onRequestNewFile={handleRequestNewFile}
+          onRequestNewFolder={handleRequestNewFolder}
+          onCopyPath={handleCopyPath}
+          onCollapseAll={collapseAll}
+          onReload={reloadProjectTree}
+        />
+      )}
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <EditorTabs
@@ -157,6 +195,8 @@ function EditorView({
                       void saveActive()
                     }}
                     onCursorChange={setCursor}
+                    onOpenFind={handleOpenFind}
+                    onViewReady={setEditorView}
                   />
                 </div>
                 <EditorStatusBar
