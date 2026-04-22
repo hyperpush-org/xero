@@ -11,6 +11,7 @@ import {
   mapAutonomousRunInspection,
   mapProjectSummary,
   mapRepositoryDiff,
+  mapRepositoryStatus,
   mapRuntimeRun,
   mapRuntimeSession,
   upsertProjectListItem,
@@ -151,6 +152,28 @@ export type {
   WorkflowPaneView,
 } from './use-cadence-desktop-state/types'
 export { BLOCKED_NOTIFICATION_SYNC_POLL_MS } from './use-cadence-desktop-state/notification-health'
+
+const REPOSITORY_STATUS_POLL_MS = 5_000
+
+function createRepositoryStatusSyncKey(status: RepositoryStatusView | null): string {
+  if (!status) {
+    return 'none'
+  }
+
+  return JSON.stringify({
+    projectId: status.projectId,
+    repositoryId: status.repositoryId,
+    branchLabel: status.branchLabel,
+    headShaLabel: status.headShaLabel,
+    lastCommit: status.lastCommit,
+    stagedCount: status.stagedCount,
+    unstagedCount: status.unstagedCount,
+    untrackedCount: status.untrackedCount,
+    statusCount: status.statusCount,
+    hasChanges: status.hasChanges,
+    entries: status.entries,
+  })
+}
 
 function createEmptyRepositoryDiffState(): RepositoryDiffState {
   return {
@@ -340,6 +363,9 @@ export function useCadenceDesktopState(
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
   const activeProjectRef = useRef<ProjectDetailView | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
+  const repositoryStatusRef = useRef<RepositoryStatusView | null>(null)
+  const repositoryStatusSyncKeyRef = useRef('none')
+  const repositoryStatusRefreshInFlightRef = useRef(false)
   const latestLoadRequestRef = useRef(0)
   const latestDiffRequestRef = useRef<Record<RepositoryDiffScope, number>>({
     staged: 0,
@@ -393,6 +419,11 @@ export function useCadenceDesktopState(
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId
   }, [activeProjectId])
+
+  useEffect(() => {
+    repositoryStatusRef.current = repositoryStatus
+    repositoryStatusSyncKeyRef.current = createRepositoryStatusSyncKey(repositoryStatus)
+  }, [repositoryStatus])
 
   useEffect(() => {
     repositoryDiffsRef.current = repositoryDiffs
@@ -487,6 +518,39 @@ export function useCadenceDesktopState(
   const handleAdapterEventError = useCallback((error: CadenceDesktopError) => {
     setErrorMessage(getDesktopErrorMessage(error))
   }, [])
+
+  const syncRepositoryStatus = useCallback(async () => {
+    const projectId = activeProjectIdRef.current
+    if (!projectId || repositoryStatusRefreshInFlightRef.current) {
+      return null
+    }
+
+    repositoryStatusRefreshInFlightRef.current = true
+
+    try {
+      const response = await adapter.getRepositoryStatus(projectId)
+      if (activeProjectIdRef.current !== projectId) {
+        return null
+      }
+
+      const nextStatus = mapRepositoryStatus(response)
+      const nextStatusKey = createRepositoryStatusSyncKey(nextStatus)
+      if (repositoryStatusSyncKeyRef.current === nextStatusKey) {
+        return nextStatus
+      }
+
+      repositoryStatusRef.current = nextStatus
+      repositoryStatusSyncKeyRef.current = nextStatusKey
+      setRefreshSource('repository:status_changed')
+      setRepositoryStatus(nextStatus)
+      resetRepositoryDiffs(nextStatus)
+      return nextStatus
+    } catch {
+      return null
+    } finally {
+      repositoryStatusRefreshInFlightRef.current = false
+    }
+  }, [adapter, resetRepositoryDiffs])
 
   const applyRuntimeSessionUpdate = useCallback(
     (runtimeSession: RuntimeSessionView, options: { clearGlobalError?: boolean } = {}) => {
@@ -969,6 +1033,30 @@ export function useCadenceDesktopState(
       disposeListeners()
     }
   }, [adapter, applyRuntimeRunUpdate, bootstrap, handleAdapterEventError, loadProject, resetRepositoryDiffs, scheduleRuntimeMetadataRefresh])
+
+  useEffect(() => {
+    if (!activeProjectId || typeof window === 'undefined' || typeof document === 'undefined') {
+      return
+    }
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'hidden') {
+        return
+      }
+
+      void syncRepositoryStatus()
+    }
+
+    const pollHandle = window.setInterval(refreshIfVisible, REPOSITORY_STATUS_POLL_MS)
+    window.addEventListener('focus', refreshIfVisible)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+
+    return () => {
+      window.clearInterval(pollHandle)
+      window.removeEventListener('focus', refreshIfVisible)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
+  }, [activeProjectId, syncRepositoryStatus])
 
   const showRepositoryDiff = useCallback(
     async (scope: RepositoryDiffScope, options: { force?: boolean } = {}) => {

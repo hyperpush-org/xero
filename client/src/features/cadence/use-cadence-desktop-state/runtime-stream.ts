@@ -285,6 +285,17 @@ export async function attachDesktopRuntimeListeners({
 
       const nextStatus = mapRepositoryStatus(payload.status)
       setters.setRefreshSource('repository:status_changed')
+      setters.setProjects((currentProjects) =>
+        currentProjects.map((project) =>
+          project.id === payload.projectId
+            ? {
+                ...project,
+                branch: nextStatus.branchLabel,
+                branchLabel: nextStatus.branchLabel,
+              }
+            : project,
+        ),
+      )
       setters.setRepositoryStatus(nextStatus)
       setters.setActiveProject((currentProject) => {
         if (!currentProject) {
