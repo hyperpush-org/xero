@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { openUrlMock } = vi.hoisted(() => ({
@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 import { CadenceApp } from './App'
-import { type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
+import { CadenceDesktopError, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import type {
   ImportRepositoryResponseDto,
   ListNotificationDispatchesResponseDto,
@@ -300,6 +300,54 @@ function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): 
   }
 }
 
+function ensureKnownProjectId(projectId: string, knownProjectIds: string[], context: string) {
+  if (knownProjectIds.includes(projectId)) {
+    return
+  }
+
+  throw new Error(
+    `${context} expected one of [${knownProjectIds.join(', ')}] but received projectId \`${projectId}\`.`,
+  )
+}
+
+function ensureCompatibleRuntimeRun(
+  projectId: string,
+  currentRuntimeRun: RuntimeRunDto | null,
+  nextRuntimeRun: RuntimeRunDto | null,
+  context: string,
+) {
+  if (!nextRuntimeRun) {
+    return
+  }
+
+  if (nextRuntimeRun.projectId !== projectId) {
+    throw new Error(
+      `${context} expected run.projectId \`${projectId}\` but received \`${nextRuntimeRun.projectId}\`.`,
+    )
+  }
+
+  if (!currentRuntimeRun || currentRuntimeRun.runId === nextRuntimeRun.runId) {
+    return
+  }
+
+  throw new Error(
+    `${context} expected active runId \`${currentRuntimeRun.runId}\` for project \`${projectId}\`; clear the active run before attaching \`${nextRuntimeRun.runId}\`.`,
+  )
+}
+
+function cloneRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunDto {
+  return {
+    ...runtimeRun,
+    transport: { ...runtimeRun.transport },
+    controls: {
+      active: { ...runtimeRun.controls.active },
+      pending: runtimeRun.controls.pending ? { ...runtimeRun.controls.pending } : null,
+    },
+    lastError: runtimeRun.lastError ? { ...runtimeRun.lastError } : null,
+    checkpoints: runtimeRun.checkpoints.map((checkpoint) => ({ ...checkpoint })),
+  }
+}
+
 function createAdapter(options?: {
   projects?: ListProjectsResponseDto['projects']
   snapshot?: ProjectSnapshotResponseDto
@@ -378,6 +426,71 @@ function createAdapter(options?: {
   const currentFileContents: Record<string, string> = {
     '/README.md': '# Cadence\n',
     '/src/App.tsx': 'export default function App() {\n  return <main>Cadence</main>\n}\n',
+  }
+  let projectUpdatedHandler: ((payload: ProjectUpdatedPayloadDto) => void) | null = null
+  let projectUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+  let runtimeUpdatedHandler: ((payload: RuntimeUpdatedPayloadDto) => void) | null = null
+  let runtimeUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+  let runtimeRunUpdatedHandler: ((payload: RuntimeRunUpdatedPayloadDto) => void) | null = null
+  let runtimeRunUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+
+  const getKnownProjectIds = () => {
+    const projectIds = new Set<string>(currentProjects.map((project) => project.id))
+    projectIds.add(currentSnapshot.project.id)
+    projectIds.add(currentRuntimeSession.projectId)
+    if (currentRuntimeRun) {
+      projectIds.add(currentRuntimeRun.projectId)
+    }
+    if (currentAutonomousState?.run) {
+      projectIds.add(currentAutonomousState.run.projectId)
+    }
+    if (currentAutonomousState?.unit) {
+      projectIds.add(currentAutonomousState.unit.projectId)
+    }
+    return Array.from(projectIds)
+  }
+
+  const applyProjectUpdatedPayload = (payload: ProjectUpdatedPayloadDto) => {
+    ensureKnownProjectId(payload.project.id, getKnownProjectIds(), 'emitProjectUpdated')
+    currentProjects = currentProjects.map((project) =>
+      project.id === payload.project.id ? payload.project : project,
+    )
+
+    if (currentSnapshot.project.id === payload.project.id) {
+      currentSnapshot = {
+        ...currentSnapshot,
+        project: payload.project,
+        repository: {
+          ...currentSnapshot.repository,
+          projectId: payload.project.id,
+          displayName: payload.project.name,
+        },
+      }
+    }
+  }
+
+  const applyRuntimeUpdatedPayload = (payload: RuntimeUpdatedPayloadDto) => {
+    ensureKnownProjectId(payload.projectId, getKnownProjectIds(), 'emitRuntimeUpdated')
+    currentRuntimeSession = makeRuntimeSession(payload.projectId, {
+      runtimeKind: payload.runtimeKind,
+      providerId: payload.providerId,
+      flowId: payload.flowId,
+      sessionId: payload.sessionId,
+      accountId: payload.accountId,
+      phase: payload.authPhase,
+      callbackBound: currentRuntimeSession.callbackBound,
+      authorizationUrl: currentRuntimeSession.authorizationUrl,
+      redirectUri: currentRuntimeSession.redirectUri,
+      lastErrorCode: payload.lastErrorCode,
+      lastError: payload.lastError,
+      updatedAt: payload.updatedAt,
+    })
+  }
+
+  const applyRuntimeRunUpdatedPayload = (payload: RuntimeRunUpdatedPayloadDto) => {
+    ensureKnownProjectId(payload.projectId, getKnownProjectIds(), 'emitRuntimeRunUpdated')
+    ensureCompatibleRuntimeRun(payload.projectId, currentRuntimeRun, payload.run, 'emitRuntimeRunUpdated')
+    currentRuntimeRun = payload.run ? cloneRuntimeRun(payload.run) : null
   }
 
   const upsertRuntimeSettings = vi.fn(async (request: UpsertRuntimeSettingsRequestDto) => {
@@ -559,6 +672,36 @@ function createAdapter(options?: {
       repository: makeStatus().repository,
     }
   })
+  const onProjectUpdated = vi.fn(
+    async (
+      handler: (payload: ProjectUpdatedPayloadDto) => void,
+      onError?: (error: CadenceDesktopError) => void,
+    ) => {
+      projectUpdatedHandler = handler
+      projectUpdatedErrorHandler = onError ?? null
+      return () => undefined
+    },
+  )
+  const onRuntimeUpdated = vi.fn(
+    async (
+      handler: (payload: RuntimeUpdatedPayloadDto) => void,
+      onError?: (error: CadenceDesktopError) => void,
+    ) => {
+      runtimeUpdatedHandler = handler
+      runtimeUpdatedErrorHandler = onError ?? null
+      return () => undefined
+    },
+  )
+  const onRuntimeRunUpdated = vi.fn(
+    async (
+      handler: (payload: RuntimeRunUpdatedPayloadDto) => void,
+      onError?: (error: CadenceDesktopError) => void,
+    ) => {
+      runtimeRunUpdatedHandler = handler
+      runtimeRunUpdatedErrorHandler = onError ?? null
+      return () => undefined
+    },
+  )
 
   const adapter: CadenceDesktopAdapter = {
     isDesktopRuntime: () => true,
@@ -856,13 +999,46 @@ function createAdapter(options?: {
       } satisfies SubscribeRuntimeStreamResponseDto,
       unsubscribe: () => {},
     }),
-    onProjectUpdated: async (_handler: (payload: ProjectUpdatedPayloadDto) => void) => () => {},
+    onProjectUpdated,
     onRepositoryStatusChanged: async (_handler: (payload: RepositoryStatusChangedPayloadDto) => void) => () => {},
-    onRuntimeUpdated: async (_handler: (payload: RuntimeUpdatedPayloadDto) => void) => () => {},
-    onRuntimeRunUpdated: async (_handler: (payload: RuntimeRunUpdatedPayloadDto) => void) => () => {},
+    onRuntimeUpdated,
+    onRuntimeRunUpdated,
   }
 
-  return { adapter, upsertNotificationRoute, upsertRuntimeSettings, upsertProviderProfile, importRepository, pickRepositoryFolder, startRuntimeRun, startAutonomousRun }
+  return {
+    adapter,
+    upsertNotificationRoute,
+    upsertRuntimeSettings,
+    upsertProviderProfile,
+    importRepository,
+    pickRepositoryFolder,
+    startRuntimeRun,
+    startAutonomousRun,
+    onProjectUpdated,
+    onRuntimeUpdated,
+    onRuntimeRunUpdated,
+    emitProjectUpdated(payload: ProjectUpdatedPayloadDto) {
+      applyProjectUpdatedPayload(payload)
+      projectUpdatedHandler?.(payload)
+    },
+    emitProjectUpdatedError(error: CadenceDesktopError) {
+      projectUpdatedErrorHandler?.(error)
+    },
+    emitRuntimeUpdated(payload: RuntimeUpdatedPayloadDto) {
+      applyRuntimeUpdatedPayload(payload)
+      runtimeUpdatedHandler?.(payload)
+    },
+    emitRuntimeUpdatedError(error: CadenceDesktopError) {
+      runtimeUpdatedErrorHandler?.(error)
+    },
+    emitRuntimeRunUpdated(payload: RuntimeRunUpdatedPayloadDto) {
+      applyRuntimeRunUpdatedPayload(payload)
+      runtimeRunUpdatedHandler?.(payload)
+    },
+    emitRuntimeRunUpdatedError(error: CadenceDesktopError) {
+      runtimeRunUpdatedErrorHandler?.(error)
+    },
+  }
 }
 
 describe('CadenceApp current UI', () => {
@@ -1186,6 +1362,280 @@ describe('CadenceApp current UI', () => {
     expect(screen.queryByRole('button', { name: 'Inspect truth' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Autonomous run truth' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Remote escalation trust' })).not.toBeInTheDocument()
+  })
+
+  it('refreshes active project metadata from project:updated events without rerendering the app root', async () => {
+    const setup = createAdapter()
+
+    render(<CadenceApp adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+    await waitFor(() => expect(setup.onProjectUpdated).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: 'Project actions for Cadence' })).toBeVisible()
+
+    act(() => {
+      setup.emitProjectUpdated({
+        project: makeProjectSummary('project-1', 'Cadence Prime'),
+        reason: 'metadata_changed',
+      })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Project actions for Cadence Prime' })).toBeVisible(),
+    )
+    expect(screen.queryByRole('button', { name: 'Project actions for Cadence' })).not.toBeInTheDocument()
+  })
+
+  it('refreshes provider auth UI from runtime:updated events without rerendering', async () => {
+    const setup = createAdapter({
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+        lastErrorCode: 'auth_session_not_found',
+        lastError: {
+          code: 'auth_session_not_found',
+          message: 'Sign in with OpenAI to create a runtime session for this project.',
+          retryable: false,
+        },
+      }),
+      runtimeRun: null,
+      autonomousState: null,
+    })
+
+    render(<CadenceApp adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByLabelText('Settings'))
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeVisible()
+    await waitFor(() => expect(setup.onRuntimeUpdated).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      setup.emitRuntimeUpdated({
+        projectId: 'project-1',
+        runtimeKind: 'openai_codex',
+        providerId: 'openai_codex',
+        flowId: 'flow-1',
+        sessionId: 'session-1',
+        accountId: 'acct-1',
+        authPhase: 'authenticated',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-04-22T12:00:00Z',
+      })
+    })
+
+    await waitFor(() => expect(screen.getByText('Connected')).toBeVisible())
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeVisible()
+
+    act(() => {
+      setup.emitRuntimeUpdatedError(
+        new CadenceDesktopError({
+          code: 'adapter_contract_mismatch',
+          errorClass: 'adapter_contract_mismatch',
+          message: 'Event runtime:updated returned an unexpected payload shape.',
+        }),
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText('Event runtime:updated returned an unexpected payload shape.')).toBeVisible(),
+    )
+  })
+
+  it('refreshes the Agent pane from runtime_run:updated events and rejects mismatched payloads', async () => {
+    const setup = createAdapter({
+      runtimeRun: null,
+      autonomousState: null,
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'authenticated',
+        sessionId: 'session-1',
+        accountId: 'acct-1',
+        lastErrorCode: null,
+        lastError: null,
+      }),
+    })
+
+    render(<CadenceApp adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
+    await waitFor(() => expect(setup.onRuntimeRunUpdated).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-live-1',
+          startedAt: '2026-04-20T12:00:00Z',
+          lastHeartbeatAt: '2026-04-20T12:00:05Z',
+          lastCheckpointAt: '2026-04-20T12:00:06Z',
+          updatedAt: '2026-04-20T12:00:06Z',
+          controls: {
+            active: {
+              modelId: 'openai_codex',
+              thinkingEffort: 'medium',
+              approvalMode: 'suggest',
+              revision: 1,
+              appliedAt: '2026-04-20T12:00:00Z',
+            },
+            pending: null,
+          },
+        }),
+      })
+    })
+
+    expect((await screen.findAllByRole('heading', { name: 'Recovered run snapshot' })).length).toBeGreaterThan(0)
+    expect(screen.getByText('Approval active · Suggest')).toBeVisible()
+
+    const pendingRun = makeRuntimeRun('project-1', {
+      runId: 'run-live-1',
+      startedAt: '2026-04-20T12:00:00Z',
+      lastHeartbeatAt: '2026-04-20T12:05:00Z',
+      lastCheckpointSequence: 2,
+      lastCheckpointAt: '2026-04-20T12:05:00Z',
+      updatedAt: '2026-04-20T12:05:00Z',
+      controls: {
+        active: {
+          modelId: 'openai_codex',
+          thinkingEffort: 'medium',
+          approvalMode: 'suggest',
+          revision: 1,
+          appliedAt: '2026-04-20T12:00:00Z',
+        },
+        pending: {
+          modelId: 'anthropic/claude-3.5-haiku',
+          thinkingEffort: 'low',
+          approvalMode: 'yolo',
+          revision: 2,
+          queuedAt: '2026-04-20T12:05:00Z',
+          queuedPrompt: 'Review the diff before continuing.',
+          queuedPromptAt: '2026-04-20T12:05:00Z',
+        },
+      },
+    })
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: pendingRun,
+      })
+    })
+
+    await waitFor(() => expect(screen.getByText('Model pending · anthropic/claude-3.5-haiku')).toBeVisible())
+    expect(screen.getByText('Thinking pending · Low')).toBeVisible()
+    expect(screen.getByText('Approval pending · YOLO')).toBeVisible()
+    expect(screen.getByText('Queued prompt pending the next model-call boundary.')).toBeVisible()
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: pendingRun,
+      })
+    })
+
+    expect(screen.getAllByText('Approval pending · YOLO')).toHaveLength(1)
+    expect(() =>
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      }),
+    ).toThrowError(/expected one of \[project-1\]/)
+    expect(() =>
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', { runId: 'run-live-2' }),
+      }),
+    ).toThrowError(/clear the active run before attaching `run-live-2`/)
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-live-1',
+          startedAt: '2026-04-20T12:00:00Z',
+          lastHeartbeatAt: '2026-04-20T12:06:00Z',
+          lastCheckpointSequence: 3,
+          lastCheckpointAt: '2026-04-20T12:06:00Z',
+          updatedAt: '2026-04-20T12:06:00Z',
+          controls: {
+            active: {
+              modelId: 'anthropic/claude-3.5-haiku',
+              thinkingEffort: 'low',
+              approvalMode: 'yolo',
+              revision: 2,
+              appliedAt: '2026-04-20T12:06:00Z',
+            },
+            pending: null,
+          },
+        }),
+      })
+    })
+
+    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
+    expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: null,
+      })
+    })
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible())
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-live-2',
+          startedAt: '2026-04-20T12:07:00Z',
+          lastHeartbeatAt: '2026-04-20T12:07:05Z',
+          lastCheckpointSequence: 4,
+          lastCheckpointAt: '2026-04-20T12:07:06Z',
+          updatedAt: '2026-04-20T12:07:06Z',
+          controls: {
+            active: {
+              modelId: 'anthropic/claude-3.5-haiku',
+              thinkingEffort: 'low',
+              approvalMode: 'yolo',
+              revision: 2,
+              appliedAt: '2026-04-20T12:07:00Z',
+            },
+            pending: null,
+          },
+        }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThan(0),
+    )
+    expect(screen.getByText('Approval active · YOLO')).toBeVisible()
+
+    act(() => {
+      setup.emitRuntimeRunUpdatedError(
+        new CadenceDesktopError({
+          code: 'adapter_contract_mismatch',
+          errorClass: 'adapter_contract_mismatch',
+          message: 'Event runtime_run:updated returned an unexpected payload shape.',
+        }),
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByText('Event runtime_run:updated returned an unexpected payload shape.')).toBeVisible(),
+    )
   })
 
   it('opens Settings and runs the current provider and notification flows', async () => {
