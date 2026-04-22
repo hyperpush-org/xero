@@ -852,4 +852,68 @@ describe('projectCheckpointControlLoops', () => {
     expect(projection.items[0].durableStateDetail).toContain('cwd escapes the imported repository root')
     expect(projection.recoveredCount).toBe(1)
   })
+
+  it('ignores malformed durable policy denials without stable diagnostic codes or boundary linkage', () => {
+    const actionId = 'flow:flow-1:run:run-1:boundary:boundary-ignored:review_command'
+
+    const projection = projectCheckpointControlLoops({
+      actionRequiredItems: [],
+      approvalRequests: [],
+      resumeHistory: [],
+      notificationBroker: makeBrokerView(),
+      autonomousHistory: [
+        makeHistoryEntry({
+          unit: makeUnit({
+            unitId: 'unit-boundary-ignored',
+            boundaryId: 'boundary-ignored',
+            updatedAt: '2026-04-16T12:07:00Z',
+          }),
+          latestAttempt: makeAttempt({
+            unitId: 'unit-boundary-ignored',
+            attemptId: 'unit-boundary-ignored:attempt-1',
+            boundaryId: 'boundary-ignored',
+            updatedAt: '2026-04-16T12:07:00Z',
+          }),
+          artifacts: [
+            makeArtifact({
+              artifactId: 'artifact-policy-denied-missing-diagnostic',
+              unitId: 'unit-boundary-ignored',
+              attemptId: 'unit-boundary-ignored:attempt-1',
+              artifactKind: 'policy_denied',
+              artifactKindLabel: 'Policy denied',
+              summary: 'Cadence denied the shell command but did not persist a stable diagnostic code.',
+              detail: 'Cadence denied the shell command but did not persist a stable diagnostic code.',
+              diagnosticCode: null,
+              actionId,
+              boundaryId: 'boundary-ignored',
+              isToolResult: false,
+              isVerificationEvidence: false,
+              isPolicyDenied: true,
+              updatedAt: '2026-04-16T12:07:10Z',
+            }),
+            makeArtifact({
+              artifactId: 'artifact-policy-denied-missing-boundary',
+              unitId: 'unit-boundary-ignored',
+              attemptId: 'unit-boundary-ignored:attempt-1',
+              artifactKind: 'policy_denied',
+              artifactKindLabel: 'Policy denied',
+              summary: 'Cadence denied the shell command but did not persist a stable boundary id.',
+              detail: 'Cadence denied the shell command but did not persist a stable boundary id.',
+              diagnosticCode: 'policy_denied_command_cwd_outside_repo',
+              actionId,
+              boundaryId: null,
+              isToolResult: false,
+              isVerificationEvidence: false,
+              isPolicyDenied: true,
+              updatedAt: '2026-04-16T12:07:11Z',
+            }),
+          ],
+        }),
+      ],
+      autonomousRecentArtifacts: [],
+    })
+
+    expect(projection.items).toHaveLength(0)
+    expect(projection.recoveredCount).toBe(0)
+  })
 })

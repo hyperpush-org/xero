@@ -274,6 +274,19 @@ function appendCheckpointEvidence(card: CheckpointControlLoopCardAccumulator, ar
   )
 }
 
+function isCheckpointArtifactUsable(artifact: AutonomousUnitArtifactView): boolean {
+  const actionId = normalizeText(artifact.actionId)
+  if (!actionId) {
+    return false
+  }
+
+  if (!artifact.isPolicyDenied) {
+    return true
+  }
+
+  return Boolean(normalizeText(artifact.boundaryId) && normalizeText(artifact.diagnosticCode))
+}
+
 function getLatestPolicyDeniedArtifact(
   card: CheckpointControlLoopCardAccumulator,
 ): AutonomousUnitArtifactView | null {
@@ -647,11 +660,11 @@ export function projectCheckpointControlLoops(options: {
   })
 
   for (const artifact of allArtifacts) {
-    const actionId = normalizeText(artifact.actionId)
-    if (!actionId) {
+    if (!isCheckpointArtifactUsable(artifact)) {
       continue
     }
 
+    const actionId = normalizeText(artifact.actionId)!
     const card = upsertCheckpointControlLoopCard({
       actionId,
       boundaryId: artifact.boundaryId,

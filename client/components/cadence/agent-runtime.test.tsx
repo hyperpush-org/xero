@@ -850,6 +850,88 @@ describe('AgentRuntime current UI', () => {
     )
   })
 
+  it('renders recovered durable denial cards without inventing approval or resume affordances', () => {
+    const deniedActionId = 'flow:flow-1:run:run-1:boundary:boundary-denied-1:review_command'
+    const deniedCard = makeCheckpointControlLoopCard({
+      actionId: deniedActionId,
+      key: `${deniedActionId}::boundary-denied-1`,
+      boundaryId: 'boundary-denied-1',
+      title: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      detail: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      truthSource: 'recovered_durable',
+      truthSourceLabel: 'Recovered durable denial',
+      truthSourceDetail:
+        'No resumable live review row remains, so this card is anchored to the durable shell-policy denial that Cadence persisted for the command.',
+      liveActionRequired: null,
+      liveStateLabel: 'No live review row',
+      liveStateDetail:
+        'Hard-denied shell-policy outcomes do not create a resumable live action-required row, so Cadence is anchoring this card to durable denial evidence.',
+      liveUpdatedAt: null,
+      approval: null,
+      durableStateLabel: 'Policy denied',
+      durableStateDetail: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      durableUpdatedAt: '2026-04-16T20:04:10Z',
+      latestResume: null,
+      resumeStateLabel: 'Not resumable',
+      resumeDetail: 'Hard-denied shell-policy outcomes do not create an operator approval or resume path.',
+      resumeUpdatedAt: '2026-04-16T20:04:10Z',
+      evidenceCount: 2,
+      evidenceStateLabel: '2 durable evidence rows',
+      evidenceSummary: 'Showing the latest durable evidence rows linked to this action.',
+      latestEvidenceAt: '2026-04-16T20:04:10Z',
+      evidencePreviews: [
+        {
+          artifactId: 'artifact-policy-denied',
+          artifactKindLabel: 'Policy denied',
+          statusLabel: 'Recorded',
+          summary: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+          updatedAt: '2026-04-16T20:04:10Z',
+        },
+        {
+          artifactId: 'artifact-policy-denied-verification',
+          artifactKindLabel: 'Verification evidence',
+          statusLabel: 'Recorded',
+          summary: 'Autonomous attempt recorded stable policy denial `policy_denied_command_cwd_outside_repo`.',
+          updatedAt: '2026-04-16T20:04:11Z',
+        },
+      ],
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          pendingApprovalCount: 0,
+          approvalRequests: [],
+          resumeHistory: [],
+          checkpointControlLoop: makeCheckpointControlLoop({
+            items: [deniedCard],
+            durableOnlyCount: 0,
+            recoveredCount: 1,
+          }),
+        })}
+      />,
+    )
+
+    const checkpointSection = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
+    expect(checkpointSection).not.toBeNull()
+    const checkpointQueries = within(checkpointSection as HTMLElement)
+
+    expect(checkpointQueries.getByText('Recovered durable denial')).toBeVisible()
+    expect(checkpointQueries.getAllByText('Policy denied').length).toBeGreaterThan(0)
+    expect(checkpointQueries.getAllByText('Not resumable').length).toBeGreaterThan(0)
+    expect(checkpointQueries.getByText('No live review row')).toBeVisible()
+    expect(
+      checkpointQueries.getAllByText(
+        'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      ).length,
+    ).toBeGreaterThan(0)
+    expect(checkpointQueries.getByText(new RegExp(`Action ${deniedActionId} · Boundary boundary-denied-1`))).toBeVisible()
+    expect(checkpointQueries.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(checkpointQueries.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument()
+  })
+
   it('fails closed on whitespace-only answers and keeps action/boundary ids visible during operator-action failures', () => {
     const pendingCard = makeCheckpointControlLoopCard({
       actionId: 'action-pending',

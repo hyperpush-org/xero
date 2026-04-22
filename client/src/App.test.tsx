@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { openUrlMock } = vi.hoisted(() => ({
@@ -16,11 +16,17 @@ afterEach(() => {
 import { CadenceApp } from './App'
 import { CadenceDesktopError, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import type {
+  ApplyWorkflowTransitionResponseDto,
+  AutonomousRunStateDto,
+  AutonomousUnitArtifactDto,
+  AutonomousUnitAttemptDto,
+  AutonomousUnitHistoryEntryDto,
   ImportRepositoryResponseDto,
   ListNotificationDispatchesResponseDto,
   ListNotificationRoutesResponseDto,
   ListProjectFilesResponseDto,
   ListProjectsResponseDto,
+  OperatorApprovalDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
   ProviderModelCatalogDto,
@@ -28,9 +34,9 @@ import type {
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
+  ResumeHistoryEntryDto,
   RuntimeRunControlInputDto,
   RuntimeRunDto,
-  AutonomousRunStateDto,
   RuntimeRunUpdatedPayloadDto,
   RuntimeSessionDto,
   RuntimeSettingsDto,
@@ -41,7 +47,6 @@ import type {
   UpsertNotificationRouteRequestDto,
   UpsertRuntimeSettingsRequestDto,
   UpsertWorkflowGraphResponseDto,
-  ApplyWorkflowTransitionResponseDto,
 } from '@/src/lib/cadence-model'
 
 function makeProjectSummary(id: string, name: string): ListProjectsResponseDto['projects'][number] {
@@ -300,6 +305,215 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
   return runtimeRun
 }
 
+function makeRuntimeApproval(actionId: string, overrides: Partial<OperatorApprovalDto> = {}): OperatorApprovalDto {
+  return {
+    actionId,
+    sessionId: 'session-1',
+    flowId: 'flow-1',
+    actionType: 'review_command',
+    title: 'Review destructive shell command',
+    detail: 'Cadence blocked a destructive shell wrapper and needs approval before continuing.',
+    gateNodeId: null,
+    gateKey: null,
+    transitionFromNodeId: null,
+    transitionToNodeId: null,
+    transitionKind: null,
+    userAnswer: null,
+    status: 'pending',
+    decisionNote: null,
+    createdAt: '2026-04-22T12:07:00Z',
+    updatedAt: '2026-04-22T12:07:00Z',
+    resolvedAt: null,
+    ...overrides,
+  }
+}
+
+function makeResumeHistoryEntry(actionId: string, overrides: Partial<ResumeHistoryEntryDto> = {}): ResumeHistoryEntryDto {
+  return {
+    id: 1,
+    sourceActionId: actionId,
+    sessionId: 'session-1',
+    status: 'failed',
+    summary: 'Operator resume failed and is waiting for corrected shell input.',
+    createdAt: '2026-04-22T12:07:05Z',
+    ...overrides,
+  }
+}
+
+function makeRecoveredPolicyDeniedAutonomousState(
+  projectId = 'project-1',
+  options: {
+    actionId: string
+    boundaryId: string
+    runtimeRunId?: string
+    diagnosticCode?: string
+  },
+): AutonomousRunStateDto {
+  const runtimeRunId = options.runtimeRunId ?? 'run-1'
+  const autonomousRunId = `auto-${projectId}`
+  const unitId = `${autonomousRunId}:${options.boundaryId}`
+  const attemptId = `${unitId}:attempt-1`
+  const baseState = makeAutonomousRunState(projectId, autonomousRunId)
+  const attempt: AutonomousUnitAttemptDto = {
+    projectId,
+    runId: autonomousRunId,
+    unitId,
+    attemptId,
+    attemptNumber: 1,
+    childSessionId: `${runtimeRunId}:child-session-1`,
+    status: 'failed',
+    boundaryId: options.boundaryId,
+    workflowLinkage: null,
+    startedAt: '2026-04-22T12:08:00Z',
+    finishedAt: '2026-04-22T12:08:10Z',
+    updatedAt: '2026-04-22T12:08:10Z',
+    lastErrorCode: options.diagnosticCode ?? 'policy_denied_command_cwd_outside_repo',
+    lastError: {
+      code: options.diagnosticCode ?? 'policy_denied_command_cwd_outside_repo',
+      message: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+    },
+  }
+  const deniedArtifactId = `${attemptId}:policy-denied`
+  const verificationArtifactId = `${attemptId}:verification`
+  const deniedArtifact: AutonomousUnitArtifactDto = {
+    projectId,
+    runId: autonomousRunId,
+    unitId,
+    attemptId,
+    artifactId: deniedArtifactId,
+    artifactKind: 'policy_denied',
+    status: 'recorded',
+    summary: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+    contentHash: 'policy-denied-hash',
+    payload: {
+      kind: 'policy_denied',
+      projectId,
+      runId: autonomousRunId,
+      unitId,
+      attemptId,
+      artifactId: deniedArtifactId,
+      diagnosticCode: options.diagnosticCode ?? 'policy_denied_command_cwd_outside_repo',
+      message: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      toolName: 'bash',
+      actionId: options.actionId,
+      boundaryId: options.boundaryId,
+    },
+    createdAt: '2026-04-22T12:08:10Z',
+    updatedAt: '2026-04-22T12:08:10Z',
+  }
+  const verificationArtifact: AutonomousUnitArtifactDto = {
+    projectId,
+    runId: autonomousRunId,
+    unitId,
+    attemptId,
+    artifactId: verificationArtifactId,
+    artifactKind: 'verification_evidence',
+    status: 'recorded',
+    summary:
+      'Autonomous attempt recorded stable policy denial `policy_denied_command_cwd_outside_repo` for the denied shell command.',
+    contentHash: 'verification-hash',
+    payload: {
+      kind: 'verification_evidence',
+      projectId,
+      runId: autonomousRunId,
+      unitId,
+      attemptId,
+      artifactId: verificationArtifactId,
+      evidenceKind: 'policy_denial',
+      label: 'Policy denial retained in durable history',
+      outcome: 'failed',
+      commandResult: {
+        exitCode: 1,
+        timedOut: false,
+        summary: 'Cadence denied the shell command before execution.',
+      },
+      actionId: options.actionId,
+      boundaryId: options.boundaryId,
+    },
+    createdAt: '2026-04-22T12:08:11Z',
+    updatedAt: '2026-04-22T12:08:11Z',
+  }
+  const historyEntry: AutonomousUnitHistoryEntryDto = {
+    unit: {
+      ...baseState.unit!,
+      runId: autonomousRunId,
+      unitId,
+      sequence: 2,
+      kind: 'diagnostic',
+      status: 'failed',
+      summary: 'Cadence recorded a terminal shell-policy denial for this checkpoint boundary.',
+      boundaryId: options.boundaryId,
+      finishedAt: '2026-04-22T12:08:10Z',
+      updatedAt: '2026-04-22T12:08:10Z',
+      lastErrorCode: options.diagnosticCode ?? 'policy_denied_command_cwd_outside_repo',
+      lastError: {
+        code: options.diagnosticCode ?? 'policy_denied_command_cwd_outside_repo',
+        message: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      },
+    },
+    latestAttempt: attempt,
+    artifacts: [deniedArtifact, verificationArtifact],
+  }
+
+  return {
+    run: {
+      ...baseState.run!,
+      runId: autonomousRunId,
+      activeUnitId: unitId,
+      updatedAt: '2026-04-22T12:08:10Z',
+    },
+    unit: historyEntry.unit,
+    attempt,
+    history: [historyEntry],
+  }
+}
+
+function makeRuntimeStreamActionRequiredEvent(options: {
+  actionId: string
+  boundaryId: string
+  detail: string
+  runId?: string
+  sequence?: number
+  title?: string
+}): RuntimeStreamEventDto {
+  const runId = options.runId ?? 'run-1'
+
+  return {
+    projectId: 'project-1',
+    runtimeKind: 'openai_codex',
+    runId,
+    sessionId: 'session-1',
+    flowId: 'flow-1',
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+    item: {
+      kind: 'action_required',
+      runId,
+      sequence: options.sequence ?? 5,
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      text: null,
+      toolCallId: null,
+      toolName: null,
+      toolState: null,
+      actionId: options.actionId,
+      boundaryId: options.boundaryId,
+      actionType: 'review_command',
+      title: options.title ?? 'Review destructive shell command',
+      detail: options.detail,
+      code: null,
+      message: null,
+      retryable: null,
+      createdAt: '2026-04-22T12:07:10Z',
+    },
+  }
+}
+
+function ensureCheckpointSection(): HTMLElement {
+  const section = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
+  expect(section).not.toBeNull()
+  return section as HTMLElement
+}
+
 function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): AutonomousRunStateDto {
   return {
     run: {
@@ -435,6 +649,12 @@ function createAdapter(options?: {
   let runtimeUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
   let runtimeRunUpdatedHandler: ((payload: RuntimeRunUpdatedPayloadDto) => void) | null = null
   let runtimeRunUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+  const streamSubscriptions: Array<{
+    projectId: string
+    handler: (payload: RuntimeStreamEventDto) => void
+    onError: ((error: CadenceDesktopError) => void) | null
+    unsubscribe: () => void
+  }> = []
 
   const rebuildProviderModelCatalogs = () => {
     currentProviderModelCatalogs = Object.fromEntries(
@@ -996,18 +1216,34 @@ function createAdapter(options?: {
     subscribeRuntimeStream: async (
       projectId: string,
       itemKinds: RuntimeStreamEventDto['subscribedItemKinds'],
-      _handler: (payload: RuntimeStreamEventDto) => void,
-    ) => ({
-      response: {
+      handler: (payload: RuntimeStreamEventDto) => void,
+      onError?: (error: CadenceDesktopError) => void,
+    ) => {
+      const subscription = {
         projectId,
-        runtimeKind: 'openai_codex',
-        runId: currentRuntimeRun?.runId ?? 'run-1',
-        sessionId: currentRuntimeSession.sessionId ?? 'session-1',
-        flowId: currentRuntimeSession.flowId ?? null,
-        subscribedItemKinds: itemKinds,
-      } satisfies SubscribeRuntimeStreamResponseDto,
-      unsubscribe: () => {},
-    }),
+        handler,
+        onError: onError ?? null,
+        unsubscribe: () => {
+          const index = streamSubscriptions.indexOf(subscription)
+          if (index >= 0) {
+            streamSubscriptions.splice(index, 1)
+          }
+        },
+      }
+      streamSubscriptions.push(subscription)
+
+      return {
+        response: {
+          projectId,
+          runtimeKind: 'openai_codex',
+          runId: currentRuntimeRun?.runId ?? 'run-1',
+          sessionId: currentRuntimeSession.sessionId ?? 'session-1',
+          flowId: currentRuntimeSession.flowId ?? null,
+          subscribedItemKinds: itemKinds,
+        } satisfies SubscribeRuntimeStreamResponseDto,
+        unsubscribe: subscription.unsubscribe,
+      }
+    },
     onProjectUpdated,
     onRepositoryStatusChanged: async (_handler: (payload: RepositoryStatusChangedPayloadDto) => void) => () => {},
     onRuntimeUpdated,
@@ -1016,6 +1252,7 @@ function createAdapter(options?: {
 
   return {
     adapter,
+    streamSubscriptions,
     upsertNotificationRoute,
     upsertRuntimeSettings,
     upsertProviderProfile,
@@ -1028,6 +1265,12 @@ function createAdapter(options?: {
     onProjectUpdated,
     onRuntimeUpdated,
     onRuntimeRunUpdated,
+    setSnapshot(snapshot: ProjectSnapshotResponseDto) {
+      currentSnapshot = snapshot
+    },
+    setAutonomousState(state: AutonomousRunStateDto | null) {
+      currentAutonomousState = state
+    },
     emitProjectUpdated(payload: ProjectUpdatedPayloadDto) {
       applyProjectUpdatedPayload(payload)
       projectUpdatedHandler?.(payload)
@@ -1048,6 +1291,12 @@ function createAdapter(options?: {
     },
     emitRuntimeRunUpdatedError(error: CadenceDesktopError) {
       runtimeRunUpdatedErrorHandler?.(error)
+    },
+    emitRuntimeStream(index: number, payload: RuntimeStreamEventDto) {
+      streamSubscriptions[index]?.handler(payload)
+    },
+    emitRuntimeStreamError(index: number, error: CadenceDesktopError) {
+      streamSubscriptions[index]?.onError?.(error)
     },
   }
 }
@@ -1786,6 +2035,163 @@ describe('CadenceApp current UI', () => {
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).not.toBeDisabled()
+  })
+
+  it('shows live review-required checkpoint truth only after YOLO becomes active on the shipped Agent surface', async () => {
+    const reviewActionId = 'flow:flow-1:run:run-1:boundary:boundary-review-1:review_command'
+    const setup = createAdapter({
+      runtimeRun: null,
+      autonomousState: null,
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'authenticated',
+        sessionId: 'session-1',
+        accountId: 'acct-1',
+        flowId: 'flow-1',
+        lastErrorCode: null,
+        lastError: null,
+      }),
+    })
+
+    render(<CadenceApp adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    await waitFor(() => expect(screen.getByText('Approval active · Suggest')).toBeVisible())
+    await waitFor(() => expect(setup.streamSubscriptions.length).toBeGreaterThan(0))
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Approval mode selector' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Approval · yolo' }))
+
+    await waitFor(() => expect(screen.getByText('Approval pending · YOLO')).toBeVisible())
+    expect(screen.getByText(/Pending YOLO does not apply until the next model-call boundary\./)).toBeVisible()
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-1',
+          startedAt: '2026-04-22T12:00:00Z',
+          lastHeartbeatAt: '2026-04-22T12:07:00Z',
+          lastCheckpointSequence: 3,
+          lastCheckpointAt: '2026-04-22T12:07:00Z',
+          updatedAt: '2026-04-22T12:07:00Z',
+          controls: {
+            active: {
+              modelId: 'openai_codex',
+              thinkingEffort: 'medium',
+              approvalMode: 'yolo',
+              revision: 2,
+              appliedAt: '2026-04-22T12:07:00Z',
+            },
+            pending: null,
+          },
+        }),
+      })
+    })
+
+    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
+
+    setup.setSnapshot({
+      ...makeSnapshot(),
+      approvalRequests: [makeRuntimeApproval(reviewActionId)],
+      resumeHistory: [],
+      notificationDispatches: [],
+      notificationReplyClaims: [],
+    })
+
+    act(() => {
+      setup.emitRuntimeStream(
+        0,
+        makeRuntimeStreamActionRequiredEvent({
+          actionId: reviewActionId,
+          boundaryId: 'boundary-review-1',
+          detail: 'Cadence blocked a destructive shell wrapper and needs operator review before continuing.',
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible())
+    const checkpointQueries = within(ensureCheckpointSection())
+
+    expect(checkpointQueries.getByText('Review destructive shell command')).toBeVisible()
+    expect(checkpointQueries.getByText('Live + durable')).toBeVisible()
+    expect(checkpointQueries.getByText(/^Pending$/)).toBeVisible()
+    expect(checkpointQueries.getByText('Live action required')).toBeVisible()
+    expect(checkpointQueries.getByText('Waiting on approval')).toBeVisible()
+    expect(
+      checkpointQueries.getByText(
+        `Action ${reviewActionId} · Boundary boundary-review-1`,
+      ),
+    ).toBeVisible()
+    expect(checkpointQueries.getByText(/Cadence blocked a destructive shell wrapper/)).toBeVisible()
+  })
+
+  it('keeps recovered durable policy denials understandable on the shipped Agent surface after the live row clears', async () => {
+    const deniedActionId = 'flow:flow-1:run:run-1:boundary:boundary-denied-1:review_command'
+    const setup = createAdapter({
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'authenticated',
+        sessionId: 'session-1',
+        accountId: 'acct-1',
+        flowId: 'flow-1',
+        lastErrorCode: null,
+        lastError: null,
+      }),
+      runtimeRun: makeRuntimeRun('project-1', {
+        runId: 'run-1',
+        controls: {
+          active: {
+            modelId: 'openai_codex',
+            thinkingEffort: 'medium',
+            approvalMode: 'yolo',
+            revision: 2,
+            appliedAt: '2026-04-22T12:07:00Z',
+          },
+          pending: null,
+        },
+        updatedAt: '2026-04-22T12:08:00Z',
+      }),
+      autonomousState: makeRecoveredPolicyDeniedAutonomousState('project-1', {
+        actionId: deniedActionId,
+        boundaryId: 'boundary-denied-1',
+      }),
+    })
+
+    render(<CadenceApp adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+
+    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible())
+
+    const checkpointQueries = within(ensureCheckpointSection())
+    expect(checkpointQueries.getByText('Recovered durable denial')).toBeVisible()
+    expect(checkpointQueries.getAllByText('Policy denied').length).toBeGreaterThan(0)
+    expect(checkpointQueries.getAllByText('Not resumable').length).toBeGreaterThan(0)
+    expect(checkpointQueries.getByText('No live review row')).toBeVisible()
+    expect(
+      checkpointQueries.getAllByText(
+        'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
+      ).length,
+    ).toBeGreaterThan(0)
+    expect(
+      checkpointQueries.getByText(
+        `Action ${deniedActionId} · Boundary boundary-denied-1`,
+      ),
+    ).toBeVisible()
+    expect(checkpointQueries.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(checkpointQueries.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument()
   })
 
   it('opens Settings and runs the current provider and notification flows', async () => {
