@@ -121,30 +121,15 @@ pub fn sync_openai_profile_link<R: Runtime>(
     let provider_profile_credentials_path = state
         .provider_profile_credential_store_file(app)
         .map_err(map_command_error_to_auth_error)?;
-    let legacy_settings_path = state
-        .runtime_settings_file(app)
-        .map_err(map_command_error_to_auth_error)?;
-    let legacy_openrouter_credentials_path = state
-        .openrouter_credential_file(app)
-        .map_err(map_command_error_to_auth_error)?;
-    let legacy_openai_auth_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
-
-    let mut snapshot = load_or_migrate_provider_profiles_from_paths(
-        &provider_profiles_path,
-        &provider_profile_credentials_path,
-        &legacy_settings_path,
-        &legacy_openrouter_credentials_path,
-        &legacy_openai_auth_path,
-    )
-    .map_err(map_provider_profiles_error)?;
+    let mut snapshot = load_provider_profiles_snapshot(app, state)?;
 
     let next_link = session.map(openai_profile_link_from_session).transpose()?;
-    let Some(target_profile_id) = select_openai_profile_id(
+    let target_profile_id = resolve_openai_profile_sync_target(
         &snapshot,
         preferred_profile_id,
         next_link.as_ref(),
-    )
-    .or_else(|| Some(OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned())) else {
+    )?;
+    let Some(target_profile_id) = target_profile_id else {
         return Ok(());
     };
 
@@ -152,7 +137,8 @@ pub fn sync_openai_profile_link<R: Runtime>(
         .as_ref()
         .map(profile_link_updated_at)
         .unwrap_or_else(now_timestamp);
-    let changed = upsert_openai_profile_link(&mut snapshot, &target_profile_id, next_link, &updated_at)?;
+    let changed =
+        upsert_openai_profile_link(&mut snapshot, &target_profile_id, next_link, &updated_at)?;
     if !changed {
         return Ok(());
     }
@@ -164,6 +150,108 @@ pub fn sync_openai_profile_link<R: Runtime>(
         &snapshot,
     )
     .map_err(map_provider_profiles_error)
+}
+
+pub fn ensure_openai_profile_target<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    profile_id: &str,
+    phase: RuntimeAuthPhase,
+    action: &str,
+) -> Result<(), AuthFlowError> {
+    let snapshot = load_provider_profiles_snapshot(app, state)?;
+    validate_target_openai_profile(&snapshot, profile_id, phase, action)
+}
+
+fn load_provider_profiles_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> Result<ProviderProfilesSnapshot, AuthFlowError> {
+    let provider_profiles_path = state
+        .provider_profiles_file(app)
+        .map_err(map_command_error_to_auth_error)?;
+    let provider_profile_credentials_path = state
+        .provider_profile_credential_store_file(app)
+        .map_err(map_command_error_to_auth_error)?;
+    let legacy_settings_path = state
+        .runtime_settings_file(app)
+        .map_err(map_command_error_to_auth_error)?;
+    let legacy_openrouter_credentials_path = state
+        .openrouter_credential_file(app)
+        .map_err(map_command_error_to_auth_error)?;
+    let legacy_openai_auth_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
+
+    load_or_migrate_provider_profiles_from_paths(
+        &provider_profiles_path,
+        &provider_profile_credentials_path,
+        &legacy_settings_path,
+        &legacy_openrouter_credentials_path,
+        &legacy_openai_auth_path,
+    )
+    .map_err(map_provider_profiles_error)
+}
+
+fn validate_target_openai_profile(
+    snapshot: &ProviderProfilesSnapshot,
+    profile_id: &str,
+    phase: RuntimeAuthPhase,
+    action: &str,
+) -> Result<(), AuthFlowError> {
+    let profile_id = profile_id.trim();
+    if profile_id.is_empty() {
+        return Err(AuthFlowError::terminal(
+            "invalid_request",
+            phase,
+            "Field `profileId` must be a non-empty string.",
+        ));
+    }
+
+    let profile = snapshot.profile(profile_id).ok_or_else(|| {
+        AuthFlowError::terminal(
+            "provider_profile_missing",
+            phase.clone(),
+            format!(
+                "Cadence rejected {action} because provider profile `{profile_id}` was not found. Repair the provider-profile metadata or select a different OpenAI profile."
+            ),
+        )
+    })?;
+
+    if profile.provider_id != OPENAI_CODEX_PROVIDER_ID {
+        return Err(AuthFlowError::terminal(
+            "provider_profile_provider_mismatch",
+            phase,
+            format!(
+                "Cadence rejected {action} because provider profile `{profile_id}` belongs to provider `{}` instead of `{OPENAI_CODEX_PROVIDER_ID}`. Select an OpenAI profile or repair the provider-profile metadata.",
+                profile.provider_id
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolve_openai_profile_sync_target(
+    snapshot: &ProviderProfilesSnapshot,
+    preferred_profile_id: Option<&str>,
+    next_link: Option<&ProviderProfileCredentialLink>,
+) -> Result<Option<String>, AuthFlowError> {
+    let preferred_profile_id = preferred_profile_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(preferred_profile_id) = preferred_profile_id {
+        validate_target_openai_profile(
+            snapshot,
+            preferred_profile_id,
+            RuntimeAuthPhase::Failed,
+            "sync OpenAI auth onto the selected provider profile",
+        )?;
+        return Ok(Some(preferred_profile_id.to_owned()));
+    }
+
+    Ok(
+        select_openai_profile_id(snapshot, next_link)
+            .or_else(|| Some(OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned())),
+    )
 }
 
 fn load_store(path: &Path) -> Result<AuthStoreFile, AuthFlowError> {
@@ -275,21 +363,8 @@ fn openai_profile_link_from_session(
 
 fn select_openai_profile_id(
     snapshot: &ProviderProfilesSnapshot,
-    preferred_profile_id: Option<&str>,
     next_link: Option<&ProviderProfileCredentialLink>,
 ) -> Option<String> {
-    let preferred_profile_id = preferred_profile_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if let Some(preferred_profile_id) = preferred_profile_id {
-        if snapshot
-            .profile(preferred_profile_id)
-            .is_some_and(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
-        {
-            return Some(preferred_profile_id.to_owned());
-        }
-    }
-
     if let Some(ProviderProfileCredentialLink::OpenAiCodex {
         account_id,
         session_id,

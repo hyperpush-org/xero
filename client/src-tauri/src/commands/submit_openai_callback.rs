@@ -22,6 +22,7 @@ pub fn submit_openai_callback<R: Runtime>(
     request: SubmitOpenAiCallbackRequestDto,
 ) -> CommandResult<RuntimeSessionDto> {
     validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.profile_id, "profileId")?;
     validate_non_empty(&request.flow_id, "flowId")?;
 
     let provider = openai_codex_provider();
@@ -31,7 +32,9 @@ pub fn submit_openai_callback<R: Runtime>(
         &app,
         state.inner(),
         provider.provider,
+        &request.project_id,
         &request.flow_id,
+        &request.profile_id,
         request.manual_input.as_deref(),
     ) {
         Ok(session) => {

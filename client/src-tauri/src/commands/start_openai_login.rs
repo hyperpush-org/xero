@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    auth::{start_provider_auth_flow, AuthFlowError},
+    auth::{ensure_openai_profile_target, start_provider_auth_flow, AuthFlowError},
     commands::{
         validate_non_empty, CommandResult, RuntimeDiagnosticDto, RuntimeSessionDto,
         StartOpenAiLoginRequestDto,
@@ -25,8 +25,17 @@ pub fn start_openai_login<R: Runtime>(
     request: StartOpenAiLoginRequestDto,
 ) -> CommandResult<RuntimeSessionDto> {
     validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.profile_id, "profileId")?;
 
     let provider = openai_codex_provider();
+    ensure_openai_profile_target(
+        &app,
+        state.inner(),
+        &request.profile_id,
+        crate::commands::RuntimeAuthPhase::Starting,
+        "start OpenAI login",
+    )
+    .map_err(command_error_from_auth)?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let current = load_runtime_session_status(state.inner(), &repo_root, &request.project_id)?;
     let current = reconcile_runtime_session(&app, state.inner(), &repo_root, current)?;
@@ -43,12 +52,36 @@ pub fn start_openai_login<R: Runtime>(
             )));
         }
 
+        let in_flight_profile_id = current
+            .flow_id
+            .as_deref()
+            .and_then(|flow_id| state.inner().active_auth_flows().snapshot(flow_id))
+            .map(|snapshot| snapshot.profile_id);
+        if let Some(in_flight_profile_id) = in_flight_profile_id {
+            if in_flight_profile_id != request.profile_id {
+                let error = AuthFlowError::terminal(
+                    "auth_flow_profile_mismatch",
+                    current.phase.clone(),
+                    format!(
+                        "Cadence already has an in-flight `{}` login for provider profile `{}` on this project. Finish or cancel it before starting login for `{}`.",
+                        provider.provider_id, in_flight_profile_id, request.profile_id
+                    ),
+                );
+                let failed = runtime_session_with_auth_error(&current, &error);
+                let persisted = persist_runtime_session(&repo_root, &failed)?;
+                emit_runtime_updated(&app, &persisted)?;
+                return Err(command_error_from_auth(error));
+            }
+        }
+
         return Ok(current);
     }
 
     let started = match start_provider_auth_flow(
         state.inner(),
         provider.provider,
+        &request.project_id,
+        &request.profile_id,
         request.originator.as_deref(),
     ) {
         Ok(started) => started,
@@ -90,6 +123,22 @@ pub fn start_openai_login<R: Runtime>(
     let runtime = load_runtime_session_status(state.inner(), &repo_root, &request.project_id)?;
     emit_runtime_updated(&app, &runtime)?;
     Ok(runtime)
+}
+
+fn runtime_session_with_auth_error(
+    runtime: &RuntimeSessionDto,
+    error: &AuthFlowError,
+) -> RuntimeSessionDto {
+    RuntimeSessionDto {
+        last_error_code: Some(error.code.clone()),
+        last_error: Some(RuntimeDiagnosticDto {
+            code: error.code.clone(),
+            message: error.message.clone(),
+            retryable: error.retryable,
+        }),
+        updated_at: crate::auth::now_timestamp(),
+        ..runtime.clone()
+    }
 }
 
 fn is_login_in_progress(runtime: &RuntimeSessionDto) -> bool {

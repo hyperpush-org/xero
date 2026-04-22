@@ -18,7 +18,7 @@ pub use openrouter::{
     OpenRouterRuntimeSessionBinding,
 };
 pub use store::{
-    load_latest_openai_codex_session, load_openai_codex_session,
+    ensure_openai_profile_target, load_latest_openai_codex_session, load_openai_codex_session,
     load_openai_codex_session_for_profile_link, persist_openai_codex_session,
     remove_openai_codex_session, sync_openai_profile_link, StoredOpenAiCodexSession,
 };
@@ -46,6 +46,8 @@ pub struct AuthDiagnostic {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAuthStateSnapshot {
+    pub project_id: String,
+    pub profile_id: String,
     pub provider_id: String,
     pub flow_id: String,
     pub session_id: Option<String>,
@@ -240,13 +242,19 @@ impl ActiveAuthFlowRegistry {
 pub fn start_provider_auth_flow(
     state: &DesktopState,
     provider: RuntimeProvider,
+    project_id: &str,
+    profile_id: &str,
     originator: Option<&str>,
 ) -> Result<StartedRuntimeAuthFlow, AuthFlowError> {
     match provider {
-        RuntimeProvider::OpenAiCodex => {
-            openai_codex::start_openai_codex_flow(state, state.openai_auth_config(), originator)
-                .map(Into::into)
-        }
+        RuntimeProvider::OpenAiCodex => openai_codex::start_openai_codex_flow(
+            state,
+            project_id,
+            profile_id,
+            state.openai_auth_config(),
+            originator,
+        )
+        .map(Into::into),
         RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
@@ -259,7 +267,9 @@ pub fn complete_provider_auth_flow<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     provider: RuntimeProvider,
+    project_id: &str,
     flow_id: &str,
+    profile_id: &str,
     manual_input: Option<&str>,
 ) -> Result<RuntimeAuthSession, AuthFlowError> {
     let requested_provider = provider.resolve();
@@ -273,6 +283,22 @@ pub fn complete_provider_auth_flow<R: Runtime>(
             flow_id,
             requested_provider,
             actual_provider,
+        ));
+    }
+
+    let snapshot = active_flow.snapshot();
+    if snapshot.project_id != project_id {
+        return Err(auth_flow_project_mismatch_error(
+            flow_id,
+            project_id,
+            &snapshot.project_id,
+        ));
+    }
+    if snapshot.profile_id != profile_id {
+        return Err(auth_flow_profile_mismatch_error(
+            flow_id,
+            profile_id,
+            &snapshot.profile_id,
         ));
     }
 
@@ -337,6 +363,34 @@ fn auth_flow_provider_mismatch_error(
         format!(
             "Cadence rejected auth flow `{flow_id}` because it belongs to provider `{}` instead of `{}`. Start a fresh login.",
             actual_provider.provider_id, requested_provider.provider_id
+        ),
+    )
+}
+
+fn auth_flow_project_mismatch_error(
+    flow_id: &str,
+    requested_project_id: &str,
+    actual_project_id: &str,
+) -> AuthFlowError {
+    AuthFlowError::terminal(
+        "auth_flow_project_mismatch",
+        RuntimeAuthPhase::Failed,
+        format!(
+            "Cadence rejected auth flow `{flow_id}` because it belongs to project `{actual_project_id}` instead of `{requested_project_id}`. Start a fresh login from the current project."
+        ),
+    )
+}
+
+fn auth_flow_profile_mismatch_error(
+    flow_id: &str,
+    requested_profile_id: &str,
+    actual_profile_id: &str,
+) -> AuthFlowError {
+    AuthFlowError::terminal(
+        "auth_flow_profile_mismatch",
+        RuntimeAuthPhase::Failed,
+        format!(
+            "Cadence rejected auth flow `{flow_id}` because it was started for provider profile `{actual_profile_id}` instead of the selected profile `{requested_profile_id}`. Retry login for the currently selected profile."
         ),
     )
 }

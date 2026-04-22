@@ -306,7 +306,13 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             START_OPENAI_CODEX_AUTH_COMMAND,
-            json!({ "request": { "projectId": "project-1", "originator": "tests" } }),
+            json!({
+                "request": {
+                    "projectId": "project-1",
+                    "profileId": "openai_codex-default",
+                    "originator": "tests"
+                }
+            }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -318,6 +324,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
             json!({
                 "request": {
                     "projectId": "project-1",
+                    "profileId": "openai_codex-default",
                     "flowId": "flow-1",
                     "manualInput": "http://localhost:1455/auth/callback?code=abc"
                 }

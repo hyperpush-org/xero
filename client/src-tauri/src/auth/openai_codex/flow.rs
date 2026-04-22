@@ -46,6 +46,8 @@ pub struct OpenAiCodexAuthSession {
 
 #[derive(Debug, Clone)]
 pub struct ActiveOpenAiCodexFlow {
+    project_id: String,
+    profile_id: String,
     flow_id: String,
     verifier: String,
     expected_state: String,
@@ -68,6 +70,14 @@ struct FlowObservation {
 }
 
 impl ActiveOpenAiCodexFlow {
+    pub(crate) fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub(crate) fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
     pub(crate) fn flow_id(&self) -> &str {
         &self.flow_id
     }
@@ -79,6 +89,8 @@ impl ActiveOpenAiCodexFlow {
             .expect("openai oauth flow lock poisoned");
 
         RuntimeAuthStateSnapshot {
+            project_id: self.project_id.clone(),
+            profile_id: self.profile_id.clone(),
             provider_id: openai_codex_provider().provider_id.into(),
             flow_id: self.flow_id.clone(),
             session_id: observation.session_id.clone(),
@@ -190,6 +202,8 @@ impl ActiveOpenAiCodexFlow {
 
 pub fn start_openai_codex_flow(
     state: &DesktopState,
+    project_id: &str,
+    profile_id: &str,
     config: OpenAiCodexAuthConfig,
     originator: Option<&str>,
 ) -> Result<StartedOpenAiCodexFlow, AuthFlowError> {
@@ -240,6 +254,8 @@ pub fn start_openai_codex_flow(
         .as_ref()
         .map(|diagnostic| diagnostic.code.clone());
     let flow = ActiveOpenAiCodexFlow {
+        project_id: project_id.to_owned(),
+        profile_id: profile_id.to_owned(),
         flow_id: flow_id.clone(),
         verifier,
         expected_state: expected_state.clone(),
@@ -300,6 +316,15 @@ pub fn complete_openai_codex_flow<R: Runtime>(
         ));
     }
 
+    store::ensure_openai_profile_target(
+        app,
+        state,
+        selected_flow.profile_id(),
+        RuntimeAuthPhase::Failed,
+        "complete OpenAI login",
+    )
+    .inspect_err(|error| selected_flow.record_error(error))?;
+
     let code = if let Some(callback_code) = selected_flow.take_callback_code() {
         callback_code
     } else if let Some(input) = manual_input {
@@ -345,6 +370,14 @@ pub fn complete_openai_codex_flow<R: Runtime>(
         expires_at: token_response.expires_at,
         updated_at: now_timestamp(),
     };
+    store::ensure_openai_profile_target(
+        app,
+        state,
+        selected_flow.profile_id(),
+        RuntimeAuthPhase::Failed,
+        "sync OpenAI auth onto the selected provider profile",
+    )
+    .inspect_err(|error| selected_flow.record_error(error))?;
     let auth_store_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
     let stored_session = store::StoredOpenAiCodexSession {
         provider_id: session.provider_id.clone(),
@@ -357,8 +390,13 @@ pub fn complete_openai_codex_flow<R: Runtime>(
     };
     store::persist_openai_codex_session(&auth_store_path, stored_session.clone())
         .inspect_err(|error| selected_flow.record_error(error))?;
-    store::sync_openai_profile_link(app, state, None, Some(&stored_session))
-        .inspect_err(|error| selected_flow.record_error(error))?;
+    store::sync_openai_profile_link(
+        app,
+        state,
+        Some(selected_flow.profile_id()),
+        Some(&stored_session),
+    )
+    .inspect_err(|error| selected_flow.record_error(error))?;
 
     selected_flow.mark_authenticated(session.session_id.clone(), session.account_id.clone());
     Ok(session)

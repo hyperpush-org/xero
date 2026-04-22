@@ -1094,16 +1094,22 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
 
     let start_request = serde_json::to_value(StartOpenAiLoginRequestDto {
         project_id: "project-1".into(),
+        profile_id: "openai_codex-default".into(),
         originator: Some("Cadence-tests".into()),
     })
     .expect("auth start request should serialize");
     assert_eq!(
         start_request,
-        json!({ "projectId": "project-1", "originator": "Cadence-tests" })
+        json!({
+            "projectId": "project-1",
+            "profileId": "openai_codex-default",
+            "originator": "Cadence-tests"
+        })
     );
 
     let complete_request = serde_json::to_value(SubmitOpenAiCallbackRequestDto {
         project_id: "project-1".into(),
+        profile_id: "openai_codex-default".into(),
         flow_id: "flow-1".into(),
         manual_input: Some("http://localhost:1455/auth/callback?code=abc".into()),
     })
@@ -1112,6 +1118,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         complete_request,
         json!({
             "projectId": "project-1",
+            "profileId": "openai_codex-default",
             "flowId": "flow-1",
             "manualInput": "http://localhost:1455/auth/callback?code=abc"
         })

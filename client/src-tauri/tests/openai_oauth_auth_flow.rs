@@ -19,9 +19,12 @@ use cadence_desktop_lib::{
         StoredOpenAiCodexSession,
     },
     commands::{
-        get_runtime_session::get_runtime_session, start_openai_login::start_openai_login,
-        submit_openai_callback::submit_openai_callback, ProjectIdRequestDto, RuntimeAuthPhase,
-        StartOpenAiLoginRequestDto, SubmitOpenAiCallbackRequestDto,
+        get_runtime_session::get_runtime_session,
+        provider_profiles::upsert_provider_profile,
+        start_openai_login::start_openai_login,
+        submit_openai_callback::submit_openai_callback,
+        ProjectIdRequestDto, RuntimeAuthPhase, StartOpenAiLoginRequestDto,
+        SubmitOpenAiCallbackRequestDto, UpsertProviderProfileRequestDto,
     },
     configure_builder_with_state,
     db::{self, database_path_for_repo},
@@ -32,6 +35,9 @@ use cadence_desktop_lib::{
 use serde_json::json;
 use tauri::Manager;
 use tempfile::TempDir;
+
+const PROJECT_ID: &str = "project-1";
+const DEFAULT_OPENAI_PROFILE_ID: &str = "openai_codex-default";
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
@@ -155,6 +161,46 @@ fn active_flow_expected_state(app: &tauri::App<tauri::test::MockRuntime>, flow_i
         .expect("expected state query")
 }
 
+fn create_openai_profile(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    profile_id: &str,
+    label: &str,
+) {
+    upsert_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertProviderProfileRequestDto {
+            profile_id: profile_id.into(),
+            provider_id: "openai_codex".into(),
+            label: label.into(),
+            model_id: "openai_codex".into(),
+            openrouter_api_key: None,
+            activate: false,
+        },
+    )
+    .expect("create openai provider profile");
+}
+
+fn create_openrouter_profile(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    profile_id: &str,
+    label: &str,
+) {
+    upsert_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertProviderProfileRequestDto {
+            profile_id: profile_id.into(),
+            provider_id: "openrouter".into(),
+            label: label.into(),
+            model_id: "openai/gpt-4.1-mini".into(),
+            openrouter_api_key: None,
+            activate: false,
+        },
+    )
+    .expect("create openrouter provider profile");
+}
+
 #[test]
 fn callback_flow_persists_tokens_only_to_app_local_store_and_exposes_redacted_snapshot() {
     let server = TestHttpServer::spawn(|form| {
@@ -177,6 +223,8 @@ fn callback_flow_persists_tokens_only_to_app_local_store_and_exposes_redacted_sn
     let config = auth_config(&server);
     let started = start_openai_codex_flow(
         &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
         config.clone(),
         Some("Cadence-tests"),
     )
@@ -202,6 +250,8 @@ fn callback_flow_persists_tokens_only_to_app_local_store_and_exposes_redacted_sn
         initial_snapshot.phase,
         RuntimeAuthPhase::AwaitingBrowserCallback
     );
+    assert_eq!(initial_snapshot.project_id, PROJECT_ID);
+    assert_eq!(initial_snapshot.profile_id, DEFAULT_OPENAI_PROFILE_ID);
     assert!(initial_snapshot.session_id.is_none());
     assert!(initial_snapshot.account_id.is_none());
     assert!(initial_snapshot.last_error_code.is_none());
@@ -282,8 +332,14 @@ fn manual_fallback_is_used_when_callback_port_cannot_bind() {
 
     let mut config = auth_config(&server);
     config.callback_port = occupied_port;
-    let started = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("start auth flow");
+    let started = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("start auth flow");
     assert!(!started.callback_bound);
     assert_eq!(started.phase, RuntimeAuthPhase::AwaitingManualInput);
     assert_eq!(
@@ -346,8 +402,14 @@ fn malformed_callback_host_fails_closed_before_browser_url_is_opened() {
 
     let mut config = auth_config(&server);
     config.callback_host = "127.0.0.1:9999".into();
-    let error = start_openai_codex_flow(&app.state::<DesktopState>(), config, None)
-        .expect_err("malformed callback host should fail before flow starts");
+    let error = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config,
+        None,
+    )
+    .expect_err("malformed callback host should fail before flow starts");
     assert_eq!(error.code, "callback_listener_config_invalid");
     assert_eq!(error.phase, RuntimeAuthPhase::Starting);
     assert!(!auth_store_path.exists());
@@ -372,8 +434,14 @@ fn callback_code_wins_over_manual_paste() {
     let app = build_mock_app(state);
     let config = auth_config(&server);
 
-    let started = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("start auth flow");
+    let started = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("start auth flow");
     send_callback(
         &started.redirect_uri,
         &started.expected_state,
@@ -419,8 +487,14 @@ fn manual_completion_rejects_empty_missing_mismatched_and_malformed_inputs() {
     let app = build_mock_app(state);
     let config = auth_config(&server);
 
-    let empty = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("empty start");
+    let empty = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("empty start");
     let error = complete_openai_codex_flow(
         &app.handle().clone(),
         &app.state::<DesktopState>(),
@@ -431,8 +505,14 @@ fn manual_completion_rejects_empty_missing_mismatched_and_malformed_inputs() {
     .expect_err("empty manual input should fail");
     assert_eq!(error.code, "empty_auth_state");
 
-    let missing = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("missing start");
+    let missing = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("missing start");
     let error = complete_openai_codex_flow(
         &app.handle().clone(),
         &app.state::<DesktopState>(),
@@ -443,8 +523,14 @@ fn manual_completion_rejects_empty_missing_mismatched_and_malformed_inputs() {
     .expect_err("missing code should fail");
     assert_eq!(error.code, "authorization_code_missing");
 
-    let mismatched = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("mismatch start");
+    let mismatched = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("mismatch start");
     let mismatched_input = format!(
         "{}?code=wrong-code&state=wrong-state",
         mismatched.redirect_uri
@@ -459,8 +545,14 @@ fn manual_completion_rejects_empty_missing_mismatched_and_malformed_inputs() {
     .expect_err("state mismatch should fail");
     assert_eq!(error.code, "callback_state_mismatch");
 
-    let malformed = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("malformed start");
+    let malformed = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("malformed start");
     let error = complete_openai_codex_flow(
         &app.handle().clone(),
         &app.state::<DesktopState>(),
@@ -492,6 +584,8 @@ fn token_exchange_failures_and_decode_errors_do_not_persist_credentials() {
     let rejected_config = auth_config(&rejected_server);
     let rejected = start_openai_codex_flow(
         &rejected_app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
         rejected_config.clone(),
         None,
     )
@@ -517,6 +611,8 @@ fn token_exchange_failures_and_decode_errors_do_not_persist_credentials() {
     let decode_config = auth_config(&decode_server);
     let decode = start_openai_codex_flow(
         &decode_app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
         decode_config.clone(),
         None,
     )
@@ -592,8 +688,14 @@ fn cancelled_login_rejects_completion() {
     let app = build_mock_app(state);
     let config = auth_config(&server);
 
-    let started = start_openai_codex_flow(&app.state::<DesktopState>(), config.clone(), None)
-        .expect("start auth flow");
+    let started = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config.clone(),
+        None,
+    )
+    .expect("start auth flow");
     let cancelled = cancel_openai_codex_flow(&app.state::<DesktopState>(), &started.flow_id)
         .expect("cancel snapshot");
     assert_eq!(cancelled.phase, RuntimeAuthPhase::Cancelled);
@@ -627,6 +729,7 @@ fn start_openai_login_reuses_in_flight_flow_and_exposes_redacted_snapshot() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
             originator: Some("Cadence-tests".into()),
         },
     )
@@ -639,6 +742,7 @@ fn start_openai_login_reuses_in_flight_flow_and_exposes_redacted_snapshot() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
             originator: Some("Cadence-tests".into()),
         },
     )
@@ -654,12 +758,163 @@ fn start_openai_login_reuses_in_flight_flow_and_exposes_redacted_snapshot() {
         .snapshot(&flow_id)
         .expect("active flow snapshot");
     assert_eq!(snapshot.phase, RuntimeAuthPhase::AwaitingBrowserCallback);
+    assert_eq!(snapshot.project_id, project_id);
+    assert_eq!(snapshot.profile_id, DEFAULT_OPENAI_PROFILE_ID);
     assert!(snapshot.session_id.is_none());
     assert!(snapshot.account_id.is_none());
     assert!(snapshot.last_error.is_none());
     assert!(!serde_json::to_string(&snapshot)
         .expect("snapshot json")
         .contains("refresh_token"));
+}
+
+#[test]
+fn start_openai_login_rejects_unknown_non_openai_and_conflicting_profiles() {
+    let server = TestHttpServer::spawn(|_| TestHttpResponse::plain(200, "unused"));
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_project_state(&root);
+    let state = state.with_openai_auth_config_override(auth_config(&server));
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    create_openai_profile(&app, "zz-openai-alt", "OpenAI Alt");
+    create_openrouter_profile(&app, "openrouter-alt", "OpenRouter Alt");
+
+    let missing = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            profile_id: "missing-profile".into(),
+            originator: Some("Cadence-tests".into()),
+        },
+    )
+    .expect_err("unknown profile should fail closed");
+    assert_eq!(missing.code, "provider_profile_missing");
+
+    let wrong_provider = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            profile_id: "openrouter-alt".into(),
+            originator: Some("Cadence-tests".into()),
+        },
+    )
+    .expect_err("non-openai profile should fail closed");
+    assert_eq!(wrong_provider.code, "provider_profile_provider_mismatch");
+
+    let started = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
+            originator: Some("Cadence-tests".into()),
+        },
+    )
+    .expect("default profile login should start");
+    let conflict = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            profile_id: "zz-openai-alt".into(),
+            originator: Some("Cadence-tests".into()),
+        },
+    )
+    .expect_err("different in-flight profile should fail closed");
+    assert_eq!(conflict.code, "auth_flow_profile_mismatch");
+
+    let runtime = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("runtime session after conflicting login attempt");
+    assert_eq!(runtime.flow_id, started.flow_id);
+    assert_eq!(runtime.last_error_code.as_deref(), Some("auth_flow_profile_mismatch"));
+    let message = runtime
+        .last_error
+        .expect("profile mismatch diagnostic")
+        .message;
+    assert!(message.contains(DEFAULT_OPENAI_PROFILE_ID));
+    assert!(message.contains("zz-openai-alt"));
+}
+
+#[test]
+fn submit_openai_callback_rejects_selected_profile_switch_before_completion() {
+    let server = TestHttpServer::spawn(|form| {
+        let code = form.get("code").cloned().unwrap_or_default();
+        TestHttpResponse::json(
+            200,
+            json!({
+                "access_token": jwt_with_account_id(&format!("acct-{code}")),
+                "refresh_token": format!("refresh-{code}"),
+                "expires_in": 3600,
+            })
+            .to_string(),
+        )
+    });
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_project_state(&root);
+    let state = state.with_openai_auth_config_override(auth_config(&server));
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    create_openai_profile(&app, "zz-openai-alt", "OpenAI Alt");
+
+    let started = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
+            originator: Some("Cadence-tests".into()),
+        },
+    )
+    .expect("start wrapper login");
+    let flow_id = started.flow_id.clone().expect("flow id");
+    let redirect_uri = started.redirect_uri.clone().expect("redirect uri");
+    let expected_state = active_flow_expected_state(&app, &flow_id);
+    send_callback(&redirect_uri, &expected_state, "browser-code");
+
+    let error = submit_openai_callback(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SubmitOpenAiCallbackRequestDto {
+            project_id: project_id.clone(),
+            profile_id: "zz-openai-alt".into(),
+            flow_id: flow_id.clone(),
+            manual_input: None,
+        },
+    )
+    .expect_err("callback should fail when selected profile changed");
+    assert_eq!(error.code, "auth_flow_profile_mismatch");
+
+    let runtime = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("runtime session after stale callback");
+    assert_eq!(runtime.flow_id.as_deref(), Some(flow_id.as_str()));
+    assert_eq!(
+        runtime.last_error_code.as_deref(),
+        Some("auth_flow_profile_mismatch")
+    );
+    assert_eq!(runtime.phase, RuntimeAuthPhase::AwaitingBrowserCallback);
+    let message = runtime
+        .last_error
+        .expect("stale callback diagnostic")
+        .message;
+    assert!(message.contains(DEFAULT_OPENAI_PROFILE_ID));
+    assert!(message.contains("zz-openai-alt"));
+    assert!(!auth_store_path.exists());
 }
 
 #[test]
@@ -687,6 +942,7 @@ fn wrapper_commands_complete_browser_callback_without_repo_secret_leakage() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
             originator: Some("Cadence-tests".into()),
         },
     )
@@ -701,6 +957,7 @@ fn wrapper_commands_complete_browser_callback_without_repo_secret_leakage() {
         app.state::<DesktopState>(),
         SubmitOpenAiCallbackRequestDto {
             project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
             flow_id: flow_id.clone(),
             manual_input: None,
         },
@@ -767,6 +1024,7 @@ fn wrapper_submit_supports_manual_fallback_and_preserves_redaction() {
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
             originator: Some("Cadence-tests".into()),
         },
     )
@@ -791,6 +1049,7 @@ fn wrapper_submit_supports_manual_fallback_and_preserves_redaction() {
         app.state::<DesktopState>(),
         SubmitOpenAiCallbackRequestDto {
             project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
             flow_id,
             manual_input: Some(manual_input),
         },

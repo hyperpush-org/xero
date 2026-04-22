@@ -204,6 +204,7 @@ pub struct RuntimeRunUpdatedPayloadDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartOpenAiLoginRequestDto {
     pub project_id: String,
+    pub profile_id: String,
     pub originator: Option<String>,
 }
 
@@ -211,6 +212,7 @@ pub struct StartOpenAiLoginRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitOpenAiCallbackRequestDto {
     pub project_id: String,
+    pub profile_id: String,
     pub flow_id: String,
     pub manual_input: Option<String>,
 }
