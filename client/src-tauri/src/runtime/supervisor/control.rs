@@ -509,7 +509,7 @@ fn handle_submit_input_request(
         write_protocol_error(
             stream,
             "runtime_supervisor_action_unavailable",
-            "Cadence cannot deliver terminal input because no interactive boundary is currently pending.",
+            "Cadence cannot resume the detached runtime because no operator boundary is currently pending.",
             false,
         )?;
         return Ok(());
@@ -519,7 +519,7 @@ fn handle_submit_input_request(
         write_protocol_error(
             stream,
             "runtime_supervisor_action_mismatch",
-            "Cadence rejected terminal input for a stale or mismatched interactive boundary.",
+            "Cadence rejected detached runtime resume for a stale or mismatched operator boundary.",
             false,
         )?;
         return Ok(());
@@ -533,24 +533,38 @@ fn handle_submit_input_request(
         }
     };
 
-    let mut writer = writer
-        .lock()
-        .expect("runtime supervisor writer lock poisoned");
-    if writer.write_all(input.as_bytes()).is_err()
-        || writer
-            .write_all(if input.ends_with('\n') { b"" } else { b"\n" })
-            .is_err()
-        || writer.flush().is_err()
-    {
-        write_protocol_error(
-            stream,
-            "runtime_supervisor_submit_input_failed",
-            "Cadence could not write approved terminal input into the detached PTY.",
-            true,
-        )?;
-        return Ok(());
+    let delivered_title;
+    let delivered_detail;
+    let delivered_code;
+    if active_boundary.action_type == "terminal_input_required" {
+        let mut writer = writer
+            .lock()
+            .expect("runtime supervisor writer lock poisoned");
+        if writer.write_all(input.as_bytes()).is_err()
+            || writer
+                .write_all(if input.ends_with('\n') { b"" } else { b"\n" })
+                .is_err()
+            || writer.flush().is_err()
+        {
+            write_protocol_error(
+                stream,
+                "runtime_supervisor_submit_input_failed",
+                "Cadence could not write approved terminal input into the detached PTY.",
+                true,
+            )?;
+            return Ok(());
+        }
+        drop(writer);
+
+        delivered_code = "runtime_supervisor_input_delivered";
+        delivered_title = "Terminal input delivered";
+        delivered_detail = "Cadence wrote approved operator input into the active detached PTY.";
+    } else {
+        delivered_code = "runtime_supervisor_boundary_resumed";
+        delivered_title = "Runtime boundary resumed";
+        delivered_detail =
+            "Cadence accepted operator approval for the active detached runtime boundary.";
     }
-    drop(writer);
 
     {
         let mut state = shared.lock().expect("sidecar state lock poisoned");
@@ -568,11 +582,9 @@ fn handle_submit_input_request(
         shared,
         event_hub,
         &SupervisorLiveEventPayload::Activity {
-            code: "runtime_supervisor_input_delivered".into(),
-            title: "Terminal input delivered".into(),
-            detail: Some(
-                "Cadence wrote approved operator input into the active detached PTY.".into(),
-            ),
+            code: delivered_code.into(),
+            title: delivered_title.into(),
+            detail: Some(delivered_detail.into()),
         },
     );
 
@@ -814,14 +826,14 @@ fn normalize_control_input(input: &str) -> Result<String, CommandError> {
     if normalized.trim().is_empty() {
         return Err(CommandError::user_fixable(
             "runtime_supervisor_submit_input_invalid",
-            "Cadence requires non-empty terminal input before it can resume the detached PTY.",
+            "Cadence requires a non-empty operator decision payload before it can resume the detached runtime boundary.",
         ));
     }
 
     if normalized.chars().count() > MAX_CONTROL_INPUT_CHARS {
         return Err(CommandError::user_fixable(
             "runtime_supervisor_submit_input_invalid",
-            "Cadence refused oversized terminal input for the detached PTY.",
+            "Cadence refused oversized operator decision payload for the detached runtime boundary.",
         ));
     }
 

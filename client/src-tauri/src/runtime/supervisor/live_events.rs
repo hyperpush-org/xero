@@ -10,13 +10,14 @@ use crate::{
 };
 
 use super::{
+    boundary::{checkpoint_summary_for_runtime_boundary, emit_structured_runtime_boundary},
     persistence::{
         apply_pending_controls_at_boundary, persist_sidecar_checkpoint, PendingControlApplyOutcome,
     },
     BufferedSupervisorEvent, NormalizedPtyEvent, PtyEventNormalizer, SidecarSharedState,
-    SupervisorEventHub, ACTIVITY_OUTPUT_PREFIX, INTERACTIVE_BOUNDARY_CHECKPOINT_SUMMARY,
-    LIVE_EVENT_RING_LIMIT, MAX_LIVE_EVENT_FRAGMENT_BYTES, MAX_LIVE_EVENT_TEXT_CHARS,
-    REDACTED_LIVE_EVENT_DETAIL, SHELL_OUTPUT_PREFIX, STRUCTURED_EVENT_PREFIX,
+    SupervisorEventHub, ACTIVITY_OUTPUT_PREFIX, LIVE_EVENT_RING_LIMIT,
+    MAX_LIVE_EVENT_FRAGMENT_BYTES, MAX_LIVE_EVENT_TEXT_CHARS, REDACTED_LIVE_EVENT_DETAIL,
+    SHELL_OUTPUT_PREFIX, STRUCTURED_EVENT_PREFIX,
 };
 use crate::runtime::protocol::{
     CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary,
@@ -639,7 +640,10 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
                 redacted_live_event()
             } else {
                 NormalizedPtyEvent {
-                    checkpoint_summary: Some(INTERACTIVE_BOUNDARY_CHECKPOINT_SUMMARY.into()),
+                    checkpoint_summary: Some(checkpoint_summary_for_runtime_boundary(
+                        &action_type,
+                        &title,
+                    )),
                     item: SupervisorLiveEventPayload::ActionRequired {
                         action_id,
                         boundary_id,
@@ -979,6 +983,28 @@ pub(super) fn emit_normalized_events(
     events: Vec<NormalizedPtyEvent>,
 ) {
     for event in events {
+        if let SupervisorLiveEventPayload::ActionRequired {
+            action_id,
+            boundary_id,
+            action_type,
+            title,
+            detail,
+        } = &event.item
+        {
+            emit_structured_runtime_boundary(
+                repo_root,
+                shared,
+                event_hub,
+                persistence_lock,
+                action_id,
+                boundary_id,
+                action_type,
+                title,
+                detail,
+            );
+            continue;
+        }
+
         let buffered = append_live_event(shared, event_hub, &event.item);
         if let Some(summary) = event
             .checkpoint_summary
@@ -995,9 +1021,9 @@ pub(super) fn emit_normalized_events(
         }
 
         let should_persist_autonomous_event = match &event.item {
-            SupervisorLiveEventPayload::Tool { .. }
-            | SupervisorLiveEventPayload::Skill { .. }
-            | SupervisorLiveEventPayload::ActionRequired { .. } => true,
+            SupervisorLiveEventPayload::Tool { .. } | SupervisorLiveEventPayload::Skill { .. } => {
+                true
+            }
             SupervisorLiveEventPayload::Activity { code, .. } => code.contains("policy_denied"),
             _ => false,
         };

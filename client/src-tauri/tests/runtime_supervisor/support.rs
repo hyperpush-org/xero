@@ -155,7 +155,7 @@ pub(crate) fn seed_running_runtime_run(
                 last_heartbeat_at: Some(now.clone()),
                 stopped_at: None,
                 last_error: None,
-                updated_at: now,
+                updated_at: now.clone(),
             },
             checkpoint: None,
             control_state: Some(sample_runtime_run_controls(&now)),

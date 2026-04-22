@@ -98,7 +98,7 @@ pub fn upsert_runtime_action_required(
         &payload.project_id,
         &action_id,
     )?;
-    match existing {
+    let replayed_existing_pending = match existing {
         None => {
             transaction
                 .execute(
@@ -163,41 +163,10 @@ pub fn upsert_runtime_action_required(
                         "Cadence could not persist the runtime action-required approval row.",
                     )
                 })?;
+            false
         }
         Some(approval) => match approval.status {
-            OperatorApprovalStatus::Pending => {
-                transaction
-                    .execute(
-                        r#"
-                        UPDATE operator_approvals
-                        SET session_id = ?3,
-                            flow_id = ?4,
-                            title = ?5,
-                            detail = ?6,
-                            updated_at = ?7
-                        WHERE project_id = ?1
-                          AND action_id = ?2
-                          AND status = 'pending'
-                        "#,
-                        params![
-                            payload.project_id.as_str(),
-                            action_id.as_str(),
-                            payload.session_id.as_str(),
-                            payload.flow_id.as_deref(),
-                            payload.title.as_str(),
-                            payload.detail.as_str(),
-                            payload.created_at.as_str(),
-                        ],
-                    )
-                    .map_err(|error| {
-                        map_operator_loop_write_error(
-                            "runtime_action_persist_failed",
-                            &database_path,
-                            error,
-                            "Cadence could not refresh the runtime action-required approval row.",
-                        )
-                    })?;
-            }
+            OperatorApprovalStatus::Pending => true,
             OperatorApprovalStatus::Approved | OperatorApprovalStatus::Rejected => {
                 return Err(CommandError::retryable(
                     "runtime_action_sync_conflict",
@@ -207,7 +176,7 @@ pub fn upsert_runtime_action_required(
                 ));
             }
         },
-    }
+    };
 
     let next_sequence = runtime_row.last_checkpoint_sequence.saturating_add(1);
     let (last_error_code, last_error_message) = payload
@@ -216,81 +185,85 @@ pub fn upsert_runtime_action_required(
         .map(|error| (Some(error.code.as_str()), Some(error.message.as_str())))
         .unwrap_or((None, None));
 
-    transaction
-        .execute(
-            r#"
-            UPDATE runtime_runs
-            SET runtime_kind = ?3,
-                supervisor_kind = ?4,
-                status = 'running',
-                transport_kind = ?5,
-                transport_endpoint = ?6,
-                transport_liveness = 'reachable',
-                last_checkpoint_sequence = ?7,
-                started_at = ?8,
-                last_heartbeat_at = ?9,
-                last_checkpoint_at = ?10,
-                stopped_at = NULL,
-                last_error_code = ?11,
-                last_error_message = ?12,
-                updated_at = ?10
-            WHERE project_id = ?1
-              AND run_id = ?2
-            "#,
-            params![
-                payload.project_id.as_str(),
-                payload.run_id.as_str(),
-                payload.runtime_kind.as_str(),
-                "detached_pty",
-                "tcp",
-                payload.transport_endpoint.as_str(),
-                i64::from(next_sequence),
-                payload.started_at.as_str(),
-                payload.last_heartbeat_at.as_deref(),
-                payload.created_at.as_str(),
-                last_error_code,
-                last_error_message,
-            ],
-        )
-        .map_err(|error| {
-            map_runtime_run_write_error(
-                "runtime_action_persist_failed",
-                &database_path,
-                error,
-                "Cadence could not update the runtime run row while persisting action-required state.",
+    if !replayed_existing_pending {
+        transaction
+            .execute(
+                r#"
+                UPDATE runtime_runs
+                SET runtime_kind = ?3,
+                    supervisor_kind = ?4,
+                    status = 'running',
+                    transport_kind = ?5,
+                    transport_endpoint = ?6,
+                    transport_liveness = 'reachable',
+                    last_checkpoint_sequence = ?7,
+                    started_at = ?8,
+                    last_heartbeat_at = ?9,
+                    last_checkpoint_at = ?10,
+                    stopped_at = NULL,
+                    last_error_code = ?11,
+                    last_error_message = ?12,
+                    updated_at = ?10
+                WHERE project_id = ?1
+                  AND run_id = ?2
+                "#,
+                params![
+                    payload.project_id.as_str(),
+                    payload.run_id.as_str(),
+                    payload.runtime_kind.as_str(),
+                    "detached_pty",
+                    "tcp",
+                    payload.transport_endpoint.as_str(),
+                    i64::from(next_sequence),
+                    payload.started_at.as_str(),
+                    payload.last_heartbeat_at.as_deref(),
+                    payload.created_at.as_str(),
+                    last_error_code,
+                    last_error_message,
+                ],
             )
-        })?;
+            .map_err(|error| {
+                map_runtime_run_write_error(
+                    "runtime_action_persist_failed",
+                    &database_path,
+                    error,
+                    "Cadence could not update the runtime run row while persisting action-required state.",
+                )
+            })?;
 
-    transaction
-        .execute(
-            r#"
-            INSERT INTO runtime_run_checkpoints (
-                project_id,
-                run_id,
-                sequence,
-                kind,
-                summary,
-                created_at
+        transaction
+            .execute(
+                r#"
+                INSERT INTO runtime_run_checkpoints (
+                    project_id,
+                    run_id,
+                    sequence,
+                    kind,
+                    summary,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                params![
+                    payload.project_id.as_str(),
+                    payload.run_id.as_str(),
+                    i64::from(next_sequence),
+                    runtime_run_checkpoint_kind_sql_value(
+                        &RuntimeRunCheckpointKind::ActionRequired
+                    ),
+                    normalize_runtime_checkpoint_summary(&payload.checkpoint_summary),
+                    payload.created_at.as_str(),
+                ],
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
-            params![
-                payload.project_id.as_str(),
-                payload.run_id.as_str(),
-                i64::from(next_sequence),
-                runtime_run_checkpoint_kind_sql_value(&RuntimeRunCheckpointKind::ActionRequired),
-                normalize_runtime_checkpoint_summary(&payload.checkpoint_summary),
-                payload.created_at.as_str(),
-            ],
-        )
-        .map_err(|error| {
-            map_runtime_run_write_error(
-                "runtime_action_persist_failed",
-                &database_path,
-                error,
-                "Cadence could not persist the runtime action-required checkpoint.",
-            )
-        })?;
+            .map_err(|error| {
+                map_runtime_run_write_error(
+                    "runtime_action_persist_failed",
+                    &database_path,
+                    error,
+                    "Cadence could not persist the runtime action-required checkpoint.",
+                )
+            })?;
+    }
 
     transaction.commit().map_err(|error| {
         map_operator_loop_commit_error(
@@ -842,7 +815,7 @@ fn validate_runtime_resume_identity_component(
     Ok(())
 }
 
-pub(crate) fn derive_runtime_action_id(
+pub fn derive_runtime_action_id(
     session_id: &str,
     flow_id: Option<&str>,
     run_id: &str,

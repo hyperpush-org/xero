@@ -147,6 +147,11 @@ fn resume_operator_run_records_failed_history_when_detached_control_channel_is_u
 }
 
 #[test]
+fn submit_notification_reply_resumes_shell_review_boundary_without_duplicate_rows() {
+    notification_operator::submit_notification_reply_resumes_shell_review_boundary_without_duplicate_rows();
+}
+
+#[test]
 fn start_runtime_run_replaces_stale_row_with_new_reachable_run() {
     runtime_recovery::start_runtime_run_replaces_stale_row_with_new_reachable_run();
 }

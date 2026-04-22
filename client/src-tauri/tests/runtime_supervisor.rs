@@ -100,3 +100,14 @@ fn submit_runtime_run_input_rejects_mismatched_ack_and_preserves_running_project
 fn submit_runtime_run_input_preserves_running_projection_on_malformed_control_response() {
     live_boundary::submit_runtime_run_input_preserves_running_projection_on_malformed_control_response();
 }
+
+#[test]
+fn detached_supervisor_persists_structured_shell_review_boundary_and_replays_same_action_identity()
+{
+    live_boundary::detached_supervisor_persists_structured_shell_review_boundary_and_replays_same_action_identity();
+}
+
+#[test]
+fn detached_supervisor_rejects_structured_shell_review_boundary_with_malformed_action_identity() {
+    live_boundary::detached_supervisor_rejects_structured_shell_review_boundary_with_malformed_action_identity();
+}

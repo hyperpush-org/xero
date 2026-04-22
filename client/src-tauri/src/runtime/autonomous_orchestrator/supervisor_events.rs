@@ -213,10 +213,19 @@ pub fn persist_supervisor_event(
             detail,
         } if code.contains("policy_denied") => {
             if let Some(attempt) = payload.attempt.as_ref() {
+                let (action_id, boundary_id) = current_boundary_linkage(existing.as_ref());
+                let artifact_suffix = linkage_suffix(boundary_id.as_deref());
                 let artifact_id = format!(
-                    "{}:policy:{}",
+                    "{}:policy:{}{}",
                     attempt.attempt_id,
-                    sanitize_artifact_fragment(code)
+                    sanitize_artifact_fragment(code),
+                    artifact_suffix
+                );
+                let evidence_artifact_id = format!(
+                    "{}:verification:{}{}",
+                    attempt.attempt_id,
+                    sanitize_artifact_fragment(code),
+                    artifact_suffix
                 );
                 let timestamp = existing_artifact_timestamp(existing.as_ref(), &artifact_id)
                     .unwrap_or_else(now_timestamp);
@@ -242,11 +251,48 @@ pub fn persist_supervisor_event(
                                 diagnostic_code: code.clone(),
                                 message: detail.clone().unwrap_or_else(|| title.clone()),
                                 tool_name: None,
-                                action_id: None,
-                                boundary_id: None,
+                                action_id: action_id.clone(),
+                                boundary_id: boundary_id.clone(),
                             },
                         )),
                         created_at: timestamp.clone(),
+                        updated_at: now_timestamp(),
+                    },
+                );
+
+                let evidence_created_at =
+                    existing_artifact_timestamp(existing.as_ref(), &evidence_artifact_id)
+                        .unwrap_or_else(|| timestamp.clone());
+                upsert_artifact(
+                    &mut payload.artifacts,
+                    AutonomousUnitArtifactRecord {
+                        project_id: attempt.project_id.clone(),
+                        run_id: attempt.run_id.clone(),
+                        unit_id: attempt.unit_id.clone(),
+                        attempt_id: attempt.attempt_id.clone(),
+                        artifact_id: evidence_artifact_id.clone(),
+                        artifact_kind: "verification_evidence".into(),
+                        status: AutonomousUnitArtifactStatus::Recorded,
+                        summary: format!(
+                            "Autonomous attempt recorded stable policy denial `{code}`."
+                        ),
+                        content_hash: None,
+                        payload: Some(AutonomousArtifactPayloadRecord::VerificationEvidence(
+                            AutonomousVerificationEvidencePayloadRecord {
+                                project_id: attempt.project_id.clone(),
+                                run_id: attempt.run_id.clone(),
+                                unit_id: attempt.unit_id.clone(),
+                                attempt_id: attempt.attempt_id.clone(),
+                                artifact_id: evidence_artifact_id,
+                                evidence_kind: code.clone(),
+                                label: title.clone(),
+                                outcome: AutonomousVerificationOutcomeRecord::Failed,
+                                command_result: None,
+                                action_id,
+                                boundary_id,
+                            },
+                        )),
+                        created_at: evidence_created_at,
                         updated_at: now_timestamp(),
                     },
                 );
@@ -364,6 +410,47 @@ fn command_error_from_supervisor_skill_diagnostic(
     } else {
         CommandError::user_fixable(diagnostic.code.clone(), diagnostic.message.clone())
     }
+}
+
+fn current_boundary_linkage(
+    existing: Option<&AutonomousRunSnapshotRecord>,
+) -> (Option<String>, Option<String>) {
+    let Some(existing) = existing else {
+        return (None, None);
+    };
+    let Some(boundary_id) = existing
+        .attempt
+        .as_ref()
+        .and_then(|attempt| attempt.boundary_id.clone())
+    else {
+        return (None, None);
+    };
+
+    let action_id = existing
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .find_map(|artifact| match artifact.payload.as_ref() {
+            Some(AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                if payload.boundary_id.as_deref() == Some(boundary_id.as_str())
+                    && payload.outcome == AutonomousVerificationOutcomeRecord::Blocked =>
+            {
+                payload.action_id.clone()
+            }
+            _ => None,
+        });
+
+    match action_id {
+        Some(action_id) => (Some(action_id), Some(boundary_id)),
+        None => (None, None),
+    }
+}
+
+fn linkage_suffix(boundary_id: Option<&str>) -> String {
+    boundary_id
+        .map(sanitize_artifact_fragment)
+        .map(|boundary| format!(":boundary:{boundary}"))
+        .unwrap_or_default()
 }
 
 fn sanitize_artifact_fragment(value: &str) -> String {

@@ -30,7 +30,9 @@ pub(super) struct ActiveInteractiveBoundary {
 }
 
 #[derive(Debug, Clone)]
-struct InteractiveBoundaryCandidate {
+struct RuntimeBoundaryCandidate {
+    boundary_id: Option<String>,
+    action_id: Option<String>,
     action_type: String,
     title: String,
     detail: String,
@@ -38,7 +40,7 @@ struct InteractiveBoundaryCandidate {
 }
 
 impl PtyEventNormalizer {
-    fn take_interactive_boundary_candidate(&mut self) -> Option<InteractiveBoundaryCandidate> {
+    fn take_interactive_boundary_candidate(&mut self) -> Option<RuntimeBoundaryCandidate> {
         if self.pending.is_empty() {
             return None;
         }
@@ -59,8 +61,10 @@ impl PtyEventNormalizer {
     }
 }
 
-fn default_interactive_boundary_candidate() -> InteractiveBoundaryCandidate {
-    InteractiveBoundaryCandidate {
+fn default_interactive_boundary_candidate() -> RuntimeBoundaryCandidate {
+    RuntimeBoundaryCandidate {
+        boundary_id: None,
+        action_id: None,
         action_type: INTERACTIVE_BOUNDARY_ACTION_TYPE.into(),
         title: INTERACTIVE_BOUNDARY_TITLE.into(),
         detail: INTERACTIVE_BOUNDARY_DETAIL.into(),
@@ -115,6 +119,14 @@ fn looks_like_interactive_boundary(fragment: &str) -> bool {
     looks_like_prompt_sentence && !looks_like_log_prefix
 }
 
+pub(super) fn checkpoint_summary_for_runtime_boundary(action_type: &str, title: &str) -> String {
+    if action_type == INTERACTIVE_BOUNDARY_ACTION_TYPE {
+        INTERACTIVE_BOUNDARY_CHECKPOINT_SUMMARY.into()
+    } else {
+        format!("Detached runtime blocked on `{title}` and is awaiting operator approval.")
+    }
+}
+
 pub(super) fn emit_interactive_boundary_if_detected(
     repo_root: &Path,
     shared: &Arc<Mutex<SidecarSharedState>>,
@@ -126,6 +138,43 @@ pub(super) fn emit_interactive_boundary_if_detected(
         return;
     };
 
+    emit_runtime_boundary_candidate(repo_root, shared, event_hub, persistence_lock, candidate);
+}
+
+pub(super) fn emit_structured_runtime_boundary(
+    repo_root: &Path,
+    shared: &Arc<Mutex<SidecarSharedState>>,
+    event_hub: &Arc<Mutex<SupervisorEventHub>>,
+    persistence_lock: &Arc<Mutex<()>>,
+    action_id: &str,
+    boundary_id: &str,
+    action_type: &str,
+    title: &str,
+    detail: &str,
+) {
+    emit_runtime_boundary_candidate(
+        repo_root,
+        shared,
+        event_hub,
+        persistence_lock,
+        RuntimeBoundaryCandidate {
+            boundary_id: Some(boundary_id.to_string()),
+            action_id: Some(action_id.to_string()),
+            action_type: action_type.to_string(),
+            title: title.to_string(),
+            detail: detail.to_string(),
+            checkpoint_summary: checkpoint_summary_for_runtime_boundary(action_type, title),
+        },
+    );
+}
+
+fn emit_runtime_boundary_candidate(
+    repo_root: &Path,
+    shared: &Arc<Mutex<SidecarSharedState>>,
+    event_hub: &Arc<Mutex<SupervisorEventHub>>,
+    persistence_lock: &Arc<Mutex<()>>,
+    candidate: RuntimeBoundaryCandidate,
+) {
     let (
         project_id,
         run_id,
@@ -139,12 +188,30 @@ pub(super) fn emit_interactive_boundary_if_detected(
         boundary,
     ) = {
         let mut state = shared.lock().expect("sidecar state lock poisoned");
-        if state.active_boundary.is_some() {
+        if let Some(active_boundary) = state.active_boundary.as_ref() {
+            let same_boundary = candidate
+                .boundary_id
+                .as_deref()
+                .is_some_and(|boundary_id| boundary_id == active_boundary.boundary_id);
+            let same_action = candidate
+                .action_id
+                .as_deref()
+                .is_some_and(|action_id| action_id == active_boundary.action_id);
+            if same_boundary && same_action {
+                return;
+            }
             return;
         }
-        state.next_boundary_serial = state.next_boundary_serial.saturating_add(1);
+
+        let boundary_id = match candidate.boundary_id.as_ref() {
+            Some(boundary_id) => boundary_id.clone(),
+            None => {
+                state.next_boundary_serial = state.next_boundary_serial.saturating_add(1);
+                format!("boundary-{}", state.next_boundary_serial)
+            }
+        };
         let boundary = ActiveInteractiveBoundary {
-            boundary_id: format!("boundary-{}", state.next_boundary_serial),
+            boundary_id,
             action_id: String::new(),
             action_type: candidate.action_type.clone(),
             title: candidate.title.clone(),
@@ -167,6 +234,40 @@ pub(super) fn emit_interactive_boundary_if_detected(
             boundary,
         )
     };
+
+    if let Some(expected_action_id) = candidate.action_id.as_deref() {
+        match project_store::derive_runtime_action_id(
+            &session_id,
+            flow_id.as_deref(),
+            &run_id,
+            &boundary.boundary_id,
+            &boundary.action_type,
+        ) {
+            Ok(canonical_action_id) if canonical_action_id == expected_action_id => {}
+            Ok(_) => {
+                reject_runtime_boundary_candidate(
+                    repo_root,
+                    shared,
+                    event_hub,
+                    persistence_lock,
+                    "runtime_action_identity_invalid",
+                    "Cadence rejected the structured runtime boundary because its action identity did not match the canonical run and boundary scope.",
+                );
+                return;
+            }
+            Err(error) => {
+                reject_runtime_boundary_candidate(
+                    repo_root,
+                    shared,
+                    event_hub,
+                    persistence_lock,
+                    &error.code,
+                    "Cadence rejected the structured runtime boundary because its action identity could not be validated safely.",
+                );
+                return;
+            }
+        }
+    }
 
     let persisted = {
         let _guard = persistence_lock
@@ -215,9 +316,9 @@ pub(super) fn emit_interactive_boundary_if_detected(
                 &SupervisorLiveEventPayload::ActionRequired {
                     action_id: action_id.clone(),
                     boundary_id,
-                    action_type: candidate.action_type,
-                    title: candidate.title,
-                    detail: candidate.detail,
+                    action_type: boundary.action_type.clone(),
+                    title: boundary.title.clone(),
+                    detail: boundary.detail.clone(),
                 },
             );
             persist_autonomous_live_event(
@@ -264,7 +365,7 @@ pub(super) fn emit_interactive_boundary_if_detected(
                                 notification_dispatch_outcome
                                     .message
                                     .unwrap_or_else(|| {
-                                        "Cadence skipped notification dispatch fan-out after persisting the pending interactive boundary."
+                                        "Cadence skipped notification dispatch fan-out after persisting the pending runtime boundary."
                                             .into()
                                     }),
                             ),
@@ -273,25 +374,33 @@ pub(super) fn emit_interactive_boundary_if_detected(
                 }
             }
         }
-        Err(error) => {
-            let safe_detail =
-                "Cadence could not persist the interactive boundary, so the last truthful runtime snapshot remains active.";
-            append_live_event(
-                shared,
-                event_hub,
-                &SupervisorLiveEventPayload::Activity {
-                    code: error.code.clone(),
-                    title: "Interactive boundary persistence failed".into(),
-                    detail: Some(safe_detail.into()),
-                },
-            );
-            let _ = persist_sidecar_runtime_error(
-                repo_root,
-                shared,
-                persistence_lock,
-                &error.code,
-                safe_detail,
-            );
-        }
+        Err(error) => reject_runtime_boundary_candidate(
+            repo_root,
+            shared,
+            event_hub,
+            persistence_lock,
+            &error.code,
+            "Cadence could not persist the runtime boundary, so the last truthful runtime snapshot remains active.",
+        ),
     }
+}
+
+fn reject_runtime_boundary_candidate(
+    repo_root: &Path,
+    shared: &Arc<Mutex<SidecarSharedState>>,
+    event_hub: &Arc<Mutex<SupervisorEventHub>>,
+    persistence_lock: &Arc<Mutex<()>>,
+    code: &str,
+    safe_detail: &str,
+) {
+    append_live_event(
+        shared,
+        event_hub,
+        &SupervisorLiveEventPayload::Activity {
+            code: code.into(),
+            title: "Runtime boundary persistence failed".into(),
+            detail: Some(safe_detail.into()),
+        },
+    );
+    let _ = persist_sidecar_runtime_error(repo_root, shared, persistence_lock, code, safe_detail);
 }

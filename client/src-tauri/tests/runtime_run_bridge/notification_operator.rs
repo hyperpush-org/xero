@@ -1123,3 +1123,170 @@ pub(crate) fn resume_operator_run_records_failed_history_when_detached_control_c
         RuntimeRunTransportLivenessDto::Unreachable
     );
 }
+
+pub(crate) fn submit_notification_reply_resumes_shell_review_boundary_without_duplicate_rows() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    upsert_notification_route(&repo_root, &project_id, "route-discord");
+
+    let run_id = "run-shell-review-approve";
+    let boundary_id = "boundary-shell-review-approve";
+    let action_type = "shell_policy_review";
+    let action_id = project_store::derive_runtime_action_id(
+        "session-1",
+        Some("flow-1"),
+        run_id,
+        boundary_id,
+        action_type,
+    )
+    .expect("derive canonical shell-review action id for bridge test");
+    let script = runtime_shell::script_join_steps(&[
+        runtime_shell::script_print_line(&format!(
+            "__Cadence_EVENT__ {}",
+            json!({
+                "kind": "action_required",
+                "action_id": action_id,
+                "boundary_id": boundary_id,
+                "action_type": action_type,
+                "title": "Review shell command",
+                "detail": "Cadence requires operator approval before running the blocked shell command."
+            })
+        )),
+        runtime_shell::script_sleep(5),
+    ]);
+
+    let launched = launch_scripted_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        run_id,
+        "session-1",
+        Some("flow-1"),
+        &script,
+    );
+
+    wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+            && runtime_run
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.kind == RuntimeRunCheckpointKindDto::ActionRequired)
+    });
+
+    let snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load shell-review snapshot before remote approval");
+    assert_eq!(snapshot.approval_requests.len(), 1);
+    let approval = &snapshot.approval_requests[0];
+    assert_eq!(approval.action_type, "shell_policy_review");
+
+    let dispatch = wait_for_notification_dispatches_for_action(
+        &repo_root,
+        &project_id,
+        &approval.action_id,
+        1,
+    )
+    .into_iter()
+    .next()
+    .expect("shell-review notification dispatch should exist");
+
+    let first = submit_notification_reply(
+        app.handle().clone(),
+        SubmitNotificationReplyRequestDto {
+            project_id: project_id.clone(),
+            action_id: approval.action_id.clone(),
+            route_id: dispatch.route_id.clone(),
+            correlation_key: dispatch.correlation_key.clone(),
+            responder_id: Some("discord-operator".into()),
+            reply_text: "approve shell review".into(),
+            decision: "approve".into(),
+            received_at: "2026-04-18T20:50:05Z".into(),
+        },
+    )
+    .expect("shell-review reply should claim, resolve, and resume");
+    assert_eq!(
+        first.claim.status,
+        NotificationReplyClaimStatusDto::Accepted
+    );
+    assert_eq!(
+        first.resolve_result.approval_request.status,
+        OperatorApprovalStatus::Approved
+    );
+    assert_eq!(
+        first
+            .resume_result
+            .as_ref()
+            .map(|resume| resume.resume_entry.status.clone()),
+        Some(ResumeHistoryStatus::Started)
+    );
+
+    let duplicate = submit_notification_reply(
+        app.handle().clone(),
+        SubmitNotificationReplyRequestDto {
+            project_id: project_id.clone(),
+            action_id: approval.action_id.clone(),
+            route_id: dispatch.route_id,
+            correlation_key: first.dispatch.correlation_key.clone(),
+            responder_id: Some("discord-operator-2".into()),
+            reply_text: "duplicate shell review".into(),
+            decision: "approve".into(),
+            received_at: "2026-04-18T20:50:06Z".into(),
+        },
+    )
+    .expect_err("duplicate shell-review reply should fail closed");
+    assert_eq!(duplicate.code, "notification_reply_already_claimed");
+
+    let resumed_snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load shell-review snapshot after remote approval");
+    assert_eq!(resumed_snapshot.resume_history.len(), 1);
+    assert_eq!(
+        resumed_snapshot.resume_history[0].status,
+        ResumeHistoryStatus::Started
+    );
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, &project_id, &approval.action_id),
+        1
+    );
+
+    let runtime_run = get_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("get shell-review runtime run after remote approval")
+    .expect("shell-review runtime run should still exist after remote approval");
+    assert_eq!(runtime_run.status, RuntimeRunStatusDto::Running);
+    assert_eq!(
+        runtime_run.transport.liveness,
+        RuntimeRunTransportLivenessDto::Reachable
+    );
+
+    let stopped = stop_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id,
+            run_id: launched.run.run_id,
+        },
+    )
+    .expect("stop shell-review runtime run after remote approval")
+    .expect("shell-review runtime run should still exist after stop");
+    assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}

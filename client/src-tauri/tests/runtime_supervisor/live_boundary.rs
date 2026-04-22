@@ -1,4 +1,5 @@
 use super::support::*;
+use serde_json::json;
 
 pub(crate) fn detached_supervisor_live_event_redacts_secret_bearing_output_in_replay_and_checkpoint(
 ) {
@@ -657,4 +658,214 @@ pub(crate) fn submit_runtime_run_input_preserves_running_projection_on_malformed
             .map(|error| error.code.as_str()),
         Some("runtime_supervisor_control_invalid")
     );
+}
+
+pub(crate) fn detached_supervisor_persists_structured_shell_review_boundary_and_replays_same_action_identity(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-shell-review";
+    let repo_root = seed_project(&root, project_id, "repo-shell-review", "repo");
+    let state = DesktopState::default();
+    let run_id = "run-shell-review";
+    let boundary_id = "boundary-shell-review";
+    let action_type = "shell_policy_review";
+    let action_id = project_store::derive_runtime_action_id(
+        "session-1",
+        Some("flow-1"),
+        run_id,
+        boundary_id,
+        action_type,
+    )
+    .expect("derive canonical shell-review action id");
+
+    let shell_review_script = runtime_shell::script_join_steps(&[
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "action_required",
+                "action_id": action_id,
+                "boundary_id": boundary_id,
+                "action_type": action_type,
+                "title": "Review shell command",
+                "detail": "Cadence requires operator approval before running the blocked shell command."
+            })
+        )),
+        runtime_shell::script_sleep(5),
+    ]);
+
+    let _launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(project_id, &repo_root, run_id, &shell_review_script),
+    )
+    .expect("launch shell-review runtime supervisor");
+
+    let running = wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.checkpoints.iter().any(|checkpoint| {
+                checkpoint.kind == project_store::RuntimeRunCheckpointKind::ActionRequired
+            })
+    });
+
+    let checkpoint = running
+        .checkpoints
+        .iter()
+        .find(|checkpoint| {
+            checkpoint.kind == project_store::RuntimeRunCheckpointKind::ActionRequired
+        })
+        .expect("shell-review action-required checkpoint");
+    assert_eq!(
+        checkpoint.summary,
+        "Detached runtime blocked on `Review shell command` and is awaiting operator approval."
+    );
+
+    let project_snapshot = project_store::load_project_snapshot(&repo_root, project_id)
+        .expect("load shell-review project snapshot")
+        .snapshot;
+    assert_eq!(project_snapshot.approval_requests.len(), 1);
+    let approval = &project_snapshot.approval_requests[0];
+    assert_eq!(approval.action_id, action_id);
+    assert_eq!(approval.action_type, action_type);
+    assert_eq!(approval.title, "Review shell command");
+    assert_eq!(
+        approval.detail,
+        "Cadence requires operator approval before running the blocked shell command."
+    );
+
+    let fresh_state = DesktopState::default();
+    let recovered = probe_runtime_run(&fresh_state, probe_request(project_id, &repo_root))
+        .expect("probe shell-review runtime run")
+        .expect("shell-review runtime run should still exist");
+    let mut reader = attach_reader(
+        &recovered.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, run_id, None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    let action_required = frames
+        .iter()
+        .find(|frame| {
+            matches!(
+                frame,
+                SupervisorControlResponse::Event {
+                    item: SupervisorLiveEventPayload::ActionRequired { .. },
+                    ..
+                }
+            )
+        })
+        .expect("shell-review replay should include action-required event");
+    assert!(matches!(
+        action_required,
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::ActionRequired {
+                    action_id,
+                    boundary_id,
+                    action_type,
+                    title,
+                    detail,
+                },
+            ..
+        } if action_id == approval.action_id.as_str()
+            && boundary_id == "boundary-shell-review"
+            && action_type == "shell_policy_review"
+            && title == "Review shell command"
+            && detail == "Cadence requires operator approval before running the blocked shell command."
+    ));
+
+    let stopped = stop_runtime_run(&fresh_state, stop_request(project_id, &repo_root))
+        .expect("stop shell-review runtime supervisor")
+        .expect("shell-review runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_rejects_structured_shell_review_boundary_with_malformed_action_identity(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-shell-review-invalid";
+    let repo_root = seed_project(&root, project_id, "repo-shell-review-invalid", "repo");
+    let state = DesktopState::default();
+
+    let invalid_script = runtime_shell::script_join_steps(&[
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "action_required",
+                "action_id": "forged-action-id",
+                "boundary_id": "boundary-shell-review-invalid",
+                "action_type": "shell_policy_review",
+                "title": "Review shell command",
+                "detail": "Cadence requires operator approval before running the blocked shell command."
+            })
+        )),
+        runtime_shell::script_sleep(5),
+    ]);
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-shell-review-invalid",
+            &invalid_script,
+        ),
+    )
+    .expect("launch malformed shell-review runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot
+                .run
+                .last_error
+                .as_ref()
+                .is_some_and(|error| error.code == "runtime_action_identity_invalid")
+    });
+
+    let snapshot = project_store::load_project_snapshot(&repo_root, project_id)
+        .expect("load malformed shell-review project snapshot")
+        .snapshot;
+    assert!(snapshot.approval_requests.is_empty());
+    assert!(snapshot.resume_history.is_empty());
+
+    let runtime_run = project_store::load_runtime_run(&repo_root, project_id)
+        .expect("load malformed shell-review runtime run")
+        .expect("runtime run should exist after malformed shell-review event");
+    assert_eq!(
+        runtime_run
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| {
+                checkpoint.kind == project_store::RuntimeRunCheckpointKind::ActionRequired
+            })
+            .count(),
+        0
+    );
+    assert_eq!(
+        runtime_run
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("runtime_action_identity_invalid")
+    );
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-shell-review-invalid", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(frames.iter().all(|frame| matches!(
+        frame,
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_action_identity_invalid"
+    )));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop malformed shell-review runtime supervisor")
+        .expect("malformed shell-review runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }
