@@ -112,13 +112,12 @@ fn register_window_state_persistence<R: Runtime>(app: AppHandle<R>, window: &Web
 
 fn default_window_bounds<R: Runtime>(window: &WebviewWindow<R>) -> Option<WindowBounds> {
     current_or_primary_monitor(window).map(|monitor| {
-        let position = monitor.position();
-        let size = monitor.size();
+        let work_area = monitor.work_area();
         WindowBounds {
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
         }
     })
 }

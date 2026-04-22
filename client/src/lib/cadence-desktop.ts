@@ -79,12 +79,17 @@ import {
   runtimeSessionSchema,
   runtimeSettingsSchema,
   runtimeUpdatedPayloadSchema,
+  startRuntimeRunRequestSchema,
+  updateRuntimeRunControlsRequestSchema,
   upsertRuntimeSettingsRequestSchema,
+  type RuntimeRunControlInputDto,
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
   type RuntimeSettingsDto,
   type RuntimeUpdatedPayloadDto,
+  type StartRuntimeRunRequestDto,
+  type UpdateRuntimeRunControlsRequestDto,
   type UpsertRuntimeSettingsRequestDto,
 } from '@/src/lib/cadence-model/runtime'
 import {
@@ -144,6 +149,7 @@ const COMMANDS = {
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
   startRuntimeRun: 'start_runtime_run',
+  updateRuntimeRunControls: 'update_runtime_run_controls',
   startRuntimeSession: 'start_runtime_session',
   cancelAutonomousRun: 'cancel_autonomous_run',
   stopRuntimeRun: 'stop_runtime_run',
@@ -202,6 +208,11 @@ export interface StartOpenAiLoginOptions {
 export interface SubmitOpenAiCallbackOptions {
   selectedProfileId: string
   manualInput?: string | null
+}
+
+export interface StartRuntimeRunOptions {
+  initialControls?: RuntimeRunControlInputDto | null
+  initialPrompt?: string | null
 }
 
 export class CadenceDesktopError extends Error {
@@ -263,7 +274,8 @@ export interface CadenceDesktopAdapter {
     options: SubmitOpenAiCallbackOptions,
   ): Promise<RuntimeSessionDto>
   startAutonomousRun(projectId: string): Promise<AutonomousRunStateDto>
-  startRuntimeRun(projectId: string): Promise<RuntimeRunDto>
+  startRuntimeRun(projectId: string, options?: StartRuntimeRunOptions): Promise<RuntimeRunDto>
+  updateRuntimeRunControls(request: UpdateRuntimeRunControlsRequestDto): Promise<RuntimeRunDto>
   startRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   cancelAutonomousRun(projectId: string, runId: string): Promise<AutonomousRunStateDto>
   stopRuntimeRun(projectId: string, runId: string): Promise<RuntimeRunDto | null>
@@ -684,9 +696,22 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     })
   },
 
-  startRuntimeRun(projectId) {
+  startRuntimeRun(projectId, options) {
+    const request: StartRuntimeRunRequestDto = startRuntimeRunRequestSchema.parse({
+      projectId,
+      initialControls: options?.initialControls ?? null,
+      initialPrompt: options?.initialPrompt ?? null,
+    })
+
     return invokeTyped(COMMANDS.startRuntimeRun, runtimeRunSchema, {
-      request: { projectId },
+      request,
+    })
+  },
+
+  updateRuntimeRunControls(request) {
+    const parsedRequest = updateRuntimeRunControlsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.updateRuntimeRunControls, runtimeRunSchema, {
+      request: parsedRequest,
     })
   },
 

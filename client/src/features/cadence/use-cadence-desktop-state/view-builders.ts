@@ -15,6 +15,10 @@ import {
 } from '@/src/lib/cadence-model/provider-models'
 import { type RepositoryStatusView } from '@/src/lib/cadence-model/project'
 import {
+  DEFAULT_RUNTIME_RUN_APPROVAL_MODE,
+  type RuntimeRunActiveControlSnapshotView,
+  type RuntimeRunApprovalModeDto,
+  type RuntimeRunPendingControlSnapshotView,
   type RuntimeRunView,
   type RuntimeSessionView,
   type RuntimeSettingsDto,
@@ -75,6 +79,20 @@ interface SelectedProviderProjection {
   providerMismatch: boolean
   selectedProvider: ReturnType<typeof resolveSelectedRuntimeProvider>
   providerMismatchCopy: ReturnType<typeof getProviderMismatchCopy>
+}
+
+interface AgentRunControlProjection {
+  source: 'runtime_run' | 'fallback'
+  selectedModelId: string | null
+  selectedThinkingEffort: ProviderModelThinkingEffortDto | null
+  selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedPrompt: {
+    text: string | null
+    queuedAt: string | null
+    hasQueuedPrompt: boolean
+  }
+  activeControls: RuntimeRunActiveControlSnapshotView | null
+  pendingControls: RuntimeRunPendingControlSnapshotView | null
 }
 
 export interface BuildWorkflowViewDependencies {
@@ -154,6 +172,35 @@ function getSelectedProviderProjection(
     selectedProvider,
     providerMismatch: hasProviderMismatch(selectedProvider, runtimeSession),
     providerMismatchCopy,
+  }
+}
+
+function getAgentRunControlProjection(runtimeRun: RuntimeRunView | null): AgentRunControlProjection {
+  const activeControls = runtimeRun?.controls?.active ?? null
+  const pendingControls = runtimeRun?.controls?.pending ?? null
+  const selectedControls = runtimeRun?.controls?.selected ?? null
+  const useRuntimeRunTruth = Boolean(selectedControls && !runtimeRun?.isTerminal)
+
+  return {
+    source: useRuntimeRunTruth ? 'runtime_run' : 'fallback',
+    selectedModelId: useRuntimeRunTruth ? selectedControls?.modelId ?? null : null,
+    selectedThinkingEffort: useRuntimeRunTruth ? selectedControls?.thinkingEffort ?? null : null,
+    selectedApprovalMode: useRuntimeRunTruth
+      ? selectedControls?.approvalMode ?? DEFAULT_RUNTIME_RUN_APPROVAL_MODE
+      : DEFAULT_RUNTIME_RUN_APPROVAL_MODE,
+    selectedPrompt: useRuntimeRunTruth
+      ? {
+          text: selectedControls?.queuedPrompt ?? null,
+          queuedAt: selectedControls?.queuedPromptAt ?? null,
+          hasQueuedPrompt: selectedControls?.hasQueuedPrompt ?? false,
+        }
+      : {
+          text: null,
+          queuedAt: null,
+          hasQueuedPrompt: false,
+        },
+    activeControls,
+    pendingControls,
   }
 }
 
@@ -395,6 +442,8 @@ function buildAgentProviderModelCatalog(options: {
   activeProviderModelCatalog: ProviderModelCatalogDto | null
   activeProviderModelCatalogLoadStatus: ProviderModelCatalogLoadStatus
   activeProviderModelCatalogLoadError: OperatorActionErrorView | null
+  selectedModelIdOverride?: string | null
+  allowCatalogTruth?: boolean
 }): {
   providerModelCatalog: AgentProviderModelCatalogView
   selectedModelOption: AgentProviderModelView | null
@@ -402,8 +451,11 @@ function buildAgentProviderModelCatalog(options: {
   selectedModelDefaultThinkingEffort: ProviderModelThinkingEffortDto | null
   selectedModelId: string | null
 } {
-  const catalog = options.activeProviderModelCatalog
-  const refreshError = getCatalogRefreshError(catalog, options.activeProviderModelCatalogLoadError)
+  const allowCatalogTruth = options.allowCatalogTruth ?? true
+  const catalog = allowCatalogTruth ? options.activeProviderModelCatalog : null
+  const refreshError = allowCatalogTruth
+    ? getCatalogRefreshError(catalog, options.activeProviderModelCatalogLoadError)
+    : null
   const discoveredModels: AgentProviderModelView[] = []
   const seenModelIds = new Set<string>()
 
@@ -418,7 +470,10 @@ function buildAgentProviderModelCatalog(options: {
   }
 
   const configuredModelId =
-    catalog?.configuredModelId.trim() || options.selectedProvider.modelId?.trim() || null
+    options.selectedModelIdOverride?.trim() ||
+    catalog?.configuredModelId.trim() ||
+    options.selectedProvider.modelId?.trim() ||
+    null
   const selectedModelId = configuredModelId && configuredModelId.length > 0 ? configuredModelId : null
   const selectedDiscoveredModel =
     selectedModelId ? discoveredModels.find((model) => model.modelId === selectedModelId) ?? null : null
@@ -427,13 +482,20 @@ function buildAgentProviderModelCatalog(options: {
   const models = selectedModelOption && selectedModelOption.availability === 'orphaned'
     ? [selectedModelOption, ...discoveredModels]
     : discoveredModels
-  const stateCopy = getCatalogStateCopy({
-    selectedProvider: options.selectedProvider,
-    catalog,
-    loadStatus: options.activeProviderModelCatalogLoadStatus,
-    refreshError,
-    discoveredModelCount: discoveredModels.length,
-  })
+  const stateCopy = allowCatalogTruth
+    ? getCatalogStateCopy({
+        selectedProvider: options.selectedProvider,
+        catalog,
+        loadStatus: options.activeProviderModelCatalogLoadStatus,
+        refreshError,
+        discoveredModelCount: discoveredModels.length,
+      })
+    : {
+        state: 'unavailable' as const,
+        stateLabel: 'Catalog unavailable',
+        detail:
+          'Cadence is showing durable run-scoped control truth from the active supervised run while keeping provider defaults out of the live projection.',
+      }
 
   return {
     providerModelCatalog: {
@@ -605,12 +667,26 @@ export function buildAgentView({
     runtimeSettings,
     runtimeSession,
   )
+  const controlProjection = getAgentRunControlProjection(runtimeRun)
+  const allowCatalogTruth =
+    controlProjection.source === 'fallback' || runtimeRun?.providerId === selectedProvider.providerId
   const providerModelCatalogProjection = buildAgentProviderModelCatalog({
     selectedProvider,
     activeProviderModelCatalog,
     activeProviderModelCatalogLoadStatus,
     activeProviderModelCatalogLoadError,
+    selectedModelIdOverride: controlProjection.selectedModelId,
+    allowCatalogTruth,
   })
+  const selectedModelId =
+    controlProjection.source === 'runtime_run'
+      ? controlProjection.selectedModelId
+      : providerModelCatalogProjection.selectedModelId
+  const selectedThinkingEffort =
+    controlProjection.source === 'runtime_run'
+      ? controlProjection.selectedThinkingEffort
+      : providerModelCatalogProjection.selectedModelDefaultThinkingEffort
+  const selectedApprovalMode = controlProjection.selectedApprovalMode
 
   return {
     trustSnapshot,
@@ -628,7 +704,13 @@ export function buildAgentView({
       selectedProviderId: selectedProvider.providerId,
       selectedProviderLabel: selectedProvider.providerLabel,
       selectedProviderSource: selectedProvider.source,
-      selectedModelId: providerModelCatalogProjection.selectedModelId,
+      controlTruthSource: controlProjection.source,
+      selectedModelId,
+      selectedThinkingEffort,
+      selectedApprovalMode,
+      selectedPrompt: controlProjection.selectedPrompt,
+      runtimeRunActiveControls: controlProjection.activeControls,
+      runtimeRunPendingControls: controlProjection.pendingControls,
       providerModelCatalog: providerModelCatalogProjection.providerModelCatalog,
       selectedModelOption: providerModelCatalogProjection.selectedModelOption,
       selectedModelThinkingEffortOptions: providerModelCatalogProjection.selectedModelThinkingEffortOptions,

@@ -1,4 +1,3 @@
-
 import { z } from 'zod'
 import {
   humanizeSegmentedLabel as humanizeRuntimeKind,
@@ -27,6 +26,10 @@ export const runtimeDiagnosticSchema = z.object({
 })
 
 export const runtimeProviderIdSchema = z.enum(['openrouter', 'openai_codex'])
+
+export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
+export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
+export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
 
 function validateRuntimeSettingsProviderModel(
   payload: { providerId: z.infer<typeof runtimeProviderIdSchema>; modelId: string },
@@ -120,6 +123,65 @@ export const runtimeRunCheckpointSchema = z
   })
   .strict()
 
+export const runtimeRunControlInputSchema = z
+  .object({
+    modelId: z.string().trim().min(1),
+    thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
+    approvalMode: runtimeRunApprovalModeSchema,
+  })
+  .strict()
+
+export const runtimeRunActiveControlSnapshotSchema = z
+  .object({
+    modelId: z.string().trim().min(1),
+    thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
+    approvalMode: runtimeRunApprovalModeSchema,
+    revision: z.number().int().positive(),
+    appliedAt: isoTimestampSchema,
+  })
+  .strict()
+
+export const runtimeRunPendingControlSnapshotSchema = z
+  .object({
+    modelId: z.string().trim().min(1),
+    thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
+    approvalMode: runtimeRunApprovalModeSchema,
+    revision: z.number().int().positive(),
+    queuedAt: isoTimestampSchema,
+    queuedPrompt: z.string().trim().min(1).nullable().optional(),
+    queuedPromptAt: isoTimestampSchema.nullable().optional(),
+  })
+  .strict()
+  .superRefine((snapshot, ctx) => {
+    const hasQueuedPrompt = typeof snapshot.queuedPrompt === 'string' && snapshot.queuedPrompt.trim().length > 0
+    const hasQueuedPromptAt = typeof snapshot.queuedPromptAt === 'string' && snapshot.queuedPromptAt.trim().length > 0
+
+    if (hasQueuedPrompt !== hasQueuedPromptAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['queuedPrompt'],
+        message: 'Cadence requires queuedPrompt and queuedPromptAt to be populated together.',
+      })
+    }
+  })
+
+export const runtimeRunControlStateSchema = z
+  .object({
+    active: runtimeRunActiveControlSnapshotSchema,
+    pending: runtimeRunPendingControlSnapshotSchema.nullable().optional(),
+  })
+  .strict()
+  .superRefine((state, ctx) => {
+    const pendingRevision = state.pending?.revision ?? null
+    if (pendingRevision !== null && pendingRevision <= state.active.revision) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pending', 'revision'],
+        message: 'Cadence requires pending runtime-run revisions to be newer than the active revision.',
+      })
+    }
+  })
+
 export const runtimeRunSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -129,6 +191,7 @@ export const runtimeRunSchema = z
     supervisorKind: z.string().trim().min(1),
     status: runtimeRunStatusSchema,
     transport: runtimeRunTransportSchema,
+    controls: runtimeRunControlStateSchema,
     startedAt: isoTimestampSchema,
     lastHeartbeatAt: nonEmptyOptionalTextSchema,
     lastCheckpointSequence: z.number().int().nonnegative(),
@@ -157,6 +220,32 @@ export const runtimeRunUpdatedPayloadSchema = z
     }
   })
 
+export const startRuntimeRunRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    initialControls: runtimeRunControlInputSchema.nullable().optional(),
+    initialPrompt: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict()
+
+export const updateRuntimeRunControlsRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    runId: z.string().trim().min(1),
+    controls: runtimeRunControlInputSchema.nullable().optional(),
+    prompt: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    if (!request.controls && !request.prompt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['controls'],
+        message: 'Cadence requires a prompt or control delta before it can queue runtime-run changes.',
+      })
+    }
+  })
+
 export type RuntimeAuthPhaseDto = z.infer<typeof runtimeAuthPhaseSchema>
 export type RuntimeDiagnosticDto = z.infer<typeof runtimeDiagnosticSchema>
 export type RuntimeProviderIdDto = z.infer<typeof runtimeProviderIdSchema>
@@ -170,8 +259,16 @@ export type RuntimeRunCheckpointKindDto = z.infer<typeof runtimeRunCheckpointKin
 export type RuntimeRunDiagnosticDto = z.infer<typeof runtimeRunDiagnosticSchema>
 export type RuntimeRunTransportDto = z.infer<typeof runtimeRunTransportSchema>
 export type RuntimeRunCheckpointDto = z.infer<typeof runtimeRunCheckpointSchema>
+export type RuntimeRunThinkingEffortDto = z.infer<typeof runtimeRunThinkingEffortSchema>
+export type RuntimeRunApprovalModeDto = z.infer<typeof runtimeRunApprovalModeSchema>
+export type RuntimeRunControlInputDto = z.infer<typeof runtimeRunControlInputSchema>
+export type RuntimeRunActiveControlSnapshotDto = z.infer<typeof runtimeRunActiveControlSnapshotSchema>
+export type RuntimeRunPendingControlSnapshotDto = z.infer<typeof runtimeRunPendingControlSnapshotSchema>
+export type RuntimeRunControlStateDto = z.infer<typeof runtimeRunControlStateSchema>
 export type RuntimeRunDto = z.infer<typeof runtimeRunSchema>
 export type RuntimeRunUpdatedPayloadDto = z.infer<typeof runtimeRunUpdatedPayloadSchema>
+export type StartRuntimeRunRequestDto = z.infer<typeof startRuntimeRunRequestSchema>
+export type UpdateRuntimeRunControlsRequestDto = z.infer<typeof updateRuntimeRunControlsRequestSchema>
 
 export interface RuntimeSessionView {
   projectId: string
@@ -213,6 +310,43 @@ export interface RuntimeRunCheckpointView {
   createdAt: string
 }
 
+export interface RuntimeRunControlInputView {
+  modelId: string
+  thinkingEffort: RuntimeRunThinkingEffortDto | null
+  thinkingEffortLabel: string
+  approvalMode: RuntimeRunApprovalModeDto
+  approvalModeLabel: string
+}
+
+export interface RuntimeRunActiveControlSnapshotView extends RuntimeRunControlInputView {
+  revision: number
+  appliedAt: string
+}
+
+export interface RuntimeRunPendingControlSnapshotView extends RuntimeRunControlInputView {
+  revision: number
+  queuedAt: string
+  queuedPrompt: string | null
+  queuedPromptAt: string | null
+  hasQueuedPrompt: boolean
+}
+
+export interface RuntimeRunControlSelectionView extends RuntimeRunControlInputView {
+  source: 'active' | 'pending'
+  revision: number
+  effectiveAt: string
+  queuedPrompt: string | null
+  queuedPromptAt: string | null
+  hasQueuedPrompt: boolean
+}
+
+export interface RuntimeRunControlStateView {
+  active: RuntimeRunActiveControlSnapshotView
+  pending: RuntimeRunPendingControlSnapshotView | null
+  selected: RuntimeRunControlSelectionView
+  hasPendingControls: boolean
+}
+
 export interface RuntimeRunView {
   projectId: string
   runId: string
@@ -224,6 +358,7 @@ export interface RuntimeRunView {
   status: RuntimeRunStatusDto
   statusLabel: string
   transport: RuntimeRunTransportView
+  controls: RuntimeRunControlStateView
   startedAt: string
   lastHeartbeatAt: string | null
   lastCheckpointSequence: number
@@ -323,8 +458,100 @@ export function getRuntimeRunCheckpointKindLabel(kind: RuntimeRunCheckpointKindD
   }
 }
 
+export function getRuntimeRunApprovalModeLabel(mode: RuntimeRunApprovalModeDto): string {
+  switch (mode) {
+    case 'suggest':
+      return 'Suggest'
+    case 'auto_edit':
+      return 'Auto edit'
+    case 'yolo':
+      return 'YOLO'
+  }
+}
+
+export function getRuntimeRunThinkingEffortLabel(effort: RuntimeRunThinkingEffortDto | null | undefined): string {
+  switch (effort) {
+    case 'minimal':
+      return 'Minimal'
+    case 'low':
+      return 'Low'
+    case 'medium':
+      return 'Medium'
+    case 'high':
+      return 'High'
+    case 'x_high':
+      return 'Very high'
+    default:
+      return 'Thinking unavailable'
+  }
+}
+
 function getRuntimeRunLabel(runtimeKind: string, status: RuntimeRunStatusDto): string {
   return `${humanizeRuntimeKind(runtimeKind)} · ${getRuntimeRunStatusLabel(status)}`
+}
+
+function mapRuntimeRunControlInput(control: RuntimeRunControlInputDto): RuntimeRunControlInputView {
+  return {
+    modelId: normalizeText(control.modelId, 'model-unavailable'),
+    thinkingEffort: control.thinkingEffort ?? null,
+    thinkingEffortLabel: getRuntimeRunThinkingEffortLabel(control.thinkingEffort ?? null),
+    approvalMode: control.approvalMode,
+    approvalModeLabel: getRuntimeRunApprovalModeLabel(control.approvalMode),
+  }
+}
+
+function mapRuntimeRunActiveControlSnapshot(
+  snapshot: RuntimeRunActiveControlSnapshotDto,
+): RuntimeRunActiveControlSnapshotView {
+  return {
+    ...mapRuntimeRunControlInput(snapshot),
+    revision: snapshot.revision,
+    appliedAt: snapshot.appliedAt,
+  }
+}
+
+function mapRuntimeRunPendingControlSnapshot(
+  snapshot: RuntimeRunPendingControlSnapshotDto,
+): RuntimeRunPendingControlSnapshotView {
+  const queuedPrompt = normalizeOptionalText(snapshot.queuedPrompt)
+  return {
+    ...mapRuntimeRunControlInput(snapshot),
+    revision: snapshot.revision,
+    queuedAt: snapshot.queuedAt,
+    queuedPrompt,
+    queuedPromptAt: normalizeOptionalText(snapshot.queuedPromptAt),
+    hasQueuedPrompt: queuedPrompt !== null,
+  }
+}
+
+function mapRuntimeRunControlState(controls: RuntimeRunControlStateDto): RuntimeRunControlStateView {
+  const active = mapRuntimeRunActiveControlSnapshot(controls.active)
+  const pending = controls.pending ? mapRuntimeRunPendingControlSnapshot(controls.pending) : null
+
+  return {
+    active,
+    pending,
+    selected: pending
+      ? {
+          ...mapRuntimeRunControlInput(pending),
+          source: 'pending',
+          revision: pending.revision,
+          effectiveAt: pending.queuedAt,
+          queuedPrompt: pending.queuedPrompt,
+          queuedPromptAt: pending.queuedPromptAt,
+          hasQueuedPrompt: pending.hasQueuedPrompt,
+        }
+      : {
+          ...mapRuntimeRunControlInput(active),
+          source: 'active',
+          revision: active.revision,
+          effectiveAt: active.appliedAt,
+          queuedPrompt: null,
+          queuedPromptAt: null,
+          hasQueuedPrompt: false,
+        },
+    hasPendingControls: pending !== null,
+  }
 }
 
 export function mapRuntimeSession(runtime: RuntimeSessionDto): RuntimeSessionView {
@@ -400,6 +627,7 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
       liveness: runtimeRun.transport.liveness,
       livenessLabel: getRuntimeRunTransportLivenessLabel(runtimeRun.transport.liveness),
     },
+    controls: mapRuntimeRunControlState(runtimeRun.controls),
     startedAt: runtimeRun.startedAt,
     lastHeartbeatAt: normalizeOptionalText(runtimeRun.lastHeartbeatAt),
     lastCheckpointSequence: runtimeRun.lastCheckpointSequence,

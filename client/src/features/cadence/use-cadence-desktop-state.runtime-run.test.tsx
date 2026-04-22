@@ -14,6 +14,7 @@ import type {
   ResumeOperatorRunResponseDto,
   AutonomousRunStateDto,
   AutonomousUnitHistoryEntryDto,
+  RuntimeRunControlInputDto,
   RuntimeRunDto,
   RuntimeRunUpdatedPayloadDto,
   RuntimeSessionDto,
@@ -321,6 +322,16 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
       endpoint: '127.0.0.1:4455',
       liveness: 'reachable',
     },
+    controls: {
+      active: {
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        approvalMode: 'suggest',
+        revision: 1,
+        appliedAt: '2026-04-15T20:00:00Z',
+      },
+      pending: null,
+    },
     startedAt: '2026-04-15T20:00:00Z',
     lastHeartbeatAt: '2026-04-15T20:00:05Z',
     lastCheckpointSequence: 2,
@@ -610,6 +621,8 @@ function createMockAdapter(options?: {
   notificationSyncResponses?: Record<string, SyncNotificationAdaptersResponseDto>
   notificationSyncErrors?: Record<string, Error>
   upsertRouteErrors?: Record<string, Error>
+  startRuntimeRunErrors?: Record<string, Error>
+  updateRuntimeRunControlErrors?: Record<string, Error>
   subscribeResponses?: Record<string, SubscribeRuntimeStreamResponseDto>
 }) {
   let projectUpdatedHandler: ((payload: ProjectUpdatedPayloadDto) => void) | null = null
@@ -655,6 +668,8 @@ function createMockAdapter(options?: {
   }
   const notificationSyncErrors = options?.notificationSyncErrors ?? {}
   const upsertRouteErrors = options?.upsertRouteErrors ?? {}
+  const startRuntimeRunErrors = options?.startRuntimeRunErrors ?? {}
+  const updateRuntimeRunControlErrors = options?.updateRuntimeRunControlErrors ?? {}
   const streamSubscriptions: Array<{
     projectId: string
     handler: (payload: RuntimeStreamEventDto) => void
@@ -945,7 +960,77 @@ function createMockAdapter(options?: {
       autonomousStates[projectId] = nextState
       return nextState
     }),
-    startRuntimeRun: vi.fn(async (projectId: string) => runtimeRuns[projectId] ?? makeRuntimeRun(projectId)),
+    startRuntimeRun: vi.fn(async (projectId: string, options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) => {
+      const error = startRuntimeRunErrors[projectId]
+      if (error) {
+        throw error
+      }
+
+      const nextRun =
+        runtimeRuns[projectId] ??
+        makeRuntimeRun(projectId, {
+          controls: {
+            active: {
+              modelId: options?.initialControls?.modelId ?? 'openai_codex',
+              thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
+              approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
+              revision: 1,
+              appliedAt: '2026-04-15T20:00:00Z',
+            },
+            pending: options?.initialPrompt
+              ? {
+                  modelId: options?.initialControls?.modelId ?? 'openai_codex',
+                  thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
+                  approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
+                  revision: 2,
+                  queuedAt: '2026-04-15T20:00:01Z',
+                  queuedPrompt: options.initialPrompt,
+                  queuedPromptAt: '2026-04-15T20:00:01Z',
+                }
+              : null,
+          },
+        })
+      runtimeRuns[projectId] = nextRun
+      return nextRun
+    }),
+    updateRuntimeRunControls: vi.fn(async (request: {
+      projectId: string
+      runId: string
+      controls?: RuntimeRunControlInputDto | null
+      prompt?: string | null
+    }) => {
+      const error = updateRuntimeRunControlErrors[request.projectId]
+      if (error) {
+        throw error
+      }
+
+      const currentRun = runtimeRuns[request.projectId] ?? makeRuntimeRun(request.projectId, { runId: request.runId })
+      const basePending = currentRun.controls.pending
+      const queuedAt = '2026-04-15T20:00:07Z'
+      const nextRun = {
+        ...currentRun,
+        controls: {
+          active: currentRun.controls.active,
+          pending: {
+            modelId: request.controls?.modelId ?? basePending?.modelId ?? currentRun.controls.active.modelId,
+            thinkingEffort:
+              request.controls?.thinkingEffort ??
+              basePending?.thinkingEffort ??
+              currentRun.controls.active.thinkingEffort ??
+              null,
+            approvalMode:
+              request.controls?.approvalMode ?? basePending?.approvalMode ?? currentRun.controls.active.approvalMode,
+            revision: basePending?.revision ?? currentRun.controls.active.revision + 1,
+            queuedAt,
+            queuedPrompt: request.prompt ?? basePending?.queuedPrompt ?? null,
+            queuedPromptAt: request.prompt ? queuedAt : basePending?.queuedPromptAt ?? null,
+          },
+        },
+        updatedAt: queuedAt,
+      }
+      runtimeRuns[request.projectId] = nextRun
+      return nextRun
+    }),
     startRuntimeSession: vi.fn(async (projectId: string) => runtimeSessions[projectId]),
     cancelAutonomousRun: vi.fn(async (projectId: string, runId: string) => {
       const nextState = makeAutonomousRunState(projectId, {
@@ -1048,6 +1133,8 @@ function createMockAdapter(options?: {
     listNotificationDispatches,
     syncNotificationAdapters,
     upsertNotificationRoute,
+    startRuntimeRun: adapter.startRuntimeRun,
+    updateRuntimeRunControls: adapter.updateRuntimeRunControls,
     resumeOperatorRun,
     subscribeRuntimeStream: adapter.subscribeRuntimeStream,
     streamSubscriptions,
@@ -1112,7 +1199,24 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="runtime-run-last-checkpoint-summary">
         {state.agentView?.runtimeRun?.latestCheckpoint?.summary ?? 'none'}
       </div>
+      <div data-testid="control-truth-source">{state.agentView?.controlTruthSource ?? 'none'}</div>
+      <div data-testid="selected-model-id">{state.agentView?.selectedModelId ?? 'none'}</div>
+      <div data-testid="selected-thinking-effort">{state.agentView?.selectedThinkingEffort ?? 'none'}</div>
+      <div data-testid="selected-approval-mode">{state.agentView?.selectedApprovalMode ?? 'none'}</div>
+      <div data-testid="selected-prompt">{state.agentView?.selectedPrompt.text ?? 'none'}</div>
+      <div data-testid="selected-prompt-queued-at">{state.agentView?.selectedPrompt.queuedAt ?? 'none'}</div>
+      <div data-testid="active-control-model-id">{state.agentView?.runtimeRunActiveControls?.modelId ?? 'none'}</div>
+      <div data-testid="active-control-thinking-effort">{state.agentView?.runtimeRunActiveControls?.thinkingEffort ?? 'none'}</div>
+      <div data-testid="active-control-approval-mode">{state.agentView?.runtimeRunActiveControls?.approvalMode ?? 'none'}</div>
+      <div data-testid="active-control-revision">{String(state.agentView?.runtimeRunActiveControls?.revision ?? 0)}</div>
+      <div data-testid="pending-control-model-id">{state.agentView?.runtimeRunPendingControls?.modelId ?? 'none'}</div>
+      <div data-testid="pending-control-thinking-effort">{state.agentView?.runtimeRunPendingControls?.thinkingEffort ?? 'none'}</div>
+      <div data-testid="pending-control-approval-mode">{state.agentView?.runtimeRunPendingControls?.approvalMode ?? 'none'}</div>
+      <div data-testid="pending-control-revision">{String(state.agentView?.runtimeRunPendingControls?.revision ?? 0)}</div>
+      <div data-testid="pending-control-prompt">{state.agentView?.runtimeRunPendingControls?.queuedPrompt ?? 'none'}</div>
+      <div data-testid="pending-control-prompt-at">{state.agentView?.runtimeRunPendingControls?.queuedPromptAt ?? 'none'}</div>
       <div data-testid="runtime-run-error">{state.agentView?.runtimeRunErrorMessage ?? 'none'}</div>
+      <div data-testid="runtime-run-action-error">{state.agentView?.runtimeRunActionError?.message ?? 'none'}</div>
       <div data-testid="runtime-run-reason">{state.agentView?.runtimeRunUnavailableReason ?? 'none'}</div>
       <div data-testid="autonomous-run-id">{state.agentView?.autonomousRun?.runId ?? 'none'}</div>
       <div data-testid="autonomous-run-provider-id">{state.agentView?.autonomousRun?.providerId ?? 'none'}</div>
@@ -1219,6 +1323,40 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="workflow-lifecycle-action-required">{String(state.workflowView?.actionRequiredLifecycleCount ?? 0)}</div>
       <button onClick={() => void state.retry()} type="button">
         Retry state
+      </button>
+      <button
+        onClick={() =>
+          void state
+            .startRuntimeRun({
+              controls: {
+                modelId: 'openai/gpt-5-mini',
+                thinkingEffort: 'high',
+                approvalMode: 'auto_edit',
+              },
+              prompt: 'Review the latest diff before continuing.',
+            })
+            .catch(() => undefined)
+        }
+        type="button"
+      >
+        Start runtime run with controls
+      </button>
+      <button
+        onClick={() =>
+          void state
+            .updateRuntimeRunControls({
+              controls: {
+                modelId: 'openai/gpt-5-mini',
+                thinkingEffort: 'high',
+                approvalMode: 'auto_edit',
+              },
+              prompt: 'Review the latest diff before continuing.',
+            })
+            .catch(() => undefined)
+        }
+        type="button"
+      >
+        Queue runtime controls
       </button>
       <button onClick={() => void state.startAutonomousRun().catch(() => undefined)} type="button">
         Start autonomous run
@@ -1341,6 +1479,63 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('runtime-run-last-checkpoint-summary')).toHaveTextContent(
       'Recovered repository context before reconnecting the live feed.',
     )
+  })
+
+  it('queues pending runtime-run controls without reloading unrelated project state and projects pending-versus-active truth into agentView', async () => {
+    const setup = createMockAdapter({
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1'),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+    expect(screen.getByTestId('control-truth-source')).toHaveTextContent('runtime_run')
+    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('selected-thinking-effort')).toHaveTextContent('medium')
+    expect(screen.getByTestId('selected-approval-mode')).toHaveTextContent('suggest')
+    expect(screen.getByTestId('pending-control-model-id')).toHaveTextContent('none')
+
+    const initialSnapshotCalls = setup.getProjectSnapshot.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Queue runtime controls' }))
+
+    await waitFor(() => expect(screen.getByTestId('pending-control-model-id')).toHaveTextContent('openai/gpt-5-mini'))
+    expect(screen.getByTestId('active-control-model-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai/gpt-5-mini')
+    expect(screen.getByTestId('selected-thinking-effort')).toHaveTextContent('high')
+    expect(screen.getByTestId('selected-approval-mode')).toHaveTextContent('auto_edit')
+    expect(screen.getByTestId('selected-prompt')).toHaveTextContent('Review the latest diff before continuing.')
+    expect(screen.getByTestId('pending-control-revision')).toHaveTextContent('2')
+    expect(setup.getProjectSnapshot.mock.calls.length).toBe(initialSnapshotCalls)
+    expect(setup.updateRuntimeRunControls).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves the last truthful runtime-run control projection when queueing controls fails and refreshes only runtime-run metadata', async () => {
+    const setup = createMockAdapter({
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1'),
+      },
+      updateRuntimeRunControlErrors: {
+        'project-1': new Error('runtime controls queue failed'),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+
+    const initialSnapshotCalls = setup.getProjectSnapshot.mock.calls.length
+    const initialRuntimeRunCalls = setup.getRuntimeRun.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Queue runtime controls' }))
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-action-error')).toHaveTextContent('runtime controls queue failed'))
+    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai_codex')
+    expect(screen.getByTestId('selected-thinking-effort')).toHaveTextContent('medium')
+    expect(screen.getByTestId('selected-approval-mode')).toHaveTextContent('suggest')
+    expect(screen.getByTestId('pending-control-model-id')).toHaveTextContent('none')
+    expect(setup.getProjectSnapshot.mock.calls.length).toBe(initialSnapshotCalls)
+    expect(setup.getRuntimeRun.mock.calls.length).toBeGreaterThan(initialRuntimeRunCalls)
   })
 
   it('hydrates autonomous run and unit truth independently from the durable ledger', async () => {

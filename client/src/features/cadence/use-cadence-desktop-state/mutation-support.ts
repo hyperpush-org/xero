@@ -59,6 +59,7 @@ export type CadenceDesktopMutationActions = Pick<
   | 'inspectAutonomousRun'
   | 'cancelAutonomousRun'
   | 'startRuntimeRun'
+  | 'updateRuntimeRunControls'
   | 'startRuntimeSession'
   | 'stopRuntimeRun'
   | 'logoutRuntimeSession'

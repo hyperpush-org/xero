@@ -28,6 +28,10 @@ import type {
   RepositoryStatusView,
   ResumeHistoryEntryView,
   RuntimeAuthPhaseDto,
+  RuntimeRunActiveControlSnapshotView,
+  RuntimeRunApprovalModeDto,
+  RuntimeRunControlInputDto,
+  RuntimeRunPendingControlSnapshotView,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeSettingsDto,
@@ -70,7 +74,7 @@ export type OperatorActionStatus = 'idle' | 'running'
 export type ProjectRemovalStatus = 'idle' | 'running'
 export type AutonomousRunActionKind = 'start' | 'cancel' | 'inspect'
 export type AutonomousRunActionStatus = 'idle' | 'running'
-export type RuntimeRunActionKind = 'start' | 'stop'
+export type RuntimeRunActionKind = 'start' | 'update_controls' | 'stop'
 export type RuntimeRunActionStatus = 'idle' | 'running'
 
 export interface OperatorActionErrorView {
@@ -89,6 +93,25 @@ export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsSaveStatus = 'idle' | 'running'
 export type NotificationRouteHealthState = 'disabled' | 'idle' | 'pending' | 'healthy' | 'degraded'
 export type AgentTrustSignalState = 'healthy' | 'degraded' | 'unavailable'
+export type AgentRunControlTruthSource = 'runtime_run' | 'fallback'
+
+export interface RuntimeRunControlMutationRequest {
+  controls?: RuntimeRunControlInputDto | null
+  prompt?: string | null
+}
+
+export interface AgentRunControlSelectionView {
+  source: AgentRunControlTruthSource
+  modelId: string | null
+  thinkingEffort: ProviderModelThinkingEffortDto | null
+  approvalMode: RuntimeRunApprovalModeDto
+}
+
+export interface AgentRunPromptView {
+  text: string | null
+  queuedAt: string | null
+  hasQueuedPrompt: boolean
+}
 
 export interface AgentTrustSnapshotView {
   state: AgentTrustSignalState
@@ -247,7 +270,13 @@ export interface AgentPaneView {
   selectedProviderId?: RuntimeSettingsDto['providerId'] | null
   selectedProviderLabel?: string
   selectedProviderSource?: SelectedRuntimeProviderSource | null
+  controlTruthSource: AgentRunControlTruthSource
   selectedModelId?: string | null
+  selectedThinkingEffort: ProviderModelThinkingEffortDto | null
+  selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedPrompt: AgentRunPromptView
+  runtimeRunActiveControls: RuntimeRunActiveControlSnapshotView | null
+  runtimeRunPendingControls: RuntimeRunPendingControlSnapshotView | null
   providerModelCatalog: AgentProviderModelCatalogView
   selectedModelOption: AgentProviderModelView | null
   selectedModelThinkingEffortOptions: ProviderModelThinkingEffortDto[]
@@ -395,7 +424,8 @@ export interface UseCadenceDesktopStateResult {
   startAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
   inspectAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
   cancelAutonomousRun: (runId: string) => Promise<ProjectDetailView['autonomousRun'] | null>
-  startRuntimeRun: () => Promise<RuntimeRunView | null>
+  startRuntimeRun: (options?: RuntimeRunControlMutationRequest) => Promise<RuntimeRunView | null>
+  updateRuntimeRunControls: (request?: RuntimeRunControlMutationRequest) => Promise<RuntimeRunView | null>
   startRuntimeSession: () => Promise<RuntimeSessionView | null>
   stopRuntimeRun: (runId: string) => Promise<RuntimeRunView | null>
   logoutRuntimeSession: () => Promise<RuntimeSessionView | null>

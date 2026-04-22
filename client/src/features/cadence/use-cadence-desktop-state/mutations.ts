@@ -35,6 +35,7 @@ export function useCadenceDesktopMutations(
     inspectAutonomousRun,
     cancelAutonomousRun,
     startRuntimeRun,
+    updateRuntimeRunControls,
     stopRuntimeRun,
   } = useRunControlMutations(args)
   const {
@@ -62,6 +63,7 @@ export function useCadenceDesktopMutations(
     inspectAutonomousRun,
     cancelAutonomousRun,
     startRuntimeRun,
+    updateRuntimeRunControls,
     startRuntimeSession,
     stopRuntimeRun,
     logoutRuntimeSession,

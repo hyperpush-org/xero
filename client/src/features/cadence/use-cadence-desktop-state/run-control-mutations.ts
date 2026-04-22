@@ -1,7 +1,10 @@
 import { useCallback } from 'react'
 
 import { mapAutonomousRunInspection } from '@/src/lib/cadence-model/autonomous'
-import { mapRuntimeRun } from '@/src/lib/cadence-model/runtime'
+import {
+  mapRuntimeRun,
+  type RuntimeRunControlInputDto,
+} from '@/src/lib/cadence-model/runtime'
 
 import type {
   CadenceDesktopMutationActions,
@@ -23,9 +26,10 @@ export function useRunControlMutations({
   | 'inspectAutonomousRun'
   | 'cancelAutonomousRun'
   | 'startRuntimeRun'
+  | 'updateRuntimeRunControls'
   | 'stopRuntimeRun'
 > {
-  const { activeProjectIdRef } = refs
+  const { activeProjectIdRef, activeProjectRef } = refs
   const {
     setAutonomousRunActionStatus,
     setPendingAutonomousRunAction,
@@ -163,7 +167,7 @@ export function useRunControlMutations({
     ],
   )
 
-  const startRuntimeRun = useCallback(async () => {
+  const startRuntimeRun = useCallback(async (options?: { controls?: RuntimeRunControlInputDto | null; prompt?: string | null }) => {
     const projectId = getActiveProjectId(
       activeProjectIdRef,
       'Select an imported project before starting a supervised runtime run.',
@@ -174,7 +178,10 @@ export function useRunControlMutations({
     setRuntimeRunActionError(null)
 
     try {
-      const response = await adapter.startRuntimeRun(projectId)
+      const response = await adapter.startRuntimeRun(projectId, {
+        initialControls: options?.controls ?? null,
+        initialPrompt: options?.prompt ?? null,
+      })
       return applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
         clearGlobalError: false,
         loadError: null,
@@ -207,6 +214,64 @@ export function useRunControlMutations({
     setRuntimeRunActionStatus,
     syncRuntimeRun,
   ])
+
+  const updateRuntimeRunControls = useCallback(
+    async (request: { controls?: RuntimeRunControlInputDto | null; prompt?: string | null } = {}) => {
+      const projectId = getActiveProjectId(
+        activeProjectIdRef,
+        'Select an imported project before queueing supervised runtime-run controls.',
+      )
+      const runId = activeProjectRef.current?.runtimeRun?.runId?.trim()
+      if (!runId) {
+        throw new Error('Cadence cannot queue runtime-run controls until a supervised runtime run exists for this project.')
+      }
+
+      setRuntimeRunActionStatus('running')
+      setPendingRuntimeRunAction('update_controls')
+      setRuntimeRunActionError(null)
+
+      try {
+        const response = await adapter.updateRuntimeRunControls({
+          projectId,
+          runId,
+          controls: request.controls ?? null,
+          prompt: request.prompt ?? null,
+        })
+        return applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
+          clearGlobalError: false,
+          loadError: null,
+        })
+      } catch (error) {
+        setRuntimeRunActionError(
+          getOperatorActionError(
+            error,
+            'Cadence could not queue runtime-run control changes for this project.',
+          ),
+        )
+
+        try {
+          await syncRuntimeRun(projectId)
+        } catch {
+          // Ignore follow-up refresh failures and preserve the last truthful state.
+        }
+
+        throw error
+      } finally {
+        setRuntimeRunActionStatus('idle')
+        setPendingRuntimeRunAction(null)
+      }
+    },
+    [
+      activeProjectIdRef,
+      activeProjectRef,
+      adapter,
+      applyRuntimeRunUpdate,
+      setPendingRuntimeRunAction,
+      setRuntimeRunActionError,
+      setRuntimeRunActionStatus,
+      syncRuntimeRun,
+    ],
+  )
 
   const stopRuntimeRun = useCallback(
     async (runId: string) => {
@@ -258,6 +323,7 @@ export function useRunControlMutations({
     inspectAutonomousRun,
     cancelAutonomousRun,
     startRuntimeRun,
+    updateRuntimeRunControls,
     stopRuntimeRun,
   }
 }

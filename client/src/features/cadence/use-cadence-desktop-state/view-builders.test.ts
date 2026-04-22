@@ -163,6 +163,33 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
 function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView {
   return {
     runId: 'run-project-1',
+    providerId: 'openrouter',
+    controls: {
+      active: {
+        modelId: 'openai/gpt-4.1-mini',
+        thinkingEffort: 'medium',
+        thinkingEffortLabel: 'Medium',
+        approvalMode: 'suggest',
+        approvalModeLabel: 'Suggest',
+        revision: 1,
+        appliedAt: '2026-04-20T12:00:00Z',
+      },
+      pending: null,
+      selected: {
+        source: 'active',
+        modelId: 'openai/gpt-4.1-mini',
+        thinkingEffort: 'medium',
+        thinkingEffortLabel: 'Medium',
+        approvalMode: 'suggest',
+        approvalModeLabel: 'Suggest',
+        revision: 1,
+        effectiveAt: '2026-04-20T12:00:00Z',
+        queuedPrompt: null,
+        queuedPromptAt: null,
+        hasQueuedPrompt: false,
+      },
+      hasPendingControls: false,
+    },
     isFailed: false,
     isStale: false,
     isActive: true,
@@ -628,6 +655,204 @@ describe('view builders', () => {
     })
     expect(result.view?.selectedModelThinkingEffortOptions).toEqual([])
     expect(result.view?.selectedModelDefaultThinkingEffort).toBeNull()
+  })
+
+  it('buildAgentView prefers non-terminal runtime-run controls over provider defaults and keeps active-versus-pending truth separate', () => {
+    const project = makeProject()
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles(),
+      runtimeSession: makeRuntimeSession({ providerId: 'openrouter', runtimeKind: 'openrouter' }),
+      runtimeSettings: makeRuntimeSettings(),
+      activeProviderModelCatalog: makeProviderModelCatalog(),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
+      runtimeRun: makeRuntimeRun({
+        providerId: 'openrouter',
+        controls: {
+          active: {
+            modelId: 'openai/gpt-4.1-mini',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'suggest',
+            approvalModeLabel: 'Suggest',
+            revision: 1,
+            appliedAt: '2026-04-20T12:00:00Z',
+          },
+          pending: {
+            modelId: 'anthropic/claude-3.5-haiku',
+            thinkingEffort: 'low',
+            thinkingEffortLabel: 'Low',
+            approvalMode: 'auto_edit',
+            approvalModeLabel: 'Auto edit',
+            revision: 2,
+            queuedAt: '2026-04-20T12:05:00Z',
+            queuedPrompt: 'Review the diff before continuing.',
+            queuedPromptAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+          selected: {
+            source: 'pending',
+            modelId: 'anthropic/claude-3.5-haiku',
+            thinkingEffort: 'low',
+            thinkingEffortLabel: 'Low',
+            approvalMode: 'auto_edit',
+            approvalModeLabel: 'Auto edit',
+            revision: 2,
+            effectiveAt: '2026-04-20T12:05:00Z',
+            queuedPrompt: 'Review the diff before continuing.',
+            queuedPromptAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+          hasPendingControls: true,
+        },
+      }),
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: [],
+      autonomousRecentArtifacts: [],
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: makeRuntimeStream(),
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view).toMatchObject({
+      controlTruthSource: 'runtime_run',
+      selectedModelId: 'anthropic/claude-3.5-haiku',
+      selectedThinkingEffort: 'low',
+      selectedApprovalMode: 'auto_edit',
+      selectedPrompt: {
+        text: 'Review the diff before continuing.',
+        queuedAt: '2026-04-20T12:05:00Z',
+        hasQueuedPrompt: true,
+      },
+      runtimeRunActiveControls: {
+        modelId: 'openai/gpt-4.1-mini',
+        revision: 1,
+      },
+      runtimeRunPendingControls: {
+        modelId: 'anthropic/claude-3.5-haiku',
+        revision: 2,
+      },
+    })
+    expect(result.view?.selectedModelOption).toMatchObject({
+      modelId: 'anthropic/claude-3.5-haiku',
+      availability: 'available',
+    })
+  })
+
+  it('buildAgentView falls back to provider/catalog truth after the runtime run becomes terminal while preserving the final run snapshots', () => {
+    const project = makeProject()
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles(),
+      runtimeSession: makeRuntimeSession({ providerId: 'openrouter', runtimeKind: 'openrouter' }),
+      runtimeSettings: makeRuntimeSettings(),
+      activeProviderModelCatalog: makeProviderModelCatalog(),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
+      runtimeRun: makeRuntimeRun({
+        providerId: 'openrouter',
+        isActive: false,
+        isTerminal: true,
+        status: 'stopped',
+        statusLabel: 'Run stopped',
+        controls: {
+          active: {
+            modelId: 'anthropic/claude-3.5-haiku',
+            thinkingEffort: 'low',
+            thinkingEffortLabel: 'Low',
+            approvalMode: 'yolo',
+            approvalModeLabel: 'YOLO',
+            revision: 3,
+            appliedAt: '2026-04-20T12:10:00Z',
+          },
+          pending: null,
+          selected: {
+            source: 'active',
+            modelId: 'anthropic/claude-3.5-haiku',
+            thinkingEffort: 'low',
+            thinkingEffortLabel: 'Low',
+            approvalMode: 'yolo',
+            approvalModeLabel: 'YOLO',
+            revision: 3,
+            effectiveAt: '2026-04-20T12:10:00Z',
+            queuedPrompt: null,
+            queuedPromptAt: null,
+            hasQueuedPrompt: false,
+          },
+          hasPendingControls: false,
+        },
+      }),
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: [],
+      autonomousRecentArtifacts: [],
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: makeRuntimeStream(),
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view).toMatchObject({
+      controlTruthSource: 'fallback',
+      selectedModelId: 'openai/gpt-4.1-mini',
+      selectedThinkingEffort: 'high',
+      selectedApprovalMode: 'suggest',
+      runtimeRunActiveControls: {
+        modelId: 'anthropic/claude-3.5-haiku',
+        approvalMode: 'yolo',
+        revision: 3,
+      },
+      runtimeRunPendingControls: null,
+    })
   })
 
   it('buildExecutionView keeps diff-scope counts and durable verification copy aligned with repository truth', () => {

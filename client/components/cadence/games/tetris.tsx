@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react"
-import { Pause, Play, RotateCcw } from "lucide-react"
+import { ArrowLeft, Pause, Play, RotateCcw, Settings2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   ARR_MS,
@@ -18,7 +18,6 @@ import {
   pieceCells,
   reduce,
   type GameState,
-  type Piece,
   type PieceType,
 } from "./tetris-engine"
 
@@ -87,17 +86,17 @@ function drawFilledCell(
   ctx.fillRect(x, y, size, size)
 
   const inset = 1
-  // top/left highlight
-  ctx.fillStyle = "rgba(255,255,255,0.22)"
-  ctx.fillRect(x + inset, y + inset, size - inset * 2, Math.max(1, size * 0.16))
-  ctx.fillRect(x + inset, y + inset, Math.max(1, size * 0.16), size - inset * 2)
-  // bottom/right shadow
-  ctx.fillStyle = "rgba(0,0,0,0.32)"
-  const shadow = Math.max(1, size * 0.14)
+  // top/left highlight — brighter so pieces pop against the lighter field
+  ctx.fillStyle = "rgba(255,255,255,0.3)"
+  ctx.fillRect(x + inset, y + inset, size - inset * 2, Math.max(1, size * 0.18))
+  ctx.fillRect(x + inset, y + inset, Math.max(1, size * 0.18), size - inset * 2)
+  // bottom/right shadow — softer so cells feel less heavy
+  ctx.fillStyle = "rgba(0,0,0,0.22)"
+  const shadow = Math.max(1, size * 0.12)
   ctx.fillRect(x + inset, y + size - inset - shadow, size - inset * 2, shadow)
   ctx.fillRect(x + size - inset - shadow, y + inset, shadow, size - inset * 2)
 
-  ctx.strokeStyle = "rgba(0,0,0,0.5)"
+  ctx.strokeStyle = "rgba(0,0,0,0.38)"
   ctx.lineWidth = 1
   ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1)
 }
@@ -110,10 +109,10 @@ function drawGhostCell(
   color: string,
 ) {
   ctx.save()
-  ctx.globalAlpha = 0.28
+  ctx.globalAlpha = 0.18
   ctx.fillStyle = color
   ctx.fillRect(x + 2, y + 2, size - 4, size - 4)
-  ctx.globalAlpha = 0.75
+  ctx.globalAlpha = 0.85
   ctx.strokeStyle = color
   ctx.lineWidth = 1.5
   ctx.strokeRect(x + 2, y + 2, size - 4, size - 4)
@@ -139,7 +138,7 @@ function drawGrid(
   size: number,
 ) {
   ctx.save()
-  ctx.strokeStyle = "rgba(255,255,255,0.04)"
+  ctx.strokeStyle = "rgba(148,163,184,0.09)"
   ctx.lineWidth = 1
   ctx.beginPath()
   for (let x = 0; x <= cols; x++) {
@@ -220,7 +219,12 @@ function setupCanvas(
 // Component
 // ---------------------------------------------------------------------------
 
-const NEXT_COUNT = 5
+const NEXT_COUNT = 4
+const PANEL_COLS = 5
+const HORIZONTAL_CHROME = 32 // inner flex padding (16) + 2 column gaps (16)
+const VERTICAL_CHROME = 58 // inner flex padding (16) + bottom strip (~36) + border (1) + safety
+const CELL_MIN = 10
+const CELL_MAX = 30
 
 interface TetrisProps {
   active: boolean
@@ -235,6 +239,7 @@ export function Tetris({ active }: TetrisProps) {
 
   const [cellSize, setCellSize] = useState(20)
   const [hasFocus, setHasFocus] = useState(false)
+  const [showKeybinds, setShowKeybinds] = useState(false)
 
   const inputRef = useRef({
     left: newRepeatKey(),
@@ -254,11 +259,14 @@ export function Tetris({ active }: TetrisProps) {
     const measure = () => {
       const rect = container.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return
-      // Side panels claim ~4.8 cols combined (hold 4 wide + next 4 wide + gaps).
-      // Gaps ≈ 1 cell of slack total.
-      const widthBudget = rect.width / (BOARD_WIDTH + 9.5)
-      const heightBudget = rect.height / (BOARD_HEIGHT + 0.5)
-      const size = Math.max(8, Math.floor(Math.min(widthBudget, heightBudget)))
+      // Horizontal budget: playfield (10 cols) + two side panels (PANEL_COLS each) + chrome.
+      const widthBudget = (rect.width - HORIZONTAL_CHROME) / (BOARD_WIDTH + PANEL_COLS * 2)
+      // Vertical budget: playfield (20 rows) plus chrome for bottom strip + padding.
+      const heightBudget = (rect.height - VERTICAL_CHROME) / BOARD_HEIGHT
+      const size = Math.max(
+        CELL_MIN,
+        Math.min(CELL_MAX, Math.floor(Math.min(widthBudget, heightBudget))),
+      )
       setCellSize(size)
     }
     measure()
@@ -306,6 +314,10 @@ export function Tetris({ active }: TetrisProps) {
       dispatch({ type: "pause" })
     }
   }, [active, state.status])
+
+  useEffect(() => {
+    if (state.status !== "paused") setShowKeybinds(false)
+  }, [state.status])
 
   useEffect(() => {
     const onBlur = () => {
@@ -429,8 +441,11 @@ export function Tetris({ active }: TetrisProps) {
     const ctx = setupCanvas(canvas, fieldWidth, fieldHeight)
     if (!ctx) return
 
-    // Background
-    ctx.fillStyle = "#05060a"
+    // Background — subtle vertical gradient so the field doesn't read as flat black.
+    const bg = ctx.createLinearGradient(0, 0, 0, fieldHeight)
+    bg.addColorStop(0, "#141a2e")
+    bg.addColorStop(1, "#0c1122")
+    ctx.fillStyle = bg
     ctx.fillRect(0, 0, fieldWidth, fieldHeight)
     drawGrid(ctx, BOARD_WIDTH, BOARD_HEIGHT, cellSize)
 
@@ -487,7 +502,7 @@ export function Tetris({ active }: TetrisProps) {
     const cssH = cellSize * 3
     const ctx = setupCanvas(canvas, cssW, cssH)
     if (!ctx) return
-    ctx.fillStyle = "#05060a"
+    ctx.fillStyle = "#10162a"
     ctx.fillRect(0, 0, cssW, cssH)
     if (state.hold) {
       const previewSize = Math.max(6, Math.floor(cellSize * 0.82))
@@ -511,7 +526,7 @@ export function Tetris({ active }: TetrisProps) {
       const cssH = cellSize * 3
       const ctx = setupCanvas(canvas, cssW, cssH)
       if (!ctx) continue
-      ctx.fillStyle = "#05060a"
+      ctx.fillStyle = "#10162a"
       ctx.fillRect(0, 0, cssW, cssH)
       const type = previewQueue[i]
       if (type) {
@@ -566,7 +581,7 @@ export function Tetris({ active }: TetrisProps) {
     <div
       aria-label="Tetris"
       className={cn(
-        "relative flex aspect-[4/3] w-full max-w-xl select-none flex-col overflow-hidden rounded-md border border-border bg-black outline-none",
+        "relative flex aspect-[4/3] w-full max-w-xl select-none flex-col overflow-hidden rounded-md border border-white/10 bg-gradient-to-br from-[#181f36] via-[#10162a] to-[#0b1020] shadow-[0_10px_40px_-12px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.06)] outline-none",
         "focus-visible:ring-2 focus-visible:ring-primary/60",
       )}
       onBlur={() => setHasFocus(false)}
@@ -577,59 +592,75 @@ export function Tetris({ active }: TetrisProps) {
       role="application"
       tabIndex={0}
     >
-      <div
-        ref={(el) => {
-          // Track cell sizing off this inner box so border/rounding doesn't eat space.
-        }}
-        className="flex min-h-0 flex-1 items-stretch justify-center gap-2 p-2"
-      >
-        {/* Left column — hold + controls */}
+      <div className="flex min-h-0 flex-1 items-stretch justify-center gap-2 p-2">
+        {/* Left column — hold + stats */}
         <div
           className="flex min-h-0 shrink-0 flex-col gap-2"
-          style={{ width: cellSize * 4 }}
+          style={{ width: cellSize * PANEL_COLS }}
         >
           <SidePanel label="Hold">
-            <canvas ref={holdRef} />
+            <canvas
+              ref={holdRef}
+              style={{ width: `${cellSize * 4}px`, height: `${cellSize * 3}px` }}
+            />
           </SidePanel>
           <StatBlock label="Score" value={state.score.toLocaleString()} primary />
-          <div className="grid grid-cols-2 gap-[5px]">
-            <StatBlock label="Level" value={String(state.level)} />
-            <StatBlock label="Lines" value={String(state.lines)} />
-          </div>
+          <StatBlock label="Level" value={String(state.level)} />
+          <StatBlock label="Lines" value={String(state.lines)} />
         </div>
 
         {/* Playfield */}
         <div className="relative flex min-h-0 shrink-0 flex-col items-center">
           <canvas
-            className="rounded-sm border border-white/10 shadow-[0_0_24px_rgba(0,0,0,0.6)_inset]"
+            className="rounded-sm border border-white/15 shadow-[0_0_18px_rgba(0,0,0,0.45)_inset,0_4px_20px_-8px_rgba(0,0,0,0.6)]"
             ref={playfieldRef}
+            style={{ width: `${fieldWidth}px`, height: `${fieldHeight}px` }}
           />
           {overlay ? (
             <div
               aria-live="polite"
               className="pointer-events-none absolute inset-0 flex items-center justify-center"
             >
-              <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-md bg-black/70 px-5 py-4 text-center backdrop-blur-sm">
-                <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-white/60">
-                  {overlay.eyebrow}
-                </div>
-                <div className="text-[18px] font-semibold text-white">{overlay.title}</div>
-                {overlay.detail ? (
-                  <div className="font-mono text-[11px] tabular-nums text-white/70">
-                    {overlay.detail}
-                  </div>
-                ) : null}
-                <button
-                  className="mt-1 flex items-center gap-2 rounded-sm border border-white/40 bg-white/5 px-4 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.24em] text-white transition-colors hover:bg-white/10"
-                  onClick={handleStartClick}
-                  type="button"
-                >
-                  <Play className="h-3 w-3 fill-current" />
-                  {overlay.button}
-                </button>
-                <div className="font-mono text-[9px] uppercase tracking-[0.2em] text-white/40">
-                  {overlay.hint}
-                </div>
+              <div className="pointer-events-auto flex min-w-[240px] flex-col items-center gap-3 rounded-md border border-white/10 bg-[#0a0e1c]/85 px-5 py-4 text-center shadow-[0_12px_36px_-8px_rgba(0,0,0,0.65)] backdrop-blur-md">
+                {state.status === "paused" && showKeybinds ? (
+                  <KeybindsView onBack={() => setShowKeybinds(false)} />
+                ) : (
+                  <>
+                    <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-white/60">
+                      {overlay.eyebrow}
+                    </div>
+                    <div className="text-[18px] font-semibold text-white">
+                      {overlay.title}
+                    </div>
+                    {overlay.detail ? (
+                      <div className="font-mono text-[11px] tabular-nums text-white/70">
+                        {overlay.detail}
+                      </div>
+                    ) : null}
+                    <button
+                      className="mt-1 flex items-center gap-2 rounded-sm border border-white/40 bg-white/5 px-4 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.24em] text-white transition-colors hover:bg-white/10"
+                      onClick={handleStartClick}
+                      type="button"
+                    >
+                      <Play className="h-3 w-3 fill-current" />
+                      {overlay.button}
+                    </button>
+                    <div className="font-mono text-[9px] uppercase tracking-[0.2em] text-white/40">
+                      {overlay.hint}
+                    </div>
+                    {state.status === "paused" ? (
+                      <button
+                        aria-label="Show controls"
+                        className="mt-1 flex items-center gap-1.5 rounded-sm border border-white/15 bg-white/5 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.22em] text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                        onClick={() => setShowKeybinds(true)}
+                        type="button"
+                      >
+                        <Settings2 className="h-3 w-3" />
+                        Controls
+                      </button>
+                    ) : null}
+                  </>
+                )}
               </div>
             </div>
           ) : null}
@@ -638,7 +669,7 @@ export function Tetris({ active }: TetrisProps) {
         {/* Right column — next queue */}
         <div
           className="flex min-h-0 shrink-0 flex-col gap-2"
-          style={{ width: cellSize * 4 }}
+          style={{ width: cellSize * PANEL_COLS }}
         >
           <SidePanel label="Next" className="flex-1">
             <div className="flex flex-col items-stretch gap-[2px]">
@@ -648,6 +679,7 @@ export function Tetris({ active }: TetrisProps) {
                   ref={(el) => {
                     nextRefs.current[i] = el
                   }}
+                  style={{ width: `${cellSize * 4}px`, height: `${cellSize * 3}px` }}
                 />
               ))}
             </div>
@@ -656,19 +688,14 @@ export function Tetris({ active }: TetrisProps) {
       </div>
 
       {/* Bottom control strip */}
-      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-white/10 bg-black/60 px-3 py-1.5 font-mono text-[9.5px] uppercase tracking-[0.22em] text-white/55">
-        <div className="flex items-center gap-3">
-          <Legend keys="← →" label="Move" />
-          <Legend keys="↑ / X" label="Rotate" />
-          <Legend keys="Z" label="CCW" />
-          <Legend keys="↓" label="Soft" />
-          <Legend keys="Space" label="Drop" />
-          <Legend keys="C" label="Hold" />
+      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-white/10 bg-white/[0.025] px-3 font-mono text-[9.5px] uppercase tracking-[0.22em] text-white/60">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-white/45">Tetris</span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             aria-label={state.status === "paused" ? "Resume" : "Pause"}
-            className="flex h-6 items-center gap-1 rounded-sm border border-white/20 bg-white/5 px-2 transition-colors hover:bg-white/10 disabled:opacity-40"
+            className="flex h-6 w-6 items-center justify-center rounded-sm border border-white/20 bg-white/10 text-white/80 transition-colors hover:border-white/30 hover:bg-white/15 hover:text-white disabled:opacity-40"
             disabled={state.status !== "playing" && state.status !== "paused"}
             onClick={handlePauseToggle}
             type="button"
@@ -678,17 +705,15 @@ export function Tetris({ active }: TetrisProps) {
             ) : (
               <Pause className="h-3 w-3 fill-current" />
             )}
-            <span>{state.status === "paused" ? "Resume" : "Pause"}</span>
           </button>
           <button
             aria-label="Restart"
-            className="flex h-6 items-center gap-1 rounded-sm border border-white/20 bg-white/5 px-2 transition-colors hover:bg-white/10 disabled:opacity-40"
+            className="flex h-6 w-6 items-center justify-center rounded-sm border border-white/20 bg-white/10 text-white/80 transition-colors hover:border-white/30 hover:bg-white/15 hover:text-white disabled:opacity-40"
             disabled={state.status === "idle"}
             onClick={handleRestartClick}
             type="button"
           >
             <RotateCcw className="h-3 w-3" />
-            <span>Restart</span>
           </button>
         </div>
       </div>
@@ -721,11 +746,11 @@ function SidePanel({
   return (
     <div
       className={cn(
-        "flex flex-col rounded-sm border border-white/10 bg-black/50",
+        "flex flex-col rounded-sm border border-white/10 bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
         className,
       )}
     >
-      <div className="border-b border-white/10 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.24em] text-white/55">
+      <div className="border-b border-white/10 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.24em] text-white/65">
         {label}
       </div>
       <div className="flex flex-1 items-center justify-center p-1.5">{children}</div>
@@ -743,14 +768,14 @@ function StatBlock({
   primary?: boolean
 }) {
   return (
-    <div className="flex flex-col rounded-sm border border-white/10 bg-black/50 px-2 py-1.5">
-      <span className="font-mono text-[8.5px] uppercase tracking-[0.22em] text-white/50">
+    <div className="flex flex-col rounded-sm border border-white/10 bg-white/[0.04] px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <span className="font-mono text-[8.5px] uppercase tracking-[0.22em] text-white/60">
         {label}
       </span>
       <span
         className={cn(
           "mt-0.5 font-mono tabular-nums leading-none",
-          primary ? "text-[17px] text-primary" : "text-[13px] text-white/95",
+          primary ? "text-[17px] text-primary" : "text-[13px] text-white",
         )}
       >
         {value}
@@ -759,14 +784,60 @@ function StatBlock({
   )
 }
 
-function Legend({ keys, label }: { keys: string; label: string }) {
+// ---------------------------------------------------------------------------
+// Keybind settings panel (shown inside the pause overlay).
+// ---------------------------------------------------------------------------
+
+const KEYBINDS: Array<{ keys: string[]; label: string }> = [
+  { keys: ["←", "→"], label: "Move" },
+  { keys: ["↑", "X"], label: "Rotate CW" },
+  { keys: ["Z"], label: "Rotate CCW" },
+  { keys: ["↓"], label: "Soft drop" },
+  { keys: ["Space"], label: "Hard drop" },
+  { keys: ["C", "Shift"], label: "Hold" },
+  { keys: ["Esc", "P"], label: "Pause" },
+  { keys: ["R"], label: "Restart" },
+]
+
+function KeybindsView({ onBack }: { onBack: () => void }) {
   return (
-    <span className="flex items-center gap-1">
-      <kbd className="rounded-[3px] border border-white/25 bg-white/10 px-1 py-[1px] font-mono text-[9px] tracking-normal text-white/90">
-        {keys}
-      </kbd>
-      <span>{label}</span>
-    </span>
+    <>
+      <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-white/60">
+        Controls
+      </div>
+      <ul className="mt-0.5 flex flex-col gap-1.5">
+        {KEYBINDS.map((bind) => (
+          <li
+            className="flex items-center justify-between gap-6 text-left font-mono text-[11px] text-white/85"
+            key={bind.label}
+          >
+            <span className="flex items-center gap-1">
+              {bind.keys.map((k, i) => (
+                <span className="flex items-center gap-1" key={k}>
+                  <kbd className="rounded-[3px] border border-white/25 bg-white/10 px-1.5 py-[1px] font-mono text-[10px] text-white/95">
+                    {k}
+                  </kbd>
+                  {i < bind.keys.length - 1 ? (
+                    <span className="text-white/40">/</span>
+                  ) : null}
+                </span>
+              ))}
+            </span>
+            <span className="uppercase tracking-[0.18em] text-white/70">
+              {bind.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <button
+        className="mt-2 flex items-center gap-1.5 rounded-sm border border-white/30 bg-white/5 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] text-white transition-colors hover:bg-white/10"
+        onClick={onBack}
+        type="button"
+      >
+        <ArrowLeft className="h-3 w-3" />
+        Back
+      </button>
+    </>
   )
 }
 

@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useRef, useState } from "react"
 import { ChevronRight, Play, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Tetris } from "./games/tetris"
 
 const MIN_WIDTH = 200
 const MAX_WIDTH = 1200
@@ -689,7 +690,7 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
         <div className="flex shrink-0 items-center justify-center border-b border-border/70 bg-background/40 px-6 py-7">
-          <GameCanvas glyph={game.glyph} />
+          {game.id === "tetris" ? <Tetris active /> : <GameCanvas glyph={game.glyph} />}
         </div>
 
         <div className="grid grid-cols-3 gap-px border-b border-border/70 bg-border/60">

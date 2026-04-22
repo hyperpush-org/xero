@@ -348,7 +348,14 @@ function softDropOne(state: GameState): GameState {
   if (!state.current) return state
   const next = { ...state.current, y: state.current.y + 1 }
   if (!isValid(state.board, next)) return state
-  return { ...state, current: next, score: state.score + 1, dropTimer: 0 }
+  return {
+    ...state,
+    current: next,
+    score: state.score + 1,
+    dropTimer: 0,
+    lockTimer: 0,
+    lockResets: 0,
+  }
 }
 
 function holdPiece(state: GameState): GameState {
@@ -418,7 +425,7 @@ function tickState(state: GameState, dt: number): GameState {
   while (dropTimer >= interval && steps < 4) {
     const moved: Piece = { ...(s.current as Piece), y: (s.current as Piece).y + 1 }
     if (isValid(s.board, moved)) {
-      s = { ...s, current: moved }
+      s = { ...s, current: moved, lockTimer: 0, lockResets: 0 }
       dropTimer -= interval
       steps++
     } else {
