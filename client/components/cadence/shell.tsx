@@ -87,6 +87,10 @@ export function CadenceShell({
     await w.startDragging()
   }
 
+  const stopTitlebarMouseEventPropagation = (e: React.MouseEvent<HTMLElement>) => {
+    e.stopPropagation()
+  }
+
   // ------------------------------------------------------------------
   // Shared pieces
   // ------------------------------------------------------------------
@@ -107,6 +111,8 @@ export function CadenceShell({
     <nav
       className="titlebar-no-drag flex items-center gap-1"
       data-titlebar-no-drag="true"
+      onDoubleClick={stopTitlebarMouseEventPropagation}
+      onMouseDown={stopTitlebarMouseEventPropagation}
     >
       {NAV_ITEMS.map(({ id, label }) => (
         <button
@@ -168,6 +174,15 @@ export function CadenceShell({
 
   const Divider = <div className="h-4 w-px shrink-0 bg-border" />
 
+  const DragSpacer = (
+    <div
+      aria-hidden="true"
+      className="titlebar-drag-region min-w-0 flex-1 self-stretch"
+      data-tauri-drag-region
+      onMouseDown={(e) => void handleTitlebarPointerDown(e)}
+    />
+  )
+
   // ------------------------------------------------------------------
   // macOS traffic lights
   // ------------------------------------------------------------------
@@ -176,6 +191,8 @@ export function CadenceShell({
     <div
       className="titlebar-no-drag mr-5 flex items-center gap-2"
       data-titlebar-no-drag="true"
+      onDoubleClick={stopTitlebarMouseEventPropagation}
+      onMouseDown={stopTitlebarMouseEventPropagation}
     >
       <button
         aria-label="Close window"
@@ -211,6 +228,8 @@ export function CadenceShell({
     <div
       className="titlebar-no-drag flex h-full items-stretch"
       data-titlebar-no-drag="true"
+      onDoubleClick={stopTitlebarMouseEventPropagation}
+      onMouseDown={stopTitlebarMouseEventPropagation}
     >
       <button
         aria-label="Minimize window"
@@ -260,24 +279,27 @@ export function CadenceShell({
   if (platform === "macos") {
     // macOS: [traffic-lights] [logo] [|] [sidebar-toggle] ← drag zone → [nav] [|] [games] [settings]
     titlebar = (
-      <header
-        className="titlebar-drag-region flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3"
-        data-tauri-drag-region
-        onMouseDown={(e) => void handleTitlebarPointerDown(e)}
-      >
+      <header className="flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3">
         {TrafficLights}
         {Logo}
         {!chromeOnly ? (
-          <div className="titlebar-no-drag ml-3 flex items-center gap-3" data-titlebar-no-drag="true">
+          <div
+            className="titlebar-no-drag ml-3 flex items-center gap-3 shrink-0"
+            data-titlebar-no-drag="true"
+            onDoubleClick={stopTitlebarMouseEventPropagation}
+            onMouseDown={stopTitlebarMouseEventPropagation}
+          >
             {Divider}
             {SidebarToggleBtn}
           </div>
         ) : null}
-        {/* center is pure drag zone */}
+        {DragSpacer}
         {!chromeOnly ? (
           <div
-            className="titlebar-no-drag ml-auto flex items-center gap-2"
+            className="titlebar-no-drag flex items-center gap-2 shrink-0"
             data-titlebar-no-drag="true"
+            onDoubleClick={stopTitlebarMouseEventPropagation}
+            onMouseDown={stopTitlebarMouseEventPropagation}
           >
             {NavButtons}
             <div className="mx-1.5 h-4 w-px bg-border" />
@@ -290,14 +312,12 @@ export function CadenceShell({
   } else {
     // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [games] [settings] [|] [min][max][close]
     titlebar = (
-      <header
-        className="titlebar-drag-region flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3"
-        data-tauri-drag-region
-        onMouseDown={(e) => void handleTitlebarPointerDown(e)}
-      >
+      <header className="flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3">
         <div
-          className="titlebar-no-drag flex items-center"
+          className="titlebar-no-drag flex items-center shrink-0"
           data-titlebar-no-drag="true"
+          onDoubleClick={stopTitlebarMouseEventPropagation}
+          onMouseDown={stopTitlebarMouseEventPropagation}
         >
           {Logo}
           {!chromeOnly ? (
@@ -309,10 +329,12 @@ export function CadenceShell({
             </>
           ) : null}
         </div>
-        {/* center drag zone */}
+        {DragSpacer}
         <div
-          className="titlebar-no-drag ml-auto flex items-center"
+          className="titlebar-no-drag flex items-center shrink-0"
           data-titlebar-no-drag="true"
+          onDoubleClick={stopTitlebarMouseEventPropagation}
+          onMouseDown={stopTitlebarMouseEventPropagation}
         >
           {!chromeOnly ? (
             <>
