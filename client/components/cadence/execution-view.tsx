@@ -103,16 +103,14 @@ function EditorView({
   const [findState, setFindState] = useState<{
     open: boolean
     query: string
-    showReplace: boolean
     token: number
-  }>({ open: false, query: '', showReplace: false, token: 0 })
+  }>({ open: false, query: '', token: 0 })
 
   const handleOpenFind = useCallback(
-    ({ withReplace, initialQuery }: { withReplace: boolean; initialQuery: string }) => {
+    ({ initialQuery }: { withReplace: boolean; initialQuery: string }) => {
       setFindState((prev) => ({
         open: true,
         query: initialQuery || prev.query,
-        showReplace: withReplace || prev.showReplace,
         token: prev.token + 1,
       }))
     },
@@ -131,7 +129,6 @@ function EditorView({
           view={editorView}
           onClose={handleCloseFind}
           initialQuery={findState.query}
-          showReplace={findState.showReplace}
           openToken={findState.token}
         />
       ) : (

@@ -196,6 +196,68 @@ export const deleteProjectEntryResponseSchema = z
   })
   .strict()
 
+export const searchProjectRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    query: z.string().min(1),
+    caseSensitive: z.boolean().default(false),
+    wholeWord: z.boolean().default(false),
+    regex: z.boolean().default(false),
+    includeGlobs: z.array(z.string().trim().min(1)).default([]),
+    excludeGlobs: z.array(z.string().trim().min(1)).default([]),
+    maxResults: z.number().int().positive().optional(),
+  })
+  .strict()
+
+export const searchMatchSchema = z
+  .object({
+    line: z.number().int().positive(),
+    column: z.number().int().positive(),
+    matchStart: z.number().int().nonnegative(),
+    matchEnd: z.number().int().nonnegative(),
+    preview: z.string(),
+  })
+  .strict()
+
+export const searchFileResultSchema = z
+  .object({
+    path: projectTreePathSchema,
+    matches: z.array(searchMatchSchema),
+  })
+  .strict()
+
+export const searchProjectResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    totalMatches: z.number().int().nonnegative(),
+    totalFiles: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    files: z.array(searchFileResultSchema),
+  })
+  .strict()
+
+export const replaceInProjectRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    query: z.string().min(1),
+    replacement: z.string(),
+    caseSensitive: z.boolean().default(false),
+    wholeWord: z.boolean().default(false),
+    regex: z.boolean().default(false),
+    includeGlobs: z.array(z.string().trim().min(1)).default([]),
+    excludeGlobs: z.array(z.string().trim().min(1)).default([]),
+    targetPaths: z.array(projectTreePathSchema).optional(),
+  })
+  .strict()
+
+export const replaceInProjectResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    filesChanged: z.number().int().nonnegative(),
+    totalReplacements: z.number().int().nonnegative(),
+  })
+  .strict()
+
 export const projectUpdatedPayloadSchema = z.object({
   project: projectSummarySchema,
   reason: z.enum(['imported', 'refreshed', 'metadata_changed']),
@@ -228,6 +290,12 @@ export type RenameProjectEntryResponseDto = z.infer<typeof renameProjectEntryRes
 export type DeleteProjectEntryResponseDto = z.infer<typeof deleteProjectEntryResponseSchema>
 export type ProjectUpdatedPayloadDto = z.infer<typeof projectUpdatedPayloadSchema>
 export type RepositoryStatusChangedPayloadDto = z.infer<typeof repositoryStatusChangedPayloadSchema>
+export type SearchProjectRequestDto = z.infer<typeof searchProjectRequestSchema>
+export type SearchMatchDto = z.infer<typeof searchMatchSchema>
+export type SearchFileResultDto = z.infer<typeof searchFileResultSchema>
+export type SearchProjectResponseDto = z.infer<typeof searchProjectResponseSchema>
+export type ReplaceInProjectRequestDto = z.infer<typeof replaceInProjectRequestSchema>
+export type ReplaceInProjectResponseDto = z.infer<typeof replaceInProjectResponseSchema>
 
 export interface ProjectListItem {
   id: string

@@ -50,9 +50,13 @@ import {
   readProjectFileResponseSchema,
   renameProjectEntryRequestSchema,
   renameProjectEntryResponseSchema,
+  replaceInProjectRequestSchema,
+  replaceInProjectResponseSchema,
   repositoryDiffResponseSchema,
   repositoryStatusChangedPayloadSchema,
   repositoryStatusResponseSchema,
+  searchProjectRequestSchema,
+  searchProjectResponseSchema,
   writeProjectFileRequestSchema,
   writeProjectFileResponseSchema,
   type CreateProjectEntryRequestDto,
@@ -66,10 +70,14 @@ import {
   type ReadProjectFileResponseDto,
   type RenameProjectEntryRequestDto,
   type RenameProjectEntryResponseDto,
+  type ReplaceInProjectRequestDto,
+  type ReplaceInProjectResponseDto,
   type RepositoryDiffResponseDto,
   type RepositoryDiffScope,
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
+  type SearchProjectRequestDto,
+  type SearchProjectResponseDto,
   type WriteProjectFileRequestDto,
   type WriteProjectFileResponseDto,
 } from '@/src/lib/cadence-model/project'
@@ -137,6 +145,8 @@ const COMMANDS = {
   createProjectEntry: 'create_project_entry',
   renameProjectEntry: 'rename_project_entry',
   deleteProjectEntry: 'delete_project_entry',
+  searchProject: 'search_project',
+  replaceInProject: 'replace_in_project',
   getAutonomousRun: 'get_autonomous_run',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
@@ -258,6 +268,8 @@ export interface CadenceDesktopAdapter {
   createProjectEntry(request: CreateProjectEntryRequestDto): Promise<CreateProjectEntryResponseDto>
   renameProjectEntry(request: RenameProjectEntryRequestDto): Promise<RenameProjectEntryResponseDto>
   deleteProjectEntry(projectId: string, path: string): Promise<DeleteProjectEntryResponseDto>
+  searchProject(request: SearchProjectRequestDto): Promise<SearchProjectResponseDto>
+  replaceInProject(request: ReplaceInProjectRequestDto): Promise<ReplaceInProjectResponseDto>
   getAutonomousRun(projectId: string): Promise<AutonomousRunStateDto>
   getRuntimeRun(projectId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
@@ -618,6 +630,20 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     const request = projectFileRequestSchema.parse({ projectId, path })
     return invokeTyped(COMMANDS.deleteProjectEntry, deleteProjectEntryResponseSchema, {
       request,
+    })
+  },
+
+  searchProject(request) {
+    const parsed = searchProjectRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.searchProject, searchProjectResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  replaceInProject(request) {
+    const parsed = replaceInProjectRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.replaceInProject, replaceInProjectResponseSchema, {
+      request: parsed,
     })
   },
 

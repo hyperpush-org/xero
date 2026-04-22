@@ -12,8 +12,6 @@ import {
   ArrowDown,
   ArrowUp,
   CaseSensitive,
-  ChevronDown,
-  ChevronRight,
   Regex,
   WholeWord,
   X,
@@ -24,7 +22,6 @@ interface FindReplacePaneProps {
   view: EditorView | null
   onClose: () => void
   initialQuery: string
-  showReplace: boolean
   /** Monotonic token; bump when the user re-triggers Cmd+F so we reset focus/selection. */
   openToken: number
 }
@@ -33,7 +30,6 @@ export function FindReplacePane({
   view,
   onClose,
   initialQuery,
-  showReplace: initialShowReplace,
   openToken,
 }: FindReplacePaneProps) {
   const [searchText, setSearchText] = useState(initialQuery)
@@ -41,7 +37,6 @@ export function FindReplacePane({
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [useRegex, setUseRegex] = useState(false)
   const [wholeWord, setWholeWord] = useState(false)
-  const [showReplace, setShowReplace] = useState(initialShowReplace)
   const [tick, setTick] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
@@ -64,6 +59,24 @@ export function FindReplacePane({
     if (!view) return
     const effective = query ?? new SearchQuery({ search: '' })
     view.dispatch({ effects: setSearchQuery.of(effective) })
+    if (!query?.valid) return
+    // Auto-advance to a match when the current selection isn't already on
+    // one — otherwise we'd show "— of N" until the user hits Next.
+    const sel = view.state.selection.main
+    let onMatch = false
+    const probe = query.getCursor(view.state)
+    while (true) {
+      const step = probe.next()
+      if (step.done) break
+      if (step.value.from === sel.from && step.value.to === sel.to) {
+        onMatch = true
+        break
+      }
+    }
+    if (!onMatch) {
+      findNext(view)
+      setTick((t) => t + 1)
+    }
   }, [view, query])
 
   useEffect(() => {
@@ -72,8 +85,7 @@ export function FindReplacePane({
     input.focus()
     input.select()
     if (initialQuery) setSearchText(initialQuery)
-    if (initialShowReplace) setShowReplace(true)
-  }, [openToken, initialQuery, initialShowReplace])
+  }, [openToken, initialQuery])
 
   const { total, current } = useMemo(() => {
     if (!view || !query || !query.valid) return { total: 0, current: 0 }
@@ -174,138 +186,124 @@ export function FindReplacePane({
         </button>
       </div>
 
-      <div className="shrink-0 px-2 pb-2">
-        <div className="flex items-stretch gap-1">
-          <button
-            aria-expanded={showReplace}
-            aria-label={showReplace ? 'Hide replace' : 'Show replace'}
-            className="flex w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            onClick={() => setShowReplace((v) => !v)}
-            title={showReplace ? 'Hide replace' : 'Show replace'}
-            type="button"
-          >
-            {showReplace ? (
-              <ChevronDown className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" />
+      <div className="shrink-0 space-y-3 px-3 pb-3">
+        <div className="space-y-2">
+          <div className="relative">
+            <input
+              ref={searchInputRef}
+              aria-invalid={queryInvalid}
+              aria-label="Find"
+              className={cn(
+                'placeholder:text-muted-foreground/70 selection:bg-primary selection:text-primary-foreground',
+                'h-8 w-full rounded-md border bg-background pl-2.5 pr-[4.75rem] text-[12px] shadow-xs outline-none transition-[color,box-shadow]',
+                'focus-visible:ring-ring/40 focus-visible:ring-[2px]',
+                queryInvalid
+                  ? 'border-destructive focus-visible:border-destructive focus-visible:ring-destructive/30'
+                  : 'border-input focus-visible:border-ring',
+              )}
+              onChange={(e) => setSearchText(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              placeholder="Find"
+              spellCheck={false}
+              type="text"
+              value={searchText}
+            />
+            <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+              <ToggleIcon
+                active={caseSensitive}
+                label="Match case (Alt+C)"
+                onClick={() => setCaseSensitive((v) => !v)}
+              >
+                <CaseSensitive className="h-3.5 w-3.5" />
+              </ToggleIcon>
+              <ToggleIcon
+                active={wholeWord}
+                label="Match whole word (Alt+W)"
+                onClick={() => setWholeWord((v) => !v)}
+              >
+                <WholeWord className="h-3.5 w-3.5" />
+              </ToggleIcon>
+              <ToggleIcon
+                active={useRegex}
+                label="Use regular expression (Alt+R)"
+                onClick={() => setUseRegex((v) => !v)}
+              >
+                <Regex className="h-3.5 w-3.5" />
+              </ToggleIcon>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-[11px] tabular-nums',
+                matchStatus?.tone === 'error' && 'text-destructive',
+                matchStatus?.tone === 'muted' && 'text-muted-foreground',
+                matchStatus?.tone === 'normal' && 'text-foreground/80',
+                !matchStatus && 'text-muted-foreground/50',
+              )}
+            >
+              {matchStatus?.text ?? 'No query'}
+            </span>
+            <IconButton
+              disabled={!hasResults}
+              label="Previous match (Shift+Enter)"
+              onClick={handleFindPrev}
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+            </IconButton>
+            <IconButton
+              disabled={!hasResults}
+              label="Next match (Enter)"
+              onClick={handleFindNext}
+            >
+              <ArrowDown className="h-3.5 w-3.5" />
+            </IconButton>
+          </div>
+        </div>
+
+        <div className="border-t border-border/60" />
+
+        <div className="space-y-2">
+          <input
+            aria-label="Replace"
+            className={cn(
+              'placeholder:text-muted-foreground/70 selection:bg-primary selection:text-primary-foreground',
+              'h-8 w-full rounded-md border border-input bg-background px-2.5 text-[12px] shadow-xs outline-none transition-[color,box-shadow]',
+              'focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[2px]',
             )}
-          </button>
-
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <div className="relative">
-              <input
-                ref={searchInputRef}
-                aria-invalid={queryInvalid}
-                aria-label="Find"
-                className={cn(
-                  'placeholder:text-muted-foreground/70 selection:bg-primary selection:text-primary-foreground',
-                  'h-7 w-full rounded-md border bg-background pl-2 pr-[4.25rem] text-[11px] shadow-xs outline-none transition-[color,box-shadow]',
-                  'focus-visible:ring-ring/40 focus-visible:ring-[2px]',
-                  queryInvalid
-                    ? 'border-destructive focus-visible:border-destructive focus-visible:ring-destructive/30'
-                    : 'border-input focus-visible:border-ring',
-                )}
-                onChange={(e) => setSearchText(e.target.value)}
-                onKeyDown={handleSearchKeyDown}
-                placeholder="Find"
-                spellCheck={false}
-                type="text"
-                value={searchText}
-              />
-              <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
-                <ToggleIcon
-                  active={caseSensitive}
-                  label="Match case (Alt+C)"
-                  onClick={() => setCaseSensitive((v) => !v)}
-                >
-                  <CaseSensitive className="h-3.5 w-3.5" />
-                </ToggleIcon>
-                <ToggleIcon
-                  active={wholeWord}
-                  label="Match whole word (Alt+W)"
-                  onClick={() => setWholeWord((v) => !v)}
-                >
-                  <WholeWord className="h-3.5 w-3.5" />
-                </ToggleIcon>
-                <ToggleIcon
-                  active={useRegex}
-                  label="Use regular expression (Alt+R)"
-                  onClick={() => setUseRegex((v) => !v)}
-                >
-                  <Regex className="h-3.5 w-3.5" />
-                </ToggleIcon>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1">
-              <span
-                className={cn(
-                  'min-w-0 flex-1 truncate text-[10px] tabular-nums',
-                  matchStatus?.tone === 'error' && 'text-destructive',
-                  matchStatus?.tone === 'muted' && 'text-muted-foreground',
-                  matchStatus?.tone === 'normal' && 'text-foreground/80',
-                )}
-              >
-                {matchStatus?.text ?? ' '}
-              </span>
-              <IconButton
-                disabled={!hasResults}
-                label="Previous match (Shift+Enter)"
-                onClick={handleFindPrev}
-              >
-                <ArrowUp className="h-3.5 w-3.5" />
-              </IconButton>
-              <IconButton
-                disabled={!hasResults}
-                label="Next match (Enter)"
-                onClick={handleFindNext}
-              >
-                <ArrowDown className="h-3.5 w-3.5" />
-              </IconButton>
-            </div>
-
-            {showReplace ? (
-              <div className="space-y-1.5 pt-1">
-                <input
-                  aria-label="Replace"
-                  className={cn(
-                    'placeholder:text-muted-foreground/70 selection:bg-primary selection:text-primary-foreground',
-                    'h-7 w-full rounded-md border border-input bg-background px-2 text-[11px] shadow-xs outline-none transition-[color,box-shadow]',
-                    'focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[2px]',
-                  )}
-                  onChange={(e) => setReplaceText(e.target.value)}
-                  onKeyDown={handleReplaceKeyDown}
-                  placeholder="Replace"
-                  spellCheck={false}
-                  type="text"
-                  value={replaceText}
-                />
-                <div className="flex items-center gap-1">
-                  <TextButton
-                    disabled={!hasResults}
-                    label="Replace next (Enter)"
-                    onClick={handleReplace}
-                  >
-                    Replace
-                  </TextButton>
-                  <TextButton
-                    disabled={!hasResults}
-                    label="Replace all (Alt+Enter)"
-                    onClick={handleReplaceAll}
-                  >
-                    Replace all
-                  </TextButton>
-                </div>
-              </div>
-            ) : null}
+            onChange={(e) => setReplaceText(e.target.value)}
+            onKeyDown={handleReplaceKeyDown}
+            placeholder="Replace"
+            spellCheck={false}
+            type="text"
+            value={replaceText}
+          />
+          <div className="flex items-center gap-1.5">
+            <TextButton
+              disabled={!hasResults}
+              label="Replace next match (Enter)"
+              onClick={handleReplace}
+            >
+              Replace
+            </TextButton>
+            <TextButton
+              disabled={!hasResults}
+              label="Replace all matches (Alt+Enter)"
+              onClick={handleReplaceAll}
+            >
+              Replace all
+            </TextButton>
           </div>
         </div>
       </div>
 
-      <div className="mt-auto shrink-0 border-t border-border/60 px-3 py-2 text-[10px] leading-tight text-muted-foreground/70">
-        <span className="text-foreground/70">↵</span> next ·{' '}
-        <span className="text-foreground/70">⇧↵</span> prev ·{' '}
-        <span className="text-foreground/70">⎋</span> close
+      <div className="mt-auto shrink-0 border-t border-border/60 bg-sidebar/60 px-3 py-2.5">
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[10.5px] text-muted-foreground">
+          <KbdHint keys={['↵']} label="next" />
+          <KbdHint keys={['⇧', '↵']} label="prev" />
+          <KbdHint keys={['⎋']} label="close" />
+        </div>
       </div>
     </aside>
   )
@@ -384,7 +382,7 @@ function TextButton({
     <button
       aria-label={label}
       className={cn(
-        'h-6 flex-1 rounded-md border text-[11px] font-medium transition-colors',
+        'h-7 flex-1 rounded-md border text-[11.5px] font-medium transition-colors',
         disabled
           ? 'cursor-not-allowed border-border/40 text-muted-foreground/40'
           : 'border-border bg-background text-foreground/85 hover:bg-muted hover:text-foreground',
@@ -396,5 +394,23 @@ function TextButton({
     >
       {children}
     </button>
+  )
+}
+
+function KbdHint({ keys, label }: { keys: string[]; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-flex items-center gap-0.5">
+        {keys.map((k) => (
+          <kbd
+            key={k}
+            className="inline-flex h-4 min-w-[16px] items-center justify-center rounded border border-border bg-muted px-1 font-sans text-[10px] font-medium text-foreground/80"
+          >
+            {k}
+          </kbd>
+        ))}
+      </span>
+      <span>{label}</span>
+    </span>
   )
 }

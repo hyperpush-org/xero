@@ -11,7 +11,7 @@ import {
 import type { StreamParser } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
 import { indentWithTab } from '@codemirror/commands'
-import { highlightSelectionMatches } from '@codemirror/search'
+import { highlightSelectionMatches, search } from '@codemirror/search'
 import { keymap } from '@codemirror/view'
 import { autocompletion } from '@codemirror/autocomplete'
 import { javascript } from '@codemirror/lang-javascript'
@@ -401,6 +401,10 @@ export function CodeEditor({
       doc: value,
       extensions: [
         basicSetup,
+        // basicSetup ships the search keymap but not the search state field;
+        // without this, setSearchQuery is a no-op and findNext falls through
+        // to openSearchPanel, showing the default bottom panel.
+        search(),
         themeCompartment.of(buildThemeExtension(theme)),
         highlightSelectionMatches(),
         autocompletion(),

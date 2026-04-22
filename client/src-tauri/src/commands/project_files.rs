@@ -285,7 +285,7 @@ pub fn delete_project_entry<R: Runtime>(
     })
 }
 
-fn resolve_project_root<R: Runtime>(
+pub(crate) fn resolve_project_root<R: Runtime>(
     app: &AppHandle<R>,
     state: &State<'_, DesktopState>,
     project_id: &str,

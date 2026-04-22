@@ -40,6 +40,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::project_files::create_project_entry,
             commands::project_files::rename_project_entry,
             commands::project_files::delete_project_entry,
+            commands::search_project::search_project,
+            commands::search_project::replace_in_project,
             commands::get_autonomous_run::get_autonomous_run,
             commands::get_runtime_run::get_runtime_run,
             commands::get_runtime_session::get_runtime_session,

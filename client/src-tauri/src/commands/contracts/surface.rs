@@ -355,6 +355,80 @@ pub struct DeleteProjectEntryResponseDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchProjectRequestDto {
+    pub project_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub whole_word: bool,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub include_globs: Vec<String>,
+    #[serde(default)]
+    pub exclude_globs: Vec<String>,
+    #[serde(default)]
+    pub max_results: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchMatchDto {
+    pub line: u32,
+    pub column: u32,
+    pub match_start: u32,
+    pub match_end: u32,
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchFileResultDto {
+    pub path: String,
+    pub matches: Vec<SearchMatchDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchProjectResponseDto {
+    pub project_id: String,
+    pub total_matches: u32,
+    pub total_files: u32,
+    pub truncated: bool,
+    pub files: Vec<SearchFileResultDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReplaceInProjectRequestDto {
+    pub project_id: String,
+    pub query: String,
+    pub replacement: String,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub whole_word: bool,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub include_globs: Vec<String>,
+    #[serde(default)]
+    pub exclude_globs: Vec<String>,
+    #[serde(default)]
+    pub target_paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReplaceInProjectResponseDto {
+    pub project_id: String,
+    pub files_changed: u32,
+    pub total_replacements: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectUpdatedPayloadDto {
     pub project: ProjectSummaryDto,
     pub reason: ProjectUpdateReason,

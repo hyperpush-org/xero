@@ -19,6 +19,7 @@ pub mod record_notification_dispatch_outcome;
 pub mod remove_project;
 pub mod resolve_operator_action;
 pub mod resume_operator_run;
+pub mod search_project;
 pub mod start_autonomous_run;
 pub mod start_openai_login;
 pub mod start_runtime_run;
@@ -63,6 +64,7 @@ pub use record_notification_dispatch_outcome::record_notification_dispatch_outco
 pub use remove_project::remove_project;
 pub use resolve_operator_action::resolve_operator_action;
 pub use resume_operator_run::resume_operator_run;
+pub use search_project::{replace_in_project, search_project};
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_openai_login::start_openai_login;
 pub use start_runtime_run::start_runtime_run;
