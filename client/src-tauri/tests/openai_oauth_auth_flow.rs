@@ -47,8 +47,23 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
     let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    let provider_profiles_path = root.path().join("app-data").join("provider-profiles.json");
+    let provider_profile_credentials_path = root
+        .path()
+        .join("app-data")
+        .join("provider-profile-credentials.json");
+    let runtime_settings_path = root.path().join("app-data").join("runtime-settings.json");
+    let openrouter_credential_path = root
+        .path()
+        .join("app-data")
+        .join("openrouter-credentials.json");
     (
-        DesktopState::default().with_auth_store_file_override(auth_store_path.clone()),
+        DesktopState::default()
+            .with_auth_store_file_override(auth_store_path.clone())
+            .with_provider_profiles_file_override(provider_profiles_path)
+            .with_provider_profile_credential_store_file_override(provider_profile_credentials_path)
+            .with_runtime_settings_file_override(runtime_settings_path)
+            .with_openrouter_credential_file_override(openrouter_credential_path),
         auth_store_path,
     )
 }
@@ -56,10 +71,24 @@ fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
 fn create_project_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
     let registry_path = root.path().join("app-data").join("project-registry.json");
     let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    let provider_profiles_path = root.path().join("app-data").join("provider-profiles.json");
+    let provider_profile_credentials_path = root
+        .path()
+        .join("app-data")
+        .join("provider-profile-credentials.json");
+    let runtime_settings_path = root.path().join("app-data").join("runtime-settings.json");
+    let openrouter_credential_path = root
+        .path()
+        .join("app-data")
+        .join("openrouter-credentials.json");
     (
         DesktopState::default()
             .with_registry_file_override(registry_path.clone())
-            .with_auth_store_file_override(auth_store_path.clone()),
+            .with_auth_store_file_override(auth_store_path.clone())
+            .with_provider_profiles_file_override(provider_profiles_path)
+            .with_provider_profile_credential_store_file_override(provider_profile_credentials_path)
+            .with_runtime_settings_file_override(runtime_settings_path)
+            .with_openrouter_credential_file_override(openrouter_credential_path),
         registry_path,
         auth_store_path,
     )

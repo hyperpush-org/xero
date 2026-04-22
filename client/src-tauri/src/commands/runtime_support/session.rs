@@ -104,7 +104,16 @@ pub(crate) fn runtime_session_from_record(
         .and_then(|flow_id| state.active_auth_flows().snapshot(flow_id));
 
     if let Some(flow) = active_flow {
-        let last_error = flow.last_error.map(runtime_diagnostic_from_auth);
+        let flow_last_error = flow.last_error.map(runtime_diagnostic_from_auth);
+        let last_error = flow_last_error
+            .clone()
+            .or_else(|| stored.last_error.clone().map(runtime_diagnostic_from_record));
+        let updated_at = if flow_last_error.is_some() || last_error.is_none() {
+            flow.updated_at.clone()
+        } else {
+            stored.updated_at.clone()
+        };
+
         return RuntimeSessionDto {
             project_id: stored.project_id.clone(),
             runtime_kind: stored.runtime_kind.clone(),
@@ -118,7 +127,7 @@ pub(crate) fn runtime_session_from_record(
             redirect_uri: Some(flow.redirect_uri),
             last_error_code: last_error.as_ref().map(|error| error.code.clone()),
             last_error,
-            updated_at: flow.updated_at,
+            updated_at,
         };
     }
 

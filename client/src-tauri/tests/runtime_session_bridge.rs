@@ -787,6 +787,7 @@ fn get_runtime_session_returns_failed_when_transient_flow_snapshot_is_missing_af
         app.state::<DesktopState>(),
         StartOpenAiLoginRequestDto {
             project_id: project_id.clone(),
+            profile_id: "openai_codex-default".into(),
             originator: Some("Cadence-tests".into()),
         },
     )
