@@ -870,6 +870,55 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings: vi.fn(async () => runtimeSettings),
+    getProviderModelCatalog: vi.fn(async (profileId: string) => {
+      const profile = providerProfiles.profiles.find((candidate) => candidate.profileId === profileId)
+      if (!profile) {
+        throw new Error(`Missing provider profile ${profileId}`)
+      }
+
+      return {
+        profileId,
+        providerId: profile.providerId,
+        configuredModelId: profile.modelId,
+        source: profile.providerId === 'openrouter' && !profile.readiness.ready ? 'unavailable' : 'live',
+        fetchedAt: profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+        lastSuccessAt: profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+        lastRefreshError:
+          profile.providerId === 'openrouter' && !profile.readiness.ready
+            ? {
+                code: 'openrouter_credentials_missing',
+                message: 'Configure an OpenRouter API key before refreshing provider models.',
+                retryable: false,
+              }
+            : null,
+        models:
+          profile.providerId === 'openrouter'
+            ? profile.readiness.ready
+              ? [
+                  {
+                    modelId: profile.modelId,
+                    displayName: 'OpenRouter model',
+                    thinking: {
+                      supported: true,
+                      effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                      defaultEffort: 'medium',
+                    },
+                  },
+                ]
+              : []
+            : [
+                {
+                  modelId: 'openai_codex',
+                  displayName: 'OpenAI Codex',
+                  thinking: {
+                    supported: true,
+                    effortOptions: ['low', 'medium', 'high'],
+                    defaultEffort: 'medium',
+                  },
+                },
+              ],
+      }
+    }),
     getProviderProfiles: vi.fn(async () => providerProfiles),
     upsertRuntimeSettings: vi.fn(async () => runtimeSettings),
     upsertProviderProfile: vi.fn(async () => providerProfiles),

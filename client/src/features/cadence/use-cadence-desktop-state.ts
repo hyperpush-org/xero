@@ -34,6 +34,7 @@ import {
   type PlanningLifecycleView,
   type ProjectDetailView,
   type ProjectListItem,
+  type ProviderModelCatalogDto,
   type ProviderProfilesDto,
   type ReadProjectFileResponseDto,
   type RenameProjectEntryRequestDto,
@@ -104,6 +105,7 @@ import type {
   OperatorActionErrorView,
   OperatorActionStatus,
   ProjectRemovalStatus,
+  ProviderModelCatalogLoadStatus,
   ProviderProfilesLoadStatus,
   ProviderProfilesSaveStatus,
   RefreshSource,
@@ -134,6 +136,7 @@ export type {
   OperatorActionErrorView,
   OperatorActionStatus,
   ProjectRemovalStatus,
+  ProviderModelCatalogLoadStatus,
   ProviderProfilesLoadStatus,
   ProviderProfilesSaveStatus,
   RefreshSource,
@@ -219,6 +222,43 @@ function getOperatorActionError(error: unknown, fallback: string): OperatorActio
   }
 }
 
+function removeRecordKey<T>(records: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in records)) {
+    return records
+  }
+
+  const nextRecords = { ...records }
+  delete nextRecords[key]
+  return nextRecords
+}
+
+function getProviderModelCatalogDependencyKey(
+  profile: ProviderProfilesDto['profiles'][number],
+): string {
+  return [
+    profile.providerId,
+    profile.modelId,
+    profile.readiness.status,
+    profile.readiness.ready ? 'ready' : 'not_ready',
+    profile.readiness.credentialUpdatedAt ?? 'none',
+  ].join('|')
+}
+
+function getProviderModelCatalogDependencyKeys(
+  providerProfiles: ProviderProfilesDto | null,
+): Record<string, string> {
+  if (!providerProfiles) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    providerProfiles.profiles.map((profile) => [
+      profile.profileId,
+      getProviderModelCatalogDependencyKey(profile),
+    ]),
+  )
+}
+
 export function useCadenceDesktopState(
   options: UseCadenceDesktopStateOptions = {},
 ): UseCadenceDesktopStateResult {
@@ -283,6 +323,13 @@ export function useCadenceDesktopState(
     useState<ProviderProfilesSaveStatus>('idle')
   const [providerProfilesSaveError, setProviderProfilesSaveError] =
     useState<OperatorActionErrorView | null>(null)
+  const [providerModelCatalogs, setProviderModelCatalogs] = useState<Record<string, ProviderModelCatalogDto>>({})
+  const [providerModelCatalogLoadStatuses, setProviderModelCatalogLoadStatuses] = useState<
+    Record<string, ProviderModelCatalogLoadStatus>
+  >({})
+  const [providerModelCatalogLoadErrors, setProviderModelCatalogLoadErrors] = useState<
+    Record<string, OperatorActionErrorView | null>
+  >({})
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettingsDto | null>(null)
   const [runtimeSettingsLoadStatus, setRuntimeSettingsLoadStatus] = useState<RuntimeSettingsLoadStatus>('idle')
   const [runtimeSettingsLoadError, setRuntimeSettingsLoadError] = useState<OperatorActionErrorView | null>(null)
@@ -317,6 +364,15 @@ export function useCadenceDesktopState(
   const trustSnapshotRef = useRef<Record<string, AgentTrustSnapshotView>>({})
   const providerProfilesRef = useRef<ProviderProfilesDto | null>(null)
   const providerProfilesLoadInFlightRef = useRef<Promise<ProviderProfilesDto> | null>(null)
+  const providerModelCatalogsRef = useRef<Record<string, ProviderModelCatalogDto>>({})
+  const providerModelCatalogLoadStatusesRef = useRef<Record<string, ProviderModelCatalogLoadStatus>>({})
+  const providerModelCatalogLoadErrorsRef = useRef<Record<string, OperatorActionErrorView | null>>({})
+  const providerModelCatalogLoadRequestRef = useRef<Record<string, number>>({})
+  const providerModelCatalogLoadInFlightRef = useRef<
+    Record<string, { requestKey: string; promise: Promise<ProviderModelCatalogDto> }>
+  >({})
+  const providerModelCatalogDependencyKeysRef = useRef<Record<string, string>>({})
+  const activeProviderProfileIdRef = useRef<string | null>(null)
   const runtimeSettingsRef = useRef<RuntimeSettingsDto | null>(null)
   const runtimeSettingsLoadInFlightRef = useRef<Promise<RuntimeSettingsDto> | null>(null)
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -389,6 +445,18 @@ export function useCadenceDesktopState(
   useEffect(() => {
     providerProfilesRef.current = providerProfiles
   }, [providerProfiles])
+
+  useEffect(() => {
+    providerModelCatalogsRef.current = providerModelCatalogs
+  }, [providerModelCatalogs])
+
+  useEffect(() => {
+    providerModelCatalogLoadStatusesRef.current = providerModelCatalogLoadStatuses
+  }, [providerModelCatalogLoadStatuses])
+
+  useEffect(() => {
+    providerModelCatalogLoadErrorsRef.current = providerModelCatalogLoadErrors
+  }, [providerModelCatalogLoadErrors])
 
   useEffect(() => {
     runtimeSettingsRef.current = runtimeSettings
@@ -610,6 +678,96 @@ export function useCadenceDesktopState(
         setNotificationRouteLoadErrors,
         getOperatorActionError,
       }),
+    [adapter],
+  )
+
+  const refreshProviderModelCatalog = useCallback(
+    async (profileId: string, options: { force?: boolean } = {}): Promise<ProviderModelCatalogDto> => {
+      const trimmedProfileId = profileId.trim()
+      const profile = providerProfilesRef.current?.profiles.find(
+        (candidate) => candidate.profileId === trimmedProfileId,
+      )
+      const requestDependencyKey = profile
+        ? getProviderModelCatalogDependencyKey(profile)
+        : `missing:${trimmedProfileId}`
+      const requestKey = `${options.force ? 'force' : 'cached'}:${requestDependencyKey}`
+      const inFlight = providerModelCatalogLoadInFlightRef.current[trimmedProfileId]
+      if (inFlight && inFlight.requestKey === requestKey) {
+        return inFlight.promise
+      }
+
+      const cachedCatalog = providerModelCatalogsRef.current[trimmedProfileId] ?? null
+      const cachedStatus = providerModelCatalogLoadStatusesRef.current[trimmedProfileId] ?? 'idle'
+      const cachedDependencyKey = providerModelCatalogDependencyKeysRef.current[trimmedProfileId] ?? null
+      if (!options.force && cachedCatalog && cachedStatus === 'ready' && cachedDependencyKey === requestDependencyKey) {
+        return cachedCatalog
+      }
+
+      const requestId = (providerModelCatalogLoadRequestRef.current[trimmedProfileId] ?? 0) + 1
+      providerModelCatalogLoadRequestRef.current[trimmedProfileId] = requestId
+
+      setProviderModelCatalogLoadStatuses((currentStatuses) => ({
+        ...currentStatuses,
+        [trimmedProfileId]: 'loading',
+      }))
+      setProviderModelCatalogLoadErrors((currentErrors) => ({
+        ...currentErrors,
+        [trimmedProfileId]: null,
+      }))
+
+      const loadPromise = (async () => {
+        try {
+          const response = await adapter.getProviderModelCatalog(trimmedProfileId, {
+            forceRefresh: options.force ?? false,
+          })
+
+          if (providerModelCatalogLoadRequestRef.current[trimmedProfileId] !== requestId) {
+            return response
+          }
+
+          setProviderModelCatalogs((currentCatalogs) => ({
+            ...currentCatalogs,
+            [trimmedProfileId]: response,
+          }))
+          setProviderModelCatalogLoadStatuses((currentStatuses) => ({
+            ...currentStatuses,
+            [trimmedProfileId]: 'ready',
+          }))
+          setProviderModelCatalogLoadErrors((currentErrors) => ({
+            ...currentErrors,
+            [trimmedProfileId]: null,
+          }))
+          return response
+        } catch (error) {
+          if (providerModelCatalogLoadRequestRef.current[trimmedProfileId] === requestId) {
+            setProviderModelCatalogLoadStatuses((currentStatuses) => ({
+              ...currentStatuses,
+              [trimmedProfileId]: 'error',
+            }))
+            setProviderModelCatalogLoadErrors((currentErrors) => ({
+              ...currentErrors,
+              [trimmedProfileId]: getOperatorActionError(
+                error,
+                `Cadence could not load the provider-model catalog for profile \`${trimmedProfileId}\`.`,
+              ),
+            }))
+          }
+
+          throw error
+        } finally {
+          const activeLoad = providerModelCatalogLoadInFlightRef.current[trimmedProfileId]
+          if (activeLoad?.requestKey === requestKey) {
+            delete providerModelCatalogLoadInFlightRef.current[trimmedProfileId]
+          }
+        }
+      })()
+
+      providerModelCatalogLoadInFlightRef.current[trimmedProfileId] = {
+        requestKey,
+        promise: loadPromise,
+      }
+      return loadPromise
+    },
     [adapter],
   )
 
@@ -1008,6 +1166,110 @@ export function useCadenceDesktopState(
     void refreshRuntimeSettings().catch(() => undefined)
   }, [refreshRuntimeSettings, runtimeSettingsLoadStatus])
 
+  useEffect(() => {
+    const nextDependencyKeys = getProviderModelCatalogDependencyKeys(providerProfiles)
+    const previousDependencyKeys = providerModelCatalogDependencyKeysRef.current
+    const invalidatedProfileIds: string[] = []
+    const removedProfileIds = Object.keys(previousDependencyKeys).filter(
+      (profileId) => !(profileId in nextDependencyKeys),
+    )
+
+    for (const [profileId, dependencyKey] of Object.entries(nextDependencyKeys)) {
+      if (previousDependencyKeys[profileId] && previousDependencyKeys[profileId] !== dependencyKey) {
+        invalidatedProfileIds.push(profileId)
+      }
+    }
+
+    if (removedProfileIds.length > 0) {
+      setProviderModelCatalogs((currentCatalogs) => {
+        let nextCatalogs = currentCatalogs
+        for (const profileId of removedProfileIds) {
+          nextCatalogs = removeRecordKey(nextCatalogs, profileId)
+        }
+        return nextCatalogs
+      })
+      setProviderModelCatalogLoadStatuses((currentStatuses) => {
+        let nextStatuses = currentStatuses
+        for (const profileId of removedProfileIds) {
+          nextStatuses = removeRecordKey(nextStatuses, profileId)
+        }
+        return nextStatuses
+      })
+      setProviderModelCatalogLoadErrors((currentErrors) => {
+        let nextErrors = currentErrors
+        for (const profileId of removedProfileIds) {
+          nextErrors = removeRecordKey(nextErrors, profileId)
+        }
+        return nextErrors
+      })
+
+      for (const profileId of removedProfileIds) {
+        delete providerModelCatalogLoadRequestRef.current[profileId]
+        delete providerModelCatalogLoadInFlightRef.current[profileId]
+      }
+    }
+
+    if (invalidatedProfileIds.length > 0) {
+      for (const profileId of invalidatedProfileIds) {
+        providerModelCatalogLoadRequestRef.current[profileId] =
+          (providerModelCatalogLoadRequestRef.current[profileId] ?? 0) + 1
+        delete providerModelCatalogLoadInFlightRef.current[profileId]
+      }
+
+      setProviderModelCatalogLoadStatuses((currentStatuses) => {
+        const nextStatuses = { ...currentStatuses }
+        for (const profileId of invalidatedProfileIds) {
+          nextStatuses[profileId] = 'idle'
+        }
+        return nextStatuses
+      })
+      setProviderModelCatalogLoadErrors((currentErrors) => {
+        const nextErrors = { ...currentErrors }
+        for (const profileId of invalidatedProfileIds) {
+          nextErrors[profileId] = null
+        }
+        return nextErrors
+      })
+    }
+
+    const nextActiveProviderProfileId = providerProfiles?.activeProfileId ?? null
+    const activeProviderProfileChanged = activeProviderProfileIdRef.current !== nextActiveProviderProfileId
+
+    providerModelCatalogDependencyKeysRef.current = nextDependencyKeys
+    activeProviderProfileIdRef.current = nextActiveProviderProfileId
+
+    if (!nextActiveProviderProfileId) {
+      return
+    }
+
+    const activeProfileInvalidated = invalidatedProfileIds.includes(nextActiveProviderProfileId)
+    const activeCatalog = providerModelCatalogsRef.current[nextActiveProviderProfileId] ?? null
+    const activeLoadStatus = providerModelCatalogLoadStatusesRef.current[nextActiveProviderProfileId] ?? 'idle'
+
+    if (
+      activeProfileInvalidated ||
+      activeProviderProfileChanged ||
+      !activeCatalog ||
+      activeLoadStatus === 'error' ||
+      activeLoadStatus === 'idle'
+    ) {
+      void refreshProviderModelCatalog(nextActiveProviderProfileId, {
+        force: activeProfileInvalidated,
+      }).catch(() => undefined)
+    }
+  }, [providerProfiles, refreshProviderModelCatalog])
+
+  const activeProviderProfileId = providerProfiles?.activeProfileId ?? null
+  const activeProviderModelCatalog = activeProviderProfileId
+    ? providerModelCatalogs[activeProviderProfileId] ?? null
+    : null
+  const activeProviderModelCatalogLoadStatus: ProviderModelCatalogLoadStatus = activeProviderProfileId
+    ? providerModelCatalogLoadStatuses[activeProviderProfileId] ?? 'idle'
+    : 'idle'
+  const activeProviderModelCatalogLoadError = activeProviderProfileId
+    ? providerModelCatalogLoadErrors[activeProviderProfileId] ?? null
+    : null
+
   const activeRuntimeSession = activeProjectId
     ? runtimeSessions[activeProjectId] ?? activeProject?.runtimeSession ?? null
     : null
@@ -1242,6 +1504,12 @@ export function useCadenceDesktopState(
     providerProfilesLoadError,
     providerProfilesSaveStatus,
     providerProfilesSaveError,
+    providerModelCatalogs,
+    providerModelCatalogLoadStatuses,
+    providerModelCatalogLoadErrors,
+    activeProviderModelCatalog,
+    activeProviderModelCatalogLoadStatus,
+    activeProviderModelCatalogLoadError,
     runtimeSettings,
     runtimeSettingsLoadStatus,
     runtimeSettingsLoadError,
@@ -1282,6 +1550,7 @@ export function useCadenceDesktopState(
     resolveOperatorAction,
     resumeOperatorRun,
     refreshProviderProfiles,
+    refreshProviderModelCatalog,
     upsertProviderProfile,
     setActiveProviderProfile,
     refreshRuntimeSettings,

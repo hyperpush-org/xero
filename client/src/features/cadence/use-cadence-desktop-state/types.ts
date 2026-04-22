@@ -14,6 +14,7 @@ import type {
   PlanningLifecycleView,
   ProjectDetailView,
   ProjectListItem,
+  ProviderModelCatalogDto,
   ProviderProfileReadinessDto,
   ProviderProfilesDto,
   ReadProjectFileResponseDto,
@@ -81,6 +82,7 @@ export type NotificationRoutesLoadStatus = 'idle' | 'loading' | 'ready' | 'error
 export type NotificationRouteMutationStatus = 'idle' | 'running'
 export type ProviderProfilesLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type ProviderProfilesSaveStatus = 'idle' | 'running'
+export type ProviderModelCatalogLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsSaveStatus = 'idle' | 'running'
 export type NotificationRouteHealthState = 'disabled' | 'idle' | 'pending' | 'healthy' | 'degraded'
@@ -316,6 +318,12 @@ export interface UseCadenceDesktopStateResult {
   providerProfilesLoadError: OperatorActionErrorView | null
   providerProfilesSaveStatus: ProviderProfilesSaveStatus
   providerProfilesSaveError: OperatorActionErrorView | null
+  providerModelCatalogs: Record<string, ProviderModelCatalogDto>
+  providerModelCatalogLoadStatuses: Record<string, ProviderModelCatalogLoadStatus>
+  providerModelCatalogLoadErrors: Record<string, OperatorActionErrorView | null>
+  activeProviderModelCatalog: ProviderModelCatalogDto | null
+  activeProviderModelCatalogLoadStatus: ProviderModelCatalogLoadStatus
+  activeProviderModelCatalogLoadError: OperatorActionErrorView | null
   runtimeSettings: RuntimeSettingsDto | null
   runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
   runtimeSettingsLoadError: OperatorActionErrorView | null
@@ -363,6 +371,10 @@ export interface UseCadenceDesktopStateResult {
     options?: { userAnswer?: string | null },
   ) => Promise<ProjectDetailView | null>
   refreshProviderProfiles: (options?: { force?: boolean }) => Promise<ProviderProfilesDto>
+  refreshProviderModelCatalog: (
+    profileId: string,
+    options?: { force?: boolean },
+  ) => Promise<ProviderModelCatalogDto>
   upsertProviderProfile: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
   setActiveProviderProfile: (profileId: string) => Promise<ProviderProfilesDto>
   refreshRuntimeSettings: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>

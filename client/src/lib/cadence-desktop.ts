@@ -95,6 +95,11 @@ import {
   type UpsertProviderProfileRequestDto,
 } from '@/src/lib/cadence-model/provider-profiles'
 import {
+  createProviderModelCatalogRequest,
+  providerModelCatalogSchema,
+  type ProviderModelCatalogDto,
+} from '@/src/lib/cadence-model/provider-models'
+import {
   runtimeStreamItemSchema,
   subscribeRuntimeStreamRequestSchema,
   subscribeRuntimeStreamResponseSchema,
@@ -131,6 +136,7 @@ const COMMANDS = {
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
   getRuntimeSettings: 'get_runtime_settings',
+  getProviderModelCatalog: 'get_provider_model_catalog',
   listProviderProfiles: 'list_provider_profiles',
   upsertProviderProfile: 'upsert_provider_profile',
   setActiveProviderProfile: 'set_active_provider_profile',
@@ -245,6 +251,10 @@ export interface CadenceDesktopAdapter {
   getRuntimeRun(projectId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   getRuntimeSettings(): Promise<RuntimeSettingsDto>
+  getProviderModelCatalog(
+    profileId: string,
+    options?: { forceRefresh?: boolean },
+  ): Promise<ProviderModelCatalogDto>
   getProviderProfiles(): Promise<ProviderProfilesDto>
   startOpenAiLogin(projectId: string, options: StartOpenAiLoginOptions): Promise<RuntimeSessionDto>
   submitOpenAiCallback(
@@ -619,6 +629,15 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   getRuntimeSettings() {
     return invokeTyped(COMMANDS.getRuntimeSettings, runtimeSettingsSchema)
+  },
+
+  getProviderModelCatalog(profileId, options) {
+    const request = createProviderModelCatalogRequest(profileId, {
+      forceRefresh: options?.forceRefresh ?? false,
+    })
+    return invokeTyped(COMMANDS.getProviderModelCatalog, providerModelCatalogSchema, {
+      request,
+    })
   },
 
   getProviderProfiles() {

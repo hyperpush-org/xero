@@ -23,6 +23,7 @@ import type {
   ListProjectsResponseDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
+  ProviderModelCatalogDto,
   ProviderProfilesDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
@@ -309,6 +310,55 @@ function createAdapter(options?: {
   let currentRuntimeSession = options?.runtimeSession ?? makeRuntimeSession()
   let currentRuntimeSettings = options?.runtimeSettings ?? makeRuntimeSettings()
   let currentProviderProfiles = options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
+  let currentProviderModelCatalogs: Record<string, ProviderModelCatalogDto> = Object.fromEntries(
+    currentProviderProfiles.profiles.map((profile) => [
+      profile.profileId,
+      {
+        profileId: profile.profileId,
+        providerId: profile.providerId,
+        configuredModelId: profile.modelId,
+        source: profile.providerId === 'openrouter' && !profile.readiness.ready ? 'unavailable' : 'live',
+        fetchedAt:
+          profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+        lastSuccessAt:
+          profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+        lastRefreshError:
+          profile.providerId === 'openrouter' && !profile.readiness.ready
+            ? {
+                code: 'openrouter_credentials_missing',
+                message: 'Configure an OpenRouter API key before refreshing provider models.',
+                retryable: false,
+              }
+            : null,
+        models:
+          profile.providerId === 'openrouter'
+            ? profile.readiness.ready
+              ? [
+                  {
+                    modelId: profile.modelId,
+                    displayName: 'OpenRouter model',
+                    thinking: {
+                      supported: true,
+                      effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                      defaultEffort: 'medium',
+                    },
+                  },
+                ]
+              : []
+            : [
+                {
+                  modelId: 'openai_codex',
+                  displayName: 'OpenAI Codex',
+                  thinking: {
+                    supported: true,
+                    effortOptions: ['low', 'medium', 'high'],
+                    defaultEffort: 'medium',
+                  },
+                },
+              ],
+      },
+    ]),
+  )
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
@@ -332,6 +382,55 @@ function createAdapter(options?: {
           : false,
     }
     currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
+    currentProviderModelCatalogs = Object.fromEntries(
+      currentProviderProfiles.profiles.map((profile) => [
+        profile.profileId,
+        {
+          profileId: profile.profileId,
+          providerId: profile.providerId,
+          configuredModelId: profile.modelId,
+          source: profile.providerId === 'openrouter' && !profile.readiness.ready ? 'unavailable' : 'live',
+          fetchedAt:
+            profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+          lastSuccessAt:
+            profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+          lastRefreshError:
+            profile.providerId === 'openrouter' && !profile.readiness.ready
+              ? {
+                  code: 'openrouter_credentials_missing',
+                  message: 'Configure an OpenRouter API key before refreshing provider models.',
+                  retryable: false,
+                }
+              : null,
+          models:
+            profile.providerId === 'openrouter'
+              ? profile.readiness.ready
+                ? [
+                    {
+                      modelId: profile.modelId,
+                      displayName: 'OpenRouter model',
+                      thinking: {
+                        supported: true,
+                        effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                        defaultEffort: 'medium',
+                      },
+                    },
+                  ]
+                : []
+              : [
+                  {
+                    modelId: 'openai_codex',
+                    displayName: 'OpenAI Codex',
+                    thinking: {
+                      supported: true,
+                      effortOptions: ['low', 'medium', 'high'],
+                      defaultEffort: 'medium',
+                    },
+                  },
+                ],
+        },
+      ]),
+    )
     return currentRuntimeSettings
   })
 
@@ -354,6 +453,55 @@ function createAdapter(options?: {
           : currentRuntimeSettings.openrouterApiKeyConfigured,
     }
     currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
+    currentProviderModelCatalogs = Object.fromEntries(
+      currentProviderProfiles.profiles.map((profile) => [
+        profile.profileId,
+        {
+          profileId: profile.profileId,
+          providerId: profile.providerId,
+          configuredModelId: profile.modelId,
+          source: profile.providerId === 'openrouter' && !profile.readiness.ready ? 'unavailable' : 'live',
+          fetchedAt:
+            profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+          lastSuccessAt:
+            profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+          lastRefreshError:
+            profile.providerId === 'openrouter' && !profile.readiness.ready
+              ? {
+                  code: 'openrouter_credentials_missing',
+                  message: 'Configure an OpenRouter API key before refreshing provider models.',
+                  retryable: false,
+                }
+              : null,
+          models:
+            profile.providerId === 'openrouter'
+              ? profile.readiness.ready
+                ? [
+                    {
+                      modelId: profile.modelId,
+                      displayName: 'OpenRouter model',
+                      thinking: {
+                        supported: true,
+                        effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                        defaultEffort: 'medium',
+                      },
+                    },
+                  ]
+                : []
+              : [
+                  {
+                    modelId: 'openai_codex',
+                    displayName: 'OpenAI Codex',
+                    thinking: {
+                      supported: true,
+                      effortOptions: ['low', 'medium', 'high'],
+                      defaultEffort: 'medium',
+                    },
+                  },
+                ],
+        },
+      ]),
+    )
     return currentProviderProfiles
   })
 
@@ -439,6 +587,65 @@ function createAdapter(options?: {
     getAutonomousRun: async () => currentAutonomousState ?? { run: null, unit: null },
     getRuntimeRun: async () => currentRuntimeRun,
     getRuntimeSettings: async () => currentRuntimeSettings,
+    getProviderModelCatalog: async (profileId, options) => {
+      const currentProfile = currentProviderProfiles.profiles.find((profile) => profile.profileId === profileId)
+      if (!currentProfile) {
+        throw new Error(`Missing provider profile ${profileId}`)
+      }
+
+      const currentCatalog = currentProviderModelCatalogs[profileId]
+      if (!options?.forceRefresh && currentCatalog) {
+        return currentCatalog
+      }
+
+      const nextCatalog: ProviderModelCatalogDto = {
+        profileId,
+        providerId: currentProfile.providerId,
+        configuredModelId: currentProfile.modelId,
+        source: currentProfile.providerId === 'openrouter' && !currentProfile.readiness.ready ? 'unavailable' : 'live',
+        fetchedAt:
+          currentProfile.providerId === 'openrouter' && !currentProfile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+        lastSuccessAt:
+          currentProfile.providerId === 'openrouter' && !currentProfile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+        lastRefreshError:
+          currentProfile.providerId === 'openrouter' && !currentProfile.readiness.ready
+            ? {
+                code: 'openrouter_credentials_missing',
+                message: 'Configure an OpenRouter API key before refreshing provider models.',
+                retryable: false,
+              }
+            : null,
+        models:
+          currentProfile.providerId === 'openrouter'
+            ? currentProfile.readiness.ready
+              ? [
+                  {
+                    modelId: currentProfile.modelId,
+                    displayName: 'OpenRouter model',
+                    thinking: {
+                      supported: true,
+                      effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                      defaultEffort: 'medium',
+                    },
+                  },
+                ]
+              : []
+            : [
+                {
+                  modelId: 'openai_codex',
+                  displayName: 'OpenAI Codex',
+                  thinking: {
+                    supported: true,
+                    effortOptions: ['low', 'medium', 'high'],
+                    defaultEffort: 'medium',
+                  },
+                },
+              ],
+      }
+
+      currentProviderModelCatalogs[profileId] = nextCatalog
+      return nextCatalog
+    },
     getProviderProfiles: async () => currentProviderProfiles,
     getRuntimeSession: async () => currentRuntimeSession,
     startOpenAiLogin: async (_projectId, _options) => {

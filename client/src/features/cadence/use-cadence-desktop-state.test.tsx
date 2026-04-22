@@ -7,6 +7,7 @@ import {
   type ListProjectsResponseDto,
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
+  type ProviderModelCatalogDto,
   type ProviderProfilesDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusChangedPayloadDto,
@@ -248,6 +249,60 @@ function makeProviderProfilesFromRuntimeSettings(
   })
 }
 
+function makeProviderModelCatalog(
+  profileId: string,
+  overrides: Partial<ProviderModelCatalogDto> = {},
+): ProviderModelCatalogDto {
+  const providerId = overrides.providerId ?? (profileId.startsWith('openrouter') ? 'openrouter' : 'openai_codex')
+  const configuredModelId =
+    overrides.configuredModelId ??
+    (providerId === 'openrouter' ? 'openai/gpt-4.1-mini' : 'openai_codex')
+
+  return {
+    profileId,
+    providerId,
+    configuredModelId,
+    source: overrides.source ?? 'live',
+    fetchedAt: overrides.fetchedAt ?? '2026-04-21T12:00:00Z',
+    lastSuccessAt: overrides.lastSuccessAt ?? '2026-04-21T12:00:00Z',
+    lastRefreshError: overrides.lastRefreshError ?? null,
+    models:
+      overrides.models ??
+      (providerId === 'openrouter'
+        ? [
+            {
+              modelId: configuredModelId,
+              displayName: 'OpenAI GPT-4.1 Mini',
+              thinking: {
+                supported: true,
+                effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                defaultEffort: 'medium',
+              },
+            },
+            {
+              modelId: 'anthropic/claude-3.7-sonnet',
+              displayName: 'Claude 3.7 Sonnet',
+              thinking: {
+                supported: false,
+                effortOptions: [],
+                defaultEffort: null,
+              },
+            },
+          ]
+        : [
+            {
+              modelId: 'openai_codex',
+              displayName: 'OpenAI Codex',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          ]),
+  }
+}
+
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
@@ -377,6 +432,8 @@ function createMockAdapter(options?: {
   runtimeRuns?: Record<string, RuntimeRunDto | null>
   runtimeSettings?: RuntimeSettingsDto
   providerProfiles?: ProviderProfilesDto
+  providerModelCatalogs?: Record<string, ProviderModelCatalogDto>
+  providerModelCatalogErrors?: Record<string, Error>
   autonomousStates?: Record<string, AutonomousRunStateDto | null>
   notificationDispatches?: Record<string, ListNotificationDispatchesResponseDto['dispatches']>
   notificationRoutes?: Record<string, ListNotificationRoutesResponseDto['routes']>
@@ -443,6 +500,28 @@ function createMockAdapter(options?: {
   const currentProviderProfiles = {
     value: options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value),
   }
+  const currentProviderModelCatalogs = {
+    value:
+      options?.providerModelCatalogs ??
+      Object.fromEntries(
+        currentProviderProfiles.value.profiles.map((profile) => [
+          profile.profileId,
+          makeProviderModelCatalog(profile.profileId, {
+            providerId: profile.providerId,
+            configuredModelId: profile.modelId,
+            source: profile.providerId === 'openrouter' && !profile.readiness.ready ? 'unavailable' : 'live',
+            fetchedAt: profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+            lastSuccessAt:
+              profile.providerId === 'openrouter' && !profile.readiness.ready ? null : '2026-04-21T12:00:00Z',
+            models:
+              profile.providerId === 'openrouter' && !profile.readiness.ready
+                ? []
+                : undefined,
+          }),
+        ]),
+      ),
+  }
+  const providerModelCatalogErrors = options?.providerModelCatalogErrors ?? {}
   const notificationDispatchErrors = options?.notificationDispatchErrors ?? {}
 
   let listedProjects = (options?.listProjects?.projects ?? [makeProjectSummary('project-1', 'Cadence')]).map((project) => ({
@@ -496,6 +575,57 @@ function createMockAdapter(options?: {
   )
   const getRuntimeSession = vi.fn(async (projectId: string) => runtimeSessions[projectId])
   const getRuntimeSettings = vi.fn(async () => currentRuntimeSettings.value)
+  const getProviderModelCatalog = vi.fn(
+    async (
+      profileId: string,
+      options?: { forceRefresh?: boolean },
+    ): Promise<ProviderModelCatalogDto> => {
+      const error = providerModelCatalogErrors[profileId]
+      if (error) {
+        throw error
+      }
+
+      const currentProfile = currentProviderProfiles.value.profiles.find((profile) => profile.profileId === profileId)
+      if (!currentProfile) {
+        throw new CadenceDesktopError({
+          code: 'provider_profile_not_found',
+          errorClass: 'user_fixable',
+          message: `Cadence could not find provider profile \`${profileId}\`.`,
+        })
+      }
+
+      const existingCatalog = currentProviderModelCatalogs.value[profileId]
+      if (!options?.forceRefresh && existingCatalog) {
+        return existingCatalog
+      }
+
+      const nextCatalog =
+        currentProfile.providerId === 'openrouter' && !currentProfile.readiness.ready
+          ? makeProviderModelCatalog(profileId, {
+              providerId: currentProfile.providerId,
+              configuredModelId: currentProfile.modelId,
+              source: 'unavailable',
+              fetchedAt: null,
+              lastSuccessAt: null,
+              lastRefreshError: {
+                code: 'openrouter_credentials_missing',
+                message: 'Configure an OpenRouter API key before refreshing provider models.',
+                retryable: false,
+              },
+              models: [],
+            })
+          : makeProviderModelCatalog(profileId, {
+              providerId: currentProfile.providerId,
+              configuredModelId: currentProfile.modelId,
+            })
+
+      currentProviderModelCatalogs.value = {
+        ...currentProviderModelCatalogs.value,
+        [profileId]: nextCatalog,
+      }
+      return nextCatalog
+    },
+  )
   const getProviderProfiles = vi.fn(async () => currentProviderProfiles.value)
   const upsertRuntimeSettings = vi.fn(async (request: {
     providerId: RuntimeSettingsDto['providerId']
@@ -891,6 +1021,7 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings,
+    getProviderModelCatalog,
     getProviderProfiles,
     startOpenAiLogin,
     submitOpenAiCallback,
@@ -969,6 +1100,7 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings,
+    getProviderModelCatalog,
     getProviderProfiles,
     listProjectFiles,
     readProjectFile,
@@ -1097,6 +1229,19 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="provider-profiles-save-status">{state.providerProfilesSaveStatus}</div>
       <div data-testid="provider-profiles-save-error-code">{state.providerProfilesSaveError?.code ?? 'none'}</div>
       <div data-testid="provider-profiles-save-error-message">{state.providerProfilesSaveError?.message ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-count">{String(Object.keys(state.providerModelCatalogs).length)}</div>
+      <div data-testid="provider-model-catalog-active-source">{state.activeProviderModelCatalog?.source ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-active-profile-id">{state.activeProviderModelCatalog?.profileId ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-active-provider-id">{state.activeProviderModelCatalog?.providerId ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-active-configured-model-id">{state.activeProviderModelCatalog?.configuredModelId ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-active-model-count">{String(state.activeProviderModelCatalog?.models.length ?? 0)}</div>
+      <div data-testid="provider-model-catalog-active-model-ids">{state.activeProviderModelCatalog?.models.map((model) => model.modelId).join(',') ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-active-load-status">{state.activeProviderModelCatalogLoadStatus}</div>
+      <div data-testid="provider-model-catalog-active-load-error-code">{state.activeProviderModelCatalogLoadError?.code ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-openrouter-source">{state.providerModelCatalogs['openrouter-default']?.source ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-openrouter-configured-model-id">{state.providerModelCatalogs['openrouter-default']?.configuredModelId ?? 'none'}</div>
+      <div data-testid="provider-model-catalog-openrouter-load-status">{state.providerModelCatalogLoadStatuses['openrouter-default'] ?? 'idle'}</div>
+      <div data-testid="provider-model-catalog-openrouter-load-error-code">{state.providerModelCatalogLoadErrors['openrouter-default']?.code ?? 'none'}</div>
       <div data-testid="runtime-settings-load-status">{state.runtimeSettingsLoadStatus}</div>
       <div data-testid="runtime-settings-load-error-code">{state.runtimeSettingsLoadError?.code ?? 'none'}</div>
       <div data-testid="runtime-settings-load-error-message">{state.runtimeSettingsLoadError?.message ?? 'none'}</div>
@@ -1271,6 +1416,22 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
         type="button"
       >
         Load provider profiles
+      </button>
+      <button
+        onClick={() => {
+          void state.refreshProviderModelCatalog('openrouter-default', { force: true }).catch(() => undefined)
+        }}
+        type="button"
+      >
+        Refresh OpenRouter provider-model catalog
+      </button>
+      <button
+        onClick={() => {
+          void state.refreshProviderModelCatalog('openai_codex-default', { force: true }).catch(() => undefined)
+        }}
+        type="button"
+      >
+        Refresh OpenAI provider-model catalog
       </button>
       <button
         onClick={() => {
@@ -2925,6 +3086,289 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default')
     expect(screen.getByTestId('provider-profiles-count')).toHaveTextContent('1')
     expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openrouter')
+  })
+
+  it('loads active provider-model truth and supports explicit inactive-profile refreshes', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'openrouter',
+        modelId: 'openai/gpt-4.1-mini',
+        openrouterApiKeyConfigured: true,
+      }),
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'openrouter-default',
+        profiles: [
+          {
+            profileId: 'openrouter-default',
+            providerId: 'openrouter',
+            label: 'OpenRouter',
+            modelId: 'openai/gpt-4.1-mini',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+          {
+            profileId: 'openai_codex-default',
+            providerId: 'openai_codex',
+            label: 'OpenAI Codex',
+            modelId: 'openai_codex',
+            active: false,
+            readiness: {
+              ready: false,
+              status: 'missing',
+              credentialUpdatedAt: null,
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openrouter-default'))
+    expect(screen.getByTestId('provider-model-catalog-active-source')).toHaveTextContent('live')
+    expect(screen.getByTestId('provider-model-catalog-active-configured-model-id')).toHaveTextContent('openai/gpt-4.1-mini')
+    expect(screen.getByTestId('provider-model-catalog-active-model-count')).toHaveTextContent('2')
+    expect(setup.getProviderModelCatalog).toHaveBeenCalledWith('openrouter-default', { forceRefresh: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh OpenAI provider-model catalog' }))
+
+    await waitFor(() => expect(setup.getProviderModelCatalog).toHaveBeenCalledWith('openai_codex-default', { forceRefresh: true }))
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('provider-model-catalog-openrouter-source')).toHaveTextContent('live')
+  })
+
+  it('preserves the last-known-good provider-model catalog snapshot when refresh fails', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'openrouter',
+        modelId: 'openai/gpt-4.1-mini',
+        openrouterApiKeyConfigured: true,
+      }),
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'openrouter-default',
+        profiles: [
+          {
+            profileId: 'openrouter-default',
+            providerId: 'openrouter',
+            label: 'OpenRouter',
+            modelId: 'openai/gpt-4.1-mini',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    })
+
+    setup.getProviderModelCatalog
+      .mockResolvedValueOnce(
+        makeProviderModelCatalog('openrouter-default', {
+          providerId: 'openrouter',
+          configuredModelId: 'openai/gpt-4.1-mini',
+        }),
+      )
+      .mockRejectedValueOnce(
+        new CadenceDesktopError({
+          code: 'openrouter_provider_unavailable',
+          errorClass: 'retryable',
+          message: 'Cadence timed out while refreshing provider models.',
+          retryable: true,
+        }),
+      )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openrouter-default'))
+    expect(screen.getByTestId('provider-model-catalog-active-model-ids')).toHaveTextContent(
+      'openai/gpt-4.1-mini,anthropic/claude-3.7-sonnet',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh OpenRouter provider-model catalog' }))
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-load-status')).toHaveTextContent('error'))
+    expect(screen.getByTestId('provider-model-catalog-active-load-error-code')).toHaveTextContent(
+      'openrouter_provider_unavailable',
+    )
+    expect(screen.getByTestId('provider-model-catalog-active-source')).toHaveTextContent('live')
+    expect(screen.getByTestId('provider-model-catalog-active-configured-model-id')).toHaveTextContent(
+      'openai/gpt-4.1-mini',
+    )
+    expect(screen.getByTestId('provider-model-catalog-active-model-ids')).toHaveTextContent(
+      'openai/gpt-4.1-mini,anthropic/claude-3.7-sonnet',
+    )
+  })
+
+  it('force-refreshes only the affected provider-model catalog after provider-profile changes', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'openai_codex-default',
+        profiles: [
+          {
+            profileId: 'openai_codex-default',
+            providerId: 'openai_codex',
+            label: 'OpenAI Codex',
+            modelId: 'openai_codex',
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'missing',
+              credentialUpdatedAt: null,
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+          {
+            profileId: 'openrouter-default',
+            providerId: 'openrouter',
+            label: 'OpenRouter',
+            modelId: 'old/openrouter-model',
+            active: false,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openai_codex-default'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh OpenRouter provider-model catalog' }))
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('provider-model-catalog-openrouter-configured-model-id')).toHaveTextContent(
+      'old/openrouter-model',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save OpenRouter provider profile' }))
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default'))
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openrouter-default'))
+    expect(screen.getByTestId('provider-model-catalog-active-configured-model-id')).toHaveTextContent(
+      'openai/gpt-4.1-mini',
+    )
+    expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2')
+    expect(screen.getByTestId('provider-model-catalog-active-source')).toHaveTextContent('live')
+    expect(setup.getProviderModelCatalog).toHaveBeenLastCalledWith('openrouter-default', { forceRefresh: true })
+  })
+
+  it('keeps the newly active provider-model catalog truthful when an older refresh resolves later', async () => {
+    let resolveOpenRouterCatalog: ((value: ProviderModelCatalogDto) => void) | null = null
+    let resolveOpenAiCatalog: ((value: ProviderModelCatalogDto) => void) | null = null
+
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'openrouter-default',
+        profiles: [
+          {
+            profileId: 'openrouter-default',
+            providerId: 'openrouter',
+            label: 'OpenRouter',
+            modelId: 'openai/gpt-4.1-mini',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+          {
+            profileId: 'openai_codex-default',
+            providerId: 'openai_codex',
+            label: 'OpenAI Codex',
+            modelId: 'openai_codex',
+            active: false,
+            readiness: {
+              ready: false,
+              status: 'missing',
+              credentialUpdatedAt: null,
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    })
+
+    setup.getProviderModelCatalog.mockImplementation(
+      async (profileId: string, options?: { forceRefresh?: boolean }) =>
+        new Promise<ProviderModelCatalogDto>((resolve) => {
+          if (profileId === 'openrouter-default' && options?.forceRefresh === false) {
+            resolveOpenRouterCatalog = resolve
+            return
+          }
+
+          if (profileId === 'openai_codex-default') {
+            resolveOpenAiCatalog = resolve
+            return
+          }
+
+          resolve(
+            makeProviderModelCatalog(profileId, {
+              providerId: profileId.startsWith('openrouter') ? 'openrouter' : 'openai_codex',
+              configuredModelId: profileId.startsWith('openrouter') ? 'openai/gpt-4.1-mini' : 'openai_codex',
+            }),
+          )
+        }),
+    )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default'))
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-load-status')).toHaveTextContent('loading'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Activate OpenAI provider profile' }))
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openai_codex-default'))
+
+    act(() => {
+      resolveOpenAiCatalog?.(
+        makeProviderModelCatalog('openai_codex-default', {
+          providerId: 'openai_codex',
+          configuredModelId: 'openai_codex',
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openai_codex-default'))
+    expect(screen.getByTestId('provider-model-catalog-active-provider-id')).toHaveTextContent('openai_codex')
+
+    act(() => {
+      resolveOpenRouterCatalog?.(
+        makeProviderModelCatalog('openrouter-default', {
+          providerId: 'openrouter',
+          configuredModelId: 'openai/gpt-4.1-mini',
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openai_codex-default')
+    expect(screen.getByTestId('provider-model-catalog-active-provider-id')).toHaveTextContent('openai_codex')
   })
 
   it('derives OpenRouter-first guidance and mismatch recovery from app-global settings', async () => {
