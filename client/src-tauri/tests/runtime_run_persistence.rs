@@ -18,6 +18,11 @@ fn runtime_run_recovery_distinguishes_running_stale_stopped_and_failed_states() 
 }
 
 #[test]
+fn runtime_run_persists_active_and_pending_control_snapshots_with_queued_prompt() {
+    runtime_rows::runtime_run_persists_active_and_pending_control_snapshots_with_queued_prompt();
+}
+
+#[test]
 fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_preserve_prior_sequence() {
     runtime_rows::runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_preserve_prior_sequence();
 }

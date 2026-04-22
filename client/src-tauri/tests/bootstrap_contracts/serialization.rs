@@ -481,6 +481,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 head_sha: Some("abc123".into()),
                 detached: false,
             }),
+            last_commit: None,
             entries: vec![RepositoryStatusEntryDto {
                 path: "src/lib.rs".into(),
                 staged: Some(ChangeKind::Modified),
@@ -513,6 +514,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                     "headSha": "abc123",
                     "detached": false
                 },
+                "lastCommit": null,
                 "entries": [
                     {
                         "path": "src/lib.rs",

@@ -398,14 +398,6 @@ pub(crate) fn runtime_settings_snapshot_from_provider_profiles(
     })
 }
 
-fn map_auth_store_error_to_command_error(error: crate::auth::AuthFlowError) -> CommandError {
-    if error.retryable {
-        CommandError::retryable(error.code, error.message)
-    } else {
-        CommandError::user_fixable(error.code, error.message)
-    }
-}
-
 fn normalize_updated_at(value: String) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {

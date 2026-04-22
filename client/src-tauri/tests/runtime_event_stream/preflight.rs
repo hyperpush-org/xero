@@ -82,7 +82,7 @@ pub(crate) fn subscribe_runtime_stream_returns_run_scoped_response_for_an_attach
         .build()
         .expect("failed to create mock webview window");
 
-    seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+    let seeded_runtime = seed_authenticated_runtime(&app, &auth_store_path, &project_id);
     let launched = launch_supervised_run(
         app.state::<DesktopState>().inner(),
         &project_id,
@@ -100,10 +100,13 @@ pub(crate) fn subscribe_runtime_stream_returns_run_scoped_response_for_an_attach
         ),
         Ok(SubscribeRuntimeStreamResponseDto {
             project_id: project_id.clone(),
-            runtime_kind: "openai_codex".into(),
+            runtime_kind: seeded_runtime.runtime_kind.clone(),
             run_id: launched.run.run_id.clone(),
-            session_id: "session-auth".into(),
-            flow_id: None,
+            session_id: seeded_runtime
+                .session_id
+                .clone()
+                .expect("authenticated runtime session id should exist"),
+            flow_id: seeded_runtime.flow_id.clone(),
             subscribed_item_kinds: vec![
                 RuntimeStreamItemKind::Transcript,
                 RuntimeStreamItemKind::Tool,

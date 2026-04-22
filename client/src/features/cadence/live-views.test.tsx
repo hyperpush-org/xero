@@ -21,9 +21,11 @@ import type {
   ExecutionPaneView,
   WorkflowPaneView,
 } from '@/src/features/cadence/use-cadence-desktop-state'
+import type { AgentProviderModelCatalogView } from '@/src/features/cadence/use-cadence-desktop-state/types'
 import type {
   PlanningLifecycleView,
   ProjectDetailView,
+  ProviderModelThinkingEffortDto,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeStreamView,
@@ -203,6 +205,32 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       liveness: 'reachable',
       livenessLabel: 'Control reachable',
     },
+    controls: {
+      active: {
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        thinkingEffortLabel: 'Medium',
+        approvalMode: 'suggest',
+        approvalModeLabel: 'Suggest',
+        revision: 1,
+        appliedAt: '2026-04-15T20:00:00Z',
+      },
+      pending: null,
+      selected: {
+        source: 'active',
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        thinkingEffortLabel: 'Medium',
+        approvalMode: 'suggest',
+        approvalModeLabel: 'Suggest',
+        revision: 1,
+        effectiveAt: '2026-04-15T20:00:00Z',
+        queuedPrompt: null,
+        queuedPromptAt: null,
+        hasQueuedPrompt: false,
+      },
+      hasPendingControls: false,
+    },
     startedAt: '2026-04-15T20:00:00Z',
     lastHeartbeatAt: '2026-04-15T20:00:05Z',
     lastCheckpointSequence: 2,
@@ -362,6 +390,39 @@ function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeS
   }
 }
 
+function makeProviderModelCatalog(): AgentProviderModelCatalogView {
+  const thinkingEffortOptions: ProviderModelThinkingEffortDto[] = ['low', 'medium', 'high']
+
+  return {
+    profileId: 'openai_codex-default',
+    profileLabel: 'OpenAI Codex',
+    providerId: 'openai_codex',
+    providerLabel: 'OpenAI Codex',
+    source: 'live',
+    loadStatus: 'ready',
+    state: 'live',
+    stateLabel: 'Live catalog',
+    detail: 'OpenAI Codex is ready for this imported project.',
+    fetchedAt: '2026-04-15T20:00:00Z',
+    lastSuccessAt: '2026-04-15T20:00:00Z',
+    lastRefreshError: null,
+    models: [
+      {
+        modelId: 'openai_codex',
+        label: 'OpenAI Codex',
+        displayName: 'OpenAI Codex',
+        groupId: 'openai',
+        groupLabel: 'OpenAI',
+        availability: 'available',
+        availabilityLabel: 'Available',
+        thinkingSupported: true,
+        thinkingEffortOptions,
+        defaultThinkingEffort: 'medium',
+      },
+    ],
+  }
+}
+
 function makeCheckpointControlLoopCard(
   overrides: Partial<CheckpointControlLoopCard> = {},
 ): CheckpointControlLoopCard {
@@ -490,6 +551,10 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
   const runtimeRun = overrides.runtimeRun ?? project.runtimeRun ?? null
   const runtimeStream = overrides.runtimeStream ?? null
   const runtimeStreamStatus = overrides.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
+  const runtimeRunControls = runtimeRun?.controls ?? null
+  const selectedControls = runtimeRunControls?.selected ?? null
+  const providerModelCatalog = overrides.providerModelCatalog ?? makeProviderModelCatalog()
+  const selectedModelOption = overrides.selectedModelOption ?? providerModelCatalog.models[0] ?? null
 
   return {
     project,
@@ -500,6 +565,33 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     repositoryLabel: project.repository?.displayName ?? project.name,
     repositoryPath: project.repository?.rootPath ?? null,
     runtimeSession,
+    selectedProfileId: overrides.selectedProfileId ?? providerModelCatalog.profileId,
+    selectedProfileLabel: overrides.selectedProfileLabel ?? providerModelCatalog.profileLabel,
+    selectedProviderId: overrides.selectedProviderId ?? providerModelCatalog.providerId,
+    selectedProviderLabel: overrides.selectedProviderLabel ?? providerModelCatalog.providerLabel,
+    selectedProviderSource: overrides.selectedProviderSource ?? 'provider_profiles',
+    controlTruthSource:
+      overrides.controlTruthSource ?? (selectedControls && !runtimeRun?.isTerminal ? 'runtime_run' : 'fallback'),
+    selectedModelId: overrides.selectedModelId ?? selectedControls?.modelId ?? selectedModelOption?.modelId ?? null,
+    selectedThinkingEffort:
+      overrides.selectedThinkingEffort ??
+      selectedControls?.thinkingEffort ??
+      selectedModelOption?.defaultThinkingEffort ??
+      null,
+    selectedApprovalMode: overrides.selectedApprovalMode ?? selectedControls?.approvalMode ?? 'suggest',
+    selectedPrompt: overrides.selectedPrompt ?? {
+      text: selectedControls?.queuedPrompt ?? null,
+      queuedAt: selectedControls?.queuedPromptAt ?? null,
+      hasQueuedPrompt: selectedControls?.hasQueuedPrompt ?? false,
+    },
+    runtimeRunActiveControls: overrides.runtimeRunActiveControls ?? runtimeRunControls?.active ?? null,
+    runtimeRunPendingControls: overrides.runtimeRunPendingControls ?? runtimeRunControls?.pending ?? null,
+    providerModelCatalog,
+    selectedModelOption,
+    selectedModelThinkingEffortOptions:
+      overrides.selectedModelThinkingEffortOptions ?? selectedModelOption?.thinkingEffortOptions ?? [],
+    selectedModelDefaultThinkingEffort:
+      overrides.selectedModelDefaultThinkingEffort ?? selectedModelOption?.defaultThinkingEffort ?? null,
     runtimeRun,
     runtimeErrorMessage: null,
     runtimeRunErrorMessage: null,
@@ -728,10 +820,7 @@ describe('live views', () => {
     expect(screen.getByText('No runtime activity yet')).toBeVisible()
     expect(screen.getByText('No tool calls yet')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Start run' })).toBeVisible()
-    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
-      'placeholder',
-      'Start or reconnect a supervised run to create the run-scoped live feed for this imported project.',
-    )
+    expect(screen.queryByLabelText('Agent input unavailable')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
     await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))

@@ -297,7 +297,7 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         .flat_map(|entry| entry.artifacts.iter())
         .filter(|artifact| artifact.attempt_id == paused_attempt.attempt_id)
         .collect::<Vec<_>>();
-    assert_eq!(paused_artifacts.len(), 4);
+    assert_eq!(paused_artifacts.len(), 5);
     assert_eq!(
         paused_artifacts
             .iter()
@@ -317,7 +317,7 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
             .iter()
             .filter(|artifact| artifact.artifact_kind == "verification_evidence")
             .count(),
-        1
+        2
     );
     assert!(paused_artifacts.iter().any(|artifact| {
         matches!(
@@ -343,6 +343,16 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
             Some(project_store::AutonomousArtifactPayloadRecord::PolicyDenied(payload))
                 if payload.diagnostic_code == "policy_denied_write_access"
                     && payload.message == "Cadence blocked repository writes until operator approval resumes the active boundary"
+        )
+    }));
+    assert!(paused_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                if payload.evidence_kind == "policy_denied_write_access"
+                    && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Failed
+                    && payload.action_id.is_none()
+                    && payload.boundary_id.is_none()
         )
     }));
     assert!(paused_artifacts.iter().any(|artifact| {
@@ -560,7 +570,7 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         .flat_map(|entry| entry.artifacts.iter())
         .filter(|artifact| artifact.attempt_id == paused_attempt.attempt_id)
         .collect::<Vec<_>>();
-    assert_eq!(resumed_artifacts.len(), 5);
+    assert_eq!(resumed_artifacts.len(), 6);
     assert_eq!(
         resumed_artifacts
             .iter()
@@ -579,7 +589,23 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         .iter()
         .filter(|artifact| artifact.artifact_kind == "verification_evidence")
         .collect::<Vec<_>>();
-    assert_eq!(boundary_evidence.len(), 2);
+    assert_eq!(boundary_evidence.len(), 3);
+    assert_eq!(
+        boundary_evidence
+            .iter()
+            .filter(|artifact| {
+                matches!(
+                    artifact.payload.as_ref(),
+                    Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                        if payload.evidence_kind == "policy_denied_write_access"
+                            && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Failed
+                            && payload.action_id.is_none()
+                            && payload.boundary_id.is_none()
+                )
+            })
+            .count(),
+        1
+    );
     assert_eq!(
         boundary_evidence
             .iter()

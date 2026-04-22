@@ -57,6 +57,7 @@ fn seed_project(
         branch_name: Some("main".into()),
         head_sha: Some("abc123".into()),
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,

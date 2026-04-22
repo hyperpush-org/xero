@@ -352,9 +352,9 @@ fn reconcile_openai_codex_runtime_session<R: Runtime>(
     ))
 }
 
-fn active_openai_profile<'a>(
-    provider_profiles: Option<&'a ProviderProfilesSnapshot>,
-) -> Result<&'a crate::provider_profiles::ProviderProfileRecord, AuthFlowError> {
+fn active_openai_profile(
+    provider_profiles: Option<&ProviderProfilesSnapshot>,
+) -> Result<&crate::provider_profiles::ProviderProfileRecord, AuthFlowError> {
     let provider_profiles = provider_profiles.ok_or_else(|| {
         AuthFlowError::terminal(
             "provider_profiles_missing",

@@ -90,6 +90,11 @@ pub(crate) fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::Moc
 pub(crate) fn create_state(root: &TempDir) -> DesktopState {
     let registry_path = root.path().join("app-data").join("project-registry.json");
     let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    let provider_profiles_path = root.path().join("app-data").join("provider-profiles.json");
+    let provider_profile_credentials_path = root
+        .path()
+        .join("app-data")
+        .join("provider-profile-credentials.json");
     let runtime_settings_path = root.path().join("app-data").join("runtime-settings.json");
     let openrouter_credential_path = root
         .path()
@@ -99,6 +104,8 @@ pub(crate) fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
         .with_registry_file_override(registry_path)
         .with_auth_store_file_override(auth_store_path)
+        .with_provider_profiles_file_override(provider_profiles_path)
+        .with_provider_profile_credential_store_file_override(provider_profile_credentials_path)
         .with_runtime_settings_file_override(runtime_settings_path)
         .with_openrouter_credential_file_override(openrouter_credential_path)
         .with_autonomous_skill_cache_dir_override(
@@ -185,6 +192,7 @@ pub(crate) fn seed_project(
         branch_name: Some("main".into()),
         head_sha: Some("abc123".into()),
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,
@@ -341,6 +349,7 @@ pub(crate) fn launch_scripted_runtime_run_with_runtime_kind(
             startup_timeout: Duration::from_secs(5),
             control_timeout: Duration::from_millis(750),
             supervisor_binary: state.runtime_supervisor_binary_override().cloned(),
+            run_controls: RuntimeSupervisorLaunchRequest::default().run_controls,
         },
     )
     .expect("launch scripted runtime supervisor")

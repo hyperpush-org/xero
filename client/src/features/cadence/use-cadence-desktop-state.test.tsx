@@ -15,6 +15,7 @@ import {
   type ResolveOperatorActionResponseDto,
   type ResumeOperatorRunResponseDto,
   type AutonomousRunStateDto,
+  type RuntimeRunControlInputDto,
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
@@ -315,6 +316,16 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
       kind: 'tcp',
       endpoint: '127.0.0.1:4455',
       liveness: 'reachable',
+    },
+    controls: {
+      active: {
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        approvalMode: 'suggest',
+        revision: 1,
+        appliedAt: '2026-04-15T20:00:00Z',
+      },
+      pending: null,
     },
     startedAt: '2026-04-15T20:00:00Z',
     lastHeartbeatAt: '2026-04-15T20:00:05Z',
@@ -802,6 +813,40 @@ function createMockAdapter(options?: {
     return nextState
   })
   const startRuntimeRun = vi.fn(async (projectId: string) => runtimeRuns[projectId] ?? makeRuntimeRun(projectId))
+  const updateRuntimeRunControls = vi.fn(
+    async (request: {
+      projectId: string
+      runId: string
+      controls?: RuntimeRunControlInputDto | null
+      prompt?: string | null
+    }): Promise<RuntimeRunDto> => {
+      const currentRun = runtimeRuns[request.projectId] ?? makeRuntimeRun(request.projectId, { runId: request.runId })
+      const queuedAt = '2026-04-15T20:00:07Z'
+      const activeControls = currentRun.controls.active
+      const pendingControls = request.controls
+        ? {
+            modelId: request.controls.modelId,
+            thinkingEffort: request.controls.thinkingEffort ?? null,
+            approvalMode: request.controls.approvalMode,
+            revision: activeControls.revision + 1,
+            queuedAt,
+            queuedPrompt: request.prompt ?? null,
+            queuedPromptAt: request.prompt ? queuedAt : null,
+          }
+        : currentRun.controls.pending
+
+      const nextRun = {
+        ...currentRun,
+        controls: {
+          active: currentRun.controls.active,
+          pending: pendingControls,
+        },
+        updatedAt: queuedAt,
+      }
+      runtimeRuns[request.projectId] = nextRun
+      return nextRun
+    },
+  )
   const startRuntimeSession = vi.fn(async (projectId: string) => makeRuntimeSession(projectId))
   const cancelAutonomousRun = vi.fn(async (projectId: string, runId: string) => {
     const nextState = makeAutonomousRunState(projectId, runId)
@@ -1027,6 +1072,7 @@ function createMockAdapter(options?: {
     submitOpenAiCallback,
     startAutonomousRun,
     startRuntimeRun,
+    updateRuntimeRunControls,
     startRuntimeSession,
     cancelAutonomousRun,
     stopRuntimeRun,
@@ -2900,7 +2946,7 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
     expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openrouter')
     expect(screen.getByTestId('selected-provider-label')).toHaveTextContent('OpenRouter')
-    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai/gpt-4.1-mini')
+    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai_codex')
     expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
     expect(screen.getByTestId('auth-phase')).toHaveTextContent('authenticated')
     expect(screen.getByTestId('runtime-settings-load-error-code')).toHaveTextContent('none')
@@ -3018,7 +3064,7 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('provider-profiles-selected-readiness-status')).toHaveTextContent('ready')
     expect(screen.getByTestId('selected-provider-source')).toHaveTextContent('provider_profiles')
     expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('openrouter')
-    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai/gpt-4.1-mini')
+    expect(screen.getByTestId('selected-model-id')).toHaveTextContent('openai_codex')
     expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter')
     expect(screen.getByTestId('runtime-provider-id')).toHaveTextContent('openai_codex')
     expect(screen.getByTestId('auth-phase')).toHaveTextContent('authenticated')
@@ -3265,8 +3311,10 @@ describe('useCadenceDesktopState', () => {
 
     await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('openrouter-default'))
     await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openrouter-default'))
-    expect(screen.getByTestId('provider-model-catalog-active-configured-model-id')).toHaveTextContent(
-      'openai/gpt-4.1-mini',
+    await waitFor(() =>
+      expect(screen.getByTestId('provider-model-catalog-active-configured-model-id')).toHaveTextContent(
+        'openai/gpt-4.1-mini',
+      ),
     )
     expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2')
     expect(screen.getByTestId('provider-model-catalog-active-source')).toHaveTextContent('live')

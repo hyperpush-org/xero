@@ -66,6 +66,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         branch_name: current_branch_name(&canonical_root),
         head_sha: current_head_sha(&canonical_root),
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,

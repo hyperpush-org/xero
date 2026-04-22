@@ -12,7 +12,7 @@ use crate::{
         OPENAI_CODEX_DEFAULT_PROFILE_ID, OPENROUTER_DEFAULT_PROFILE_ID,
         OPENROUTER_FALLBACK_MODEL_ID,
     },
-    runtime::{OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID},
+    runtime::OPENROUTER_PROVIDER_ID,
     state::DesktopState,
 };
 
@@ -219,13 +219,5 @@ fn openrouter_secret_updated_at(
             current.updated_at.clone()
         }
         _ => crate::auth::now_timestamp(),
-    }
-}
-
-fn map_auth_store_error_to_command_error(error: crate::auth::AuthFlowError) -> CommandError {
-    if error.retryable {
-        CommandError::retryable(error.code, error.message)
-    } else {
-        CommandError::user_fixable(error.code, error.message)
     }
 }

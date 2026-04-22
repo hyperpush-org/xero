@@ -29,6 +29,15 @@ pub(super) struct ActiveInteractiveBoundary {
     pub(super) detected_at: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StructuredRuntimeBoundary<'a> {
+    pub(super) action_id: &'a str,
+    pub(super) boundary_id: &'a str,
+    pub(super) action_type: &'a str,
+    pub(super) title: &'a str,
+    pub(super) detail: &'a str,
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeBoundaryCandidate {
     boundary_id: Option<String>,
@@ -146,11 +155,7 @@ pub(super) fn emit_structured_runtime_boundary(
     shared: &Arc<Mutex<SidecarSharedState>>,
     event_hub: &Arc<Mutex<SupervisorEventHub>>,
     persistence_lock: &Arc<Mutex<()>>,
-    action_id: &str,
-    boundary_id: &str,
-    action_type: &str,
-    title: &str,
-    detail: &str,
+    boundary: StructuredRuntimeBoundary<'_>,
 ) {
     emit_runtime_boundary_candidate(
         repo_root,
@@ -158,12 +163,15 @@ pub(super) fn emit_structured_runtime_boundary(
         event_hub,
         persistence_lock,
         RuntimeBoundaryCandidate {
-            boundary_id: Some(boundary_id.to_string()),
-            action_id: Some(action_id.to_string()),
-            action_type: action_type.to_string(),
-            title: title.to_string(),
-            detail: detail.to_string(),
-            checkpoint_summary: checkpoint_summary_for_runtime_boundary(action_type, title),
+            boundary_id: Some(boundary.boundary_id.to_string()),
+            action_id: Some(boundary.action_id.to_string()),
+            action_type: boundary.action_type.to_string(),
+            title: boundary.title.to_string(),
+            detail: boundary.detail.to_string(),
+            checkpoint_summary: checkpoint_summary_for_runtime_boundary(
+                boundary.action_type,
+                boundary.title,
+            ),
         },
     );
 }

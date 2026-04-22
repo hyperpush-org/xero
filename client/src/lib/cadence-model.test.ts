@@ -1886,6 +1886,16 @@ describe('cadence-model', () => {
           endpoint: '127.0.0.1:4455',
           liveness: 'reachable',
         },
+        controls: {
+          active: {
+            modelId: 'azure-openai/gpt-4.1-mini',
+            thinkingEffort: 'medium',
+            approvalMode: 'suggest',
+            revision: 1,
+            appliedAt: '2026-04-15T20:00:00Z',
+          },
+          pending: null,
+        },
         startedAt: '2026-04-15T20:00:00Z',
         lastHeartbeatAt: '2026-04-15T20:00:05Z',
         lastCheckpointSequence: 1,

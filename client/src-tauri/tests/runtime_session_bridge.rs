@@ -131,6 +131,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         branch_name: Some("main".into()),
         head_sha: Some("abc123".into()),
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,
@@ -782,7 +783,7 @@ fn get_runtime_session_returns_idle_when_authenticated_binding_is_stale() {
 }
 
 #[test]
-fn get_runtime_session_returns_failed_when_transient_flow_snapshot_is_missing_after_reload() {
+fn get_runtime_session_returns_idle_when_transient_flow_snapshot_is_missing_after_reload() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, registry_path, auth_store_path) = create_state(&root);
     let state = state.with_openai_auth_config_override(auth_config_with_token_url(
@@ -821,11 +822,8 @@ fn get_runtime_session_returns_failed_when_transient_flow_snapshot_is_missing_af
     )
     .expect("reconcile missing in-memory flow");
 
-    assert_eq!(runtime.phase, RuntimeAuthPhase::Failed);
-    assert_eq!(
-        runtime.last_error_code.as_deref(),
-        Some("auth_flow_unavailable")
-    );
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
+    assert!(runtime.last_error_code.is_none());
     assert!(runtime.flow_id.is_none());
 }
 

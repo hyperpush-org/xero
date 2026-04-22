@@ -242,13 +242,15 @@ fn run_supervisor_sidecar(args: RuntimeSupervisorSidecarArgs) -> Result<(), Comm
 
     let control_thread = spawn_control_listener(
         listener,
-        args.repo_root.clone(),
-        shared.clone(),
-        event_hub.clone(),
-        persistence_lock.clone(),
-        writer.clone(),
-        shutdown.clone(),
-        killer,
+        super::control::ControlListenerContext {
+            repo_root: args.repo_root.clone(),
+            shared: shared.clone(),
+            event_hub: event_hub.clone(),
+            persistence_lock: persistence_lock.clone(),
+            writer: writer.clone(),
+            shutdown: shutdown.clone(),
+            killer: Arc::new(Mutex::new(killer)),
+        },
     );
 
     emit_startup_message(&SupervisorStartupMessage::Ready {

@@ -13,7 +13,7 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use tauri::Manager;
 use tempfile::TempDir;
 

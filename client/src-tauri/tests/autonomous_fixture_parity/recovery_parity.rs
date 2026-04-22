@@ -3,8 +3,10 @@ use super::support::*;
 pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_tool_skill_recovery_after_reload(
 ) {
     let _guard = supervisor_test_guard();
-    let models_base_url =
-        spawn_static_http_server(200, r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#);
+    let models_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"openai/gpt-4o-mini","supported_parameters":[]}]}"#,
+    );
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_openrouter_state(
         &root,
@@ -287,7 +289,7 @@ pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_
             && history_shape(autonomous_state) == progressed_shape
             && tool_count == 2
             && skill_count == 3
-            && verification_count == 1
+            && verification_count == 2
             && policy_count == 1
     });
     let paused_attempt = paused
@@ -334,7 +336,7 @@ pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_
         .flat_map(|entry| entry.artifacts.iter())
         .filter(|artifact| artifact.attempt_id == paused_attempt.attempt_id)
         .collect::<Vec<_>>();
-    assert_eq!(paused_artifacts.len(), 7);
+    assert_eq!(paused_artifacts.len(), 8);
     assert_eq!(
         paused_artifacts
             .iter()
@@ -361,7 +363,7 @@ pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_
             .iter()
             .filter(|artifact| artifact.artifact_kind == "verification_evidence")
             .count(),
-        1
+        2
     );
     assert!(paused_artifacts.iter().any(|artifact| {
         matches!(
@@ -421,6 +423,16 @@ pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_
             Some(project_store::AutonomousArtifactPayloadRecord::PolicyDenied(payload))
                 if payload.diagnostic_code == "policy_denied_write_access"
                     && payload.message == "Cadence blocked repository writes until operator approval resumes the active boundary"
+        )
+    }));
+    assert!(paused_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                if payload.evidence_kind == "policy_denied_write_access"
+                    && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Failed
+                    && payload.action_id.is_none()
+                    && payload.boundary_id.is_none()
         )
     }));
     assert!(paused_artifacts.iter().any(|artifact| {
@@ -525,12 +537,28 @@ pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_
         .flat_map(|entry| entry.artifacts.iter())
         .filter(|artifact| artifact.attempt_id == paused_attempt.attempt_id)
         .collect::<Vec<_>>();
-    assert_eq!(resumed_artifacts.len(), 8);
+    assert_eq!(resumed_artifacts.len(), 9);
     let boundary_evidence = resumed_artifacts
         .iter()
         .filter(|artifact| artifact.artifact_kind == "verification_evidence")
         .collect::<Vec<_>>();
-    assert_eq!(boundary_evidence.len(), 2);
+    assert_eq!(boundary_evidence.len(), 3);
+    assert_eq!(
+        boundary_evidence
+            .iter()
+            .filter(|artifact| {
+                matches!(
+                    artifact.payload.as_ref(),
+                    Some(project_store::AutonomousArtifactPayloadRecord::VerificationEvidence(payload))
+                        if payload.evidence_kind == "policy_denied_write_access"
+                            && payload.outcome == project_store::AutonomousVerificationOutcomeRecord::Failed
+                            && payload.action_id.is_none()
+                            && payload.boundary_id.is_none()
+                )
+            })
+            .count(),
+        1
+    );
     assert_eq!(
         boundary_evidence
             .iter()
@@ -584,8 +612,11 @@ pub(crate) fn autonomous_fixture_repo_parity_binds_openrouter_truth_and_replays_
         Some(action_id.as_str())
     );
 
-    let replay_models_base_url =
-        spawn_static_http_server_with_requests(200, r#"{"data":[{"id":"openai/gpt-4o-mini"}]}"#, 2);
+    let replay_models_base_url = spawn_static_http_server_with_requests(
+        200,
+        r#"{"data":[{"id":"openai/gpt-4o-mini","supported_parameters":[]}]}"#,
+        2,
+    );
     let replay_app = build_mock_app(create_openrouter_state(
         &root,
         format!("{replay_models_base_url}/api/v1/models"),

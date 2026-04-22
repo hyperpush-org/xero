@@ -8,6 +8,8 @@ import type {
   ListProjectsResponseDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
+  ProviderModelCatalogDto,
+  ProviderProfilesDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
@@ -805,18 +807,18 @@ function createMockAdapter(options?: {
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
   }
-  const providerProfiles = {
+  const providerProfiles: ProviderProfilesDto = {
     activeProfileId: 'openai_codex-default',
     profiles: [
       {
         profileId: 'openai_codex-default',
-        providerId: 'openai_codex' as const,
+        providerId: 'openai_codex',
         label: 'OpenAI Codex',
         modelId: 'openai_codex',
         active: true,
         readiness: {
           ready: false,
-          status: 'missing' as const,
+          status: 'missing',
           credentialUpdatedAt: null,
         },
         migratedFromLegacy: false,
@@ -885,7 +887,7 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings: vi.fn(async () => runtimeSettings),
-    getProviderModelCatalog: vi.fn(async (profileId: string) => {
+    getProviderModelCatalog: vi.fn(async (profileId: string): Promise<ProviderModelCatalogDto> => {
       const profile = providerProfiles.profiles.find((candidate) => candidate.profileId === profileId)
       if (!profile) {
         throw new Error(`Missing provider profile ${profileId}`)

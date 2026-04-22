@@ -2,7 +2,7 @@ pub(crate) use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -53,6 +53,14 @@ pub(crate) use tempfile::TempDir;
 
 #[path = "../support/runtime_shell.rs"]
 pub(crate) mod runtime_shell;
+
+pub(crate) fn supervisor_test_guard() -> MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct EventRecorder {
@@ -212,6 +220,7 @@ pub(crate) fn seed_project(
         branch_name: Some("main".into()),
         head_sha: Some("abc123".into()),
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,

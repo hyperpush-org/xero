@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
 };
 
@@ -110,6 +110,15 @@ struct CachedProviderModelCatalogRow {
     fetched_at: String,
     last_success_at: String,
     models: Vec<ProviderModelRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderModelCatalogRefreshContext {
+    cached_row: Option<CachedProviderModelCatalogRow>,
+    cache_catalogs: BTreeMap<String, CachedProviderModelCatalogRow>,
+    cache_path: PathBuf,
+    cache_write_allowed: bool,
+    cache_read_diagnostic: Option<ProviderModelCatalogDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,19 +255,18 @@ pub fn load_provider_model_catalog<R: Runtime>(
     let profile = profile.clone();
     let cache_path = cache_path.clone();
 
+    let refresh_context = ProviderModelCatalogRefreshContext {
+        cached_row,
+        cache_catalogs,
+        cache_path: cache_path.clone(),
+        cache_write_allowed,
+        cache_read_diagnostic,
+    };
+
     Ok(state
         .provider_model_catalog_refresh_registry()
         .run(profile_id, move || {
-            refresh_provider_model_catalog(
-                &profile,
-                &provider_profiles,
-                state,
-                cached_row.as_ref(),
-                &cache_catalogs,
-                &cache_path,
-                cache_write_allowed,
-                cache_read_diagnostic,
-            )
+            refresh_provider_model_catalog(&profile, &provider_profiles, state, &refresh_context)
         }))
 }
 
@@ -266,18 +274,14 @@ fn refresh_provider_model_catalog(
     profile: &ProviderProfileRecord,
     provider_profiles: &ProviderProfilesSnapshot,
     state: &DesktopState,
-    cached_row: Option<&CachedProviderModelCatalogRow>,
-    cache_catalogs: &BTreeMap<String, CachedProviderModelCatalogRow>,
-    cache_path: &Path,
-    cache_write_allowed: bool,
-    cache_read_diagnostic: Option<ProviderModelCatalogDiagnostic>,
+    refresh_context: &ProviderModelCatalogRefreshContext,
 ) -> ProviderModelCatalog {
     let live_models = match profile.provider_id.as_str() {
         OPENAI_CODEX_PROVIDER_ID => Ok(openai_codex_projection()),
         OPENROUTER_PROVIDER_ID => {
             let Some(secret) = provider_profiles.openrouter_credential(&profile.profile_id) else {
                 let diagnostic = missing_openrouter_credential_diagnostic(profile);
-                return match cached_row {
+                return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
                     None => unavailable_catalog(profile, Some(diagnostic)),
                 };
@@ -313,21 +317,23 @@ fn refresh_provider_model_catalog(
                 source: ProviderModelCatalogSource::Live,
                 fetched_at: Some(now.clone()),
                 last_success_at: Some(now),
-                last_refresh_error: cache_read_diagnostic.clone(),
+                last_refresh_error: refresh_context.cache_read_diagnostic.clone(),
                 models,
             };
 
-            if !cache_write_allowed {
+            if !refresh_context.cache_write_allowed {
                 return catalog;
             }
 
-            if cached_row
+            if refresh_context
+                .cached_row
+                .as_ref()
                 .map(|cached| materially_changed(cached, &new_row))
                 .unwrap_or(true)
             {
                 if let Err(error) = persist_provider_model_catalog_cache(
-                    cache_path,
-                    cache_catalogs,
+                    &refresh_context.cache_path,
+                    &refresh_context.cache_catalogs,
                     &profile.profile_id,
                     &new_row,
                 ) {
@@ -337,7 +343,7 @@ fn refresh_provider_model_catalog(
 
             catalog
         }
-        Err(diagnostic) => match cached_row {
+        Err(diagnostic) => match refresh_context.cached_row.as_ref() {
             Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
             None => unavailable_catalog(profile, Some(diagnostic)),
         },

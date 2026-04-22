@@ -10,7 +10,10 @@ use crate::{
 };
 
 use super::{
-    boundary::{checkpoint_summary_for_runtime_boundary, emit_structured_runtime_boundary},
+    boundary::{
+        checkpoint_summary_for_runtime_boundary, emit_structured_runtime_boundary,
+        StructuredRuntimeBoundary,
+    },
     persistence::{
         apply_pending_controls_at_boundary, persist_sidecar_checkpoint, PendingControlApplyOutcome,
     },
@@ -996,11 +999,13 @@ pub(super) fn emit_normalized_events(
                 shared,
                 event_hub,
                 persistence_lock,
-                action_id,
-                boundary_id,
-                action_type,
-                title,
-                detail,
+                StructuredRuntimeBoundary {
+                    action_id,
+                    boundary_id,
+                    action_type,
+                    title,
+                    detail,
+                },
             );
             continue;
         }

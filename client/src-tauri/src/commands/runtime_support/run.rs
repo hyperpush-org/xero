@@ -429,8 +429,7 @@ fn resolve_initial_runtime_run_thinking_effort(
     Ok(model
         .thinking
         .default_effort
-        .clone()
-        .or_else(|| model.thinking.effort_options.first().cloned())
+        .or_else(|| model.thinking.effort_options.first().copied())
         .map(provider_model_thinking_effort_dto))
 }
 

@@ -14,5 +14,5 @@ pub use store::{
 
 pub(crate) use store::{
     build_openai_default_profile, build_openrouter_default_profile,
-    persist_provider_profiles_snapshot, restore_file_snapshot, snapshot_existing_file,
+    persist_provider_profiles_snapshot,
 };

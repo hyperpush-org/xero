@@ -1,5 +1,16 @@
 use super::support::*;
 
+fn runtime_control_state(timestamp: &str) -> project_store::RuntimeRunControlStateRecord {
+    project_store::build_runtime_run_control_state(
+        "openai_codex",
+        None,
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        timestamp,
+        None,
+    )
+    .expect("build runtime control state")
+}
+
 pub(crate) fn resolve_operator_action_persists_decision_and_verification_rows() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path) = create_state(&root);
@@ -246,6 +257,7 @@ pub(crate) fn runtime_scoped_resume_rejects_conflicting_user_answer_without_pers
                 updated_at: "2026-04-15T21:00:05Z".into(),
             },
             checkpoint: None,
+            control_state: Some(runtime_control_state("2026-04-15T21:00:05Z")),
         },
     )
     .expect("persist runtime run for conflicting-answer test");
@@ -347,6 +359,7 @@ pub(crate) fn runtime_scoped_resume_rejects_corrupted_approved_answer_metadata_w
                 updated_at: "2026-04-15T21:06:05Z".into(),
             },
             checkpoint: None,
+            control_state: Some(runtime_control_state("2026-04-15T21:06:05Z")),
         },
     )
     .expect("persist runtime run for metadata-conflict test");
@@ -459,6 +472,7 @@ pub(crate) fn runtime_scoped_approval_requires_non_secret_user_answer_at_resolve
                 updated_at: "2026-04-15T21:10:05Z".into(),
             },
             checkpoint: None,
+            control_state: Some(runtime_control_state("2026-04-15T21:10:05Z")),
         },
     )
     .expect("persist runtime run for resolve-answer test");
@@ -610,6 +624,7 @@ pub(crate) fn runtime_scoped_approval_rejects_malformed_runtime_identity_without
                 updated_at: "2026-04-15T21:20:05Z".into(),
             },
             checkpoint: None,
+            control_state: Some(runtime_control_state("2026-04-15T21:20:05Z")),
         },
     )
     .expect("persist runtime run for malformed-identity test");
@@ -712,6 +727,7 @@ pub(crate) fn runtime_scoped_resume_rejects_already_resumed_autonomous_boundary_
                 updated_at: "2026-04-15T21:30:05Z".into(),
             },
             checkpoint: None,
+            control_state: Some(runtime_control_state("2026-04-15T21:30:05Z")),
         },
     )
     .expect("persist runtime run for autonomous replay test");

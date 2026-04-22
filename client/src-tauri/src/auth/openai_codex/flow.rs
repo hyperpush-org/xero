@@ -70,10 +70,6 @@ struct FlowObservation {
 }
 
 impl ActiveOpenAiCodexFlow {
-    pub(crate) fn project_id(&self) -> &str {
-        &self.project_id
-    }
-
     pub(crate) fn profile_id(&self) -> &str {
         &self.profile_id
     }

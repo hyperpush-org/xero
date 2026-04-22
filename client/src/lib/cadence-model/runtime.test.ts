@@ -87,6 +87,9 @@ describe('runtime run control schemas', () => {
     })
 
     expect(parsed.success).toBe(false)
+    if (parsed.success) {
+      throw new Error('Expected runtimeRunSchema to reject missing controls.')
+    }
     expect(parsed.error.issues.some((issue) => issue.path.join('.') === 'controls')).toBe(true)
   })
 
@@ -114,6 +117,9 @@ describe('runtime run control schemas', () => {
     })
 
     expect(parsed.success).toBe(false)
+    if (parsed.success) {
+      throw new Error('Expected runtimeRunSchema to reject malformed pending controls.')
+    }
     expect(parsed.error.issues.some((issue) => issue.path.join('.') === 'controls.pending.approvalMode')).toBe(true)
   })
 

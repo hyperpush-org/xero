@@ -866,6 +866,7 @@ pub(crate) fn planning_lifecycle_gate_pause_branch_requires_explicit_resume_with
 }
 
 pub(crate) fn start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage() {
+    let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, auth_store_path) = create_state(&root);
     let app = build_mock_app(state);

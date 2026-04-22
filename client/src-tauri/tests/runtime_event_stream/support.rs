@@ -64,6 +64,17 @@ pub(crate) fn supervisor_test_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn runtime_control_state(timestamp: &str) -> project_store::RuntimeRunControlStateRecord {
+    project_store::build_runtime_run_control_state(
+        "openai_codex",
+        None,
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        timestamp,
+        None,
+    )
+    .expect("build runtime control state")
+}
+
 pub(crate) fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
         .build(tauri::generate_context!())
@@ -143,6 +154,7 @@ pub(crate) fn seed_project(
         branch_name: Some("main".into()),
         head_sha: Some("abc123".into()),
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,
@@ -239,6 +251,7 @@ pub(crate) fn launch_request(
         startup_timeout: Duration::from_secs(5),
         control_timeout: Duration::from_millis(750),
         supervisor_binary: Some(supervisor_binary_path()),
+        run_controls: RuntimeSupervisorLaunchRequest::default().run_controls,
     }
 }
 
@@ -427,6 +440,7 @@ pub(crate) fn seed_terminal_runtime_run(repo_root: &Path, project_id: &str, run_
                 updated_at: "2026-04-15T23:10:05Z".into(),
             },
             checkpoint: None,
+            control_state: Some(runtime_control_state("2026-04-15T23:10:05Z")),
         },
     )
     .expect("seed failed runtime run");
@@ -465,8 +479,9 @@ pub(crate) fn seed_fake_runtime_run(
                 sequence: 1,
                 kind: RuntimeRunCheckpointKind::Bootstrap,
                 summary: "Supervisor ready".into(),
-                created_at: timestamp,
+                created_at: timestamp.clone(),
             }),
+            control_state: Some(runtime_control_state(&timestamp)),
         },
     )
     .expect("seed fake runtime run");

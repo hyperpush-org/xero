@@ -809,11 +809,22 @@ function createAdapter(options?: {
     )
 
     if (currentSnapshot.project.id === payload.project.id) {
+      const currentRepository =
+        currentSnapshot.repository ?? {
+          id: `repo-${payload.project.id}`,
+          projectId: payload.project.id,
+          rootPath: `/tmp/${payload.project.name}`,
+          displayName: payload.project.name,
+          branch: null,
+          headSha: null,
+          isGitRepo: true,
+        }
+
       currentSnapshot = {
         ...currentSnapshot,
         project: payload.project,
         repository: {
-          ...currentSnapshot.repository,
+          ...currentRepository,
           projectId: payload.project.id,
           displayName: payload.project.name,
         },

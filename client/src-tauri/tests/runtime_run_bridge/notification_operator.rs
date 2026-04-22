@@ -523,6 +523,7 @@ pub(crate) fn resume_operator_run_delivers_approved_terminal_input_without_auth_
 
 pub(crate) fn submit_notification_reply_persists_autonomous_boundary_and_resume_evidence_exactly_once(
 ) {
+    let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, _auth_store_path) = create_state(&root);
     let app = build_mock_app(state);

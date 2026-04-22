@@ -31,39 +31,38 @@ use crate::runtime::protocol::{
     SupervisorProcessStatus, SUPERVISOR_PROTOCOL_VERSION,
 };
 
+#[derive(Clone)]
+pub(super) struct ControlListenerContext {
+    pub(super) repo_root: PathBuf,
+    pub(super) shared: Arc<Mutex<SidecarSharedState>>,
+    pub(super) event_hub: Arc<Mutex<SupervisorEventHub>>,
+    pub(super) persistence_lock: Arc<Mutex<()>>,
+    pub(super) writer: SharedPtyWriter,
+    pub(super) shutdown: Arc<AtomicBool>,
+    pub(super) killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+}
+
+struct QueueControlsRequestArgs {
+    protocol_version: u8,
+    project_id: String,
+    run_id: String,
+    session_id: String,
+    flow_id: Option<String>,
+    controls: Option<RuntimeRunControlInputDto>,
+    prompt: Option<String>,
+}
+
 pub(super) fn spawn_control_listener(
     listener: TcpListener,
-    repo_root: PathBuf,
-    shared: Arc<Mutex<SidecarSharedState>>,
-    event_hub: Arc<Mutex<SupervisorEventHub>>,
-    persistence_lock: Arc<Mutex<()>>,
-    writer: SharedPtyWriter,
-    shutdown: Arc<AtomicBool>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    context: ControlListenerContext,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let killer = Arc::new(Mutex::new(killer));
-        while !shutdown.load(Ordering::SeqCst) {
+        while !context.shutdown.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let repo_root = repo_root.clone();
-                    let shared = shared.clone();
-                    let event_hub = event_hub.clone();
-                    let persistence_lock = persistence_lock.clone();
-                    let writer = writer.clone();
-                    let shutdown = shutdown.clone();
-                    let killer = killer.clone();
+                    let connection_context = context.clone();
                     thread::spawn(move || {
-                        let _ = handle_control_connection(
-                            stream,
-                            &repo_root,
-                            &shared,
-                            &event_hub,
-                            &persistence_lock,
-                            &writer,
-                            &shutdown,
-                            &killer,
-                        );
+                        let _ = handle_control_connection(stream, &connection_context);
                     });
                 }
                 Err(error)
@@ -77,7 +76,7 @@ pub(super) fn spawn_control_listener(
                     thread::sleep(CONTROL_ACCEPT_POLL_INTERVAL);
                 }
                 Err(_) => {
-                    if shutdown.load(Ordering::SeqCst) {
+                    if context.shutdown.load(Ordering::SeqCst) {
                         break;
                     }
                     thread::sleep(CONTROL_ACCEPT_POLL_INTERVAL);
@@ -89,14 +88,14 @@ pub(super) fn spawn_control_listener(
 
 fn handle_control_connection(
     mut stream: TcpStream,
-    repo_root: &PathBuf,
-    shared: &Arc<Mutex<SidecarSharedState>>,
-    event_hub: &Arc<Mutex<SupervisorEventHub>>,
-    persistence_lock: &Arc<Mutex<()>>,
-    writer: &SharedPtyWriter,
-    shutdown: &Arc<AtomicBool>,
-    killer: &Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+    context: &ControlListenerContext,
 ) -> Result<(), CommandError> {
+    let shared = &context.shared;
+    let event_hub = &context.event_hub;
+    let writer = &context.writer;
+    let shutdown = &context.shutdown;
+    let killer = &context.killer;
+
     stream.set_nonblocking(false).map_err(|_| {
         CommandError::retryable(
             "runtime_supervisor_control_io_failed",
@@ -281,17 +280,16 @@ fn handle_control_connection(
             prompt,
         }) => handle_queue_controls_request(
             &mut stream,
-            repo_root,
-            shared,
-            event_hub,
-            persistence_lock,
-            protocol_version,
-            project_id,
-            run_id,
-            session_id,
-            flow_id,
-            controls,
-            prompt,
+            context,
+            QueueControlsRequestArgs {
+                protocol_version,
+                project_id,
+                run_id,
+                session_id,
+                flow_id,
+                controls,
+                prompt,
+            },
         ),
         Err(error) => write_protocol_error(
             &mut stream,
@@ -609,18 +607,23 @@ fn handle_submit_input_request(
 
 fn handle_queue_controls_request(
     stream: &mut TcpStream,
-    repo_root: &PathBuf,
-    shared: &Arc<Mutex<SidecarSharedState>>,
-    event_hub: &Arc<Mutex<SupervisorEventHub>>,
-    persistence_lock: &Arc<Mutex<()>>,
-    protocol_version: u8,
-    project_id: String,
-    run_id: String,
-    session_id: String,
-    flow_id: Option<String>,
-    controls: Option<RuntimeRunControlInputDto>,
-    prompt: Option<String>,
+    context: &ControlListenerContext,
+    request: QueueControlsRequestArgs,
 ) -> Result<(), CommandError> {
+    let QueueControlsRequestArgs {
+        protocol_version,
+        project_id,
+        run_id,
+        session_id,
+        flow_id,
+        controls,
+        prompt,
+    } = request;
+    let repo_root = context.repo_root.as_path();
+    let shared = &context.shared;
+    let event_hub = &context.event_hub;
+    let persistence_lock = &context.persistence_lock;
+
     if protocol_version != SUPERVISOR_PROTOCOL_VERSION {
         write_protocol_error(
             stream,

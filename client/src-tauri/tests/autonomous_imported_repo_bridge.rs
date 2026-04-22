@@ -15,7 +15,8 @@ use cadence_desktop_lib::{
         start_runtime_session::start_runtime_session, AutonomousRunRecoveryStateDto,
         AutonomousRunStateDto, AutonomousRunStatusDto, CancelAutonomousRunRequestDto,
         GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, ProjectIdRequestDto,
-        RepositoryDiffScope, RuntimeAuthPhase, RuntimeRunDto, RuntimeRunStatusDto,
+        RepositoryDiffScope, RuntimeAuthPhase, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, RuntimeRunDto, RuntimeRunStatusDto,
         RuntimeRunTransportLivenessDto, StartAutonomousRunRequestDto,
     },
     configure_builder_with_state, db,
@@ -37,9 +38,6 @@ use cadence_desktop_lib::{
 use git2::{Repository, Status, StatusOptions};
 use tauri::Manager;
 use tempfile::TempDir;
-
-#[path = "support/runtime_shell.rs"]
-mod runtime_shell;
 
 #[path = "support/supervisor_test_lock.rs"]
 mod supervisor_test_lock;
@@ -75,6 +73,29 @@ fn current_unix_timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock should be after unix epoch")
         .as_secs() as i64
+}
+
+fn runtime_with_approval(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    approval_mode: RuntimeRunApprovalModeDto,
+) -> AutonomousToolRuntime {
+    AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        project_id,
+    )
+    .expect("build autonomous tool runtime for imported repo")
+    .with_runtime_run_controls(RuntimeRunControlStateDto {
+        active: RuntimeRunActiveControlSnapshotDto {
+            model_id: "model-1".into(),
+            thinking_effort: None,
+            approval_mode,
+            revision: 1,
+            applied_at: "2026-04-22T00:00:00Z".into(),
+        },
+        pending: None,
+    })
 }
 
 fn commit_all(repo_root: &Path, message: &str) {
@@ -131,6 +152,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         branch_name: Some("main".into()),
         head_sha: None,
         branch: None,
+        last_commit: None,
         status_entries: Vec::new(),
         has_staged_changes: false,
         has_unstaged_changes: false,
@@ -188,11 +210,6 @@ fn seed_authenticated_runtime(
     )
     .expect("start runtime session");
     assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
-}
-
-fn shell_argv(script: impl Into<String>) -> Vec<String> {
-    let shell = runtime_shell::launch_script(script);
-    std::iter::once(shell.program).chain(shell.args).collect()
 }
 
 fn wait_for_runtime_run(
@@ -451,12 +468,7 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
     let app = build_mock_app(state);
     let (project_id, repo_root) = seed_project(&root, &app);
 
-    let runtime = AutonomousToolRuntime::for_project(
-        &app.handle().clone(),
-        app.state::<DesktopState>().inner(),
-        &project_id,
-    )
-    .expect("build autonomous tool runtime for imported repo");
+    let runtime = runtime_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
 
     let read = runtime
         .read(AutonomousReadRequest {
@@ -597,7 +609,7 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
 
     let command = runtime
         .command(AutonomousCommandRequest {
-            argv: shell_argv(if cfg!(windows) { "cd" } else { "pwd" }),
+            argv: vec!["git".into(), "rev-parse".into(), "--show-prefix".into()],
             cwd: Some("notes".into()),
             timeout_ms: Some(2_000),
         })
@@ -608,7 +620,7 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
             assert_eq!(output.exit_code, Some(0));
             let stdout = output.stdout.expect("command stdout should be captured");
             assert!(
-                stdout.contains("notes"),
+                stdout.contains("notes/"),
                 "expected repo-scoped cwd in stdout: {stdout}"
             );
         }
@@ -663,6 +675,8 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
         app.state::<DesktopState>(),
         StartAutonomousRunRequestDto {
             project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
         },
     )
     .expect("start autonomous run on imported repo");
@@ -716,6 +730,8 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
         app.state::<DesktopState>(),
         StartAutonomousRunRequestDto {
             project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
         },
     )
     .expect("duplicate autonomous start should reconnect");
