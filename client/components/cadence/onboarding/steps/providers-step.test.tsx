@@ -7,6 +7,7 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 
 import { ProvidersStep } from '@/components/cadence/onboarding/steps/providers-step'
 import type {
+  ProviderModelCatalogDto,
   ProviderProfileDto,
   ProviderProfilesDto,
   RuntimeSessionView,
@@ -66,6 +67,60 @@ function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): Pro
   }
 }
 
+function makeProviderModelCatalog(
+  profileId: string,
+  overrides: Partial<ProviderModelCatalogDto> = {},
+): ProviderModelCatalogDto {
+  const providerId = overrides.providerId ?? (profileId.startsWith('openrouter') ? 'openrouter' : 'openai_codex')
+  const configuredModelId =
+    overrides.configuredModelId ??
+    (providerId === 'openrouter' ? 'openai/gpt-4.1-mini' : 'openai_codex')
+
+  return {
+    profileId,
+    providerId,
+    configuredModelId,
+    source: overrides.source ?? 'live',
+    fetchedAt: overrides.fetchedAt ?? '2026-04-21T12:00:00Z',
+    lastSuccessAt: overrides.lastSuccessAt ?? '2026-04-21T12:00:00Z',
+    lastRefreshError: overrides.lastRefreshError ?? null,
+    models:
+      overrides.models ??
+      (providerId === 'openrouter'
+        ? [
+            {
+              modelId: 'openai/gpt-4.1-mini',
+              displayName: 'OpenAI GPT-4.1 Mini',
+              thinking: {
+                supported: true,
+                effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                defaultEffort: 'medium',
+              },
+            },
+            {
+              modelId: 'openrouter/anthropic/claude-3.5-sonnet',
+              displayName: 'Claude 3.5 Sonnet',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          ]
+        : [
+            {
+              modelId: 'openai_codex',
+              displayName: 'OpenAI Codex',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          ]),
+  }
+}
+
 function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): RuntimeSessionView {
   return {
     projectId: 'project-1',
@@ -94,20 +149,42 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
   }
 }
 
+function makeProvidersStepProps(overrides: Partial<Parameters<typeof ProvidersStep>[0]> = {}) {
+  return {
+    providerProfiles: makeProviderProfiles(),
+    providerProfilesLoadStatus: 'ready' as const,
+    providerProfilesLoadError: null,
+    providerProfilesSaveStatus: 'idle' as const,
+    providerProfilesSaveError: null,
+    providerModelCatalogs: {
+      'openai_codex-default': makeProviderModelCatalog('openai_codex-default'),
+      'openrouter-default': makeProviderModelCatalog('openrouter-default'),
+    },
+    providerModelCatalogLoadStatuses: {
+      'openai_codex-default': 'ready' as const,
+      'openrouter-default': 'ready' as const,
+    },
+    providerModelCatalogLoadErrors: {
+      'openai_codex-default': null,
+      'openrouter-default': null,
+    },
+    onRefreshProviderProfiles: vi.fn(async () => makeProviderProfiles()),
+    onRefreshProviderModelCatalog: vi.fn(async (profileId: string) => makeProviderModelCatalog(profileId)),
+    onUpsertProviderProfile: vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles()),
+    onSetActiveProviderProfile: vi.fn(async (_profileId: string) => makeProviderProfiles()),
+    ...overrides,
+  }
+}
+
 describe('ProvidersStep', () => {
   it('renders migrated active profiles, keeps saved keys blank, and validates label/model edits', async () => {
     const onUpsertProviderProfile = vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles())
 
     render(
       <ProvidersStep
-        providerProfiles={makeProviderProfiles()}
-        providerProfilesLoadStatus="ready"
-        providerProfilesLoadError={null}
-        providerProfilesSaveStatus="idle"
-        providerProfilesSaveError={null}
-        onRefreshProviderProfiles={vi.fn(async () => makeProviderProfiles())}
-        onUpsertProviderProfile={onUpsertProviderProfile}
-        onSetActiveProviderProfile={vi.fn(async (_profileId: string) => makeProviderProfiles())}
+        {...makeProvidersStepProps({
+          onUpsertProviderProfile,
+        })}
       />,
     )
 
@@ -120,11 +197,11 @@ describe('ProvidersStep', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit setup' }))
 
     const labelInput = screen.getByLabelText('Profile label') as HTMLInputElement
-    const modelInput = screen.getByLabelText('Model ID') as HTMLInputElement
+    const modelSelector = screen.getByLabelText('Model')
     const keyInput = screen.getByLabelText('API Key') as HTMLInputElement
 
     expect(labelInput).toHaveValue('OpenRouter')
-    expect(modelInput).toHaveValue('openai/gpt-4.1-mini')
+    expect(modelSelector).toHaveTextContent('OpenAI GPT-4.1 Mini · openai/gpt-4.1-mini')
     expect(keyInput).toHaveValue('')
 
     fireEvent.change(labelInput, { target: { value: '   ' } })
@@ -132,11 +209,8 @@ describe('ProvidersStep', () => {
     expect(screen.getByText('Profile label is required.')).toBeVisible()
 
     fireEvent.change(labelInput, { target: { value: 'Team OpenRouter' } })
-    fireEvent.change(modelInput, { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(screen.getByText('Model ID is required.')).toBeVisible()
-
-    fireEvent.change(modelInput, { target: { value: 'openrouter/anthropic/claude-3.5-sonnet' } })
+    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Claude 3.5 Sonnet · openrouter/anthropic/claude-3.5-sonnet' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
@@ -166,14 +240,12 @@ describe('ProvidersStep', () => {
 
     const { rerender } = render(
       <ProvidersStep
-        providerProfiles={providerProfiles}
-        providerProfilesLoadStatus="ready"
-        providerProfilesLoadError={null}
-        providerProfilesSaveStatus="idle"
-        providerProfilesSaveError={null}
-        onRefreshProviderProfiles={vi.fn(async () => providerProfiles)}
-        onUpsertProviderProfile={vi.fn(async (_request: UpsertProviderProfileRequestDto) => providerProfiles)}
-        onSetActiveProviderProfile={onSetActiveProviderProfile}
+        {...makeProvidersStepProps({
+          providerProfiles,
+          onRefreshProviderProfiles: vi.fn(async () => providerProfiles),
+          onUpsertProviderProfile: vi.fn(async (_request: UpsertProviderProfileRequestDto) => providerProfiles),
+          onSetActiveProviderProfile,
+        })}
       />,
     )
 
@@ -182,14 +254,12 @@ describe('ProvidersStep', () => {
 
     rerender(
       <ProvidersStep
-        providerProfiles={providerProfiles}
-        providerProfilesLoadStatus="ready"
-        providerProfilesLoadError={null}
-        providerProfilesSaveStatus="idle"
-        providerProfilesSaveError={null}
-        onRefreshProviderProfiles={vi.fn(async () => providerProfiles)}
-        onUpsertProviderProfile={vi.fn(async (_request: UpsertProviderProfileRequestDto) => providerProfiles)}
-        onSetActiveProviderProfile={onSetActiveProviderProfile}
+        {...makeProvidersStepProps({
+          providerProfiles,
+          onRefreshProviderProfiles: vi.fn(async () => providerProfiles),
+          onUpsertProviderProfile: vi.fn(async (_request: UpsertProviderProfileRequestDto) => providerProfiles),
+          onSetActiveProviderProfile,
+        })}
       />,
     )
 
@@ -200,29 +270,24 @@ describe('ProvidersStep', () => {
   it('scopes OpenAI auth copy to the selected profile and uses onboarding project guidance when no project is selected', () => {
     render(
       <ProvidersStep
-        providerProfiles={makeProviderProfiles({
-          activeProfileId: 'zz-openai-alt',
-          profiles: [
-            makeOpenAiProfile({ active: false }),
-            makeOpenAiProfile({
-              profileId: 'zz-openai-alt',
-              label: 'OpenAI Alt',
-              active: true,
-            }),
-            makeOpenRouterProfile({ active: false, migratedFromLegacy: false, migratedAt: null }),
-          ],
+        {...makeProvidersStepProps({
+          providerProfiles: makeProviderProfiles({
+            activeProfileId: 'zz-openai-alt',
+            profiles: [
+              makeOpenAiProfile({ active: false }),
+              makeOpenAiProfile({
+                profileId: 'zz-openai-alt',
+                label: 'OpenAI Alt',
+                active: true,
+              }),
+              makeOpenRouterProfile({ active: false, migratedFromLegacy: false, migratedAt: null }),
+            ],
+          }),
+          runtimeSession: makeRuntimeSession(),
+          hasSelectedProject: false,
+          onStartLogin: vi.fn(async () => makeRuntimeSession()),
+          onLogout: vi.fn(async () => makeRuntimeSession()),
         })}
-        providerProfilesLoadStatus="ready"
-        providerProfilesLoadError={null}
-        providerProfilesSaveStatus="idle"
-        providerProfilesSaveError={null}
-        runtimeSession={makeRuntimeSession()}
-        hasSelectedProject={false}
-        onRefreshProviderProfiles={vi.fn(async () => makeProviderProfiles())}
-        onUpsertProviderProfile={vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles())}
-        onSetActiveProviderProfile={vi.fn(async (_profileId: string) => makeProviderProfiles())}
-        onStartLogin={vi.fn(async () => makeRuntimeSession())}
-        onLogout={vi.fn(async () => makeRuntimeSession())}
       />,
     )
 
@@ -241,42 +306,37 @@ describe('ProvidersStep', () => {
   it('shows the shared selected-profile mismatch recovery copy without forking onboarding provider logic', () => {
     render(
       <ProvidersStep
-        providerProfiles={makeProviderProfiles({
-          activeProfileId: 'openrouter-work',
-          profiles: [
-            makeOpenAiProfile({ active: false }),
-            makeOpenRouterProfile({
-              profileId: 'openrouter-work',
-              label: 'OpenRouter Work',
-              active: true,
-              migratedFromLegacy: false,
-              migratedAt: null,
-            }),
-          ],
+        {...makeProvidersStepProps({
+          providerProfiles: makeProviderProfiles({
+            activeProfileId: 'openrouter-work',
+            profiles: [
+              makeOpenAiProfile({ active: false }),
+              makeOpenRouterProfile({
+                profileId: 'openrouter-work',
+                label: 'OpenRouter Work',
+                active: true,
+                migratedFromLegacy: false,
+                migratedAt: null,
+              }),
+            ],
+          }),
+          runtimeSession: makeRuntimeSession({
+            providerId: 'openai_codex',
+            runtimeKind: 'openai_codex',
+            phase: 'authenticated',
+            phaseLabel: 'Authenticated',
+            runtimeLabel: 'OpenAI Codex · Signed in',
+            accountLabel: 'operator',
+            sessionLabel: 'session-1',
+            sessionId: 'session-1',
+            accountId: 'acct-1',
+            isAuthenticated: true,
+            isSignedOut: false,
+          }),
+          hasSelectedProject: true,
+          onStartLogin: vi.fn(async () => makeRuntimeSession()),
+          onLogout: vi.fn(async () => makeRuntimeSession()),
         })}
-        providerProfilesLoadStatus="ready"
-        providerProfilesLoadError={null}
-        providerProfilesSaveStatus="idle"
-        providerProfilesSaveError={null}
-        runtimeSession={makeRuntimeSession({
-          providerId: 'openai_codex',
-          runtimeKind: 'openai_codex',
-          phase: 'authenticated',
-          phaseLabel: 'Authenticated',
-          runtimeLabel: 'OpenAI Codex · Signed in',
-          accountLabel: 'operator',
-          sessionLabel: 'session-1',
-          sessionId: 'session-1',
-          accountId: 'acct-1',
-          isAuthenticated: true,
-          isSignedOut: false,
-        })}
-        hasSelectedProject
-        onRefreshProviderProfiles={vi.fn(async () => makeProviderProfiles())}
-        onUpsertProviderProfile={vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles())}
-        onSetActiveProviderProfile={vi.fn(async (_profileId: string) => makeProviderProfiles())}
-        onStartLogin={vi.fn(async () => makeRuntimeSession())}
-        onLogout={vi.fn(async () => makeRuntimeSession())}
       />,
     )
 
@@ -295,18 +355,13 @@ describe('ProvidersStep', () => {
   it('shows typed save errors while keeping the last truthful provider snapshot visible', () => {
     render(
       <ProvidersStep
-        providerProfiles={makeProviderProfiles()}
-        providerProfilesLoadStatus="ready"
-        providerProfilesLoadError={null}
-        providerProfilesSaveStatus="idle"
-        providerProfilesSaveError={{
-          code: 'provider_profiles_write_failed',
-          message: 'Cadence could not save the selected provider profile.',
-          retryable: true,
-        }}
-        onRefreshProviderProfiles={vi.fn(async () => makeProviderProfiles())}
-        onUpsertProviderProfile={vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles())}
-        onSetActiveProviderProfile={vi.fn(async (_profileId: string) => makeProviderProfiles())}
+        {...makeProvidersStepProps({
+          providerProfilesSaveError: {
+            code: 'provider_profiles_write_failed',
+            message: 'Cadence could not save the selected provider profile.',
+            retryable: true,
+          },
+        })}
       />,
     )
 

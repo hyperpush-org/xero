@@ -75,6 +75,19 @@ pub(crate) fn supervisor_binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_Cadence-runtime-supervisor"))
 }
 
+pub(crate) fn sample_runtime_run_controls(
+    timestamp: &str,
+) -> project_store::RuntimeRunControlStateRecord {
+    project_store::build_runtime_run_control_state(
+        "openai_codex",
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        timestamp,
+        None,
+    )
+    .expect("build runtime run controls")
+}
+
 pub(crate) fn launch_request(
     project_id: &str,
     repo_root: &Path,
@@ -82,6 +95,7 @@ pub(crate) fn launch_request(
     command: &str,
 ) -> RuntimeSupervisorLaunchRequest {
     let shell = runtime_shell::launch_script(command);
+    let timestamp = cadence_desktop_lib::auth::now_timestamp();
     RuntimeSupervisorLaunchRequest {
         project_id: project_id.into(),
         repo_root: repo_root.to_path_buf(),
@@ -94,6 +108,7 @@ pub(crate) fn launch_request(
         startup_timeout: Duration::from_secs(5),
         control_timeout: Duration::from_millis(750),
         supervisor_binary: Some(supervisor_binary_path()),
+        run_controls: sample_runtime_run_controls(&timestamp),
     }
 }
 
@@ -143,6 +158,7 @@ pub(crate) fn seed_running_runtime_run(
                 updated_at: now,
             },
             checkpoint: None,
+            control_state: Some(sample_runtime_run_controls(&now)),
         },
     )
     .expect("seed running runtime run");

@@ -70,6 +70,19 @@ pub(crate) fn sample_run(project_id: &str, run_id: &str) -> project_store::Runti
     }
 }
 
+pub(crate) fn sample_control_state(
+    timestamp: &str,
+) -> project_store::RuntimeRunControlStateRecord {
+    project_store::build_runtime_run_control_state(
+        "openai_codex",
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        timestamp,
+        None,
+    )
+    .expect("build sample runtime run controls")
+}
+
 pub(crate) fn sample_checkpoint(
     project_id: &str,
     run_id: &str,

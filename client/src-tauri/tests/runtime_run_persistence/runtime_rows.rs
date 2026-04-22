@@ -1,4 +1,5 @@
 use super::support::*;
+
 pub(crate) fn legacy_repo_local_state_is_upgraded_before_runtime_run_reads() {
     let root = tempfile::tempdir().expect("temp dir");
     let repo_root = root.path().join("legacy-repo");
@@ -68,6 +69,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
         &project_store::RuntimeRunUpsertRecord {
             run: running.clone(),
             checkpoint: None,
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
         },
     )
     .expect("persist running runtime run without checkpoints");
@@ -75,6 +77,16 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
     assert!(first.checkpoints.is_empty());
     assert_eq!(first.last_checkpoint_sequence, 0);
     assert!(first.last_checkpoint_at.is_none());
+    assert_eq!(first.controls.active.model_id, "openai_codex");
+    assert_eq!(
+        first.controls.active.thinking_effort,
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium)
+    );
+    assert_eq!(
+        first.controls.active.approval_mode,
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest
+    );
+    assert!(first.controls.pending.is_none());
 
     project_store::upsert_runtime_run(
         &repo_root,
@@ -92,6 +104,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 "Supervisor launched and connected to the project PTY.",
                 "2099-04-15T19:00:20Z",
             )),
+            control_state: None,
         },
     )
     .expect("persist checkpoint one");
@@ -112,6 +125,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 "Repository status collected; waiting for the next supervisor checkpoint.",
                 "2099-04-15T19:00:35Z",
             )),
+            control_state: None,
         },
     )
     .expect("persist checkpoint two");
@@ -132,6 +146,8 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
+    assert_eq!(recovered.controls.active.model_id, first.controls.active.model_id);
+    assert_eq!(recovered.controls, first.controls);
 
     let stale = project_store::upsert_runtime_run(
         &repo_root,
@@ -142,10 +158,12 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 ..running.clone()
             },
             checkpoint: None,
+            control_state: None,
         },
     )
     .expect("persist stale runtime run");
     assert_eq!(stale.run.status, project_store::RuntimeRunStatus::Stale);
+    assert_eq!(stale.controls, first.controls);
 
     let stopped = project_store::upsert_runtime_run(
         &repo_root,
@@ -157,6 +175,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 ..running.clone()
             },
             checkpoint: None,
+            control_state: None,
         },
     )
     .expect("persist stopped runtime run");
@@ -179,6 +198,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 ..running
             },
             checkpoint: None,
+            control_state: None,
         },
     )
     .expect("persist failed runtime run");
@@ -191,6 +211,62 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             .map(|error| error.code.as_str()),
         Some("supervisor_probe_failed")
     );
+    assert_eq!(failed.controls, first.controls);
+}
+
+pub(crate) fn runtime_run_persists_active_and_pending_control_snapshots_with_queued_prompt() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-controls";
+    let control_state = project_store::build_runtime_run_control_state(
+        "openai_codex",
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::High),
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit,
+        "2099-04-15T19:00:00Z",
+        Some("Summarize the active worktree and propose the next action."),
+    )
+    .expect("build queued control state");
+
+    let persisted = project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: None,
+            control_state: Some(control_state.clone()),
+        },
+    )
+    .expect("persist runtime run with queued control snapshot");
+
+    assert_eq!(persisted.controls, control_state);
+    let pending = persisted
+        .controls
+        .pending
+        .as_ref()
+        .expect("queued prompt should persist pending control snapshot");
+    assert_eq!(pending.model_id, "openai_codex");
+    assert_eq!(
+        pending.thinking_effort,
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::High)
+    );
+    assert_eq!(
+        pending.approval_mode,
+        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit
+    );
+    assert_eq!(pending.revision, 2);
+    assert_eq!(
+        pending.queued_prompt.as_deref(),
+        Some("Summarize the active worktree and propose the next action.")
+    );
+    assert_eq!(
+        pending.queued_prompt_at.as_deref(),
+        Some("2099-04-15T19:00:00Z")
+    );
+
+    let recovered = project_store::load_runtime_run(&repo_root, project_id)
+        .expect("reload runtime run with queued control snapshot")
+        .expect("runtime run should exist");
+    assert_eq!(recovered.controls, control_state);
 }
 
 pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_preserve_prior_sequence(
@@ -213,6 +289,7 @@ pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_
                 "Supervisor launched with a redacted startup summary.",
                 "2099-04-15T19:00:20Z",
             )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
         },
     )
     .expect("persist safe checkpoint");
@@ -233,6 +310,7 @@ pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_
                 "oauth redirect_uri=http://127.0.0.1:1455/auth/callback access_token=sk-live-secret",
                 "2099-04-15T19:00:25Z",
             )),
+            control_state: None,
         },
     )
     .expect_err("secret-bearing checkpoint summary should fail closed");
@@ -250,7 +328,7 @@ pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_
     assert!(!database_text.contains("redirect_uri=http://127.0.0.1:1455/auth/callback"));
 }
 
-pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_and_checkpoint_kind() {
+pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_checkpoint_kind_and_controls() {
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-1";
     let repo_root = seed_project(&root, project_id, "repo-1", "repo");
@@ -268,6 +346,7 @@ pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_and
                 "Initial safe checkpoint.",
                 "2099-04-15T19:00:20Z",
             )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
         },
     )
     .expect("persist runtime run for corruption tests");
@@ -312,6 +391,52 @@ pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_and
     let error = project_store::load_runtime_run(&repo_root, project_id)
         .expect_err("malformed checkpoint kind should fail closed");
     assert_eq!(error.code, "runtime_run_checkpoint_decode_failed");
+
+    connection
+        .execute(
+            "UPDATE runtime_run_checkpoints SET kind = 'bootstrap' WHERE project_id = ?1 AND run_id = ?2 AND sequence = 1",
+            params![project_id, run_id],
+        )
+        .expect("repair checkpoint kind");
+    connection
+        .execute(
+            "UPDATE runtime_runs SET control_state_json = '{\"active\":{\"modelId\":\" \" ,\"approvalMode\":\"suggest\",\"revision\":1,\"appliedAt\":\"2099-04-15T19:00:00Z\"}}' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt control model id");
+    let error = project_store::load_runtime_run(&repo_root, project_id)
+        .expect_err("blank active control model id should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
+
+    connection
+        .execute(
+            "UPDATE runtime_runs SET control_state_json = '{\"active\":{\"modelId\":\"openai_codex\",\"thinkingEffort\":\"ludicrous\",\"approvalMode\":\"suggest\",\"revision\":1,\"appliedAt\":\"2099-04-15T19:00:00Z\"}}' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt thinking effort enum");
+    let error = project_store::load_runtime_run(&repo_root, project_id)
+        .expect_err("bogus thinking effort should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
+
+    connection
+        .execute(
+            "UPDATE runtime_runs SET control_state_json = '{\"active\":{\"modelId\":\"openai_codex\",\"approvalMode\":\"\",\"revision\":1,\"appliedAt\":\"2099-04-15T19:00:00Z\"}}' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt approval mode enum");
+    let error = project_store::load_runtime_run(&repo_root, project_id)
+        .expect_err("blank approval mode should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
+
+    connection
+        .execute(
+            "UPDATE runtime_runs SET control_state_json = '{\"pending\":{\"modelId\":\"openai_codex\",\"approvalMode\":\"suggest\",\"revision\":2,\"queuedAt\":\"2099-04-15T19:00:00Z\"}}' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("remove active control snapshot");
+    let error = project_store::load_runtime_run(&repo_root, project_id)
+        .expect_err("missing active control snapshot should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
 }
 
 pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
@@ -333,6 +458,7 @@ pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
                 "First checkpoint.",
                 "2099-04-15T19:00:20Z",
             )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
         },
     )
     .expect("persist first checkpoint");
@@ -353,6 +479,7 @@ pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
                 "Duplicate sequence should be rejected.",
                 "2099-04-15T19:00:25Z",
             )),
+            control_state: None,
         },
     )
     .expect_err("duplicate checkpoint sequence should fail closed");
@@ -364,4 +491,5 @@ pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
     assert_eq!(recovered.last_checkpoint_sequence, 1);
     assert_eq!(recovered.checkpoints.len(), 1);
     assert_eq!(recovered.checkpoints[0].summary, "First checkpoint.");
+    assert_eq!(recovered.controls.active.model_id, "openai_codex");
 }

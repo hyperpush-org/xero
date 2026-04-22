@@ -48,6 +48,7 @@ fn parse_sidecar_args(
     let mut run_id = None;
     let mut session_id = None;
     let mut flow_id = None;
+    let mut control_state_json = None;
     let mut program = None;
     let mut command_args = Vec::new();
 
@@ -60,6 +61,7 @@ fn parse_sidecar_args(
             "--run-id" => run_id = args.next(),
             "--session-id" => session_id = args.next(),
             "--flow-id" => flow_id = args.next(),
+            "--control-state-json" => control_state_json = args.next(),
             "--program" => program = args.next(),
             "--command-arg" => {
                 let Some(value) = args.next() else {
@@ -88,6 +90,17 @@ fn parse_sidecar_args(
         flow_id,
         program: program.ok_or_else(|| CommandError::invalid_request("program"))?,
         args: command_args,
+        run_controls: serde_json::from_str(
+            &control_state_json.ok_or_else(|| CommandError::invalid_request("controlStateJson"))?,
+        )
+        .map_err(|error| {
+            CommandError::user_fixable(
+                "runtime_supervisor_request_invalid",
+                format!(
+                    "Cadence could not decode the detached runtime supervisor control seed JSON: {error}"
+                ),
+            )
+        })?,
     };
 
     validate_non_empty(&args.project_id, "projectId")?;
@@ -192,6 +205,7 @@ fn run_supervisor_sidecar(args: RuntimeSupervisorSidecarArgs) -> Result<(), Comm
                 updated_at: started_at.clone(),
             },
             checkpoint: None,
+            control_state: Some(args.run_controls.clone()),
         },
     )
     .map_err(|_| {

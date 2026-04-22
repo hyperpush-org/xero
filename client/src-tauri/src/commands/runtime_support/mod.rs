@@ -16,7 +16,8 @@ pub(crate) use protocol_dto::{
     autonomous_skill_lifecycle_stage_dto_from_protocol, tool_result_summary_dto_from_protocol,
 };
 pub(crate) use run::{
-    emit_runtime_run_updated, emit_runtime_run_updated_if_changed, generate_runtime_run_id,
+    emit_runtime_run_updated, emit_runtime_run_updated_if_changed, ensure_runtime_run_auth_ready,
+    generate_runtime_run_id, is_reconnectable_runtime_run, launch_or_reconnect_runtime_run,
     load_persisted_runtime_run, load_runtime_run_status, runtime_run_dto_from_snapshot,
     DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT, DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
     DEFAULT_RUNTIME_RUN_STARTUP_TIMEOUT,

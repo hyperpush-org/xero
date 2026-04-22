@@ -16,9 +16,9 @@ use crate::{
     auth::now_timestamp,
     commands::{validate_non_empty, CommandError},
     db::project_store::{
-        self, RuntimeRunDiagnosticRecord, RuntimeRunRecord, RuntimeRunSnapshotRecord,
-        RuntimeRunStatus, RuntimeRunTransportLiveness, RuntimeRunTransportRecord,
-        RuntimeRunUpsertRecord,
+        self, RuntimeRunControlStateRecord, RuntimeRunDiagnosticRecord, RuntimeRunRecord,
+        RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness,
+        RuntimeRunTransportRecord, RuntimeRunUpsertRecord,
     },
     runtime::{
         platform_adapter::resolve_runtime_supervisor_binary,
@@ -74,6 +74,7 @@ pub struct RuntimeSupervisorLaunchRequest {
     pub startup_timeout: Duration,
     pub control_timeout: Duration,
     pub supervisor_binary: Option<PathBuf>,
+    pub run_controls: RuntimeRunControlStateRecord,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,16 @@ impl Default for RuntimeSupervisorLaunchRequest {
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             control_timeout: DEFAULT_CONTROL_TIMEOUT,
             supervisor_binary: None,
+            run_controls: RuntimeRunControlStateRecord {
+                active: project_store::RuntimeRunActiveControlSnapshotRecord {
+                    model_id: "openai_codex".into(),
+                    thinking_effort: None,
+                    approval_mode: crate::commands::RuntimeRunApprovalModeDto::Suggest,
+                    revision: 1,
+                    applied_at: crate::auth::now_timestamp(),
+                },
+                pending: None,
+            },
         }
     }
 }
@@ -235,6 +246,18 @@ pub fn launch_detached_runtime_supervisor(
         sidecar.arg("--flow-id").arg(flow_id);
     }
 
+    let control_state_json = serde_json::to_string(&request.run_controls).map_err(|error| {
+        CommandError::system_fault(
+            "runtime_supervisor_request_invalid",
+            format!(
+                "Cadence could not serialize the detached runtime supervisor control seed: {error}"
+            ),
+        )
+    })?;
+    sidecar
+        .arg("--control-state-json")
+        .arg(control_state_json);
+
     for arg in &request.args {
         sidecar.arg("--command-arg").arg(arg);
     }
@@ -245,6 +268,7 @@ pub fn launch_detached_runtime_supervisor(
             &request.project_id,
             &request.run_id,
             &request.runtime_kind,
+            &request.run_controls,
             "runtime_supervisor_spawn_failed",
             "Cadence could not launch the detached PTY supervisor process.",
         );
@@ -264,6 +288,7 @@ pub fn launch_detached_runtime_supervisor(
             &request.project_id,
             &request.run_id,
             &request.runtime_kind,
+            &request.run_controls,
             "runtime_supervisor_stdout_missing",
             "Cadence could not read the detached PTY supervisor startup handshake.",
         );
@@ -282,6 +307,7 @@ pub fn launch_detached_runtime_supervisor(
                 &request.project_id,
                 &request.run_id,
                 &request.runtime_kind,
+                &request.run_controls,
                 &error.code,
                 &error.message,
             );
@@ -306,6 +332,7 @@ pub fn launch_detached_runtime_supervisor(
                     &request.project_id,
                     &request.run_id,
                     &request.runtime_kind,
+                    &request.run_controls,
                     "runtime_supervisor_protocol_invalid",
                     "Cadence rejected the detached PTY supervisor handshake because its protocol version was unsupported.",
                 );
@@ -322,6 +349,7 @@ pub fn launch_detached_runtime_supervisor(
                     &request.project_id,
                     &request.run_id,
                     &request.runtime_kind,
+                    &request.run_controls,
                     "runtime_supervisor_handshake_invalid",
                     "Cadence rejected the detached PTY supervisor handshake because it did not match the requested project or run id.",
                 );
@@ -338,6 +366,7 @@ pub fn launch_detached_runtime_supervisor(
                     &request.project_id,
                     &request.run_id,
                     &request.runtime_kind,
+                    &request.run_controls,
                     "runtime_supervisor_handshake_invalid",
                     "Cadence rejected the detached PTY supervisor handshake because it omitted a valid control endpoint.",
                 );
@@ -380,6 +409,7 @@ pub fn launch_detached_runtime_supervisor(
                                     updated_at: now_timestamp(),
                                 },
                                 checkpoint: None,
+                                control_state: Some(request.run_controls.clone()),
                             },
                         )
                     })?;
@@ -402,6 +432,7 @@ pub fn launch_detached_runtime_supervisor(
                 &request.project_id,
                 &request.run_id,
                 &request.runtime_kind,
+                &request.run_controls,
                 &code,
                 &message,
             );
@@ -1013,6 +1044,7 @@ fn upsert_runtime_run_projection(
                 updated_at: now_timestamp(),
             },
             checkpoint: None,
+            control_state: None,
         },
     )
 }
@@ -1032,6 +1064,7 @@ fn persist_failed_launch(
     project_id: &str,
     run_id: &str,
     runtime_kind: &str,
+    run_controls: &RuntimeRunControlStateRecord,
     code: &str,
     message: &str,
 ) -> Result<RuntimeRunSnapshotRecord, CommandError> {
@@ -1059,6 +1092,7 @@ fn persist_failed_launch(
                 updated_at: now_timestamp(),
             },
             checkpoint: None,
+            control_state: Some(run_controls.clone()),
         },
     )
 }

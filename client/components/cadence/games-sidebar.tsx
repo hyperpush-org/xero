@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useMemo, useRef, useState } from "react"
-import { ChevronLeft, Play, Search } from "lucide-react"
+import { ChevronRight, Play, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const MIN_WIDTH = 200
@@ -47,7 +47,7 @@ function PixelArt({ glyph }: { glyph: PixelGlyph }) {
 
 // ---------------------------------------------------------------------------
 // Catalog (mockup only). Data is player-centric: best score, runs, session
-// history, trend — not encyclopedia metadata.
+// history — not encyclopedia metadata.
 // ---------------------------------------------------------------------------
 
 interface LeaderboardEntry {
@@ -60,9 +60,7 @@ interface GameStats {
   personalBest: string
   runs: number
   timePlayed: string
-  modes: string[]
   leaderboard: LeaderboardEntry[] // pre-sorted, rank 1 first
-  trend: number[] // last 10 runs, 0–100 normalized
 }
 
 interface Game {
@@ -95,7 +93,6 @@ const GAMES: Game[] = [
       personalBest: "2,480",
       runs: 17,
       timePlayed: "42m",
-      modes: ["Classic", "Endless", "Marathon"],
       leaderboard: [
         { name: "Maya", score: "2,840" },
         { name: "Andrew", score: "2,480", you: true },
@@ -103,7 +100,6 @@ const GAMES: Game[] = [
         { name: "Priya", score: "1,720" },
         { name: "Dante", score: "1,420" },
       ],
-      trend: [30, 45, 22, 58, 40, 62, 51, 48, 78, 100],
     },
   },
   {
@@ -127,7 +123,6 @@ const GAMES: Game[] = [
       personalBest: "9,870",
       runs: 8,
       timePlayed: "18m",
-      modes: ["Classic", "Waves"],
       leaderboard: [
         { name: "Andrew", score: "9,870", you: true },
         { name: "Rin", score: "8,420" },
@@ -135,7 +130,6 @@ const GAMES: Game[] = [
         { name: "Joel", score: "5,420" },
         { name: "Sam", score: "4,080" },
       ],
-      trend: [40, 30, 55, 48, 62, 70, 58, 75, 82, 100],
     },
   },
   {
@@ -159,7 +153,6 @@ const GAMES: Game[] = [
       personalBest: "21 – 14",
       runs: 5,
       timePlayed: "12m",
-      modes: ["1P vs CPU", "2P local"],
       leaderboard: [
         { name: "Joel", score: "21 – 8" },
         { name: "Andrew", score: "21 – 14", you: true },
@@ -167,7 +160,6 @@ const GAMES: Game[] = [
         { name: "Priya", score: "21 – 18" },
         { name: "Sam", score: "21 – 19" },
       ],
-      trend: [40, 60, 50, 45, 70, 62, 55, 80, 72, 100],
     },
   },
   {
@@ -191,7 +183,6 @@ const GAMES: Game[] = [
       personalBest: "1,420",
       runs: 23,
       timePlayed: "55m",
-      modes: ["Classic", "Walls off", "Speedrun"],
       leaderboard: [
         { name: "Rin", score: "1,680" },
         { name: "Priya", score: "1,520" },
@@ -199,7 +190,6 @@ const GAMES: Game[] = [
         { name: "Maya", score: "1,120" },
         { name: "Joel", score: "880" },
       ],
-      trend: [20, 35, 45, 30, 52, 68, 48, 82, 65, 95],
     },
   },
   {
@@ -223,7 +213,6 @@ const GAMES: Game[] = [
       personalBest: "24,700",
       runs: 6,
       timePlayed: "22m",
-      modes: ["Classic", "Championship"],
       leaderboard: [
         { name: "Andrew", score: "24,700", you: true },
         { name: "Joel", score: "18,320" },
@@ -231,7 +220,6 @@ const GAMES: Game[] = [
         { name: "Dante", score: "11,400" },
         { name: "Sam", score: "9,240" },
       ],
-      trend: [30, 45, 55, 48, 62, 70, 75, 80, 88, 100],
     },
   },
   {
@@ -255,7 +243,6 @@ const GAMES: Game[] = [
       personalBest: "1,980",
       runs: 9,
       timePlayed: "16m",
-      modes: ["Classic", "Endless"],
       leaderboard: [
         { name: "Maya", score: "2,240" },
         { name: "Andrew", score: "1,980", you: true },
@@ -263,7 +250,6 @@ const GAMES: Game[] = [
         { name: "Priya", score: "1,240" },
         { name: "Rin", score: "980" },
       ],
-      trend: [25, 40, 32, 55, 48, 62, 58, 70, 85, 100],
     },
   },
   {
@@ -287,7 +273,6 @@ const GAMES: Game[] = [
       personalBest: "6,450",
       runs: 4,
       timePlayed: "9m",
-      modes: ["Classic"],
       leaderboard: [
         { name: "Andrew", score: "6,450", you: true },
         { name: "Dante", score: "5,120" },
@@ -295,7 +280,6 @@ const GAMES: Game[] = [
         { name: "Rin", score: "3,680" },
         { name: "Maya", score: "3,080" },
       ],
-      trend: [20, 38, 30, 45, 42, 55, 62, 70, 65, 100],
     },
   },
   {
@@ -319,7 +303,6 @@ const GAMES: Game[] = [
       personalBest: "128s",
       runs: 31,
       timePlayed: "1h 12m",
-      modes: ["Beginner", "Intermediate", "Expert"],
       leaderboard: [
         { name: "Andrew", score: "128s", you: true },
         { name: "Joel", score: "149s" },
@@ -327,7 +310,6 @@ const GAMES: Game[] = [
         { name: "Maya", score: "198s" },
         { name: "Priya", score: "212s" },
       ],
-      trend: [50, 45, 60, 52, 68, 62, 75, 72, 88, 100],
     },
   },
   {
@@ -351,7 +333,6 @@ const GAMES: Game[] = [
       personalBest: "4,300",
       runs: 3,
       timePlayed: "7m",
-      modes: ["Classic"],
       leaderboard: [
         { name: "Andrew", score: "4,300", you: true },
         { name: "Priya", score: "3,480" },
@@ -359,7 +340,6 @@ const GAMES: Game[] = [
         { name: "Joel", score: "2,120" },
         { name: "Sam", score: "1,920" },
       ],
-      trend: [15, 25, 40, 35, 50, 55, 62, 70, 82, 100],
     },
   },
   {
@@ -383,7 +363,6 @@ const GAMES: Game[] = [
       personalBest: "15,780",
       runs: 5,
       timePlayed: "14m",
-      modes: ["Classic", "Rapid fire"],
       leaderboard: [
         { name: "Maya", score: "17,420" },
         { name: "Andrew", score: "15,780", you: true },
@@ -391,7 +370,6 @@ const GAMES: Game[] = [
         { name: "Joel", score: "9,280" },
         { name: "Rin", score: "7,940" },
       ],
-      trend: [30, 42, 55, 48, 62, 68, 70, 82, 78, 100],
     },
   },
   {
@@ -415,14 +393,12 @@ const GAMES: Game[] = [
       personalBest: "8,200",
       runs: 2,
       timePlayed: "5m",
-      modes: ["Classic"],
       leaderboard: [
         { name: "Andrew", score: "8,200", you: true },
         { name: "Joel", score: "6,540" },
         { name: "Maya", score: "5,310" },
         { name: "Rin", score: "4,180" },
       ],
-      trend: [40, 55, 70, 60, 75, 68, 80, 90, 85, 100],
     },
   },
   {
@@ -446,7 +422,6 @@ const GAMES: Game[] = [
       personalBest: "3,650",
       runs: 4,
       timePlayed: "11m",
-      modes: ["Classic"],
       leaderboard: [
         { name: "Andrew", score: "3,650", you: true },
         { name: "Dante", score: "3,180" },
@@ -454,7 +429,6 @@ const GAMES: Game[] = [
         { name: "Joel", score: "2,120" },
         { name: "Priya", score: "1,540" },
       ],
-      trend: [20, 35, 42, 48, 55, 60, 72, 68, 88, 100],
     },
   },
 ]
@@ -471,6 +445,7 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
   const widthRef = useRef(width)
   widthRef.current = width
   const widthBeforeSelectRef = useRef<number | null>(null)
+  const viewDirectionRef = useRef<1 | -1>(1)
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -514,6 +489,7 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
   }, [])
 
   const handleSelectGame = useCallback((gameId: string) => {
+    viewDirectionRef.current = 1
     if (typeof window !== "undefined") {
       widthBeforeSelectRef.current = widthRef.current
       const target = Math.round(window.innerWidth / 2)
@@ -524,6 +500,7 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
   }, [])
 
   const handleBack = useCallback(() => {
+    viewDirectionRef.current = -1
     const prev = widthBeforeSelectRef.current
     if (prev !== null) {
       setWidth(prev)
@@ -546,12 +523,16 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
     )
   }, [query])
 
-  if (!open) return null
-
   return (
     <aside
-      className="relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar"
-      style={{ width }}
+      aria-hidden={!open}
+      className={cn(
+        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
+        !isResizing && "transition-[width] duration-200 ease-out",
+        !open && "border-l-0",
+      )}
+      inert={!open ? true : undefined}
+      style={{ width: open ? width : 0 }}
     >
       <div
         aria-label="Resize arcade sidebar"
@@ -567,20 +548,28 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
         onKeyDown={handleResizeKey}
         onPointerDown={handleResizeStart}
         role="separator"
-        tabIndex={0}
+        tabIndex={open ? 0 : -1}
       />
 
-      {selectedGame ? (
-        <GameDetail game={selectedGame} onBack={handleBack} />
-      ) : (
-        <GameList
-          filtered={filtered}
-          onQueryChange={setQuery}
-          onSelect={handleSelectGame}
-          query={query}
-          total={GAMES.length}
-        />
-      )}
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col animate-in fade-in-0 duration-200 ease-out",
+          viewDirectionRef.current === 1 ? "slide-in-from-right-3" : "slide-in-from-left-3",
+        )}
+        key={selectedGame?.id ?? "__list__"}
+      >
+        {selectedGame ? (
+          <GameDetail game={selectedGame} onBack={handleBack} />
+        ) : (
+          <GameList
+            filtered={filtered}
+            onQueryChange={setQuery}
+            onSelect={handleSelectGame}
+            query={query}
+            total={GAMES.length}
+          />
+        )}
+      </div>
     </aside>
   )
 }
@@ -681,18 +670,16 @@ function GameRow({ game, onSelect }: { game: Game; onSelect: (gameId: string) =>
 // ---------------------------------------------------------------------------
 
 function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
-  const [mode, setMode] = useState(game.stats.modes[0])
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/70 pl-1.5 pr-3">
+      <div className="flex py-[7px] shrink-0 items-center gap-2 border-b border-border/70 pl-1.5 pr-3">
         <button
           aria-label="Back to games"
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
           onClick={onBack}
           type="button"
         >
-          <ChevronLeft className="h-4 w-4" />
+          <ChevronRight className="h-4 w-4" />
         </button>
         <div className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-border/70 bg-background/60 p-[1px]">
           <PixelArt glyph={game.glyph} />
@@ -701,26 +688,8 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
-        <div className="flex shrink-0 items-center justify-center bg-background/40 px-6 py-7">
+        <div className="flex shrink-0 items-center justify-center border-b border-border/70 bg-background/40 px-6 py-7">
           <GameCanvas glyph={game.glyph} />
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center justify-center gap-1 border-b border-border/70 px-4 py-2.5">
-          {game.stats.modes.map((m) => (
-            <button
-              className={cn(
-                "rounded-full px-3 py-1 text-[11px] font-medium transition-colors",
-                mode === m
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-              )}
-              key={m}
-              onClick={() => setMode(m)}
-              type="button"
-            >
-              {m}
-            </button>
-          ))}
         </div>
 
         <div className="grid grid-cols-3 gap-px border-b border-border/70 bg-border/60">
@@ -780,18 +749,6 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
               )
             })}
           </ul>
-        </section>
-
-        <section className="px-4 py-3">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Last 10 runs
-            </div>
-            <div className="font-mono text-[10px] tabular-nums text-muted-foreground">
-              trend
-            </div>
-          </div>
-          <Sparkline data={game.stats.trend} />
         </section>
       </div>
     </div>
@@ -864,25 +821,3 @@ function StatCell({
   )
 }
 
-function Sparkline({ data }: { data: number[] }) {
-  const max = Math.max(...data, 1)
-  return (
-    <div className="flex h-12 items-end gap-1">
-      {data.map((v, i) => {
-        const isLast = i === data.length - 1
-        const height = Math.max(8, Math.round((v / max) * 100))
-        return (
-          <div
-            className={cn(
-              "flex-1 rounded-sm transition-colors",
-              isLast ? "bg-primary" : "bg-primary/35 hover:bg-primary/60",
-            )}
-            key={i}
-            style={{ height: `${height}%` }}
-            title={`Run ${i + 1}`}
-          />
-        )
-      })}
-    </div>
-  )
-}

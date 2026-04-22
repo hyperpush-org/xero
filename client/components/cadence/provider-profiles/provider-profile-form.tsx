@@ -1065,7 +1065,9 @@ export function ProviderProfileForm({
 
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-3">
-                      <Label className="text-[11px]">Model</Label>
+                      <Label htmlFor={`${card.key}-model`} className="text-[11px]">
+                        Model
+                      </Label>
                       {canRefreshCatalog ? (
                         <Button
                           type="button"
@@ -1102,11 +1104,7 @@ export function ProviderProfileForm({
                           })
                         }
                       >
-                        <SelectTrigger
-                          aria-label={`${card.catalog.label} model choice`}
-                          className="h-8 w-full text-[12px]"
-                          size="sm"
-                        >
+                        <SelectTrigger id={`${card.key}-model`} className="h-8 w-full text-[12px]" size="sm">
                           <SelectValue placeholder="No discovered model available" />
                         </SelectTrigger>
                         <SelectContent>

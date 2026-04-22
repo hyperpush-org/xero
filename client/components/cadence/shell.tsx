@@ -30,7 +30,7 @@ interface CadenceShellProps {
   children: React.ReactNode
   projectName?: string
   onOpenSettings?: () => void
-  onOpenGames?: () => void
+  onToggleGames?: () => void
   gamesOpen?: boolean
   sidebarCollapsed?: boolean
   onToggleSidebar?: () => void
@@ -57,7 +57,7 @@ export function CadenceShell({
   onViewChange,
   children,
   onOpenSettings,
-  onOpenGames,
+  onToggleGames,
   gamesOpen = false,
   sidebarCollapsed = false,
   onToggleSidebar,
@@ -136,7 +136,7 @@ export function CadenceShell({
 
   const GamesBtn = (
     <button
-      aria-label="Arcade"
+      aria-label={gamesOpen ? "Close arcade" : "Open arcade"}
       aria-pressed={gamesOpen}
       className={cn(
         "rounded-md p-1.5 transition-colors",
@@ -144,7 +144,7 @@ export function CadenceShell({
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
       )}
-      onClick={onOpenGames}
+      onClick={onToggleGames}
       type="button"
     >
       <Gamepad2 className="h-4 w-4" />

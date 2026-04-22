@@ -90,6 +90,7 @@ pub(crate) fn detached_supervisor_probe_marks_unreachable_run_stale() {
                 updated_at: "2026-04-15T19:00:10Z".into(),
             },
             checkpoint: None,
+            control_state: Some(sample_runtime_run_controls("2026-04-15T19:00:10Z")),
         },
     )
     .expect("seed unreachable runtime run");
@@ -135,6 +136,7 @@ pub(crate) fn detached_supervisor_rejects_missing_shell_program() {
             startup_timeout: Duration::from_secs(5),
             control_timeout: Duration::from_millis(750),
             supervisor_binary: Some(supervisor_binary_path()),
+            run_controls: sample_runtime_run_controls("2026-04-15T19:00:00Z"),
         },
     )
     .expect_err("missing shell program should fail");

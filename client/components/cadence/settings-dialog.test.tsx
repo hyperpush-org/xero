@@ -12,6 +12,7 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 import { SettingsDialog, type SettingsDialogProps } from '@/components/cadence/settings-dialog'
 import type { AgentPaneView, OperatorActionErrorView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
+  ProviderModelCatalogDto,
   ProviderProfileDto,
   ProviderProfilesDto,
   RuntimeSessionView,
@@ -70,6 +71,60 @@ function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): Pro
     profiles:
       overrides.profiles ?? [makeOpenAiProfile(), makeOpenRouterProfile({ active: false })],
     migration: overrides.migration ?? null,
+  }
+}
+
+function makeProviderModelCatalog(
+  profileId: string,
+  overrides: Partial<ProviderModelCatalogDto> = {},
+): ProviderModelCatalogDto {
+  const providerId = overrides.providerId ?? (profileId.startsWith('openrouter') ? 'openrouter' : 'openai_codex')
+  const configuredModelId =
+    overrides.configuredModelId ??
+    (providerId === 'openrouter' ? 'openai/gpt-4.1-mini' : 'openai_codex')
+
+  return {
+    profileId,
+    providerId,
+    configuredModelId,
+    source: overrides.source ?? 'live',
+    fetchedAt: overrides.fetchedAt ?? '2026-04-21T12:00:00Z',
+    lastSuccessAt: overrides.lastSuccessAt ?? '2026-04-21T12:00:00Z',
+    lastRefreshError: overrides.lastRefreshError ?? null,
+    models:
+      overrides.models ??
+      (providerId === 'openrouter'
+        ? [
+            {
+              modelId: 'openai/gpt-4.1-mini',
+              displayName: 'OpenAI GPT-4.1 Mini',
+              thinking: {
+                supported: true,
+                effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+                defaultEffort: 'medium',
+              },
+            },
+            {
+              modelId: 'openrouter/anthropic/claude-3.5-sonnet',
+              displayName: 'Claude 3.5 Sonnet',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          ]
+        : [
+            {
+              modelId: 'openai_codex',
+              displayName: 'OpenAI Codex',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          ]),
   }
 }
 
@@ -236,7 +291,20 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> = {}): 
     providerProfilesLoadError: null,
     providerProfilesSaveStatus: 'idle',
     providerProfilesSaveError: null,
+    providerModelCatalogs: {
+      'openai_codex-default': makeProviderModelCatalog('openai_codex-default'),
+      'openrouter-default': makeProviderModelCatalog('openrouter-default'),
+    },
+    providerModelCatalogLoadStatuses: {
+      'openai_codex-default': 'ready',
+      'openrouter-default': 'ready',
+    },
+    providerModelCatalogLoadErrors: {
+      'openai_codex-default': null,
+      'openrouter-default': null,
+    },
     onRefreshProviderProfiles: vi.fn(async () => makeProviderProfiles()),
+    onRefreshProviderModelCatalog: vi.fn(async (profileId: string) => makeProviderModelCatalog(profileId)),
     onUpsertProviderProfile: vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles()),
     onSetActiveProviderProfile: vi.fn(async (_profileId: string) => makeProviderProfiles()),
     onStartLogin: vi.fn(async () => makeRuntimeSession()),
@@ -412,13 +480,14 @@ describe('SettingsDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Set up' }))
 
-    const modelInput = screen.getByLabelText('Model ID') as HTMLInputElement
+    const modelSelector = screen.getByLabelText('Model')
     const keyInput = screen.getByLabelText('API Key') as HTMLInputElement
 
-    expect(modelInput).toHaveValue('openai/gpt-4.1-mini')
+    expect(modelSelector).toHaveTextContent('OpenAI GPT-4.1 Mini · openai/gpt-4.1-mini')
     expect(keyInput).toHaveValue('')
 
-    fireEvent.change(modelInput, { target: { value: 'openrouter/anthropic/claude-3.5-sonnet' } })
+    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Claude 3.5 Sonnet · openrouter/anthropic/claude-3.5-sonnet' }))
     fireEvent.change(keyInput, { target: { value: secret } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -446,10 +515,10 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('Ready')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Edit setup' }))
 
-    const modelInputAfter = screen.getByLabelText('Model ID') as HTMLInputElement
+    const modelSelectorAfter = screen.getByLabelText('Model')
     const keyInputAfter = screen.getByLabelText('API Key') as HTMLInputElement
 
-    expect(modelInputAfter).toHaveValue('openrouter/anthropic/claude-3.5-sonnet')
+    expect(modelSelectorAfter).toHaveTextContent('Claude 3.5 Sonnet · openrouter/anthropic/claude-3.5-sonnet')
     expect(keyInputAfter).toHaveValue('')
     expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument()
     expect(screen.queryByText(secret)).not.toBeInTheDocument()
@@ -557,7 +626,7 @@ describe('SettingsDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit setup' }))
 
-    expect(screen.getByDisplayValue('openrouter/meta-llama/llama-3.1-8b-instruct')).toBeVisible()
+    expect(screen.getByLabelText('Model')).toHaveTextContent('openrouter/meta-llama/llama-3.1-8b-instruct')
     expect(screen.getByText('Ready')).toBeVisible()
   })
 })

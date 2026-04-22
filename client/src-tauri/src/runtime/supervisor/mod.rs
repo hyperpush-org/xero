@@ -65,6 +65,7 @@ struct RuntimeSupervisorSidecarArgs {
     flow_id: Option<String>,
     program: String,
     args: Vec<String>,
+    run_controls: crate::db::project_store::RuntimeRunControlStateRecord,
 }
 
 #[derive(Debug, Clone)]

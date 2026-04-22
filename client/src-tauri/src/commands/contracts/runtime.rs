@@ -81,6 +81,57 @@ pub struct RuntimeRunCheckpointDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRunApprovalModeDto {
+    Suggest,
+    AutoEdit,
+    Yolo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunControlInputDto {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_effort: Option<ProviderModelThinkingEffortDto>,
+    pub approval_mode: RuntimeRunApprovalModeDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunActiveControlSnapshotDto {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_effort: Option<ProviderModelThinkingEffortDto>,
+    pub approval_mode: RuntimeRunApprovalModeDto,
+    pub revision: u32,
+    pub applied_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunPendingControlSnapshotDto {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_effort: Option<ProviderModelThinkingEffortDto>,
+    pub approval_mode: RuntimeRunApprovalModeDto,
+    pub revision: u32,
+    pub queued_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_prompt_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunControlStateDto {
+    pub active: RuntimeRunActiveControlSnapshotDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<RuntimeRunPendingControlSnapshotDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunDto {
     pub project_id: String,
@@ -90,6 +141,7 @@ pub struct RuntimeRunDto {
     pub supervisor_kind: String,
     pub status: RuntimeRunStatusDto,
     pub transport: RuntimeRunTransportDto,
+    pub controls: RuntimeRunControlStateDto,
     pub started_at: String,
     pub last_heartbeat_at: Option<String>,
     pub last_checkpoint_sequence: u32,
@@ -321,6 +373,10 @@ pub struct GetProviderModelCatalogRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartRuntimeRunRequestDto {
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_controls: Option<RuntimeRunControlInputDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

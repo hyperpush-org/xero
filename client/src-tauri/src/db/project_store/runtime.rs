@@ -1,10 +1,14 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, Error as SqlError};
+use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
-    commands::{CommandError, OperatorApprovalDto, RuntimeAuthPhase},
+    commands::{
+        CommandError, OperatorApprovalDto, ProviderModelThinkingEffortDto,
+        RuntimeAuthPhase, RuntimeRunApprovalModeDto,
+    },
     db::database_path_for_repo,
 };
 
@@ -72,6 +76,40 @@ pub struct RuntimeRunDiagnosticRecord {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunActiveControlSnapshotRecord {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_effort: Option<ProviderModelThinkingEffortDto>,
+    pub approval_mode: RuntimeRunApprovalModeDto,
+    pub revision: u32,
+    pub applied_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunPendingControlSnapshotRecord {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_effort: Option<ProviderModelThinkingEffortDto>,
+    pub approval_mode: RuntimeRunApprovalModeDto,
+    pub revision: u32,
+    pub queued_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_prompt_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunControlStateRecord {
+    pub active: RuntimeRunActiveControlSnapshotRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<RuntimeRunPendingControlSnapshotRecord>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRunRecord {
     pub project_id: String,
@@ -101,6 +139,7 @@ pub struct RuntimeRunCheckpointRecord {
 pub struct RuntimeRunUpsertRecord {
     pub run: RuntimeRunRecord,
     pub checkpoint: Option<RuntimeRunCheckpointRecord>,
+    pub control_state: Option<RuntimeRunControlStateRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +290,7 @@ pub struct RuntimeActionRequiredPersistedRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRunSnapshotRecord {
     pub run: RuntimeRunRecord,
+    pub controls: RuntimeRunControlStateRecord,
     pub checkpoints: Vec<RuntimeRunCheckpointRecord>,
     pub last_checkpoint_sequence: u32,
     pub last_checkpoint_at: Option<String>,
@@ -261,6 +301,7 @@ pub(crate) struct StoredRuntimeRunRow {
     pub(crate) run_id: String,
     pub(crate) last_checkpoint_sequence: u32,
     pub(crate) last_checkpoint_at: Option<String>,
+    pub(crate) control_state_json: Option<String>,
 }
 
 #[derive(Debug)]
@@ -273,6 +314,7 @@ struct RawRuntimeRunRow {
     transport_kind: String,
     transport_endpoint: String,
     transport_liveness: String,
+    control_state_json: Option<String>,
     last_checkpoint_sequence: i64,
     started_at: String,
     last_heartbeat_at: Option<String>,
@@ -490,6 +532,9 @@ pub fn upsert_runtime_run(
     let existing_last_checkpoint_at = existing
         .as_ref()
         .and_then(|row| row.last_checkpoint_at.clone());
+    let existing_control_state_json = existing
+        .as_ref()
+        .and_then(|row| row.control_state_json.clone());
 
     if existing_run_id.is_some_and(|run_id| run_id != payload.run.run_id.as_str()) {
         transaction
@@ -533,6 +578,32 @@ pub fn upsert_runtime_run(
         None => (0_u32, None),
     };
 
+    let control_state_json = match payload.control_state.as_ref() {
+        Some(control_state) => Some(serialize_runtime_run_control_state(control_state)?),
+        None if existing_run_id.is_some_and(|run_id| run_id == payload.run.run_id.as_str()) => {
+            Some(existing_control_state_json.clone().ok_or_else(|| {
+                CommandError::system_fault(
+                    "runtime_run_control_state_missing",
+                    format!(
+                        "Cadence refused to rewrite runtime-run `{}` in {} because the durable control snapshot was missing.",
+                        payload.run.run_id,
+                        database_path.display()
+                    ),
+                )
+            })?)
+        }
+        None => {
+            return Err(CommandError::system_fault(
+                "runtime_run_control_state_missing",
+                format!(
+                    "Cadence requires a durable control snapshot before it can persist runtime-run `{}` in {}.",
+                    payload.run.run_id,
+                    database_path.display()
+                ),
+            ))
+        }
+    };
+
     let (last_error_code, last_error_message) = payload
         .run
         .last_error
@@ -552,6 +623,7 @@ pub fn upsert_runtime_run(
                 transport_kind,
                 transport_endpoint,
                 transport_liveness,
+                control_state_json,
                 last_checkpoint_sequence,
                 started_at,
                 last_heartbeat_at,
@@ -561,7 +633,7 @@ pub fn upsert_runtime_run(
                 last_error_message,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             ON CONFLICT(project_id) DO UPDATE SET
                 run_id = excluded.run_id,
                 runtime_kind = excluded.runtime_kind,
@@ -570,6 +642,7 @@ pub fn upsert_runtime_run(
                 transport_kind = excluded.transport_kind,
                 transport_endpoint = excluded.transport_endpoint,
                 transport_liveness = excluded.transport_liveness,
+                control_state_json = excluded.control_state_json,
                 last_checkpoint_sequence = excluded.last_checkpoint_sequence,
                 started_at = excluded.started_at,
                 last_heartbeat_at = excluded.last_heartbeat_at,
@@ -588,6 +661,7 @@ pub fn upsert_runtime_run(
                 payload.run.transport.kind.as_str(),
                 payload.run.transport.endpoint.as_str(),
                 runtime_run_transport_liveness_sql_value(&payload.run.transport.liveness),
+                control_state_json.as_deref(),
                 i64::from(last_checkpoint_sequence),
                 payload.run.started_at.as_str(),
                 payload.run.last_heartbeat_at.as_deref(),
@@ -804,6 +878,7 @@ pub(crate) fn read_runtime_run_snapshot(
                 transport_kind,
                 transport_endpoint,
                 transport_liveness,
+                control_state_json,
                 last_checkpoint_sequence,
                 started_at,
                 last_heartbeat_at,
@@ -826,14 +901,15 @@ pub(crate) fn read_runtime_run_snapshot(
                 transport_kind: row.get(5)?,
                 transport_endpoint: row.get(6)?,
                 transport_liveness: row.get(7)?,
-                last_checkpoint_sequence: row.get(8)?,
-                started_at: row.get(9)?,
-                last_heartbeat_at: row.get(10)?,
-                last_checkpoint_at: row.get(11)?,
-                stopped_at: row.get(12)?,
-                last_error_code: row.get(13)?,
-                last_error_message: row.get(14)?,
-                updated_at: row.get(15)?,
+                control_state_json: row.get(8)?,
+                last_checkpoint_sequence: row.get(9)?,
+                started_at: row.get(10)?,
+                last_heartbeat_at: row.get(11)?,
+                last_checkpoint_at: row.get(12)?,
+                stopped_at: row.get(13)?,
+                last_error_code: row.get(14)?,
+                last_error_message: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         },
     );
@@ -857,6 +933,10 @@ pub(crate) fn read_runtime_run_snapshot(
         database_path,
         expected_project_id,
         raw_row.run_id.as_str(),
+    )?;
+    let controls = decode_runtime_run_control_state(
+        raw_row.control_state_json.clone(),
+        database_path,
     )?;
     let last_checkpoint_sequence = decode_runtime_run_checkpoint_sequence(
         raw_row.last_checkpoint_sequence,
@@ -898,6 +978,7 @@ pub(crate) fn read_runtime_run_snapshot(
 
     Ok(Some(RuntimeRunSnapshotRecord {
         run: decode_runtime_run_row(raw_row, database_path)?,
+        controls,
         checkpoints,
         last_checkpoint_sequence,
         last_checkpoint_at: snapshot_last_checkpoint_at,
@@ -914,7 +995,8 @@ pub(crate) fn read_runtime_run_row(
             SELECT
                 run_id,
                 last_checkpoint_sequence,
-                last_checkpoint_at
+                last_checkpoint_at,
+                control_state_json
             FROM runtime_runs
             WHERE project_id = ?1
             "#,
@@ -924,12 +1006,13 @@ pub(crate) fn read_runtime_run_row(
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         },
     );
 
     match row {
-        Ok((run_id, last_checkpoint_sequence, last_checkpoint_at)) => {
+        Ok((run_id, last_checkpoint_sequence, last_checkpoint_at, control_state_json)) => {
             Ok(Some(StoredRuntimeRunRow {
                 run_id: require_runtime_run_non_empty_owned(run_id, "run_id", database_path)?,
                 last_checkpoint_sequence: decode_runtime_run_checkpoint_sequence(
@@ -942,6 +1025,7 @@ pub(crate) fn read_runtime_run_row(
                     "last_checkpoint_at",
                     database_path,
                 )?,
+                control_state_json,
             }))
         }
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
@@ -1352,6 +1436,10 @@ fn validate_runtime_run_upsert_payload(
         }
     }
 
+    if let Some(control_state) = payload.control_state.as_ref() {
+        validate_runtime_run_control_state(control_state)?;
+    }
+
     if let Some(checkpoint) = payload.checkpoint.as_ref() {
         if checkpoint.project_id != payload.run.project_id {
             return Err(CommandError::system_fault(
@@ -1397,6 +1485,187 @@ fn validate_runtime_run_upsert_payload(
     }
 
     Ok(())
+}
+
+fn validate_runtime_run_control_state(
+    control_state: &RuntimeRunControlStateRecord,
+) -> Result<(), CommandError> {
+    validate_runtime_run_active_control_snapshot(&control_state.active)?;
+    if let Some(pending) = control_state.pending.as_ref() {
+        validate_runtime_run_pending_control_snapshot(pending, control_state.active.revision)?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_run_active_control_snapshot(
+    active: &RuntimeRunActiveControlSnapshotRecord,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(
+        &active.model_id,
+        "control_state.active.model_id",
+        "runtime_run_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &active.applied_at,
+        "control_state.active.applied_at",
+        "runtime_run_request_invalid",
+    )?;
+    if active.revision == 0 {
+        return Err(CommandError::system_fault(
+            "runtime_run_request_invalid",
+            "Cadence requires runtime-run active control revisions to start at 1.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_run_pending_control_snapshot(
+    pending: &RuntimeRunPendingControlSnapshotRecord,
+    active_revision: u32,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(
+        &pending.model_id,
+        "control_state.pending.model_id",
+        "runtime_run_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &pending.queued_at,
+        "control_state.pending.queued_at",
+        "runtime_run_request_invalid",
+    )?;
+    if pending.revision <= active_revision {
+        return Err(CommandError::system_fault(
+            "runtime_run_request_invalid",
+            "Cadence requires pending runtime-run control revisions to advance beyond the active revision.",
+        ));
+    }
+
+    match (&pending.queued_prompt, &pending.queued_prompt_at) {
+        (None, None) => {}
+        (Some(prompt), Some(queued_prompt_at)) => {
+            if prompt.trim().is_empty() {
+                return Err(CommandError::invalid_request("initialPrompt"));
+            }
+            validate_non_empty_text(
+                queued_prompt_at,
+                "control_state.pending.queued_prompt_at",
+                "runtime_run_request_invalid",
+            )?;
+            if let Some(secret_hint) = find_prohibited_runtime_control_prompt_content(prompt) {
+                return Err(CommandError::user_fixable(
+                    "runtime_run_request_invalid",
+                    format!(
+                        "Runtime-run queued prompts must not include {secret_hint}. Remove secret-bearing content before retrying."
+                    ),
+                ));
+            }
+        }
+        _ => {
+            return Err(CommandError::system_fault(
+                "runtime_run_request_invalid",
+                "Cadence requires queuedPrompt and queuedPromptAt to be populated together.",
+            ))
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn build_runtime_run_control_state(
+    model_id: &str,
+    thinking_effort: Option<ProviderModelThinkingEffortDto>,
+    approval_mode: RuntimeRunApprovalModeDto,
+    timestamp: &str,
+    initial_prompt: Option<&str>,
+) -> Result<RuntimeRunControlStateRecord, CommandError> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err(CommandError::invalid_request("initialControls.modelId"));
+    }
+
+    let active = RuntimeRunActiveControlSnapshotRecord {
+        model_id: model_id.to_owned(),
+        thinking_effort,
+        approval_mode: approval_mode.clone(),
+        revision: 1,
+        applied_at: timestamp.to_owned(),
+    };
+    let pending = match initial_prompt {
+        Some(prompt) if !prompt.trim().is_empty() => Some(RuntimeRunPendingControlSnapshotRecord {
+            model_id: active.model_id.clone(),
+            thinking_effort: active.thinking_effort.clone(),
+            approval_mode,
+            revision: active.revision.saturating_add(1),
+            queued_at: timestamp.to_owned(),
+            queued_prompt: Some(prompt.to_owned()),
+            queued_prompt_at: Some(timestamp.to_owned()),
+        }),
+        Some(_) => return Err(CommandError::invalid_request("initialPrompt")),
+        None => None,
+    };
+
+    let control_state = RuntimeRunControlStateRecord { active, pending };
+    validate_runtime_run_control_state(&control_state)?;
+    Ok(control_state)
+}
+
+fn serialize_runtime_run_control_state(
+    control_state: &RuntimeRunControlStateRecord,
+) -> Result<String, CommandError> {
+    serde_json::to_string(control_state).map_err(|error| {
+        CommandError::system_fault(
+            "runtime_run_control_state_serialize_failed",
+            format!(
+                "Cadence could not serialize the durable runtime-run control snapshot: {error}"
+            ),
+        )
+    })
+}
+
+fn decode_runtime_run_control_state(
+    value: Option<String>,
+    database_path: &Path,
+) -> Result<RuntimeRunControlStateRecord, CommandError> {
+    let Some(value) = value else {
+        return Err(map_runtime_run_decode_error(
+            database_path,
+            "Field `control_state_json` must be populated with a durable control snapshot.".into(),
+        ));
+    };
+    if value.trim().is_empty() {
+        return Err(map_runtime_run_decode_error(
+            database_path,
+            "Field `control_state_json` must be non-empty JSON text.".into(),
+        ));
+    }
+
+    let control_state = serde_json::from_str::<RuntimeRunControlStateRecord>(&value).map_err(|error| {
+        map_runtime_run_decode_error(
+            database_path,
+            format!("Field `control_state_json` is not valid runtime-run control JSON: {error}"),
+        )
+    })?;
+
+    validate_runtime_run_control_state(&control_state).map_err(|error| {
+        map_runtime_run_decode_error(database_path, error.message)
+    })?;
+    Ok(control_state)
+}
+
+pub(crate) fn find_prohibited_runtime_control_prompt_content(value: &str) -> Option<&'static str> {
+    let normalized = value.to_ascii_lowercase();
+    if normalized.contains("access_token")
+        || normalized.contains("refresh_token")
+        || normalized.contains("bearer ")
+        || normalized.contains("sk-")
+        || normalized.contains("authorization_url")
+        || normalized.contains("redirect_uri")
+        || normalized.contains("localhost:")
+        || normalized.contains("127.0.0.1:")
+    {
+        return Some("OAuth or API credential material");
+    }
+    None
 }
 
 pub(crate) fn normalize_runtime_checkpoint_summary(summary: &str) -> String {

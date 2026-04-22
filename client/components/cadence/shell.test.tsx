@@ -37,13 +37,13 @@ describe('CadenceShell', () => {
     expect(screen.getByRole('navigation')).toBeVisible()
   })
 
-  it.each(['macos', 'windows'] as const)('opens the arcade from the %s titlebar', (platform) => {
-    const onOpenGames = vi.fn()
+  it.each(['macos', 'windows'] as const)('toggles the arcade from the %s titlebar', (platform) => {
+    const onToggleGames = vi.fn()
 
-    render(
+    const { rerender } = render(
       <CadenceShell
         activeView="phases"
-        onOpenGames={onOpenGames}
+        onToggleGames={onToggleGames}
         onViewChange={() => undefined}
         platformOverride={platform}
       >
@@ -51,8 +51,22 @@ describe('CadenceShell', () => {
       </CadenceShell>,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Arcade' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open arcade' }))
+    expect(onToggleGames).toHaveBeenCalledTimes(1)
 
-    expect(onOpenGames).toHaveBeenCalledTimes(1)
+    rerender(
+      <CadenceShell
+        activeView="phases"
+        gamesOpen
+        onToggleGames={onToggleGames}
+        onViewChange={() => undefined}
+        platformOverride={platform}
+      >
+        <div>Body</div>
+      </CadenceShell>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close arcade' }))
+    expect(onToggleGames).toHaveBeenCalledTimes(2)
   })
 })

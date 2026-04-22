@@ -180,6 +180,7 @@ pub(super) fn persist_sidecar_checkpoint(
                     summary: summary.clone(),
                     created_at: now_timestamp(),
                 }),
+                control_state: None,
             },
         )
     };
@@ -250,6 +251,7 @@ pub(super) fn persist_sidecar_checkpoint(
                         summary: fallback_summary,
                         created_at: now_timestamp(),
                     }),
+                    control_state: None,
                 },
             )
         }
@@ -292,6 +294,7 @@ pub(super) fn persist_runtime_row_from_shared(
                 updated_at: now_timestamp(),
             },
             checkpoint: None,
+            control_state: None,
         },
     )
 }

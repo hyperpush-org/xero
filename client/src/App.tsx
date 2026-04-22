@@ -212,7 +212,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onViewChange={setActiveView}
         projectName={activeProject?.name}
         onOpenSettings={() => setSettingsOpen(true)}
-        onOpenGames={() => setGamesOpen(true)}
+        onToggleGames={() => setGamesOpen((current) => !current)}
         gamesOpen={gamesOpen}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
@@ -266,7 +266,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       onViewChange={setActiveView}
       projectName={activeProject?.name}
       onOpenSettings={() => setSettingsOpen(true)}
-      onOpenGames={() => setGamesOpen(true)}
+      onToggleGames={() => setGamesOpen((current) => !current)}
       gamesOpen={gamesOpen}
       sidebarCollapsed={sidebarCollapsed}
       onToggleSidebar={() => setSidebarCollapsed((current) => !current)}

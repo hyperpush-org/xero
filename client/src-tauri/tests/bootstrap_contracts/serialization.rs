@@ -1,4 +1,9 @@
 use super::support::*;
+use cadence_desktop_lib::commands::{
+    ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto,
+    RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+    RuntimeRunPendingControlSnapshotDto,
+};
 
 pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payloads() {
     assert_eq!(
@@ -797,6 +802,24 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             endpoint: "127.0.0.1:45123".into(),
             liveness: RuntimeRunTransportLivenessDto::Unreachable,
         },
+        controls: RuntimeRunControlStateDto {
+            active: RuntimeRunActiveControlSnapshotDto {
+                model_id: "openai_codex".into(),
+                thinking_effort: Some(ProviderModelThinkingEffortDto::Medium),
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                revision: 1,
+                applied_at: "2026-04-15T23:10:00Z".into(),
+            },
+            pending: Some(RuntimeRunPendingControlSnapshotDto {
+                model_id: "openai_codex".into(),
+                thinking_effort: Some(ProviderModelThinkingEffortDto::High),
+                approval_mode: RuntimeRunApprovalModeDto::AutoEdit,
+                revision: 2,
+                queued_at: "2026-04-15T23:10:01Z".into(),
+                queued_prompt: Some("Review the latest diff before continuing.".into()),
+                queued_prompt_at: Some("2026-04-15T23:10:01Z".into()),
+            }),
+        },
         started_at: "2026-04-15T23:10:00Z".into(),
         last_heartbeat_at: Some("2026-04-15T23:10:01Z".into()),
         last_checkpoint_sequence: 2,
@@ -830,6 +853,24 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 "kind": "tcp",
                 "endpoint": "127.0.0.1:45123",
                 "liveness": "unreachable"
+            },
+            "controls": {
+                "active": {
+                    "modelId": "openai_codex",
+                    "thinkingEffort": "medium",
+                    "approvalMode": "suggest",
+                    "revision": 1,
+                    "appliedAt": "2026-04-15T23:10:00Z"
+                },
+                "pending": {
+                    "modelId": "openai_codex",
+                    "thinkingEffort": "high",
+                    "approvalMode": "auto_edit",
+                    "revision": 2,
+                    "queuedAt": "2026-04-15T23:10:01Z",
+                    "queuedPrompt": "Review the latest diff before continuing.",
+                    "queuedPromptAt": "2026-04-15T23:10:01Z"
+                }
             },
             "startedAt": "2026-04-15T23:10:00Z",
             "lastHeartbeatAt": "2026-04-15T23:10:01Z",
@@ -867,6 +908,16 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                 endpoint: "127.0.0.1:45123".into(),
                 liveness: RuntimeRunTransportLivenessDto::Reachable,
             },
+            controls: RuntimeRunControlStateDto {
+                active: RuntimeRunActiveControlSnapshotDto {
+                    model_id: "openai_codex".into(),
+                    thinking_effort: Some(ProviderModelThinkingEffortDto::Medium),
+                    approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                    revision: 1,
+                    applied_at: "2026-04-15T23:10:00Z".into(),
+                },
+                pending: None,
+            },
             started_at: "2026-04-15T23:10:00Z".into(),
             last_heartbeat_at: Some("2026-04-15T23:10:01Z".into()),
             last_checkpoint_sequence: 2,
@@ -894,6 +945,15 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                     "kind": "tcp",
                     "endpoint": "127.0.0.1:45123",
                     "liveness": "reachable"
+                },
+                "controls": {
+                    "active": {
+                        "modelId": "openai_codex",
+                        "thinkingEffort": "medium",
+                        "approvalMode": "suggest",
+                        "revision": 1,
+                        "appliedAt": "2026-04-15T23:10:00Z"
+                    }
                 },
                 "startedAt": "2026-04-15T23:10:00Z",
                 "lastHeartbeatAt": "2026-04-15T23:10:01Z",
@@ -1147,20 +1207,47 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
 
     let start_autonomous_run_request = serde_json::to_value(StartAutonomousRunRequestDto {
         project_id: "project-1".into(),
+        initial_controls: Some(RuntimeRunControlInputDto {
+            model_id: "openai_codex".into(),
+            thinking_effort: Some(ProviderModelThinkingEffortDto::High),
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+        }),
+        initial_prompt: Some("Continue with the next verifier step.".into()),
     })
     .expect("start autonomous run request should serialize");
     assert_eq!(
         start_autonomous_run_request,
-        json!({ "projectId": "project-1" })
+        json!({
+            "projectId": "project-1",
+            "initialControls": {
+                "modelId": "openai_codex",
+                "thinkingEffort": "high",
+                "approvalMode": "yolo"
+            },
+            "initialPrompt": "Continue with the next verifier step."
+        })
     );
 
     let start_runtime_run_request = serde_json::to_value(StartRuntimeRunRequestDto {
         project_id: "project-1".into(),
+        initial_controls: Some(RuntimeRunControlInputDto {
+            model_id: "openai_codex".into(),
+            thinking_effort: Some(ProviderModelThinkingEffortDto::Low),
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+        }),
+        initial_prompt: None,
     })
     .expect("start runtime run request should serialize");
     assert_eq!(
         start_runtime_run_request,
-        json!({ "projectId": "project-1" })
+        json!({
+            "projectId": "project-1",
+            "initialControls": {
+                "modelId": "openai_codex",
+                "thinkingEffort": "low",
+                "approvalMode": "suggest"
+            }
+        })
     );
 
     let cancel_autonomous_run_request = serde_json::to_value(CancelAutonomousRunRequestDto {
