@@ -97,11 +97,8 @@ pub(crate) fn provider_profiles_dto_from_snapshot(
     ProviderProfilesDto {
         active_profile_id: snapshot.metadata.active_profile_id.clone(),
         profiles,
-        migration: snapshot
-            .metadata
-            .migration
-            .as_ref()
-            .map(|migration| ProviderProfilesMigrationDto {
+        migration: snapshot.metadata.migration.as_ref().map(|migration| {
+            ProviderProfilesMigrationDto {
                 source: migration.source.clone(),
                 migrated_at: migration.migrated_at.clone(),
                 runtime_settings_updated_at: migration.runtime_settings_updated_at.clone(),
@@ -110,7 +107,8 @@ pub(crate) fn provider_profiles_dto_from_snapshot(
                     .clone(),
                 openai_auth_updated_at: migration.openai_auth_updated_at.clone(),
                 openrouter_model_inferred: migration.openrouter_model_inferred,
-            }),
+            }
+        }),
     }
 }
 
@@ -135,7 +133,9 @@ fn provider_profile_dto(
     }
 }
 
-fn map_readiness_status(status: ProviderProfileReadinessStatus) -> ProviderProfileReadinessStatusDto {
+fn map_readiness_status(
+    status: ProviderProfileReadinessStatus,
+) -> ProviderProfileReadinessStatusDto {
     match status {
         ProviderProfileReadinessStatus::Ready => ProviderProfileReadinessStatusDto::Ready,
         ProviderProfileReadinessStatus::Missing => ProviderProfileReadinessStatusDto::Missing,
@@ -157,7 +157,8 @@ fn apply_provider_profile_upsert(
         return Err(CommandError::invalid_request("label"));
     }
 
-    let validated = runtime_settings_file_from_request(&request.provider_id, &request.model_id, false)?;
+    let validated =
+        runtime_settings_file_from_request(&request.provider_id, &request.model_id, false)?;
     let now = crate::auth::now_timestamp();
     let current_profile = current.profile(profile_id).cloned();
     let current_openrouter_secret = current.openrouter_credential(profile_id).cloned();
@@ -178,7 +179,10 @@ fn apply_provider_profile_upsert(
             Some(OpenRouterProfileCredentialEntry {
                 profile_id: profile_id.to_owned(),
                 api_key: api_key.to_owned(),
-                updated_at: openrouter_secret_updated_at(current_openrouter_secret.as_ref(), Some(api_key)),
+                updated_at: openrouter_secret_updated_at(
+                    current_openrouter_secret.as_ref(),
+                    Some(api_key),
+                ),
             })
         } else {
             current_openrouter_secret.clone()
@@ -187,18 +191,24 @@ fn apply_provider_profile_upsert(
         None
     };
 
-    let next_credential_link = match validated.provider_id.as_str() {
-        OPENAI_CODEX_PROVIDER_ID => current_profile.as_ref().and_then(|profile| match profile.credential_link.as_ref() {
-            Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => profile.credential_link.clone(),
-            _ => None,
-        }),
-        OPENROUTER_PROVIDER_ID => next_openrouter_secret
-            .as_ref()
-            .map(|entry| ProviderProfileCredentialLink::OpenRouter {
-                updated_at: entry.updated_at.clone(),
+    let next_credential_link =
+        match validated.provider_id.as_str() {
+            OPENAI_CODEX_PROVIDER_ID => current_profile.as_ref().and_then(|profile| match profile
+                .credential_link
+                .as_ref()
+            {
+                Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
+                    profile.credential_link.clone()
+                }
+                _ => None,
             }),
-        _ => None,
-    };
+            OPENROUTER_PROVIDER_ID => next_openrouter_secret.as_ref().map(|entry| {
+                ProviderProfileCredentialLink::OpenRouter {
+                    updated_at: entry.updated_at.clone(),
+                }
+            }),
+            _ => None,
+        };
 
     let mut next = current.clone();
     let profile_updated_at = current_profile

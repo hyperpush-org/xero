@@ -124,11 +124,8 @@ pub fn sync_openai_profile_link<R: Runtime>(
     let mut snapshot = load_provider_profiles_snapshot(app, state)?;
 
     let next_link = session.map(openai_profile_link_from_session).transpose()?;
-    let target_profile_id = resolve_openai_profile_sync_target(
-        &snapshot,
-        preferred_profile_id,
-        next_link.as_ref(),
-    )?;
+    let target_profile_id =
+        resolve_openai_profile_sync_target(&snapshot, preferred_profile_id, next_link.as_ref())?;
     let Some(target_profile_id) = target_profile_id else {
         return Ok(());
     };
@@ -179,7 +176,8 @@ fn load_provider_profiles_snapshot<R: Runtime>(
     let legacy_openrouter_credentials_path = state
         .openrouter_credential_file(app)
         .map_err(map_command_error_to_auth_error)?;
-    let legacy_openai_auth_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
+    let legacy_openai_auth_path =
+        state.auth_store_file_for_provider(app, openai_codex_provider())?;
 
     load_or_migrate_provider_profiles_from_paths(
         &provider_profiles_path,
@@ -248,10 +246,8 @@ fn resolve_openai_profile_sync_target(
         return Ok(Some(preferred_profile_id.to_owned()));
     }
 
-    Ok(
-        select_openai_profile_id(snapshot, next_link)
-            .or_else(|| Some(OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned())),
-    )
+    Ok(select_openai_profile_id(snapshot, next_link)
+        .or_else(|| Some(OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned())))
 }
 
 fn load_store(path: &Path) -> Result<AuthStoreFile, AuthFlowError> {
@@ -446,7 +442,9 @@ fn upsert_openai_profile_link(
 fn profile_link_updated_at(link: &ProviderProfileCredentialLink) -> String {
     match link {
         ProviderProfileCredentialLink::OpenAiCodex { updated_at, .. }
-        | ProviderProfileCredentialLink::OpenRouter { updated_at } => normalize_updated_at(updated_at),
+        | ProviderProfileCredentialLink::OpenRouter { updated_at } => {
+            normalize_updated_at(updated_at)
+        }
     }
 }
 

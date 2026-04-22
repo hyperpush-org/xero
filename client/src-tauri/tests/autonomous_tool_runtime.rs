@@ -7,7 +7,10 @@ use std::{
 };
 
 use cadence_desktop_lib::{
-    commands::RepositoryDiffScope,
+    commands::{
+        RepositoryDiffScope, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
+    },
     configure_builder_with_state, db,
     git::{
         diff::MAX_PATCH_BYTES,
@@ -15,11 +18,11 @@ use cadence_desktop_lib::{
     },
     registry::{self, RegistryProjectRecord},
     runtime::{
-        AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
-        AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousReadRequest,
-        AutonomousSearchRequest, AutonomousToolOutput, AutonomousToolRequest,
-        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousWebConfig,
-        AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousCommandPolicyOutcome, AutonomousCommandRequest, AutonomousEditRequest,
+        AutonomousFindRequest, AutonomousGitDiffRequest, AutonomousGitStatusRequest,
+        AutonomousReadRequest, AutonomousSearchRequest, AutonomousToolOutput,
+        AutonomousToolRequest, AutonomousToolRuntime, AutonomousToolRuntimeLimits,
+        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
         AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
@@ -151,6 +154,52 @@ fn current_head_sha(repo_root: &Path) -> Option<String> {
     })
 }
 
+fn runtime_control_state(
+    active: RuntimeRunApprovalModeDto,
+    pending: Option<RuntimeRunApprovalModeDto>,
+) -> RuntimeRunControlStateDto {
+    RuntimeRunControlStateDto {
+        active: RuntimeRunActiveControlSnapshotDto {
+            model_id: "model-1".into(),
+            thinking_effort: None,
+            approval_mode: active,
+            revision: 1,
+            applied_at: "2026-04-22T00:00:00Z".into(),
+        },
+        pending: pending.map(|approval_mode| RuntimeRunPendingControlSnapshotDto {
+            model_id: "model-1".into(),
+            thinking_effort: None,
+            approval_mode,
+            revision: 2,
+            queued_at: "2026-04-22T00:01:00Z".into(),
+            queued_prompt: None,
+            queued_prompt_at: None,
+        }),
+    }
+}
+
+fn runtime_for_project_with_controls(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    controls: RuntimeRunControlStateDto,
+) -> AutonomousToolRuntime {
+    AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        project_id,
+    )
+    .expect("build autonomous tool runtime")
+    .with_runtime_run_controls(controls)
+}
+
+fn runtime_for_project_with_approval(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    active: RuntimeRunApprovalModeDto,
+) -> AutonomousToolRuntime {
+    runtime_for_project_with_controls(app, project_id, runtime_control_state(active, None))
+}
+
 fn shell_argv(script: impl Into<String>) -> Vec<String> {
     let shell = runtime_shell::launch_script(script);
     std::iter::once(shell.program).chain(shell.args).collect()
@@ -214,12 +263,8 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     )
     .expect("seed skipped dependency file");
 
-    let runtime = AutonomousToolRuntime::for_project(
-        &app.handle().clone(),
-        app.state::<DesktopState>().inner(),
-        &project_id,
-    )
-    .expect("build autonomous tool runtime");
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
 
     let read = runtime
         .read(AutonomousReadRequest {
@@ -325,10 +370,9 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
         other => panic!("unexpected edit output: {other:?}"),
     }
 
-    let command_script = if cfg!(windows) { "cd" } else { "pwd" };
     let command = runtime
         .command(AutonomousCommandRequest {
-            argv: shell_argv(command_script),
+            argv: vec!["git".into(), "rev-parse".into(), "--show-prefix".into()],
             cwd: Some("notes".into()),
             timeout_ms: Some(2_000),
         })
@@ -341,15 +385,24 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             .and_then(|result| result.exit_code),
         Some(0)
     );
+    assert_eq!(
+        command
+            .command_result
+            .as_ref()
+            .map(|result| result.policy.outcome.clone()),
+        Some(AutonomousCommandPolicyOutcome::Allowed)
+    );
     match command.output {
         AutonomousToolOutput::Command(output) => {
             assert_eq!(output.cwd, "notes");
             assert_eq!(output.exit_code, Some(0));
-            let stdout = output.stdout.expect("stdout captured");
-            assert!(
-                stdout.contains("notes"),
-                "stdout should include cwd: {stdout}"
+            assert!(output.spawned);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Allowed
             );
+            let stdout = output.stdout.expect("stdout captured");
+            assert_eq!(stdout, "notes/");
         }
         other => panic!("unexpected command output: {other:?}"),
     }
@@ -807,10 +860,17 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
         "alpha\ndelta\ngamma\n"
     );
 
-    let nonzero_script = runtime_shell::script_print_line_then_exit("boom", 7);
-    let nonzero = runtime
+    let yolo_runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
+
+    let nonzero = yolo_runtime
         .command(AutonomousCommandRequest {
-            argv: shell_argv(nonzero_script),
+            argv: vec![
+                "git".into(),
+                "rev-parse".into(),
+                "--verify".into(),
+                "refs/heads/missing-branch".into(),
+            ],
             cwd: None,
             timeout_ms: Some(2_000),
         })
@@ -820,20 +880,28 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             .command_result
             .as_ref()
             .and_then(|result| result.exit_code),
-        Some(7)
+        Some(128)
     );
     match nonzero.output {
         AutonomousToolOutput::Command(output) => {
-            assert_eq!(output.exit_code, Some(7));
-            assert_eq!(output.stderr, None);
-            assert_eq!(output.stdout.as_deref(), Some("boom"));
+            assert_eq!(output.exit_code, Some(128));
+            assert!(output.spawned);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Allowed
+            );
+            assert!(output.stderr.is_some());
         }
         other => panic!("unexpected non-zero command output: {other:?}"),
     }
 
-    let timeout = runtime
+    let timeout = yolo_runtime
         .command(AutonomousCommandRequest {
-            argv: shell_argv(runtime_shell::script_sleep(2)),
+            argv: if cfg!(windows) {
+                vec!["ping".into(), "-n".into(), "3".into(), "127.0.0.1".into()]
+            } else {
+                vec!["ping".into(), "-c".into(), "3".into(), "127.0.0.1".into()]
+            },
             cwd: None,
             timeout_ms: Some(50),
         })
@@ -854,6 +922,165 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
         })
         .expect_err("broken git state should fail git diff");
     assert_eq!(git_diff_error.code, "git_repository_not_found");
+}
+
+#[test]
+fn tool_runtime_command_policy_uses_active_approval_snapshot_only() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let strict_runtime = runtime_for_project_with_controls(
+        &app,
+        &project_id,
+        runtime_control_state(
+            RuntimeRunApprovalModeDto::Suggest,
+            Some(RuntimeRunApprovalModeDto::Yolo),
+        ),
+    );
+    let strict = strict_runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["git".into(), "status".into(), "--short".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("strict approval mode should return a review envelope");
+    match strict.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(output.exit_code, None);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(
+                output.policy.approval_mode,
+                RuntimeRunApprovalModeDto::Suggest
+            );
+            assert_eq!(output.policy.code, "policy_escalated_approval_mode");
+        }
+        other => panic!("unexpected strict command output: {other:?}"),
+    }
+
+    let yolo_runtime = runtime_for_project_with_controls(
+        &app,
+        &project_id,
+        runtime_control_state(
+            RuntimeRunApprovalModeDto::Yolo,
+            Some(RuntimeRunApprovalModeDto::Suggest),
+        ),
+    );
+    let allowed = yolo_runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["git".into(), "status".into(), "--short".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("active yolo should allow safe git status");
+    match allowed.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(output.spawned);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Allowed
+            );
+            assert_eq!(output.policy.approval_mode, RuntimeRunApprovalModeDto::Yolo);
+            assert_eq!(output.policy.code, "policy_allowed_repo_scoped_command");
+        }
+        other => panic!("unexpected yolo command output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_command_policy_escalates_destructive_shell_wrappers_before_spawn() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
+    let destructive = runtime
+        .command(AutonomousCommandRequest {
+            argv: shell_argv(if cfg!(windows) {
+                "del /Q src\\tracked.txt"
+            } else {
+                "rm -rf src"
+            }),
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("destructive shell wrapper should escalate before spawn");
+
+    match destructive.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(output.exit_code, None);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(output.policy.code, "policy_escalated_destructive_shell");
+        }
+        other => panic!("unexpected destructive shell output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_command_policy_fails_closed_for_ambiguous_commands() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
+    let ambiguous = runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["madeup-command".into(), "--version".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("ambiguous commands should fail closed before spawn");
+
+    match ambiguous.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(output.exit_code, None);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(output.policy.code, "policy_escalated_ambiguous_command");
+        }
+        other => panic!("unexpected ambiguous command output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_command_policy_denies_repo_escape_arguments_before_spawn() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
+    let error = runtime
+        .command(AutonomousCommandRequest {
+            argv: vec![
+                "git".into(),
+                "diff".into(),
+                "--".into(),
+                "../outside.txt".into(),
+            ],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect_err("repo escape arguments should be denied before spawn");
+
+    assert_eq!(error.code, "policy_denied_argument_outside_repo");
+    assert_eq!(
+        error.class,
+        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied
+    );
 }
 
 #[test]
@@ -924,12 +1151,8 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
     let app = build_mock_app(create_state(&root));
     let (project_id, _repo_root) = seed_project(&root, &app);
 
-    let runtime = AutonomousToolRuntime::for_project(
-        &app.handle().clone(),
-        app.state::<DesktopState>().inner(),
-        &project_id,
-    )
-    .expect("build autonomous tool runtime");
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
 
     let read_error = runtime
         .read(AutonomousReadRequest {
@@ -958,12 +1181,12 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
 
     let cwd_error = runtime
         .command(AutonomousCommandRequest {
-            argv: shell_argv(if cfg!(windows) { "cd" } else { "pwd" }),
+            argv: vec!["git".into(), "status".into(), "--short".into()],
             cwd: Some("../".into()),
             timeout_ms: Some(1_000),
         })
         .expect_err("out-of-root cwd should be denied");
-    assert_eq!(cwd_error.code, "autonomous_tool_path_denied");
+    assert_eq!(cwd_error.code, "policy_denied_command_cwd_outside_repo");
     assert_eq!(
         cwd_error.class,
         cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied

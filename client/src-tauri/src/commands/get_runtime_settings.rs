@@ -5,7 +5,10 @@ use tauri::{AppHandle, Runtime, State};
 use tempfile::NamedTempFile;
 
 use crate::{
-    commands::{provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult, RuntimeSettingsDto},
+    commands::{
+        provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult,
+        RuntimeSettingsDto,
+    },
     provider_profiles::ProviderProfilesSnapshot,
     runtime::{
         resolve_runtime_provider_identity, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
@@ -395,9 +398,7 @@ pub(crate) fn runtime_settings_snapshot_from_provider_profiles(
     })
 }
 
-fn map_auth_store_error_to_command_error(
-    error: crate::auth::AuthFlowError,
-) -> CommandError {
+fn map_auth_store_error_to_command_error(error: crate::auth::AuthFlowError) -> CommandError {
     if error.retryable {
         CommandError::retryable(error.code, error.message)
     } else {

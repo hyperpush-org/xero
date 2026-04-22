@@ -10,9 +10,9 @@ use cadence_desktop_lib::{
     auth::OpenRouterAuthConfig,
     commands::{
         provider_model_catalog::get_provider_model_catalog,
-        provider_profiles::upsert_provider_profile,
-        GetProviderModelCatalogRequestDto, ProviderModelCatalogSourceDto,
-        ProviderModelThinkingEffortDto, UpsertProviderProfileRequestDto,
+        provider_profiles::upsert_provider_profile, GetProviderModelCatalogRequestDto,
+        ProviderModelCatalogSourceDto, ProviderModelThinkingEffortDto,
+        UpsertProviderProfileRequestDto,
     },
     configure_builder_with_state,
     state::DesktopState,
@@ -161,7 +161,8 @@ fn get_provider_model_catalog_projects_openai_codex_as_single_model_truth() {
 }
 
 #[test]
-fn get_provider_model_catalog_discovers_inactive_openrouter_profile_and_persists_secret_free_cache() {
+fn get_provider_model_catalog_discovers_inactive_openrouter_profile_and_persists_secret_free_cache()
+{
     let models_base_url = spawn_static_http_server(
         200,
         r#"{"data":[{"id":"openai/o4-mini","name":"OpenAI o4-mini","supported_parameters":["reasoning"]},{"id":"anthropic/claude-3.7-sonnet","name":"Claude 3.7 Sonnet","supported_parameters":[]}]}"#,
@@ -222,7 +223,12 @@ fn get_provider_model_catalog_returns_cached_snapshot_when_live_refresh_fails() 
         openrouter_auth_config(format!("{success_base_url}/api/v1/models")),
     );
     let first_app = build_mock_app(first_state);
-    seed_openrouter_profile(&first_app, "openrouter-work", "openai/o4-mini", "sk-or-v1-first");
+    seed_openrouter_profile(
+        &first_app,
+        "openrouter-work",
+        "openai/o4-mini",
+        "sk-or-v1-first",
+    );
 
     let first = get_provider_model_catalog(
         first_app.handle().clone(),
@@ -254,7 +260,10 @@ fn get_provider_model_catalog_returns_cached_snapshot_when_live_refresh_fails() 
     assert_eq!(cached.fetched_at, first.fetched_at);
     assert_eq!(cached.last_success_at, first.last_success_at);
     assert_eq!(
-        cached.last_refresh_error.as_ref().map(|error| error.code.as_str()),
+        cached
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
         Some("openrouter_provider_unavailable")
     );
 }
@@ -270,7 +279,12 @@ fn get_provider_model_catalog_rejects_malformed_live_payload_and_preserves_cache
         openrouter_auth_config(format!("{success_base_url}/api/v1/models")),
     );
     let first_app = build_mock_app(first_state);
-    seed_openrouter_profile(&first_app, "openrouter-work", "openai/o4-mini", "sk-or-v1-first");
+    seed_openrouter_profile(
+        &first_app,
+        "openrouter-work",
+        "openai/o4-mini",
+        "sk-or-v1-first",
+    );
 
     get_provider_model_catalog(
         first_app.handle().clone(),
@@ -282,8 +296,7 @@ fn get_provider_model_catalog_rejects_malformed_live_payload_and_preserves_cache
     )
     .expect("seed live catalog");
 
-    let malformed_base_url =
-        spawn_static_http_server(200, r#"{"data":[{"id":"openai/o4-mini"}]}"#);
+    let malformed_base_url = spawn_static_http_server(200, r#"{"data":[{"id":"openai/o4-mini"}]}"#);
     let second_state = create_state(&root).with_openrouter_auth_config_override(
         openrouter_auth_config(format!("{malformed_base_url}/api/v1/models")),
     );
@@ -301,7 +314,10 @@ fn get_provider_model_catalog_rejects_malformed_live_payload_and_preserves_cache
 
     assert_eq!(cached.source, ProviderModelCatalogSourceDto::Cache);
     assert_eq!(
-        cached.last_refresh_error.as_ref().map(|error| error.code.as_str()),
+        cached
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
         Some("openrouter_models_decode_failed")
     );
 }
@@ -317,7 +333,12 @@ fn get_provider_model_catalog_ignores_corrupt_cache_row_and_stays_read_only_unti
         format!("{models_base_url}/api/v1/models"),
     ));
     let app = build_mock_app(state);
-    seed_openrouter_profile(&app, "openrouter-work", "missing/from-provider", "sk-or-v1-first");
+    seed_openrouter_profile(
+        &app,
+        "openrouter-work",
+        "missing/from-provider",
+        "sk-or-v1-first",
+    );
 
     std::fs::create_dir_all(root.path().join("app-data")).expect("create app-data dir");
     let corrupt = r#"{
@@ -343,7 +364,10 @@ fn get_provider_model_catalog_ignores_corrupt_cache_row_and_stays_read_only_unti
 
     assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Live);
     assert_eq!(
-        catalog.last_refresh_error.as_ref().map(|error| error.code.as_str()),
+        catalog
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
         Some("provider_model_catalog_cache_decode_failed")
     );
 

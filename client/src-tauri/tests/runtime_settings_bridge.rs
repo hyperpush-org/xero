@@ -54,7 +54,9 @@ fn create_state(root: &TempDir) -> (DesktopState, TestPaths) {
                 paths.provider_profile_credentials_path.clone(),
             )
             .with_runtime_settings_file_override(paths.legacy_settings_path.clone())
-            .with_openrouter_credential_file_override(paths.legacy_openrouter_credentials_path.clone())
+            .with_openrouter_credential_file_override(
+                paths.legacy_openrouter_credentials_path.clone(),
+            )
             .with_auth_store_file_override(paths.legacy_openai_auth_path.clone()),
         paths,
     )
@@ -210,9 +212,13 @@ fn upsert_runtime_settings_rolls_back_metadata_when_profile_credential_write_fai
         .with_provider_profile_credential_store_file_override(
             blocked_parent.join("provider-profile-credentials.json"),
         )
-        .with_runtime_settings_file_override(root.path().join("app-data").join("runtime-settings.json"))
+        .with_runtime_settings_file_override(
+            root.path().join("app-data").join("runtime-settings.json"),
+        )
         .with_openrouter_credential_file_override(
-            root.path().join("app-data").join("openrouter-credentials.json"),
+            root.path()
+                .join("app-data")
+                .join("openrouter-credentials.json"),
         )
         .with_auth_store_file_override(root.path().join("app-data").join("openai-auth.json"));
     let app = build_mock_app(state);
@@ -228,7 +234,10 @@ fn upsert_runtime_settings_rolls_back_metadata_when_profile_credential_write_fai
     )
     .expect_err("credential write failure should roll back metadata");
 
-    assert_eq!(error.code, "provider_profile_credentials_directory_unavailable");
+    assert_eq!(
+        error.code,
+        "provider_profile_credentials_directory_unavailable"
+    );
 
     let settings = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
         .expect("settings load after rollback");
@@ -249,7 +258,10 @@ fn get_runtime_settings_rejects_invalid_legacy_settings_json() {
     let (state, paths) = create_state(&root);
     let app = build_mock_app(state);
 
-    let parent = paths.legacy_settings_path.parent().expect("settings parent");
+    let parent = paths
+        .legacy_settings_path
+        .parent()
+        .expect("settings parent");
     std::fs::create_dir_all(parent).expect("create settings parent");
     std::fs::write(&paths.legacy_settings_path, "{not-json").expect("write malformed settings");
 
@@ -310,7 +322,10 @@ fn get_runtime_settings_rejects_legacy_mismatched_redacted_key_state() {
     let (state, paths) = create_state(&root);
     let app = build_mock_app(state);
 
-    let parent = paths.legacy_settings_path.parent().expect("settings parent");
+    let parent = paths
+        .legacy_settings_path
+        .parent()
+        .expect("settings parent");
     std::fs::create_dir_all(parent).expect("create settings parent");
     std::fs::write(
         &paths.legacy_settings_path,
@@ -335,7 +350,10 @@ fn get_runtime_settings_rejects_blank_provider_id_in_legacy_settings() {
     let (state, paths) = create_state(&root);
     let app = build_mock_app(state);
 
-    let parent = paths.legacy_settings_path.parent().expect("settings parent");
+    let parent = paths
+        .legacy_settings_path
+        .parent()
+        .expect("settings parent");
     std::fs::create_dir_all(parent).expect("create settings parent");
     std::fs::write(
         &paths.legacy_settings_path,
@@ -360,7 +378,10 @@ fn get_runtime_settings_rejects_blank_model_id_in_legacy_settings() {
     let (state, paths) = create_state(&root);
     let app = build_mock_app(state);
 
-    let parent = paths.legacy_settings_path.parent().expect("settings parent");
+    let parent = paths
+        .legacy_settings_path
+        .parent()
+        .expect("settings parent");
     std::fs::create_dir_all(parent).expect("create settings parent");
     std::fs::write(
         &paths.legacy_settings_path,

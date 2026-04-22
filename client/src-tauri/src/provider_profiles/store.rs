@@ -17,8 +17,7 @@ use crate::{
 };
 
 pub const PROVIDER_PROFILES_FILE_NAME: &str = "provider-profiles.json";
-pub const PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME: &str =
-    "provider-profile-credentials.json";
+pub const PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME: &str = "provider-profile-credentials.json";
 pub const OPENAI_CODEX_DEFAULT_PROFILE_ID: &str = "openai_codex-default";
 pub const OPENROUTER_DEFAULT_PROFILE_ID: &str = "openrouter-default";
 pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "openai/gpt-4.1-mini";
@@ -393,7 +392,10 @@ pub(crate) fn validate_provider_profiles_contract(
         }
     }
 
-    Ok(ProviderProfilesSnapshot { metadata, credentials })
+    Ok(ProviderProfilesSnapshot {
+        metadata,
+        credentials,
+    })
 }
 
 pub(crate) fn persist_provider_profiles_snapshot(
@@ -643,9 +645,10 @@ fn validate_provider_profile_record(
         ));
     }
 
-    let provider = resolve_runtime_provider_identity(Some(provider_id), Some(provider_id)).map_err(
-        |diagnostic| CommandError::user_fixable("provider_profiles_invalid", diagnostic.message),
-    )?;
+    let provider = resolve_runtime_provider_identity(Some(provider_id), Some(provider_id))
+        .map_err(|diagnostic| {
+            CommandError::user_fixable("provider_profiles_invalid", diagnostic.message)
+        })?;
 
     let label = profile.label.trim();
     if label.is_empty() {
@@ -749,7 +752,9 @@ fn validate_migration_state(
             migration.source.trim().to_owned()
         },
         migrated_at: normalize_updated_at(migration.migrated_at),
-        runtime_settings_updated_at: migration.runtime_settings_updated_at.map(normalize_updated_at),
+        runtime_settings_updated_at: migration
+            .runtime_settings_updated_at
+            .map(normalize_updated_at),
         openrouter_credentials_updated_at: migration
             .openrouter_credentials_updated_at
             .map(normalize_updated_at),

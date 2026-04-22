@@ -170,7 +170,10 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
 
     tauri::test::assert_ipc_response(
         &webview,
-        invoke_request(cadence_desktop_lib::commands::LIST_PROVIDER_PROFILES_COMMAND, json!({})),
+        invoke_request(
+            cadence_desktop_lib::commands::LIST_PROVIDER_PROFILES_COMMAND,
+            json!({}),
+        ),
         Ok(cadence_desktop_lib::commands::ProviderProfilesDto {
             active_profile_id: "openai_codex-default".into(),
             profiles: vec![cadence_desktop_lib::commands::ProviderProfileDto {
@@ -181,7 +184,8 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
                 active: true,
                 readiness: cadence_desktop_lib::commands::ProviderProfileReadinessDto {
                     ready: false,
-                    status: cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing,
+                    status:
+                        cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing,
                     credential_updated_at: None,
                 },
                 migrated_from_legacy: false,

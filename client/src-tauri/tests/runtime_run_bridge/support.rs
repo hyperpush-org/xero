@@ -25,9 +25,9 @@ pub(crate) use cadence_desktop_lib::{
         NotificationReplyClaimStatusDto, OperatorApprovalStatus, PhaseStatus, PhaseStep,
         ProjectIdRequestDto, ProjectUpdateReason, ProjectUpdatedPayloadDto,
         ResolveOperatorActionRequestDto, ResumeHistoryStatus, ResumeOperatorRunRequestDto,
-        RuntimeAuthPhase, RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto,
-        RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportLivenessDto,
-        RuntimeRunUpdatedPayloadDto, RuntimeUpdatedPayloadDto, RuntimeRunApprovalModeDto,
+        RuntimeAuthPhase, RuntimeRunApprovalModeDto, RuntimeRunCheckpointKindDto,
+        RuntimeRunControlInputDto, RuntimeRunDto, RuntimeRunStatusDto,
+        RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto, RuntimeUpdatedPayloadDto,
         StartAutonomousRunRequestDto, StartRuntimeRunRequestDto, StopRuntimeRunRequestDto,
         SubmitNotificationReplyRequestDto, UpdateRuntimeRunControlsRequestDto,
         WorkflowAutomaticDispatchStatusDto, PROJECT_UPDATED_EVENT, RUNTIME_RUN_UPDATED_EVENT,
@@ -116,10 +116,24 @@ pub(crate) fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::Moc
 pub(crate) fn create_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
     let registry_path = root.path().join("app-data").join("project-registry.json");
     let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    let provider_profiles_path = root.path().join("app-data").join("provider-profiles.json");
+    let provider_profile_credentials_path = root
+        .path()
+        .join("app-data")
+        .join("provider-profile-credentials.json");
+    let runtime_settings_path = root.path().join("app-data").join("runtime-settings.json");
+    let openrouter_credential_path = root
+        .path()
+        .join("app-data")
+        .join("openrouter-credentials.json");
     (
         DesktopState::default()
             .with_registry_file_override(registry_path.clone())
             .with_auth_store_file_override(auth_store_path.clone())
+            .with_provider_profiles_file_override(provider_profiles_path)
+            .with_provider_profile_credential_store_file_override(provider_profile_credentials_path)
+            .with_runtime_settings_file_override(runtime_settings_path)
+            .with_openrouter_credential_file_override(openrouter_credential_path)
             .with_runtime_supervisor_binary_override(supervisor_binary_path()),
         registry_path,
         auth_store_path,

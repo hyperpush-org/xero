@@ -277,9 +277,7 @@ pub fn launch_detached_runtime_supervisor(
             ),
         )
     })?;
-    sidecar
-        .arg("--control-state-json")
-        .arg(control_state_json);
+    sidecar.arg("--control-state-json").arg(control_state_json);
 
     for arg in &request.args {
         sidecar.arg("--command-arg").arg(arg);

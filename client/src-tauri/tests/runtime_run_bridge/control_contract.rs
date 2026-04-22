@@ -132,9 +132,15 @@ pub(crate) fn queued_runtime_controls_apply_on_next_model_boundary_and_recover_r
             && runtime_run.controls.active.revision == pending.revision
             && runtime_run.controls.active.approval_mode == RuntimeRunApprovalModeDto::AutoEdit
     });
-    assert_eq!(applied.controls.active.model_id, running.controls.active.model_id);
+    assert_eq!(
+        applied.controls.active.model_id,
+        running.controls.active.model_id
+    );
     assert!(applied.controls.active.applied_at >= pending.queued_at);
-    assert_ne!(applied.controls.active.applied_at, queued.controls.active.applied_at);
+    assert_ne!(
+        applied.controls.active.applied_at,
+        queued.controls.active.applied_at
+    );
     assert!(applied.last_error_code.is_none());
 
     let mut reader = attach_reader(
@@ -147,12 +153,18 @@ pub(crate) fn queued_runtime_controls_apply_on_next_model_boundary_and_recover_r
         other => panic!("expected attach ack, got {other:?}"),
     };
     let frames = read_event_frames(&mut reader, replayed_count);
-    assert_eq!(count_activity_code(&frames, "runtime_run_controls_queued"), 1);
+    assert_eq!(
+        count_activity_code(&frames, "runtime_run_controls_queued"),
+        1
+    );
     assert_eq!(
         count_activity_code(&frames, CONTROL_APPLY_BOUNDARY_ACTIVITY_CODE),
         1
     );
-    assert_eq!(count_activity_code(&frames, CONTROL_APPLIED_ACTIVITY_CODE), 1);
+    assert_eq!(
+        count_activity_code(&frames, CONTROL_APPLIED_ACTIVITY_CODE),
+        1
+    );
 
     let replay_dump = response_dump(&frames);
     assert!(!replay_dump.contains(queued_prompt));
@@ -250,15 +262,28 @@ pub(crate) fn queued_runtime_controls_duplicate_boundary_is_idempotent() {
         .expect("pending snapshot should exist after queue")
         .revision;
 
-    let applied = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+    let _applied = wait_for_runtime_run(&app, &project_id, |runtime_run| {
         runtime_run.run_id == launched.run.run_id
             && runtime_run.controls.pending.is_none()
             && runtime_run.controls.active.revision == pending_revision
             && runtime_run.controls.active.approval_mode == RuntimeRunApprovalModeDto::Yolo
     });
+    let replay_ready = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.run_id == launched.run.run_id
+            && runtime_run
+                .checkpoints
+                .iter()
+                .filter(|checkpoint| {
+                    checkpoint
+                        .summary
+                        .contains(CONTROL_APPLY_BOUNDARY_ACTIVITY_CODE)
+                })
+                .count()
+                >= 2
+    });
 
     let mut reader = attach_reader(
-        &applied.transport.endpoint,
+        &replay_ready.transport.endpoint,
         SupervisorControlRequest::attach(&project_id, &launched.run.run_id, None),
     );
     let attached = expect_attach_ack(read_supervisor_response(&mut reader));
@@ -272,7 +297,10 @@ pub(crate) fn queued_runtime_controls_duplicate_boundary_is_idempotent() {
         2,
         "duplicate boundary markers should still replay, but only the first may apply pending controls"
     );
-    assert_eq!(count_activity_code(&frames, CONTROL_APPLIED_ACTIVITY_CODE), 1);
+    assert_eq!(
+        count_activity_code(&frames, CONTROL_APPLIED_ACTIVITY_CODE),
+        1
+    );
 
     let stopped = stop_runtime_run(
         app.handle().clone(),
@@ -287,8 +315,8 @@ pub(crate) fn queued_runtime_controls_duplicate_boundary_is_idempotent() {
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
 }
 
-pub(crate) fn get_runtime_run_fails_closed_for_malformed_control_state_without_fake_apply_transition()
-{
+pub(crate) fn get_runtime_run_fails_closed_for_malformed_control_state_without_fake_apply_transition(
+) {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, _auth_store_path) = create_state(&root);
     let app = build_mock_app(state);

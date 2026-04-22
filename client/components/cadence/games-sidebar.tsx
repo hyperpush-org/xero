@@ -3,6 +3,10 @@
 import { useCallback, useMemo, useRef, useState } from "react"
 import { ChevronRight, Play, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Asteroids } from "./games/asteroids"
+import { Breakout } from "./games/breakout"
+import { Pacman } from "./games/pacman"
+import { Snake } from "./games/snake"
 import { SpaceInvaders } from "./games/space-invaders"
 import { Tetris } from "./games/tetris"
 
@@ -635,6 +639,14 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
             <Tetris active />
           ) : game.id === "space-invaders" ? (
             <SpaceInvaders active />
+          ) : game.id === "snake" ? (
+            <Snake active />
+          ) : game.id === "pacman" ? (
+            <Pacman active />
+          ) : game.id === "breakout" ? (
+            <Breakout active />
+          ) : game.id === "asteroids" ? (
+            <Asteroids active />
           ) : (
             <GameCanvas glyph={game.glyph} />
           )}

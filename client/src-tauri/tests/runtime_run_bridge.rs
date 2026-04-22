@@ -158,7 +158,8 @@ fn stop_runtime_run_rejects_mismatched_run_id_and_marks_unreachable_sidecar_stal
 
 #[test]
 fn queued_runtime_controls_apply_on_next_model_boundary_and_recover_reload_truth() {
-    control_contract::queued_runtime_controls_apply_on_next_model_boundary_and_recover_reload_truth();
+    control_contract::queued_runtime_controls_apply_on_next_model_boundary_and_recover_reload_truth(
+    );
 }
 
 #[test]

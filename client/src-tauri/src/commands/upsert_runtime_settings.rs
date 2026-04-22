@@ -1,7 +1,10 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    commands::{provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult, RuntimeSettingsDto, UpsertRuntimeSettingsRequestDto},
+    commands::{
+        provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult,
+        RuntimeSettingsDto, UpsertRuntimeSettingsRequestDto,
+    },
     provider_profiles::{
         build_openai_default_profile, build_openrouter_default_profile,
         persist_provider_profiles_snapshot, OpenRouterProfileCredentialEntry,
@@ -40,11 +43,8 @@ fn apply_runtime_settings_update(
     current: &ProviderProfilesSnapshot,
     request: &UpsertRuntimeSettingsRequestDto,
 ) -> CommandResult<ProviderProfilesSnapshot> {
-    let validated_request = runtime_settings_file_from_request(
-        &request.provider_id,
-        &request.model_id,
-        false,
-    )?;
+    let validated_request =
+        runtime_settings_file_from_request(&request.provider_id, &request.model_id, false)?;
     let now = crate::auth::now_timestamp();
     let requested_key = request
         .openrouter_api_key
@@ -76,11 +76,12 @@ fn apply_runtime_settings_update(
     } else {
         current_openrouter_secret.clone()
     };
-    let next_openrouter_link = next_openrouter_secret
-        .as_ref()
-        .map(|entry| ProviderProfileCredentialLink::OpenRouter {
-            updated_at: entry.updated_at.clone(),
-        });
+    let next_openrouter_link =
+        next_openrouter_secret
+            .as_ref()
+            .map(|entry| ProviderProfileCredentialLink::OpenRouter {
+                updated_at: entry.updated_at.clone(),
+            });
 
     let openai_profile = merge_profile(
         current_openai.as_ref(),
@@ -221,9 +222,7 @@ fn openrouter_secret_updated_at(
     }
 }
 
-fn map_auth_store_error_to_command_error(
-    error: crate::auth::AuthFlowError,
-) -> CommandError {
+fn map_auth_store_error_to_command_error(error: crate::auth::AuthFlowError) -> CommandError {
     if error.retryable {
         CommandError::retryable(error.code, error.message)
     } else {

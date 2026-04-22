@@ -12,8 +12,7 @@ use crate::{
     auth::openrouter::{fetch_openrouter_models, OpenRouterDiscoveredModel},
     commands::{
         get_runtime_settings::write_json_file_atomically,
-        provider_profiles::load_provider_profiles_snapshot,
-        CommandError, CommandResult,
+        provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult,
     },
     provider_profiles::{
         ProviderProfileReadinessStatus, ProviderProfileRecord, ProviderProfilesSnapshot,
@@ -212,12 +211,15 @@ pub fn load_provider_model_catalog<R: Runtime>(
     }
 
     let provider_profiles = load_provider_profiles_snapshot(app, state)?;
-    let profile = provider_profiles.profile(profile_id).cloned().ok_or_else(|| {
-        CommandError::user_fixable(
-            "provider_profile_not_found",
-            format!("Cadence could not find provider profile `{profile_id}`."),
-        )
-    })?;
+    let profile = provider_profiles
+        .profile(profile_id)
+        .cloned()
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "provider_profile_not_found",
+                format!("Cadence could not find provider profile `{profile_id}`."),
+            )
+        })?;
 
     let cache_path = state.provider_model_catalog_cache_file(app)?;
     let cache_load = load_provider_model_catalog_cache(&cache_path);
@@ -680,9 +682,7 @@ fn missing_openrouter_credential_diagnostic(
     }
 }
 
-fn diagnostic_from_auth_error(
-    error: crate::auth::AuthFlowError,
-) -> ProviderModelCatalogDiagnostic {
+fn diagnostic_from_auth_error(error: crate::auth::AuthFlowError) -> ProviderModelCatalogDiagnostic {
     ProviderModelCatalogDiagnostic {
         code: error.code,
         message: error.message,

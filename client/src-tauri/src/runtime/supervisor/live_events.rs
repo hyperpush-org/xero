@@ -11,8 +11,7 @@ use crate::{
 
 use super::{
     persistence::{
-        apply_pending_controls_at_boundary, persist_sidecar_checkpoint,
-        PendingControlApplyOutcome,
+        apply_pending_controls_at_boundary, persist_sidecar_checkpoint, PendingControlApplyOutcome,
     },
     BufferedSupervisorEvent, NormalizedPtyEvent, PtyEventNormalizer, SidecarSharedState,
     SupervisorEventHub, ACTIVITY_OUTPUT_PREFIX, INTERACTIVE_BOUNDARY_CHECKPOINT_SUMMARY,

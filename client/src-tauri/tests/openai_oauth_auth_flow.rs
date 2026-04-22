@@ -19,10 +19,8 @@ use cadence_desktop_lib::{
         StoredOpenAiCodexSession,
     },
     commands::{
-        get_runtime_session::get_runtime_session,
-        provider_profiles::upsert_provider_profile,
-        start_openai_login::start_openai_login,
-        submit_openai_callback::submit_openai_callback,
+        get_runtime_session::get_runtime_session, provider_profiles::upsert_provider_profile,
+        start_openai_login::start_openai_login, submit_openai_callback::submit_openai_callback,
         ProjectIdRequestDto, RuntimeAuthPhase, StartOpenAiLoginRequestDto,
         SubmitOpenAiCallbackRequestDto, UpsertProviderProfileRequestDto,
     },
@@ -864,7 +862,10 @@ fn start_openai_login_rejects_unknown_non_openai_and_conflicting_profiles() {
     )
     .expect("runtime session after conflicting login attempt");
     assert_eq!(runtime.flow_id, started.flow_id);
-    assert_eq!(runtime.last_error_code.as_deref(), Some("auth_flow_profile_mismatch"));
+    assert_eq!(
+        runtime.last_error_code.as_deref(),
+        Some("auth_flow_profile_mismatch")
+    );
     let message = runtime
         .last_error
         .expect("profile mismatch diagnostic")

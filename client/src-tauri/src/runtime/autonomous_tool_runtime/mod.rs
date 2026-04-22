@@ -1,5 +1,6 @@
 mod filesystem;
 mod git;
+mod policy;
 mod process;
 mod repo_scope;
 
@@ -20,7 +21,7 @@ use super::autonomous_web_runtime::{
 use crate::{
     commands::{
         BranchSummaryDto, CommandError, CommandResult, RepositoryDiffScope,
-        RepositoryStatusEntryDto,
+        RepositoryStatusEntryDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto,
     },
     state::DesktopState,
 };
@@ -83,6 +84,7 @@ pub struct AutonomousToolRuntime {
     pub(super) repo_root: PathBuf,
     pub(super) limits: AutonomousToolRuntimeLimits,
     pub(super) web_runtime: AutonomousWebRuntime,
+    pub(super) command_controls: Option<RuntimeRunControlStateDto>,
 }
 
 impl AutonomousToolRuntime {
@@ -132,6 +134,7 @@ impl AutonomousToolRuntime {
             repo_root: canonical_root,
             limits,
             web_runtime: AutonomousWebRuntime::new(web_config),
+            command_controls: None,
         })
     }
 
@@ -154,6 +157,15 @@ impl AutonomousToolRuntime {
 
     pub fn limits(&self) -> AutonomousToolRuntimeLimits {
         self.limits
+    }
+
+    pub fn with_runtime_run_controls(mut self, controls: RuntimeRunControlStateDto) -> Self {
+        self.command_controls = Some(controls);
+        self
+    }
+
+    pub fn runtime_run_controls(&self) -> Option<&RuntimeRunControlStateDto> {
+        self.command_controls.as_ref()
     }
 
     pub fn execute(&self, request: AutonomousToolRequest) -> CommandResult<AutonomousToolResult> {
@@ -302,11 +314,28 @@ pub struct AutonomousCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousCommandPolicyOutcome {
+    Allowed,
+    Escalated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCommandPolicyTrace {
+    pub outcome: AutonomousCommandPolicyOutcome,
+    pub approval_mode: RuntimeRunApprovalModeDto,
+    pub code: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousToolCommandResult {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub summary: String,
+    pub policy: AutonomousCommandPolicyTrace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -425,4 +454,6 @@ pub struct AutonomousCommandOutput {
     pub stderr_redacted: bool,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    pub spawned: bool,
+    pub policy: AutonomousCommandPolicyTrace,
 }

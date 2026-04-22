@@ -3,9 +3,8 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     commands::{
         validate_non_empty, CommandResult, GetProviderModelCatalogRequestDto,
-        ProviderModelCatalogDiagnosticDto, ProviderModelCatalogDto,
-        ProviderModelCatalogSourceDto, ProviderModelDto, ProviderModelThinkingCapabilityDto,
-        ProviderModelThinkingEffortDto,
+        ProviderModelCatalogDiagnosticDto, ProviderModelCatalogDto, ProviderModelCatalogSourceDto,
+        ProviderModelDto, ProviderModelThinkingCapabilityDto, ProviderModelThinkingEffortDto,
     },
     provider_models::{
         load_provider_model_catalog, ProviderModelCatalog, ProviderModelCatalogDiagnostic,

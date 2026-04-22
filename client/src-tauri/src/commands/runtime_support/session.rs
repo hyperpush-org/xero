@@ -105,9 +105,12 @@ pub(crate) fn runtime_session_from_record(
 
     if let Some(flow) = active_flow {
         let flow_last_error = flow.last_error.map(runtime_diagnostic_from_auth);
-        let last_error = flow_last_error
-            .clone()
-            .or_else(|| stored.last_error.clone().map(runtime_diagnostic_from_record));
+        let last_error = flow_last_error.clone().or_else(|| {
+            stored
+                .last_error
+                .clone()
+                .map(runtime_diagnostic_from_record)
+        });
         let updated_at = if flow_last_error.is_some() || last_error.is_none() {
             flow.updated_at.clone()
         } else {

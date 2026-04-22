@@ -5,8 +5,10 @@ use crate::{
         validate_non_empty, CommandError, CommandResult, RuntimeRunDto,
         UpdateRuntimeRunControlsRequestDto,
     },
-    runtime::{update_runtime_run_controls as update_supervised_runtime_run_controls,
-        RuntimeSupervisorUpdateControlsRequest},
+    runtime::{
+        update_runtime_run_controls as update_supervised_runtime_run_controls,
+        RuntimeSupervisorUpdateControlsRequest,
+    },
     state::DesktopState,
 };
 

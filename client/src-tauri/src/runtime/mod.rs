@@ -27,15 +27,16 @@ pub use autonomous_skill_runtime::{
 };
 pub use autonomous_tool_runtime::{
     resolve_imported_repo_root, resolve_imported_repo_root_from_registry, AutonomousCommandOutput,
-    AutonomousCommandRequest, AutonomousEditOutput, AutonomousEditRequest, AutonomousFindOutput,
-    AutonomousFindRequest, AutonomousGitDiffOutput, AutonomousGitDiffRequest,
-    AutonomousGitStatusOutput, AutonomousGitStatusRequest, AutonomousReadOutput,
-    AutonomousReadRequest, AutonomousSearchMatch, AutonomousSearchOutput, AutonomousSearchRequest,
-    AutonomousToolCommandResult, AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult,
-    AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousWriteOutput,
-    AutonomousWriteRequest, AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND,
-    AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_READ,
-    AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_WRITE,
+    AutonomousCommandPolicyOutcome, AutonomousCommandPolicyTrace, AutonomousCommandRequest,
+    AutonomousEditOutput, AutonomousEditRequest, AutonomousFindOutput, AutonomousFindRequest,
+    AutonomousGitDiffOutput, AutonomousGitDiffRequest, AutonomousGitStatusOutput,
+    AutonomousGitStatusRequest, AutonomousReadOutput, AutonomousReadRequest, AutonomousSearchMatch,
+    AutonomousSearchOutput, AutonomousSearchRequest, AutonomousToolCommandResult,
+    AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
+    AutonomousToolRuntimeLimits, AutonomousWriteOutput, AutonomousWriteRequest,
+    AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
+    AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_WRITE,
 };
 pub use autonomous_web_runtime::{
     AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchOutput,
@@ -64,7 +65,7 @@ pub use stream::{start_runtime_stream, RuntimeStreamController, RuntimeStreamReq
 pub use supervisor::{
     launch_detached_runtime_supervisor, probe_runtime_run, run_supervisor_sidecar_from_env,
     stop_runtime_run, submit_runtime_run_input, update_runtime_run_controls,
-    RuntimeSupervisorController, RuntimeSupervisorLaunchRequest,
-    RuntimeSupervisorProbeRequest, RuntimeSupervisorStopRequest,
-    RuntimeSupervisorSubmitInputRequest, RuntimeSupervisorUpdateControlsRequest,
+    RuntimeSupervisorController, RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest,
+    RuntimeSupervisorStopRequest, RuntimeSupervisorSubmitInputRequest,
+    RuntimeSupervisorUpdateControlsRequest,
 };

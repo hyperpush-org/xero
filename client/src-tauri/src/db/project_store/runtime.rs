@@ -6,8 +6,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     commands::{
-        CommandError, OperatorApprovalDto, ProviderModelThinkingEffortDto,
-        RuntimeAuthPhase, RuntimeRunApprovalModeDto,
+        CommandError, OperatorApprovalDto, ProviderModelThinkingEffortDto, RuntimeAuthPhase,
+        RuntimeRunApprovalModeDto,
     },
     db::database_path_for_repo,
 };
@@ -934,10 +934,8 @@ pub(crate) fn read_runtime_run_snapshot(
         expected_project_id,
         raw_row.run_id.as_str(),
     )?;
-    let controls = decode_runtime_run_control_state(
-        raw_row.control_state_json.clone(),
-        database_path,
-    )?;
+    let controls =
+        decode_runtime_run_control_state(raw_row.control_state_json.clone(), database_path)?;
     let last_checkpoint_sequence = decode_runtime_run_checkpoint_sequence(
         raw_row.last_checkpoint_sequence,
         "last_checkpoint_sequence",
@@ -1510,10 +1508,7 @@ fn validate_runtime_run_active_control_snapshot(
         "control_state.active.applied_at",
         "runtime_run_request_invalid",
     )?;
-    validate_runtime_run_control_timestamp(
-        &active.applied_at,
-        "control_state.active.applied_at",
-    )?;
+    validate_runtime_run_control_timestamp(&active.applied_at, "control_state.active.applied_at")?;
     if active.revision == 0 {
         return Err(CommandError::system_fault(
             "runtime_run_request_invalid",
@@ -1658,16 +1653,18 @@ fn decode_runtime_run_control_state(
         ));
     }
 
-    let control_state = serde_json::from_str::<RuntimeRunControlStateRecord>(&value).map_err(|error| {
-        map_runtime_run_decode_error(
-            database_path,
-            format!("Field `control_state_json` is not valid runtime-run control JSON: {error}"),
-        )
-    })?;
+    let control_state =
+        serde_json::from_str::<RuntimeRunControlStateRecord>(&value).map_err(|error| {
+            map_runtime_run_decode_error(
+                database_path,
+                format!(
+                    "Field `control_state_json` is not valid runtime-run control JSON: {error}"
+                ),
+            )
+        })?;
 
-    validate_runtime_run_control_state(&control_state).map_err(|error| {
-        map_runtime_run_decode_error(database_path, error.message)
-    })?;
+    validate_runtime_run_control_state(&control_state)
+        .map_err(|error| map_runtime_run_decode_error(database_path, error.message))?;
     Ok(control_state)
 }
 

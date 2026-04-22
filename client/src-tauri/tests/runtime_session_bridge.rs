@@ -14,13 +14,17 @@ use cadence_desktop_lib::{
         OpenAiCodexAuthConfig, OpenRouterAuthConfig, StoredOpenAiCodexSession,
     },
     commands::{
-        get_runtime_session::get_runtime_session, logout_runtime_session::logout_runtime_session,
-        provider_profiles::{list_provider_profiles, set_active_provider_profile, upsert_provider_profile},
-        start_openai_login::start_openai_login, start_runtime_session::start_runtime_session,
-        upsert_runtime_settings::upsert_runtime_settings, ProjectIdRequestDto,
-        RuntimeAuthPhase, RuntimeUpdatedPayloadDto, SetActiveProviderProfileRequestDto,
-        StartOpenAiLoginRequestDto, UpsertProviderProfileRequestDto,
-        UpsertRuntimeSettingsRequestDto, RUNTIME_UPDATED_EVENT,
+        get_runtime_session::get_runtime_session,
+        logout_runtime_session::logout_runtime_session,
+        provider_profiles::{
+            list_provider_profiles, set_active_provider_profile, upsert_provider_profile,
+        },
+        start_openai_login::start_openai_login,
+        start_runtime_session::start_runtime_session,
+        upsert_runtime_settings::upsert_runtime_settings,
+        ProjectIdRequestDto, RuntimeAuthPhase, RuntimeUpdatedPayloadDto,
+        SetActiveProviderProfileRequestDto, StartOpenAiLoginRequestDto,
+        UpsertProviderProfileRequestDto, UpsertRuntimeSettingsRequestDto, RUNTIME_UPDATED_EVENT,
     },
     configure_builder_with_state,
     db::{self, database_path_for_repo, project_store},
@@ -410,12 +414,14 @@ fn runtime_session_bridge_profile_commands_expose_redacted_profile_state() {
     )
     .expect("switch active provider profile");
     assert_eq!(switched.active_profile_id, "zz-openai-alt");
-    assert!(switched
-        .profiles
-        .iter()
-        .find(|profile| profile.profile_id == "zz-openai-alt")
-        .expect("switched profile")
-        .active);
+    assert!(
+        switched
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == "zz-openai-alt")
+            .expect("switched profile")
+            .active
+    );
 }
 
 #[test]
@@ -472,7 +478,10 @@ fn runtime_session_bridge_signs_out_when_active_openai_profile_changes() {
     )
     .expect("reconcile runtime after active profile switch");
     assert_eq!(reconciled.phase, RuntimeAuthPhase::Idle);
-    assert_eq!(reconciled.last_error_code.as_deref(), Some("auth_session_stale"));
+    assert_eq!(
+        reconciled.last_error_code.as_deref(),
+        Some("auth_session_stale")
+    );
 }
 
 #[test]

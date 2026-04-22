@@ -1,8 +1,7 @@
 use super::support::*;
 use cadence_desktop_lib::commands::{
-    ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto,
-    RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
-    RuntimeRunPendingControlSnapshotDto,
+    ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+    RuntimeRunControlInputDto, RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
 };
 
 pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payloads() {
@@ -661,7 +660,10 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         profile_id: "openrouter-work".into(),
     })
     .expect("active profile request should serialize");
-    assert_eq!(set_active_profile_request, json!({ "profileId": "openrouter-work" }));
+    assert_eq!(
+        set_active_profile_request,
+        json!({ "profileId": "openrouter-work" })
+    );
 
     let provider_profiles_response = serde_json::to_value(ProviderProfilesDto {
         active_profile_id: "openrouter-work".into(),

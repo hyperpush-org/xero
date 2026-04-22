@@ -19,11 +19,12 @@ use crate::{
 };
 
 use super::live_events::append_live_event;
-use super::persistence::persist_runtime_row_from_shared;
+use super::persistence::{persist_runtime_row_from_shared, persist_sidecar_checkpoint};
 use super::{
     read_json_line_from_reader, write_json_line, BufferedSupervisorEvent, ReplayRegistration,
-    SharedPtyWriter, SidecarSharedState, SupervisorEventHub, CONTROL_ACCEPT_POLL_INTERVAL,
-    DEFAULT_CONTROL_TIMEOUT, LIVE_EVENT_SUBSCRIBER_BUFFER, MAX_CONTROL_INPUT_CHARS,
+    SharedPtyWriter, SidecarSharedState, SupervisorEventHub, ACTIVITY_OUTPUT_PREFIX,
+    CONTROL_ACCEPT_POLL_INTERVAL, DEFAULT_CONTROL_TIMEOUT, LIVE_EVENT_SUBSCRIBER_BUFFER,
+    MAX_CONTROL_INPUT_CHARS,
 };
 use crate::runtime::protocol::{
     SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
@@ -706,9 +707,18 @@ fn handle_queue_controls_request(
             detail: Some(if next_pending.queued_prompt.is_some() {
                 "Cadence queued pending runtime-run controls and one prompt for the next model-call boundary.".into()
             } else {
-                "Cadence queued pending runtime-run controls for the next model-call boundary.".into()
+                "Cadence queued pending runtime-run controls for the next model-call boundary."
+                    .into()
             }),
         },
+    );
+    let _ = persist_sidecar_checkpoint(
+        repo_root,
+        shared,
+        persistence_lock,
+        crate::db::project_store::RuntimeRunStatus::Running,
+        crate::db::project_store::RuntimeRunCheckpointKind::State,
+        format!("{ACTIVITY_OUTPUT_PREFIX} runtime_run_controls_queued: Queued runtime controls"),
     );
 
     write_json_line(
@@ -739,10 +749,10 @@ fn build_pending_control_snapshot(
     queued_at: &str,
 ) -> Result<RuntimeRunPendingControlSnapshotRecord, CommandError> {
     let base = control_state.pending.as_ref();
-    let pending_revision = base.map_or(
-        control_state.active.revision.saturating_add(1),
-        |pending| pending.revision.saturating_add(1),
-    );
+    let pending_revision = base
+        .map_or(control_state.active.revision.saturating_add(1), |pending| {
+            pending.revision.saturating_add(1)
+        });
 
     let model_id = controls
         .map(|controls| controls.model_id.clone())

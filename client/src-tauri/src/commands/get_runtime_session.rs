@@ -4,10 +4,12 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
-        get_runtime_settings::{runtime_settings_snapshot_from_provider_profiles, RuntimeSettingsSnapshot},
+        get_runtime_settings::{
+            runtime_settings_snapshot_from_provider_profiles, RuntimeSettingsSnapshot,
+        },
         provider_profiles::load_provider_profiles_snapshot,
-        validate_non_empty, CommandError, CommandResult, ProjectIdRequestDto,
-        RuntimeAuthPhase, RuntimeDiagnosticDto, RuntimeSessionDto,
+        validate_non_empty, CommandError, CommandResult, ProjectIdRequestDto, RuntimeAuthPhase,
+        RuntimeDiagnosticDto, RuntimeSessionDto,
     },
     provider_profiles::ProviderProfilesSnapshot,
     runtime::{
@@ -205,9 +207,12 @@ fn normalize_runtime_provider_selection_error(error: CommandError) -> CommandErr
     const AUTH_STORE_PREFIX: &str = "auth_store_";
 
     match error.code.strip_prefix(MIGRATION_PREFIX) {
-        Some(stripped) if stripped.starts_with(AUTH_STORE_PREFIX) => {
-            CommandError::new(stripped.to_owned(), error.class, error.message, error.retryable)
-        }
+        Some(stripped) if stripped.starts_with(AUTH_STORE_PREFIX) => CommandError::new(
+            stripped.to_owned(),
+            error.class,
+            error.message,
+            error.retryable,
+        ),
         _ => error,
     }
 }

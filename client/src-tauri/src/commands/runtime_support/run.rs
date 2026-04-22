@@ -7,9 +7,8 @@ use crate::{
     commands::{
         get_runtime_session::reconcile_runtime_session,
         get_runtime_settings::runtime_settings_file_from_request,
-        provider_profiles::load_provider_profiles_snapshot,
-        CommandError, CommandResult, RuntimeAuthPhase,
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult,
+        RuntimeAuthPhase, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
         RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto,
         RuntimeRunControlStateDto, RuntimeRunDiagnosticDto, RuntimeRunDto,
         RuntimeRunPendingControlSnapshotDto, RuntimeRunStatusDto, RuntimeRunTransportDto,
@@ -329,7 +328,11 @@ fn resolve_initial_runtime_run_control_state<R: Runtime>(
         )
     })?;
     let catalog = load_provider_model_catalog(app, state, &active_profile.profile_id, false)?;
-    let model_id = resolve_initial_runtime_run_model_id(active_profile.provider_id.as_str(), active_profile.model_id.as_str(), requested_controls)?;
+    let model_id = resolve_initial_runtime_run_model_id(
+        active_profile.provider_id.as_str(),
+        active_profile.model_id.as_str(),
+        requested_controls,
+    )?;
     let model = resolve_initial_runtime_run_model(&catalog, &model_id)?;
     let thinking_effort = resolve_initial_runtime_run_thinking_effort(model, requested_controls)?;
     let approval_mode = requested_controls
@@ -352,8 +355,10 @@ fn resolve_initial_runtime_run_model_id(
     requested_controls: Option<&RuntimeRunControlInputDto>,
 ) -> CommandResult<String> {
     match requested_controls {
-        Some(requested) => runtime_settings_file_from_request(provider_id, &requested.model_id, false)
-            .map(|settings| settings.model_id),
+        Some(requested) => {
+            runtime_settings_file_from_request(provider_id, &requested.model_id, false)
+                .map(|settings| settings.model_id)
+        }
         None => Ok(configured_model_id.trim().to_owned()),
     }
 }
@@ -362,7 +367,9 @@ fn resolve_initial_runtime_run_model<'a>(
     catalog: &'a ProviderModelCatalog,
     model_id: &str,
 ) -> CommandResult<&'a ProviderModelRecord> {
-    if matches!(catalog.source, ProviderModelCatalogSource::Unavailable) || catalog.models.is_empty() {
+    if matches!(catalog.source, ProviderModelCatalogSource::Unavailable)
+        || catalog.models.is_empty()
+    {
         return Err(CommandError::user_fixable(
             "runtime_run_initial_controls_unavailable",
             format!(
@@ -438,9 +445,7 @@ fn provider_model_thinking_effort_from_dto(
         crate::commands::ProviderModelThinkingEffortDto::Medium => {
             ProviderModelThinkingEffort::Medium
         }
-        crate::commands::ProviderModelThinkingEffortDto::High => {
-            ProviderModelThinkingEffort::High
-        }
+        crate::commands::ProviderModelThinkingEffortDto::High => ProviderModelThinkingEffort::High,
         crate::commands::ProviderModelThinkingEffortDto::XHigh => {
             ProviderModelThinkingEffort::XHigh
         }
@@ -458,9 +463,7 @@ fn provider_model_thinking_effort_dto(
         ProviderModelThinkingEffort::Medium => {
             crate::commands::ProviderModelThinkingEffortDto::Medium
         }
-        ProviderModelThinkingEffort::High => {
-            crate::commands::ProviderModelThinkingEffortDto::High
-        }
+        ProviderModelThinkingEffort::High => crate::commands::ProviderModelThinkingEffortDto::High,
         ProviderModelThinkingEffort::XHigh => {
             crate::commands::ProviderModelThinkingEffortDto::XHigh
         }
@@ -478,15 +481,18 @@ fn runtime_run_control_state_dto(
             revision: controls.active.revision,
             applied_at: controls.active.applied_at.clone(),
         },
-        pending: controls.pending.as_ref().map(|pending| RuntimeRunPendingControlSnapshotDto {
-            model_id: pending.model_id.clone(),
-            thinking_effort: pending.thinking_effort.clone(),
-            approval_mode: pending.approval_mode.clone(),
-            revision: pending.revision,
-            queued_at: pending.queued_at.clone(),
-            queued_prompt: pending.queued_prompt.clone(),
-            queued_prompt_at: pending.queued_prompt_at.clone(),
-        }),
+        pending: controls
+            .pending
+            .as_ref()
+            .map(|pending| RuntimeRunPendingControlSnapshotDto {
+                model_id: pending.model_id.clone(),
+                thinking_effort: pending.thinking_effort.clone(),
+                approval_mode: pending.approval_mode.clone(),
+                revision: pending.revision,
+                queued_at: pending.queued_at.clone(),
+                queued_prompt: pending.queued_prompt.clone(),
+                queued_prompt_at: pending.queued_prompt_at.clone(),
+            }),
     }
 }
 

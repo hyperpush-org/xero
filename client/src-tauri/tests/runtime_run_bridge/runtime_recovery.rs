@@ -62,7 +62,11 @@ pub(crate) fn start_runtime_run_requires_authenticated_runtime_session() {
     let error = start_runtime_run(
         app.handle().clone(),
         app.state::<DesktopState>(),
-        StartRuntimeRunRequestDto { project_id, initial_controls: None, initial_prompt: None },
+        StartRuntimeRunRequestDto {
+            project_id,
+            initial_controls: None,
+            initial_prompt: None,
+        },
     )
     .expect_err("start runtime run should require auth binding");
 

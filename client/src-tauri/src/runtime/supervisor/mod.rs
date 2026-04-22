@@ -51,9 +51,9 @@ use boundary::ActiveInteractiveBoundary;
 pub use host::{
     launch_detached_runtime_supervisor, probe_runtime_run, stop_runtime_run,
     submit_runtime_run_input, update_runtime_run_controls, ActiveRuntimeSupervisorSnapshot,
-    RuntimeSupervisorController, RuntimeSupervisorLaunchRequest,
-    RuntimeSupervisorProbeRequest, RuntimeSupervisorStopRequest,
-    RuntimeSupervisorSubmitInputRequest, RuntimeSupervisorUpdateControlsRequest,
+    RuntimeSupervisorController, RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest,
+    RuntimeSupervisorStopRequest, RuntimeSupervisorSubmitInputRequest,
+    RuntimeSupervisorUpdateControlsRequest,
 };
 
 #[derive(Debug, Clone)]

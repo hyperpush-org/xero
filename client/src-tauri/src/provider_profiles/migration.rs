@@ -121,16 +121,14 @@ fn build_legacy_provider_profiles_snapshot(
                 OPENROUTER_FALLBACK_MODEL_ID.into()
             });
 
-        let openrouter_link = runtime_settings
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot
-                    .openrouter_credentials_updated_at
-                    .as_ref()
-                    .map(|updated_at| ProviderProfileCredentialLink::OpenRouter {
-                        updated_at: updated_at.clone(),
-                    })
-            });
+        let openrouter_link = runtime_settings.as_ref().and_then(|snapshot| {
+            snapshot
+                .openrouter_credentials_updated_at
+                .as_ref()
+                .map(|updated_at| ProviderProfileCredentialLink::OpenRouter {
+                    updated_at: updated_at.clone(),
+                })
+        });
 
         profiles.push(build_openrouter_default_profile(
             &model_id,
@@ -193,8 +191,10 @@ fn persist_migrated_provider_profiles(
     snapshot: &ProviderProfilesSnapshot,
 ) -> CommandResult<()> {
     let previous_metadata = snapshot_existing_file(metadata_path, "provider_profiles")?;
-    let previous_credentials = snapshot_existing_file(credentials_path, "provider_profile_credentials")?;
-    let previous_legacy_settings = snapshot_existing_file(legacy_settings_path, "provider_profiles_migration")?;
+    let previous_credentials =
+        snapshot_existing_file(credentials_path, "provider_profile_credentials")?;
+    let previous_legacy_settings =
+        snapshot_existing_file(legacy_settings_path, "provider_profiles_migration")?;
     let previous_legacy_openrouter_credentials = snapshot_existing_file(
         legacy_openrouter_credentials_path,
         "provider_profiles_migration",
@@ -203,7 +203,11 @@ fn persist_migrated_provider_profiles(
     persist_provider_profiles_snapshot(metadata_path, credentials_path, snapshot)?;
 
     let cleanup_result = (|| -> CommandResult<()> {
-        restore_file_snapshot(legacy_settings_path, None, "provider_profiles_migration_cleanup")?;
+        restore_file_snapshot(
+            legacy_settings_path,
+            None,
+            "provider_profiles_migration_cleanup",
+        )?;
         restore_file_snapshot(
             legacy_openrouter_credentials_path,
             None,
@@ -316,9 +320,7 @@ fn openai_latest_session(
     load_latest_openai_codex_session(legacy_openai_auth_path).map_err(map_auth_store_error)
 }
 
-fn should_create_openrouter_profile(
-    runtime_settings: Option<&RuntimeSettingsSnapshot>,
-) -> bool {
+fn should_create_openrouter_profile(runtime_settings: Option<&RuntimeSettingsSnapshot>) -> bool {
     runtime_settings.is_some_and(|snapshot| {
         snapshot.settings.provider_id == OPENROUTER_PROVIDER_ID
             || snapshot.settings.openrouter_api_key_configured

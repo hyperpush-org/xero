@@ -1917,18 +1917,19 @@ fn build_autonomous_unit_history(
 
     let mut history = Vec::new();
     for unit in units {
-        let latest_attempt = attempts_by_unit
-            .remove(&unit.unit_id)
-            .and_then(|mut unit_attempts| {
-                unit_attempts.sort_by(|left, right| {
-                    right
-                        .attempt_number
-                        .cmp(&left.attempt_number)
-                        .then_with(|| right.updated_at.cmp(&left.updated_at))
-                        .then_with(|| right.attempt_id.cmp(&left.attempt_id))
+        let latest_attempt =
+            attempts_by_unit
+                .remove(&unit.unit_id)
+                .and_then(|mut unit_attempts| {
+                    unit_attempts.sort_by(|left, right| {
+                        right
+                            .attempt_number
+                            .cmp(&left.attempt_number)
+                            .then_with(|| right.updated_at.cmp(&left.updated_at))
+                            .then_with(|| right.attempt_id.cmp(&left.attempt_id))
+                    });
+                    unit_attempts.into_iter().next()
                 });
-                unit_attempts.into_iter().next()
-            });
 
         if let Some(attempt) = latest_attempt.as_ref() {
             match (&unit.workflow_linkage, &attempt.workflow_linkage) {

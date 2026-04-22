@@ -6,13 +6,12 @@ use std::{
 };
 
 use super::{
-    repo_scope::{display_relative_or_root, normalize_relative_path},
-    AutonomousCommandOutput, AutonomousCommandRequest, AutonomousToolCommandResult,
-    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_COMMAND,
-    DEFAULT_COMMAND_TIMEOUT_MS,
+    policy::CommandPolicyDecision, repo_scope::display_relative_or_root, AutonomousCommandOutput,
+    AutonomousToolCommandResult, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AUTONOMOUS_TOOL_COMMAND,
 };
 
-use crate::commands::{validate_non_empty, CommandError, CommandResult};
+use crate::commands::{CommandError, CommandResult};
 
 const REDACTED_COMMAND_OUTPUT_SUMMARY: &str =
     "Command output was redacted before durable persistence.";
@@ -20,193 +19,208 @@ const REDACTED_COMMAND_OUTPUT_SUMMARY: &str =
 impl AutonomousToolRuntime {
     pub fn command(
         &self,
-        request: AutonomousCommandRequest,
+        request: super::AutonomousCommandRequest,
     ) -> CommandResult<AutonomousToolResult> {
-        let argv = normalize_command_argv(&request.argv)?;
-        let cwd_relative = request
-            .cwd
-            .as_deref()
-            .map(|value| {
-                validate_non_empty(value, "cwd")?;
-                normalize_relative_path(value, "cwd")
-            })
-            .transpose()?;
-        let cwd = match cwd_relative.as_ref() {
-            Some(path) => self.resolve_existing_directory(path)?,
-            None => self.repo_root.clone(),
-        };
-        let timeout = normalize_timeout_ms(request.timeout_ms, self.limits.max_command_timeout_ms)?;
+        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
 
-        let mut command = Command::new(&argv[0]);
-        command
-            .args(argv.iter().skip(1))
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        match decision {
+            CommandPolicyDecision::Allow { prepared, policy } => {
+                let mut command = Command::new(&prepared.argv[0]);
+                command
+                    .args(prepared.argv.iter().skip(1))
+                    .current_dir(&prepared.cwd)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
 
-        let mut child = command.spawn().map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => CommandError::user_fixable(
-                "autonomous_tool_command_not_found",
-                format!("Cadence could not find command `{}`.", argv[0]),
-            ),
-            _ => CommandError::system_fault(
-                "autonomous_tool_command_spawn_failed",
-                format!("Cadence could not launch command `{}`: {error}", argv[0]),
-            ),
-        })?;
-
-        let stdout = child.stdout.take().ok_or_else(|| {
-            CommandError::system_fault(
-                "autonomous_tool_command_stdout_missing",
-                "Cadence could not capture command stdout.",
-            )
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            CommandError::system_fault(
-                "autonomous_tool_command_stderr_missing",
-                "Cadence could not capture command stderr.",
-            )
-        })?;
-
-        let stdout_handle = spawn_capture(stdout, self.limits.max_command_capture_bytes);
-        let stderr_handle = spawn_capture(stderr, self.limits.max_command_capture_bytes);
-        let started_at = Instant::now();
-        let timeout_duration = Duration::from_millis(timeout);
-
-        let (status, timed_out) = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break (status, false),
-                Ok(None) if started_at.elapsed() >= timeout_duration => {
-                    let _ = child.kill();
-                    let status = child.wait().map_err(|error| {
-                        CommandError::system_fault(
-                            "autonomous_tool_command_wait_failed",
-                            format!(
-                                "Cadence could not stop timed-out command `{}`: {error}",
-                                argv[0]
-                            ),
-                        )
-                    })?;
-                    break (status, true);
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(CommandError::system_fault(
-                        "autonomous_tool_command_wait_failed",
+                let mut child = command.spawn().map_err(|error| match error.kind() {
+                    std::io::ErrorKind::NotFound => CommandError::user_fixable(
+                        "autonomous_tool_command_not_found",
+                        format!("Cadence could not find command `{}`.", prepared.argv[0]),
+                    ),
+                    _ => CommandError::system_fault(
+                        "autonomous_tool_command_spawn_failed",
                         format!(
-                            "Cadence could not observe command `{}` while it was running: {error}",
-                            argv[0]
+                            "Cadence could not launch command `{}`: {error}",
+                            prepared.argv[0]
+                        ),
+                    ),
+                })?;
+
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    CommandError::system_fault(
+                        "autonomous_tool_command_stdout_missing",
+                        "Cadence could not capture command stdout.",
+                    )
+                })?;
+                let stderr = child.stderr.take().ok_or_else(|| {
+                    CommandError::system_fault(
+                        "autonomous_tool_command_stderr_missing",
+                        "Cadence could not capture command stderr.",
+                    )
+                })?;
+
+                let stdout_handle = spawn_capture(stdout, self.limits.max_command_capture_bytes);
+                let stderr_handle = spawn_capture(stderr, self.limits.max_command_capture_bytes);
+                let started_at = Instant::now();
+                let timeout_duration = Duration::from_millis(prepared.timeout_ms);
+
+                let (status, timed_out) = loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break (status, false),
+                        Ok(None) if started_at.elapsed() >= timeout_duration => {
+                            let _ = child.kill();
+                            let status = child.wait().map_err(|error| {
+                                CommandError::system_fault(
+                                    "autonomous_tool_command_wait_failed",
+                                    format!(
+                                        "Cadence could not stop timed-out command `{}`: {error}",
+                                        prepared.argv[0]
+                                    ),
+                                )
+                            })?;
+                            break (status, true);
+                        }
+                        Ok(None) => thread::sleep(Duration::from_millis(10)),
+                        Err(error) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(CommandError::system_fault(
+                                "autonomous_tool_command_wait_failed",
+                                format!(
+                                    "Cadence could not observe command `{}` while it was running: {error}",
+                                    prepared.argv[0]
+                                ),
+                            ));
+                        }
+                    }
+                };
+
+                let stdout_capture = join_capture(stdout_handle)?;
+                let stderr_capture = join_capture(stderr_handle)?;
+
+                if timed_out {
+                    return Err(CommandError::retryable(
+                        "autonomous_tool_command_timeout",
+                        format!(
+                            "Cadence timed out command `{}` after {}ms.",
+                            render_command_for_summary(&prepared.argv),
+                            prepared.timeout_ms,
                         ),
                     ));
                 }
+
+                let stdout_excerpt = sanitize_command_output(
+                    stdout_capture.excerpt.as_slice(),
+                    stdout_capture.truncated,
+                    self.limits.max_command_excerpt_chars,
+                );
+                let stderr_excerpt = sanitize_command_output(
+                    stderr_capture.excerpt.as_slice(),
+                    stderr_capture.truncated,
+                    self.limits.max_command_excerpt_chars,
+                );
+
+                let exit_code = status.code();
+                let command_result = AutonomousToolCommandResult {
+                    exit_code,
+                    timed_out: false,
+                    summary: command_result_summary(&prepared.argv, exit_code),
+                    policy: policy.clone(),
+                };
+                let summary = match exit_code {
+                    Some(0) => format!(
+                        "Command `{}` exited successfully in `{}` under active `{}` policy.",
+                        render_command_for_summary(&prepared.argv),
+                        display_relative_or_root(&self.repo_root, &prepared.cwd),
+                        approval_mode_label(&policy.approval_mode),
+                    ),
+                    Some(code) => format!(
+                        "Command `{}` exited with code {code} in `{}` under active `{}` policy.",
+                        render_command_for_summary(&prepared.argv),
+                        display_relative_or_root(&self.repo_root, &prepared.cwd),
+                        approval_mode_label(&policy.approval_mode),
+                    ),
+                    None => format!(
+                        "Command `{}` terminated without an exit code in `{}` under active `{}` policy.",
+                        render_command_for_summary(&prepared.argv),
+                        display_relative_or_root(&self.repo_root, &prepared.cwd),
+                        approval_mode_label(&policy.approval_mode),
+                    ),
+                };
+
+                Ok(AutonomousToolResult {
+                    tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+                    summary,
+                    command_result: Some(command_result),
+                    output: AutonomousToolOutput::Command(AutonomousCommandOutput {
+                        argv: prepared.argv,
+                        cwd: display_relative_or_root(&self.repo_root, &prepared.cwd),
+                        stdout: stdout_excerpt.text,
+                        stderr: stderr_excerpt.text,
+                        stdout_truncated: stdout_excerpt.truncated,
+                        stderr_truncated: stderr_excerpt.truncated,
+                        stdout_redacted: stdout_excerpt.redacted,
+                        stderr_redacted: stderr_excerpt.redacted,
+                        exit_code,
+                        timed_out: false,
+                        spawned: true,
+                        policy,
+                    }),
+                })
             }
-        };
+            CommandPolicyDecision::Escalate { prepared, policy } => {
+                let cwd = prepared
+                    .cwd_relative
+                    .as_ref()
+                    .map(|path| {
+                        display_relative_or_root(&self.repo_root, &self.repo_root.join(path))
+                    })
+                    .unwrap_or_else(|| ".".into());
+                let summary = format!(
+                    "Command `{}` requires operator review before Cadence can run it.",
+                    render_command_for_summary(&prepared.argv)
+                );
 
-        let stdout_capture = join_capture(stdout_handle)?;
-        let stderr_capture = join_capture(stderr_handle)?;
-
-        if timed_out {
-            return Err(CommandError::retryable(
-                "autonomous_tool_command_timeout",
-                format!(
-                    "Cadence timed out command `{}` after {timeout}ms.",
-                    render_command_for_summary(&argv)
-                ),
-            ));
+                Ok(AutonomousToolResult {
+                    tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+                    summary: summary.clone(),
+                    command_result: Some(AutonomousToolCommandResult {
+                        exit_code: None,
+                        timed_out: false,
+                        summary,
+                        policy: policy.clone(),
+                    }),
+                    output: AutonomousToolOutput::Command(AutonomousCommandOutput {
+                        argv: prepared.argv,
+                        cwd,
+                        stdout: None,
+                        stderr: None,
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        stdout_redacted: false,
+                        stderr_redacted: false,
+                        exit_code: None,
+                        timed_out: false,
+                        spawned: false,
+                        policy,
+                    }),
+                })
+            }
         }
-
-        let stdout_excerpt = sanitize_command_output(
-            stdout_capture.excerpt.as_slice(),
-            stdout_capture.truncated,
-            self.limits.max_command_excerpt_chars,
-        );
-        let stderr_excerpt = sanitize_command_output(
-            stderr_capture.excerpt.as_slice(),
-            stderr_capture.truncated,
-            self.limits.max_command_excerpt_chars,
-        );
-
-        let exit_code = status.code();
-        let command_result = AutonomousToolCommandResult {
-            exit_code,
-            timed_out: false,
-            summary: command_result_summary(&argv, exit_code),
-        };
-        let summary = match exit_code {
-            Some(0) => format!(
-                "Command `{}` exited successfully in `{}`.",
-                render_command_for_summary(&argv),
-                display_relative_or_root(&self.repo_root, &cwd)
-            ),
-            Some(code) => format!(
-                "Command `{}` exited with code {code} in `{}`.",
-                render_command_for_summary(&argv),
-                display_relative_or_root(&self.repo_root, &cwd)
-            ),
-            None => format!(
-                "Command `{}` terminated without an exit code in `{}`.",
-                render_command_for_summary(&argv),
-                display_relative_or_root(&self.repo_root, &cwd)
-            ),
-        };
-
-        Ok(AutonomousToolResult {
-            tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
-            summary,
-            command_result: Some(command_result.clone()),
-            output: AutonomousToolOutput::Command(AutonomousCommandOutput {
-                argv,
-                cwd: display_relative_or_root(&self.repo_root, &cwd),
-                stdout: stdout_excerpt.text,
-                stderr: stderr_excerpt.text,
-                stdout_truncated: stdout_excerpt.truncated,
-                stderr_truncated: stderr_excerpt.truncated,
-                stdout_redacted: stdout_excerpt.redacted,
-                stderr_redacted: stderr_excerpt.redacted,
-                exit_code,
-                timed_out: false,
-            }),
-        })
     }
-}
-
-fn normalize_command_argv(argv: &[String]) -> CommandResult<Vec<String>> {
-    if argv.is_empty() || argv[0].trim().is_empty() {
-        return Err(CommandError::user_fixable(
-            "autonomous_tool_command_invalid",
-            "Cadence requires autonomous command requests to include a non-empty argv[0].",
-        ));
-    }
-
-    if argv.iter().any(|argument| argument.contains('\0')) {
-        return Err(CommandError::user_fixable(
-            "autonomous_tool_command_invalid",
-            "Cadence refused a command that contained a NUL byte.",
-        ));
-    }
-
-    Ok(argv
-        .iter()
-        .map(|argument| argument.trim().to_string())
-        .collect())
-}
-
-fn normalize_timeout_ms(timeout_ms: Option<u64>, max_timeout_ms: u64) -> CommandResult<u64> {
-    let timeout = timeout_ms.unwrap_or(DEFAULT_COMMAND_TIMEOUT_MS);
-    if timeout == 0 || timeout > max_timeout_ms {
-        return Err(CommandError::user_fixable(
-            "autonomous_tool_command_timeout_invalid",
-            format!("Cadence requires command timeout_ms to be between 1 and {max_timeout_ms}."),
-        ));
-    }
-    Ok(timeout)
 }
 
 fn render_command_for_summary(argv: &[String]) -> String {
     argv.join(" ")
+}
+
+fn approval_mode_label(mode: &crate::commands::RuntimeRunApprovalModeDto) -> &'static str {
+    match mode {
+        crate::commands::RuntimeRunApprovalModeDto::Suggest => "suggest",
+        crate::commands::RuntimeRunApprovalModeDto::AutoEdit => "auto_edit",
+        crate::commands::RuntimeRunApprovalModeDto::Yolo => "yolo",
+    }
 }
 
 fn command_result_summary(argv: &[String], exit_code: Option<i32>) -> String {

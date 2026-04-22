@@ -2,8 +2,8 @@ use tauri::{AppHandle, Runtime};
 
 use crate::{
     auth::{
-        bind_openrouter_runtime_session, load_openai_codex_session_for_profile_link,
-        load_latest_openai_codex_session, reconcile_openrouter_runtime_session,
+        bind_openrouter_runtime_session, load_latest_openai_codex_session,
+        load_openai_codex_session_for_profile_link, reconcile_openrouter_runtime_session,
         refresh_provider_auth_session, remove_openai_codex_session, sync_openai_profile_link,
         AuthDiagnostic, AuthFlowError, OpenRouterBindOutcome, OpenRouterReconcileOutcome,
         OpenRouterRuntimeSessionBinding, RuntimeAuthSession,

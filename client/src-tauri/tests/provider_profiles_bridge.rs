@@ -122,10 +122,15 @@ fn fresh_install_returns_in_memory_default_without_writing_files() {
     )
     .expect("load default provider profiles");
 
-    assert_eq!(snapshot.metadata.active_profile_id, OPENAI_CODEX_DEFAULT_PROFILE_ID);
+    assert_eq!(
+        snapshot.metadata.active_profile_id,
+        OPENAI_CODEX_DEFAULT_PROFILE_ID
+    );
     assert_eq!(snapshot.metadata.profiles.len(), 1);
     assert_eq!(
-        snapshot.metadata.profiles[0].readiness(&snapshot.credentials).status,
+        snapshot.metadata.profiles[0]
+            .readiness(&snapshot.credentials)
+            .status,
         ProviderProfileReadinessStatus::Missing
     );
     assert!(!paths.provider_profiles_path.exists());
@@ -154,7 +159,10 @@ fn openai_only_legacy_state_migrates_to_redacted_profile_store() {
     )
     .expect("migrate openai-only legacy state");
 
-    assert_eq!(snapshot.metadata.active_profile_id, OPENAI_CODEX_DEFAULT_PROFILE_ID);
+    assert_eq!(
+        snapshot.metadata.active_profile_id,
+        OPENAI_CODEX_DEFAULT_PROFILE_ID
+    );
     let openai_profile = snapshot
         .profile(OPENAI_CODEX_DEFAULT_PROFILE_ID)
         .expect("openai profile");
@@ -202,7 +210,10 @@ fn openrouter_only_legacy_state_migrates_and_removes_legacy_files() {
     )
     .expect("migrate openrouter-only legacy state");
 
-    assert_eq!(snapshot.metadata.active_profile_id, OPENROUTER_DEFAULT_PROFILE_ID);
+    assert_eq!(
+        snapshot.metadata.active_profile_id,
+        OPENROUTER_DEFAULT_PROFILE_ID
+    );
     let openrouter_profile = snapshot
         .profile(OPENROUTER_DEFAULT_PROFILE_ID)
         .expect("openrouter profile");
@@ -273,7 +284,10 @@ fn both_providers_migrate_once_and_repo_local_sqlite_stays_secret_free() {
 
     assert_eq!(first, second);
     assert_eq!(metadata_after_first, metadata_after_second);
-    assert_eq!(first.metadata.active_profile_id, OPENAI_CODEX_DEFAULT_PROFILE_ID);
+    assert_eq!(
+        first.metadata.active_profile_id,
+        OPENAI_CODEX_DEFAULT_PROFILE_ID
+    );
     assert!(first.profile(OPENROUTER_DEFAULT_PROFILE_ID).is_some());
     assert_eq!(
         first
@@ -311,8 +325,10 @@ fn migration_rolls_back_new_store_and_keeps_legacy_files_when_credential_write_f
     let provider_profile_credentials_path =
         blocked_parent.join("provider-profile-credentials.json");
     let legacy_settings_path = root.path().join("app-data").join("runtime-settings.json");
-    let legacy_openrouter_credentials_path =
-        root.path().join("app-data").join("openrouter-credentials.json");
+    let legacy_openrouter_credentials_path = root
+        .path()
+        .join("app-data")
+        .join("openrouter-credentials.json");
     let legacy_openai_auth_path = root.path().join("app-data").join("openai-auth.json");
 
     write_json(
@@ -341,7 +357,10 @@ fn migration_rolls_back_new_store_and_keeps_legacy_files_when_credential_write_f
     )
     .expect_err("credential write failure should roll back migration");
 
-    assert_eq!(error.code, "provider_profile_credentials_directory_unavailable");
+    assert_eq!(
+        error.code,
+        "provider_profile_credentials_directory_unavailable"
+    );
     assert!(!provider_profiles_path.exists());
     assert!(legacy_settings_path.exists());
     assert!(legacy_openrouter_credentials_path.exists());
@@ -378,7 +397,10 @@ fn migration_rejects_blank_openai_account_or_session_ids() {
     )
     .expect_err("blank migrated session id should fail closed");
 
-    assert_eq!(error.code, "provider_profiles_migration_openai_link_invalid");
+    assert_eq!(
+        error.code,
+        "provider_profiles_migration_openai_link_invalid"
+    );
     assert!(!paths.provider_profiles_path.exists());
     assert!(!paths.provider_profile_credentials_path.exists());
 }

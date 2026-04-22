@@ -496,9 +496,7 @@ pub(crate) fn count_workflow_handoff_rows(repo_root: &Path, project_id: &str) ->
 
 type HistoryShapeEntry = (u32, String, u32, String, String, String, String, String);
 
-pub(crate) fn history_shape(
-    state: &AutonomousRunStateDto,
-) -> Vec<HistoryShapeEntry> {
+pub(crate) fn history_shape(state: &AutonomousRunStateDto) -> Vec<HistoryShapeEntry> {
     state
         .history
         .iter()

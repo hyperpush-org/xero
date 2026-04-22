@@ -9,9 +9,7 @@ use crate::{
     provider_models::{
         ProviderModelCatalogRefreshRegistry, PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME,
     },
-    provider_profiles::{
-        PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME, PROVIDER_PROFILES_FILE_NAME,
-    },
+    provider_profiles::{PROVIDER_PROFILES_FILE_NAME, PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME},
     runtime::{
         openai_codex_provider, AutonomousWebConfig, ResolvedRuntimeProvider,
         RuntimeStreamController, RuntimeSupervisorController,
@@ -81,10 +79,7 @@ impl DesktopState {
         self
     }
 
-    pub fn with_provider_profile_credential_store_file_override(
-        mut self,
-        path: PathBuf,
-    ) -> Self {
+    pub fn with_provider_profile_credential_store_file_override(mut self, path: PathBuf) -> Self {
         self.provider_profile_credential_store_file_override = Some(path);
         self
     }
@@ -155,9 +150,7 @@ impl DesktopState {
         &self.runtime_supervisor_controller
     }
 
-    pub fn provider_model_catalog_refresh_registry(
-        &self,
-    ) -> &ProviderModelCatalogRefreshRegistry {
+    pub fn provider_model_catalog_refresh_registry(&self) -> &ProviderModelCatalogRefreshRegistry {
         &self.provider_model_catalog_refresh_registry
     }
 

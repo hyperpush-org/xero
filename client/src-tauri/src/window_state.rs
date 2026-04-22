@@ -1,7 +1,13 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow,
+    WindowEvent,
+};
 
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -136,7 +142,9 @@ fn current_or_primary_monitor<R: Runtime>(window: &WebviewWindow<R>) -> Option<M
         })
 }
 
-fn display_areas_for_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<Vec<DisplayArea>, String> {
+fn display_areas_for_window<R: Runtime>(
+    window: &WebviewWindow<R>,
+) -> Result<Vec<DisplayArea>, String> {
     window
         .available_monitors()
         .map(|monitors| monitors.iter().map(DisplayArea::from_monitor).collect())
@@ -150,7 +158,10 @@ fn saved_bounds_fit_display_areas(bounds: WindowBounds, display_areas: &[Display
             .any(|display_area| display_area.fully_contains(bounds))
 }
 
-fn apply_window_bounds<R: Runtime>(window: &WebviewWindow<R>, bounds: WindowBounds) -> Result<(), String> {
+fn apply_window_bounds<R: Runtime>(
+    window: &WebviewWindow<R>,
+    bounds: WindowBounds,
+) -> Result<(), String> {
     window
         .set_size(PhysicalSize::new(bounds.width, bounds.height))
         .map_err(|error| format!("window resize failed: {error}"))?;
@@ -160,7 +171,10 @@ fn apply_window_bounds<R: Runtime>(window: &WebviewWindow<R>, bounds: WindowBoun
     Ok(())
 }
 
-fn save_current_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) -> Result<(), String> {
+fn save_current_window_bounds<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+) -> Result<(), String> {
     let position = window
         .outer_position()
         .map_err(|error| format!("window position lookup failed: {error}"))?;
@@ -218,8 +232,8 @@ fn load_window_bounds_from_path(path: &Path) -> Result<Option<WindowBounds>, Str
         return Ok(None);
     }
 
-    let json = fs::read_to_string(path)
-        .map_err(|error| format!("window state read failed: {error}"))?;
+    let json =
+        fs::read_to_string(path).map_err(|error| format!("window state read failed: {error}"))?;
 
     let bounds: WindowBounds = serde_json::from_str(&json)
         .map_err(|error| format!("window state parse failed: {error}"))?;
@@ -239,7 +253,8 @@ mod tests {
         let root = tempfile::tempdir().expect("temp dir");
         let state_path = root.path().join("window-state.json");
 
-        let loaded = load_window_bounds_from_path(&state_path).expect("missing state should not fail");
+        let loaded =
+            load_window_bounds_from_path(&state_path).expect("missing state should not fail");
 
         assert_eq!(loaded, None);
     }

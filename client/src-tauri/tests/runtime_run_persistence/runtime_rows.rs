@@ -146,7 +146,10 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-    assert_eq!(recovered.controls.active.model_id, first.controls.active.model_id);
+    assert_eq!(
+        recovered.controls.active.model_id,
+        first.controls.active.model_id
+    );
     assert_eq!(recovered.controls, first.controls);
 
     let stale = project_store::upsert_runtime_run(
@@ -328,7 +331,8 @@ pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_
     assert!(!database_text.contains("redirect_uri=http://127.0.0.1:1455/auth/callback"));
 }
 
-pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_checkpoint_kind_and_controls() {
+pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_checkpoint_kind_and_controls(
+) {
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-1";
     let repo_root = seed_project(&root, project_id, "repo-1", "repo");
