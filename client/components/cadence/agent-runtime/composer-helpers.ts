@@ -1,128 +1,167 @@
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
+  ProviderModelThinkingEffortDto,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeStreamStatus,
 } from '@/src/lib/cadence-model'
+import { getProviderModelThinkingEffortLabel } from '@/src/lib/cadence-model'
 
 import { displayValue } from './shared-helpers'
 import { hasUsableRuntimeRunId } from './runtime-stream-helpers'
 
-interface ComposerModelOption {
+export interface ComposerModelOption {
   value: string
   label: string
 }
 
-interface ComposerModelGroup {
+export interface ComposerModelGroup {
   id: string
   label: string
   items: ComposerModelOption[]
 }
 
-const SAMPLE_COMPOSER_MODEL_GROUPS: ComposerModelGroup[] = [
-  {
-    id: 'openai_codex',
-    label: 'OpenAI Codex',
-    items: [
-      { value: 'openai_codex', label: 'openai_codex' },
-      { value: 'codex-mini-latest', label: 'codex-mini-latest' },
-    ],
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    items: [
-      { value: 'gpt-4.1', label: 'gpt-4.1' },
-      { value: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
-      { value: 'o4-mini', label: 'o4-mini' },
-      { value: 'o3', label: 'o3' },
-      { value: 'o3-mini', label: 'o3-mini' },
-    ],
-  },
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    items: [
-      { value: 'anthropic/claude-3.7-sonnet', label: 'claude-3.7-sonnet' },
-      { value: 'anthropic/claude-3.5-sonnet', label: 'claude-3.5-sonnet' },
-      { value: 'anthropic/claude-3.5-haiku', label: 'claude-3.5-haiku' },
-    ],
-  },
-  {
-    id: 'google',
-    label: 'Google',
-    items: [
-      { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
-      { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
-    ],
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    items: [
-      { value: 'deepseek/deepseek-chat-v3-0324', label: 'deepseek-chat-v3-0324' },
-      { value: 'deepseek/deepseek-r1-0528', label: 'deepseek-r1-0528' },
-    ],
-  },
-  {
-    id: 'meta_llama',
-    label: 'Meta Llama',
-    items: [
-      { value: 'meta-llama/llama-4-maverick', label: 'llama-4-maverick' },
-      { value: 'meta-llama/llama-4-scout', label: 'llama-4-scout' },
-    ],
-  },
-  {
-    id: 'mistral',
-    label: 'Mistral',
-    items: [
-      { value: 'mistral/magistral-medium-2506', label: 'magistral-medium-2506' },
-      { value: 'mistral/devstral-medium', label: 'devstral-medium' },
-    ],
-  },
-  {
-    id: 'moonshot',
-    label: 'Moonshot',
-    items: [{ value: 'moonshotai/kimi-k2', label: 'kimi-k2' }],
-  },
-  {
-    id: 'x_ai',
-    label: 'xAI',
-    items: [
-      { value: 'x-ai/grok-3-beta', label: 'grok-3-beta' },
-      { value: 'x-ai/grok-3-mini-beta', label: 'grok-3-mini-beta' },
-    ],
-  },
-]
+export interface ComposerThinkingOption {
+  value: ProviderModelThinkingEffortDto
+  label: string
+}
+
+export interface ComposerCatalogStatusCopy {
+  catalogLabel: string
+  catalogDetail: string
+  thinkingDetail: string
+}
 
 export function getComposerModelGroups(
-  selectedProviderId: string,
-  selectedProviderLabel: string,
-  currentModelId: string,
+  models: AgentPaneView['providerModelCatalog']['models'],
+  currentModelId: string | null | undefined = null,
 ): ComposerModelGroup[] {
-  const groups = SAMPLE_COMPOSER_MODEL_GROUPS.map((group) => ({
-    ...group,
-    items: [...group.items],
-  }))
+  const currentModel = getComposerModelOption(models, currentModelId)
+  const visibleModels =
+    currentModel && !models.some((model) => model.modelId === currentModel.modelId)
+      ? [currentModel, ...models]
+      : models
+  const groups = new Map<string, ComposerModelGroup>()
 
-  const currentExists = groups.some((group) => group.items.some((item) => item.value === currentModelId))
-  if (currentExists) {
-    return groups
-  }
-
-  const fallbackLabel = selectedProviderLabel.trim().length > 0 ? selectedProviderLabel : 'Selected provider'
-  const fallbackGroupIndex = groups.findIndex((group) => group.id === selectedProviderId)
-  const fallbackItem = { value: currentModelId, label: currentModelId }
-
-  if (fallbackGroupIndex >= 0) {
-    groups[fallbackGroupIndex] = {
-      ...groups[fallbackGroupIndex],
-      items: [fallbackItem, ...groups[fallbackGroupIndex].items],
+  for (const model of visibleModels) {
+    const existingGroup = groups.get(model.groupId)
+    const nextItem: ComposerModelOption = {
+      value: model.modelId,
+      label: model.availability === 'orphaned' ? `${model.label} · unavailable` : model.label,
     }
-    return groups
+
+    if (existingGroup) {
+      existingGroup.items.push(nextItem)
+      continue
+    }
+
+    groups.set(model.groupId, {
+      id: model.groupId,
+      label: model.groupLabel,
+      items: [nextItem],
+    })
   }
 
-  return [{ id: selectedProviderId, label: fallbackLabel, items: [fallbackItem] }, ...groups]
+  return Array.from(groups.values())
+}
+
+export function getComposerModelOption(
+  models: AgentPaneView['providerModelCatalog']['models'],
+  modelId: string | null | undefined,
+): AgentPaneView['selectedModelOption'] {
+  const trimmedModelId = modelId?.trim() ?? ''
+  if (trimmedModelId.length === 0) {
+    return null
+  }
+
+  return (
+    models.find((model) => model.modelId === trimmedModelId) ?? {
+      modelId: trimmedModelId,
+      label: trimmedModelId,
+      displayName: trimmedModelId,
+      groupId: 'current_selection',
+      groupLabel: 'Current selection',
+      availability: 'orphaned',
+      availabilityLabel: 'Unavailable',
+      thinkingSupported: false,
+      thinkingEffortOptions: [],
+      defaultThinkingEffort: null,
+    }
+  )
+}
+
+export function getComposerThinkingOptions(
+  model: AgentPaneView['selectedModelOption'],
+): ComposerThinkingOption[] {
+  if (!model?.thinkingSupported) {
+    return []
+  }
+
+  return model.thinkingEffortOptions.map((effort) => ({
+    value: effort,
+    label: `Thinking · ${getProviderModelThinkingEffortLabel(effort).toLowerCase()}`,
+  }))
+}
+
+export function resolveComposerThinkingSelection(
+  model: AgentPaneView['selectedModelOption'],
+  currentThinkingEffort: ProviderModelThinkingEffortDto | null | undefined,
+): ProviderModelThinkingEffortDto | null {
+  if (!model?.thinkingSupported || model.thinkingEffortOptions.length === 0) {
+    return null
+  }
+
+  if (currentThinkingEffort && model.thinkingEffortOptions.includes(currentThinkingEffort)) {
+    return currentThinkingEffort
+  }
+
+  if (model.defaultThinkingEffort && model.thinkingEffortOptions.includes(model.defaultThinkingEffort)) {
+    return model.defaultThinkingEffort
+  }
+
+  return model.thinkingEffortOptions[0] ?? null
+}
+
+export function getComposerCatalogStatusCopy(
+  catalog: AgentPaneView['providerModelCatalog'],
+  selectedModel: AgentPaneView['selectedModelOption'],
+): ComposerCatalogStatusCopy {
+  if (!selectedModel) {
+    return {
+      catalogLabel: catalog.stateLabel,
+      catalogDetail: catalog.detail,
+      thinkingDetail: 'Choose a model to inspect supported thinking efforts.',
+    }
+  }
+
+  if (selectedModel.availability === 'orphaned') {
+    return {
+      catalogLabel: catalog.stateLabel,
+      catalogDetail: catalog.detail,
+      thinkingDetail: `${selectedModel.label} is not present in the latest ${catalog.providerLabel} catalog, so thinking options stay unavailable until discovery confirms it.`,
+    }
+  }
+
+  if (!selectedModel.thinkingSupported) {
+    return {
+      catalogLabel: catalog.stateLabel,
+      catalogDetail: catalog.detail,
+      thinkingDetail: `${selectedModel.label} does not expose configurable thinking for this provider catalog.`,
+    }
+  }
+
+  const supportedEfforts = selectedModel.thinkingEffortOptions.map((effort) => getProviderModelThinkingEffortLabel(effort))
+  const defaultEffort = selectedModel.defaultThinkingEffort
+    ? getProviderModelThinkingEffortLabel(selectedModel.defaultThinkingEffort)
+    : null
+
+  return {
+    catalogLabel: catalog.stateLabel,
+    catalogDetail: catalog.detail,
+    thinkingDetail: defaultEffort
+      ? `Thinking supports ${supportedEfforts.join(', ')}. Default: ${defaultEffort}.`
+      : `Thinking supports ${supportedEfforts.join(', ')}.`,
+  }
 }
 
 export function getSelectedProviderId(agent: AgentPaneView, runtimeSession: RuntimeSessionView | null): string {
@@ -130,7 +169,8 @@ export function getSelectedProviderId(agent: AgentPaneView, runtimeSession: Runt
 }
 
 export function getSelectedProviderLabel(agent: AgentPaneView, runtimeSession: RuntimeSessionView | null): string {
-  return agent.selectedProviderLabel ?? (getSelectedProviderId(agent, runtimeSession) === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex')
+  return agent.selectedProviderLabel ??
+    (getSelectedProviderId(agent, runtimeSession) === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex')
 }
 
 export function getComposerPlaceholder(

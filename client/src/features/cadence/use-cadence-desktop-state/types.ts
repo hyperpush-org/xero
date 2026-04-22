@@ -15,6 +15,8 @@ import type {
   ProjectDetailView,
   ProjectListItem,
   ProviderModelCatalogDto,
+  ProviderModelCatalogSourceDto,
+  ProviderModelThinkingEffortDto,
   ProviderProfileReadinessDto,
   ProviderProfilesDto,
   ReadProjectFileResponseDto,
@@ -118,6 +120,38 @@ export interface AgentTrustSnapshotView {
   projectionError: OperatorActionErrorView | null
 }
 
+export type AgentProviderModelCatalogState = 'live' | 'stale' | 'unavailable'
+export type AgentProviderModelAvailability = 'available' | 'orphaned'
+
+export interface AgentProviderModelView {
+  modelId: string
+  label: string
+  displayName: string
+  groupId: string
+  groupLabel: string
+  availability: AgentProviderModelAvailability
+  availabilityLabel: string
+  thinkingSupported: boolean
+  thinkingEffortOptions: ProviderModelThinkingEffortDto[]
+  defaultThinkingEffort: ProviderModelThinkingEffortDto | null
+}
+
+export interface AgentProviderModelCatalogView {
+  profileId: string | null
+  profileLabel: string | null
+  providerId: ProviderModelCatalogDto['providerId']
+  providerLabel: string
+  source: ProviderModelCatalogSourceDto | null
+  loadStatus: ProviderModelCatalogLoadStatus
+  state: AgentProviderModelCatalogState
+  stateLabel: string
+  detail: string
+  fetchedAt: string | null
+  lastSuccessAt: string | null
+  lastRefreshError: OperatorActionErrorView | null
+  models: AgentProviderModelView[]
+}
+
 export interface NotificationRouteHealthView {
   projectId: string
   routeId: string
@@ -214,6 +248,10 @@ export interface AgentPaneView {
   selectedProviderLabel?: string
   selectedProviderSource?: SelectedRuntimeProviderSource | null
   selectedModelId?: string | null
+  providerModelCatalog: AgentProviderModelCatalogView
+  selectedModelOption: AgentProviderModelView | null
+  selectedModelThinkingEffortOptions: ProviderModelThinkingEffortDto[]
+  selectedModelDefaultThinkingEffort: ProviderModelThinkingEffortDto | null
   selectedProfileReadiness?: ProviderProfileReadinessDto | null
   openrouterApiKeyConfigured?: boolean
   providerMismatch?: boolean

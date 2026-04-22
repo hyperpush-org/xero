@@ -7,6 +7,12 @@ import {
   type NotificationRouteDto,
   type SyncNotificationAdaptersResponseDto,
 } from '@/src/lib/cadence-model/notifications'
+import {
+  getProviderModelCatalogFetchedAt,
+  type ProviderModelCatalogDto,
+  type ProviderModelThinkingEffortDto,
+  type ProviderModelDto,
+} from '@/src/lib/cadence-model/provider-models'
 import { type RepositoryStatusView } from '@/src/lib/cadence-model/project'
 import {
   type RuntimeRunView,
@@ -36,11 +42,14 @@ import {
   getAgentRuntimeRunUnavailableReason,
   getAgentSessionUnavailableReason,
   getProviderMismatchCopy,
+  getRuntimeProviderLabel,
   hasProviderMismatch,
   resolveSelectedRuntimeProvider,
 } from './runtime-provider'
 import type {
   AgentPaneView,
+  AgentProviderModelCatalogView,
+  AgentProviderModelView,
   AgentTrustSnapshotView,
   AutonomousRunActionKind,
   AutonomousRunActionStatus,
@@ -50,6 +59,7 @@ import type {
   NotificationRoutesLoadStatus,
   OperatorActionErrorView,
   OperatorActionStatus,
+  ProviderModelCatalogLoadStatus,
   RuntimeRunActionKind,
   RuntimeRunActionStatus,
   WorkflowPaneView,
@@ -82,6 +92,9 @@ export interface BuildAgentViewDependencies {
   providerProfiles: ProviderProfilesDto | null
   runtimeSession: RuntimeSessionView | null
   runtimeSettings: RuntimeSettingsDto | null
+  activeProviderModelCatalog: ProviderModelCatalogDto | null
+  activeProviderModelCatalogLoadStatus: ProviderModelCatalogLoadStatus
+  activeProviderModelCatalogLoadError: OperatorActionErrorView | null
   runtimeRun: RuntimeRunView | null
   autonomousRun: ProjectDetailView['autonomousRun']
   autonomousUnit: ProjectDetailView['autonomousUnit']
@@ -192,6 +205,259 @@ function getProjectionError(error: unknown, fallback: string): OperatorActionErr
   }
 }
 
+const MODEL_GROUP_LABELS: Record<string, string> = {
+  anthropic: 'Anthropic',
+  deepseek: 'DeepSeek',
+  google: 'Google',
+  meta: 'Meta',
+  'meta-llama': 'Meta Llama',
+  mistral: 'Mistral',
+  moonshot: 'Moonshot',
+  moonshotai: 'Moonshot',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  'x-ai': 'xAI',
+  xai: 'xAI',
+}
+
+function getCatalogOwnerLabel(selectedProvider: SelectedProviderProjection['selectedProvider']): string {
+  const profileLabel = selectedProvider.profileLabel?.trim() ?? ''
+  if (profileLabel.length > 0) {
+    return profileLabel
+  }
+
+  const profileId = selectedProvider.profileId?.trim() ?? ''
+  if (profileId.length > 0) {
+    return profileId
+  }
+
+  return selectedProvider.providerLabel
+}
+
+function getModelGroupLabel(modelId: string, providerLabel: string): { groupId: string; groupLabel: string } {
+  const trimmedModelId = modelId.trim()
+  const namespace = trimmedModelId.includes('/') ? trimmedModelId.split('/')[0]?.trim() ?? '' : ''
+  if (namespace.length === 0) {
+    return {
+      groupId: providerLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'provider_models',
+      groupLabel: providerLabel,
+    }
+  }
+
+  const normalizedNamespace = namespace.toLowerCase()
+  const knownLabel = MODEL_GROUP_LABELS[normalizedNamespace]
+  if (knownLabel) {
+    return {
+      groupId: normalizedNamespace.replace(/[^a-z0-9]+/g, '_'),
+      groupLabel: knownLabel,
+    }
+  }
+
+  return {
+    groupId: normalizedNamespace.replace(/[^a-z0-9]+/g, '_'),
+    groupLabel: getRuntimeProviderLabel(namespace),
+  }
+}
+
+function getThinkingEffortOptions(model: ProviderModelDto): ProviderModelThinkingEffortDto[] {
+  if (!model.thinking.supported) {
+    return []
+  }
+
+  const effortOptions: ProviderModelThinkingEffortDto[] = []
+  for (const effort of model.thinking.effortOptions) {
+    if (!effortOptions.includes(effort)) {
+      effortOptions.push(effort)
+    }
+  }
+
+  return effortOptions
+}
+
+function buildAgentProviderModel(
+  model: ProviderModelDto,
+  providerLabel: string,
+): AgentProviderModelView | null {
+  const modelId = model.modelId.trim()
+  if (modelId.length === 0) {
+    return null
+  }
+
+  const effortOptions = getThinkingEffortOptions(model)
+  const defaultThinkingEffort =
+    model.thinking.supported && model.thinking.defaultEffort && effortOptions.includes(model.thinking.defaultEffort)
+      ? model.thinking.defaultEffort
+      : effortOptions[0] ?? null
+  const { groupId, groupLabel } = getModelGroupLabel(modelId, providerLabel)
+
+  return {
+    modelId,
+    label: modelId,
+    displayName: model.displayName.trim() || modelId,
+    groupId,
+    groupLabel,
+    availability: 'available',
+    availabilityLabel: 'Available',
+    thinkingSupported: effortOptions.length > 0,
+    thinkingEffortOptions: effortOptions,
+    defaultThinkingEffort,
+  }
+}
+
+function buildOrphanedAgentProviderModel(modelId: string): AgentProviderModelView | null {
+  const trimmedModelId = modelId.trim()
+  if (trimmedModelId.length === 0) {
+    return null
+  }
+
+  return {
+    modelId: trimmedModelId,
+    label: trimmedModelId,
+    displayName: trimmedModelId,
+    groupId: 'current_selection',
+    groupLabel: 'Current selection',
+    availability: 'orphaned',
+    availabilityLabel: 'Unavailable',
+    thinkingSupported: false,
+    thinkingEffortOptions: [],
+    defaultThinkingEffort: null,
+  }
+}
+
+function getCatalogRefreshError(
+  catalog: ProviderModelCatalogDto | null,
+  loadError: OperatorActionErrorView | null,
+): OperatorActionErrorView | null {
+  if (catalog?.lastRefreshError) {
+    return {
+      code: catalog.lastRefreshError.code,
+      message: catalog.lastRefreshError.message,
+      retryable: catalog.lastRefreshError.retryable,
+    }
+  }
+
+  return loadError
+}
+
+function getCatalogStateCopy(options: {
+  selectedProvider: SelectedProviderProjection['selectedProvider']
+  catalog: ProviderModelCatalogDto | null
+  loadStatus: ProviderModelCatalogLoadStatus
+  refreshError: OperatorActionErrorView | null
+  discoveredModelCount: number
+}): Pick<AgentProviderModelCatalogView, 'state' | 'stateLabel' | 'detail'> {
+  const ownerLabel = getCatalogOwnerLabel(options.selectedProvider)
+
+  if (options.catalog?.source === 'live' && options.discoveredModelCount > 0) {
+    return {
+      state: 'live',
+      stateLabel: 'Live catalog',
+      detail:
+        options.loadStatus === 'loading'
+          ? `Refreshing ${ownerLabel} model discovery while keeping ${options.discoveredModelCount} live model${
+              options.discoveredModelCount === 1 ? '' : 's'
+            } visible.`
+          : `Showing ${options.discoveredModelCount} discovered model${
+              options.discoveredModelCount === 1 ? '' : 's'
+            } for ${ownerLabel}.`,
+    }
+  }
+
+  if (options.discoveredModelCount > 0) {
+    return {
+      state: 'stale',
+      stateLabel: options.catalog?.source === 'cache' ? 'Cached catalog' : 'Stale catalog',
+      detail: options.refreshError?.message?.trim()
+        ? `${options.refreshError.message} Cadence is keeping the last successful model catalog for ${ownerLabel} visible.`
+        : `Cadence is keeping the last successful model catalog for ${ownerLabel} visible.`,
+    }
+  }
+
+  if (options.loadStatus === 'loading') {
+    return {
+      state: 'unavailable',
+      stateLabel: 'Catalog unavailable',
+      detail: `Loading the active provider-model catalog for ${ownerLabel}. Cadence is keeping the configured model visible without sample lists.`,
+    }
+  }
+
+  return {
+    state: 'unavailable',
+    stateLabel: 'Catalog unavailable',
+    detail: options.refreshError?.message?.trim()
+      ? `${options.refreshError.message} Cadence is keeping the configured model visible without discovered-model confirmation.`
+      : `Cadence does not have a discovered model catalog for ${ownerLabel} yet, so only configured model truth remains visible.`,
+  }
+}
+
+function buildAgentProviderModelCatalog(options: {
+  selectedProvider: SelectedProviderProjection['selectedProvider']
+  activeProviderModelCatalog: ProviderModelCatalogDto | null
+  activeProviderModelCatalogLoadStatus: ProviderModelCatalogLoadStatus
+  activeProviderModelCatalogLoadError: OperatorActionErrorView | null
+}): {
+  providerModelCatalog: AgentProviderModelCatalogView
+  selectedModelOption: AgentProviderModelView | null
+  selectedModelThinkingEffortOptions: ProviderModelThinkingEffortDto[]
+  selectedModelDefaultThinkingEffort: ProviderModelThinkingEffortDto | null
+  selectedModelId: string | null
+} {
+  const catalog = options.activeProviderModelCatalog
+  const refreshError = getCatalogRefreshError(catalog, options.activeProviderModelCatalogLoadError)
+  const discoveredModels: AgentProviderModelView[] = []
+  const seenModelIds = new Set<string>()
+
+  for (const model of catalog?.models ?? []) {
+    const nextModel = buildAgentProviderModel(model, options.selectedProvider.providerLabel)
+    if (!nextModel || seenModelIds.has(nextModel.modelId)) {
+      continue
+    }
+
+    seenModelIds.add(nextModel.modelId)
+    discoveredModels.push(nextModel)
+  }
+
+  const configuredModelId =
+    catalog?.configuredModelId.trim() || options.selectedProvider.modelId?.trim() || null
+  const selectedModelId = configuredModelId && configuredModelId.length > 0 ? configuredModelId : null
+  const selectedDiscoveredModel =
+    selectedModelId ? discoveredModels.find((model) => model.modelId === selectedModelId) ?? null : null
+  const selectedModelOption =
+    selectedDiscoveredModel ?? (selectedModelId ? buildOrphanedAgentProviderModel(selectedModelId) : null)
+  const models = selectedModelOption && selectedModelOption.availability === 'orphaned'
+    ? [selectedModelOption, ...discoveredModels]
+    : discoveredModels
+  const stateCopy = getCatalogStateCopy({
+    selectedProvider: options.selectedProvider,
+    catalog,
+    loadStatus: options.activeProviderModelCatalogLoadStatus,
+    refreshError,
+    discoveredModelCount: discoveredModels.length,
+  })
+
+  return {
+    providerModelCatalog: {
+      profileId: catalog?.profileId ?? options.selectedProvider.profileId,
+      profileLabel: options.selectedProvider.profileLabel,
+      providerId: catalog?.providerId ?? options.selectedProvider.providerId,
+      providerLabel: options.selectedProvider.providerLabel,
+      source: catalog?.source ?? null,
+      loadStatus: options.activeProviderModelCatalogLoadStatus,
+      state: stateCopy.state,
+      stateLabel: stateCopy.stateLabel,
+      detail: stateCopy.detail,
+      fetchedAt: getProviderModelCatalogFetchedAt(catalog),
+      lastSuccessAt: catalog?.lastSuccessAt ?? null,
+      lastRefreshError: refreshError,
+      models,
+    },
+    selectedModelOption,
+    selectedModelThinkingEffortOptions: selectedModelOption?.thinkingEffortOptions ?? [],
+    selectedModelDefaultThinkingEffort: selectedModelOption?.defaultThinkingEffort ?? null,
+    selectedModelId,
+  }
+}
+
 export function buildWorkflowView({
   project,
   activePhase,
@@ -242,6 +508,9 @@ export function buildAgentView({
   providerProfiles,
   runtimeSession,
   runtimeSettings,
+  activeProviderModelCatalog,
+  activeProviderModelCatalogLoadStatus,
+  activeProviderModelCatalogLoadError,
   runtimeRun,
   autonomousRun,
   autonomousUnit,
@@ -336,6 +605,12 @@ export function buildAgentView({
     runtimeSettings,
     runtimeSession,
   )
+  const providerModelCatalogProjection = buildAgentProviderModelCatalog({
+    selectedProvider,
+    activeProviderModelCatalog,
+    activeProviderModelCatalogLoadStatus,
+    activeProviderModelCatalogLoadError,
+  })
 
   return {
     trustSnapshot,
@@ -353,7 +628,11 @@ export function buildAgentView({
       selectedProviderId: selectedProvider.providerId,
       selectedProviderLabel: selectedProvider.providerLabel,
       selectedProviderSource: selectedProvider.source,
-      selectedModelId: selectedProvider.modelId,
+      selectedModelId: providerModelCatalogProjection.selectedModelId,
+      providerModelCatalog: providerModelCatalogProjection.providerModelCatalog,
+      selectedModelOption: providerModelCatalogProjection.selectedModelOption,
+      selectedModelThinkingEffortOptions: providerModelCatalogProjection.selectedModelThinkingEffortOptions,
+      selectedModelDefaultThinkingEffort: providerModelCatalogProjection.selectedModelDefaultThinkingEffort,
       selectedProfileReadiness: selectedProvider.readiness,
       openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
       providerMismatch,

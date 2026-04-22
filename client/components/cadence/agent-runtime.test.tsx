@@ -358,6 +358,46 @@ function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeS
   }
 }
 
+function makeAgentModel(
+  overrides: Partial<NonNullable<AgentPaneView['selectedModelOption']>> = {},
+): NonNullable<AgentPaneView['selectedModelOption']> {
+  return {
+    modelId: 'openai_codex',
+    label: 'openai_codex',
+    displayName: 'openai_codex',
+    groupId: 'current_selection',
+    groupLabel: 'Current selection',
+    availability: 'orphaned',
+    availabilityLabel: 'Unavailable',
+    thinkingSupported: false,
+    thinkingEffortOptions: [],
+    defaultThinkingEffort: null,
+    ...overrides,
+  }
+}
+
+function makeProviderModelCatalog(
+  overrides: Partial<AgentPaneView['providerModelCatalog']> = {},
+): AgentPaneView['providerModelCatalog'] {
+  return {
+    profileId: null,
+    profileLabel: null,
+    providerId: 'openai_codex',
+    providerLabel: 'OpenAI Codex',
+    source: null,
+    loadStatus: 'idle',
+    state: 'unavailable',
+    stateLabel: 'Catalog unavailable',
+    detail:
+      'Cadence does not have a discovered model catalog for OpenAI Codex yet, so only configured model truth remains visible.',
+    fetchedAt: null,
+    lastSuccessAt: null,
+    lastRefreshError: null,
+    models: [makeAgentModel()],
+    ...overrides,
+  }
+}
+
 function makeRecentAutonomousUnits(
   overrides: Partial<NonNullable<AgentPaneView['recentAutonomousUnits']>> = {},
 ): NonNullable<AgentPaneView['recentAutonomousUnits']> {
@@ -540,6 +580,28 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
   const runtimeRun = overrides.runtimeRun ?? null
   const runtimeStream = overrides.runtimeStream ?? null
   const runtimeStreamStatus = overrides.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
+  const selectedProviderId = overrides.selectedProviderId ?? 'openai_codex'
+  const selectedProviderLabel = overrides.selectedProviderLabel ?? 'OpenAI Codex'
+  const selectedModelId = overrides.selectedModelId ?? 'openai_codex'
+  const fallbackSelectedModelOption = selectedModelId
+    ? makeAgentModel({
+        modelId: selectedModelId,
+        label: selectedModelId,
+        displayName: selectedModelId,
+      })
+    : null
+  const providerModelCatalog =
+    overrides.providerModelCatalog ??
+    makeProviderModelCatalog({
+      providerId: selectedProviderId,
+      providerLabel: selectedProviderLabel,
+      models: fallbackSelectedModelOption ? [fallbackSelectedModelOption] : [],
+    })
+  const selectedModelOption =
+    overrides.selectedModelOption ??
+    (selectedModelId
+      ? providerModelCatalog.models.find((model) => model.modelId === selectedModelId) ?? fallbackSelectedModelOption
+      : null)
 
   return {
     project,
@@ -552,10 +614,16 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     runtimeSession,
     selectedProfileId: overrides.selectedProfileId ?? null,
     selectedProfileLabel: overrides.selectedProfileLabel ?? null,
-    selectedProviderId: overrides.selectedProviderId ?? 'openai_codex',
-    selectedProviderLabel: overrides.selectedProviderLabel ?? 'OpenAI Codex',
+    selectedProviderId,
+    selectedProviderLabel,
     selectedProviderSource: overrides.selectedProviderSource ?? 'provider_profiles',
-    selectedModelId: overrides.selectedModelId ?? 'openai_codex',
+    selectedModelId,
+    providerModelCatalog,
+    selectedModelOption,
+    selectedModelThinkingEffortOptions:
+      overrides.selectedModelThinkingEffortOptions ?? selectedModelOption?.thinkingEffortOptions ?? [],
+    selectedModelDefaultThinkingEffort:
+      overrides.selectedModelDefaultThinkingEffort ?? selectedModelOption?.defaultThinkingEffort ?? null,
     openrouterApiKeyConfigured: overrides.openrouterApiKeyConfigured ?? false,
     providerMismatch: overrides.providerMismatch ?? false,
     runtimeRun,
@@ -1166,7 +1234,9 @@ describe('AgentRuntime current UI', () => {
     expect(composer).toHaveAttribute('placeholder', 'Connect a provider to start.')
     expect(composer).toHaveAttribute('rows', '3')
     expect(modelSelector).toHaveTextContent('openai_codex')
-    expect(thinkingLevelSelector).toHaveTextContent('Thinking · medium')
+    expect(thinkingLevelSelector).toHaveTextContent('Thinking unavailable')
+    expect(screen.getByText('Catalog unavailable')).toBeVisible()
+    expect(screen.getByText(/only configured model truth remains visible/i)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Configure' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled()
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
@@ -1176,38 +1246,178 @@ describe('AgentRuntime current UI', () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('lets the local model selector switch between grouped sample models', async () => {
-    render(<AgentRuntime agent={makeAgent()} />)
+  it('renders discovered model groups from the active provider catalog instead of sample lists', async () => {
+    const liveCatalog = makeProviderModelCatalog({
+      profileId: 'openrouter-work',
+      profileLabel: 'OpenRouter Work',
+      providerId: 'openrouter',
+      providerLabel: 'OpenRouter',
+      source: 'live',
+      loadStatus: 'ready',
+      state: 'live',
+      stateLabel: 'Live catalog',
+      detail: 'Showing 3 discovered models for OpenRouter Work.',
+      fetchedAt: '2026-04-20T12:00:00Z',
+      lastSuccessAt: '2026-04-20T12:00:00Z',
+      models: [
+        makeAgentModel({
+          modelId: 'openai/gpt-5-mini',
+          label: 'openai/gpt-5-mini',
+          displayName: 'openai/gpt-5-mini',
+          groupId: 'openai',
+          groupLabel: 'OpenAI',
+          availability: 'available',
+          availabilityLabel: 'Available',
+          thinkingSupported: true,
+          thinkingEffortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+          defaultThinkingEffort: 'high',
+        }),
+        makeAgentModel({
+          modelId: 'anthropic/claude-3.5-haiku',
+          label: 'anthropic/claude-3.5-haiku',
+          displayName: 'anthropic/claude-3.5-haiku',
+          groupId: 'anthropic',
+          groupLabel: 'Anthropic',
+          availability: 'available',
+          availabilityLabel: 'Available',
+          thinkingSupported: true,
+          thinkingEffortOptions: ['low'],
+          defaultThinkingEffort: 'low',
+        }),
+        makeAgentModel({
+          modelId: 'mistral/devstral-medium',
+          label: 'mistral/devstral-medium',
+          displayName: 'mistral/devstral-medium',
+          groupId: 'mistral',
+          groupLabel: 'Mistral',
+          availability: 'available',
+          availabilityLabel: 'Available',
+          thinkingSupported: false,
+          thinkingEffortOptions: [],
+          defaultThinkingEffort: null,
+        }),
+      ],
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          selectedProviderId: 'openrouter',
+          selectedProviderLabel: 'OpenRouter',
+          selectedProfileId: 'openrouter-work',
+          selectedProfileLabel: 'OpenRouter Work',
+          selectedModelId: 'openai/gpt-5-mini',
+          providerModelCatalog: liveCatalog,
+          openrouterApiKeyConfigured: true,
+        })}
+      />,
+    )
 
     const modelSelector = screen.getByRole('combobox', { name: 'Model selector' })
 
-    expect(modelSelector).toHaveTextContent('openai_codex')
+    expect(modelSelector).toHaveTextContent('openai/gpt-5-mini')
+    expect(screen.getByText('Live catalog')).toBeVisible()
+    expect(
+      screen.getByText((content) => content.includes('Showing 3 discovered models for OpenRouter Work.')),
+    ).toBeVisible()
 
     fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
 
-    expect(await screen.findByText('OpenAI Codex')).toBeVisible()
+    expect(await screen.findByText('OpenAI')).toBeVisible()
     expect(screen.getByText('Anthropic')).toBeVisible()
     expect(screen.getByText('Mistral')).toBeVisible()
-
-    fireEvent.click(await screen.findByRole('option', { name: 'claude-3.5-haiku' }))
-
-    await waitFor(() => expect(modelSelector).toHaveTextContent('claude-3.5-haiku'))
+    expect(screen.getByRole('option', { name: 'anthropic/claude-3.5-haiku' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'mistral/devstral-medium' })).toBeVisible()
   })
 
-  it('lets the mock thinking level selector switch between sample levels', async () => {
-    render(<AgentRuntime agent={makeAgent()} />)
+  it('clamps thinking to the selected model capabilities and disables it when a model exposes none', async () => {
+    const liveCatalog = makeProviderModelCatalog({
+      profileId: 'openrouter-work',
+      profileLabel: 'OpenRouter Work',
+      providerId: 'openrouter',
+      providerLabel: 'OpenRouter',
+      source: 'live',
+      loadStatus: 'ready',
+      state: 'live',
+      stateLabel: 'Live catalog',
+      detail: 'Showing 3 discovered models for OpenRouter Work.',
+      fetchedAt: '2026-04-20T12:00:00Z',
+      lastSuccessAt: '2026-04-20T12:00:00Z',
+      models: [
+        makeAgentModel({
+          modelId: 'openai/gpt-5-mini',
+          label: 'openai/gpt-5-mini',
+          displayName: 'openai/gpt-5-mini',
+          groupId: 'openai',
+          groupLabel: 'OpenAI',
+          availability: 'available',
+          availabilityLabel: 'Available',
+          thinkingSupported: true,
+          thinkingEffortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+          defaultThinkingEffort: 'high',
+        }),
+        makeAgentModel({
+          modelId: 'anthropic/claude-3.5-haiku',
+          label: 'anthropic/claude-3.5-haiku',
+          displayName: 'anthropic/claude-3.5-haiku',
+          groupId: 'anthropic',
+          groupLabel: 'Anthropic',
+          availability: 'available',
+          availabilityLabel: 'Available',
+          thinkingSupported: true,
+          thinkingEffortOptions: ['low'],
+          defaultThinkingEffort: 'low',
+        }),
+        makeAgentModel({
+          modelId: 'mistral/devstral-medium',
+          label: 'mistral/devstral-medium',
+          displayName: 'mistral/devstral-medium',
+          groupId: 'mistral',
+          groupLabel: 'Mistral',
+          availability: 'available',
+          availabilityLabel: 'Available',
+          thinkingSupported: false,
+          thinkingEffortOptions: [],
+          defaultThinkingEffort: null,
+        }),
+      ],
+    })
 
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          selectedProviderId: 'openrouter',
+          selectedProviderLabel: 'OpenRouter',
+          selectedProfileId: 'openrouter-work',
+          selectedProfileLabel: 'OpenRouter Work',
+          selectedModelId: 'openai/gpt-5-mini',
+          providerModelCatalog: liveCatalog,
+          openrouterApiKeyConfigured: true,
+        })}
+      />,
+    )
+
+    const modelSelector = screen.getByRole('combobox', { name: 'Model selector' })
     const thinkingLevelSelector = screen.getByRole('combobox', { name: 'Thinking level selector' })
 
-    expect(thinkingLevelSelector).toHaveTextContent('Thinking · medium')
+    expect(thinkingLevelSelector).toHaveTextContent('Thinking · high')
 
     fireEvent.keyDown(thinkingLevelSelector, { key: 'ArrowDown' })
+    expect(await screen.findByRole('option', { name: 'Thinking · very high' })).toBeVisible()
+    fireEvent.click(screen.getByRole('option', { name: 'Thinking · very high' }))
+    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking · very high'))
 
-    expect(await screen.findByRole('option', { name: 'Thinking · low' })).toBeVisible()
-    expect(screen.getByRole('option', { name: 'Thinking · high' })).toBeVisible()
+    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'anthropic/claude-3.5-haiku' }))
+    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking · low'))
+    expect(screen.getByText('Thinking supports Low. Default: Low.')).toBeVisible()
 
-    fireEvent.click(screen.getByRole('option', { name: 'Thinking · high' }))
-
-    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking · high'))
+    fireEvent.keyDown(modelSelector, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'mistral/devstral-medium' }))
+    await waitFor(() => expect(thinkingLevelSelector).toHaveTextContent('Thinking unavailable'))
+    expect(thinkingLevelSelector).toBeDisabled()
+    expect(
+      screen.getByText('mistral/devstral-medium does not expose configurable thinking for this provider catalog.'),
+    ).toBeVisible()
   })
 })

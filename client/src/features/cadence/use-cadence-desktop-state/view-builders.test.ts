@@ -4,6 +4,7 @@ import type {
   Phase,
   PlanningLifecycleView,
   ProjectDetailView,
+  ProviderModelCatalogDto,
   ProviderProfilesDto,
   RepositoryStatusView,
   RuntimeRunView,
@@ -197,6 +198,50 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
   }
 }
 
+function makeProviderModelCatalog(
+  overrides: Partial<ProviderModelCatalogDto> = {},
+): ProviderModelCatalogDto {
+  return {
+    profileId: 'openrouter-work',
+    providerId: 'openrouter',
+    configuredModelId: 'openai/gpt-4.1-mini',
+    source: 'live',
+    fetchedAt: '2026-04-20T12:00:00Z',
+    lastSuccessAt: '2026-04-20T12:00:00Z',
+    lastRefreshError: null,
+    models: [
+      {
+        modelId: 'openai/gpt-4.1-mini',
+        displayName: 'openai/gpt-4.1-mini',
+        thinking: {
+          supported: true,
+          effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
+          defaultEffort: 'high',
+        },
+      },
+      {
+        modelId: 'anthropic/claude-3.5-haiku',
+        displayName: 'anthropic/claude-3.5-haiku',
+        thinking: {
+          supported: true,
+          effortOptions: ['low'],
+          defaultEffort: 'low',
+        },
+      },
+      {
+        modelId: 'mistral/devstral-medium',
+        displayName: 'mistral/devstral-medium',
+        thinking: {
+          supported: false,
+          effortOptions: [],
+          defaultEffort: null,
+        },
+      },
+    ],
+    ...overrides,
+  } as ProviderModelCatalogDto
+}
+
 function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): ProviderProfilesDto {
   const activeProfileId = overrides.activeProfileId ?? 'openrouter-work'
   const profiles = overrides.profiles ?? [
@@ -382,6 +427,9 @@ describe('view builders', () => {
       providerProfiles: null,
       runtimeSession: makeRuntimeSession(),
       runtimeSettings: makeRuntimeSettings(),
+      activeProviderModelCatalog: makeProviderModelCatalog(),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
       runtimeRun: makeRuntimeRun(),
       autonomousRun: null,
       autonomousUnit: null,
@@ -439,6 +487,14 @@ describe('view builders', () => {
       selectedProviderId: 'openrouter',
       selectedProviderLabel: 'OpenRouter',
       selectedProviderSource: 'runtime_settings',
+      selectedModelId: 'openai/gpt-4.1-mini',
+      providerModelCatalog: {
+        providerId: 'openrouter',
+        providerLabel: 'OpenRouter',
+        source: 'live',
+        state: 'live',
+        stateLabel: 'Live catalog',
+      },
       providerMismatch: true,
       providerMismatchReason:
         'Settings now select provider OpenRouter, but the persisted runtime session still reflects OpenAI Codex.',
@@ -458,8 +514,120 @@ describe('view builders', () => {
     })
     expect(result.view?.notificationRoutes).toHaveLength(1)
     expect(result.view?.notificationChannelHealth).toHaveLength(2)
+    expect(result.view?.selectedModelOption).toMatchObject({
+      modelId: 'openai/gpt-4.1-mini',
+      groupLabel: 'OpenAI',
+      thinkingSupported: true,
+      defaultThinkingEffort: 'high',
+    })
+    expect(result.view?.selectedModelThinkingEffortOptions).toEqual(['minimal', 'low', 'medium', 'high', 'x_high'])
+    expect(result.view?.selectedModelDefaultThinkingEffort).toBe('high')
     expect(result.view?.recentAutonomousUnits?.totalCount).toBe(0)
     expect(result.view?.checkpointControlLoop?.totalCount).toBe(0)
+  })
+
+  it('buildAgentView preserves an orphaned configured model and cached catalog state when discovery cannot confirm it', () => {
+    const project = makeProject()
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles(),
+      runtimeSession: makeRuntimeSession({ providerId: 'openai_codex', runtimeKind: 'openai_codex' }),
+      runtimeSettings: makeRuntimeSettings(),
+      activeProviderModelCatalog: makeProviderModelCatalog({
+        source: 'cache',
+        lastRefreshError: {
+          code: 'provider_model_catalog_failed',
+          message: 'OpenRouter discovery timed out.',
+          retryable: true,
+        },
+        models: [
+          {
+            modelId: 'mistral/devstral-medium',
+            displayName: 'mistral/devstral-medium',
+            thinking: {
+              supported: false,
+              effortOptions: [],
+              defaultEffort: null,
+            },
+          },
+          {
+            modelId: ' ',
+            displayName: 'broken-row',
+            thinking: {
+              supported: true,
+              effortOptions: ['low'],
+              defaultEffort: 'low',
+            },
+          } as never,
+        ],
+      }),
+      activeProviderModelCatalogLoadStatus: 'error',
+      activeProviderModelCatalogLoadError: makeOperatorActionError({
+        code: 'provider_model_catalog_failed',
+        message: 'OpenRouter discovery timed out.',
+        retryable: true,
+      }),
+      runtimeRun: makeRuntimeRun(),
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: [],
+      autonomousRecentArtifacts: [],
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: makeRuntimeStream(),
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view?.providerModelCatalog).toMatchObject({
+      state: 'stale',
+      stateLabel: 'Cached catalog',
+      source: 'cache',
+      lastRefreshError: {
+        code: 'provider_model_catalog_failed',
+        message: 'OpenRouter discovery timed out.',
+        retryable: true,
+      },
+    })
+    expect(result.view?.providerModelCatalog.models).toHaveLength(2)
+    expect(result.view?.providerModelCatalog.models[0]).toMatchObject({
+      modelId: 'openai/gpt-4.1-mini',
+      availability: 'orphaned',
+      groupLabel: 'Current selection',
+    })
+    expect(result.view?.providerModelCatalog.models[1]).toMatchObject({
+      modelId: 'mistral/devstral-medium',
+      availability: 'available',
+    })
+    expect(result.view?.selectedModelOption).toMatchObject({
+      modelId: 'openai/gpt-4.1-mini',
+      availability: 'orphaned',
+      thinkingSupported: false,
+    })
+    expect(result.view?.selectedModelThinkingEffortOptions).toEqual([])
+    expect(result.view?.selectedModelDefaultThinkingEffort).toBeNull()
   })
 
   it('buildExecutionView keeps diff-scope counts and durable verification copy aligned with repository truth', () => {

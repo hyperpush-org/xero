@@ -1,12 +1,14 @@
 "use client"
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
-import type { RuntimeRunView } from '@/src/lib/cadence-model'
+import type { ProviderModelThinkingEffortDto, RuntimeRunView } from '@/src/lib/cadence-model'
+
+import { getComposerModelOption, resolveComposerThinkingSelection } from './composer-helpers'
 
 export type OperatorIntentKind = 'approve' | 'reject' | 'resume'
-export type ComposerThinkingLevel = 'low' | 'medium' | 'high'
+export type ComposerThinkingLevel = ProviderModelThinkingEffortDto | null
 
 export interface PendingOperatorIntent {
   actionId: string
@@ -15,7 +17,8 @@ export interface PendingOperatorIntent {
 
 interface UseAgentRuntimeControllerOptions {
   projectId: string
-  selectedModelId: string
+  selectedModelId: string | null
+  availableModels: AgentPaneView['providerModelCatalog']['models']
   approvalRequests: AgentPaneView['approvalRequests']
   operatorActionStatus: AgentPaneView['operatorActionStatus']
   pendingOperatorActionId: string | null
@@ -50,6 +53,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 export function useAgentRuntimeController({
   projectId,
   selectedModelId,
+  availableModels,
   approvalRequests,
   operatorActionStatus,
   pendingOperatorActionId,
@@ -64,8 +68,17 @@ export function useAgentRuntimeController({
   onResolveOperatorAction,
   onResumeOperatorRun,
 }: UseAgentRuntimeControllerOptions) {
-  const [composerModelId, setComposerModelId] = useState(selectedModelId)
-  const [composerThinkingLevel, setComposerThinkingLevel] = useState<ComposerThinkingLevel>('medium')
+  const normalizedSelectedModelId = selectedModelId?.trim() || null
+  const externalSelectionKey = `${projectId}::${normalizedSelectedModelId ?? ''}`
+  const externalSelectedModel = useMemo(
+    () => getComposerModelOption(availableModels, normalizedSelectedModelId),
+    [availableModels, normalizedSelectedModelId],
+  )
+
+  const [composerModelId, setComposerModelId] = useState<string | null>(normalizedSelectedModelId)
+  const [composerThinkingLevel, setComposerThinkingLevel] = useState<ComposerThinkingLevel>(() =>
+    resolveComposerThinkingSelection(externalSelectedModel, null),
+  )
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
   const [operatorAnswers, setOperatorAnswers] = useState<Record<string, string>>({})
   const [pendingOperatorIntent, setPendingOperatorIntent] = useState<PendingOperatorIntent | null>(null)
@@ -76,10 +89,28 @@ export function useAgentRuntimeController({
 
   const lastSeenProjectIdRef = useRef(projectId)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
+  const lastExternalSelectionKeyRef = useRef<string | null>(null)
+
+  const selectedComposerModel = useMemo(
+    () => getComposerModelOption(availableModels, composerModelId),
+    [availableModels, composerModelId],
+  )
 
   useEffect(() => {
-    setComposerModelId(selectedModelId)
-  }, [selectedModelId])
+    if (lastExternalSelectionKeyRef.current === externalSelectionKey) {
+      return
+    }
+
+    lastExternalSelectionKeyRef.current = externalSelectionKey
+    setComposerModelId(normalizedSelectedModelId)
+    setComposerThinkingLevel(resolveComposerThinkingSelection(externalSelectedModel, null))
+  }, [externalSelectionKey, externalSelectedModel, normalizedSelectedModelId])
+
+  useEffect(() => {
+    setComposerThinkingLevel((currentThinkingLevel) =>
+      resolveComposerThinkingSelection(selectedComposerModel, currentThinkingLevel),
+    )
+  }, [selectedComposerModel])
 
   useEffect(() => {
     if (runtimeRunActionError) {

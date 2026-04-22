@@ -9,6 +9,7 @@ import { ProjectLoadErrorState } from '@/components/cadence/project-load-error-s
 import { PhaseView } from '@/components/cadence/phase-view'
 import { ProjectRail } from '@/components/cadence/project-rail'
 import { CadenceShell, type PlatformVariant } from '@/components/cadence/shell'
+import { GamesSidebar } from '@/components/cadence/games-sidebar'
 import { SettingsDialog } from '@/components/cadence/settings-dialog'
 import { type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
@@ -67,6 +68,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   } = useCadenceDesktopState({ adapter })
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [gamesOpen, setGamesOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
@@ -206,6 +208,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onViewChange={setActiveView}
         projectName={activeProject?.name}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenGames={() => setGamesOpen(true)}
+        gamesOpen={gamesOpen}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
         platformOverride={platformOverride}
@@ -252,6 +256,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       onViewChange={setActiveView}
       projectName={activeProject?.name}
       onOpenSettings={() => setSettingsOpen(true)}
+      onOpenGames={() => setGamesOpen(true)}
+      gamesOpen={gamesOpen}
       sidebarCollapsed={sidebarCollapsed}
       onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
       platformOverride={platformOverride}
@@ -270,6 +276,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         projects={projects}
       />
       {renderBody()}
+      <GamesSidebar open={gamesOpen} />
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}

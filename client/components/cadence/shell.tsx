@@ -2,7 +2,7 @@
 
 import { isTauri } from "@tauri-apps/api/core"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Maximize2, Minus, PanelLeftClose, PanelLeftOpen, Settings, X } from "lucide-react"
+import { Gamepad2, Maximize2, Minus, PanelLeftClose, PanelLeftOpen, Settings, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { View } from "./data"
 
@@ -30,6 +30,8 @@ interface CadenceShellProps {
   children: React.ReactNode
   projectName?: string
   onOpenSettings?: () => void
+  onOpenGames?: () => void
+  gamesOpen?: boolean
   sidebarCollapsed?: boolean
   onToggleSidebar?: () => void
   /** Dev override — null means auto-detect */
@@ -55,6 +57,8 @@ export function CadenceShell({
   onViewChange,
   children,
   onOpenSettings,
+  onOpenGames,
+  gamesOpen = false,
   sidebarCollapsed = false,
   onToggleSidebar,
   platformOverride,
@@ -127,6 +131,23 @@ export function CadenceShell({
       type="button"
     >
       <Settings className="h-4 w-4" />
+    </button>
+  )
+
+  const GamesBtn = (
+    <button
+      aria-label="Arcade"
+      aria-pressed={gamesOpen}
+      className={cn(
+        "rounded-md p-1.5 transition-colors",
+        gamesOpen
+          ? "bg-primary/15 text-primary"
+          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+      )}
+      onClick={onOpenGames}
+      type="button"
+    >
+      <Gamepad2 className="h-4 w-4" />
     </button>
   )
 
@@ -234,7 +255,7 @@ export function CadenceShell({
   let titlebar: React.ReactNode
 
   if (platform === "macos") {
-    // macOS: [traffic-lights] [logo] [|] [sidebar-toggle] ← drag zone → [nav] [|] [settings]
+    // macOS: [traffic-lights] [logo] [|] [sidebar-toggle] ← drag zone → [nav] [|] [games] [settings]
     titlebar = (
       <header
         className="titlebar-drag-region flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3"
@@ -257,13 +278,14 @@ export function CadenceShell({
           >
             {NavButtons}
             <div className="mx-1.5 h-4 w-px bg-border" />
+            {GamesBtn}
             {SettingsBtn}
           </div>
         ) : null}
       </header>
     )
   } else {
-    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [settings] [|] [min][max][close]
+    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [games] [settings] [|] [min][max][close]
     titlebar = (
       <header
         className="titlebar-drag-region flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3"
@@ -291,6 +313,7 @@ export function CadenceShell({
         >
           {!chromeOnly ? (
             <>
+              {GamesBtn}
               {SettingsBtn}
               <div className="mx-2 h-4 w-px bg-border" />
             </>

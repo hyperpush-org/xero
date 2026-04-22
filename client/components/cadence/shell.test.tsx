@@ -36,4 +36,23 @@ describe('CadenceShell', () => {
     expect(onToggleSidebar).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('navigation')).toBeVisible()
   })
+
+  it.each(['macos', 'windows'] as const)('opens the arcade from the %s titlebar', (platform) => {
+    const onOpenGames = vi.fn()
+
+    render(
+      <CadenceShell
+        activeView="phases"
+        onOpenGames={onOpenGames}
+        onViewChange={() => undefined}
+        platformOverride={platform}
+      >
+        <div>Body</div>
+      </CadenceShell>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Arcade' }))
+
+    expect(onOpenGames).toHaveBeenCalledTimes(1)
+  })
 })

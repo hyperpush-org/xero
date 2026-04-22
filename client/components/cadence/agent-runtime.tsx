@@ -18,10 +18,12 @@ import {
   getCheckpointControlLoopRecoveryAlertMeta,
 } from './agent-runtime/checkpoint-control-loop-helpers'
 import {
+  getComposerCatalogStatusCopy,
   getComposerModelGroups,
+  getComposerModelOption,
   getComposerPlaceholder,
+  getComposerThinkingOptions,
   getSelectedProviderId,
-  getSelectedProviderLabel,
 } from './agent-runtime/composer-helpers'
 import { ComposerDock } from './agent-runtime/composer-dock'
 import { RecoveredRuntimeSection } from './agent-runtime/recovered-runtime-section'
@@ -92,11 +94,8 @@ export function AgentRuntime({
   )
 
   const selectedProviderId = getSelectedProviderId(agent, runtimeSession)
-  const selectedProviderLabel = getSelectedProviderLabel(agent, runtimeSession)
-  const selectedModelId = displayValue(
-    agent.selectedModelId,
-    selectedProviderId === 'openrouter' ? 'Model not configured' : 'openai_codex',
-  )
+  const selectedModelId = agent.selectedModelId?.trim() || null
+  const availableModels = agent.providerModelCatalog.models
   const openrouterApiKeyConfigured = agent.openrouterApiKeyConfigured ?? false
   const providerMismatch = agent.providerMismatch ?? false
   const hasRepositoryBinding = Boolean(agent.repositoryPath?.trim())
@@ -110,6 +109,7 @@ export function AgentRuntime({
   const controller = useAgentRuntimeController({
     projectId: agent.project.id,
     selectedModelId,
+    availableModels,
     approvalRequests: agent.approvalRequests,
     operatorActionStatus: agent.operatorActionStatus,
     pendingOperatorActionId: agent.pendingOperatorActionId,
@@ -125,10 +125,25 @@ export function AgentRuntime({
     onResumeOperatorRun,
   })
 
-  const composerModelGroups = useMemo(
-    () => getComposerModelGroups(selectedProviderId, selectedProviderLabel, controller.composerModelId),
-    [controller.composerModelId, selectedProviderId, selectedProviderLabel],
+  const selectedComposerModel = useMemo(
+    () => getComposerModelOption(availableModels, controller.composerModelId),
+    [availableModels, controller.composerModelId],
   )
+  const composerModelGroups = useMemo(
+    () => getComposerModelGroups(availableModels, controller.composerModelId),
+    [availableModels, controller.composerModelId],
+  )
+  const composerThinkingOptions = useMemo(
+    () => getComposerThinkingOptions(selectedComposerModel),
+    [selectedComposerModel],
+  )
+  const composerCatalogStatusCopy = useMemo(
+    () => getComposerCatalogStatusCopy(agent.providerModelCatalog, selectedComposerModel),
+    [agent.providerModelCatalog, selectedComposerModel],
+  )
+  const composerThinkingPlaceholder = controller.composerModelId
+    ? 'Thinking unavailable'
+    : 'Choose model'
   const streamStatusMeta = useMemo(() => getStreamStatusMeta(agent, runtimeSession), [agent, runtimeSession])
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const streamSequenceLabel = formatSequence(runtimeStream?.lastSequence ?? null)
@@ -263,6 +278,11 @@ export function AgentRuntime({
           composerModelGroups={composerModelGroups}
           composerModelId={controller.composerModelId}
           composerThinkingLevel={controller.composerThinkingLevel}
+          composerThinkingOptions={composerThinkingOptions}
+          composerThinkingPlaceholder={composerThinkingPlaceholder}
+          catalogStatusLabel={composerCatalogStatusCopy.catalogLabel}
+          catalogStatusDetail={composerCatalogStatusCopy.catalogDetail}
+          thinkingStatusDetail={composerCatalogStatusCopy.thinkingDetail}
           onComposerModelChange={controller.setComposerModelId}
           onComposerThinkingLevelChange={controller.setComposerThinkingLevel}
           onStartRuntimeRun={() => void controller.handleStartRuntimeRun()}
