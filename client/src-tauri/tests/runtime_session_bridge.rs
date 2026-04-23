@@ -400,10 +400,13 @@ fn runtime_session_bridge_profile_commands_expose_redacted_profile_state() {
         UpsertProviderProfileRequestDto {
             profile_id: "zz-openai-alt".into(),
             provider_id: "openai_codex".into(),
+            runtime_kind: "openai_codex".into(),
             label: "OpenAI Alt".into(),
             model_id: "openai_codex".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: None,
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )
@@ -465,10 +468,13 @@ fn runtime_session_bridge_signs_out_when_active_openai_profile_changes() {
         UpsertProviderProfileRequestDto {
             profile_id: "zz-openai-alt".into(),
             provider_id: "openai_codex".into(),
+            runtime_kind: "openai_codex".into(),
             label: "OpenAI Alt".into(),
             model_id: "openai_codex".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: None,
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )
@@ -507,10 +513,13 @@ fn runtime_session_bridge_profile_commands_reject_invalid_requests_and_metadata(
         UpsertProviderProfileRequestDto {
             profile_id: "   ".into(),
             provider_id: "openai_codex".into(),
+            runtime_kind: "openai_codex".into(),
             label: "OpenAI".into(),
             model_id: "openai_codex".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: None,
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )
@@ -523,10 +532,13 @@ fn runtime_session_bridge_profile_commands_reject_invalid_requests_and_metadata(
         UpsertProviderProfileRequestDto {
             profile_id: "openai-alt".into(),
             provider_id: "openai_codex".into(),
+            runtime_kind: "openai_codex".into(),
             label: "   ".into(),
             model_id: "openai_codex".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: None,
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )
@@ -539,15 +551,18 @@ fn runtime_session_bridge_profile_commands_reject_invalid_requests_and_metadata(
         UpsertProviderProfileRequestDto {
             profile_id: "bogus".into(),
             provider_id: "azure_openai".into(),
+            runtime_kind: "openai_compatible".into(),
             label: "Bogus".into(),
             model_id: "claude".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: None,
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )
     .expect_err("unknown provider should fail");
-    assert_eq!(unknown_provider.code, "runtime_settings_request_invalid");
+    assert_eq!(unknown_provider.code, "provider_profiles_invalid");
 
     let metadata_path = provider_profiles_path(&root);
     std::fs::create_dir_all(metadata_path.parent().expect("provider profiles parent"))
@@ -1373,10 +1388,13 @@ fn start_runtime_session_binds_anthropic_from_provider_profiles_without_secret_l
         UpsertProviderProfileRequestDto {
             profile_id: "anthropic-default".into(),
             provider_id: "anthropic".into(),
+            runtime_kind: "anthropic".into(),
             label: "Anthropic".into(),
             model_id: "claude-3-5-sonnet-latest".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: Some(secret.into()),
+            preset_id: Some("anthropic".into()),
+            base_url: None,
+            api_version: None,
+            api_key: Some(secret.into()),
             activate: true,
         },
     )
@@ -1417,10 +1435,13 @@ fn start_runtime_session_returns_idle_when_anthropic_selected_without_api_key() 
         UpsertProviderProfileRequestDto {
             profile_id: "anthropic-default".into(),
             provider_id: "anthropic".into(),
+            runtime_kind: "anthropic".into(),
             label: "Anthropic".into(),
             model_id: "claude-3-5-sonnet-latest".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: None,
+            preset_id: Some("anthropic".into()),
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: true,
         },
     )
@@ -1465,10 +1486,13 @@ fn get_runtime_session_rejects_stale_anthropic_binding_after_key_rotation() {
         UpsertProviderProfileRequestDto {
             profile_id: "anthropic-default".into(),
             provider_id: "anthropic".into(),
+            runtime_kind: "anthropic".into(),
             label: "Anthropic".into(),
             model_id: "claude-3-5-sonnet-latest".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: Some("sk-ant-api03-first".into()),
+            preset_id: Some("anthropic".into()),
+            base_url: None,
+            api_version: None,
+            api_key: Some("sk-ant-api03-first".into()),
             activate: true,
         },
     )
@@ -1489,10 +1513,13 @@ fn get_runtime_session_rejects_stale_anthropic_binding_after_key_rotation() {
         UpsertProviderProfileRequestDto {
             profile_id: "anthropic-default".into(),
             provider_id: "anthropic".into(),
+            runtime_kind: "anthropic".into(),
             label: "Anthropic".into(),
             model_id: "claude-3-5-sonnet-latest".into(),
-            openrouter_api_key: None,
-            anthropic_api_key: Some("sk-ant-api03-second".into()),
+            preset_id: Some("anthropic".into()),
+            base_url: None,
+            api_version: None,
+            api_key: Some("sk-ant-api03-second".into()),
             activate: true,
         },
     )

@@ -28,15 +28,34 @@ pub(crate) use tempfile::TempDir;
 #[path = "../support/runtime_shell.rs"]
 pub(crate) mod runtime_shell;
 
+#[path = "../support/supervisor_test_lock.rs"]
+pub(crate) mod supervisor_test_lock;
+
 pub(crate) const STRUCTURED_EVENT_PREFIX: &str = "__Cadence_EVENT__ ";
 pub(crate) const ATTACH_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(crate) fn supervisor_test_guard() -> MutexGuard<'static, ()> {
+pub(crate) struct SupervisorTestGuard {
+    _in_process: MutexGuard<'static, ()>,
+    _cross_process: supervisor_test_lock::SupervisorProcessLock,
+}
+
+impl Drop for SupervisorTestGuard {
+    fn drop(&mut self) {
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+pub(crate) fn supervisor_test_guard() -> SupervisorTestGuard {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD
+    let in_process = GUARD
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    SupervisorTestGuard {
+        _in_process: in_process,
+        _cross_process: supervisor_test_lock::lock_supervisor_test_process(),
+    }
 }
 
 pub(crate) fn seed_project(
@@ -206,6 +225,50 @@ pub(crate) fn anthropic_launch_request(
     )
 }
 
+pub(crate) fn openai_compatible_launch_request(
+    project_id: &str,
+    repo_root: &Path,
+    run_id: &str,
+    provider_id: &str,
+    runtime_kind: &str,
+    model_id: &str,
+    thinking_effort: Option<cadence_desktop_lib::commands::ProviderModelThinkingEffortDto>,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    api_version: Option<&str>,
+    command: &str,
+) -> RuntimeSupervisorLaunchRequest {
+    let mut launch_env = RuntimeSupervisorLaunchEnv::default();
+    if let Some(api_key) = api_key {
+        launch_env.insert("OPENAI_API_KEY", api_key);
+    }
+    if let Some(base_url) = base_url {
+        launch_env.insert("OPENAI_BASE_URL", base_url);
+    }
+    if let Some(api_version) = api_version {
+        launch_env.insert("OPENAI_API_VERSION", api_version);
+    }
+
+    let session_id = format!("{provider_id}-session-1");
+    let flow_id = format!("{provider_id}-flow-1");
+
+    launch_request_with_context(
+        project_id,
+        repo_root,
+        run_id,
+        runtime_kind,
+        sample_launch_context(
+            provider_id,
+            &session_id,
+            Some(&flow_id),
+            model_id,
+            thinking_effort,
+        ),
+        launch_env,
+        command,
+    )
+}
+
 pub(crate) fn probe_request(project_id: &str, repo_root: &Path) -> RuntimeSupervisorProbeRequest {
     RuntimeSupervisorProbeRequest {
         project_id: project_id.into(),
@@ -238,6 +301,7 @@ pub(crate) fn seed_running_runtime_run(
                 project_id: project_id.into(),
                 run_id: run_id.into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -491,6 +555,4 @@ pub(crate) fn response_dump(frames: &[SupervisorControlResponse]) -> String {
         .map(|frame| serde_json::to_string(frame).expect("serialize frame"))
         .collect::<Vec<_>>()
         .join("\n")
-}
-)
 }

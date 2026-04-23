@@ -519,10 +519,13 @@ fn normalize_openai_compatible_models(
 ) -> Vec<ProviderModelRecord> {
     let mut normalized = models
         .into_iter()
-        .map(|model| ProviderModelRecord {
-            model_id: model.id,
-            display_name: model.display_name,
-            thinking: openai_compatible_thinking_capability(&model),
+        .map(|model| {
+            let thinking = openai_compatible_thinking_capability(&model);
+            ProviderModelRecord {
+                model_id: model.id,
+                display_name: model.display_name,
+                thinking,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -903,6 +906,25 @@ fn validate_cached_catalog_row(
         });
     }
 
+    for value in [
+        row.scope.preset_id.as_deref(),
+        row.scope.configured_base_url.as_deref(),
+        row.scope.effective_base_url.as_deref(),
+        row.scope.api_version.as_deref(),
+        row.scope.model_list_strategy.as_deref(),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            return Err(ProviderModelCatalogDiagnostic {
+                code: "provider_model_catalog_cache_invalid".into(),
+                message: format!(
+                    "Cadence rejected the cached provider-model catalog row for profile `{profile_id}` at {} because one cache-scope field was blank.",
+                    path.display()
+                ),
+                retryable: false,
+            });
+        }
+    }
+
     for model in &row.models {
         if model.model_id.trim().is_empty() {
             return Err(ProviderModelCatalogDiagnostic {
@@ -934,8 +956,14 @@ fn readiness_diagnostic(
     profile: &ProviderProfileRecord,
     provider_profiles: &ProviderProfilesSnapshot,
 ) -> Option<ProviderModelCatalogDiagnostic> {
-    if profile.provider_id != OPENROUTER_PROVIDER_ID && profile.provider_id != ANTHROPIC_PROVIDER_ID
-    {
+    if !matches!(
+        profile.provider_id.as_str(),
+        OPENROUTER_PROVIDER_ID
+            | ANTHROPIC_PROVIDER_ID
+            | OPENAI_API_PROVIDER_ID
+            | AZURE_OPENAI_PROVIDER_ID
+            | GEMINI_AI_STUDIO_PROVIDER_ID
+    ) {
         return None;
     }
 
@@ -945,6 +973,12 @@ fn readiness_diagnostic(
         ProviderProfileReadinessStatus::Missing => Some(match profile.provider_id.as_str() {
             OPENROUTER_PROVIDER_ID => missing_openrouter_credential_diagnostic(profile),
             ANTHROPIC_PROVIDER_ID => missing_anthropic_credential_diagnostic(profile),
+            OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+                diagnostic_from_auth_error(missing_openai_compatible_api_key_error(
+                    profile.provider_id.as_str(),
+                    "discover",
+                ))
+            }
             _ => return None,
         }),
         ProviderProfileReadinessStatus::Malformed => Some(match profile.provider_id.as_str() {
@@ -964,6 +998,16 @@ fn readiness_diagnostic(
                 ),
                 retryable: false,
             },
+            OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+                ProviderModelCatalogDiagnostic {
+                    code: "provider_profile_credentials_unavailable".into(),
+                    message: format!(
+                        "Cadence cannot discover models for provider profile `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                        profile.profile_id
+                    ),
+                    retryable: false,
+                }
+            }
             _ => return None,
         }),
     }
@@ -1009,6 +1053,25 @@ fn diagnostic_from_command_error(error: CommandError) -> ProviderModelCatalogDia
         message: error.message,
         retryable: error.retryable,
     }
+}
+
+fn diagnostic_into_command_error(diagnostic: ProviderModelCatalogDiagnostic) -> CommandError {
+    if diagnostic.retryable {
+        CommandError::retryable(diagnostic.code, diagnostic.message)
+    } else {
+        CommandError::user_fixable(diagnostic.code, diagnostic.message)
+    }
+}
+
+fn normalized_optional_string(value: Option<&str>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
 }
 
 const fn provider_model_catalog_cache_schema_version() -> u32 {

@@ -410,6 +410,14 @@ function getCatalogStateCopy(options: {
     }
   }
 
+  if (options.catalog?.source === 'manual' && options.discoveredModelCount > 0) {
+    return {
+      state: 'live',
+      stateLabel: 'Manual catalog',
+      detail: `Cadence is showing configured model truth for ${ownerLabel} because this provider does not expose a compatible live models listing endpoint.`,
+    }
+  }
+
   if (options.discoveredModelCount > 0) {
     return {
       state: 'stale',

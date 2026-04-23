@@ -200,9 +200,13 @@ fn create_openai_profile(
         UpsertProviderProfileRequestDto {
             profile_id: profile_id.into(),
             provider_id: "openai_codex".into(),
+            runtime_kind: "openai_codex".into(),
             label: label.into(),
             model_id: "openai_codex".into(),
-            openrouter_api_key: None,
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )
@@ -220,9 +224,13 @@ fn create_openrouter_profile(
         UpsertProviderProfileRequestDto {
             profile_id: profile_id.into(),
             provider_id: "openrouter".into(),
+            runtime_kind: "openrouter".into(),
             label: label.into(),
             model_id: "openai/gpt-4.1-mini".into(),
-            openrouter_api_key: None,
+            preset_id: Some("openrouter".into()),
+            base_url: None,
+            api_version: None,
+            api_key: None,
             activate: false,
         },
     )

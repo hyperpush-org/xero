@@ -187,3 +187,9 @@ fn start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secr
 ) {
     runtime_recovery::start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secret_free_persistence();
 }
+
+#[test]
+fn start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_and_secret_free_persistence(
+) {
+    runtime_recovery::start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_and_secret_free_persistence();
+}

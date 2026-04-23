@@ -586,58 +586,144 @@ fn get_provider_model_catalog_returns_cached_anthropic_snapshot_when_live_refres
 }
 
 #[test]
-fn get_provider_model_catalog_rejects_malformed_anthropic_live_payload_and_preserves_cached_snapshot() {
-    let success_base_url = spawn_static_http_server(
+fn get_provider_model_catalog_discovers_openai_compatible_profile_with_live_models() {
+    let base_url = spawn_static_http_server(
         200,
-        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"medium":{"supported":true},"high":{"supported":true}}}}]}"#,
+        r#"{"data":[{"id":"gpt-4.1-mini","display_name":"GPT-4.1 Mini","capabilities":{"reasoning":{"supported":true,"effortOptions":["low","medium","high"],"defaultEffort":"medium"}}},{"id":"gpt-4.1-nano","display_name":"GPT-4.1 Nano"}]}"#,
     );
     let root = tempfile::tempdir().expect("temp dir");
-    let first_state = create_state(&root).with_anthropic_auth_config_override(
-        anthropic_auth_config(format!("{success_base_url}/v1/models")),
-    );
-    let first_app = build_mock_app(first_state);
-    seed_anthropic_profile(
-        &first_app,
-        "anthropic-work",
-        "claude-3-7-sonnet-latest",
-        Some("sk-ant-api03-first"),
+    let app = build_mock_app(create_state(&root));
+    let secret = "sk-openai-live-secret";
+    seed_openai_compatible_profile(
+        &app,
+        "openai-compatible-work",
+        "openai_api",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("openai_api"),
+        Some(&base_url),
+        Some("2025-03-01-preview"),
+        Some(secret),
     );
 
-    get_provider_model_catalog(
+    let catalog = get_provider_model_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "openai-compatible-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("discover openai-compatible profile catalog");
+
+    assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Live);
+    assert_eq!(catalog.provider_id, "openai_api");
+    assert_eq!(catalog.configured_model_id, "gpt-4.1-mini");
+    assert_eq!(catalog.models.len(), 2);
+    assert!(catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == "gpt-4.1-mini")
+        .expect("configured model should be present")
+        .thinking
+        .supported);
+
+    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    assert!(!cache.contains(secret));
+}
+
+#[test]
+fn get_provider_model_catalog_invalidates_openai_compatible_cache_when_endpoint_metadata_changes() {
+    let first_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"gpt-4.1-mini","displayName":"First Endpoint"}]}"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let first_app = build_mock_app(create_state(&root));
+    seed_openai_compatible_profile(
+        &first_app,
+        "openai-compatible-work",
+        "openai_api",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("openai_api"),
+        Some(&first_base_url),
+        None,
+        Some("sk-openai-first"),
+    );
+
+    let first = get_provider_model_catalog(
         first_app.handle().clone(),
         first_app.state::<DesktopState>(),
         GetProviderModelCatalogRequestDto {
-            profile_id: "anthropic-work".into(),
+            profile_id: "openai-compatible-work".into(),
             force_refresh: true,
         },
     )
-    .expect("seed live anthropic catalog");
+    .expect("seed first openai-compatible catalog");
+    assert_eq!(first.models[0].display_name, "First Endpoint");
 
-    let malformed_base_url = spawn_static_http_server(
+    let second_base_url = spawn_static_http_server(
         200,
-        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"thinking":{"supported":true}}}]}"#,
+        r#"{"data":[{"id":"gpt-4.1-mini","displayName":"Second Endpoint"}]}"#,
     );
-    let second_state = create_state(&root).with_anthropic_auth_config_override(
-        anthropic_auth_config(format!("{malformed_base_url}/v1/models")),
+    let second_app = build_mock_app(create_state(&root));
+    seed_openai_compatible_profile(
+        &second_app,
+        "openai-compatible-work",
+        "openai_api",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("openai_api"),
+        Some(&second_base_url),
+        Some("2026-04-01-preview"),
+        Some("sk-openai-second"),
     );
-    let second_app = build_mock_app(second_state);
 
-    let cached = get_provider_model_catalog(
+    let refreshed = get_provider_model_catalog(
         second_app.handle().clone(),
         second_app.state::<DesktopState>(),
         GetProviderModelCatalogRequestDto {
-            profile_id: "anthropic-work".into(),
+            profile_id: "openai-compatible-work".into(),
+            force_refresh: false,
+        },
+    )
+    .expect("refresh catalog after endpoint metadata change");
+
+    assert_eq!(refreshed.source, ProviderModelCatalogSourceDto::Live);
+    assert_eq!(refreshed.models[0].display_name, "Second Endpoint");
+    assert_ne!(refreshed.fetched_at, first.fetched_at);
+}
+
+#[test]
+fn get_provider_model_catalog_projects_manual_azure_model_truth_when_list_models_is_unsupported() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    seed_openai_compatible_profile(
+        &app,
+        "azure-work",
+        "azure_openai",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("azure_openai"),
+        Some("https://azure.example.invalid/openai/deployments/work"),
+        Some("2025-04-01-preview"),
+        Some("azure-secret"),
+    );
+
+    let catalog = get_provider_model_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "azure-work".into(),
             force_refresh: true,
         },
     )
-    .expect("fall back to cached anthropic catalog after malformed payload");
+    .expect("project manual azure catalog");
 
-    assert_eq!(cached.source, ProviderModelCatalogSourceDto::Cache);
-    assert_eq!(
-        cached
-            .last_refresh_error
-            .as_ref()
-            .map(|error| error.code.as_str()),
-        Some("anthropic_models_decode_failed")
-    );
+    assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Manual);
+    assert_eq!(catalog.provider_id, "azure_openai");
+    assert_eq!(catalog.models.len(), 1);
+    assert_eq!(catalog.models[0].model_id, "gpt-4.1-mini");
+    assert!(!catalog.models[0].thinking.supported);
 }

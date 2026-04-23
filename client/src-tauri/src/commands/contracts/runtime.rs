@@ -246,6 +246,7 @@ pub struct ProviderProfilesDto {
 pub enum ProviderModelCatalogSourceDto {
     Live,
     Cache,
+    Manual,
     Unavailable,
 }
 

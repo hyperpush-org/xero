@@ -243,6 +243,7 @@ pub(crate) fn runtime_scoped_resume_rejects_conflicting_user_answer_without_pers
                 project_id: project_id.into(),
                 run_id: "run-conflict-1".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -345,6 +346,7 @@ pub(crate) fn runtime_scoped_resume_rejects_corrupted_approved_answer_metadata_w
                 project_id: project_id.into(),
                 run_id: "run-metadata-conflict-1".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -458,6 +460,7 @@ pub(crate) fn runtime_scoped_approval_requires_non_secret_user_answer_at_resolve
                 project_id: project_id.into(),
                 run_id: "run-require-answer-1".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -610,6 +613,7 @@ pub(crate) fn runtime_scoped_approval_rejects_malformed_runtime_identity_without
                 project_id: project_id.into(),
                 run_id: "run-malformed-1".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -713,6 +717,7 @@ pub(crate) fn runtime_scoped_resume_rejects_already_resumed_autonomous_boundary_
                 project_id: project_id.into(),
                 run_id: "run-autonomous-replay-1".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -780,6 +785,7 @@ pub(crate) fn runtime_scoped_resume_rejects_already_resumed_autonomous_boundary_
                 project_id: project_id.into(),
                 run_id: "run-autonomous-replay-1".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::AutonomousRunStatus::Running,
                 active_unit_sequence: Some(1),

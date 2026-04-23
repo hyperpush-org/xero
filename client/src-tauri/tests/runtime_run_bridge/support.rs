@@ -59,12 +59,31 @@ pub(crate) use tempfile::TempDir;
 #[path = "../support/runtime_shell.rs"]
 pub(crate) mod runtime_shell;
 
-pub(crate) fn supervisor_test_guard() -> MutexGuard<'static, ()> {
+#[path = "../support/supervisor_test_lock.rs"]
+pub(crate) mod supervisor_test_lock;
+
+pub(crate) struct SupervisorTestGuard {
+    _in_process: MutexGuard<'static, ()>,
+    _cross_process: supervisor_test_lock::SupervisorProcessLock,
+}
+
+impl Drop for SupervisorTestGuard {
+    fn drop(&mut self) {
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+pub(crate) fn supervisor_test_guard() -> SupervisorTestGuard {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD
+    let in_process = GUARD
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    SupervisorTestGuard {
+        _in_process: in_process,
+        _cross_process: supervisor_test_lock::lock_supervisor_test_process(),
+    }
 }
 
 #[derive(Clone, Default)]
@@ -898,6 +917,7 @@ pub(crate) fn seed_unreachable_runtime_run(repo_root: &Path, project_id: &str, r
                 project_id: project_id.into(),
                 run_id: run_id.into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -942,6 +962,7 @@ pub(crate) fn seed_failed_runtime_run(repo_root: &Path, project_id: &str, run_id
                 project_id: project_id.into(),
                 run_id: run_id.into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Failed,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -981,6 +1002,7 @@ pub(crate) fn seed_active_autonomous_run(repo_root: &Path, project_id: &str, run
             project_id: project_id.into(),
             run_id: run_id.into(),
             runtime_kind: "openai_codex".into(),
+            provider_id: "openai_codex".into(),
             supervisor_kind: "detached_pty".into(),
             status: project_store::AutonomousRunStatus::Running,
             active_unit_sequence: Some(1),

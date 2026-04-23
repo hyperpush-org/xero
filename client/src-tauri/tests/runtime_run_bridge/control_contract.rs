@@ -338,6 +338,7 @@ pub(crate) fn get_runtime_run_fails_closed_for_malformed_control_state_without_f
                 project_id: project_id.clone(),
                 run_id: "run-malformed-control-state".into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Failed,
                 transport: project_store::RuntimeRunTransportRecord {

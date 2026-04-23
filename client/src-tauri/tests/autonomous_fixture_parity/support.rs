@@ -806,6 +806,7 @@ pub(crate) fn seed_openrouter_runtime(
             provider_id: "openrouter".into(),
             model_id: "openai/gpt-4o-mini".into(),
             openrouter_api_key: Some(secret.into()),
+            anthropic_api_key: None,
         },
     )
     .expect("save openrouter runtime settings for deterministic parity proof");

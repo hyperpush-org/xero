@@ -53,15 +53,34 @@ pub(crate) use tempfile::TempDir;
 #[path = "../support/runtime_shell.rs"]
 pub(crate) mod runtime_shell;
 
+#[path = "../support/supervisor_test_lock.rs"]
+pub(crate) mod supervisor_test_lock;
+
 pub(crate) const STRUCTURED_EVENT_PREFIX: &str = "__Cadence_EVENT__ ";
 pub(crate) const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) fn supervisor_test_guard() -> MutexGuard<'static, ()> {
+pub(crate) struct SupervisorTestGuard {
+    _in_process: MutexGuard<'static, ()>,
+    _cross_process: supervisor_test_lock::SupervisorProcessLock,
+}
+
+impl Drop for SupervisorTestGuard {
+    fn drop(&mut self) {
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+pub(crate) fn supervisor_test_guard() -> SupervisorTestGuard {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD
+    let in_process = GUARD
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    SupervisorTestGuard {
+        _in_process: in_process,
+        _cross_process: supervisor_test_lock::lock_supervisor_test_process(),
+    }
 }
 
 fn runtime_control_state(timestamp: &str) -> project_store::RuntimeRunControlStateRecord {
@@ -431,6 +450,7 @@ pub(crate) fn seed_terminal_runtime_run(repo_root: &Path, project_id: &str, run_
                 project_id: project_id.into(),
                 run_id: run_id.into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: RuntimeRunStatus::Failed,
                 transport: RuntimeRunTransportRecord {
@@ -468,6 +488,7 @@ pub(crate) fn seed_fake_runtime_run(
                 project_id: project_id.into(),
                 run_id: run_id.into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: RuntimeRunStatus::Running,
                 transport: RuntimeRunTransportRecord {
@@ -554,6 +575,7 @@ pub(crate) fn seed_blocked_autonomous_run(
                 project_id: project_id.into(),
                 run_id: run_id.into(),
                 runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::AutonomousRunStatus::Paused,
                 active_unit_sequence: Some(1),

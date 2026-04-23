@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { isoTimestampSchema, optionalIsoTimestampSchema } from './shared'
 import { runtimeProviderIdSchema } from './runtime'
 
-export const providerModelCatalogSourceSchema = z.enum(['live', 'cache', 'unavailable'])
+export const providerModelCatalogSourceSchema = z.enum(['live', 'cache', 'manual', 'unavailable'])
 export const providerModelThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 
 export const providerModelCatalogDiagnosticSchema = z

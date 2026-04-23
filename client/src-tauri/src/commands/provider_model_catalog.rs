@@ -47,6 +47,7 @@ fn map_catalog_source(source: ProviderModelCatalogSource) -> ProviderModelCatalo
     match source {
         ProviderModelCatalogSource::Live => ProviderModelCatalogSourceDto::Live,
         ProviderModelCatalogSource::Cache => ProviderModelCatalogSourceDto::Cache,
+        ProviderModelCatalogSource::Manual => ProviderModelCatalogSourceDto::Manual,
         ProviderModelCatalogSource::Unavailable => ProviderModelCatalogSourceDto::Unavailable,
     }
 }
