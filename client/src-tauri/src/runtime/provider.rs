@@ -23,10 +23,14 @@ pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const GITHUB_MODELS_PROVIDER_ID: &str = "github_models";
 pub const OPENAI_API_PROVIDER_ID: &str = "openai_api";
+pub const OLLAMA_PROVIDER_ID: &str = "ollama";
 pub const AZURE_OPENAI_PROVIDER_ID: &str = "azure_openai";
 pub const GEMINI_AI_STUDIO_PROVIDER_ID: &str = "gemini_ai_studio";
+pub const BEDROCK_PROVIDER_ID: &str = "bedrock";
+pub const VERTEX_PROVIDER_ID: &str = "vertex";
 pub const OPENAI_COMPATIBLE_RUNTIME_KIND: &str = "openai_compatible";
 pub const GEMINI_RUNTIME_KIND: &str = "gemini";
+pub const ANTHROPIC_RUNTIME_KIND: &str = ANTHROPIC_PROVIDER_ID;
 pub const OPENAI_CODEX_AUTH_STORE_FILE_NAME: &str = "openai-auth.json";
 pub const OPENROUTER_AUTH_STORE_FILE_NAME: &str = "openrouter-credentials.json";
 pub const ANTHROPIC_AUTH_STORE_FILE_NAME: &str = "provider-profile-credentials.json";
@@ -47,8 +51,11 @@ pub enum RuntimeProvider {
     Anthropic,
     GitHubModels,
     OpenAiApi,
+    Ollama,
     AzureOpenAi,
     GeminiAiStudio,
+    Bedrock,
+    Vertex,
 }
 
 impl RuntimeProvider {
@@ -57,10 +64,11 @@ impl RuntimeProvider {
             Self::OpenAiCodex => RuntimeProviderFamily::OpenAiCodex,
             Self::OpenRouter => RuntimeProviderFamily::OpenRouter,
             Self::Anthropic => RuntimeProviderFamily::Anthropic,
-            Self::GitHubModels | Self::OpenAiApi | Self::AzureOpenAi => {
+            Self::GitHubModels | Self::OpenAiApi | Self::Ollama | Self::AzureOpenAi => {
                 RuntimeProviderFamily::OpenAiCompatible
             }
             Self::GeminiAiStudio => RuntimeProviderFamily::Gemini,
+            Self::Bedrock | Self::Vertex => RuntimeProviderFamily::Anthropic,
         }
     }
 
@@ -101,6 +109,13 @@ impl RuntimeProvider {
                 runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
                 auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
+            Self::Ollama => ResolvedRuntimeProvider {
+                provider: Self::Ollama,
+                family: RuntimeProviderFamily::OpenAiCompatible,
+                provider_id: OLLAMA_PROVIDER_ID,
+                runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
+                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
+            },
             Self::AzureOpenAi => ResolvedRuntimeProvider {
                 provider: Self::AzureOpenAi,
                 family: RuntimeProviderFamily::OpenAiCompatible,
@@ -113,6 +128,20 @@ impl RuntimeProvider {
                 family: RuntimeProviderFamily::Gemini,
                 provider_id: GEMINI_AI_STUDIO_PROVIDER_ID,
                 runtime_kind: GEMINI_RUNTIME_KIND,
+                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
+            },
+            Self::Bedrock => ResolvedRuntimeProvider {
+                provider: Self::Bedrock,
+                family: RuntimeProviderFamily::Anthropic,
+                provider_id: BEDROCK_PROVIDER_ID,
+                runtime_kind: ANTHROPIC_RUNTIME_KIND,
+                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
+            },
+            Self::Vertex => ResolvedRuntimeProvider {
+                provider: Self::Vertex,
+                family: RuntimeProviderFamily::Anthropic,
+                provider_id: VERTEX_PROVIDER_ID,
+                runtime_kind: ANTHROPIC_RUNTIME_KIND,
                 auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
         }
@@ -169,12 +198,24 @@ pub const fn openai_api_provider() -> ResolvedRuntimeProvider {
     RuntimeProvider::OpenAiApi.resolve()
 }
 
+pub const fn ollama_provider() -> ResolvedRuntimeProvider {
+    RuntimeProvider::Ollama.resolve()
+}
+
 pub const fn azure_openai_provider() -> ResolvedRuntimeProvider {
     RuntimeProvider::AzureOpenAi.resolve()
 }
 
 pub const fn gemini_ai_studio_provider() -> ResolvedRuntimeProvider {
     RuntimeProvider::GeminiAiStudio.resolve()
+}
+
+pub const fn bedrock_provider() -> ResolvedRuntimeProvider {
+    RuntimeProvider::Bedrock.resolve()
+}
+
+pub const fn vertex_provider() -> ResolvedRuntimeProvider {
+    RuntimeProvider::Vertex.resolve()
 }
 
 pub const fn default_runtime_provider() -> ResolvedRuntimeProvider {
@@ -259,7 +300,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
                 }
             }
         }
-        RuntimeProvider::Anthropic => {
+        RuntimeProvider::Anthropic | RuntimeProvider::Bedrock | RuntimeProvider::Vertex => {
             let settings = settings.ok_or_else(|| {
                 AuthFlowError::terminal(
                     "runtime_settings_missing",
@@ -278,6 +319,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
             }
         }
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => {
@@ -346,7 +388,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
                 }
             }
         }
-        RuntimeProvider::Anthropic => {
+        RuntimeProvider::Anthropic | RuntimeProvider::Bedrock | RuntimeProvider::Vertex => {
             let settings = settings.ok_or_else(|| {
                 AuthFlowError::terminal(
                     "runtime_settings_missing",
@@ -366,6 +408,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
             }
         }
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => {
@@ -430,8 +473,11 @@ pub fn logout_provider_runtime_session<R: Runtime>(
         | RuntimeProvider::Anthropic
         | RuntimeProvider::GitHubModels
         | RuntimeProvider::OpenAiApi
+        | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
-        | RuntimeProvider::GeminiAiStudio => Ok(()),
+        | RuntimeProvider::GeminiAiStudio
+        | RuntimeProvider::Bedrock
+        | RuntimeProvider::Vertex => Ok(()),
     }
 }
 
@@ -654,8 +700,11 @@ fn parse_provider_id(value: &str) -> Result<RuntimeProvider, AuthDiagnostic> {
         ANTHROPIC_PROVIDER_ID => Ok(RuntimeProvider::Anthropic),
         GITHUB_MODELS_PROVIDER_ID => Ok(RuntimeProvider::GitHubModels),
         OPENAI_API_PROVIDER_ID => Ok(RuntimeProvider::OpenAiApi),
+        OLLAMA_PROVIDER_ID => Ok(RuntimeProvider::Ollama),
         AZURE_OPENAI_PROVIDER_ID => Ok(RuntimeProvider::AzureOpenAi),
         GEMINI_AI_STUDIO_PROVIDER_ID => Ok(RuntimeProvider::GeminiAiStudio),
+        BEDROCK_PROVIDER_ID => Ok(RuntimeProvider::Bedrock),
+        VERTEX_PROVIDER_ID => Ok(RuntimeProvider::Vertex),
         other => Err(unknown_runtime_provider_diagnostic(other)),
     }
 }
@@ -664,12 +713,15 @@ fn parse_runtime_reference(value: &str) -> Result<RuntimeReference, AuthDiagnost
     match value {
         OPENAI_CODEX_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::OpenAiCodex)),
         OPENROUTER_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::OpenRouter)),
-        ANTHROPIC_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::Anthropic)),
+        ANTHROPIC_PROVIDER_ID => Ok(RuntimeReference::Family(RuntimeProviderFamily::Anthropic)),
         OPENAI_API_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::OpenAiApi)),
+        OLLAMA_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::Ollama)),
         AZURE_OPENAI_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::AzureOpenAi)),
         GEMINI_AI_STUDIO_PROVIDER_ID => {
             Ok(RuntimeReference::Actual(RuntimeProvider::GeminiAiStudio))
         }
+        BEDROCK_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::Bedrock)),
+        VERTEX_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::Vertex)),
         OPENAI_COMPATIBLE_RUNTIME_KIND => Ok(RuntimeReference::Family(
             RuntimeProviderFamily::OpenAiCompatible,
         )),
@@ -682,7 +734,7 @@ fn unknown_runtime_provider_diagnostic(value: &str) -> AuthDiagnostic {
     AuthDiagnostic {
         code: "runtime_provider_unknown".into(),
         message: format!(
-            "Cadence does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
+            "Cadence does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {OLLAMA_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}, {BEDROCK_PROVIDER_ID}, {VERTEX_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_RUNTIME_KIND}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
         ),
         retryable: false,
     }

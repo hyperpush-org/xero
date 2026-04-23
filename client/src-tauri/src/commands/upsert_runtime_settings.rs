@@ -240,6 +240,8 @@ fn merge_profile(
             && existing.preset_id == next.preset_id
             && existing.base_url == next.base_url
             && existing.api_version == next.api_version
+            && existing.region == next.region
+            && existing.project_id == next.project_id
             && existing.credential_link == next.credential_link
         {
             next.updated_at = existing.updated_at.clone();

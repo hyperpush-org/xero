@@ -1484,7 +1484,7 @@ describe('CadenceApp current UI', () => {
     expect(screen.getAllByRole('button', { name: /Import repository/ }).length).toBeGreaterThanOrEqual(1)
   })
 
-  it('reflects real provider settings in onboarding and disables unsupported providers', async () => {
+  it('reflects real provider settings in onboarding and keeps shipped provider presets available', async () => {
     const { adapter } = createAdapter({
       projects: [],
       runtimeSession: makeRuntimeSession('project-1', {
@@ -1502,7 +1502,8 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByText('Provider setup is app-wide. Choose the active profile for new runtime binds without rewriting project runtime history.')).toBeVisible()
     expect(screen.getByText('Active')).toBeVisible()
     expect(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Set up' })).toBeVisible()
-    expect(screen.getAllByText('Unavailable')).toHaveLength(1)
+    expect(within(getProviderCard('GitHub Models')).getByRole('button', { name: 'Use this' })).toBeVisible()
+    expect(within(getProviderCard('OpenAI Codex')).getByText('Choose a project next')).toBeVisible()
   })
 
   it('keeps onboarding provider review truthful before OpenAI is connected', async () => {
@@ -1604,9 +1605,13 @@ describe('CadenceApp current UI', () => {
     expect(upsertProviderProfile).toHaveBeenCalledWith({
       profileId: 'openrouter-default',
       providerId: 'openrouter',
+      runtimeKind: 'openrouter',
       label: 'OpenRouter',
       modelId: 'openai/gpt-4.1-mini',
-      openrouterApiKey: 'sk-or-v1-test-secret',
+      presetId: 'openrouter',
+      baseUrl: null,
+      apiVersion: null,
+      apiKey: 'sk-or-v1-test-secret',
       activate: false,
     })
   })
@@ -1632,9 +1637,13 @@ describe('CadenceApp current UI', () => {
     expect(upsertProviderProfile).toHaveBeenCalledWith({
       profileId: 'anthropic-default',
       providerId: 'anthropic',
+      runtimeKind: 'anthropic',
       label: 'Anthropic',
       modelId: 'claude-3-7-sonnet-latest',
-      anthropicApiKey: 'sk-ant-test-secret',
+      presetId: 'anthropic',
+      baseUrl: null,
+      apiVersion: null,
+      apiKey: 'sk-ant-test-secret',
       activate: false,
     })
   })

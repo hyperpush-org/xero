@@ -4,14 +4,15 @@ use crate::{
     auth::AuthFlowError,
     commands::{
         get_runtime_settings::runtime_settings_file_from_request, CommandError, CommandResult,
-        ProviderProfileDto, ProviderProfileReadinessDto, ProviderProfileReadinessStatusDto,
-        ProviderProfilesDto, ProviderProfilesMigrationDto, SetActiveProviderProfileRequestDto,
-        UpsertProviderProfileRequestDto,
+        ProviderProfileDto, ProviderProfileReadinessDto, ProviderProfileReadinessProofDto,
+        ProviderProfileReadinessStatusDto, ProviderProfilesDto, ProviderProfilesMigrationDto,
+        SetActiveProviderProfileRequestDto, UpsertProviderProfileRequestDto,
     },
     provider_profiles::{
         load_or_migrate_provider_profiles_from_paths, persist_provider_profiles_snapshot,
         ProviderApiKeyCredentialEntry, ProviderProfileCredentialLink,
-        ProviderProfileReadinessStatus, ProviderProfileRecord, ProviderProfilesSnapshot,
+        ProviderProfileReadinessProof, ProviderProfileReadinessStatus, ProviderProfileRecord,
+        ProviderProfilesSnapshot,
     },
     runtime::{resolve_runtime_provider_identity, OPENAI_CODEX_PROVIDER_ID},
     state::DesktopState,
@@ -126,11 +127,14 @@ fn provider_profile_dto(
         preset_id: profile.preset_id.clone(),
         base_url: profile.base_url.clone(),
         api_version: profile.api_version.clone(),
+        region: profile.region.clone(),
+        project_id: profile.project_id.clone(),
         active: profile.profile_id == snapshot.metadata.active_profile_id,
         readiness: ProviderProfileReadinessDto {
             ready: readiness.ready,
             status: map_readiness_status(readiness.status),
-            credential_updated_at: readiness.credential_updated_at,
+            proof: readiness.proof.map(map_readiness_proof),
+            proof_updated_at: readiness.proof_updated_at,
         },
         migrated_from_legacy: profile.migrated_from_legacy,
         migrated_at: profile.migrated_at.clone(),
@@ -144,6 +148,15 @@ fn map_readiness_status(
         ProviderProfileReadinessStatus::Ready => ProviderProfileReadinessStatusDto::Ready,
         ProviderProfileReadinessStatus::Missing => ProviderProfileReadinessStatusDto::Missing,
         ProviderProfileReadinessStatus::Malformed => ProviderProfileReadinessStatusDto::Malformed,
+    }
+}
+
+fn map_readiness_proof(proof: ProviderProfileReadinessProof) -> ProviderProfileReadinessProofDto {
+    match proof {
+        ProviderProfileReadinessProof::OAuthSession => ProviderProfileReadinessProofDto::OAuthSession,
+        ProviderProfileReadinessProof::StoredSecret => ProviderProfileReadinessProofDto::StoredSecret,
+        ProviderProfileReadinessProof::Local => ProviderProfileReadinessProofDto::Local,
+        ProviderProfileReadinessProof::Ambient => ProviderProfileReadinessProofDto::Ambient,
     }
 }
 
@@ -195,6 +208,16 @@ fn apply_provider_profile_upsert(
         }
     }
 
+    let supports_api_key = !matches!(provider.provider_id, "openai_codex" | "ollama" | "bedrock" | "vertex");
+    if !supports_api_key
+        && request
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(CommandError::invalid_request("apiKey"));
+    }
+
     let now = crate::auth::now_timestamp();
     let current_profile = current.profile(profile_id).cloned();
     let current_api_key_secret = current.api_key_credential(profile_id).cloned();
@@ -215,7 +238,7 @@ fn apply_provider_profile_upsert(
         return Err(CommandError::invalid_request("apiKey"));
     }
 
-    let next_api_key_secret = if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
+    let next_api_key_secret = if !supports_api_key || provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
         None
     } else if explicit_api_key_clear {
         None
@@ -265,6 +288,8 @@ fn apply_provider_profile_upsert(
         preset_id: normalize_optional_text(request.preset_id.clone()),
         base_url: normalize_optional_text(request.base_url.clone()),
         api_version: normalize_optional_text(request.api_version.clone()),
+        region: normalize_optional_text(request.region.clone()),
+        project_id: normalize_optional_text(request.project_id.clone()),
         credential_link: next_credential_link,
         migrated_from_legacy: current_profile
             .as_ref()
@@ -287,6 +312,8 @@ fn apply_provider_profile_upsert(
                     && profile.preset_id == normalize_optional_text(request.preset_id.clone())
                     && profile.base_url == normalize_optional_text(request.base_url.clone())
                     && profile.api_version == normalize_optional_text(request.api_version.clone())
+                    && profile.region == normalize_optional_text(request.region.clone())
+                    && profile.project_id == normalize_optional_text(request.project_id.clone())
                     && profile.credential_link
                         == if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
                             current_profile.as_ref().and_then(|profile| {

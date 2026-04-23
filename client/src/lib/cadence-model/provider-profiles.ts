@@ -15,8 +15,11 @@ const providerProfilePresetIdSchema = z.enum([
   'anthropic',
   'github_models',
   'openai_api',
+  'ollama',
   'azure_openai',
   'gemini_ai_studio',
+  'bedrock',
+  'vertex',
 ])
 
 const optionalUrlSchema = z.string().url().nullable().optional()
@@ -31,10 +34,14 @@ function expectedRuntimeKindForProvider(providerId: z.infer<typeof runtimeProvid
       return 'anthropic'
     case 'github_models':
     case 'openai_api':
+    case 'ollama':
     case 'azure_openai':
       return 'openai_compatible'
     case 'gemini_ai_studio':
       return 'gemini'
+    case 'bedrock':
+    case 'vertex':
+      return 'anthropic'
   }
 }
 
@@ -58,6 +65,8 @@ function validateCloudProfileContract(
     presetId?: z.infer<typeof providerProfilePresetIdSchema> | null
     baseUrl?: string | null
     apiVersion?: string | null
+    region?: string | null
+    projectId?: string | null
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -73,6 +82,8 @@ function validateCloudProfileContract(
   const hasPresetId = typeof payload.presetId === 'string' && payload.presetId.trim().length > 0
   const hasBaseUrl = typeof payload.baseUrl === 'string' && payload.baseUrl.trim().length > 0
   const hasApiVersion = typeof payload.apiVersion === 'string' && payload.apiVersion.trim().length > 0
+  const hasRegion = typeof payload.region === 'string' && payload.region.trim().length > 0
+  const hasProjectId = typeof payload.projectId === 'string' && payload.projectId.trim().length > 0
 
   switch (payload.providerId) {
     case 'openai_codex':
@@ -96,6 +107,12 @@ function validateCloudProfileContract(
           path: ['apiVersion'],
           message: 'Cadence OpenAI Codex profiles do not accept `apiVersion` metadata.',
         })
+      }
+      if (hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: 'Cadence OpenAI Codex profiles do not accept `region` metadata.' })
+      }
+      if (hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Cadence OpenAI Codex profiles do not accept `projectId` metadata.' })
       }
       return
 
@@ -124,6 +141,12 @@ function validateCloudProfileContract(
           message: `Cadence does not accept apiVersion metadata for provider \`${payload.providerId}\`.`,
         })
       }
+      if (hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: `Cadence does not accept region metadata for provider \`${payload.providerId}\`.` })
+      }
+      if (hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: `Cadence does not accept projectId metadata for provider \`${payload.providerId}\`.` })
+      }
       return
     }
 
@@ -151,6 +174,27 @@ function validateCloudProfileContract(
           message: 'Cadence only accepts apiVersion metadata for custom OpenAI-compatible endpoints.',
         })
       }
+      if (hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: 'Cadence OpenAI-compatible profiles do not accept `region` metadata.' })
+      }
+      if (hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Cadence OpenAI-compatible profiles do not accept `projectId` metadata.' })
+      }
+      return
+
+    case 'ollama':
+      if (payload.presetId !== 'ollama') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['presetId'], message: 'Cadence requires presetId `ollama` for Ollama profiles.' })
+      }
+      if (hasApiVersion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['apiVersion'], message: 'Cadence does not accept apiVersion metadata for provider `ollama`.' })
+      }
+      if (hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: 'Cadence does not accept region metadata for provider `ollama`.' })
+      }
+      if (hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Cadence does not accept projectId metadata for provider `ollama`.' })
+      }
       return
 
     case 'azure_openai':
@@ -175,17 +219,61 @@ function validateCloudProfileContract(
           message: 'Cadence requires apiVersion metadata for Azure OpenAI profiles.',
         })
       }
+      if (hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: 'Cadence Azure OpenAI profiles do not accept `region` metadata.' })
+      }
+      if (hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Cadence Azure OpenAI profiles do not accept `projectId` metadata.' })
+      }
+      return
+
+    case 'bedrock':
+      if (payload.presetId !== 'bedrock') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['presetId'], message: 'Cadence requires presetId `bedrock` for Bedrock profiles.' })
+      }
+      if (!hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: 'Cadence requires region metadata for Bedrock profiles.' })
+      }
+      if (hasBaseUrl) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['baseUrl'], message: 'Cadence does not accept baseUrl metadata for provider `bedrock`.' })
+      }
+      if (hasApiVersion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['apiVersion'], message: 'Cadence does not accept apiVersion metadata for provider `bedrock`.' })
+      }
+      if (hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Cadence does not accept projectId metadata for provider `bedrock`.' })
+      }
+      return
+
+    case 'vertex':
+      if (payload.presetId !== 'vertex') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['presetId'], message: 'Cadence requires presetId `vertex` for Vertex profiles.' })
+      }
+      if (!hasRegion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['region'], message: 'Cadence requires region metadata for Vertex profiles.' })
+      }
+      if (!hasProjectId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['projectId'], message: 'Cadence requires projectId metadata for Vertex profiles.' })
+      }
+      if (hasBaseUrl) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['baseUrl'], message: 'Cadence does not accept baseUrl metadata for provider `vertex`.' })
+      }
+      if (hasApiVersion) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['apiVersion'], message: 'Cadence does not accept apiVersion metadata for provider `vertex`.' })
+      }
       return
   }
 }
 
 export const providerProfileReadinessStatusSchema = z.enum(['ready', 'missing', 'malformed'])
+export const providerProfileReadinessProofSchema = z.enum(['oauth_session', 'stored_secret', 'local', 'ambient'])
 
 export const providerProfileReadinessSchema = z
   .object({
     ready: z.boolean(),
     status: providerProfileReadinessStatusSchema,
-    credentialUpdatedAt: optionalIsoTimestampSchema,
+    proof: providerProfileReadinessProofSchema.nullable().optional(),
+    proofUpdatedAt: optionalIsoTimestampSchema,
   })
   .strict()
   .superRefine((readiness, ctx) => {
@@ -198,11 +286,19 @@ export const providerProfileReadinessSchema = z
         })
       }
 
-      if (!readiness.credentialUpdatedAt) {
+      if (!readiness.proof) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['credentialUpdatedAt'],
-          message: 'Ready provider-profile rows must include `credentialUpdatedAt`.',
+          path: ['proof'],
+          message: 'Ready provider-profile rows must include a proof source.',
+        })
+      }
+
+      if (!readiness.proofUpdatedAt) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['proofUpdatedAt'],
+          message: 'Ready provider-profile rows must include `proofUpdatedAt`.',
         })
       }
 
@@ -217,19 +313,27 @@ export const providerProfileReadinessSchema = z
       })
     }
 
-    if (readiness.status === 'missing' && readiness.credentialUpdatedAt) {
+    if (readiness.proof) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['credentialUpdatedAt'],
-        message: 'Missing provider-profile readiness rows must not include `credentialUpdatedAt`.',
+        path: ['proof'],
+        message: 'Non-ready provider-profile rows must not include `proof`.',
       })
     }
 
-    if (readiness.status === 'malformed' && !readiness.credentialUpdatedAt) {
+    if (readiness.status === 'missing' && readiness.proofUpdatedAt) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['credentialUpdatedAt'],
-        message: 'Malformed provider-profile readiness rows must include `credentialUpdatedAt`.',
+        path: ['proofUpdatedAt'],
+        message: 'Missing provider-profile readiness rows must not include `proofUpdatedAt`.',
+      })
+    }
+
+    if (readiness.status === 'malformed' && !readiness.proofUpdatedAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['proofUpdatedAt'],
+        message: 'Malformed provider-profile readiness rows must include `proofUpdatedAt`.',
       })
     }
   })
@@ -244,6 +348,8 @@ export const providerProfileSchema = z
     presetId: providerProfilePresetIdSchema.nullable().optional(),
     baseUrl: optionalUrlSchema,
     apiVersion: z.string().trim().min(1).nullable().optional(),
+    region: z.string().trim().min(1).nullable().optional(),
+    projectId: z.string().trim().min(1).nullable().optional(),
     active: z.boolean(),
     readiness: providerProfileReadinessSchema,
     migratedFromLegacy: z.boolean(),
@@ -266,6 +372,8 @@ export const providerProfileSchema = z
         presetId: profile.presetId,
         baseUrl: profile.baseUrl,
         apiVersion: profile.apiVersion,
+        region: profile.region,
+        projectId: profile.projectId,
       },
       ctx,
     )
@@ -361,6 +469,8 @@ export const upsertProviderProfileRequestSchema = z
     presetId: providerProfilePresetIdSchema.nullable().optional(),
     baseUrl: optionalUrlSchema,
     apiVersion: z.string().trim().min(1).nullable().optional(),
+    region: z.string().trim().min(1).nullable().optional(),
+    projectId: z.string().trim().min(1).nullable().optional(),
     apiKey: z.string().nullable().optional(),
     activate: z.boolean().optional(),
   })
@@ -381,15 +491,17 @@ export const upsertProviderProfileRequestSchema = z
         presetId: payload.presetId,
         baseUrl: payload.baseUrl,
         apiVersion: payload.apiVersion,
+        region: payload.region,
+        projectId: payload.projectId,
       },
       ctx,
     )
 
-    if (payload.providerId === 'openai_codex' && typeof payload.apiKey === 'string' && payload.apiKey.trim().length > 0) {
+    if (['openai_codex', 'ollama', 'bedrock', 'vertex'].includes(payload.providerId) && typeof payload.apiKey === 'string' && payload.apiKey.trim().length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['apiKey'],
-        message: 'Cadence OpenAI Codex profiles use OAuth and do not accept `apiKey` payloads.',
+        message: `Cadence provider \`${payload.providerId}\` does not accept app-local apiKey payloads.`,
       })
     }
   })
@@ -401,6 +513,7 @@ export const setActiveProviderProfileRequestSchema = z
   .strict()
 
 export type ProviderProfileReadinessStatusDto = z.infer<typeof providerProfileReadinessStatusSchema>
+export type ProviderProfileReadinessProofDto = z.infer<typeof providerProfileReadinessProofSchema>
 export type ProviderProfileReadinessDto = z.infer<typeof providerProfileReadinessSchema>
 export type ProviderProfileDto = z.infer<typeof providerProfileSchema>
 export type ProviderProfilesMigrationDto = z.infer<typeof providerProfilesMigrationSchema>

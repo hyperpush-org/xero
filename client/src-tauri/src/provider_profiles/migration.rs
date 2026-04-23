@@ -153,7 +153,7 @@ fn build_legacy_provider_profiles_snapshot(
 
     Ok(Some(ProviderProfilesSnapshot {
         metadata: ProviderProfilesMetadataFile {
-            version: 2,
+            version: 3,
             active_profile_id: if active_provider_id == OPENROUTER_PROVIDER_ID {
                 OPENROUTER_DEFAULT_PROFILE_ID.into()
             } else {

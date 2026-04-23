@@ -14,9 +14,10 @@ use crate::{
     },
     runtime::{
         resolve_runtime_provider_identity, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
-        GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID,
-        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND,
-        OPENROUTER_PROVIDER_ID,
+        BEDROCK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND,
+        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_PROVIDER_ID,
+        VERTEX_PROVIDER_ID,
     },
 };
 
@@ -27,7 +28,7 @@ pub const OPENROUTER_DEFAULT_PROFILE_ID: &str = "openrouter-default";
 pub const ANTHROPIC_DEFAULT_PROFILE_ID: &str = "anthropic-default";
 pub const GITHUB_MODELS_DEFAULT_PROFILE_ID: &str = "github_models-default";
 pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "openai/gpt-4.1-mini";
-const PROVIDER_PROFILES_SCHEMA_VERSION: u32 = 2;
+const PROVIDER_PROFILES_SCHEMA_VERSION: u32 = 3;
 const OPENAI_CODEX_DEFAULT_PROFILE_LABEL: &str = "OpenAI Codex";
 const OPENROUTER_DEFAULT_PROFILE_LABEL: &str = "OpenRouter";
 const ANTHROPIC_DEFAULT_PROFILE_LABEL: &str = "Anthropic";
@@ -61,6 +62,10 @@ pub struct ProviderProfileRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_link: Option<ProviderProfileCredentialLink>,
     #[serde(default)]
     pub migrated_from_legacy: bool,
@@ -80,6 +85,10 @@ pub enum ProviderProfileCredentialLink {
     },
     #[serde(rename = "api_key", alias = "openrouter", alias = "anthropic")]
     ApiKey { updated_at: String },
+    #[serde(rename = "local")]
+    Local { updated_at: String },
+    #[serde(rename = "ambient")]
+    Ambient { updated_at: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -137,11 +146,20 @@ pub enum ProviderProfileReadinessStatus {
     Malformed,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ProviderProfileReadinessProof {
+    OAuthSession,
+    StoredSecret,
+    Local,
+    Ambient,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderProfileReadinessProjection {
     pub ready: bool,
     pub status: ProviderProfileReadinessStatus,
-    pub credential_updated_at: Option<String>,
+    pub proof: Option<ProviderProfileReadinessProof>,
+    pub proof_updated_at: Option<String>,
 }
 
 impl ProviderProfilesSnapshot {
@@ -251,7 +269,8 @@ impl ProviderProfileRecord {
                 ProviderProfileReadinessProjection {
                     ready: true,
                     status: ProviderProfileReadinessStatus::Ready,
-                    credential_updated_at: Some(updated_at.clone()),
+                    proof: Some(ProviderProfileReadinessProof::OAuthSession),
+                    proof_updated_at: Some(updated_at.clone()),
                 }
             }
             Some(ProviderProfileCredentialLink::ApiKey { updated_at }) => {
@@ -262,20 +281,39 @@ impl ProviderProfileRecord {
                     ProviderProfileReadinessProjection {
                         ready: true,
                         status: ProviderProfileReadinessStatus::Ready,
-                        credential_updated_at: Some(updated_at.clone()),
+                        proof: Some(ProviderProfileReadinessProof::StoredSecret),
+                        proof_updated_at: Some(updated_at.clone()),
                     }
                 } else {
                     ProviderProfileReadinessProjection {
                         ready: false,
                         status: ProviderProfileReadinessStatus::Malformed,
-                        credential_updated_at: Some(updated_at.clone()),
+                        proof: None,
+                        proof_updated_at: Some(updated_at.clone()),
                     }
+                }
+            }
+            Some(ProviderProfileCredentialLink::Local { updated_at }) => {
+                ProviderProfileReadinessProjection {
+                    ready: true,
+                    status: ProviderProfileReadinessStatus::Ready,
+                    proof: Some(ProviderProfileReadinessProof::Local),
+                    proof_updated_at: Some(updated_at.clone()),
+                }
+            }
+            Some(ProviderProfileCredentialLink::Ambient { updated_at }) => {
+                ProviderProfileReadinessProjection {
+                    ready: true,
+                    status: ProviderProfileReadinessStatus::Ready,
+                    proof: Some(ProviderProfileReadinessProof::Ambient),
+                    proof_updated_at: Some(updated_at.clone()),
                 }
             }
             None => ProviderProfileReadinessProjection {
                 ready: false,
                 status: ProviderProfileReadinessStatus::Missing,
-                credential_updated_at: None,
+                proof: None,
+                proof_updated_at: None,
             },
         }
     }
@@ -451,12 +489,44 @@ pub(crate) fn validate_provider_profiles_contract(
                 )?;
             }
             Some(ProviderProfileCredentialLink::ApiKey { .. }) => {
-                if profile.provider_id == OPENAI_CODEX_PROVIDER_ID {
+                if !provider_supports_api_key_credential(profile.provider_id.as_str()) {
                     return Err(CommandError::user_fixable(
                         "provider_profiles_invalid",
                         format!(
-                            "Cadence rejected provider profile `{}` because OpenAI Codex profiles cannot use api_key credential links.",
-                            profile.profile_id
+                            "Cadence rejected provider profile `{}` because provider `{}` cannot use api_key credential links.",
+                            profile.profile_id, profile.provider_id
+                        ),
+                    ));
+                }
+            }
+            Some(ProviderProfileCredentialLink::Local { .. }) => {
+                ensure_no_api_key_secret(
+                    profile.profile_id.as_str(),
+                    &credentials_by_profile,
+                    credentials_path,
+                )?;
+                if !provider_supports_local_readiness(profile) {
+                    return Err(CommandError::user_fixable(
+                        "provider_profiles_invalid",
+                        format!(
+                            "Cadence rejected provider profile `{}` because provider `{}` cannot use local readiness proof.",
+                            profile.profile_id, profile.provider_id
+                        ),
+                    ));
+                }
+            }
+            Some(ProviderProfileCredentialLink::Ambient { .. }) => {
+                ensure_no_api_key_secret(
+                    profile.profile_id.as_str(),
+                    &credentials_by_profile,
+                    credentials_path,
+                )?;
+                if !provider_supports_ambient_readiness(profile.provider_id.as_str()) {
+                    return Err(CommandError::user_fixable(
+                        "provider_profiles_invalid",
+                        format!(
+                            "Cadence rejected provider profile `{}` because provider `{}` cannot use ambient readiness proof.",
+                            profile.profile_id, profile.provider_id
                         ),
                     ));
                 }
@@ -606,6 +676,8 @@ pub(crate) fn build_openai_default_profile(
         preset_id: None,
         base_url: None,
         api_version: None,
+        region: None,
+        project_id: None,
         credential_link,
         migrated_from_legacy: migrated_at.is_some(),
         migrated_at: migrated_at.map(str::to_owned),
@@ -628,6 +700,8 @@ pub(crate) fn build_openrouter_default_profile(
         preset_id: Some(OPENROUTER_PROVIDER_ID.into()),
         base_url: None,
         api_version: None,
+        region: None,
+        project_id: None,
         credential_link,
         migrated_from_legacy: migrated_at.is_some(),
         migrated_at: migrated_at.map(str::to_owned),
@@ -650,6 +724,8 @@ pub(crate) fn build_anthropic_default_profile(
         preset_id: Some(ANTHROPIC_PROVIDER_ID.into()),
         base_url: None,
         api_version: None,
+        region: None,
+        project_id: None,
         credential_link,
         migrated_from_legacy: migrated_at.is_some(),
         migrated_at: migrated_at.map(str::to_owned),
@@ -661,7 +737,7 @@ fn validate_provider_profiles_metadata(
     metadata: ProviderProfilesMetadataFile,
     path: &Path,
 ) -> CommandResult<ProviderProfilesMetadataFile> {
-    if metadata.version != 1 && metadata.version != PROVIDER_PROFILES_SCHEMA_VERSION {
+    if metadata.version != 1 && metadata.version != 2 && metadata.version != PROVIDER_PROFILES_SCHEMA_VERSION {
         return Err(CommandError::user_fixable(
             "provider_profiles_invalid",
             format!(
@@ -823,7 +899,9 @@ fn validate_provider_profile_record(
     let preset_id = normalize_optional_text(profile.preset_id);
     let base_url = normalize_optional_text(profile.base_url);
     let api_version = normalize_optional_text(profile.api_version);
-    let (preset_id, base_url, api_version) = validate_cloud_profile_metadata(
+    let region = normalize_optional_text(profile.region);
+    let project_id = normalize_optional_text(profile.project_id);
+    let (preset_id, base_url, api_version, region, project_id) = validate_cloud_profile_metadata(
         provider.provider_id,
         provider.runtime_kind,
         profile_id,
@@ -832,6 +910,8 @@ fn validate_provider_profile_record(
         preset_id,
         base_url,
         api_version,
+        region,
+        project_id,
     )?;
 
     let credential_link = match profile.credential_link {
@@ -875,6 +955,16 @@ fn validate_provider_profile_record(
                 updated_at: normalize_updated_at(updated_at),
             })
         }
+        Some(ProviderProfileCredentialLink::Local { updated_at }) => {
+            Some(ProviderProfileCredentialLink::Local {
+                updated_at: normalize_updated_at(updated_at),
+            })
+        }
+        Some(ProviderProfileCredentialLink::Ambient { updated_at }) => {
+            Some(ProviderProfileCredentialLink::Ambient {
+                updated_at: normalize_updated_at(updated_at),
+            })
+        }
         None => None,
     };
 
@@ -887,6 +977,8 @@ fn validate_provider_profile_record(
         preset_id,
         base_url,
         api_version,
+        region,
+        project_id,
         credential_link,
         migrated_from_legacy: profile.migrated_from_legacy,
         migrated_at: profile.migrated_at.map(normalize_updated_at),
@@ -903,12 +995,22 @@ fn validate_cloud_profile_metadata(
     preset_id: Option<String>,
     base_url: Option<String>,
     api_version: Option<String>,
-) -> CommandResult<(Option<String>, Option<String>, Option<String>)> {
+    region: Option<String>,
+    project_id: Option<String>,
+) -> CommandResult<(
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+)> {
     let mut preset_id = preset_id;
     let base_url = base_url;
     let api_version = api_version;
+    let region = region;
+    let project_id = project_id;
 
-    if schema_version == 1 && provider_id != OPENAI_CODEX_PROVIDER_ID && preset_id.is_none() {
+    if schema_version <= 2 && provider_id != OPENAI_CODEX_PROVIDER_ID && preset_id.is_none() {
         preset_id = Some(provider_id.to_owned());
     }
 
@@ -917,6 +1019,8 @@ fn validate_cloud_profile_metadata(
             ensure_absent_metadata_field(profile_id, path, "presetId", preset_id.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "region", region.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
         }
         OPENROUTER_PROVIDER_ID
         | ANTHROPIC_PROVIDER_ID
@@ -925,6 +1029,8 @@ fn validate_cloud_profile_metadata(
             require_exact_preset_id(profile_id, path, provider_id, preset_id.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "region", region.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
         }
         OPENAI_API_PROVIDER_ID => {
             if base_url.is_none() {
@@ -962,6 +1068,28 @@ fn validate_cloud_profile_metadata(
                     ),
                 ));
             }
+            ensure_absent_metadata_field(profile_id, path, "region", region.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
+        }
+        OLLAMA_PROVIDER_ID => {
+            if runtime_kind != OPENAI_COMPATIBLE_RUNTIME_KIND {
+                return Err(CommandError::user_fixable(
+                    "provider_profiles_invalid",
+                    format!(
+                        "Cadence rejected provider profile `{}` in {} because Ollama profiles must use runtimeKind `{}`.",
+                        profile_id,
+                        path.display(),
+                        OPENAI_COMPATIBLE_RUNTIME_KIND
+                    ),
+                ));
+            }
+            require_exact_preset_id(profile_id, path, OLLAMA_PROVIDER_ID, preset_id.as_deref())?;
+            if let Some(base_url) = base_url.as_deref() {
+                validate_base_url(profile_id, path, base_url)?;
+            }
+            ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "region", region.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
         }
         AZURE_OPENAI_PROVIDER_ID => {
             if runtime_kind != OPENAI_COMPATIBLE_RUNTIME_KIND {
@@ -1002,6 +1130,44 @@ fn validate_cloud_profile_metadata(
                     ),
                 ));
             }
+            ensure_absent_metadata_field(profile_id, path, "region", region.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
+        }
+        BEDROCK_PROVIDER_ID => {
+            if runtime_kind != ANTHROPIC_PROVIDER_ID {
+                return Err(CommandError::user_fixable(
+                    "provider_profiles_invalid",
+                    format!(
+                        "Cadence rejected provider profile `{}` in {} because Bedrock profiles must use runtimeKind `{}`.",
+                        profile_id,
+                        path.display(),
+                        ANTHROPIC_PROVIDER_ID
+                    ),
+                ));
+            }
+            require_exact_preset_id(profile_id, path, BEDROCK_PROVIDER_ID, preset_id.as_deref())?;
+            require_non_empty_metadata_field(profile_id, path, "region", region.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
+        }
+        VERTEX_PROVIDER_ID => {
+            if runtime_kind != ANTHROPIC_PROVIDER_ID {
+                return Err(CommandError::user_fixable(
+                    "provider_profiles_invalid",
+                    format!(
+                        "Cadence rejected provider profile `{}` in {} because Vertex profiles must use runtimeKind `{}`.",
+                        profile_id,
+                        path.display(),
+                        ANTHROPIC_PROVIDER_ID
+                    ),
+                ));
+            }
+            require_exact_preset_id(profile_id, path, VERTEX_PROVIDER_ID, preset_id.as_deref())?;
+            require_non_empty_metadata_field(profile_id, path, "region", region.as_deref())?;
+            require_non_empty_metadata_field(profile_id, path, "projectId", project_id.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
+            ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
         }
         other => {
             return Err(CommandError::user_fixable(
@@ -1028,7 +1194,59 @@ fn validate_cloud_profile_metadata(
         ));
     }
 
-    Ok((preset_id, base_url, api_version))
+    Ok((preset_id, base_url, api_version, region, project_id))
+}
+
+fn provider_supports_api_key_credential(provider_id: &str) -> bool {
+    !matches!(
+        provider_id,
+        OPENAI_CODEX_PROVIDER_ID | OLLAMA_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID
+    )
+}
+
+fn provider_supports_local_readiness(profile: &ProviderProfileRecord) -> bool {
+    profile.provider_id == OLLAMA_PROVIDER_ID
+        || (profile.provider_id == OPENAI_API_PROVIDER_ID
+            && profile
+                .base_url
+                .as_deref()
+                .is_some_and(is_local_endpoint_url))
+}
+
+fn provider_supports_ambient_readiness(provider_id: &str) -> bool {
+    matches!(provider_id, BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID)
+}
+
+fn require_non_empty_metadata_field(
+    profile_id: &str,
+    path: &Path,
+    field: &str,
+    value: Option<&str>,
+) -> CommandResult<()> {
+    if value.is_some() {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "provider_profiles_invalid",
+        format!(
+            "Cadence rejected provider profile `{}` in {} because field `{}` is required for that provider.",
+            profile_id,
+            path.display(),
+            field
+        ),
+    ))
+}
+
+fn is_local_endpoint_url(base_url: &str) -> bool {
+    let Ok(parsed) = Url::parse(base_url) else {
+        return false;
+    };
+
+    matches!(
+        parsed.host_str(),
+        Some("localhost") | Some("127.0.0.1") | Some("::1")
+    )
 }
 
 fn require_exact_preset_id(

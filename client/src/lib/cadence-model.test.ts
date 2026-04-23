@@ -368,7 +368,8 @@ function makeProviderProfiles(overrides: Record<string, unknown> = {}) {
         readiness: {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-16T14:05:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-16T14:05:00Z',
         },
         migratedFromLegacy: true,
         migratedAt: '2026-04-16T14:06:00Z',
@@ -386,7 +387,8 @@ function makeProviderProfiles(overrides: Record<string, unknown> = {}) {
         readiness: {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proof: null,
+          proofUpdatedAt: null,
         },
         migratedFromLegacy: false,
         migratedAt: null,
@@ -2902,7 +2904,8 @@ describe('cadence-model', () => {
             readiness: {
               ready: false,
               status: 'ready',
-              credentialUpdatedAt: null,
+              proof: null,
+              proofUpdatedAt: null,
             },
           },
         ],
@@ -2986,7 +2989,8 @@ describe('cadence-model', () => {
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3004,7 +3008,8 @@ describe('cadence-model', () => {
             readiness: {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proof: null,
+              proofUpdatedAt: null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3067,7 +3072,8 @@ describe('cadence-model', () => {
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3125,7 +3131,8 @@ describe('cadence-model', () => {
             readiness: {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proof: null,
+              proofUpdatedAt: null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3185,7 +3192,8 @@ describe('cadence-model', () => {
             readiness: {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proof: null,
+              proofUpdatedAt: null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3686,6 +3694,102 @@ describe('cadence-model', () => {
         },
       }),
     ).toThrow(/Skipped automatic dispatch outcomes must not include transition or handoff payloads/)
+  })
+
+  it('admits local and ambient provider-profile contracts without fake api keys', () => {
+    expect(
+      providerProfilesSchema.parse({
+        activeProfileId: 'ollama-default',
+        profiles: [
+          {
+            profileId: 'ollama-default',
+            providerId: 'ollama',
+            runtimeKind: 'openai_compatible',
+            label: 'Ollama',
+            modelId: 'llama3.2',
+            presetId: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434/v1',
+            apiVersion: null,
+            region: null,
+            projectId: null,
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              proof: 'local',
+              proofUpdatedAt: '2026-04-21T06:30:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    ).toMatchObject({ activeProfileId: 'ollama-default' })
+
+    expect(
+      providerProfilesSchema.parse({
+        activeProfileId: 'vertex-default',
+        profiles: [
+          {
+            profileId: 'vertex-default',
+            providerId: 'vertex',
+            runtimeKind: 'anthropic',
+            label: 'Vertex',
+            modelId: 'claude-3-7-sonnet@20250219',
+            presetId: 'vertex',
+            baseUrl: null,
+            apiVersion: null,
+            region: 'us-central1',
+            projectId: 'vertex-project',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              proof: 'ambient',
+              proofUpdatedAt: '2026-04-21T06:35:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    ).toMatchObject({ activeProfileId: 'vertex-default' })
+
+    expect(
+      runtimeSettingsSchema.parse({
+        providerId: 'ollama',
+        modelId: 'llama3.2',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: false,
+      }),
+    ).toMatchObject({ providerId: 'ollama', modelId: 'llama3.2' })
+
+    expect(
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'vertex-default',
+        providerId: 'vertex',
+        runtimeKind: 'anthropic',
+        label: 'Vertex',
+        modelId: 'claude-3-7-sonnet@20250219',
+        presetId: 'vertex',
+        region: 'us-central1',
+        projectId: 'vertex-project',
+        activate: true,
+      }),
+    ).toMatchObject({ providerId: 'vertex', runtimeKind: 'anthropic' })
+
+    expect(() =>
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'bedrock-default',
+        providerId: 'bedrock',
+        runtimeKind: 'anthropic',
+        label: 'Bedrock',
+        modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+        presetId: 'bedrock',
+        region: 'us-east-1',
+        apiKey: 'should-not-exist',
+      }),
+    ).toThrow(/does not accept app-local apiKey payloads/)
   })
 
   it('keeps percent math bounded when counts are invalid or exceed total', () => {

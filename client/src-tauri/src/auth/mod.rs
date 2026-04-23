@@ -279,9 +279,12 @@ pub fn start_provider_auth_flow(
             "Cadence binds Anthropic runtime sessions from the saved app-local provider-profile API key and does not support a browser login flow for that provider.",
         )),
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
-        | RuntimeProvider::GeminiAiStudio => Err(AuthFlowError::terminal(
+        | RuntimeProvider::GeminiAiStudio
+        | RuntimeProvider::Bedrock
+        | RuntimeProvider::Vertex => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
             "Cadence does not support a browser login flow for provider-profile cloud runtimes that bind through shared transport families.",
@@ -348,9 +351,12 @@ pub fn complete_provider_auth_flow<R: Runtime>(
             "Cadence does not complete an Anthropic browser login flow because Anthropic runtime sessions bind from the saved app-local provider-profile API key instead.",
         )),
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
-        | RuntimeProvider::GeminiAiStudio => Err(AuthFlowError::terminal(
+        | RuntimeProvider::GeminiAiStudio
+        | RuntimeProvider::Bedrock
+        | RuntimeProvider::Vertex => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
             "Cadence does not complete browser login flows for provider-profile cloud runtimes that bind through shared transport families.",
@@ -383,9 +389,12 @@ pub fn refresh_provider_auth_session<R: Runtime>(
             "Cadence does not refresh Anthropic runtime sessions through a browser auth store. Rebind from the saved app-local provider-profile API key instead.",
         )),
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
-        | RuntimeProvider::GeminiAiStudio => Err(AuthFlowError::terminal(
+        | RuntimeProvider::GeminiAiStudio
+        | RuntimeProvider::Bedrock
+        | RuntimeProvider::Vertex => Err(AuthFlowError::terminal(
             "auth_refresh_unavailable",
             RuntimeAuthPhase::Failed,
             "Cadence does not refresh provider-profile cloud runtimes through a browser auth store for shared transport families.",

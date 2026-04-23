@@ -607,6 +607,8 @@ fn upsert_runtime_settings_treats_missing_api_key_linkage_as_unconfigured() {
                 preset_id: Some("openrouter".into()),
                 base_url: None,
                 api_version: None,
+            region: None,
+            project_id: None,
                 credential_link: Some(ProviderProfileCredentialLink::ApiKey {
                     updated_at: "2026-04-21T01:00:00Z".into(),
                 }),
@@ -649,4 +651,108 @@ fn upsert_runtime_settings_treats_missing_api_key_linkage_as_unconfigured() {
             anthropic_api_key_configured: false,
         }
     );
+}
+
+
+#[test]
+fn get_runtime_settings_projects_ollama_provider_profiles_without_fake_api_keys() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, paths) = create_state(&root);
+    let app = build_mock_app(state);
+
+    let parent = paths
+        .provider_profiles_path
+        .parent()
+        .expect("provider profile parent");
+    std::fs::create_dir_all(parent).expect("create provider profile parent");
+    std::fs::write(
+        &paths.provider_profiles_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 3,
+            "activeProfileId": "ollama-default",
+            "profiles": [{
+                "profileId": "ollama-default",
+                "providerId": "ollama",
+                "runtimeKind": "openai_compatible",
+                "label": "Ollama",
+                "modelId": "llama3.2",
+                "presetId": "ollama",
+                "baseUrl": "http://127.0.0.1:11434/v1",
+                "credentialLink": {
+                    "kind": "local",
+                    "updated_at": "2026-04-21T06:30:00Z"
+                },
+                "updatedAt": "2026-04-21T06:30:00Z"
+            }],
+            "updatedAt": "2026-04-21T06:30:00Z"
+        }))
+        .expect("serialize provider profiles"),
+    )
+    .expect("write provider profiles file");
+
+    let settings = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
+        .expect("load ollama runtime settings");
+
+    assert_eq!(
+        settings,
+        RuntimeSettingsDto {
+            provider_id: "ollama".into(),
+            model_id: "llama3.2".into(),
+            openrouter_api_key_configured: false,
+            anthropic_api_key_configured: false,
+        }
+    );
+    assert!(!paths.provider_profile_credentials_path.exists());
+}
+
+#[test]
+fn get_runtime_settings_projects_vertex_provider_profiles_without_secret_flags() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, paths) = create_state(&root);
+    let app = build_mock_app(state);
+
+    let parent = paths
+        .provider_profiles_path
+        .parent()
+        .expect("provider profile parent");
+    std::fs::create_dir_all(parent).expect("create provider profile parent");
+    std::fs::write(
+        &paths.provider_profiles_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 3,
+            "activeProfileId": "vertex-default",
+            "profiles": [{
+                "profileId": "vertex-default",
+                "providerId": "vertex",
+                "runtimeKind": "anthropic",
+                "label": "Vertex",
+                "modelId": "claude-3-7-sonnet@20250219",
+                "presetId": "vertex",
+                "region": "us-central1",
+                "projectId": "vertex-project",
+                "credentialLink": {
+                    "kind": "ambient",
+                    "updated_at": "2026-04-21T06:35:00Z"
+                },
+                "updatedAt": "2026-04-21T06:35:00Z"
+            }],
+            "updatedAt": "2026-04-21T06:35:00Z"
+        }))
+        .expect("serialize provider profiles"),
+    )
+    .expect("write provider profiles file");
+
+    let settings = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
+        .expect("load vertex runtime settings");
+
+    assert_eq!(
+        settings,
+        RuntimeSettingsDto {
+            provider_id: "vertex".into(),
+            model_id: "claude-3-7-sonnet@20250219".into(),
+            openrouter_api_key_configured: false,
+            anthropic_api_key_configured: false,
+        }
+    );
+    assert!(!paths.provider_profile_credentials_path.exists());
 }

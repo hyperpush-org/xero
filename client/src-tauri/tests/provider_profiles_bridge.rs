@@ -6,7 +6,8 @@ use cadence_desktop_lib::{
     git::repository::CanonicalRepository,
     provider_profiles::{
         load_or_migrate_provider_profiles_from_paths, ProviderProfileCredentialLink,
-        ProviderProfileReadinessStatus, ANTHROPIC_DEFAULT_PROFILE_ID,
+        ProviderProfileReadinessProof, ProviderProfileReadinessStatus,
+        ANTHROPIC_DEFAULT_PROFILE_ID,
         GITHUB_MODELS_DEFAULT_PROFILE_ID, OPENAI_CODEX_DEFAULT_PROFILE_ID,
         OPENROUTER_DEFAULT_PROFILE_ID, OPENROUTER_FALLBACK_MODEL_ID,
     },
@@ -647,4 +648,141 @@ fn github_models_profile_store_rejects_api_version_override() {
 
     assert_eq!(error.code, "provider_profiles_invalid");
     assert!(error.message.contains("field `apiVersion` is not allowed"));
+}
+
+
+#[test]
+fn ollama_profile_store_accepts_local_readiness_without_secret_files() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let paths = create_paths(&root);
+
+    write_json(
+        &paths.provider_profiles_path,
+        serde_json::json!({
+            "version": 3,
+            "activeProfileId": "ollama-default",
+            "profiles": [{
+                "profileId": "ollama-default",
+                "providerId": "ollama",
+                "runtimeKind": "openai_compatible",
+                "label": "Ollama",
+                "modelId": "llama3.2",
+                "presetId": "ollama",
+                "baseUrl": "http://127.0.0.1:11434/v1",
+                "credentialLink": {
+                    "kind": "local",
+                    "updated_at": "2026-04-21T06:00:00Z"
+                },
+                "updatedAt": "2026-04-21T06:00:00Z"
+            }],
+            "updatedAt": "2026-04-21T06:00:00Z"
+        }),
+    );
+
+    let snapshot = load_or_migrate_provider_profiles_from_paths(
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )
+    .expect("load ollama provider profiles");
+
+    let profile = snapshot.profile("ollama-default").expect("ollama profile");
+    assert!(matches!(
+        profile.credential_link,
+        Some(ProviderProfileCredentialLink::Local { .. })
+    ));
+    let readiness = profile.readiness(&snapshot.credentials);
+    assert_eq!(readiness.status, ProviderProfileReadinessStatus::Ready);
+    assert_eq!(readiness.proof, Some(ProviderProfileReadinessProof::Local));
+    assert_eq!(readiness.proof_updated_at.as_deref(), Some("2026-04-21T06:00:00Z"));
+    assert!(!paths.provider_profile_credentials_path.exists());
+}
+
+#[test]
+fn bedrock_profile_store_accepts_ambient_readiness_without_secret_files() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let paths = create_paths(&root);
+
+    write_json(
+        &paths.provider_profiles_path,
+        serde_json::json!({
+            "version": 3,
+            "activeProfileId": "bedrock-default",
+            "profiles": [{
+                "profileId": "bedrock-default",
+                "providerId": "bedrock",
+                "runtimeKind": "anthropic",
+                "label": "Bedrock",
+                "modelId": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+                "presetId": "bedrock",
+                "region": "us-east-1",
+                "credentialLink": {
+                    "kind": "ambient",
+                    "updated_at": "2026-04-21T06:10:00Z"
+                },
+                "updatedAt": "2026-04-21T06:10:00Z"
+            }],
+            "updatedAt": "2026-04-21T06:10:00Z"
+        }),
+    );
+
+    let snapshot = load_or_migrate_provider_profiles_from_paths(
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )
+    .expect("load bedrock provider profiles");
+
+    let profile = snapshot.profile("bedrock-default").expect("bedrock profile");
+    assert_eq!(profile.region.as_deref(), Some("us-east-1"));
+    assert!(matches!(
+        profile.credential_link,
+        Some(ProviderProfileCredentialLink::Ambient { .. })
+    ));
+    let readiness = profile.readiness(&snapshot.credentials);
+    assert_eq!(readiness.status, ProviderProfileReadinessStatus::Ready);
+    assert_eq!(readiness.proof, Some(ProviderProfileReadinessProof::Ambient));
+    assert_eq!(readiness.proof_updated_at.as_deref(), Some("2026-04-21T06:10:00Z"));
+    assert!(!paths.provider_profile_credentials_path.exists());
+}
+
+#[test]
+fn vertex_profile_store_rejects_missing_project_id() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let paths = create_paths(&root);
+
+    write_json(
+        &paths.provider_profiles_path,
+        serde_json::json!({
+            "version": 3,
+            "activeProfileId": "vertex-default",
+            "profiles": [{
+                "profileId": "vertex-default",
+                "providerId": "vertex",
+                "runtimeKind": "anthropic",
+                "label": "Vertex",
+                "modelId": "claude-3-7-sonnet@20250219",
+                "presetId": "vertex",
+                "region": "us-central1",
+                "updatedAt": "2026-04-21T06:20:00Z"
+            }],
+            "updatedAt": "2026-04-21T06:20:00Z"
+        }),
+    );
+
+    let error = load_or_migrate_provider_profiles_from_paths(
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )
+    .expect_err("vertex project metadata should fail closed");
+
+    assert_eq!(error.code, "provider_profiles_invalid");
+    assert!(error.message.contains("projectId"));
 }

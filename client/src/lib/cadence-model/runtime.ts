@@ -31,8 +31,11 @@ export const runtimeProviderIdSchema = z.enum([
   'anthropic',
   'github_models',
   'openai_api',
+  'ollama',
   'azure_openai',
   'gemini_ai_studio',
+  'bedrock',
+  'vertex',
 ])
 export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'openai_codex', 'anthropic'])
 
