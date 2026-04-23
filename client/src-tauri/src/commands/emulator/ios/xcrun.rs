@@ -252,6 +252,128 @@ pub fn push_notification(udid: &str, bundle_id: &str, payload: &str) -> Result<(
     Ok(())
 }
 
+/// AppleScript-driven HID fallbacks for builds without the
+/// `ios-grpc` Cargo feature. These aren't a 1:1 replacement for
+/// idb_companion's gRPC HID — touch and swipe need the companion's
+/// HID surface because AppleScript `click at {x,y}` targets the host
+/// screen, not the simulator's device-pixel coordinate system. But
+/// the three most common automations (press Home, press Lock, type
+/// text) all reduce to Simulator.app keyboard shortcuts, so we can
+/// keep those working out of the box.
+pub mod hid_fallback {
+    use super::{focus_simulator, simulator_applescript};
+    use std::io::Result;
+
+    pub fn press_home(udid: &str) -> Result<()> {
+        focus_simulator(udid)?;
+        // Device → Home menu item is Cmd+Shift+H on every Simulator
+        // release since Xcode 9. Key code 4 = 'h'.
+        simulator_applescript("key code 4 using {command down, shift down}")
+    }
+
+    pub fn press_lock(udid: &str) -> Result<()> {
+        focus_simulator(udid)?;
+        // Cmd+L = Device → Lock. On iOS 18+ simulators this is the
+        // same effect as pressing the side button.
+        simulator_applescript("key code 37 using command down")
+    }
+
+    /// Double-tap Home to invoke the app switcher.
+    pub fn press_app_switcher(udid: &str) -> Result<()> {
+        focus_simulator(udid)?;
+        simulator_applescript(
+            "key code 4 using {command down, shift down}\n    delay 0.1\n    key code 4 using {command down, shift down}",
+        )
+    }
+
+    /// Trigger Siri via Device → Siri. Xcode 15+ exposes this as
+    /// Cmd+Shift+S inside Simulator.app.
+    pub fn press_siri(udid: &str) -> Result<()> {
+        focus_simulator(udid)?;
+        // Key code 1 = 's'.
+        simulator_applescript("key code 1 using {command down, shift down}")
+    }
+
+    /// Inject text via AppleScript keystroke. Newlines become return
+    /// presses so agents can type multi-line fields.
+    pub fn type_text(udid: &str, text: &str) -> Result<()> {
+        focus_simulator(udid)?;
+        let mut script = String::new();
+        for line in text.split('\n') {
+            if !line.is_empty() {
+                // AppleScript needs its double-quotes escaped; a
+                // literal `\"` inside an AppleScript string works, but
+                // we also need to handle backslashes.
+                let escaped = line.replace('\\', "\\\\").replace('"', "\\\"");
+                script.push_str(&format!("keystroke \"{escaped}\"\n    "));
+            }
+            // Inter-line newline becomes a Return keypress (key code 36).
+            script.push_str("key code 36\n    ");
+        }
+        // Strip the trailing Return we don't need (the last split-on-\n
+        // chunk was the final line, which doesn't end the user's input).
+        if !text.ends_with('\n') {
+            if let Some(idx) = script.rfind("key code 36") {
+                script.truncate(idx);
+            }
+        }
+        simulator_applescript(script.trim())
+    }
+}
+
+/// Bring Simulator.app to the foreground and point it at `udid`. The
+/// `-g` flag keeps the app backgrounded if possible, but some macOS
+/// releases ignore that when the app isn't already running. We always
+/// follow up with an activate in the caller for keystrokes that need
+/// focus.
+pub fn focus_simulator(udid: &str) -> Result<()> {
+    let status = Command::new("open")
+        .args(["-g", "-a", "Simulator", "--args", "-CurrentDeviceUDID", udid])
+        .status()?;
+    if !status.success() {
+        return Err(io_other(format!(
+            "could not launch Simulator.app: open exited {status}"
+        )));
+    }
+    // Give Simulator.app a brief moment to claim the window when we just
+    // launched it; System Events can't target a process that hasn't
+    // registered yet.
+    std::thread::sleep(Duration::from_millis(150));
+    Ok(())
+}
+
+/// Send an AppleScript keystroke to the `Simulator` process. `script`
+/// is the `tell process "Simulator" to ...` body — the boilerplate
+/// around it is prepended here so callers pass only the command
+/// clause.
+pub fn simulator_applescript(body: &str) -> Result<()> {
+    let script = format!(
+        r#"tell application "Simulator" to activate
+tell application "System Events"
+  tell process "Simulator"
+    {body}
+  end tell
+end tell"#
+    );
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .stderr(Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.contains("1743") || stderr.contains("not authorized") {
+            "Cadence is not allowed to drive the iOS Simulator. Grant Accessibility permission \
+             in System Settings → Privacy & Security → Accessibility, then try again."
+                .to_string()
+        } else {
+            format!("Simulator AppleScript failed: {stderr}")
+        };
+        return Err(io_other(message));
+    }
+    Ok(())
+}
+
 /// Set the simulator's UI orientation.
 ///
 /// iOS Simulator has never exposed a stable `simctl ui orientation`
@@ -266,69 +388,21 @@ pub fn push_notification(udid: &str, bundle_id: &str, payload: &str) -> Result<(
 /// (System Settings → Privacy & Security → Accessibility). If it's
 /// denied we surface a typed error pointing at the setting.
 pub fn set_orientation(udid: &str, value: &str) -> Result<()> {
-    // Ensure Simulator.app is running and pointed at our UDID. This is
-    // a no-op when it's already up — `open -a` just brings the
-    // existing instance forward. We still target the specific device
-    // so the keystroke doesn't rotate the wrong simulator window.
-    if let Err(err) = Command::new("open")
-        .args(["-g", "-a", "Simulator", "--args", "-CurrentDeviceUDID", udid])
-        .status()
-    {
-        return Err(io_other(format!(
-            "could not launch Simulator.app for rotation: {err}"
-        )));
-    }
-
-    // Give Simulator.app a brief moment to bring the window up if it
-    // was just launched — System Events can't target a process that
-    // isn't registered yet.
-    std::thread::sleep(Duration::from_millis(200));
-
+    focus_simulator(udid)?;
     // Key codes: 123 = Left Arrow, 124 = Right Arrow. Cmd+Left rotates
-    // the window counter-clockwise (portrait → landscapeLeft), Cmd+Right
-    // rotates clockwise (portrait → landscapeRight).
+    // counter-clockwise (portrait → landscapeLeft), Cmd+Right rotates
+    // clockwise (portrait → landscapeRight).
     let key_code = match value {
-        "portrait" | "portraitUpsideDown" => "124",
-        "landscapeLeft" | "landscape" => "123",
-        "landscapeRight" => "124",
+        "portrait" | "portraitUpsideDown" => 124,
+        "landscapeLeft" | "landscape" => 123,
+        "landscapeRight" => 124,
         other => {
             return Err(io_other(format!(
                 "unsupported orientation value: {other}"
             )));
         }
     };
-
-    let script = format!(
-        r#"tell application "Simulator" to activate
-tell application "System Events"
-  tell process "Simulator"
-    key code {key_code} using command down
-  end tell
-end tell"#
-    );
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .stderr(Stdio::piped())
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        // osascript error -1743 = "not authorized to send keystrokes",
-        // i.e. Accessibility permission is missing. Rewrite to a
-        // user-actionable message; otherwise pass the stderr through.
-        let message = if stderr.contains("1743") || stderr.contains("not authorized") {
-            "Cadence is not allowed to rotate the iOS Simulator. Grant Accessibility \
-             permission in System Settings → Privacy & Security → Accessibility, \
-             then try again."
-                .to_string()
-        } else {
-            format!("Simulator rotation via AppleScript failed: {stderr}")
-        };
-        return Err(io_other(message));
-    }
-    Ok(())
+    simulator_applescript(&format!("key code {key_code} using command down"))
 }
 
 fn device_state(udid: &str) -> Result<String> {

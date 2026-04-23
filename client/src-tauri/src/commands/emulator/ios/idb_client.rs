@@ -24,25 +24,38 @@ use super::input::HidEvent;
 /// Stable, frontend-exposed handle to a running idb_companion.
 pub struct IdbClient {
     grpc_port: u16,
+    /// Simulator UDID — kept alongside the gRPC port so the non-gRPC
+    /// HID fallback (AppleScript → Simulator.app) knows which device
+    /// window to focus.
+    udid: String,
     #[cfg(feature = "ios-grpc")]
     inner: grpc_impl::Runtime,
 }
 
 impl IdbClient {
-    pub fn new(grpc_port: u16) -> Self {
+    pub fn new(grpc_port: u16, udid: impl Into<String>) -> Self {
+        let udid = udid.into();
         #[cfg(feature = "ios-grpc")]
         {
             let inner = grpc_impl::Runtime::connect(grpc_port);
-            Self { grpc_port, inner }
+            Self {
+                grpc_port,
+                udid,
+                inner,
+            }
         }
         #[cfg(not(feature = "ios-grpc"))]
         {
-            Self { grpc_port }
+            Self { grpc_port, udid }
         }
     }
 
     pub fn grpc_port(&self) -> u16 {
         self.grpc_port
+    }
+
+    pub fn udid(&self) -> &str {
+        &self.udid
     }
 
     /// Open a bidirectional `VideoStream` RPC and push raw H.264 NAL
@@ -70,6 +83,13 @@ impl IdbClient {
     /// Send a single HID event over the bidirectional HID RPC. We open
     /// one short-lived stream per event; idb accepts this pattern and
     /// it keeps the call signature synchronous.
+    ///
+    /// When the `ios-grpc` feature is off we route the common button /
+    /// text events through an AppleScript fallback against Simulator.app
+    /// so dev builds still get working Home / Lock / text-injection
+    /// without a tonic rebuild. Touch / swipe still require the gRPC
+    /// path because AppleScript mouse coordinates can't reliably map
+    /// to device-pixel space.
     pub fn send_hid(&self, event: HidEvent) -> Result<(), CommandError> {
         #[cfg(feature = "ios-grpc")]
         {
@@ -77,11 +97,7 @@ impl IdbClient {
         }
         #[cfg(not(feature = "ios-grpc"))]
         {
-            let _ = event;
-            Err(grpc_unimplemented(
-                "HID.inject",
-                "enable the `ios-grpc` Cargo feature to link the vendored idb proto",
-            ))
+            send_hid_applescript(&self.udid, event)
         }
     }
 
@@ -162,6 +178,44 @@ fn grpc_unimplemented(method: &str, detail: &str) -> CommandError {
         "ios_idb_proto_missing",
         format!("idb gRPC `{method}` is not yet wired up in this Cadence build. {detail}."),
     )
+}
+
+/// AppleScript-powered HID fallback for builds without the
+/// `ios-grpc` feature. Handles Home, Lock, Siri, app-switcher, and
+/// text; surfaces a typed `ios_input_unsupported` error for touch
+/// gestures (those genuinely require the gRPC HID surface).
+#[cfg(not(feature = "ios-grpc"))]
+fn send_hid_applescript(udid: &str, event: HidEvent) -> Result<(), CommandError> {
+    use super::input::HardwareButton;
+    use super::xcrun::hid_fallback;
+
+    let map_err = |err: std::io::Error| {
+        CommandError::user_fixable("ios_input_fallback_failed", err.to_string())
+    };
+
+    match event {
+        HidEvent::Home => hid_fallback::press_home(udid).map_err(map_err),
+        HidEvent::Button { button } => match button {
+            HardwareButton::Home => hid_fallback::press_home(udid).map_err(map_err),
+            HardwareButton::Lock | HardwareButton::SideButton => {
+                hid_fallback::press_lock(udid).map_err(map_err)
+            }
+            HardwareButton::Siri => hid_fallback::press_siri(udid).map_err(map_err),
+            HardwareButton::VolumeUp | HardwareButton::VolumeDown => {
+                Err(CommandError::user_fixable(
+                    "ios_input_unsupported",
+                    "Volume buttons aren't available in this build. Rebuild Cadence with \
+                     `--features ios-grpc` to route HID through idb_companion.",
+                ))
+            }
+        },
+        HidEvent::Text { text } => hid_fallback::type_text(udid, &text).map_err(map_err),
+        HidEvent::Touch { .. } | HidEvent::Swipe { .. } => Err(CommandError::user_fixable(
+            "ios_input_unsupported",
+            "Touch and swipe gestures require idb_companion's HID RPC. Rebuild Cadence \
+             with `--features ios-grpc` to enable it.",
+        )),
+    }
 }
 
 // ---------- Real gRPC path -------------------------------------------------

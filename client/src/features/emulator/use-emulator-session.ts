@@ -71,7 +71,15 @@ export interface UseEmulatorSession {
   devices: DeviceDescriptor[]
   isStarting: boolean
   isStopping: boolean
+  /** Session-level error (boot failure, broken stream) — the canvas
+   * is replaced with this. */
   error: string | null
+  /** Transient error from a user-initiated action (tap, press key,
+   * rotate). The canvas stays visible and this renders as a banner
+   * that the UI can auto-dismiss. */
+  inputError: string | null
+  /** Clear the transient input error surface. */
+  dismissInputError: () => void
   orientation: EmulatorOrientation
   refreshDevices: () => Promise<DeviceDescriptor[]>
   start: (deviceId: string) => Promise<EmulatorStartResponse | null>
@@ -112,6 +120,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
   const [isStarting, setIsStarting] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [inputError, setInputError] = useState<string | null>(null)
   const devicesRef = useRef<DeviceDescriptor[]>([])
   devicesRef.current = devices
   const currentDeviceRef = useRef<DeviceDescriptor | null>(null)
@@ -259,9 +268,11 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
     try {
       await invoke("emulator_input", { request: input })
     } catch (err) {
-      // Input commands fire at high frequency; swallow individual failures to
-      // avoid flooding the error surface, but remember the last one.
-      setError(errorMessage(err))
+      // Input commands fire at high frequency (touch_move runs at
+      // ~60Hz during a drag). Route failures to the transient surface
+      // so they don't replace the video canvas — streamed frames are
+      // still arriving and the user can keep interacting.
+      setInputError(errorMessage(err))
     }
   }, [])
 
@@ -270,7 +281,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
     try {
       await invoke("emulator_press_key", { request: { key } })
     } catch (err) {
-      setError(errorMessage(err))
+      setInputError(errorMessage(err))
     }
   }, [])
 
@@ -286,11 +297,24 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
         await invoke("emulator_rotate", { request: { orientation: next } })
         setOrientation(next)
       } catch (err) {
-        setError(errorMessage(err))
+        setInputError(errorMessage(err))
       }
     },
     [],
   )
+
+  const dismissInputError = useCallback(() => {
+    setInputError(null)
+  }, [])
+
+  // Any session-level transition clears the input-error banner — a
+  // broken rotate isn't worth surfacing after the user starts a fresh
+  // device.
+  useEffect(() => {
+    if (status.phase === "idle" || status.phase === "stopped") {
+      setInputError(null)
+    }
+  }, [status.phase])
 
   return {
     status,
@@ -300,6 +324,8 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
     isStarting,
     isStopping,
     error,
+    inputError,
+    dismissInputError,
     orientation,
     refreshDevices,
     start,

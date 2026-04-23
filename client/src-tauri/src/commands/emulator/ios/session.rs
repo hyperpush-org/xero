@@ -263,7 +263,7 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<IosSession, Com
         )
     })?;
 
-    let client = Arc::new(IdbClient::new(companion.grpc_port));
+    let client = Arc::new(IdbClient::new(companion.grpc_port, device_id.clone()));
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let (width, height, video_handle, fallback_thread) = start_frame_pump(
         &app,
@@ -388,21 +388,42 @@ fn spawn_screenshot_fallback<R: Runtime + 'static>(
     let (width, height) = (initial.width(), initial.height());
     publish_png(&app, &bus, png, width, height);
 
-    let handle = thread::spawn(move || loop {
-        if shutdown.load(Ordering::Relaxed) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(600));
-        if shutdown.load(Ordering::Relaxed) {
-            break;
-        }
-        match xcrun::screenshot(&device_id) {
-            Ok(png) => {
-                publish_png(&app, &bus, png, width, height);
-            }
-            Err(err) => {
-                emit_error(&app, &device_id, format!("simctl screenshot: {err}"));
+    let handle = thread::spawn(move || {
+        // Tolerate transient screenshot failures — a single simctl hiccup
+        // shouldn't kill the whole frame pump. Exit only after the shutdown
+        // flag is set or the failure streak clearly means the simulator is
+        // gone.
+        const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+        let mut consecutive_failures = 0u32;
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
                 break;
+            }
+            std::thread::sleep(Duration::from_millis(600));
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            match xcrun::screenshot(&device_id) {
+                Ok(png) => {
+                    consecutive_failures = 0;
+                    publish_png(&app, &bus, png, width, height);
+                }
+                Err(err) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        emit_error(
+                            &app,
+                            &device_id,
+                            format!(
+                                "simctl screenshot failed {consecutive_failures} times in a row: {err}"
+                            ),
+                        );
+                        break;
+                    }
+                    // Back off a little so we don't spin on a transient
+                    // issue (e.g. simctl contending during a boot step).
+                    std::thread::sleep(Duration::from_millis(400));
+                }
             }
         }
     });
@@ -414,12 +435,17 @@ fn publish_png<R: Runtime>(
     app: &AppHandle<R>,
     bus: &Arc<FrameBus>,
     png_bytes: Vec<u8>,
-    width: u32,
-    height: u32,
+    _initial_width: u32,
+    _initial_height: u32,
 ) {
     let Ok(img) = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png) else {
         return;
     };
+    // Always trust the PNG's actual dimensions — rotation can change
+    // them mid-session and we don't want to feed the encoder the
+    // initial-boot dimensions against a rotated buffer.
+    let width = img.width();
+    let height = img.height();
     let rgba = img.to_rgba8();
     let mut out = Vec::with_capacity(rgba.len() / 4);
     let encoder = JpegEncoder::new_with_quality(Cursor::new(&mut out), 80);

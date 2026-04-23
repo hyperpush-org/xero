@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Square,
   Smartphone,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -355,7 +356,9 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         currentDevice={session.currentDevice}
         error={session.error}
         frameSeq={session.frame?.seq ?? null}
+        inputError={session.inputError}
         isStreaming={isStreaming}
+        onDismissInputError={session.dismissInputError}
         onInput={(payload) => void session.sendInput(payload)}
         onKeyDown={handleKeyDown}
         orientation={session.orientation}
@@ -376,7 +379,9 @@ interface ViewportProps {
   currentDevice: ReturnType<typeof useEmulatorSession>["currentDevice"]
   error: string | null
   frameSeq: number | null
+  inputError: string | null
   isStreaming: boolean
+  onDismissInputError: () => void
   onInput: (input: { kind: EmulatorInputKind; x?: number; y?: number }) => void
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
   orientation: EmulatorOrientation
@@ -388,7 +393,9 @@ function EmulatorViewport({
   currentDevice,
   error,
   frameSeq,
+  inputError,
   isStreaming,
+  onDismissInputError,
   onInput,
   onKeyDown,
   orientation,
@@ -497,6 +504,48 @@ function EmulatorViewport({
         draggable={false}
         src={frameSrc}
       />
+      <InputErrorToast message={inputError} onDismiss={onDismissInputError} />
+    </div>
+  )
+}
+
+function InputErrorToast({
+  message,
+  onDismiss,
+}: {
+  message: string | null
+  onDismiss: () => void
+}) {
+  // Auto-dismiss after a few seconds so repeated input failures don't
+  // pile up over the viewport. A manual dismiss button stays available
+  // for cases where the user wants to clear it sooner.
+  useEffect(() => {
+    if (!message) return
+    const handle = window.setTimeout(onDismiss, 6000)
+    return () => window.clearTimeout(handle)
+  }, [message, onDismiss])
+
+  if (!message) return null
+
+  return (
+    <div
+      aria-live="polite"
+      className={cn(
+        "pointer-events-auto absolute bottom-3 left-3 right-3 flex items-start gap-2",
+        "rounded-md border border-red-500/40 bg-red-500/15 px-2.5 py-1.5 text-[11px] text-red-100",
+        "shadow-md backdrop-blur-sm",
+      )}
+      role="status"
+    >
+      <span className="min-w-0 flex-1 break-words leading-snug">{message}</span>
+      <button
+        aria-label="Dismiss"
+        className="shrink-0 rounded-sm p-0.5 text-red-100/80 hover:bg-red-500/20 hover:text-red-50"
+        onClick={onDismiss}
+        type="button"
+      >
+        <X className="h-3 w-3" />
+      </button>
     </div>
   )
 }
