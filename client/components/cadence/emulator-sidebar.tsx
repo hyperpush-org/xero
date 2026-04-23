@@ -1,13 +1,22 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Apple, Loader2, Play, Square, Smartphone } from "lucide-react"
+import {
+  Apple,
+  Loader2,
+  Play,
+  RotateCcw,
+  Square,
+  Smartphone,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   useEmulatorSession,
   type EmulatorInputKind,
+  type EmulatorOrientation,
   type EmulatorPlatform,
 } from "@/src/features/emulator/use-emulator-session"
+import { EmulatorHardwareStrip } from "./emulator-hardware-strip"
 
 interface EmulatorSidebarProps {
   open: boolean
@@ -176,6 +185,70 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
     session.status.phase === "booting" ||
     session.status.phase === "connecting"
 
+  const handleRotate = useCallback(() => {
+    const next: EmulatorOrientation =
+      session.orientation === "portrait" ? "landscape" : "portrait"
+    void session.rotate(next)
+  }, [session])
+
+  const handlePressKey = useCallback(
+    (key: string) => {
+      void session.pressKey(key)
+    },
+    [session],
+  )
+
+  // Keyboard capture: when the viewport is focused, route printable chars to
+  // the device as text, arrow keys / modifiers as hardware keys, and let
+  // Cmd/Ctrl combinations pass through to Cadence so the user doesn't lose
+  // global shortcuts (Cmd+W, Cmd+S, etc.).
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!isStreaming) return
+      if (event.metaKey || event.ctrlKey) return
+
+      const key = event.key
+      if (key === "Enter") {
+        event.preventDefault()
+        void session.pressKey("enter")
+        return
+      }
+      if (key === "Backspace") {
+        event.preventDefault()
+        void session.pressKey("backspace")
+        return
+      }
+      if (key === "Tab") {
+        event.preventDefault()
+        void session.pressKey("tab")
+        return
+      }
+      if (key === "Escape") {
+        event.preventDefault()
+        void session.pressKey("escape")
+        return
+      }
+      if (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown") {
+        event.preventDefault()
+        const mapped =
+          key === "ArrowLeft"
+            ? "dpad_left"
+            : key === "ArrowRight"
+              ? "dpad_right"
+              : key === "ArrowUp"
+                ? "dpad_up"
+                : "dpad_down"
+        void session.pressKey(mapped)
+        return
+      }
+      if (key.length === 1) {
+        event.preventDefault()
+        void session.sendInput({ kind: "text", text: key })
+      }
+    },
+    [isStreaming, session],
+  )
+
   return (
     <aside
       aria-hidden={!open}
@@ -230,20 +303,32 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
             </select>
           ) : null}
           {isActive ? (
-            <button
-              aria-label="Stop device"
-              className="flex h-6 items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-60"
-              disabled={session.isStopping}
-              onClick={handleStop}
-              type="button"
-            >
-              {session.isStopping ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Square className="h-3 w-3" />
-              )}
-              Stop
-            </button>
+            <>
+              <button
+                aria-label={`Rotate ${session.orientation === "portrait" ? "to landscape" : "to portrait"}`}
+                className="flex h-6 w-6 items-center justify-center rounded-md border border-border/70 bg-background/40 text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
+                disabled={!isStreaming}
+                onClick={handleRotate}
+                title="Rotate"
+                type="button"
+              >
+                <RotateCcw className="h-3 w-3" />
+              </button>
+              <button
+                aria-label="Stop device"
+                className="flex h-6 items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-60"
+                disabled={session.isStopping}
+                onClick={handleStop}
+                type="button"
+              >
+                {session.isStopping ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Square className="h-3 w-3" />
+                )}
+                Stop
+              </button>
+            </>
           ) : (
             <button
               aria-label="Start device"
@@ -269,8 +354,16 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         frameSeq={session.frame?.seq ?? null}
         isStreaming={isStreaming}
         onInput={(payload) => void session.sendInput(payload)}
+        onKeyDown={handleKeyDown}
+        orientation={session.orientation}
         platformLabel={meta.label}
         status={session.status}
+      />
+
+      <EmulatorHardwareStrip
+        disabled={!isStreaming}
+        onPressKey={handlePressKey}
+        platform={platform}
       />
     </aside>
   )
@@ -282,6 +375,8 @@ interface ViewportProps {
   frameSeq: number | null
   isStreaming: boolean
   onInput: (input: { kind: EmulatorInputKind; x?: number; y?: number }) => void
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
+  orientation: EmulatorOrientation
   platformLabel: string
   status: ReturnType<typeof useEmulatorSession>["status"]
 }
@@ -292,6 +387,8 @@ function EmulatorViewport({
   frameSeq,
   isStreaming,
   onInput,
+  onKeyDown,
+  orientation,
   platformLabel,
   status,
 }: ViewportProps) {
@@ -374,17 +471,26 @@ function EmulatorViewport({
 
   return (
     <div
-      className="relative flex min-h-0 flex-1 items-center justify-center bg-black"
+      className={cn(
+        "relative flex min-h-0 flex-1 items-center justify-center bg-black outline-none",
+        "focus-visible:ring-1 focus-visible:ring-primary/60 focus-visible:ring-offset-0",
+      )}
+      onKeyDown={onKeyDown}
       onPointerCancel={handlePointerUp}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      role="application"
       style={{ touchAction: "none" }}
+      tabIndex={0}
     >
       <img
         ref={imgRef}
         alt={`${platformLabel} viewport`}
-        className="max-h-full max-w-full select-none"
+        className={cn(
+          "max-h-full max-w-full select-none transition-transform duration-150",
+          orientation === "landscape" && "rotate-90",
+        )}
         draggable={false}
         src={frameSrc}
       />

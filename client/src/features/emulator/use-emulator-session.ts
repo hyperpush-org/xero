@@ -62,6 +62,8 @@ export interface EmulatorInputPayload {
   button?: string
 }
 
+export type EmulatorOrientation = "portrait" | "landscape"
+
 export interface UseEmulatorSession {
   status: EmulatorStatus
   frame: EmulatorFrameInfo | null
@@ -70,10 +72,13 @@ export interface UseEmulatorSession {
   isStarting: boolean
   isStopping: boolean
   error: string | null
+  orientation: EmulatorOrientation
   refreshDevices: () => Promise<DeviceDescriptor[]>
   start: (deviceId: string) => Promise<EmulatorStartResponse | null>
   stop: () => Promise<void>
   sendInput: (input: EmulatorInputPayload) => Promise<void>
+  pressKey: (key: string) => Promise<void>
+  rotate: (orientation: EmulatorOrientation) => Promise<void>
 }
 
 const EMULATOR_FRAME_EVENT = "emulator:frame"
@@ -260,6 +265,33 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
     }
   }, [])
 
+  const pressKey = useCallback(async (key: string): Promise<void> => {
+    if (!isTauri()) return
+    try {
+      await invoke("emulator_press_key", { request: { key } })
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }, [])
+
+  const [orientation, setOrientation] = useState<EmulatorOrientation>("portrait")
+
+  const rotate = useCallback(
+    async (next: EmulatorOrientation): Promise<void> => {
+      if (!isTauri()) {
+        setOrientation(next)
+        return
+      }
+      try {
+        await invoke("emulator_rotate", { request: { orientation: next } })
+        setOrientation(next)
+      } catch (err) {
+        setError(errorMessage(err))
+      }
+    },
+    [],
+  )
+
   return {
     status,
     frame,
@@ -268,9 +300,12 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
     isStarting,
     isStopping,
     error,
+    orientation,
     refreshDevices,
     start,
     stop,
     sendInput,
+    pressKey,
+    rotate,
   }
 }
