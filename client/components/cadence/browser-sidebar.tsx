@@ -13,6 +13,11 @@ import {
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  useCookieImport,
+  type CookieImportStatus,
+  type DetectedBrowser,
+} from "./browser-cookie-import"
 
 const MIN_WIDTH = 320
 const RIGHT_PADDING = 200
@@ -65,25 +70,6 @@ interface BrowserLoadStatePayload {
 interface BrowserTabUpdatedPayload {
   tabs: BrowserTabMeta[]
 }
-
-interface DetectedBrowser {
-  id: string
-  label: string
-  available: boolean
-}
-
-interface CookieImportResult {
-  source: string
-  imported: number
-  skipped: number
-  domains: number
-}
-
-type ImportStatus =
-  | { kind: "idle" }
-  | { kind: "running"; source: string }
-  | { kind: "success"; source: string; result: CookieImportResult }
-  | { kind: "error"; source: string; message: string }
 
 function viewportDefaultWidth() {
   if (typeof window === "undefined") return 640
@@ -150,9 +136,13 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
   const [navError, setNavError] = useState<string | null>(null)
-  const [cookieBrowsers, setCookieBrowsers] = useState<DetectedBrowser[]>([])
   const [showCookieBanner, setShowCookieBanner] = useState(false)
-  const [importStatus, setImportStatus] = useState<ImportStatus>({ kind: "idle" })
+  const {
+    browsers: cookieBrowsers,
+    status: importStatus,
+    refresh: refreshCookieSources,
+    importFrom: importCookiesFromBrowser,
+  } = useCookieImport()
   const widthRef = useRef(width)
   widthRef.current = width
   const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -479,18 +469,6 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
     openUrl("https://www.google.com/", { newTab: true })
   }, [openUrl])
 
-  const loadCookieSources = useCallback(async () => {
-    if (!isTauri()) return [] as DetectedBrowser[]
-    try {
-      const list = (await invoke<DetectedBrowser[]>("browser_list_cookie_sources")) ?? []
-      setCookieBrowsers(list)
-      return list
-    } catch {
-      setCookieBrowsers([])
-      return []
-    }
-  }, [])
-
   // First-run prompt: once a webview exists and the user hasn't been prompted
   // yet, probe installed browsers and pop the banner. Keyed off tabs (not
   // sidebar open) because the import command needs a live webview to anchor
@@ -503,55 +481,25 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
 
     const prompted = readCookiePromptFlag()
 
-    void loadCookieSources().then((list) => {
+    void refreshCookieSources().then((list) => {
       if (prompted) return
       if (!list.some((browser) => browser.available)) return
       setShowCookieBanner(true)
     })
-  }, [open, tabs.length, loadCookieSources])
-
-  const markCookiePromptDone = useCallback(() => {
-    writeCookiePromptFlag()
-  }, [])
+  }, [open, tabs.length, refreshCookieSources])
 
   const handleImportCookies = useCallback(
     async (browser: DetectedBrowser) => {
-      if (!isTauri()) return
-      setImportStatus({ kind: "running", source: browser.id })
-      try {
-        const result = await invoke<CookieImportResult>("browser_import_cookies", {
-          source: browser.id,
-        })
-        setImportStatus({ kind: "success", source: browser.id, result })
-        markCookiePromptDone()
-      } catch (error) {
-        const message =
-          typeof error === "object" && error && "message" in error
-            ? String((error as { message?: unknown }).message ?? "")
-            : String(error)
-        setImportStatus({
-          kind: "error",
-          source: browser.id,
-          message: message || `Could not import from ${browser.label}.`,
-        })
-      }
+      await importCookiesFromBrowser(browser)
+      writeCookiePromptFlag()
     },
-    [markCookiePromptDone],
+    [importCookiesFromBrowser],
   )
 
   const handleDismissCookieBanner = useCallback(() => {
     setShowCookieBanner(false)
-    setImportStatus({ kind: "idle" })
-    markCookiePromptDone()
-  }, [markCookiePromptDone])
-
-  const handleOpenCookieBanner = useCallback(() => {
-    setImportStatus({ kind: "idle" })
-    setShowCookieBanner(true)
-    if (cookieBrowsers.length === 0) {
-      void loadCookieSources()
-    }
-  }, [cookieBrowsers.length, loadCookieSources])
+    writeCookiePromptFlag()
+  }, [])
 
   // Show the tab strip (and the + button) as soon as there's any tab — otherwise
   // users have no way to open a second tab because the new-tab trigger lives there.
@@ -663,17 +611,6 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
             <RotateCw className="h-3.5 w-3.5" />
           )}
         </button>
-        <button
-          aria-label="Import cookies"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-          disabled={!activeTab}
-          onClick={handleOpenCookieBanner}
-          title="Import cookies from another browser"
-          type="button"
-        >
-          <Cookie className="h-3.5 w-3.5" />
-        </button>
-
         <form className="ml-1 flex min-w-0 flex-1" onSubmit={handleSubmit}>
           <input
             aria-label="Address"
@@ -698,7 +635,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
           browsers={cookieBrowsers}
           onDismiss={handleDismissCookieBanner}
           onImport={handleImportCookies}
-          onRefresh={() => void loadCookieSources()}
+          onRefresh={() => void refreshCookieSources()}
           status={importStatus}
         />
       ) : null}
@@ -733,7 +670,7 @@ interface CookieImportBannerProps {
   onDismiss: () => void
   onImport: (browser: DetectedBrowser) => void
   onRefresh: () => void
-  status: ImportStatus
+  status: CookieImportStatus
 }
 
 function CookieImportBanner({

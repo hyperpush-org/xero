@@ -368,7 +368,7 @@ pub(crate) fn start_runtime_run_launches_anthropic_with_truthful_provider_identi
     let models_base_url = spawn_static_http_server_for_requests(
         200,
         r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"medium":{"supported":true},"high":{"supported":true}}}}]}"#,
-        2,
+        3,
     );
     let (state, _registry_path, _auth_store_path) = create_state(&root);
     let state = state.with_anthropic_auth_config_override(anthropic_auth_config(format!(

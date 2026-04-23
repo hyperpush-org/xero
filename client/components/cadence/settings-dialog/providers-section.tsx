@@ -52,11 +52,11 @@ export function ProvidersSection({
   onLogout,
 }: ProvidersSectionProps) {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div>
-        <h3 className="text-[13px] font-semibold text-foreground">Providers</h3>
-        <p className="mt-1 text-[12px] text-muted-foreground">
-          Manage app-local provider profiles, readiness, and active selection. Projects are not assigned to a provider here.
+        <h3 className="text-[14px] font-semibold text-foreground">Providers</h3>
+        <p className="mt-1.5 text-[13px] text-muted-foreground">
+          Pick a provider, manage its API key, and choose a model.
         </p>
       </div>
 

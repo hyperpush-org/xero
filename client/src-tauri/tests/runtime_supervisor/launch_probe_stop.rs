@@ -284,7 +284,7 @@ pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_
         snapshot.run.status == project_store::RuntimeRunStatus::Running
             && snapshot.run.transport.liveness
                 == project_store::RuntimeRunTransportLiveness::Reachable
-            && snapshot.last_checkpoint_sequence >= 5
+            && snapshot.last_checkpoint_sequence >= 1
     });
     assert_eq!(running.run.runtime_kind, "anthropic");
 
@@ -293,6 +293,10 @@ pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_
         SupervisorControlRequest::attach(project_id, "run-anthropic", None),
     );
     let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert!(
+        attached.latest_sequence.unwrap_or_default() >= 5,
+        "attach ack missing expected transcript sequence coverage: {attached:?}"
+    );
     assert!(attached.replayed_count >= 5, "attach ack: {attached:?}");
 
     let frames = read_event_frames(&mut reader, attached.replayed_count);

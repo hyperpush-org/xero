@@ -745,17 +745,17 @@ export function ProviderProfileForm({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {providerProfilesLoadError ? (
-        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-2.5">
+        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-[12px]">
+          <AlertDescription className="text-[13px]">
             {errorViewMessage(providerProfilesLoadError, "Failed to load app-local provider profiles.")}
             {onRefreshProviderProfiles ? (
               <Button
                 variant="outline"
                 size="sm"
-                className="mt-2 h-6 gap-1 text-[10px]"
+                className="mt-2.5 h-7 gap-1 text-[11px]"
                 disabled={isRefreshing}
                 onClick={() => void onRefreshProviderProfiles({ force: true }).catch(() => undefined)}
               >
@@ -768,29 +768,29 @@ export function ProviderProfileForm({
       ) : null}
 
       {providerProfilesSaveError ? (
-        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-2.5">
+        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-[12px]">
+          <AlertDescription className="text-[13px]">
             {errorViewMessage(providerProfilesSaveError, "Failed to save the selected provider profile.")}
           </AlertDescription>
         </Alert>
       ) : null}
 
       {selectedProfileUnavailableMessage ? (
-        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-2.5">
+        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-[12px]">{selectedProfileUnavailableMessage}</AlertDescription>
+          <AlertDescription className="text-[13px]">{selectedProfileUnavailableMessage}</AlertDescription>
         </Alert>
       ) : null}
 
       {formError ? (
-        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-2.5">
+        <Alert variant="destructive" className="border-destructive/30 bg-destructive/5 py-3">
           <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-[12px]">{formError}</AlertDescription>
+          <AlertDescription className="text-[13px]">{formError}</AlertDescription>
         </Alert>
       ) : null}
 
-      <div className="grid gap-2.5">
+      <div className="grid gap-3">
         {cards.map((card) => {
           const draft = getDraft(card)
           const isEditing = editingCardKey === card.key
