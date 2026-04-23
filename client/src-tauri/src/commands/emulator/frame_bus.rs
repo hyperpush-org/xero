@@ -82,7 +82,12 @@ pub fn publish_and_emit<R: Runtime>(
     bytes: Vec<u8>,
 ) -> u64 {
     let seq = bus.publish(width, height, bytes);
-    let _ = app.emit(EMULATOR_FRAME_EVENT, FramePayload { seq, width, height });
+    if let Err(err) = app.emit(EMULATOR_FRAME_EVENT, FramePayload { seq, width, height }) {
+        // We don't have a structured log surface here; stderr is enough
+        // to diagnose the "never see the device" class of bug where the
+        // webview bridge is dropping events before the listener attaches.
+        eprintln!("[emulator] frame emit failed (seq {seq}): {err}");
+    }
     seq
 }
 

@@ -30,7 +30,14 @@ tonic-build = { version = "0.12", optional = true }
 protoc-bin-vendored = { version = "3", optional = true }
 
 [features]
-default = []
+# `ios-grpc` ships in the default build so Home / Lock / touch / swipe /
+# typing all hit idb_companion's real HID RPC out of the box — without it
+# the iOS sidebar can still render frames via the simctl-screenshot
+# fallback, but every input gesture would fall back to AppleScript and
+# touch coordinates would be unavailable. The tonic/prost dependency
+# graph pulls in ~3 MB of transitive crates; worth paying for a
+# working iOS pipeline by default.
+default = ["ios-grpc"]
 # When enabled, `emulator_start` spins up a color-cycling frame generator
 # instead of launching a real device. Used for end-to-end testing of the
 # frame pipeline without an Android SDK / Xcode.
@@ -43,8 +50,8 @@ emulator-synthetic = []
 # the build artifact.
 emulator-live = ["dep:openh264", "ios-grpc"]
 # Compiles the vendored `proto/idb.proto` with `tonic-build` and links the
-# resulting gRPC client. Required for real iOS streaming; the default build
-# uses a simctl screenshot fallback so the sidebar still works without this.
+# resulting gRPC client. Required for real iOS streaming; builds without
+# this feature fall back to a simctl-screenshot poll + AppleScript HID.
 ios-grpc = ["dep:tonic", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:prost", "dep:tokio", "dep:tokio-stream"]
 
 [dependencies]

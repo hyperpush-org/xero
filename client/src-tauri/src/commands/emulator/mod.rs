@@ -599,16 +599,35 @@ pub fn emulator_rotate(
 pub fn emulator_subscribe_ready<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, EmulatorState>,
-) -> CommandResult<StatusPayload> {
+) -> CommandResult<SubscribeReadyResponse> {
     let active = state.active.lock().expect("emulator active mutex poisoned");
-    let payload = match active.as_ref() {
+    let status = match active.as_ref() {
         Some(device) => StatusPayload::new(StatusPhase::Streaming)
             .with_platform(device.platform().as_str())
             .with_device(device.device_id().to_string()),
         None => StatusPayload::new(StatusPhase::Stopped),
     };
-    let _ = app.emit(EMULATOR_STATUS_EVENT, payload.clone());
-    Ok(payload)
+    // Hand the frontend the current frame seq (if any) alongside the
+    // status. This closes a race on session startup: the backend can
+    // publish its first frame before the frontend's `listen` finishes
+    // registering, which would otherwise leave the UI stuck on
+    // "Waiting for first frame" even though FrameBus has something
+    // ready to serve.
+    let frame = state.frame_bus().latest().map(|f| FramePayload {
+        seq: f.seq,
+        width: f.width,
+        height: f.height,
+    });
+
+    let _ = app.emit(EMULATOR_STATUS_EVENT, status.clone());
+    Ok(SubscribeReadyResponse { status, frame })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeReadyResponse {
+    pub status: StatusPayload,
+    pub frame: Option<FramePayload>,
 }
 
 // ---------- Helpers ---------------------------------------------------------

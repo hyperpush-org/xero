@@ -309,6 +309,26 @@ fn start_frame_pump<R: Runtime + 'static>(
     let width_state_clone = Arc::clone(&width_state);
     let decoder_clone = Arc::clone(&decoder);
 
+    // Skip the H.264 path entirely when no decoder is linked. Opening
+    // idb's VideoStream would succeed but every NAL would error with
+    // DecodeError::Unavailable, so no frames would ever reach the
+    // canvas. The screenshot poll gives the user a functional (though
+    // lower-FPS) viewport instead.
+    let decoder_live = decoder
+        .lock()
+        .ok()
+        .map(|d| d.name() != "unavailable")
+        .unwrap_or(false);
+    if !decoder_live {
+        let (w, h, thread_handle) = spawn_screenshot_fallback(
+            app.clone(),
+            Arc::clone(bus),
+            device_id.to_string(),
+            shutdown,
+        )?;
+        return Ok((w, h, None, Some(thread_handle)));
+    }
+
     let video_cb = Box::new(move |nal: &[u8]| {
         let mut decoder_guard = decoder_clone.lock().expect("ios decoder mutex");
         match decoder_guard.decode(nal) {

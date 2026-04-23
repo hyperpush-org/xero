@@ -176,22 +176,32 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
     })
 
     // Ask the backend to re-emit the current status snapshot so we don't
-    // have to wait for the next transition.
+    // have to wait for the next transition. The response also carries
+    // the latest frame seq (if any) to defeat a startup race where
+    // the first EMULATOR_FRAME_EVENT can fire before `listen()`
+    // finishes registering.
     void invoke<{
-      phase: EmulatorStatus["phase"]
-      platform?: string | null
-      deviceId?: string | null
-      message?: string | null
+      status: {
+        phase: EmulatorStatus["phase"]
+        platform?: string | null
+        deviceId?: string | null
+        message?: string | null
+      }
+      frame: EmulatorFrameInfo | null
     }>("emulator_subscribe_ready")
       .then((payload) => {
         if (cancelled) return
-        if (!payload.platform || payload.platform === platformTag) {
+        const statusPayload = payload.status
+        if (!statusPayload.platform || statusPayload.platform === platformTag) {
           setStatus({
-            phase: payload.phase,
-            platform: payload.platform ?? null,
-            deviceId: payload.deviceId ?? null,
-            message: payload.message ?? null,
+            phase: statusPayload.phase,
+            platform: statusPayload.platform ?? null,
+            deviceId: statusPayload.deviceId ?? null,
+            message: statusPayload.message ?? null,
           })
+          if (payload.frame) {
+            setFrame((current) => current ?? payload.frame)
+          }
         }
       })
       .catch(() => {
@@ -315,6 +325,30 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
       setInputError(null)
     }
   }, [status.phase])
+
+  // Whenever phase transitions into streaming without a frame already
+  // cached, ask the backend for the latest frame info directly. This
+  // covers the case where listen() finishes registering after the first
+  // frame was emitted — subscribe_ready returns the current FrameBus
+  // head so the <img> can start rendering right away.
+  useEffect(() => {
+    if (status.phase !== "streaming" || frame) return
+    if (!isTauri()) return
+    let cancelled = false
+    void invoke<{ frame: EmulatorFrameInfo | null }>("emulator_subscribe_ready")
+      .then((payload) => {
+        if (cancelled) return
+        if (payload.frame) {
+          setFrame((current) => current ?? payload.frame)
+        }
+      })
+      .catch(() => {
+        /* best-effort re-seed */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [status.phase, frame])
 
   return {
     status,

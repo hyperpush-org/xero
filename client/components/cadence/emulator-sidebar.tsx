@@ -464,13 +464,17 @@ function EmulatorViewport({
   }
 
   if (!isStreaming || frameSrc === null || !currentDevice) {
+    const headline =
+      status.phase === "booting" || status.phase === "connecting"
+        ? `Starting ${platformLabel}…`
+        : isStreaming && !currentDevice
+          ? `${platformLabel} streaming`
+          : isStreaming
+            ? `Waiting for first frame…`
+            : `${platformLabel} not running`
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 bg-background/40 px-6 text-center">
-        <div className="text-[12px] font-medium text-foreground/85">
-          {status.phase === "booting" || status.phase === "connecting"
-            ? `Starting ${platformLabel}…`
-            : `${platformLabel} not running`}
-        </div>
+        <div className="text-[12px] font-medium text-foreground/85">{headline}</div>
         <div className="text-[11px] leading-relaxed text-muted-foreground">
           {status.message ??
             `Pick a device above and hit Start to stream the ${platformLabel.toLowerCase()}.`}
