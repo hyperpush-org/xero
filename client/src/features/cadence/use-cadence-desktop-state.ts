@@ -260,10 +260,11 @@ function getProviderModelCatalogDependencyKey(
 ): string {
   return [
     profile.providerId,
-    profile.modelId,
-    profile.presetId ?? 'none',
-    profile.baseUrl ?? 'none',
-    profile.apiVersion ?? 'none',
+    profile.runtimeKind,
+    profile.modelId.trim(),
+    profile.presetId?.trim() || 'none',
+    profile.baseUrl?.trim() || 'none',
+    profile.apiVersion?.trim() || 'none',
     profile.readiness.status,
     profile.readiness.ready ? 'ready' : 'not_ready',
     profile.readiness.credentialUpdatedAt ?? 'none',

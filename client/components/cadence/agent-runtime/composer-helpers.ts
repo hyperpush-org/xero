@@ -22,6 +22,7 @@ import {
 
 import { displayValue } from './shared-helpers'
 import { hasUsableRuntimeRunId } from './runtime-stream-helpers'
+import { getCloudProviderLabel, isApiKeyCloudProvider } from '@/src/lib/cadence-model/provider-presets'
 
 export interface ComposerModelOption {
   value: string
@@ -330,19 +331,11 @@ export function getSelectedProviderId(agent: AgentPaneView, runtimeSession: Runt
 }
 
 function getProviderDisplayLabel(providerId: string): string {
-  if (providerId === 'openrouter') {
-    return 'OpenRouter'
-  }
-
-  if (providerId === 'anthropic') {
-    return 'Anthropic'
-  }
-
-  return 'OpenAI Codex'
+  return getCloudProviderLabel(providerId)
 }
 
-function isApiKeyProvider(providerId: string): providerId is 'openrouter' | 'anthropic' {
-  return providerId === 'openrouter' || providerId === 'anthropic'
+function isApiKeyProvider(providerId: string): boolean {
+  return isApiKeyCloudProvider(providerId)
 }
 
 function hasConfiguredApiKey(options: {
@@ -350,12 +343,16 @@ function hasConfiguredApiKey(options: {
   selectedProfileReadiness?: ProviderProfileReadinessDto | null
   openrouterApiKeyConfigured: boolean
 }): boolean {
-  if (options.selectedProviderId === 'openrouter') {
-    return options.selectedProfileReadiness?.ready ?? options.openrouterApiKeyConfigured
+  if (!isApiKeyProvider(options.selectedProviderId)) {
+    return false
   }
 
-  if (options.selectedProviderId === 'anthropic') {
-    return options.selectedProfileReadiness?.ready ?? false
+  if (options.selectedProfileReadiness) {
+    return options.selectedProfileReadiness.status !== 'missing'
+  }
+
+  if (options.selectedProviderId === 'openrouter') {
+    return options.openrouterApiKeyConfigured
   }
 
   return false

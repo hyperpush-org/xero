@@ -25,6 +25,10 @@ import {
   type UpsertNotificationRouteRequestDto,
   type UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
+import {
+  formatProviderEndpointLabel,
+  isApiKeyCloudProvider,
+} from "@/src/lib/cadence-model/provider-presets"
 import { type OnboardingStepId } from "./types"
 
 const STEP_ORDER: Array<{ id: OnboardingStepId; showIndicator: boolean }> = [
@@ -51,15 +55,19 @@ function getProviderReview(providerProfiles: ProviderProfilesDto | null, runtime
     }
   }
 
-  if (activeProfile.providerId === "openrouter" || activeProfile.providerId === "anthropic") {
+  const customEndpointSuffix = activeProfile.baseUrl?.trim()
+    ? ` · ${formatProviderEndpointLabel(activeProfile)}`
+    : ""
+
+  if (isApiKeyCloudProvider(activeProfile.providerId)) {
     return activeProfile.readiness.ready
       ? {
           ready: true,
-          value: `${activeProfile.label} · API key saved`,
+          value: `${activeProfile.label}${customEndpointSuffix} · API key saved`,
         }
       : {
           ready: false,
-          value: `${activeProfile.label} · API key required`,
+          value: `${activeProfile.label}${customEndpointSuffix} · API key required`,
         }
   }
 
@@ -72,7 +80,7 @@ function getProviderReview(providerProfiles: ProviderProfilesDto | null, runtime
       }
     : {
         ready: true,
-        value: `${activeProfile.label} · active profile`,
+        value: `${activeProfile.label}${customEndpointSuffix} · active profile`,
       }
 }
 

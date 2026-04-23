@@ -7,6 +7,12 @@ import type {
   RuntimeStreamView,
 } from '@/src/lib/cadence-model'
 import { getActiveProviderProfile } from '@/src/lib/cadence-model'
+import {
+  getCloudProviderDefaultModelId,
+  getCloudProviderLabel,
+  isApiKeyCloudProvider,
+  isKnownCloudProviderId,
+} from '@/src/lib/cadence-model/provider-presets'
 
 export const DEFAULT_RUNTIME_PROVIDER_ID: RuntimeSettingsDto['providerId'] = 'openai_codex'
 
@@ -37,92 +43,46 @@ export interface ProviderMismatchCopyView {
 export function isKnownRuntimeProviderId(
   value: string | null | undefined,
 ): value is RuntimeSettingsDto['providerId'] {
-  return value === 'openrouter' || value === 'openai_codex' || value === 'anthropic'
+  return isKnownCloudProviderId(value)
 }
 
 export function getRuntimeProviderLabel(providerId: string | null | undefined): string {
-  if (providerId === 'openrouter') {
-    return 'OpenRouter'
-  }
-
-  if (providerId === 'openai_codex') {
-    return 'OpenAI Codex'
-  }
-
-  if (providerId === 'anthropic') {
-    return 'Anthropic'
-  }
-
   if (typeof providerId !== 'string' || providerId.trim().length === 0) {
     return 'Runtime provider'
   }
 
-  return providerId
-    .trim()
-    .split(/[_\s-]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
+  return getCloudProviderLabel(providerId)
 }
 
 export function getDefaultRuntimeModelId(providerId: RuntimeSettingsDto['providerId']): string {
-  if (providerId === 'openrouter' || providerId === 'anthropic') {
-    return ''
-  }
-
-  return 'openai_codex'
+  return getCloudProviderDefaultModelId(providerId)
 }
 
-function hasAnyReadyOpenRouterProfile(providerProfiles: ProviderProfilesDto | null | undefined): boolean {
-  return (
-    providerProfiles?.profiles.some(
-      (profile) => profile.providerId === 'openrouter' && profile.readiness.ready,
-    ) ?? false
-  )
+function hasAnyReadyProfile(
+  providerProfiles: ProviderProfilesDto | null | undefined,
+  providerId: RuntimeSettingsDto['providerId'],
+): boolean {
+  return providerProfiles?.profiles.some((profile) => profile.providerId === providerId && profile.readiness.ready) ?? false
 }
 
-function hasAnyReadyAnthropicProfile(providerProfiles: ProviderProfilesDto | null | undefined): boolean {
-  return (
-    providerProfiles?.profiles.some(
-      (profile) => profile.providerId === 'anthropic' && profile.readiness.ready,
-    ) ?? false
-  )
-}
-
-function isSelectedOpenRouterReady(selectedProvider: SelectedRuntimeProviderView): boolean {
-  if (selectedProvider.providerId !== 'openrouter') {
+function hasSelectedApiKeyProviderConfigured(selectedProvider: SelectedRuntimeProviderView): boolean {
+  if (!isApiKeyCloudProvider(selectedProvider.providerId)) {
     return false
   }
 
-  return selectedProvider.readiness?.ready ?? selectedProvider.openrouterApiKeyConfigured
-}
-
-function getSelectedOpenRouterReadinessStatus(
-  selectedProvider: SelectedRuntimeProviderView,
-): ProviderProfileReadinessDto['status'] | null {
-  if (selectedProvider.providerId !== 'openrouter') {
-    return null
+  if (selectedProvider.readiness) {
+    return selectedProvider.readiness.status !== 'missing'
   }
 
-  return selectedProvider.readiness?.status ?? null
-}
-
-function isSelectedAnthropicReady(selectedProvider: SelectedRuntimeProviderView): boolean {
-  if (selectedProvider.providerId !== 'anthropic') {
-    return false
+  if (selectedProvider.providerId === 'openrouter') {
+    return selectedProvider.openrouterApiKeyConfigured
   }
 
-  return selectedProvider.readiness?.ready ?? selectedProvider.anthropicApiKeyConfigured
-}
-
-function getSelectedAnthropicReadinessStatus(
-  selectedProvider: SelectedRuntimeProviderView,
-): ProviderProfileReadinessDto['status'] | null {
-  if (selectedProvider.providerId !== 'anthropic') {
-    return null
+  if (selectedProvider.providerId === 'anthropic') {
+    return selectedProvider.anthropicApiKeyConfigured
   }
 
-  return selectedProvider.readiness?.status ?? null
+  return false
 }
 
 interface SelectedApiKeyProviderState {
@@ -134,23 +94,15 @@ interface SelectedApiKeyProviderState {
 function getSelectedApiKeyProviderState(
   selectedProvider: SelectedRuntimeProviderView,
 ): SelectedApiKeyProviderState | null {
-  if (selectedProvider.providerId === 'openrouter') {
-    return {
-      providerLabel: selectedProvider.providerLabel,
-      ready: isSelectedOpenRouterReady(selectedProvider),
-      readinessStatus: getSelectedOpenRouterReadinessStatus(selectedProvider),
-    }
+  if (!isApiKeyCloudProvider(selectedProvider.providerId)) {
+    return null
   }
 
-  if (selectedProvider.providerId === 'anthropic') {
-    return {
-      providerLabel: selectedProvider.providerLabel,
-      ready: isSelectedAnthropicReady(selectedProvider),
-      readinessStatus: getSelectedAnthropicReadinessStatus(selectedProvider),
-    }
+  return {
+    providerLabel: selectedProvider.providerLabel,
+    ready: selectedProvider.readiness?.ready ?? false,
+    readinessStatus: selectedProvider.readiness?.status ?? (hasSelectedApiKeyProviderConfigured(selectedProvider) ? 'ready' : 'missing'),
   }
-
-  return null
 }
 
 function getSelectedRuntimeIdentityLabel(selectedProvider: SelectedRuntimeProviderView): string {
@@ -167,6 +119,17 @@ function getSelectedRuntimeIdentityLabel(selectedProvider: SelectedRuntimeProvid
   return `${profileLabel} (${profileId})`
 }
 
+function getApiKeyArticle(providerLabel: string): 'a' | 'an' {
+  const normalizedProviderLabel = providerLabel.trim().toLowerCase()
+  return normalizedProviderLabel.startsWith('a') || normalizedProviderLabel.startsWith('e') || normalizedProviderLabel.startsWith('i') || normalizedProviderLabel.startsWith('o') || normalizedProviderLabel.startsWith('u')
+    ? 'an'
+    : 'a'
+}
+
+function getConfigureApiKeyCopy(providerLabel: string, suffix: string): string {
+  return `Configure ${getApiKeyArticle(providerLabel)} ${providerLabel} API key in Settings${suffix}`
+}
+
 export function resolveSelectedRuntimeProvider(
   providerProfiles: ProviderProfilesDto | null,
   runtimeSettings: RuntimeSettingsDto | null,
@@ -181,8 +144,8 @@ export function resolveSelectedRuntimeProvider(
       providerLabel: getRuntimeProviderLabel(activeProfile.providerId),
       modelId: activeProfile.modelId,
       readiness: activeProfile.readiness,
-      openrouterApiKeyConfigured: hasAnyReadyOpenRouterProfile(providerProfiles),
-      anthropicApiKeyConfigured: hasAnyReadyAnthropicProfile(providerProfiles),
+      openrouterApiKeyConfigured: hasAnyReadyProfile(providerProfiles, 'openrouter'),
+      anthropicApiKeyConfigured: hasAnyReadyProfile(providerProfiles, 'anthropic'),
       source: 'provider_profiles',
     }
   }
@@ -207,7 +170,7 @@ export function resolveSelectedRuntimeProvider(
       profileLabel: null,
       providerId: runtimeSession.providerId,
       providerLabel: getRuntimeProviderLabel(runtimeSession.providerId),
-      modelId: runtimeSession.runtimeKind,
+      modelId: null,
       readiness: null,
       openrouterApiKeyConfigured: runtimeSession.providerId === 'openrouter',
       anthropicApiKeyConfigured: runtimeSession.providerId === 'anthropic',
@@ -273,7 +236,10 @@ export function getAgentSessionUnavailableReason(
 
       return selectedApiKeyProvider.ready
         ? `Bind ${selectedApiKeyProvider.providerLabel} with the selected app-local provider profile to create a project runtime session.`
-        : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before Cadence can bind a project runtime session.`
+        : getConfigureApiKeyCopy(
+            selectedApiKeyProvider.providerLabel,
+            ' before Cadence can bind a project runtime session.',
+          )
     }
 
     return 'Sign in with OpenAI to create or reuse a runtime session for this imported project.'
@@ -326,7 +292,10 @@ export function getAgentSessionUnavailableReason(
 
         return selectedApiKeyProvider.ready
           ? `Bind ${selectedApiKeyProvider.providerLabel} from the Agent tab to create or refresh the runtime session for this imported project.`
-          : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before Cadence can bind the selected provider for this imported project.`
+          : getConfigureApiKeyCopy(
+              selectedApiKeyProvider.providerLabel,
+              ' before Cadence can bind the selected provider for this imported project.',
+            )
       }
 
       return 'Sign in with OpenAI to create or reuse a runtime session for this imported project.'
@@ -370,7 +339,10 @@ export function getAgentRuntimeRunUnavailableReason(
 
       return selectedApiKeyProvider.ready
         ? `Bind ${selectedApiKeyProvider.providerLabel} first, then launch a supervised harness run to populate durable repo-local run state for this project.`
-        : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings and bind the provider before launching a supervised harness run for this project.`
+        : getConfigureApiKeyCopy(
+            selectedApiKeyProvider.providerLabel,
+            ' and bind the provider before launching a supervised harness run for this project.',
+          )
     }
 
     return 'Authenticate and launch a supervised harness run to populate durable repo-local run state for this project.'
@@ -416,7 +388,10 @@ export function getAgentMessagesUnavailableReason(
         ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires a ${selectedApiKeyProvider.providerLabel} runtime bind for the selected provider.`
         : selectedApiKeyProvider.ready
           ? `Bind ${selectedApiKeyProvider.providerLabel} from the Agent tab to establish the runtime session for this imported project.`
-          : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before Cadence can establish a runtime session for this imported project.`
+          : getConfigureApiKeyCopy(
+              selectedApiKeyProvider.providerLabel,
+              ' before Cadence can establish a runtime session for this imported project.',
+            )
     }
 
     return runtimeRun
@@ -444,7 +419,10 @@ export function getAgentMessagesUnavailableReason(
         ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires an authenticated ${selectedApiKeyProvider.providerLabel} runtime binding.`
         : selectedApiKeyProvider.ready
           ? `Bind ${selectedApiKeyProvider.providerLabel} from the Agent tab to establish the runtime session for this imported project.`
-          : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before live streaming can start for this imported project.`
+          : getConfigureApiKeyCopy(
+              selectedApiKeyProvider.providerLabel,
+              ' before live streaming can start for this imported project.',
+            )
     }
 
     if (runtimeSession.isLoginInProgress) {
