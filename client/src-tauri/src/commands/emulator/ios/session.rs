@@ -11,13 +11,11 @@
 
 #![cfg(target_os = "macos")]
 
-use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use image::{codecs::jpeg::JpegEncoder, ColorType, ImageEncoder};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -458,24 +456,36 @@ fn publish_png<R: Runtime>(
     _initial_width: u32,
     _initial_height: u32,
 ) {
-    let Ok(img) = image::load_from_memory_with_format(&png_bytes, image::ImageFormat::Png) else {
-        return;
-    };
-    // Always trust the PNG's actual dimensions — rotation can change
-    // them mid-session and we don't want to feed the encoder the
+    match png_to_jpeg(&png_bytes) {
+        Ok((width, height, jpeg)) => {
+            publish_and_emit(app, bus, width, height, jpeg);
+        }
+        Err(err) => {
+            // Surface the specific failure — an earlier version of this
+            // function silently dropped frames when the `image` crate's
+            // JPEG encoder rejected an RGBA buffer, which looked like a
+            // frozen stream from the frontend. Route through stderr so
+            // the next diagnosis doesn't have to re-derive this.
+            eprintln!("[emulator] ios publish_png: {err}");
+        }
+    }
+}
+
+/// Decode a PNG, strip its alpha channel, and JPEG-encode it. Pure so
+/// it's testable without a Tauri runtime — the regression test for the
+/// "first frame never arrives" bug lives in `tests::` below.
+fn png_to_jpeg(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
+        .map_err(|err| format!("PNG decode failed: {err}"))?;
+    // Trust the PNG's actual dimensions — rotation can change them
+    // mid-session and we don't want to feed the encoder the
     // initial-boot dimensions against a rotated buffer.
     let width = img.width();
     let height = img.height();
     let rgba = img.to_rgba8();
-    let mut out = Vec::with_capacity(rgba.len() / 4);
-    let encoder = JpegEncoder::new_with_quality(Cursor::new(&mut out), 80);
-    if encoder
-        .write_image(rgba.as_raw(), width, height, ColorType::Rgba8.into())
-        .is_err()
-    {
-        return;
-    }
-    publish_and_emit(app, bus, width, height, out);
+    let jpeg = encode_jpeg_rgba(rgba.as_raw(), width, height)
+        .map_err(|err| format!("JPEG encode failed: {err}"))?;
+    Ok((width, height, jpeg))
 }
 
 fn emit_status<R: Runtime>(
@@ -501,4 +511,57 @@ fn emit_error<R: Runtime>(app: &AppHandle<R>, device_id: &str, message: String) 
             .with_device(device_id.to_string())
             .with_message(message),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::png_to_jpeg;
+    use image::codecs::png::PngEncoder;
+    use image::{ColorType, ImageEncoder};
+
+    /// Regression: `image` 0.25's `JpegEncoder` rejects `Rgba8` buffers
+    /// with `UnsupportedError`. An earlier revision of `publish_png`
+    /// fed the RGBA buffer straight to the encoder and silently
+    /// returned on the error, leaving the screenshot fallback stalled
+    /// on "Waiting for first frame…" even though `simctl io
+    /// screenshot` was succeeding every 600 ms. Route through
+    /// `encode_jpeg_rgba` (strips alpha first) and verify end-to-end
+    /// that a PNG with an alpha channel becomes a valid JPEG.
+    #[test]
+    fn png_with_alpha_round_trips_to_jpeg() {
+        let width = 16u32;
+        let height = 8u32;
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                rgba.push((x * 16) as u8);
+                rgba.push((y * 32) as u8);
+                rgba.push(((x + y) * 8) as u8);
+                rgba.push(200); // non-opaque alpha — the bug path
+            }
+        }
+
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&rgba, width, height, ColorType::Rgba8.into())
+            .expect("png encode");
+
+        let (decoded_w, decoded_h, jpeg) = png_to_jpeg(&png).expect("publish path must not fail");
+        assert_eq!(decoded_w, width);
+        assert_eq!(decoded_h, height);
+        // JPEG magic: 0xFF 0xD8 0xFF.
+        assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF]);
+        assert!(jpeg.len() > 128, "jpeg output suspiciously small");
+
+        let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)
+            .expect("jpeg decode");
+        assert_eq!(decoded.width(), width);
+        assert_eq!(decoded.height(), height);
+    }
+
+    #[test]
+    fn invalid_png_bytes_surface_a_typed_error() {
+        let err = png_to_jpeg(&[0, 1, 2, 3]).unwrap_err();
+        assert!(err.contains("PNG decode failed"), "got {err}");
+    }
 }
