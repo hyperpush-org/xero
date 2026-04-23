@@ -362,6 +362,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         onInput={(payload) => void session.sendInput(payload)}
         onKeyDown={handleKeyDown}
         orientation={session.orientation}
+        platform={platform}
         platformLabel={meta.label}
         status={session.status}
       />
@@ -385,6 +386,7 @@ interface ViewportProps {
   onInput: (input: { kind: EmulatorInputKind; x?: number; y?: number }) => void
   onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
   orientation: EmulatorOrientation
+  platform: EmulatorPlatform
   platformLabel: string
   status: ReturnType<typeof useEmulatorSession>["status"]
 }
@@ -399,6 +401,7 @@ function EmulatorViewport({
   onInput,
   onKeyDown,
   orientation,
+  platform,
   platformLabel,
   status,
 }: ViewportProps) {
@@ -483,33 +486,154 @@ function EmulatorViewport({
     )
   }
 
+  // Use the device's native pixel dimensions for the chassis aspect
+  // ratio so the bezel hugs the simulator frame exactly. Fall back to
+  // a generic 9:19.5 iPhone-ish ratio when the descriptor hasn't
+  // hydrated yet.
+  const aspectRatio =
+    currentDevice?.width && currentDevice?.height
+      ? `${currentDevice.width}/${currentDevice.height}`
+      : "9/19.5"
+
+  const isTablet = currentDevice?.kind === "tablet"
+  const isIos = platform === "ios"
+
   return (
     <div
       className={cn(
-        "relative flex min-h-0 flex-1 items-center justify-center bg-black outline-none",
+        "relative flex min-h-0 flex-1 items-center justify-center bg-background/60 outline-none",
+        "px-4 py-5",
         "focus-visible:ring-1 focus-visible:ring-primary/60 focus-visible:ring-offset-0",
       )}
       onKeyDown={onKeyDown}
-      onPointerCancel={handlePointerUp}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
       role="application"
-      style={{ touchAction: "none" }}
       tabIndex={0}
     >
-      <img
-        ref={imgRef}
-        alt={`${platformLabel} viewport`}
-        className={cn(
-          "max-h-full max-w-full select-none transition-transform duration-150",
-          orientation === "landscape" && "rotate-90",
-        )}
-        draggable={false}
-        src={frameSrc}
-      />
+      <DeviceChassis
+        aspectRatio={aspectRatio}
+        isIos={isIos}
+        isTablet={isTablet}
+        orientation={orientation}
+      >
+        <div
+          className={cn(
+            "relative h-full w-full overflow-hidden bg-black",
+            // Inner screen radius derives from the chassis radius minus
+            // bezel thickness; tuned to match iPhone 15/17 Pro and a
+            // generic Pixel-style Android chassis.
+            isTablet
+              ? "rounded-[14px]"
+              : isIos
+                ? "rounded-[34px]"
+                : "rounded-[28px]",
+          )}
+          onPointerCancel={handlePointerUp}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          style={{ touchAction: "none" }}
+        >
+          <img
+            ref={imgRef}
+            alt={`${platformLabel} viewport`}
+            className={cn(
+              "block h-full w-full select-none object-cover transition-transform duration-150",
+              orientation === "landscape" && "rotate-90",
+            )}
+            draggable={false}
+            src={frameSrc}
+          />
+          {isIos && !isTablet ? <DynamicIsland /> : null}
+          {isIos && !isTablet ? <HomeIndicator /> : null}
+        </div>
+      </DeviceChassis>
       <InputErrorToast message={inputError} onDismiss={onDismissInputError} />
     </div>
+  )
+}
+
+/// iPhone-/Android-style physical bezel around the screen. Sizes itself
+/// by aspect ratio so the chassis hugs the streamed image regardless of
+/// device dimensions; max-h / max-w keep it inside the sidebar.
+function DeviceChassis({
+  aspectRatio,
+  children,
+  isIos,
+  isTablet,
+  orientation,
+}: {
+  aspectRatio: string
+  children: React.ReactNode
+  isIos: boolean
+  isTablet: boolean
+  orientation: EmulatorOrientation
+}) {
+  // Bezel thickness + outer corner radius mimic real-hardware
+  // proportions at a UI-friendly size. iPad uses a shallower curve
+  // since its physical corners are less aggressive than a Face ID
+  // iPhone.
+  const bezelClasses = isTablet
+    ? "rounded-[20px] p-[8px]"
+    : isIos
+      ? "rounded-[42px] p-[8px]"
+      : "rounded-[36px] p-[6px]"
+
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        "relative flex items-stretch justify-stretch",
+        "bg-gradient-to-b from-neutral-700/90 via-neutral-900 to-neutral-800/90",
+        "shadow-[0_18px_45px_-18px_rgba(0,0,0,0.75)]",
+        "ring-1 ring-white/10",
+        "transition-transform duration-200 ease-out",
+        bezelClasses,
+        // In landscape we rotate the entire chassis so the bezel +
+        // Dynamic Island land on the correct side of the screen,
+        // matching what the user would see on a physical device held
+        // horizontally.
+        orientation === "landscape" && "rotate-90",
+      )}
+      style={{
+        aspectRatio,
+        maxHeight: "100%",
+        maxWidth: "100%",
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
+function DynamicIsland() {
+  // Dimensions are relative to the screen so the island scales with
+  // the chassis at any sidebar width. Real iPhone 15/17 Pro is ~126pt
+  // wide and ~37pt tall — roughly 28% x 1.2% of device pixels.
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        "pointer-events-none absolute left-1/2 -translate-x-1/2",
+        "top-[0.95%] h-[3.5%] w-[28%]",
+        "rounded-full bg-black",
+        "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]",
+      )}
+    />
+  )
+}
+
+function HomeIndicator() {
+  // The thin horizontal pill at the bottom of every Face ID iPhone.
+  // Sized in % so it tracks the chassis regardless of device.
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        "pointer-events-none absolute left-1/2 -translate-x-1/2",
+        "bottom-[0.5%] h-[0.35%] w-[32%] min-h-[3px]",
+        "rounded-full bg-white/60",
+      )}
+    />
   )
 }
 
