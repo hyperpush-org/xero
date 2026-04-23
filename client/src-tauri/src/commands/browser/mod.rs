@@ -117,6 +117,10 @@ pub fn browser_show<R: Runtime>(
             label
         };
         tabs.insert(id.clone(), label.clone())?;
+        // Focus the freshly created tab so the UI (and the tab_updated event)
+        // sees the new tab as active. Without this, the active marker stays on
+        // whatever tab was focused before and the frontend snaps back to it.
+        tabs.set_active(&id)?;
         (id, label)
     } else {
         match tab_id {
@@ -178,6 +182,7 @@ pub fn browser_show<R: Runtime>(
             )
         })?;
         tabs.record_page_state(&tab_id, Some(target.to_string()), None, Some(true));
+        hide_inactive_webviews(&app, &tabs);
         emit_tab_list(&app, &tabs);
         return Ok(current_tab_meta(&tabs, &tab_id));
     }
@@ -249,6 +254,7 @@ pub fn browser_show<R: Runtime>(
         })?;
 
     tabs.record_page_state(&tab_id, Some(target.to_string()), None, Some(true));
+    hide_inactive_webviews(&app, &tabs);
     emit_tab_list(&app, &tabs);
     Ok(current_tab_meta(&tabs, &tab_id))
 }
@@ -665,6 +671,7 @@ pub fn browser_tab_focus<R: Runtime>(
 ) -> CommandResult<BrowserTabMetadata> {
     let tabs = state.tabs();
     tabs.set_active(&tab_id)?;
+    hide_inactive_webviews(&app, &tabs);
     emit_tab_list(&app, &tabs);
     Ok(current_tab_meta(&tabs, &tab_id))
 }
@@ -682,6 +689,7 @@ pub fn browser_tab_close<R: Runtime>(
             let _ = webview.close();
         }
     }
+    hide_inactive_webviews(&app, &tabs);
     emit_tab_list(&app, &tabs);
     tabs.list()
 }
@@ -851,6 +859,24 @@ fn emit_tab_list<R: Runtime>(app: &AppHandle<R>, tabs: &BrowserTabs) {
             BROWSER_TAB_UPDATED_EVENT,
             &BrowserTabUpdatedPayload { tabs: list },
         );
+    }
+}
+
+/// Move every non-active tab's webview off-screen so only the active one is
+/// visible. Native child webviews paint on top of all HTML regardless of
+/// CSS z-index, so without this all created tabs would stack over one
+/// another at the same viewport rect.
+fn hide_inactive_webviews<R: Runtime>(app: &AppHandle<R>, tabs: &BrowserTabs) {
+    let Ok(list) = tabs.list() else {
+        return;
+    };
+    for tab in list {
+        if tab.active {
+            continue;
+        }
+        if let Some(webview) = app.get_webview(&tab.label) {
+            let _ = webview.set_position(LogicalPosition::new(HIDDEN_OFFSET, HIDDEN_OFFSET));
+        }
     }
 }
 

@@ -113,6 +113,12 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
     if (!open || !isTauri()) return
     if (!hasWebviewRef.current) return
 
+    // Reset the cache on every effect re-run (sidebar open, active tab change)
+    // so the first tick always fires a browser_resize. Without this, switching
+    // tabs leaves the new active tab parked at HIDDEN_OFFSET because the
+    // viewport rect hasn't changed and rectsEqual short-circuits the call.
+    lastSyncedRectRef.current = null
+
     let rafId = 0
     const tick = () => {
       const node = viewportRef.current
