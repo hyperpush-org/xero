@@ -36,15 +36,15 @@ pub struct IosSdkStatus {
     pub supported: bool,
 }
 
-pub fn probe_sdks() -> SdkStatus {
+pub fn probe_sdks<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> SdkStatus {
     SdkStatus {
-        android: probe_android_status(),
-        ios: probe_ios_status(),
+        android: probe_android_status(app),
+        ios: probe_ios_status(app),
     }
 }
 
-fn probe_android_status() -> AndroidSdkStatus {
-    let sdk = android_sdk::probe();
+fn probe_android_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AndroidSdkStatus {
+    let sdk = android_sdk::probe_with_app(app);
     AndroidSdkStatus {
         present: sdk.is_usable(),
         sdk_root: sdk.sdk_root.map(path_to_string),
@@ -54,10 +54,10 @@ fn probe_android_status() -> AndroidSdkStatus {
     }
 }
 
-fn probe_ios_status() -> IosSdkStatus {
+fn probe_ios_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> IosSdkStatus {
     #[cfg(target_os = "macos")]
     {
-        let ios = super::ios::sdk::probe();
+        let ios = super::ios::sdk::probe_with_app(app);
         IosSdkStatus {
             present: ios.is_usable(),
             xcrun_path: ios.xcrun.map(path_to_string),
@@ -68,6 +68,7 @@ fn probe_ios_status() -> IosSdkStatus {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         IosSdkStatus {
             present: false,
             xcrun_path: None,

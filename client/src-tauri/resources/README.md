@@ -23,22 +23,75 @@ triggers a re-fetch.
 Apache 2.0 licensed (Genymobile) — a matching `NOTICE` entry ships in
 Cadence's About dialog as required.
 
-## idb_companion (macOS-only)
+## idb-companion.universal/ (macOS-only)
 
 Required for the iOS simulator sidebar to stream frames.
 
-**Not auto-fetched** — the upstream macOS universal binary is ~50 MB and
-not consistently published as a release asset. Either:
+**Auto-fetched by `build.rs` on macOS**: the first `cargo build` downloads
+the pinned `idb-companion.universal.tar.gz` from the `facebook/idb` GitHub
+release, verifies the SHA-256, and extracts into
+`resources/idb-companion.universal/` preserving the upstream layout:
 
-1. Install via Homebrew: `brew install facebook/fb/idb-companion`. The
-   SDK probe picks it up from `/opt/homebrew/bin` or `/usr/local/bin`.
-2. Drop a universal binary into `resources/binaries/idb_companion` and
-   reference it from `tauri.conf.json` as an `externalBin`.
+```
+idb-companion.universal/
+├── bin/idb_companion
+└── Frameworks/        # XCTestBootstrap, FBSimulatorControl, FBControlCore, …
+```
 
-The iOS pipeline resolves `idb_companion` in this order:
+The binary's `LC_RPATH` is `@executable_path/../Frameworks`, so the tree
+has to stay intact — shipping only `bin/idb_companion` yields
+`Library not loaded: @rpath/...` at spawn time. Tauri copies every file
+under the directory into the bundle's `Resources/resources/`, preserving
+that layout.
 
-1. Tauri resource directory (this folder).
+The pinned version and digest live in `build.rs::IDB_COMPANION_VERSION` /
+`IDB_COMPANION_SHA256`. A `.cadence-version` sentinel inside the
+extracted directory lets incremental builds skip the refetch. Bumping
+the pin means:
+
+1. Update `IDB_COMPANION_VERSION` + `IDB_COMPANION_SHA256` in `build.rs`.
+2. `rm -rf resources/idb-companion.universal resources/*.tar.gz` once so
+   the sentinel mismatches and the fetcher re-runs on the next build.
+
+Set `CADENCE_SKIP_SIDECAR_FETCH=1` to bypass the fetcher entirely.
+
+Manual override: drop a compatible `idb-companion.universal/` tree into
+this directory (for example, the one Homebrew installs at
+`/opt/homebrew/opt/idb-companion`) and the fetcher will see the version
+sentinel is already in place.
+
+### Runtime resolution order
+
+The iOS pipeline picks up `idb_companion` in this order:
+
+1. Tauri resource directory — the bundled `idb-companion.universal/bin/idb_companion`.
 2. `which idb_companion` on `PATH`.
-3. `/opt/homebrew/bin/idb_companion`, `/usr/local/bin/idb_companion`.
+3. `/opt/homebrew/bin/idb_companion`, `/usr/local/bin/idb_companion`
+   (Homebrew fallbacks for dev builds that skipped the fetcher).
 
 MIT-licensed (Meta / facebook/idb).
+
+### Signing / notarization
+
+`tauri build` code-signs everything under `Resources/`, including every
+framework inside `idb-companion.universal/Frameworks`. After a release
+build, smoke-test with:
+
+```
+codesign --verify --deep --strict \
+  target/release/bundle/macos/Cadence.app
+```
+
+and check that `spctl --assess --type execute --verbose` returns
+"accepted". Both should pass without additional entitlements — the
+frameworks are already signed by Meta, and Tauri's codesign pass
+re-signs them under the Cadence identity.
+
+### Required host state
+
+Bundling `idb_companion` removes the "install via Homebrew" step from
+the user's onboarding. It does **not** remove the need for Xcode itself —
+`idb_companion` links against Apple's private
+`CoreSimulator.framework`, which only ships inside the Xcode.app
+install. The titlebar discovery UI surfaces an "Install Xcode" CTA when
+`xcrun` is missing.

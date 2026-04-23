@@ -143,23 +143,32 @@ function androidPanel(status: SdkStatus): Panel | null {
 
 function iosPanel(status: SdkStatus): Panel | null {
   if (!status.ios.supported) return null
+  // Packaged builds hydrate idb_companion into the Tauri resource directory
+  // during build, so `idbCompanionPresent` flips true without the user
+  // installing anything. The only remaining hard prerequisite is Xcode
+  // itself — `idb_companion` links against Apple's private
+  // CoreSimulator.framework, which only ships inside Xcode.
   if (status.ios.present && status.ios.idbCompanionPresent) return null
 
   if (!status.ios.present) {
     return {
       title: "Xcode command-line tools not found",
       detail:
-        "Install Xcode and run `xcode-select --install` so Cadence can reach the iOS Simulator via simctl.",
+        "Cadence needs Xcode installed so the iOS Simulator framework is available. Run `xcode-select --install` after installing Xcode to finish the setup.",
       actions: [
         { label: "Install Xcode", href: "https://apps.apple.com/app/xcode/id497799835" },
       ],
     }
   }
 
+  // Xcode is present, but the bundled idb_companion is somehow missing —
+  // typically a dev build started with `CADENCE_SKIP_SIDECAR_FETCH=1` or a
+  // packaged build with a corrupted Resources/ tree. Give the user both a
+  // manual path and the rebuild hint.
   return {
-    title: "idb_companion not found",
+    title: "idb_companion sidecar missing",
     detail:
-      "The iOS sidebar streams frames through Meta's idb_companion. Install it with `brew install facebook/fb/idb-companion` or drop a prebuilt binary into client/src-tauri/resources/binaries/.",
+      "The bundled idb_companion helper is not present in this build. Packaged installers include it automatically; for a dev build, rebuild without CADENCE_SKIP_SIDECAR_FETCH, or install it via Homebrew so it resolves from PATH.",
     actions: [
       { label: "Install via Homebrew", href: "https://github.com/facebook/idb" },
     ],

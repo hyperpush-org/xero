@@ -41,8 +41,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "resources/scrcpy-server-v2.7.jar": "resources/scrcpy-server-v2.7.jar"
-    }
+    "resources": [
+      "resources/scrcpy-server-v2.7.jar",
+      "resources/idb-companion.universal/**/*"
+    ]
   }
 }

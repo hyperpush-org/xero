@@ -338,15 +338,40 @@ fn humanize_runtime(id: &str) -> String {
 /// Resolve the bundled `idb_companion` binary path. Prefers the Tauri
 /// resource directory for distributed builds and falls back to common
 /// Homebrew locations for local development.
+///
+/// The primary location is `resources/idb-companion.universal/bin/idb_companion`
+/// — the binary has an `@executable_path/../Frameworks` rpath so it has to
+/// sit next to the Frameworks directory the tarball ships. The other
+/// candidates are kept so older/manual drops still resolve.
 pub fn resolve_idb_companion<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    if let Some(path) = resolve_bundled_idb_companion(app) {
+        return Some(path);
+    }
+    super::sdk::probe().idb_companion
+}
+
+/// Tauri-resource-only lookup — separated out so the SDK probe can answer
+/// "is the bundled binary present?" without falling back to Homebrew, which
+/// is useful when deciding whether to show the "Install idb_companion" CTA.
+pub fn resolve_bundled_idb_companion<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<PathBuf> {
     use tauri::{path::BaseDirectory, Manager};
 
-    for rel in ["binaries/idb_companion", "idb_companion"] {
+    for rel in [
+        // Primary: the auto-fetched tree from `build.rs`.
+        "resources/idb-companion.universal/bin/idb_companion",
+        // Legacy / manual-drop layouts we still honour.
+        "idb-companion.universal/bin/idb_companion",
+        "binaries/idb-companion.universal/bin/idb_companion",
+        "binaries/idb_companion",
+        "idb_companion",
+    ] {
         if let Ok(path) = app.path().resolve(rel, BaseDirectory::Resource) {
             if path.is_file() {
                 return Some(path);
             }
         }
     }
-    super::sdk::probe().idb_companion
+    None
 }

@@ -34,6 +34,14 @@ impl AndroidSdk {
     }
 }
 
+/// Like [`probe`] but threads the Tauri `AppHandle` through for callers
+/// that want to merge app-managed SDK locations on top of the host
+/// defaults. Phase 1 keeps this a thin passthrough; the Android
+/// auto-provisioning flow in a later phase extends the fallback chain.
+pub fn probe_with_app<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> AndroidSdk {
+    probe()
+}
+
 /// Probe the host for an Android SDK. Order of precedence:
 /// 1. `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or `ANDROID_SDK_HOME` env vars.
 /// 2. `which adb` / `which emulator` (covers `brew install android-platform-tools`).

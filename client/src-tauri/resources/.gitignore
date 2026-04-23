@@ -1,3 +1,5 @@
 # Sidecar binaries are hydrated by build.rs — don't carry them in git.
 *.jar
+*.tar.gz
 binaries/
+idb-companion.universal/

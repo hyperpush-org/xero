@@ -7,10 +7,20 @@ use std::process::Command;
 const SCRCPY_VERSION: &str = "2.7";
 const SCRCPY_SHA256: &str = "a23c5659f36c260f105c022d27bcb3eafffa26070e7baa9eda66d01377a1adba";
 
+/// Pinned `idb_companion` universal tarball. The archive extracts to a
+/// sibling `idb-companion.universal/` directory which holds both the binary
+/// at `bin/idb_companion` and its `@executable_path/../Frameworks` dylibs —
+/// the whole tree has to ship together or the binary fails to load.
+const IDB_COMPANION_VERSION: &str = "1.1.8";
+const IDB_COMPANION_SHA256: &str =
+    "3b72cc6a9a5b1a22a188205a84090d3a294347a846180efd755cf1a3c848e3e7";
+const IDB_COMPANION_DIR: &str = "idb-companion.universal";
+
 fn main() {
     tauri_build::build();
     build_cookie_importer();
     fetch_scrcpy_server();
+    fetch_idb_companion();
     compile_idb_proto();
 }
 
@@ -191,6 +201,170 @@ fn fetch_scrcpy_server() {
             let _ = std::fs::remove_file(&target);
         }
     }
+}
+
+/// Ensure `resources/idb-companion.universal/bin/idb_companion` exists for
+/// macOS builds. On non-macOS hosts this is a no-op — the iOS pipeline is
+/// compiled out entirely by `#[cfg(target_os = "macos")]` guards, so the
+/// bundled resource would never be loaded.
+///
+/// The fetch is skipped when `CADENCE_SKIP_SIDECAR_FETCH` is set (CI caches
+/// the extraction itself) or when the pinned version marker is already
+/// present. Failures downgrade to a `cargo:warning`; the runtime probe
+/// falls back to Homebrew / `PATH` so `tauri dev` without a prior fetch
+/// still works.
+#[cfg(target_os = "macos")]
+fn fetch_idb_companion() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let resources_dir = manifest_dir.join("resources");
+    let extracted = resources_dir.join(IDB_COMPANION_DIR);
+    let sentinel = extracted.join(".cadence-version");
+
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=CADENCE_SKIP_SIDECAR_FETCH");
+    println!("cargo:rerun-if-changed={}", sentinel.display());
+
+    if std::env::var_os("CADENCE_SKIP_SIDECAR_FETCH").is_some() {
+        return;
+    }
+
+    if let Ok(existing) = std::fs::read_to_string(&sentinel) {
+        if existing.trim() == IDB_COMPANION_VERSION {
+            return;
+        }
+    }
+
+    if let Err(err) = std::fs::create_dir_all(&resources_dir) {
+        println!(
+            "cargo:warning=could not create {}: {err}. Drop idb_companion into resources/ manually.",
+            resources_dir.display()
+        );
+        return;
+    }
+
+    // Drop any previous (stale) extraction before writing new contents so
+    // version mismatches can't leave a mixed tree behind.
+    if extracted.exists() {
+        if let Err(err) = std::fs::remove_dir_all(&extracted) {
+            println!(
+                "cargo:warning=failed to prune stale idb-companion tree at {}: {err}",
+                extracted.display()
+            );
+            return;
+        }
+    }
+
+    let tarball = resources_dir.join(format!(
+        "idb-companion.universal-v{IDB_COMPANION_VERSION}.tar.gz"
+    ));
+    let url = format!(
+        "https://github.com/facebook/idb/releases/download/v{IDB_COMPANION_VERSION}/idb-companion.universal.tar.gz"
+    );
+
+    let fetch = Command::new("curl")
+        .args(["-sSL", "-f", "-o"])
+        .arg(&tarball)
+        .arg(&url)
+        .status();
+    match fetch {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            println!(
+                "cargo:warning=curl exited {status} fetching idb_companion from {url}. iOS streaming will fall back to Homebrew / PATH."
+            );
+            let _ = std::fs::remove_file(&tarball);
+            return;
+        }
+        Err(err) => {
+            println!(
+                "cargo:warning=failed to invoke curl for idb_companion: {err}. iOS streaming will fall back to Homebrew / PATH."
+            );
+            return;
+        }
+    }
+
+    match sha256_of(&tarball) {
+        Ok(digest) if digest == IDB_COMPANION_SHA256 => {}
+        Ok(other) => {
+            println!(
+                "cargo:warning=fetched idb_companion SHA {other} does not match pinned {IDB_COMPANION_SHA256}. Discarding."
+            );
+            let _ = std::fs::remove_file(&tarball);
+            return;
+        }
+        Err(err) => {
+            println!("cargo:warning=could not hash fetched idb_companion: {err}");
+            let _ = std::fs::remove_file(&tarball);
+            return;
+        }
+    }
+
+    // `tar -xzf <tarball> -C resources/` re-materializes the upstream layout
+    // `idb-companion.universal/{bin,Frameworks}` inside resources_dir. Use
+    // `--no-same-owner` so CI runs as a non-root user don't choke on the
+    // archive's preserved uid/gid.
+    let extract = Command::new("tar")
+        .arg("-xzf")
+        .arg(&tarball)
+        .arg("--no-same-owner")
+        .arg("-C")
+        .arg(&resources_dir)
+        .status();
+    match extract {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            println!(
+                "cargo:warning=tar exited {status} extracting {}. iOS streaming will fall back to Homebrew / PATH.",
+                tarball.display()
+            );
+            let _ = std::fs::remove_file(&tarball);
+            let _ = std::fs::remove_dir_all(&extracted);
+            return;
+        }
+        Err(err) => {
+            println!("cargo:warning=failed to invoke tar for idb_companion: {err}");
+            let _ = std::fs::remove_file(&tarball);
+            return;
+        }
+    }
+
+    let _ = std::fs::remove_file(&tarball);
+
+    let binary = extracted.join("bin").join("idb_companion");
+    if !binary.is_file() {
+        println!(
+            "cargo:warning=idb_companion binary missing from extracted tree at {}",
+            binary.display()
+        );
+        let _ = std::fs::remove_dir_all(&extracted);
+        return;
+    }
+
+    // tar usually preserves the execute bit, but certain archivers (and
+    // some CI Docker layer caches) strip it. Force it back on so Tauri
+    // doesn't ship a non-executable sidecar.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&binary) {
+            let mut perms = metadata.permissions();
+            let mode = perms.mode();
+            if mode & 0o111 == 0 {
+                perms.set_mode(mode | 0o755);
+                let _ = std::fs::set_permissions(&binary, perms);
+            }
+        }
+    }
+
+    if let Err(err) = std::fs::write(&sentinel, IDB_COMPANION_VERSION) {
+        println!("cargo:warning=could not write idb_companion version marker: {err}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fetch_idb_companion() {
+    // idb_companion only runs on macOS; non-macOS builds have no iOS
+    // Simulator to point it at.
 }
 
 fn sha256_of(path: &Path) -> std::io::Result<String> {

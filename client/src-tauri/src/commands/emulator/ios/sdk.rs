@@ -46,6 +46,24 @@ pub fn probe() -> IosSdk {
     IosSdk::default()
 }
 
+/// Like [`probe`] but also consults the Tauri resource directory for the
+/// bundled `idb_companion` tree. Used by the SDK-status command so packaged
+/// builds report `idb_companion_present = true` without the user having to
+/// install anything.
+#[cfg(target_os = "macos")]
+pub fn probe_with_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> IosSdk {
+    let mut sdk = probe();
+    if sdk.idb_companion.is_none() {
+        sdk.idb_companion = super::xcrun::resolve_bundled_idb_companion(app);
+    }
+    sdk
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn probe_with_app<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> IosSdk {
+    IosSdk::default()
+}
+
 fn which_binary(name: &str) -> Option<PathBuf> {
     let locator = if cfg!(windows) { "where" } else { "which" };
     if let Ok(out) = Command::new(locator).arg(name).output() {

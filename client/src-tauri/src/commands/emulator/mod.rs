@@ -225,8 +225,8 @@ pub enum DeviceKind {
 // ---------- Tauri commands --------------------------------------------------
 
 #[tauri::command]
-pub fn emulator_sdk_status() -> CommandResult<SdkStatus> {
-    Ok(probe_sdks())
+pub fn emulator_sdk_status<R: Runtime>(app: AppHandle<R>) -> CommandResult<SdkStatus> {
+    Ok(probe_sdks(&app))
 }
 
 #[tauri::command]
