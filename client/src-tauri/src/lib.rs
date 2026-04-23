@@ -29,7 +29,30 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         )
         .setup(|app| {
             window_state::configure_main_window(app.handle().clone());
+
+            // Sweep leftover emulator-related processes from a previous
+            // crash. Best-effort — we only log the suspects so the user
+            // can clean up manually.
+            let zombies = commands::emulator::shutdown::zombie_processes();
+            if !zombies.is_empty() {
+                eprintln!(
+                    "[emulator] found {} leftover process(es) from a previous session: {}",
+                    zombies.len(),
+                    zombies
+                        .iter()
+                        .map(|z| format!("{} (pid {})", z.name, z.pid))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                use tauri::Manager;
+                commands::emulator::shutdown::shutdown_on_close(&window.app_handle());
+            }
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

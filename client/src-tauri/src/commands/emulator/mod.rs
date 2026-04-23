@@ -13,6 +13,7 @@ pub mod frame_bus;
 pub mod ios;
 pub mod process;
 pub mod sdk;
+pub mod shutdown;
 #[cfg(feature = "emulator-synthetic")]
 pub mod synthetic;
 pub mod uri_scheme;

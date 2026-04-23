@@ -17,6 +17,7 @@ import {
   type EmulatorPlatform,
 } from "@/src/features/emulator/use-emulator-session"
 import { EmulatorHardwareStrip } from "./emulator-hardware-strip"
+import { EmulatorMissingSdk } from "./emulator-missing-sdk"
 
 interface EmulatorSidebarProps {
   open: boolean
@@ -347,6 +348,8 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
           )}
         </div>
       </div>
+
+      <EmulatorMissingSdk platform={platform} />
 
       <EmulatorViewport
         currentDevice={session.currentDevice}
