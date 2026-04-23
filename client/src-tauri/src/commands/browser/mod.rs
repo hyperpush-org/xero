@@ -96,15 +96,30 @@ pub fn browser_show<R: Runtime>(
     width: f64,
     height: f64,
     tab_id: Option<String>,
+    new_tab: Option<bool>,
 ) -> CommandResult<BrowserTabMetadata> {
     let target = actions::parse_url(&url)?;
     let tabs = state.tabs();
+    let force_new = new_tab.unwrap_or(false);
 
     let _guard = state.creation_lock.lock().map_err(|_| {
         CommandError::system_fault("browser_lock_poisoned", "Browser state lock poisoned.")
     })?;
 
-    let (tab_id, label) = match tab_id {
+    // Explicit new-tab requests always create a fresh webview, regardless of
+    // whether the caller also supplied a tab_id. Without this the "+" button
+    // would reuse the active tab and silently replace its contents.
+    let (tab_id, label) = if force_new {
+        let (id, label) = tabs.new_tab_label();
+        let label = if id == "tab-1" {
+            BROWSER_LEGACY_LABEL.to_string()
+        } else {
+            label
+        };
+        tabs.insert(id.clone(), label.clone())?;
+        (id, label)
+    } else {
+        match tab_id {
         Some(existing) => {
             let label = tabs
                 .list()?
@@ -135,6 +150,7 @@ pub fn browser_show<R: Runtime>(
                 tabs.insert(id.clone(), label.clone())?;
                 (id, label)
             }
+        }
         }
     };
 

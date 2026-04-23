@@ -290,7 +290,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
   }, [])
 
   const openUrl = useCallback(
-    (target: string, tabId?: string) => {
+    (target: string, options?: { tabId?: string; newTab?: boolean }) => {
       setNavError(null)
 
       if (!isTauri()) {
@@ -301,13 +301,15 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
       const node = viewportRef.current
       if (!node) return
       const rect = node.getBoundingClientRect()
+      const forceNew = options?.newTab === true
       const payload = {
         url: target,
         x: Math.round(rect.left) + RESIZE_HANDLE_INSET,
         y: Math.round(rect.top),
         width: Math.max(1, Math.round(rect.width) - RESIZE_HANDLE_INSET),
         height: Math.max(1, Math.round(rect.height)),
-        tab_id: tabId ?? activeTabId ?? null,
+        tab_id: forceNew ? null : options?.tabId ?? activeTabId ?? null,
+        new_tab: forceNew,
       }
       lastSyncedRectRef.current = {
         x: payload.x,
@@ -411,7 +413,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
 
   const handleNewTab = useCallback(() => {
     if (!isTauri()) return
-    openUrl("https://www.google.com/", undefined)
+    openUrl("https://www.google.com/", { newTab: true })
   }, [openUrl])
 
   // Show the tab strip (and the + button) as soon as there's any tab — otherwise
