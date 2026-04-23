@@ -282,6 +282,7 @@ pub fn start_provider_auth_flow(
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
+        | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
@@ -350,6 +351,7 @@ pub fn complete_provider_auth_flow<R: Runtime>(
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
+        | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
@@ -384,6 +386,7 @@ pub fn refresh_provider_auth_session<R: Runtime>(
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
+        | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => Err(AuthFlowError::terminal(
             "auth_refresh_unavailable",
             RuntimeAuthPhase::Failed,

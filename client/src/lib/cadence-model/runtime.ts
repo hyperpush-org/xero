@@ -29,6 +29,7 @@ export const runtimeProviderIdSchema = z.enum([
   'openrouter',
   'openai_codex',
   'anthropic',
+  'github_models',
   'openai_api',
   'azure_openai',
   'gemini_ai_studio',

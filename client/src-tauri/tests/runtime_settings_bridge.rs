@@ -561,6 +561,28 @@ fn upsert_runtime_settings_rejects_unsupported_provider_id() {
 }
 
 #[test]
+fn upsert_runtime_settings_rejects_github_models_compatibility_write() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _paths) = create_state(&root);
+    let app = build_mock_app(state);
+
+    let error = upsert_runtime_settings(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertRuntimeSettingsRequestDto {
+            provider_id: "github_models".into(),
+            model_id: "openai/gpt-4.1".into(),
+            openrouter_api_key: None,
+            anthropic_api_key: None,
+        },
+    )
+    .expect_err("github models should stay provider-profile only");
+
+    assert_eq!(error.code, "runtime_settings_request_invalid");
+    assert!(error.message.contains("github_models"));
+}
+
+#[test]
 fn upsert_runtime_settings_treats_missing_api_key_linkage_as_unconfigured() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, paths) = create_state(&root);

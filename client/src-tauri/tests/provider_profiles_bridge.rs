@@ -7,8 +7,8 @@ use cadence_desktop_lib::{
     provider_profiles::{
         load_or_migrate_provider_profiles_from_paths, ProviderProfileCredentialLink,
         ProviderProfileReadinessStatus, ANTHROPIC_DEFAULT_PROFILE_ID,
-        OPENAI_CODEX_DEFAULT_PROFILE_ID, OPENROUTER_DEFAULT_PROFILE_ID,
-        OPENROUTER_FALLBACK_MODEL_ID,
+        GITHUB_MODELS_DEFAULT_PROFILE_ID, OPENAI_CODEX_DEFAULT_PROFILE_ID,
+        OPENROUTER_DEFAULT_PROFILE_ID, OPENROUTER_FALLBACK_MODEL_ID,
     },
     state::ImportFailpoints,
 };
@@ -475,29 +475,40 @@ fn anthropic_profile_store_keeps_api_keys_out_of_metadata() {
 }
 
 #[test]
-fn anthropic_profile_readiness_becomes_malformed_when_secret_link_stales() {
+fn github_models_profile_store_round_trips_fixed_openai_compatible_metadata() {
     let root = tempfile::tempdir().expect("temp dir");
     let paths = create_paths(&root);
+    let secret = "github_pat_provider_profile_secret";
 
     write_json(
         &paths.provider_profiles_path,
         serde_json::json!({
             "version": 2,
-            "activeProfileId": ANTHROPIC_DEFAULT_PROFILE_ID,
+            "activeProfileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
             "profiles": [{
-                "profileId": ANTHROPIC_DEFAULT_PROFILE_ID,
-                "providerId": "anthropic",
-                "runtimeKind": "anthropic",
-                "label": "Anthropic",
-                "modelId": "claude-3-5-sonnet-latest",
-                "presetId": "anthropic",
+                "profileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+                "providerId": "github_models",
+                "runtimeKind": "openai_compatible",
+                "label": "GitHub Models",
+                "modelId": "openai/gpt-4.1",
+                "presetId": "github_models",
                 "credentialLink": {
                     "kind": "api_key",
-                    "updated_at": "2026-04-21T05:10:00Z"
+                    "updated_at": "2026-04-21T05:20:00Z"
                 },
-                "updatedAt": "2026-04-21T05:10:00Z"
+                "updatedAt": "2026-04-21T05:20:00Z"
             }],
-            "updatedAt": "2026-04-21T05:10:00Z"
+            "updatedAt": "2026-04-21T05:20:00Z"
+        }),
+    );
+    write_json(
+        &paths.provider_profile_credentials_path,
+        serde_json::json!({
+            "apiKeys": [{
+                "profileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+                "apiKey": secret,
+                "updatedAt": "2026-04-21T05:20:00Z"
+            }]
         }),
     );
 
@@ -508,13 +519,132 @@ fn anthropic_profile_readiness_becomes_malformed_when_secret_link_stales() {
         &paths.legacy_openrouter_credentials_path,
         &paths.legacy_openai_auth_path,
     )
-    .expect("load anthropic provider profiles with missing secret");
+    .expect("load github models provider profiles");
 
-    let anthropic_profile = snapshot
-        .profile(ANTHROPIC_DEFAULT_PROFILE_ID)
-        .expect("anthropic profile");
+    let github_profile = snapshot
+        .profile(GITHUB_MODELS_DEFAULT_PROFILE_ID)
+        .expect("github models profile");
+    assert_eq!(github_profile.provider_id, "github_models");
+    assert_eq!(github_profile.runtime_kind, "openai_compatible");
+    assert_eq!(github_profile.preset_id.as_deref(), Some("github_models"));
+    assert_eq!(github_profile.base_url, None);
+    assert_eq!(github_profile.api_version, None);
+    assert!(matches!(
+        github_profile.credential_link,
+        Some(ProviderProfileCredentialLink::ApiKey { .. })
+    ));
     assert_eq!(
-        anthropic_profile.readiness(&snapshot.credentials).status,
-        ProviderProfileReadinessStatus::Malformed
+        github_profile.readiness(&snapshot.credentials).status,
+        ProviderProfileReadinessStatus::Ready
     );
+}
+
+#[test]
+fn github_models_profile_store_rejects_wrong_runtime_kind() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let paths = create_paths(&root);
+
+    write_json(
+        &paths.provider_profiles_path,
+        serde_json::json!({
+            "version": 2,
+            "activeProfileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+            "profiles": [{
+                "profileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+                "providerId": "github_models",
+                "runtimeKind": "github_models",
+                "label": "GitHub Models",
+                "modelId": "openai/gpt-4.1",
+                "presetId": "github_models",
+                "updatedAt": "2026-04-21T05:21:00Z"
+            }],
+            "updatedAt": "2026-04-21T05:21:00Z"
+        }),
+    );
+
+    let error = load_or_migrate_provider_profiles_from_paths(
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )
+    .expect_err("github models runtime kind should fail closed");
+
+    assert_eq!(error.code, "provider_profiles_invalid");
+    assert!(error.message.contains("github_models"));
+}
+
+#[test]
+fn github_models_profile_store_rejects_illegal_endpoint_metadata() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let paths = create_paths(&root);
+
+    write_json(
+        &paths.provider_profiles_path,
+        serde_json::json!({
+            "version": 2,
+            "activeProfileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+            "profiles": [{
+                "profileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+                "providerId": "github_models",
+                "runtimeKind": "openai_compatible",
+                "label": "GitHub Models",
+                "modelId": "openai/gpt-4.1",
+                "presetId": "github_models",
+                "baseUrl": "https://example.invalid/v1",
+                "updatedAt": "2026-04-21T05:22:00Z"
+            }],
+            "updatedAt": "2026-04-21T05:22:00Z"
+        }),
+    );
+
+    let error = load_or_migrate_provider_profiles_from_paths(
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )
+    .expect_err("github models baseUrl override should fail closed");
+
+    assert_eq!(error.code, "provider_profiles_invalid");
+    assert!(error.message.contains("field `baseUrl` is not allowed"));
+}
+
+#[test]
+fn github_models_profile_store_rejects_api_version_override() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let paths = create_paths(&root);
+
+    write_json(
+        &paths.provider_profiles_path,
+        serde_json::json!({
+            "version": 2,
+            "activeProfileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+            "profiles": [{
+                "profileId": GITHUB_MODELS_DEFAULT_PROFILE_ID,
+                "providerId": "github_models",
+                "runtimeKind": "openai_compatible",
+                "label": "GitHub Models",
+                "modelId": "openai/gpt-4.1",
+                "presetId": "github_models",
+                "apiVersion": "2024-10-21",
+                "updatedAt": "2026-04-21T05:23:00Z"
+            }],
+            "updatedAt": "2026-04-21T05:23:00Z"
+        }),
+    );
+
+    let error = load_or_migrate_provider_profiles_from_paths(
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )
+    .expect_err("github models apiVersion override should fail closed");
+
+    assert_eq!(error.code, "provider_profiles_invalid");
+    assert!(error.message.contains("field `apiVersion` is not allowed"));
 }

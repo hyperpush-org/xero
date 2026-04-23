@@ -14,8 +14,9 @@ use crate::{
     },
     runtime::{
         resolve_runtime_provider_identity, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
-        GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND, OPENAI_API_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND,
+        OPENROUTER_PROVIDER_ID,
     },
 };
 
@@ -24,6 +25,7 @@ pub const PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME: &str = "provider-profile-
 pub const OPENAI_CODEX_DEFAULT_PROFILE_ID: &str = "openai_codex-default";
 pub const OPENROUTER_DEFAULT_PROFILE_ID: &str = "openrouter-default";
 pub const ANTHROPIC_DEFAULT_PROFILE_ID: &str = "anthropic-default";
+pub const GITHUB_MODELS_DEFAULT_PROFILE_ID: &str = "github_models-default";
 pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "openai/gpt-4.1-mini";
 const PROVIDER_PROFILES_SCHEMA_VERSION: u32 = 2;
 const OPENAI_CODEX_DEFAULT_PROFILE_LABEL: &str = "OpenAI Codex";
@@ -911,7 +913,8 @@ fn validate_cloud_profile_metadata(
             ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
         }
-        OPENROUTER_PROVIDER_ID | ANTHROPIC_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+        OPENROUTER_PROVIDER_ID | ANTHROPIC_PROVIDER_ID | GITHUB_MODELS_PROVIDER_ID
+        | GEMINI_AI_STUDIO_PROVIDER_ID => {
             require_exact_preset_id(profile_id, path, provider_id, preset_id.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;

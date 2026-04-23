@@ -21,6 +21,7 @@ use crate::{
 pub const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+pub const GITHUB_MODELS_PROVIDER_ID: &str = "github_models";
 pub const OPENAI_API_PROVIDER_ID: &str = "openai_api";
 pub const AZURE_OPENAI_PROVIDER_ID: &str = "azure_openai";
 pub const GEMINI_AI_STUDIO_PROVIDER_ID: &str = "gemini_ai_studio";
@@ -44,6 +45,7 @@ pub enum RuntimeProvider {
     OpenAiCodex,
     OpenRouter,
     Anthropic,
+    GitHubModels,
     OpenAiApi,
     AzureOpenAi,
     GeminiAiStudio,
@@ -55,7 +57,9 @@ impl RuntimeProvider {
             Self::OpenAiCodex => RuntimeProviderFamily::OpenAiCodex,
             Self::OpenRouter => RuntimeProviderFamily::OpenRouter,
             Self::Anthropic => RuntimeProviderFamily::Anthropic,
-            Self::OpenAiApi | Self::AzureOpenAi => RuntimeProviderFamily::OpenAiCompatible,
+            Self::GitHubModels | Self::OpenAiApi | Self::AzureOpenAi => {
+                RuntimeProviderFamily::OpenAiCompatible
+            }
             Self::GeminiAiStudio => RuntimeProviderFamily::Gemini,
         }
     }
@@ -81,6 +85,13 @@ impl RuntimeProvider {
                 family: RuntimeProviderFamily::Anthropic,
                 provider_id: ANTHROPIC_PROVIDER_ID,
                 runtime_kind: ANTHROPIC_PROVIDER_ID,
+                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
+            },
+            Self::GitHubModels => ResolvedRuntimeProvider {
+                provider: Self::GitHubModels,
+                family: RuntimeProviderFamily::OpenAiCompatible,
+                provider_id: GITHUB_MODELS_PROVIDER_ID,
+                runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
                 auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::OpenAiApi => ResolvedRuntimeProvider {
@@ -148,6 +159,10 @@ pub const fn openrouter_provider() -> ResolvedRuntimeProvider {
 
 pub const fn anthropic_provider() -> ResolvedRuntimeProvider {
     RuntimeProvider::Anthropic.resolve()
+}
+
+pub const fn github_models_provider() -> ResolvedRuntimeProvider {
+    RuntimeProvider::GitHubModels.resolve()
 }
 
 pub const fn openai_api_provider() -> ResolvedRuntimeProvider {
@@ -264,6 +279,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
         }
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
+        | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => {
             let settings = settings.ok_or_else(|| {
                 AuthFlowError::terminal(
@@ -351,6 +367,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
         }
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
+        | RuntimeProvider::GitHubModels
         | RuntimeProvider::GeminiAiStudio => {
             let settings = settings.ok_or_else(|| {
                 AuthFlowError::terminal(
@@ -411,6 +428,7 @@ pub fn logout_provider_runtime_session<R: Runtime>(
         }
         RuntimeProvider::OpenRouter
         | RuntimeProvider::Anthropic
+        | RuntimeProvider::GitHubModels
         | RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GeminiAiStudio => Ok(()),
@@ -634,6 +652,7 @@ fn parse_provider_id(value: &str) -> Result<RuntimeProvider, AuthDiagnostic> {
         OPENAI_CODEX_PROVIDER_ID => Ok(RuntimeProvider::OpenAiCodex),
         OPENROUTER_PROVIDER_ID => Ok(RuntimeProvider::OpenRouter),
         ANTHROPIC_PROVIDER_ID => Ok(RuntimeProvider::Anthropic),
+        GITHUB_MODELS_PROVIDER_ID => Ok(RuntimeProvider::GitHubModels),
         OPENAI_API_PROVIDER_ID => Ok(RuntimeProvider::OpenAiApi),
         AZURE_OPENAI_PROVIDER_ID => Ok(RuntimeProvider::AzureOpenAi),
         GEMINI_AI_STUDIO_PROVIDER_ID => Ok(RuntimeProvider::GeminiAiStudio),
@@ -663,7 +682,7 @@ fn unknown_runtime_provider_diagnostic(value: &str) -> AuthDiagnostic {
     AuthDiagnostic {
         code: "runtime_provider_unknown".into(),
         message: format!(
-            "Cadence does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
+            "Cadence does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
         ),
         retryable: false,
     }
@@ -691,7 +710,7 @@ impl From<OpenAiCompatibleRuntimeSessionBinding> for RuntimeProviderSessionBindi
     fn from(binding: OpenAiCompatibleRuntimeSessionBinding) -> Self {
         let provider = resolve_runtime_provider_identity(
             Some(binding.provider_id.as_str()),
-            Some(binding.provider_id.as_str()),
+            Some(OPENAI_COMPATIBLE_RUNTIME_KIND),
         )
         .expect("openai-compatible binding provider id should resolve");
 

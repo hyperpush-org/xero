@@ -497,6 +497,15 @@ export function useCadenceDesktopState(
     runtimeSettingsRef.current = runtimeSettings
   }, [runtimeSettings])
 
+  const supersedeInFlightProjectLoad = useCallback((projectId: string) => {
+    if (activeProjectIdRef.current !== projectId) {
+      return
+    }
+
+    latestLoadRequestRef.current += 1
+    setIsProjectLoading(false)
+  }, [])
+
   const updateRuntimeStream = useCallback(
     (projectId: string, updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null) => {
       setRuntimeStreams((currentStreams) => {
@@ -558,6 +567,8 @@ export function useCadenceDesktopState(
 
   const applyRuntimeSessionUpdate = useCallback(
     (runtimeSession: RuntimeSessionView, options: { clearGlobalError?: boolean } = {}) => {
+      supersedeInFlightProjectLoad(runtimeSession.projectId)
+
       setRuntimeSessions((currentRuntimeSessions) => ({
         ...currentRuntimeSessions,
         [runtimeSession.projectId]: runtimeSession,
@@ -587,7 +598,7 @@ export function useCadenceDesktopState(
 
       return runtimeSession
     },
-    [],
+    [supersedeInFlightProjectLoad],
   )
 
   const applyRuntimeRunUpdate = useCallback(
@@ -596,6 +607,8 @@ export function useCadenceDesktopState(
       runtimeRun: RuntimeRunView | null,
       options: { clearGlobalError?: boolean; loadError?: string | null } = {},
     ) => {
+      supersedeInFlightProjectLoad(projectId)
+
       setRuntimeRuns((currentRuntimeRuns) => {
         if (!runtimeRun) {
           return removeProjectRecord(currentRuntimeRuns, projectId)
@@ -620,7 +633,7 @@ export function useCadenceDesktopState(
 
       return runtimeRun
     },
-    [],
+    [supersedeInFlightProjectLoad],
   )
 
   const applyAutonomousRunStateUpdate = useCallback(
@@ -635,6 +648,8 @@ export function useCadenceDesktopState(
       },
       options: { clearGlobalError?: boolean; loadError?: string | null } = {},
     ) => {
+      supersedeInFlightProjectLoad(projectId)
+
       setAutonomousRuns((currentRuns) => {
         if (!inspection.autonomousRun) {
           return removeProjectRecord(currentRuns, projectId)
@@ -696,7 +711,7 @@ export function useCadenceDesktopState(
 
       return inspection.autonomousRun
     },
-    [],
+    [supersedeInFlightProjectLoad],
   )
 
   const syncRuntimeSession = useCallback(

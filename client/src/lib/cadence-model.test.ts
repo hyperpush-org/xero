@@ -3052,6 +3052,64 @@ describe('cadence-model', () => {
 
     expect(
       providerProfilesSchema.parse({
+        activeProfileId: 'github-models-work',
+        profiles: [
+          {
+            profileId: 'github-models-work',
+            providerId: 'github_models',
+            runtimeKind: 'openai_compatible',
+            label: 'GitHub Models Work',
+            modelId: 'openai/gpt-4.1',
+            presetId: 'github_models',
+            baseUrl: null,
+            apiVersion: null,
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      activeProfileId: 'github-models-work',
+    })
+
+    expect(
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'github-models-work',
+        providerId: 'github_models',
+        runtimeKind: 'openai_compatible',
+        label: 'GitHub Models Work',
+        modelId: 'openai/gpt-4.1',
+        presetId: 'github_models',
+        apiKey: 'github_pat_example',
+        activate: true,
+      }),
+    ).toMatchObject({
+      providerId: 'github_models',
+      runtimeKind: 'openai_compatible',
+      modelId: 'openai/gpt-4.1',
+      activate: true,
+    })
+
+    expect(
+      runtimeSettingsSchema.parse({
+        providerId: 'github_models',
+        modelId: 'openai/gpt-4.1',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: false,
+      }),
+    ).toMatchObject({
+      providerId: 'github_models',
+      modelId: 'openai/gpt-4.1',
+    })
+
+    expect(
+      providerProfilesSchema.parse({
         activeProfileId: 'azure-work',
         profiles: [
           {
@@ -3105,6 +3163,78 @@ describe('cadence-model', () => {
       upsertRuntimeSettingsRequestSchema.parse({
         providerId: 'azure_openai',
         modelId: 'gpt-4.1',
+      }),
+    ).toThrow(/provider profiles/)
+  })
+
+  it('fails closed for malformed GitHub Models provider-profile metadata', () => {
+    expect(() =>
+      providerProfilesSchema.parse({
+        activeProfileId: 'github-models-work',
+        profiles: [
+          {
+            profileId: 'github-models-work',
+            providerId: 'github_models',
+            runtimeKind: 'github_models',
+            label: 'GitHub Models Work',
+            modelId: 'openai/gpt-4.1',
+            presetId: 'github_models',
+            baseUrl: null,
+            apiVersion: null,
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'missing',
+              credentialUpdatedAt: null,
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    ).toThrow(/openai_compatible/)
+
+    expect(() =>
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'github-models-work',
+        providerId: 'github_models',
+        runtimeKind: 'openai_compatible',
+        label: 'GitHub Models Work',
+        modelId: 'openai/gpt-4.1',
+        activate: true,
+      }),
+    ).toThrow(/presetId `github_models`/)
+
+    expect(() =>
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'github-models-work',
+        providerId: 'github_models',
+        runtimeKind: 'openai_compatible',
+        label: 'GitHub Models Work',
+        modelId: 'openai/gpt-4.1',
+        presetId: 'github_models',
+        baseUrl: 'https://example.invalid/v1',
+        activate: true,
+      }),
+    ).toThrow(/baseUrl overrides/)
+
+    expect(() =>
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'github-models-work',
+        providerId: 'github_models',
+        runtimeKind: 'openai_compatible',
+        label: 'GitHub Models Work',
+        modelId: 'openai/gpt-4.1',
+        presetId: 'github_models',
+        apiVersion: '2024-10-21',
+        activate: true,
+      }),
+    ).toThrow(/apiVersion metadata/)
+
+    expect(() =>
+      upsertRuntimeSettingsRequestSchema.parse({
+        providerId: 'github_models',
+        modelId: 'openai/gpt-4.1',
       }),
     ).toThrow(/provider profiles/)
   })

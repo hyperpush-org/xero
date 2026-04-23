@@ -13,6 +13,7 @@ const providerProfileRuntimeKindSchema = z.enum([
 const providerProfilePresetIdSchema = z.enum([
   'openrouter',
   'anthropic',
+  'github_models',
   'openai_api',
   'azure_openai',
   'gemini_ai_studio',
@@ -28,6 +29,7 @@ function expectedRuntimeKindForProvider(providerId: z.infer<typeof runtimeProvid
       return 'openrouter'
     case 'anthropic':
       return 'anthropic'
+    case 'github_models':
     case 'openai_api':
     case 'azure_openai':
       return 'openai_compatible'
@@ -99,6 +101,7 @@ function validateCloudProfileContract(
 
     case 'openrouter':
     case 'anthropic':
+    case 'github_models':
     case 'gemini_ai_studio': {
       if (payload.presetId !== payload.providerId) {
         ctx.addIssue({
