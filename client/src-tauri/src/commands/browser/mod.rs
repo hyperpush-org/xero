@@ -18,13 +18,13 @@ use tauri::{
 use crate::commands::{CommandError, CommandResult};
 
 pub use actions::{StorageArea, TypingMode};
-pub use screenshot::capture_webview as screenshot_webview;
 pub use events::{
     BrowserConsolePayload, BrowserDialogPayload, BrowserDownloadPayload, BrowserLoadStatePayload,
     BrowserTabUpdatedPayload, BrowserUrlChangedPayload, BROWSER_CONSOLE_EVENT,
     BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
     BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
+pub use screenshot::capture_webview as screenshot_webview;
 pub use tabs::{BrowserTabMetadata, BROWSER_LEGACY_LABEL, BROWSER_TAB_PREFIX};
 
 use bridge::{BridgeReply, BridgeWaiters};
@@ -125,37 +125,39 @@ pub fn browser_show<R: Runtime>(
         (id, label)
     } else {
         match tab_id {
-        Some(existing) => {
-            let label = tabs
-                .list()?
-                .into_iter()
-                .find(|tab| tab.id == existing)
-                .map(|tab| tab.label)
-                .ok_or_else(|| {
-                    CommandError::user_fixable(
-                        "browser_tab_not_found",
-                        format!("Browser tab `{existing}` was not found."),
-                    )
-                })?;
-            tabs.set_active(&existing)?;
-            (existing, label)
-        }
-        None => {
-            if let Some(active) = tabs.active_tab_id() {
-                let label = tabs.active_label_soft().unwrap_or_else(|| BROWSER_LEGACY_LABEL.to_string());
-                (active, label)
-            } else {
-                let (id, label) = tabs.new_tab_label();
-                // First tab gets the legacy label so existing screenshot/capability code keeps working.
-                let label = if id == "tab-1" {
-                    BROWSER_LEGACY_LABEL.to_string()
-                } else {
-                    label
-                };
-                tabs.insert(id.clone(), label.clone())?;
-                (id, label)
+            Some(existing) => {
+                let label = tabs
+                    .list()?
+                    .into_iter()
+                    .find(|tab| tab.id == existing)
+                    .map(|tab| tab.label)
+                    .ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "browser_tab_not_found",
+                            format!("Browser tab `{existing}` was not found."),
+                        )
+                    })?;
+                tabs.set_active(&existing)?;
+                (existing, label)
             }
-        }
+            None => {
+                if let Some(active) = tabs.active_tab_id() {
+                    let label = tabs
+                        .active_label_soft()
+                        .unwrap_or_else(|| BROWSER_LEGACY_LABEL.to_string());
+                    (active, label)
+                } else {
+                    let (id, label) = tabs.new_tab_label();
+                    // First tab gets the legacy label so existing screenshot/capability code keeps working.
+                    let label = if id == "tab-1" {
+                        BROWSER_LEGACY_LABEL.to_string()
+                    } else {
+                        label
+                    };
+                    tabs.insert(id.clone(), label.clone())?;
+                    (id, label)
+                }
+            }
         }
     };
 
@@ -206,7 +208,12 @@ pub fn browser_show<R: Runtime>(
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(target.clone()))
         .initialization_script(BROWSER_BRIDGE_INIT_SCRIPT)
         .on_navigation(move |url| {
-            tabs_for_nav.record_page_state(&tab_id_for_nav, Some(url.to_string()), None, Some(true));
+            tabs_for_nav.record_page_state(
+                &tab_id_for_nav,
+                Some(url.to_string()),
+                None,
+                Some(true),
+            );
             events::emit(
                 &app_for_nav,
                 BROWSER_URL_CHANGED_EVENT,
@@ -339,7 +346,13 @@ pub fn browser_eval<R: Runtime>(
     let tabs = state.tabs();
     let waiters = state.waiters();
     let body = format!("return (function(){{ {js} }})();", js = js);
-    bridge::run_script(&app, &tabs, &waiters, &body, actions::resolve_timeout(timeout_ms))
+    bridge::run_script(
+        &app,
+        &tabs,
+        &waiters,
+        &body,
+        actions::resolve_timeout(timeout_ms),
+    )
 }
 
 #[tauri::command]
@@ -423,14 +436,12 @@ pub fn browser_reload<R: Runtime>(
             "The in-app browser is not currently open.",
         ));
     };
-    let current = webview
-        .url()
-        .map_err(|error| {
-            CommandError::system_fault(
-                "browser_url_failed",
-                format!("Cadence could not read the browser URL: {error}"),
-            )
-        })?;
+    let current = webview.url().map_err(|error| {
+        CommandError::system_fault(
+            "browser_url_failed",
+            format!("Cadence could not read the browser URL: {error}"),
+        )
+    })?;
     webview.navigate(current).map_err(|error| {
         CommandError::system_fault(
             "browser_navigate_failed",
@@ -455,13 +466,7 @@ pub fn browser_click<R: Runtime>(
     selector: String,
     timeout_ms: Option<u64>,
 ) -> CommandResult<JsonValue> {
-    actions::click(
-        &app,
-        &state.tabs(),
-        &state.waiters(),
-        &selector,
-        timeout_ms,
-    )
+    actions::click(&app, &state.tabs(), &state.waiters(), &selector, timeout_ms)
 }
 
 #[tauri::command]
@@ -620,13 +625,7 @@ pub fn browser_storage_read<R: Runtime>(
     area: StorageArea,
     key: Option<String>,
 ) -> CommandResult<JsonValue> {
-    actions::storage_read(
-        &app,
-        &state.tabs(),
-        &state.waiters(),
-        area,
-        key.as_deref(),
-    )
+    actions::storage_read(&app, &state.tabs(), &state.waiters(), area, key.as_deref())
 }
 
 #[tauri::command]
@@ -741,13 +740,18 @@ pub fn browser_internal_event<R: Runtime>(
     match kind.as_str() {
         "page" => {
             let url = parsed.get("url").and_then(|v| v.as_str()).map(String::from);
-            let title = parsed.get("title").and_then(|v| v.as_str()).map(String::from);
+            let title = parsed
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let ready_state = parsed
                 .get("readyState")
                 .and_then(|v| v.as_str())
                 .unwrap_or("loading");
             let loading = ready_state != "complete";
-            state.tabs().record_page_state(&tab_id, url.clone(), title.clone(), Some(loading));
+            state
+                .tabs()
+                .record_page_state(&tab_id, url.clone(), title.clone(), Some(loading));
             if let Some(url) = url {
                 events::emit(
                     &app,

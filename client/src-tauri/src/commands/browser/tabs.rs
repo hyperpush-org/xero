@@ -66,10 +66,16 @@ impl BrowserTabs {
         self.ensure_active(app)
     }
 
-    pub fn active_webview<R: Runtime>(&self, app: &AppHandle<R>) -> CommandResult<tauri::Webview<R>> {
+    pub fn active_webview<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> CommandResult<tauri::Webview<R>> {
         let label = self.ensure_active(app)?;
         app.get_webview(&label).ok_or_else(|| {
-            CommandError::user_fixable("browser_not_open", "The in-app browser is not currently open.")
+            CommandError::user_fixable(
+                "browser_not_open",
+                "The in-app browser is not currently open.",
+            )
         })
     }
 
@@ -93,10 +99,7 @@ impl BrowserTabs {
     }
 
     pub fn new_tab_label(&self) -> (String, String) {
-        let next = self
-            .counter
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1);
+        let next = self.counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         let id = format!("tab-{next:x}");
         let label = format!("{BROWSER_TAB_PREFIX}{next:x}");
         (id, label)

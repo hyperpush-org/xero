@@ -230,7 +230,8 @@ impl ProviderProfilesSnapshot {
         &self,
         profile: &ProviderProfileRecord,
     ) -> Option<&ProviderApiKeyCredentialEntry> {
-        let ProviderProfileCredentialLink::ApiKey { updated_at } = profile.credential_link.as_ref()?
+        let ProviderProfileCredentialLink::ApiKey { updated_at } =
+            profile.credential_link.as_ref()?
         else {
             return None;
         };
@@ -470,7 +471,11 @@ pub(crate) fn validate_provider_profiles_contract(
         }
     }
 
-    ensure_all_credentials_reference_profiles(&metadata, &credentials_by_profile, credentials_path)?;
+    ensure_all_credentials_reference_profiles(
+        &metadata,
+        &credentials_by_profile,
+        credentials_path,
+    )?;
 
     Ok(ProviderProfilesSnapshot {
         metadata,
@@ -913,7 +918,9 @@ fn validate_cloud_profile_metadata(
             ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "apiVersion", api_version.as_deref())?;
         }
-        OPENROUTER_PROVIDER_ID | ANTHROPIC_PROVIDER_ID | GITHUB_MODELS_PROVIDER_ID
+        OPENROUTER_PROVIDER_ID
+        | ANTHROPIC_PROVIDER_ID
+        | GITHUB_MODELS_PROVIDER_ID
         | GEMINI_AI_STUDIO_PROVIDER_ID => {
             require_exact_preset_id(profile_id, path, provider_id, preset_id.as_deref())?;
             ensure_absent_metadata_field(profile_id, path, "baseUrl", base_url.as_deref())?;
@@ -921,7 +928,12 @@ fn validate_cloud_profile_metadata(
         }
         OPENAI_API_PROVIDER_ID => {
             if base_url.is_none() {
-                require_exact_preset_id(profile_id, path, OPENAI_API_PROVIDER_ID, preset_id.as_deref())?;
+                require_exact_preset_id(
+                    profile_id,
+                    path,
+                    OPENAI_API_PROVIDER_ID,
+                    preset_id.as_deref(),
+                )?;
             } else if let Some(preset_id) = preset_id.as_deref() {
                 if preset_id != OPENAI_API_PROVIDER_ID {
                     return Err(CommandError::user_fixable(
@@ -963,7 +975,12 @@ fn validate_cloud_profile_metadata(
                     ),
                 ));
             }
-            require_exact_preset_id(profile_id, path, AZURE_OPENAI_PROVIDER_ID, preset_id.as_deref())?;
+            require_exact_preset_id(
+                profile_id,
+                path,
+                AZURE_OPENAI_PROVIDER_ID,
+                preset_id.as_deref(),
+            )?;
             let base_url = base_url.as_deref().ok_or_else(|| {
                 CommandError::user_fixable(
                     "provider_profiles_invalid",

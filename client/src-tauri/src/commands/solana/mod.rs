@@ -28,8 +28,7 @@ pub use events::{
 };
 pub use rpc_router::{EndpointHealth, EndpointSpec, RpcRouter};
 pub use snapshot::{
-    AccountFetcher, AccountRecord, RpcAccountFetcher, SnapshotManifest, SnapshotMeta,
-    SnapshotStore,
+    AccountFetcher, AccountRecord, RpcAccountFetcher, SnapshotManifest, SnapshotMeta, SnapshotStore,
 };
 pub use toolchain::{ToolProbe, ToolchainStatus};
 pub use validator::{
@@ -216,11 +215,7 @@ pub fn solana_snapshot_restore(
     // accounts from the live cluster; the round-trip check proves they
     // still match the captured state. Phase 2 will actually push the
     // accounts back into a fresh validator.
-    let pubkeys: Vec<String> = manifest
-        .accounts
-        .iter()
-        .map(|a| a.pubkey.clone())
-        .collect();
+    let pubkeys: Vec<String> = manifest.accounts.iter().map(|a| a.pubkey.clone()).collect();
     let fetcher = RpcAccountFetcher;
     let replay = fetcher
         .fetch(&manifest.rpc_url, &pubkeys)

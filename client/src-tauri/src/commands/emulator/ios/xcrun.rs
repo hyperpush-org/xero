@@ -125,14 +125,7 @@ pub fn shutdown(udid: &str) -> Result<()> {
 /// Take a single PNG screenshot of the booted simulator. Returns the bytes.
 pub fn screenshot(udid: &str) -> Result<Vec<u8>> {
     let output = Command::new("xcrun")
-        .args([
-            "simctl",
-            "io",
-            udid,
-            "screenshot",
-            "--type=png",
-            "-",
-        ])
+        .args(["simctl", "io", udid, "screenshot", "--type=png", "-"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;

@@ -33,13 +33,12 @@ use crate::{
 
 use super::persistence::protocol_diagnostic_into_record;
 use super::{
-    runtime_supervisor_thinking_effort_env_value, validate_runtime_supervisor_launch_context,
+    read_json_line_from_reader, runtime_supervisor_thinking_effort_env_value,
+    validate_runtime_supervisor_launch_context, write_json_line, RuntimeSupervisorLaunchEnv,
     ANTHROPIC_API_KEY_ENV, CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
     CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
-    CADENCE_RUNTIME_THINKING_EFFORT_ENV, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV,
-    OPENAI_BASE_URL_ENV, RuntimeSupervisorLaunchEnv,
-    read_json_line_from_reader, write_json_line, DEFAULT_CONTROL_TIMEOUT,
-    DEFAULT_STARTUP_TIMEOUT, DEFAULT_STOP_TIMEOUT,
+    CADENCE_RUNTIME_THINKING_EFFORT_ENV, DEFAULT_CONTROL_TIMEOUT, DEFAULT_STARTUP_TIMEOUT,
+    DEFAULT_STOP_TIMEOUT, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV, OPENAI_BASE_URL_ENV,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -292,7 +291,9 @@ pub fn launch_detached_runtime_supervisor(
             ),
         )
     })?;
-    sidecar.arg("--launch-context-json").arg(launch_context_json);
+    sidecar
+        .arg("--launch-context-json")
+        .arg(launch_context_json);
 
     let control_state_json = serde_json::to_string(&request.run_controls).map_err(|error| {
         CommandError::system_fault(

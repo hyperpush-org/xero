@@ -1,6 +1,6 @@
 pub mod anthropic;
-pub mod openai_compatible;
 pub mod openai_codex;
+pub mod openai_compatible;
 pub mod openrouter;
 pub mod store;
 
@@ -10,21 +10,19 @@ pub use crate::runtime::{
     OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
 };
 pub(crate) use anthropic::{bind_anthropic_runtime_session, reconcile_anthropic_runtime_session};
-pub(crate) use openai_compatible::{
-    bind_openai_compatible_runtime_session, reconcile_openai_compatible_runtime_session,
-    OpenAiCompatibleBindOutcome, OpenAiCompatibleReconcileOutcome,
-};
 pub use anthropic::{
     AnthropicAuthConfig, AnthropicBindOutcome, AnthropicDiscoveredModel, AnthropicReconcileOutcome,
     AnthropicRuntimeSessionBinding,
-};
-pub use openai_compatible::{
-    OpenAiCompatibleAuthConfig, OpenAiCompatibleRuntimeSessionBinding,
 };
 pub use openai_codex::{
     cancel_openai_codex_flow, complete_openai_codex_flow, refresh_openai_codex_session,
     start_openai_codex_flow, OpenAiCodexAuthConfig, OpenAiCodexAuthSession, StartedOpenAiCodexFlow,
 };
+pub(crate) use openai_compatible::{
+    bind_openai_compatible_runtime_session, reconcile_openai_compatible_runtime_session,
+    OpenAiCompatibleBindOutcome, OpenAiCompatibleReconcileOutcome,
+};
+pub use openai_compatible::{OpenAiCompatibleAuthConfig, OpenAiCompatibleRuntimeSessionBinding};
 pub(crate) use openrouter::{
     bind_openrouter_runtime_session, reconcile_openrouter_runtime_session,
 };

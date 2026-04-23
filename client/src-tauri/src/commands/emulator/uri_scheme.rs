@@ -50,7 +50,9 @@ pub fn handle<R: Runtime>(
                         .header("X-Frame-Width", frame.width.to_string())
                         .header("X-Frame-Height", frame.height.to_string())
                         .body(frame.bytes.as_ref().clone())
-                        .unwrap_or_else(|_| empty_response(http::StatusCode::INTERNAL_SERVER_ERROR));
+                        .unwrap_or_else(|_| {
+                            empty_response(http::StatusCode::INTERNAL_SERVER_ERROR)
+                        });
                     responder.respond(response);
                 }
                 None => {

@@ -156,10 +156,7 @@ mod tests {
             .iter()
             .position(|a| a == "--clone-account")
             .expect("clone-account present");
-        assert_eq!(
-            args[idx + 1],
-            "So11111111111111111111111111111111111111112"
-        );
+        assert_eq!(args[idx + 1], "So11111111111111111111111111111111111111112");
         let rpc = args.iter().position(|a| a == "--rpc-port").unwrap();
         assert_eq!(args[rpc + 1], "7000");
         let ws = args.iter().position(|a| a == "--ws-port").unwrap();

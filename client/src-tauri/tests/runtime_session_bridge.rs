@@ -1544,6 +1544,124 @@ fn get_runtime_session_rejects_stale_anthropic_binding_after_key_rotation() {
 }
 
 #[test]
+fn start_runtime_session_binds_github_models_from_provider_profiles_without_secret_leakage() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let secret = "github_pat_runtime_session_secret";
+
+    upsert_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertProviderProfileRequestDto {
+            profile_id: "github_models-default".into(),
+            provider_id: "github_models".into(),
+            runtime_kind: "openai_compatible".into(),
+            label: "GitHub Models".into(),
+            model_id: "openai/gpt-4.1".into(),
+            preset_id: Some("github_models".into()),
+            base_url: None,
+            api_version: None,
+            api_key: Some(secret.into()),
+            activate: true,
+        },
+    )
+    .expect("save github models provider profile");
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind github models runtime session");
+
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "github_models");
+    assert_eq!(runtime.runtime_kind, "openai_compatible");
+    assert!(runtime.session_id.is_some());
+    assert!(runtime.account_id.is_some());
+    assert!(runtime.last_error.is_none());
+
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db bytes");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains(secret));
+}
+
+#[test]
+fn get_runtime_session_rejects_stale_github_models_binding_after_token_rotation() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    upsert_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertProviderProfileRequestDto {
+            profile_id: "github_models-default".into(),
+            provider_id: "github_models".into(),
+            runtime_kind: "openai_compatible".into(),
+            label: "GitHub Models".into(),
+            model_id: "openai/gpt-4.1".into(),
+            preset_id: Some("github_models".into()),
+            base_url: None,
+            api_version: None,
+            api_key: Some("github_pat_first".into()),
+            activate: true,
+        },
+    )
+    .expect("save first github models provider profile");
+
+    start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind first github models runtime session");
+
+    upsert_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertProviderProfileRequestDto {
+            profile_id: "github_models-default".into(),
+            provider_id: "github_models".into(),
+            runtime_kind: "openai_compatible".into(),
+            label: "GitHub Models".into(),
+            model_id: "openai/gpt-4.1".into(),
+            preset_id: Some("github_models".into()),
+            base_url: None,
+            api_version: None,
+            api_key: Some("github_pat_second".into()),
+            activate: true,
+        },
+    )
+    .expect("rotate github token");
+
+    let reconciled = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("reconcile stale github binding");
+
+    assert_eq!(reconciled.phase, RuntimeAuthPhase::Idle);
+    assert_eq!(reconciled.provider_id, "github_models");
+    assert_eq!(
+        reconciled.last_error_code.as_deref(),
+        Some("github_models_binding_stale")
+    );
+    assert!(reconciled.session_id.is_none());
+}
+
+#[test]
 fn start_runtime_session_rejects_empty_project_id() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, _auth_store_path) = create_state(&root);

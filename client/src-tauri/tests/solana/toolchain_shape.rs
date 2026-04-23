@@ -23,7 +23,10 @@ pub fn toolchain_probe_returns_well_shaped_struct_on_this_host() {
     if cfg!(target_os = "windows") {
         assert!(status.wsl2.is_some(), "Windows hosts must probe wsl2");
     } else {
-        assert!(status.wsl2.is_none(), "non-Windows hosts must not probe wsl2");
+        assert!(
+            status.wsl2.is_none(),
+            "non-Windows hosts must not probe wsl2"
+        );
     }
 }
 

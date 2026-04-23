@@ -151,10 +151,7 @@ impl AutonomousToolRuntime {
         })
     }
 
-    pub fn with_browser_executor(
-        mut self,
-        executor: std::sync::Arc<dyn BrowserExecutor>,
-    ) -> Self {
+    pub fn with_browser_executor(mut self, executor: std::sync::Arc<dyn BrowserExecutor>) -> Self {
         self.browser_executor = Some(executor);
         self
     }
@@ -223,12 +220,12 @@ impl AutonomousToolRuntime {
         let action_summary = format!("Browser action {:?}", request.action);
         let output = executor.execute(request.action)?;
         let summary = if let Some(url) = &output.url {
-            format!(
-                "Executed browser action `{}` on `{}`.",
-                output.action, url
-            )
+            format!("Executed browser action `{}` on `{}`.", output.action, url)
         } else {
-            format!("Executed browser action `{}` ({action_summary}).", output.action)
+            format!(
+                "Executed browser action `{}` ({action_summary}).",
+                output.action
+            )
         };
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_BROWSER.into(),

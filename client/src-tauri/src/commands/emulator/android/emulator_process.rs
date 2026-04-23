@@ -83,9 +83,7 @@ pub fn spawn(
                 let tail = guard.stderr_tail();
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    format!(
-                        "emulator exited before boot (status={status}). stderr tail: {tail}"
-                    ),
+                    format!("emulator exited before boot (status={status}). stderr tail: {tail}"),
                 ));
             }
             Ok(None) if Instant::now() >= deadline => {

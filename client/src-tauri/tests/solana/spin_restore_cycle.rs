@@ -104,9 +104,7 @@ pub fn snapshot_restore_is_bit_identical_across_process_boundary() {
         .fetch(&manifest.rpc_url, &["A".into(), "B".into()])
         .unwrap();
     assert!(
-        cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(
-            &manifest, &replay
-        ),
+        cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replay),
         "round-trip must still be identical after a simulated restart"
     );
 
@@ -119,9 +117,7 @@ pub fn snapshot_restore_is_bit_identical_across_process_boundary() {
         .fetch(&manifest.rpc_url, &["A".into(), "B".into()])
         .unwrap();
     assert!(
-        !cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(
-            &manifest, &replay
-        ),
+        !cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replay),
         "mutated account must fail the round-trip check"
     );
 }
@@ -141,10 +137,7 @@ pub fn starting_second_cluster_replaces_the_first() {
         .supervisor()
         .start(ClusterKind::MainnetFork, StartOpts::default())
         .unwrap();
-    assert_ne!(
-        first_pid, second.pid,
-        "second start must spawn a new child"
-    );
+    assert_ne!(first_pid, second.pid, "second start must spawn a new child");
 
     let status = fixture.state.supervisor().status();
     assert!(status.running);

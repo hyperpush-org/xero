@@ -4,8 +4,8 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{
     auth::{
-        ActiveAuthFlowRegistry, AnthropicAuthConfig, AuthFlowError,
-        OpenAiCompatibleAuthConfig, OpenAiCodexAuthConfig, OpenRouterAuthConfig,
+        ActiveAuthFlowRegistry, AnthropicAuthConfig, AuthFlowError, OpenAiCodexAuthConfig,
+        OpenAiCompatibleAuthConfig, OpenRouterAuthConfig,
     },
     commands::CommandError,
     notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,

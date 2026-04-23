@@ -168,10 +168,7 @@ pub fn send_text(stream: &mut TcpStream, text: &str) -> Result<()> {
 /// scrcpy's combined back/screen-on message — useful as a home-key press
 /// replacement when the screen is off.
 pub fn send_back_or_screen_on(stream: &mut TcpStream) -> Result<()> {
-    let buf = [
-        MessageType::BackOrScreenOn as u8,
-        KeyAction::Down as u8,
-    ];
+    let buf = [MessageType::BackOrScreenOn as u8, KeyAction::Down as u8];
     stream.write_all(&buf)?;
     stream.flush()
 }
@@ -208,7 +205,10 @@ pub fn send_set_clipboard(stream: &mut TcpStream, text: &str, paste: bool) -> Re
 pub fn denormalize(x: f32, y: f32, width: u32, height: u32) -> (i32, i32) {
     let px = (x.clamp(0.0, 1.0) * width as f32).round() as i32;
     let py = (y.clamp(0.0, 1.0) * height as f32).round() as i32;
-    (px.min(width as i32 - 1).max(0), py.min(height as i32 - 1).max(0))
+    (
+        px.min(width as i32 - 1).max(0),
+        py.min(height as i32 - 1).max(0),
+    )
 }
 
 #[cfg(test)]

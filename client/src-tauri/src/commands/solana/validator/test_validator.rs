@@ -125,11 +125,7 @@ fn ensure_dir(dir: &Path) -> CommandResult<()> {
     })
 }
 
-fn await_rpc_ready(
-    guard: &mut ChildGuard,
-    rpc_url: &str,
-    timeout: Duration,
-) -> CommandResult<()> {
+fn await_rpc_ready(guard: &mut ChildGuard, rpc_url: &str, timeout: Duration) -> CommandResult<()> {
     let client = Client::builder()
         .timeout(Duration::from_secs(2))
         .build()

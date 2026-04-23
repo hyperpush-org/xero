@@ -319,7 +319,11 @@ fn start_frame_pump<R: Runtime + 'static>(
                         publish_and_emit(&app_clone, &bus_clone, frame.width, frame.height, jpeg);
                     }
                     Err(err) => {
-                        emit_error(&app_clone, &device_for_stream, format!("jpeg encode: {err}"));
+                        emit_error(
+                            &app_clone,
+                            &device_for_stream,
+                            format!("jpeg encode: {err}"),
+                        );
                     }
                 }
             }
@@ -332,7 +336,11 @@ fn start_frame_pump<R: Runtime + 'static>(
                 );
             }
             Err(err) => {
-                emit_error(&app_clone, &device_for_stream, format!("h264 decode: {err}"));
+                emit_error(
+                    &app_clone,
+                    &device_for_stream,
+                    format!("h264 decode: {err}"),
+                );
             }
         }
     });
@@ -370,12 +378,13 @@ fn spawn_screenshot_fallback<R: Runtime + 'static>(
             format!("initial simctl screenshot failed: {err}"),
         )
     })?;
-    let initial = image::load_from_memory_with_format(&png, image::ImageFormat::Png).map_err(|e| {
-        CommandError::system_fault(
-            "ios_screenshot_decode_failed",
-            format!("failed to decode simctl PNG: {e}"),
-        )
-    })?;
+    let initial =
+        image::load_from_memory_with_format(&png, image::ImageFormat::Png).map_err(|e| {
+            CommandError::system_fault(
+                "ios_screenshot_decode_failed",
+                format!("failed to decode simctl PNG: {e}"),
+            )
+        })?;
     let (width, height) = (initial.width(), initial.height());
     publish_png(&app, &bus, png, width, height);
 

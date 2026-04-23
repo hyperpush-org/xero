@@ -155,9 +155,7 @@ impl RpcHealthCheck for HttpHealthCheck {
             return Err(format!("http {}", response.status().as_u16()));
         }
 
-        let body: serde_json::Value = response
-            .json()
-            .map_err(|e| format!("body: {e}"))?;
+        let body: serde_json::Value = response.json().map_err(|e| format!("body: {e}"))?;
 
         // `getHealth` returns "ok" when healthy and an RPC error otherwise.
         if let Some(result) = body.get("result") {
@@ -318,8 +316,7 @@ impl RpcRouter {
                 Err(err) => {
                     endpoint.healthy = false;
                     endpoint.last_error = Some(err.clone());
-                    endpoint.consecutive_failures =
-                        endpoint.consecutive_failures.saturating_add(1);
+                    endpoint.consecutive_failures = endpoint.consecutive_failures.saturating_add(1);
                 }
             }
         }
@@ -526,7 +523,10 @@ mod tests {
         );
         router.report_failure(ClusterKind::Mainnet, "primary", "500 from upstream");
         let pick = router.pick_healthy(ClusterKind::Mainnet).unwrap();
-        assert_ne!(pick.id, "primary", "primary should not be picked after failure");
+        assert_ne!(
+            pick.id, "primary",
+            "primary should not be picked after failure"
+        );
     }
 
     #[test]

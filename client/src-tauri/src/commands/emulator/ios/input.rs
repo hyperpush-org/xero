@@ -42,11 +42,7 @@ pub enum TouchPhase {
 #[serde(tag = "kind")]
 pub enum HidEvent {
     /// Touch event at device-pixel `(x, y)` with the given phase.
-    Touch {
-        phase: TouchPhase,
-        x: i32,
-        y: i32,
-    },
+    Touch { phase: TouchPhase, x: i32, y: i32 },
     /// Two-finger swipe — represented as a pair of touch events delivered
     /// together to produce a simultaneous gesture.
     Swipe {
@@ -101,8 +97,14 @@ mod tests {
 
     #[test]
     fn parse_hardware_button_covers_common_names() {
-        assert!(matches!(parse_hardware_button("home"), Some(HardwareButton::Home)));
-        assert!(matches!(parse_hardware_button("lock"), Some(HardwareButton::SideButton)));
+        assert!(matches!(
+            parse_hardware_button("home"),
+            Some(HardwareButton::Home)
+        ));
+        assert!(matches!(
+            parse_hardware_button("lock"),
+            Some(HardwareButton::SideButton)
+        ));
         assert!(parse_hardware_button("back").is_none());
     }
 }

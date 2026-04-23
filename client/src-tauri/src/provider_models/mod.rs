@@ -15,9 +15,9 @@ use crate::{
         },
         openai_compatible::{
             fetch_openai_compatible_models, missing_openai_compatible_api_key_error,
-            resolve_openai_compatible_endpoint_for_profile,
-            OpenAiCompatibleDiscoveredModel, OpenAiCompatibleDiscoveredThinkingEffort,
-            OpenAiCompatibleModelListStrategy, ResolvedOpenAiCompatibleEndpoint,
+            resolve_openai_compatible_endpoint_for_profile, OpenAiCompatibleDiscoveredModel,
+            OpenAiCompatibleDiscoveredThinkingEffort, OpenAiCompatibleModelListStrategy,
+            ResolvedOpenAiCompatibleEndpoint,
         },
         openrouter::{fetch_openrouter_models, OpenRouterDiscoveredModel},
     },
@@ -30,7 +30,8 @@ use crate::{
     },
     runtime::{
         ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+        GITHUB_MODELS_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENROUTER_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -352,7 +353,9 @@ fn refresh_provider_model_catalog(
                 let diagnostic = missing_openrouter_credential_diagnostic(profile);
                 return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
-                    None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
+                    None => {
+                        unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic))
+                    }
                 };
             };
 
@@ -365,7 +368,9 @@ fn refresh_provider_model_catalog(
                 let diagnostic = missing_anthropic_credential_diagnostic(profile);
                 return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
-                    None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
+                    None => {
+                        unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic))
+                    }
                 };
             };
 
@@ -374,28 +379,33 @@ fn refresh_provider_model_catalog(
                 .map_err(diagnostic_from_auth_error)
         }
         ProviderModelCatalogRefreshTarget::OpenAiCompatible(endpoint) => {
-            let Some(secret) = provider_profiles.matched_api_key_credential_for_profile(&profile.profile_id) else {
-                let diagnostic = diagnostic_from_auth_error(missing_openai_compatible_api_key_error(
-                    profile.provider_id.as_str(),
-                    "discover",
-                ));
+            let Some(secret) =
+                provider_profiles.matched_api_key_credential_for_profile(&profile.profile_id)
+            else {
+                let diagnostic =
+                    diagnostic_from_auth_error(missing_openai_compatible_api_key_error(
+                        profile.provider_id.as_str(),
+                        "discover",
+                    ));
                 return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
-                    None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
+                    None => {
+                        unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic))
+                    }
                 };
             };
 
             match endpoint.model_list_strategy {
-                OpenAiCompatibleModelListStrategy::Live => {
-                    fetch_openai_compatible_models(
-                        &secret.api_key,
-                        endpoint,
-                        &state.openai_compatible_auth_config(),
-                    )
-                    .map(normalize_openai_compatible_models)
-                    .map_err(diagnostic_from_auth_error)
+                OpenAiCompatibleModelListStrategy::Live => fetch_openai_compatible_models(
+                    &secret.api_key,
+                    endpoint,
+                    &state.openai_compatible_auth_config(),
+                )
+                .map(normalize_openai_compatible_models)
+                .map_err(diagnostic_from_auth_error),
+                OpenAiCompatibleModelListStrategy::Manual => {
+                    Ok(manual_openai_compatible_projection(profile))
                 }
-                OpenAiCompatibleModelListStrategy::Manual => Ok(manual_openai_compatible_projection(profile)),
             }
         }
     };
@@ -405,10 +415,12 @@ fn refresh_provider_model_catalog(
             let now = crate::auth::now_timestamp();
             let source = if matches!(
                 refresh_target,
-                ProviderModelCatalogRefreshTarget::OpenAiCompatible(ResolvedOpenAiCompatibleEndpoint {
-                    model_list_strategy: OpenAiCompatibleModelListStrategy::Manual,
-                    ..
-                })
+                ProviderModelCatalogRefreshTarget::OpenAiCompatible(
+                    ResolvedOpenAiCompatibleEndpoint {
+                        model_list_strategy: OpenAiCompatibleModelListStrategy::Manual,
+                        ..
+                    }
+                )
             ) {
                 ProviderModelCatalogSource::Manual
             } else {
@@ -433,7 +445,8 @@ fn refresh_provider_model_catalog(
                 models,
             };
 
-            if source == ProviderModelCatalogSource::Manual || !refresh_context.cache_write_allowed {
+            if source == ProviderModelCatalogSource::Manual || !refresh_context.cache_write_allowed
+            {
                 return catalog;
             }
 
@@ -537,7 +550,9 @@ fn normalize_openai_compatible_models(
     normalized
 }
 
-fn manual_openai_compatible_projection(profile: &ProviderProfileRecord) -> Vec<ProviderModelRecord> {
+fn manual_openai_compatible_projection(
+    profile: &ProviderProfileRecord,
+) -> Vec<ProviderModelRecord> {
     vec![ProviderModelRecord {
         model_id: profile.model_id.clone(),
         display_name: profile.model_id.clone(),
@@ -566,9 +581,7 @@ fn openai_compatible_thinking_capability(
                 OpenAiCompatibleDiscoveredThinkingEffort::Medium => {
                     ProviderModelThinkingEffort::Medium
                 }
-                OpenAiCompatibleDiscoveredThinkingEffort::High => {
-                    ProviderModelThinkingEffort::High
-                }
+                OpenAiCompatibleDiscoveredThinkingEffort::High => ProviderModelThinkingEffort::High,
                 OpenAiCompatibleDiscoveredThinkingEffort::XHigh => {
                     ProviderModelThinkingEffort::XHigh
                 }
@@ -579,13 +592,9 @@ fn openai_compatible_thinking_capability(
                 ProviderModelThinkingEffort::Minimal
             }
             OpenAiCompatibleDiscoveredThinkingEffort::Low => ProviderModelThinkingEffort::Low,
-            OpenAiCompatibleDiscoveredThinkingEffort::Medium => {
-                ProviderModelThinkingEffort::Medium
-            }
+            OpenAiCompatibleDiscoveredThinkingEffort::Medium => ProviderModelThinkingEffort::Medium,
             OpenAiCompatibleDiscoveredThinkingEffort::High => ProviderModelThinkingEffort::High,
-            OpenAiCompatibleDiscoveredThinkingEffort::XHigh => {
-                ProviderModelThinkingEffort::XHigh
-            }
+            OpenAiCompatibleDiscoveredThinkingEffort::XHigh => ProviderModelThinkingEffort::XHigh,
         }),
     }
 }
@@ -725,7 +734,10 @@ fn resolve_provider_model_catalog_refresh_target(
         OPENAI_CODEX_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::OpenAiCodex),
         OPENROUTER_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::OpenRouter),
         ANTHROPIC_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::Anthropic),
-        OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+        OPENAI_API_PROVIDER_ID
+        | AZURE_OPENAI_PROVIDER_ID
+        | GITHUB_MODELS_PROVIDER_ID
+        | GEMINI_AI_STUDIO_PROVIDER_ID => {
             resolve_openai_compatible_endpoint_for_profile(
                 profile,
                 &state.openai_compatible_auth_config(),
@@ -962,6 +974,7 @@ fn readiness_diagnostic(
             | ANTHROPIC_PROVIDER_ID
             | OPENAI_API_PROVIDER_ID
             | AZURE_OPENAI_PROVIDER_ID
+            | GITHUB_MODELS_PROVIDER_ID
             | GEMINI_AI_STUDIO_PROVIDER_ID
     ) {
         return None;
@@ -973,7 +986,10 @@ fn readiness_diagnostic(
         ProviderProfileReadinessStatus::Missing => Some(match profile.provider_id.as_str() {
             OPENROUTER_PROVIDER_ID => missing_openrouter_credential_diagnostic(profile),
             ANTHROPIC_PROVIDER_ID => missing_anthropic_credential_diagnostic(profile),
-            OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+            OPENAI_API_PROVIDER_ID
+            | AZURE_OPENAI_PROVIDER_ID
+            | GITHUB_MODELS_PROVIDER_ID
+            | GEMINI_AI_STUDIO_PROVIDER_ID => {
                 diagnostic_from_auth_error(missing_openai_compatible_api_key_error(
                     profile.provider_id.as_str(),
                     "discover",
@@ -998,7 +1014,10 @@ fn readiness_diagnostic(
                 ),
                 retryable: false,
             },
-            OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+            OPENAI_API_PROVIDER_ID
+            | AZURE_OPENAI_PROVIDER_ID
+            | GITHUB_MODELS_PROVIDER_ID
+            | GEMINI_AI_STUDIO_PROVIDER_ID => {
                 ProviderModelCatalogDiagnostic {
                     code: "provider_profile_credentials_unavailable".into(),
                     message: format!(

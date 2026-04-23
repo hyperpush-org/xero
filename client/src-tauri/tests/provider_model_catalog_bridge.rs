@@ -7,7 +7,7 @@ use std::{
 };
 
 use cadence_desktop_lib::{
-    auth::{AnthropicAuthConfig, OpenRouterAuthConfig},
+    auth::{AnthropicAuthConfig, OpenAiCompatibleAuthConfig, OpenRouterAuthConfig},
     commands::{
         provider_model_catalog::get_provider_model_catalog,
         provider_profiles::upsert_provider_profile, GetProviderModelCatalogRequestDto,
@@ -60,6 +60,14 @@ fn anthropic_auth_config(models_url: String) -> AnthropicAuthConfig {
         models_url,
         timeout: Duration::from_secs(5),
         ..AnthropicAuthConfig::default()
+    }
+}
+
+fn openai_compatible_auth_config(github_models_catalog_url: String) -> OpenAiCompatibleAuthConfig {
+    OpenAiCompatibleAuthConfig {
+        github_models_catalog_url,
+        timeout: Duration::from_secs(5),
+        ..OpenAiCompatibleAuthConfig::default()
     }
 }
 
@@ -443,7 +451,8 @@ fn get_provider_model_catalog_ignores_corrupt_cache_row_and_stays_read_only_unti
 }
 
 #[test]
-fn get_provider_model_catalog_discovers_anthropic_profile_with_truthful_thinking_and_secret_free_cache() {
+fn get_provider_model_catalog_discovers_anthropic_profile_with_truthful_thinking_and_secret_free_cache(
+) {
     let models_base_url = spawn_static_http_server(
         200,
         r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true}}}},{"id":"claude-3-5-haiku-latest","display_name":"Claude 3.5 Haiku"}]}"#,
@@ -530,7 +539,8 @@ fn get_provider_model_catalog_returns_unavailable_for_anthropic_profile_without_
 }
 
 #[test]
-fn get_provider_model_catalog_returns_cached_anthropic_snapshot_when_live_refresh_is_rate_limited() {
+fn get_provider_model_catalog_returns_cached_anthropic_snapshot_when_live_refresh_is_rate_limited()
+{
     let success_base_url = spawn_static_http_server(
         200,
         r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"medium":{"supported":true},"high":{"supported":true}}}}]}"#,
@@ -586,6 +596,215 @@ fn get_provider_model_catalog_returns_cached_anthropic_snapshot_when_live_refres
 }
 
 #[test]
+fn get_provider_model_catalog_discovers_github_models_profile_with_live_catalog_truth() {
+    let catalog_base_url = spawn_static_http_server(
+        200,
+        r#"[{"id":"openai/gpt-4.1","name":"OpenAI GPT-4.1","capabilities":["streaming","tool-calling"]},{"id":"meta/llama-3.3-70b-instruct","name":"Meta Llama 3.3 70B Instruct","capabilities":["streaming"]}]"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let state = create_state(&root).with_openai_compatible_auth_config_override(
+        openai_compatible_auth_config(format!("{catalog_base_url}/catalog/models")),
+    );
+    let app = build_mock_app(state);
+    let secret = "github_pat_test_secret";
+    seed_openai_compatible_profile(
+        &app,
+        "github-models-work",
+        "github_models",
+        "openai_compatible",
+        "openai/gpt-4.1",
+        Some("github_models"),
+        None,
+        None,
+        Some(secret),
+    );
+
+    let catalog = get_provider_model_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "github-models-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("discover github models catalog");
+
+    assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Live);
+    assert_eq!(catalog.provider_id, "github_models");
+    assert_eq!(catalog.configured_model_id, "openai/gpt-4.1");
+    assert_eq!(catalog.models.len(), 2);
+
+    let configured = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == "openai/gpt-4.1")
+        .expect("configured GitHub model should be present");
+    assert_eq!(configured.display_name, "OpenAI GPT-4.1");
+    assert!(!configured.thinking.supported);
+    assert!(configured.thinking.default_effort.is_none());
+
+    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    assert!(!cache.contains(secret));
+    assert!(cache.contains("github_models"));
+}
+
+#[test]
+fn get_provider_model_catalog_returns_unavailable_for_github_models_profile_without_token() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    seed_openai_compatible_profile(
+        &app,
+        "github-models-work",
+        "github_models",
+        "openai_compatible",
+        "openai/gpt-4.1",
+        Some("github_models"),
+        None,
+        None,
+        None,
+    );
+
+    let catalog = get_provider_model_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "github-models-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("surface unavailable github catalog without token");
+
+    assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Unavailable);
+    assert!(catalog.models.is_empty());
+    assert_eq!(
+        catalog
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("github_models_token_missing")
+    );
+}
+
+#[test]
+fn get_provider_model_catalog_returns_cached_github_snapshot_when_refresh_fails() {
+    let success_base_url =
+        spawn_static_http_server(200, r#"[{"id":"openai/gpt-4.1","name":"OpenAI GPT-4.1"}]"#);
+    let root = tempfile::tempdir().expect("temp dir");
+    let first_state = create_state(&root).with_openai_compatible_auth_config_override(
+        openai_compatible_auth_config(format!("{success_base_url}/catalog/models")),
+    );
+    let first_app = build_mock_app(first_state);
+    seed_openai_compatible_profile(
+        &first_app,
+        "github-models-work",
+        "github_models",
+        "openai_compatible",
+        "openai/gpt-4.1",
+        Some("github_models"),
+        None,
+        None,
+        Some("github_pat_first"),
+    );
+
+    let first = get_provider_model_catalog(
+        first_app.handle().clone(),
+        first_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "github-models-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("seed live github catalog");
+
+    let failing_base_url = spawn_static_http_server(503, r#"{"error":"down"}"#);
+    let second_state = create_state(&root).with_openai_compatible_auth_config_override(
+        openai_compatible_auth_config(format!("{failing_base_url}/catalog/models")),
+    );
+    let second_app = build_mock_app(second_state);
+
+    let cached = get_provider_model_catalog(
+        second_app.handle().clone(),
+        second_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "github-models-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("fall back to cached github catalog");
+
+    assert_eq!(cached.source, ProviderModelCatalogSourceDto::Cache);
+    assert_eq!(cached.fetched_at, first.fetched_at);
+    assert_eq!(cached.last_success_at, first.last_success_at);
+    assert_eq!(
+        cached
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("github_models_provider_unavailable")
+    );
+}
+
+#[test]
+fn get_provider_model_catalog_rejects_malformed_github_catalog_and_preserves_cached_snapshot() {
+    let success_base_url =
+        spawn_static_http_server(200, r#"[{"id":"openai/gpt-4.1","name":"OpenAI GPT-4.1"}]"#);
+    let root = tempfile::tempdir().expect("temp dir");
+    let first_state = create_state(&root).with_openai_compatible_auth_config_override(
+        openai_compatible_auth_config(format!("{success_base_url}/catalog/models")),
+    );
+    let first_app = build_mock_app(first_state);
+    seed_openai_compatible_profile(
+        &first_app,
+        "github-models-work",
+        "github_models",
+        "openai_compatible",
+        "openai/gpt-4.1",
+        Some("github_models"),
+        None,
+        None,
+        Some("github_pat_first"),
+    );
+
+    get_provider_model_catalog(
+        first_app.handle().clone(),
+        first_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "github-models-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("seed live github catalog");
+
+    let malformed_base_url = spawn_static_http_server(
+        200,
+        r#"[{"id":"openai/gpt-4.1","name":"OpenAI GPT-4.1"},{"id":"   ","name":"Broken"}]"#,
+    );
+    let second_state = create_state(&root).with_openai_compatible_auth_config_override(
+        openai_compatible_auth_config(format!("{malformed_base_url}/catalog/models")),
+    );
+    let second_app = build_mock_app(second_state);
+
+    let cached = get_provider_model_catalog(
+        second_app.handle().clone(),
+        second_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "github-models-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("fall back to cached github catalog after malformed payload");
+
+    assert_eq!(cached.source, ProviderModelCatalogSourceDto::Cache);
+    assert_eq!(
+        cached
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("github_models_models_decode_failed")
+    );
+}
+
+#[test]
 fn get_provider_model_catalog_discovers_openai_compatible_profile_with_live_models() {
     let base_url = spawn_static_http_server(
         200,
@@ -620,13 +839,15 @@ fn get_provider_model_catalog_discovers_openai_compatible_profile_with_live_mode
     assert_eq!(catalog.provider_id, "openai_api");
     assert_eq!(catalog.configured_model_id, "gpt-4.1-mini");
     assert_eq!(catalog.models.len(), 2);
-    assert!(catalog
-        .models
-        .iter()
-        .find(|model| model.model_id == "gpt-4.1-mini")
-        .expect("configured model should be present")
-        .thinking
-        .supported);
+    assert!(
+        catalog
+            .models
+            .iter()
+            .find(|model| model.model_id == "gpt-4.1-mini")
+            .expect("configured model should be present")
+            .thinking
+            .supported
+    );
 
     let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
     assert!(!cache.contains(secret));

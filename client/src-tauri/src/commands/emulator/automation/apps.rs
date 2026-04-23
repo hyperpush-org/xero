@@ -13,7 +13,8 @@ use super::AppDescriptor;
 // ---------- Android ---------------------------------------------------------
 
 pub fn android_install(adb: &Adb, apk: &Path) -> Result<AppDescriptor, CommandError> {
-    adb.install(apk).map_err(|err| install_err(err.to_string()))?;
+    adb.install(apk)
+        .map_err(|err| install_err(err.to_string()))?;
 
     // `adb install` doesn't print the bundle id; we best-effort extract it
     // from the filename (com.example.apk → com.example) and fall back to
@@ -42,7 +43,12 @@ pub fn android_launch(adb: &Adb, bundle_id: &str, args: &[String]) -> Result<(),
     let activity = resolve_launcher_activity(adb, bundle_id).unwrap_or_default();
     if !activity.is_empty() {
         let component = format!("{bundle_id}/{activity}");
-        let mut cmd = vec!["am".to_string(), "start".to_string(), "-n".to_string(), component];
+        let mut cmd = vec![
+            "am".to_string(),
+            "start".to_string(),
+            "-n".to_string(),
+            component,
+        ];
         for arg in args {
             cmd.push("--es".to_string());
             cmd.push("cadence_arg".to_string());
@@ -90,13 +96,7 @@ pub fn android_list(adb: &Adb) -> Result<Vec<AppDescriptor>, CommandError> {
 
 fn resolve_launcher_activity(adb: &Adb, bundle_id: &str) -> Option<String> {
     let stdout = adb
-        .shell([
-            "cmd",
-            "package",
-            "resolve-activity",
-            "--brief",
-            bundle_id,
-        ])
+        .shell(["cmd", "package", "resolve-activity", "--brief", bundle_id])
         .ok()?;
     // Output is two lines: the priority (ignore) and `<pkg>/<activity>`.
     stdout
@@ -135,11 +135,7 @@ pub fn ios_uninstall(udid: &str, bundle_id: &str) -> Result<(), CommandError> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn ios_launch(
-    udid: &str,
-    bundle_id: &str,
-    args: &[String],
-) -> Result<(), CommandError> {
+pub fn ios_launch(udid: &str, bundle_id: &str, args: &[String]) -> Result<(), CommandError> {
     use crate::commands::emulator::ios::xcrun;
     xcrun::launch(udid, bundle_id, args)
         .map_err(|e| CommandError::system_fault("app_launch_failed", e.to_string()))

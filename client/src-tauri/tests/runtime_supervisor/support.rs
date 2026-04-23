@@ -17,9 +17,9 @@ pub(crate) use cadence_desktop_lib::{
     runtime::{
         autonomous_orchestrator::persist_supervisor_event, launch_detached_runtime_supervisor,
         probe_runtime_run, stop_runtime_run, submit_runtime_run_input,
-        RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv,
-        RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest,
-        RuntimeSupervisorStopRequest, RuntimeSupervisorSubmitInputRequest,
+        RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv, RuntimeSupervisorLaunchRequest,
+        RuntimeSupervisorProbeRequest, RuntimeSupervisorStopRequest,
+        RuntimeSupervisorSubmitInputRequest,
     },
     state::DesktopState,
 };

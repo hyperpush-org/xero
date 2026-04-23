@@ -76,7 +76,9 @@ impl RuntimeSupervisorLaunchEnv {
     }
 
     fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.vars.iter().map(|(key, value)| (key.as_str(), value.as_str()))
+        self.vars
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 }
 

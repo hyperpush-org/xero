@@ -86,11 +86,12 @@ fn apply_runtime_settings_update(
     } else {
         current_openrouter_secret.clone()
     };
-    let next_openrouter_link = next_openrouter_secret.as_ref().map(|entry| {
-        ProviderProfileCredentialLink::ApiKey {
-            updated_at: entry.updated_at.clone(),
-        }
-    });
+    let next_openrouter_link =
+        next_openrouter_secret
+            .as_ref()
+            .map(|entry| ProviderProfileCredentialLink::ApiKey {
+                updated_at: entry.updated_at.clone(),
+            });
 
     let next_anthropic_secret = if explicit_anthropic_clear {
         None
@@ -103,11 +104,12 @@ fn apply_runtime_settings_update(
     } else {
         current_anthropic_secret.clone()
     };
-    let next_anthropic_link = next_anthropic_secret.as_ref().map(|entry| {
-        ProviderProfileCredentialLink::ApiKey {
-            updated_at: entry.updated_at.clone(),
-        }
-    });
+    let next_anthropic_link =
+        next_anthropic_secret
+            .as_ref()
+            .map(|entry| ProviderProfileCredentialLink::ApiKey {
+                updated_at: entry.updated_at.clone(),
+            });
 
     let openai_profile = merge_profile(
         current_openai.as_ref(),

@@ -363,7 +363,8 @@ pub(crate) fn stop_runtime_run_returns_existing_terminal_snapshot_after_sidecar_
     );
 }
 
-pub(crate) fn start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secret_free_persistence() {
+pub(crate) fn start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secret_free_persistence(
+) {
     let root = tempfile::tempdir().expect("temp dir");
     let models_base_url = spawn_static_http_server_for_requests(
         200,
@@ -378,12 +379,7 @@ pub(crate) fn start_runtime_run_launches_anthropic_with_truthful_provider_identi
     let (project_id, repo_root) = seed_project(&root, &app);
     let secret = "sk-ant-api03-runtime-secret";
 
-    seed_anthropic_profile(
-        &app,
-        "anthropic-work",
-        "claude-3-7-sonnet-latest",
-        secret,
-    );
+    seed_anthropic_profile(&app, "anthropic-work", "claude-3-7-sonnet-latest", secret);
 
     let runtime = start_runtime_session(
         app.handle().clone(),
@@ -451,7 +447,8 @@ pub(crate) fn start_runtime_run_launches_anthropic_with_truthful_provider_identi
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
 }
 
-pub(crate) fn start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_and_secret_free_persistence() {
+pub(crate) fn start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_and_secret_free_persistence(
+) {
     let root = tempfile::tempdir().expect("temp dir");
     let models_base_url = spawn_static_http_server_for_requests(
         200,
@@ -538,5 +535,97 @@ pub(crate) fn start_runtime_run_launches_openai_compatible_with_truthful_provide
     )
     .expect("stop recovered openai-compatible runtime run")
     .expect("openai-compatible runtime run should still exist");
+    assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}
+
+pub(crate) fn start_runtime_run_launches_github_models_with_truthful_provider_identity_and_secret_free_persistence(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let catalog_base_url = spawn_static_http_server_for_requests(
+        200,
+        r#"[{"id":"openai/gpt-4.1","name":"OpenAI GPT-4.1","capabilities":["streaming","tool-calling"]}]"#,
+        3,
+    );
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let state = state.with_openai_compatible_auth_config_override(OpenAiCompatibleAuthConfig {
+        github_models_catalog_url: format!("{catalog_base_url}/catalog/models"),
+        ..OpenAiCompatibleAuthConfig::default()
+    });
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let secret = "github_pat_runtime_secret";
+
+    seed_openai_compatible_profile(
+        &app,
+        "github-models-work",
+        "github_models",
+        "openai_compatible",
+        "openai/gpt-4.1",
+        Some("github_models"),
+        None,
+        None,
+        secret,
+    );
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind github models runtime session before run start");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "github_models");
+    assert_eq!(runtime.runtime_kind, "openai_compatible");
+
+    let launched = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect("start github models runtime run");
+    assert_eq!(launched.provider_id, "github_models");
+    assert_eq!(launched.runtime_kind, "openai_compatible");
+
+    let running = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+    assert_eq!(running.run_id, launched.run_id);
+    assert_eq!(running.provider_id, "github_models");
+    assert_eq!(running.runtime_kind, "openai_compatible");
+    assert_eq!(running.controls.active.model_id, "openai/gpt-4.1");
+    assert_eq!(running.controls.active.thinking_effort, None);
+
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db bytes");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains(secret));
+
+    let (fresh_state, _fresh_registry_path, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+    let recovered = wait_for_runtime_run(&fresh_app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+    assert_eq!(recovered.run_id, launched.run_id);
+    assert_eq!(recovered.provider_id, "github_models");
+    assert_eq!(recovered.runtime_kind, "openai_compatible");
+
+    let stopped = stop_runtime_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id,
+            run_id: launched.run_id,
+        },
+    )
+    .expect("stop recovered github models runtime run")
+    .expect("github models runtime run should still exist");
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
 }

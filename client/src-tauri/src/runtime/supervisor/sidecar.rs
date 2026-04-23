@@ -27,13 +27,12 @@ use super::persistence::{
 };
 use super::{
     control::spawn_control_listener, runtime_supervisor_thinking_effort_env_value,
-    validate_runtime_supervisor_launch_context, write_json_line, ANTHROPIC_API_KEY_ENV,
-    CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
+    validate_runtime_supervisor_launch_context, write_json_line, PtyEventNormalizer,
+    RuntimeSupervisorSidecarArgs, SharedPtyWriter, SidecarSharedState, SupervisorEventHub,
+    ANTHROPIC_API_KEY_ENV, CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
     CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
-    CADENCE_RUNTIME_THINKING_EFFORT_ENV, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV,
-    OPENAI_BASE_URL_ENV, PtyEventNormalizer, RuntimeSupervisorSidecarArgs, SharedPtyWriter,
-    SidecarSharedState, SupervisorEventHub, HEARTBEAT_INTERVAL,
-    TERMINAL_ATTACH_GRACE_PERIOD,
+    CADENCE_RUNTIME_THINKING_EFFORT_ENV, HEARTBEAT_INTERVAL, OPENAI_API_KEY_ENV,
+    OPENAI_API_VERSION_ENV, OPENAI_BASE_URL_ENV, TERMINAL_ATTACH_GRACE_PERIOD,
 };
 use crate::runtime::protocol::{
     RuntimeSupervisorLaunchContext, SupervisorProcessStatus, SupervisorStartupMessage,
@@ -171,6 +170,7 @@ fn validate_inherited_launch_environment(
         }
         crate::runtime::OPENAI_API_PROVIDER_ID
         | crate::runtime::AZURE_OPENAI_PROVIDER_ID
+        | crate::runtime::GITHUB_MODELS_PROVIDER_ID
         | crate::runtime::GEMINI_AI_STUDIO_PROVIDER_ID => {
             let openai_api_key = std::env::var(OPENAI_API_KEY_ENV)
                 .ok()
@@ -181,6 +181,9 @@ fn validate_inherited_launch_environment(
                     match launch_context.provider_id.as_str() {
                         crate::runtime::OPENAI_API_PROVIDER_ID => "openai_api_key_missing",
                         crate::runtime::AZURE_OPENAI_PROVIDER_ID => "azure_openai_api_key_missing",
+                        crate::runtime::GITHUB_MODELS_PROVIDER_ID => {
+                            "github_models_token_missing"
+                        }
                         crate::runtime::GEMINI_AI_STUDIO_PROVIDER_ID => {
                             "gemini_ai_studio_api_key_missing"
                         }
@@ -268,6 +271,7 @@ fn apply_launch_context_to_child_environment(
         launch_context.provider_id.as_str(),
         crate::runtime::OPENAI_API_PROVIDER_ID
             | crate::runtime::AZURE_OPENAI_PROVIDER_ID
+            | crate::runtime::GITHUB_MODELS_PROVIDER_ID
             | crate::runtime::GEMINI_AI_STUDIO_PROVIDER_ID
     ) {
         if let Ok(api_key) = std::env::var(OPENAI_API_KEY_ENV) {

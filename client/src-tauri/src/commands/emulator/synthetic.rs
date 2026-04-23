@@ -55,7 +55,13 @@ impl SyntheticSession {
                 let rgba = render_pattern(frame_no, elapsed);
                 match encode_jpeg_rgba(&rgba, SYNTHETIC_WIDTH, SYNTHETIC_HEIGHT) {
                     Ok(jpeg) => {
-                        publish_and_emit(&app, &worker_bus, SYNTHETIC_WIDTH, SYNTHETIC_HEIGHT, jpeg);
+                        publish_and_emit(
+                            &app,
+                            &worker_bus,
+                            SYNTHETIC_WIDTH,
+                            SYNTHETIC_HEIGHT,
+                            jpeg,
+                        );
                     }
                     Err(error) => {
                         let _ = app.emit(
@@ -108,9 +114,9 @@ fn render_pattern(frame_no: u32, elapsed: f32) -> Vec<u8> {
             let (r, g, b) = if x == bar_x {
                 (255, 255, 255)
             } else {
-                let local_hue = (hue + (x as f32 / width as f32) * 120.0
-                    + (y as f32 / height as f32) * 60.0)
-                    % 360.0;
+                let local_hue =
+                    (hue + (x as f32 / width as f32) * 120.0 + (y as f32 / height as f32) * 60.0)
+                        % 360.0;
                 hsv_to_rgb(local_hue, 0.7, 0.85)
             };
             buf.push(r);

@@ -82,14 +82,7 @@ pub fn publish_and_emit<R: Runtime>(
     bytes: Vec<u8>,
 ) -> u64 {
     let seq = bus.publish(width, height, bytes);
-    let _ = app.emit(
-        EMULATOR_FRAME_EVENT,
-        FramePayload {
-            seq,
-            width,
-            height,
-        },
-    );
+    let _ = app.emit(EMULATOR_FRAME_EVENT, FramePayload { seq, width, height });
     seq
 }
 

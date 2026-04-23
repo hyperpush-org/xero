@@ -670,9 +670,9 @@ fn parse_runtime_reference(value: &str) -> Result<RuntimeReference, AuthDiagnost
         GEMINI_AI_STUDIO_PROVIDER_ID => {
             Ok(RuntimeReference::Actual(RuntimeProvider::GeminiAiStudio))
         }
-        OPENAI_COMPATIBLE_RUNTIME_KIND => {
-            Ok(RuntimeReference::Family(RuntimeProviderFamily::OpenAiCompatible))
-        }
+        OPENAI_COMPATIBLE_RUNTIME_KIND => Ok(RuntimeReference::Family(
+            RuntimeProviderFamily::OpenAiCompatible,
+        )),
         GEMINI_RUNTIME_KIND => Ok(RuntimeReference::Family(RuntimeProviderFamily::Gemini)),
         other => Err(unknown_runtime_provider_diagnostic(other)),
     }

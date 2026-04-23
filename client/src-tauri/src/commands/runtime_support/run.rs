@@ -30,9 +30,9 @@ use crate::{
     provider_profiles::ProviderProfileReadinessStatus,
     runtime::{
         launch_detached_runtime_supervisor, probe_runtime_run, resolve_runtime_shell_selection,
-        RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv,
-        RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest, ANTHROPIC_PROVIDER_ID,
-        AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv, RuntimeSupervisorLaunchRequest,
+        RuntimeSupervisorProbeRequest, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -219,13 +219,8 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime>(
         requested_controls.as_ref(),
         initial_prompt.as_deref(),
     )?;
-    let prepared_launch = prepare_runtime_supervisor_launch(
-        app,
-        state,
-        &runtime,
-        &session_id,
-        &run_controls,
-    )?;
+    let prepared_launch =
+        prepare_runtime_supervisor_launch(app, state, &runtime, &session_id, &run_controls)?;
 
     let launched = launch_detached_runtime_supervisor(
         state,
@@ -431,7 +426,10 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
         }
     } else if matches!(
         runtime.provider_id.as_str(),
-        OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID
+        OPENAI_API_PROVIDER_ID
+            | AZURE_OPENAI_PROVIDER_ID
+            | GITHUB_MODELS_PROVIDER_ID
+            | GEMINI_AI_STUDIO_PROVIDER_ID
     ) {
         let readiness = active_profile.readiness(&provider_profiles.credentials);
         let api_key = match readiness.status {
@@ -469,8 +467,8 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
             &state.openai_compatible_auth_config(),
         )
         .map_err(command_error_from_auth)?;
-        let env =
-            resolve_openai_compatible_launch_env(&api_key, &endpoint).map_err(command_error_from_auth)?;
+        let env = resolve_openai_compatible_launch_env(&api_key, &endpoint)
+            .map_err(command_error_from_auth)?;
         launch_env.insert("OPENAI_API_KEY", env.api_key);
         launch_env.insert("OPENAI_BASE_URL", env.base_url);
         if let Some(api_version) = env.api_version {

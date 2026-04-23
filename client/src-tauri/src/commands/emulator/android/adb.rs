@@ -191,20 +191,14 @@ impl Adb {
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() || stdout.contains("Failure") {
-            return Err(io_other(format!(
-                "adb install failed: {}",
-                stdout.trim()
-            )));
+            return Err(io_other(format!("adb install failed: {}", stdout.trim())));
         }
         Ok(())
     }
 
     /// `adb uninstall <package>`.
     pub fn uninstall(&self, package: &str) -> Result<()> {
-        let output = self
-            .base_command()
-            .args(["uninstall", package])
-            .output()?;
+        let output = self.base_command().args(["uninstall", package]).output()?;
         if !output.status.success() {
             return Err(io_other(format!(
                 "adb uninstall failed: {}",

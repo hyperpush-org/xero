@@ -55,8 +55,8 @@ pub fn probe() -> AndroidSdk {
     }
     candidate_roots.extend(default_roots.into_iter().filter(|p| p.exists()));
 
-    let adb = which_binary("adb")
-        .or_else(|| find_in_roots(&candidate_roots, &["platform-tools/adb"]));
+    let adb =
+        which_binary("adb").or_else(|| find_in_roots(&candidate_roots, &["platform-tools/adb"]));
     let emulator = which_binary("emulator")
         .or_else(|| find_in_roots(&candidate_roots, &["emulator/emulator"]));
     let avdmanager = which_binary("avdmanager").or_else(|| {

@@ -120,10 +120,7 @@ impl AccountFetcher for RpcAccountFetcher {
                 .get("executable")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let rent_epoch = value
-                .get("rentEpoch")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let rent_epoch = value.get("rentEpoch").and_then(|v| v.as_u64()).unwrap_or(0);
             let data = value
                 .get("data")
                 .and_then(|v| v.as_array())
@@ -226,10 +223,7 @@ impl SnapshotStore {
         for entry in fs::read_dir(&self.root).map_err(|err| {
             CommandError::system_fault(
                 "solana_snapshot_list_failed",
-                format!(
-                    "Could not read snapshot dir {}: {err}",
-                    self.root.display()
-                ),
+                format!("Could not read snapshot dir {}: {err}", self.root.display()),
             )
         })? {
             let entry = match entry {
@@ -261,10 +255,7 @@ impl SnapshotStore {
         fs::remove_dir_all(&path).map_err(|err| {
             CommandError::system_fault(
                 "solana_snapshot_delete_failed",
-                format!(
-                    "Could not delete snapshot dir {}: {err}",
-                    path.display()
-                ),
+                format!("Could not delete snapshot dir {}: {err}", path.display()),
             )
         })
     }
@@ -291,10 +282,7 @@ impl SnapshotStore {
 /// fresh instance of the cluster (Phase 2 will teach LiteSVM / surfpool to
 /// receive the dump directly). For now, the manifest is the source of
 /// truth and restore is bit-identical to the original capture.
-pub fn verify_round_trip(
-    original: &SnapshotManifest,
-    restored_accounts: &[AccountRecord],
-) -> bool {
+pub fn verify_round_trip(original: &SnapshotManifest, restored_accounts: &[AccountRecord]) -> bool {
     if original.accounts.len() != restored_accounts.len() {
         return false;
     }
@@ -316,7 +304,10 @@ fn read_manifest(path: &Path) -> CommandResult<SnapshotManifest> {
     let manifest: SnapshotManifest = serde_json::from_reader(reader).map_err(|err| {
         CommandError::system_fault(
             "solana_snapshot_parse_failed",
-            format!("Could not parse snapshot manifest {}: {err}", path.display()),
+            format!(
+                "Could not parse snapshot manifest {}: {err}",
+                path.display()
+            ),
         )
     })?;
     Ok(manifest)
@@ -426,27 +417,16 @@ mod tests {
     }
 
     impl AccountFetcher for MockFetcher {
-        fn fetch(
-            &self,
-            _rpc_url: &str,
-            pubkeys: &[String],
-        ) -> Result<Vec<AccountRecord>, String> {
+        fn fetch(&self, _rpc_url: &str, pubkeys: &[String]) -> Result<Vec<AccountRecord>, String> {
             let map = self.by_pubkey.lock().unwrap();
-            Ok(pubkeys
-                .iter()
-                .filter_map(|p| map.get(p).cloned())
-                .collect())
+            Ok(pubkeys.iter().filter_map(|p| map.get(p).cloned()).collect())
         }
     }
 
     #[derive(Debug)]
     struct FetcherHandle(std::sync::Arc<MockFetcher>);
     impl AccountFetcher for FetcherHandle {
-        fn fetch(
-            &self,
-            rpc_url: &str,
-            pubkeys: &[String],
-        ) -> Result<Vec<AccountRecord>, String> {
+        fn fetch(&self, rpc_url: &str, pubkeys: &[String]) -> Result<Vec<AccountRecord>, String> {
             self.0.fetch(rpc_url, pubkeys)
         }
     }

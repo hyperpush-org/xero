@@ -2,7 +2,6 @@ pub mod apply_workflow_transition;
 pub mod browser;
 pub mod cancel_autonomous_run;
 pub mod emulator;
-pub mod solana;
 pub mod get_autonomous_run;
 pub mod get_project_snapshot;
 pub mod get_repository_diff;
@@ -23,6 +22,7 @@ pub mod remove_project;
 pub mod resolve_operator_action;
 pub mod resume_operator_run;
 pub mod search_project;
+pub mod solana;
 pub mod start_autonomous_run;
 pub mod start_openai_login;
 pub mod start_runtime_run;
@@ -46,24 +46,17 @@ pub use browser::{
     browser_back, browser_click, browser_cookies_get, browser_cookies_set, browser_current_url,
     browser_eval, browser_forward, browser_hide, browser_history_state, browser_internal_event,
     browser_internal_reply, browser_navigate, browser_press_key, browser_query, browser_read_text,
-    browser_reload, browser_resize, browser_screenshot, browser_scroll, browser_show,
-    browser_stop, browser_storage_clear, browser_storage_read, browser_storage_write,
-    browser_tab_close, browser_tab_focus, browser_tab_list, browser_type,
-    browser_wait_for_load, browser_wait_for_selector, BrowserState, BrowserTabMetadata,
-    BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT,
-    BROWSER_LOAD_STATE_EVENT, BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT,
-    BROWSER_URL_CHANGED_EVENT,
+    browser_reload, browser_resize, browser_screenshot, browser_scroll, browser_show, browser_stop,
+    browser_storage_clear, browser_storage_read, browser_storage_write, browser_tab_close,
+    browser_tab_focus, browser_tab_list, browser_type, browser_wait_for_load,
+    browser_wait_for_selector, BrowserState, BrowserTabMetadata, BROWSER_CONSOLE_EVENT,
+    BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT, BROWSER_TAB_PREFIX,
+    BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
 pub use emulator::{
     emulator_input, emulator_list_devices, emulator_rotate, emulator_sdk_status, emulator_start,
     emulator_stop, emulator_subscribe_ready, EmulatorState,
-};
-pub use solana::{
-    solana_cluster_list, solana_cluster_start, solana_cluster_status, solana_cluster_stop,
-    solana_rpc_endpoints_set, solana_rpc_health, solana_snapshot_create, solana_snapshot_delete,
-    solana_snapshot_list, solana_snapshot_restore, solana_subscribe_ready,
-    solana_toolchain_status, SolanaState,
 };
 pub use get_autonomous_run::get_autonomous_run;
 pub use get_project_snapshot::get_project_snapshot;
@@ -90,6 +83,12 @@ pub use remove_project::remove_project;
 pub use resolve_operator_action::resolve_operator_action;
 pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
+pub use solana::{
+    solana_cluster_list, solana_cluster_start, solana_cluster_status, solana_cluster_stop,
+    solana_rpc_endpoints_set, solana_rpc_health, solana_snapshot_create, solana_snapshot_delete,
+    solana_snapshot_list, solana_snapshot_restore, solana_subscribe_ready, solana_toolchain_status,
+    SolanaState,
+};
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_openai_login::start_openai_login;
 pub use start_runtime_run::start_runtime_run;

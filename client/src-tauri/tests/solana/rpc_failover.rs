@@ -4,9 +4,7 @@
 
 use std::sync::Arc;
 
-use super::support::{
-    EndpointSpec, ScriptedHealthCheck, ScriptedHealthCheckHandle,
-};
+use super::support::{EndpointSpec, ScriptedHealthCheck, ScriptedHealthCheckHandle};
 use cadence_desktop_lib::commands::solana::{ClusterKind, RpcRouter};
 
 fn router_with_three_mainnet_endpoints() -> (RpcRouter, Arc<ScriptedHealthCheck>) {
@@ -60,7 +58,10 @@ pub fn rpc_router_fails_over_when_primary_endpoint_goes_down() {
     // picks must route to a different endpoint.
     router.report_failure(ClusterKind::Mainnet, "primary", "500 from upstream");
     let next = router.pick_healthy(ClusterKind::Mainnet).unwrap();
-    assert_ne!(next.id, "primary", "primary must not be picked after failure");
+    assert_ne!(
+        next.id, "primary",
+        "primary must not be picked after failure"
+    );
     assert!(matches!(next.id.as_str(), "secondary" | "tertiary"));
 
     // Health snapshot reflects the failure shape (not healthy, error recorded).
@@ -99,7 +100,10 @@ pub fn rpc_router_set_endpoints_replaces_default_pool() {
         .iter()
         .filter(|e| e.cluster == ClusterKind::Mainnet)
         .count();
-    assert!(mainnet_count_before >= 2, "default pool has several mainnet endpoints");
+    assert!(
+        mainnet_count_before >= 2,
+        "default pool has several mainnet endpoints"
+    );
 
     router
         .set_endpoints(

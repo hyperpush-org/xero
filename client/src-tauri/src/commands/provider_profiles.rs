@@ -176,9 +176,10 @@ fn apply_provider_profile_upsert(
         return Err(CommandError::invalid_request("modelId"));
     }
 
-    let provider = resolve_runtime_provider_identity(Some(provider_id), Some(runtime_kind)).map_err(
-        |diagnostic| CommandError::user_fixable("provider_profiles_invalid", diagnostic.message),
-    )?;
+    let provider = resolve_runtime_provider_identity(Some(provider_id), Some(runtime_kind))
+        .map_err(|diagnostic| {
+            CommandError::user_fixable("provider_profiles_invalid", diagnostic.message)
+        })?;
 
     if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
         let validated = runtime_settings_file_from_request(provider_id, model_id, false)?;
@@ -234,16 +235,20 @@ fn apply_provider_profile_upsert(
     };
 
     let next_credential_link = if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
-        current_profile.as_ref().and_then(|profile| match profile.credential_link.as_ref() {
-            Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
-                profile.credential_link.clone()
-            }
-            _ => None,
-        })
+        current_profile
+            .as_ref()
+            .and_then(|profile| match profile.credential_link.as_ref() {
+                Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
+                    profile.credential_link.clone()
+                }
+                _ => None,
+            })
     } else {
-        next_api_key_secret.as_ref().map(|entry| ProviderProfileCredentialLink::ApiKey {
-            updated_at: entry.updated_at.clone(),
-        })
+        next_api_key_secret
+            .as_ref()
+            .map(|entry| ProviderProfileCredentialLink::ApiKey {
+                updated_at: entry.updated_at.clone(),
+            })
     };
 
     let mut next = current.clone();
@@ -284,15 +289,19 @@ fn apply_provider_profile_upsert(
                     && profile.api_version == normalize_optional_text(request.api_version.clone())
                     && profile.credential_link
                         == if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
-                            current_profile.as_ref().and_then(|profile| match profile.credential_link.as_ref() {
-                                Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
-                                    profile.credential_link.clone()
+                            current_profile.as_ref().and_then(|profile| {
+                                match profile.credential_link.as_ref() {
+                                    Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
+                                        profile.credential_link.clone()
+                                    }
+                                    _ => None,
                                 }
-                                _ => None,
                             })
                         } else {
-                            next_api_key_secret.as_ref().map(|entry| ProviderProfileCredentialLink::ApiKey {
-                                updated_at: entry.updated_at.clone(),
+                            next_api_key_secret.as_ref().map(|entry| {
+                                ProviderProfileCredentialLink::ApiKey {
+                                    updated_at: entry.updated_at.clone(),
+                                }
                             })
                         }
             })
@@ -364,7 +373,10 @@ fn upsert_profile(profiles: &mut Vec<ProviderProfileRecord>, next: ProviderProfi
     }
 }
 
-fn upsert_api_key_secret(snapshot: &mut ProviderProfilesSnapshot, next: ProviderApiKeyCredentialEntry) {
+fn upsert_api_key_secret(
+    snapshot: &mut ProviderProfilesSnapshot,
+    next: ProviderApiKeyCredentialEntry,
+) {
     if let Some(existing) = snapshot
         .credentials
         .api_keys

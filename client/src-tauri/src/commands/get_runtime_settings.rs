@@ -402,8 +402,12 @@ fn validate_runtime_settings_contract(
         ));
     }
 
-    let openrouter_api_key = credentials.as_ref().map(|credentials| credentials.api_key.clone());
-    let openrouter_updated_at = credentials.as_ref().map(|credentials| credentials.updated_at.clone());
+    let openrouter_api_key = credentials
+        .as_ref()
+        .map(|credentials| credentials.api_key.clone());
+    let openrouter_updated_at = credentials
+        .as_ref()
+        .map(|credentials| credentials.updated_at.clone());
 
     Ok(RuntimeSettingsSnapshot {
         settings: settings.clone(),
@@ -440,8 +444,8 @@ pub(crate) fn runtime_settings_snapshot_from_provider_profiles(
 
     let preferred_openrouter_credential = provider_profiles.preferred_openrouter_credential();
     let preferred_anthropic_credential = provider_profiles.preferred_anthropic_credential();
-    let active_api_key_credential = provider_profiles
-        .matched_api_key_credential_for_profile(&active_profile.profile_id);
+    let active_api_key_credential =
+        provider_profiles.matched_api_key_credential_for_profile(&active_profile.profile_id);
 
     Ok(RuntimeSettingsSnapshot {
         settings: RuntimeSettingsFile {
@@ -452,7 +456,8 @@ pub(crate) fn runtime_settings_snapshot_from_provider_profiles(
         },
         runtime_kind: active_profile.runtime_kind.clone(),
         provider_api_key: active_api_key_credential.map(|entry| entry.api_key.clone()),
-        provider_api_key_updated_at: active_api_key_credential.map(|entry| entry.updated_at.clone()),
+        provider_api_key_updated_at: active_api_key_credential
+            .map(|entry| entry.updated_at.clone()),
         preset_id: active_profile.preset_id.clone(),
         base_url: active_profile.base_url.clone(),
         api_version: active_profile.api_version.clone(),

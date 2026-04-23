@@ -302,8 +302,8 @@ pub fn history_state<R: Runtime>(
     tabs: &Arc<BrowserTabs>,
     waiters: &Arc<BridgeWaiters>,
 ) -> CommandResult<JsonValue> {
-    let body = "return { length: history.length, url: location.href, title: document.title };"
-        .to_string();
+    let body =
+        "return { length: history.length, url: location.href, title: document.title };".to_string();
     run_script(app, tabs, waiters, &body, 2_000)
 }
 
@@ -366,7 +366,10 @@ pub fn cookies_set<R: Runtime>(
         return Err(CommandError::invalid_request("cookie"));
     }
     let encoded = serde_json::to_string(cookie).map_err(encode_err)?;
-    let body = format!("document.cookie = {c}; return {{ set: true }};", c = encoded);
+    let body = format!(
+        "document.cookie = {c}; return {{ set: true }};",
+        c = encoded
+    );
     run_script(app, tabs, waiters, &body, 2_000)
 }
 
@@ -442,7 +445,10 @@ pub fn storage_clear<R: Runtime>(
         StorageArea::Local => "localStorage",
         StorageArea::Session => "sessionStorage",
     };
-    let body = format!("{store}.clear(); return {{ cleared: true }};", store = store);
+    let body = format!(
+        "{store}.clear(); return {{ cleared: true }};",
+        store = store
+    );
     run_script(app, tabs, waiters, &body, 2_000)
 }
 
@@ -502,7 +508,10 @@ mod tests {
     fn resolve_timeout_clamps() {
         assert_eq!(resolve_timeout(None), BRIDGE_DEFAULT_TIMEOUT_MS);
         assert_eq!(resolve_timeout(Some(50)), 100);
-        assert_eq!(resolve_timeout(Some(BRIDGE_MAX_TIMEOUT_MS + 5_000)), BRIDGE_MAX_TIMEOUT_MS);
+        assert_eq!(
+            resolve_timeout(Some(BRIDGE_MAX_TIMEOUT_MS + 5_000)),
+            BRIDGE_MAX_TIMEOUT_MS
+        );
         assert_eq!(resolve_timeout(Some(5_000)), 5_000);
     }
 }

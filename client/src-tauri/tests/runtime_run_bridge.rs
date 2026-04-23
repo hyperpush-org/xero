@@ -193,3 +193,9 @@ fn start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_
 ) {
     runtime_recovery::start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_and_secret_free_persistence();
 }
+
+#[test]
+fn start_runtime_run_launches_github_models_with_truthful_provider_identity_and_secret_free_persistence(
+) {
+    runtime_recovery::start_runtime_run_launches_github_models_with_truthful_provider_identity_and_secret_free_persistence();
+}

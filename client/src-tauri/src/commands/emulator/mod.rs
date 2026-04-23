@@ -247,10 +247,7 @@ pub fn emulator_list_devices(
                     },
                     width: avd.width.unwrap_or(0),
                     height: avd.height.unwrap_or(0),
-                    device_pixel_ratio: avd
-                        .density
-                        .map(|d| d as f32 / 160.0)
-                        .unwrap_or(2.0),
+                    device_pixel_ratio: avd.density.map(|d| d as f32 / 160.0).unwrap_or(2.0),
                 })
                 .collect();
 
@@ -619,10 +616,7 @@ fn stop_active<R: Runtime>(
     // Stop any active log stream first so its child process doesn't outlive
     // the emulator session.
     {
-        let mut stream = state
-            .log_stream
-            .lock()
-            .expect("log stream mutex poisoned");
+        let mut stream = state.log_stream.lock().expect("log stream mutex poisoned");
         *stream = None;
     }
 
@@ -670,9 +664,7 @@ fn stop_active<R: Runtime>(
 // ---------- Automation commands --------------------------------------------
 
 #[tauri::command]
-pub fn emulator_screenshot(
-    state: State<'_, EmulatorState>,
-) -> CommandResult<ScreenshotResponse> {
+pub fn emulator_screenshot(state: State<'_, EmulatorState>) -> CommandResult<ScreenshotResponse> {
     let frame = state.frame_bus().latest().ok_or_else(|| {
         CommandError::user_fixable(
             "emulator_no_frame",
@@ -683,13 +675,14 @@ pub fn emulator_screenshot(
     // `FrameBus` stores JPEG; re-encode once as PNG so agents get a
     // lossless copy they can pipe into a vision model without worrying
     // about JPEG artifacts.
-    let img = image::load_from_memory_with_format(&frame.bytes, image::ImageFormat::Jpeg)
-        .map_err(|e| {
+    let img = image::load_from_memory_with_format(&frame.bytes, image::ImageFormat::Jpeg).map_err(
+        |e| {
             CommandError::system_fault(
                 "emulator_frame_decode_failed",
                 format!("could not decode live frame: {e}"),
             )
-        })?;
+        },
+    )?;
 
     let mut png_bytes: Vec<u8> = Vec::new();
     img.write_to(
@@ -746,10 +739,7 @@ pub fn emulator_find(
 }
 
 #[tauri::command]
-pub fn emulator_tap(
-    state: State<'_, EmulatorState>,
-    target: TapTarget,
-) -> CommandResult<()> {
+pub fn emulator_tap(state: State<'_, EmulatorState>, target: TapTarget) -> CommandResult<()> {
     match target {
         TapTarget::Point { x, y } => tap_point(&state, x, y),
         TapTarget::Element { selector } => {
@@ -829,10 +819,7 @@ fn synthetic_down_up(state: &State<'_, EmulatorState>, x: f32, y: f32) -> Comman
 }
 
 #[tauri::command]
-pub fn emulator_swipe(
-    state: State<'_, EmulatorState>,
-    request: SwipeRequest,
-) -> CommandResult<()> {
+pub fn emulator_swipe(state: State<'_, EmulatorState>, request: SwipeRequest) -> CommandResult<()> {
     let active = state.active.lock().expect("emulator active mutex poisoned");
     let device = active.as_ref().ok_or_else(no_active_device)?;
     match device {
@@ -858,8 +845,7 @@ pub fn emulator_swipe(
             let height = session.height().max(1);
             let (from_x, from_y) =
                 ios::input::denormalize(request.from_x, request.from_y, width, height);
-            let (to_x, to_y) =
-                ios::input::denormalize(request.to_x, request.to_y, width, height);
+            let (to_x, to_y) = ios::input::denormalize(request.to_x, request.to_y, width, height);
             session.client().send_hid(HidEvent::Swipe {
                 from_x,
                 from_y,
@@ -874,10 +860,7 @@ pub fn emulator_swipe(
 }
 
 #[tauri::command]
-pub fn emulator_type(
-    state: State<'_, EmulatorState>,
-    request: TypeRequest,
-) -> CommandResult<()> {
+pub fn emulator_type(state: State<'_, EmulatorState>, request: TypeRequest) -> CommandResult<()> {
     if let Some(selector) = request.into.as_ref() {
         let tree = emulator_ui_dump(state.clone())?;
         let hits = automation::selector::find(&tree, selector);
@@ -956,12 +939,12 @@ pub fn emulator_press_key(
 // ---- App lifecycle commands ------------------------------------------------
 
 #[tauri::command]
-pub fn emulator_list_apps(
-    state: State<'_, EmulatorState>,
-) -> CommandResult<Vec<AppDescriptor>> {
+pub fn emulator_list_apps(state: State<'_, EmulatorState>) -> CommandResult<Vec<AppDescriptor>> {
     let active = state.active.lock().expect("emulator active mutex poisoned");
     match active.as_ref() {
-        Some(ActiveDevice::Android { session, .. }) => automation::apps::android_list(session.adb()),
+        Some(ActiveDevice::Android { session, .. }) => {
+            automation::apps::android_list(session.adb())
+        }
         #[cfg(target_os = "macos")]
         Some(ActiveDevice::Ios { session, .. }) => automation::apps::ios_list(session.device_id()),
         #[cfg(feature = "emulator-synthetic")]
@@ -1204,10 +1187,9 @@ impl ActiveDevice {
             #[cfg(target_os = "macos")]
             ActiveDevice::Ios { session, .. } => (session.width(), session.height()),
             #[cfg(feature = "emulator-synthetic")]
-            ActiveDevice::Synthetic { .. } => (
-                synthetic::synthetic_width(),
-                synthetic::synthetic_height(),
-            ),
+            ActiveDevice::Synthetic { .. } => {
+                (synthetic::synthetic_width(), synthetic::synthetic_height())
+            }
         }
     }
 }

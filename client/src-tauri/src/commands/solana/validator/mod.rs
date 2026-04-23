@@ -171,21 +171,20 @@ impl ValidatorSupervisor {
         if !kind.is_local() {
             return Err(CommandError::user_fixable(
                 "solana_cluster_not_startable",
-                format!("Cluster {} is remote-only and cannot be started locally.", kind.as_str()),
+                format!(
+                    "Cluster {} is remote-only and cannot be started locally.",
+                    kind.as_str()
+                ),
             ));
         }
 
         let mut events = Vec::new();
-        events.push(
-            ValidatorStatusPayload::new(ValidatorPhase::Stopping).with_kind(kind.as_str()),
-        );
+        events.push(ValidatorStatusPayload::new(ValidatorPhase::Stopping).with_kind(kind.as_str()));
 
         // Single-active invariant — drop any existing session first.
         self.stop_locked(&mut self.lock_active()?)?;
 
-        events.push(
-            ValidatorStatusPayload::new(ValidatorPhase::Booting).with_kind(kind.as_str()),
-        );
+        events.push(ValidatorStatusPayload::new(ValidatorPhase::Booting).with_kind(kind.as_str()));
 
         let session = self.launcher.launch(kind, &opts)?;
         let handle = session.handle.clone();
@@ -208,7 +207,8 @@ impl ValidatorSupervisor {
         let mut events = Vec::new();
         if let Some(session) = active.as_ref() {
             events.push(
-                ValidatorStatusPayload::new(ValidatorPhase::Stopping).with_kind(session.kind.as_str()),
+                ValidatorStatusPayload::new(ValidatorPhase::Stopping)
+                    .with_kind(session.kind.as_str()),
             );
         }
         self.stop_locked(&mut active)?;
@@ -297,11 +297,7 @@ mod tests {
     }
 
     impl ValidatorLauncher for ScriptedLauncher {
-        fn launch(
-            &self,
-            kind: ClusterKind,
-            opts: &StartOpts,
-        ) -> CommandResult<ValidatorSession> {
+        fn launch(&self, kind: ClusterKind, opts: &StartOpts) -> CommandResult<ValidatorSession> {
             self.calls.lock().unwrap().push((kind, opts.clone()));
             if *self.fail.lock().unwrap() {
                 return Err(CommandError::system_fault(
@@ -342,20 +338,15 @@ mod tests {
 
     fn make_supervisor() -> (ValidatorSupervisor, std::sync::Arc<ScriptedLauncher>) {
         let launcher = std::sync::Arc::new(ScriptedLauncher::new());
-        let supervisor = ValidatorSupervisor::new(Box::new(LauncherHandle(std::sync::Arc::clone(
-            &launcher,
-        ))));
+        let supervisor =
+            ValidatorSupervisor::new(Box::new(LauncherHandle(std::sync::Arc::clone(&launcher))));
         (supervisor, launcher)
     }
 
     #[derive(Debug)]
     struct LauncherHandle(std::sync::Arc<ScriptedLauncher>);
     impl ValidatorLauncher for LauncherHandle {
-        fn launch(
-            &self,
-            kind: ClusterKind,
-            opts: &StartOpts,
-        ) -> CommandResult<ValidatorSession> {
+        fn launch(&self, kind: ClusterKind, opts: &StartOpts) -> CommandResult<ValidatorSession> {
             self.0.launch(kind, opts)
         }
     }

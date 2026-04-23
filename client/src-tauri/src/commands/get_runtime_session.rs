@@ -97,7 +97,7 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
 
     let provider = match resolve_runtime_provider_identity(
         Some(settings.settings.provider_id.as_str()),
-        Some(settings.settings.provider_id.as_str()),
+        Some(settings.runtime_kind.as_str()),
     ) {
         Ok(provider) => provider,
         Err(diagnostic) => {

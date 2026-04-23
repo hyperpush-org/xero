@@ -67,7 +67,9 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
 
     let local_x = (screen_x - monitor_x).max(0) as u32;
     let local_y = (screen_y - monitor_y).max(0) as u32;
-    let crop_w = webview_size.width.min(captured.width().saturating_sub(local_x));
+    let crop_w = webview_size
+        .width
+        .min(captured.width().saturating_sub(local_x));
     let crop_h = webview_size
         .height
         .min(captured.height().saturating_sub(local_y));
@@ -119,10 +121,7 @@ fn monitor_contains(monitor: &xcap::Monitor, x: i32, y: i32) -> bool {
     x >= mx && y >= my && x < mx.saturating_add(mw) && y < my.saturating_add(mh)
 }
 
-fn monitor_geometry_field(
-    monitor: &xcap::Monitor,
-    field: MonitorField,
-) -> CommandResult<i32> {
+fn monitor_geometry_field(monitor: &xcap::Monitor, field: MonitorField) -> CommandResult<i32> {
     let value: i64 = match field {
         MonitorField::X => monitor.x().map(i64::from),
         MonitorField::Y => monitor.y().map(i64::from),

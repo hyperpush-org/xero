@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use cadence_desktop_lib::commands::solana::{
-    AccountFetcher, AccountRecord, ClusterHandle, ClusterKind, RpcRouter, SnapshotStore, SolanaState,
-    StartOpts, ValidatorLauncher, ValidatorSession, ValidatorSupervisor,
+    AccountFetcher, AccountRecord, ClusterHandle, ClusterKind, RpcRouter, SnapshotStore,
+    SolanaState, StartOpts, ValidatorLauncher, ValidatorSession, ValidatorSupervisor,
 };
 use cadence_desktop_lib::commands::CommandResult;
 
@@ -46,16 +46,9 @@ impl MockAccountFetcher {
 }
 
 impl AccountFetcher for MockAccountFetcher {
-    fn fetch(
-        &self,
-        _rpc_url: &str,
-        pubkeys: &[String],
-    ) -> Result<Vec<AccountRecord>, String> {
+    fn fetch(&self, _rpc_url: &str, pubkeys: &[String]) -> Result<Vec<AccountRecord>, String> {
         let map = self.records.lock().unwrap();
-        Ok(pubkeys
-            .iter()
-            .filter_map(|p| map.get(p).cloned())
-            .collect())
+        Ok(pubkeys.iter().filter_map(|p| map.get(p).cloned()).collect())
     }
 }
 
@@ -64,11 +57,7 @@ impl AccountFetcher for MockAccountFetcher {
 pub struct FetcherHandle(pub Arc<MockAccountFetcher>);
 
 impl AccountFetcher for FetcherHandle {
-    fn fetch(
-        &self,
-        rpc_url: &str,
-        pubkeys: &[String],
-    ) -> Result<Vec<AccountRecord>, String> {
+    fn fetch(&self, rpc_url: &str, pubkeys: &[String]) -> Result<Vec<AccountRecord>, String> {
         self.0.fetch(rpc_url, pubkeys)
     }
 }
@@ -101,11 +90,7 @@ impl ScriptedLauncher {
 }
 
 impl ValidatorLauncher for ScriptedLauncher {
-    fn launch(
-        &self,
-        kind: ClusterKind,
-        opts: &StartOpts,
-    ) -> CommandResult<ValidatorSession> {
+    fn launch(&self, kind: ClusterKind, opts: &StartOpts) -> CommandResult<ValidatorSession> {
         self.calls.lock().unwrap().push((kind, opts.clone()));
         if *self.fail.lock().unwrap() {
             return Err(CommandError::system_fault(
@@ -118,8 +103,10 @@ impl ValidatorLauncher for ScriptedLauncher {
             .arg("3600")
             .spawn()
             .expect("sleep should spawn in test environment");
-        let guard =
-            cadence_desktop_lib::commands::emulator::process::ChildGuard::new("test-validator", child);
+        let guard = cadence_desktop_lib::commands::emulator::process::ChildGuard::new(
+            "test-validator",
+            child,
+        );
 
         let ledger = opts
             .ledger_dir
@@ -193,9 +180,9 @@ pub struct FixtureState {
 
 pub fn fixture_with_scripted_launcher_and_fetcher() -> FixtureState {
     let launcher = Arc::new(ScriptedLauncher::new());
-    let supervisor = Arc::new(ValidatorSupervisor::new(Box::new(LauncherHandle(Arc::clone(
-        &launcher,
-    )))));
+    let supervisor = Arc::new(ValidatorSupervisor::new(Box::new(LauncherHandle(
+        Arc::clone(&launcher),
+    ))));
 
     let router = Arc::new(RpcRouter::new_with_default_pool());
 
@@ -224,11 +211,7 @@ pub fn fixture_with_scripted_launcher_and_fetcher() -> FixtureState {
 #[derive(Debug)]
 pub struct LauncherHandle(pub Arc<ScriptedLauncher>);
 impl ValidatorLauncher for LauncherHandle {
-    fn launch(
-        &self,
-        kind: ClusterKind,
-        opts: &StartOpts,
-    ) -> CommandResult<ValidatorSession> {
+    fn launch(&self, kind: ClusterKind, opts: &StartOpts) -> CommandResult<ValidatorSession> {
         self.0.launch(kind, opts)
     }
 }

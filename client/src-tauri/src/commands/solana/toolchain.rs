@@ -145,7 +145,9 @@ fn candidate_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
 fn run_version(path: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.args(args);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
 
     let child = cmd.spawn().ok()?;
     let output = wait_with_timeout(child, Duration::from_secs(PROBE_TIMEOUT_SECS))?;

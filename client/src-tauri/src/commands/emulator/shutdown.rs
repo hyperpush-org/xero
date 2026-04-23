@@ -73,10 +73,7 @@ pub struct ZombieProcess {
 fn unix_scan_ps() -> Vec<ZombieProcess> {
     use std::process::Command;
 
-    let output = match Command::new("ps")
-        .args(["-Ao", "pid=,comm="])
-        .output()
-    {
+    let output = match Command::new("ps").args(["-Ao", "pid=,comm="]).output() {
         Ok(out) if out.status.success() => out,
         _ => return Vec::new(),
     };
@@ -129,7 +126,9 @@ mod tests {
     #[cfg(unix)]
     fn is_emulator_relevant_recognizes_known_names() {
         assert!(is_emulator_relevant("qemu-system-aarch64"));
-        assert!(is_emulator_relevant("/opt/Android/emulator/qemu-system-x86_64"));
+        assert!(is_emulator_relevant(
+            "/opt/Android/emulator/qemu-system-x86_64"
+        ));
         assert!(is_emulator_relevant("idb_companion"));
         assert!(!is_emulator_relevant("Safari"));
         assert!(!is_emulator_relevant("Cadence"));

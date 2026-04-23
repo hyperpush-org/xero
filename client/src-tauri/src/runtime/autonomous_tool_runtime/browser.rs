@@ -211,14 +211,9 @@ pub fn execute_action_with_app<R: Runtime>(
             selector,
             key,
             timeout_ms,
-        } => browser_actions::press_key(
-            app,
-            &tabs,
-            &waiters,
-            selector.as_deref(),
-            &key,
-            timeout_ms,
-        )?,
+        } => {
+            browser_actions::press_key(app, &tabs, &waiters, selector.as_deref(), &key, timeout_ms)?
+        }
         AutonomousBrowserAction::ReadText {
             selector,
             timeout_ms,
@@ -263,9 +258,7 @@ pub fn execute_action_with_app<R: Runtime>(
             let base64 = crate::commands::browser::screenshot_webview(&webview)?;
             JsonValue::String(base64)
         }
-        AutonomousBrowserAction::CookiesGet => {
-            browser_actions::cookies_get(app, &tabs, &waiters)?
-        }
+        AutonomousBrowserAction::CookiesGet => browser_actions::cookies_get(app, &tabs, &waiters)?,
         AutonomousBrowserAction::CookiesSet { cookie } => {
             browser_actions::cookies_set(app, &tabs, &waiters, &cookie)?
         }
@@ -394,10 +387,7 @@ pub fn tauri_browser_executor<R: Runtime>(
     app: AppHandle<R>,
     desktop_state: DesktopState,
 ) -> Arc<dyn BrowserExecutor> {
-    Arc::new(TauriBrowserExecutor {
-        app,
-        desktop_state,
-    })
+    Arc::new(TauriBrowserExecutor { app, desktop_state })
 }
 
 struct TauriBrowserExecutor<R: Runtime> {

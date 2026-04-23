@@ -1185,7 +1185,10 @@ fn decode_runtime_run_row(
     .map_err(|diagnostic| {
         map_runtime_run_decode_error(
             database_path,
-            format!("Runtime run provider identity is invalid because {}", diagnostic.message),
+            format!(
+                "Runtime run provider identity is invalid because {}",
+                diagnostic.message
+            ),
         )
     })?;
     let supervisor_kind = require_runtime_run_non_empty_owned(

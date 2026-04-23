@@ -81,7 +81,9 @@ fn build_cookie_importer() {
         cmd.arg("--release");
     }
 
-    let status = cmd.status().expect("failed to spawn cargo for cookie-importer");
+    let status = cmd
+        .status()
+        .expect("failed to spawn cargo for cookie-importer");
     if !status.success() {
         panic!("failed to build cookie-importer (exit {status:?})");
     }
@@ -95,8 +97,9 @@ fn build_cookie_importer() {
     }
 
     let destination = profile_dir.join(binary_name());
-    std::fs::copy(&helper_target, &destination)
-        .unwrap_or_else(|error| panic!("failed to copy cookie-importer to {destination:?}: {error}"));
+    std::fs::copy(&helper_target, &destination).unwrap_or_else(|error| {
+        panic!("failed to copy cookie-importer to {destination:?}: {error}")
+    });
 }
 
 fn binary_name() -> &'static str {
@@ -246,7 +249,10 @@ impl Sha256Hasher {
         if tool == "shasum" {
             cmd.args(["-a", "256"]);
         }
-        let child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn();
+        let child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn();
         if let Ok(mut child) = child {
             if let Some(mut stdin) = child.stdin.take() {
                 if stdin.write_all(&self.data).is_err() {

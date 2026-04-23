@@ -231,7 +231,10 @@ fn accept_control(listener: &TcpListener, timeout: Duration) -> Result<(TcpStrea
     ))
 }
 
-fn accept_within(listener: &TcpListener, timeout: Duration) -> Result<(TcpStream, std::net::SocketAddr)> {
+fn accept_within(
+    listener: &TcpListener,
+    timeout: Duration,
+) -> Result<(TcpStream, std::net::SocketAddr)> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
     loop {

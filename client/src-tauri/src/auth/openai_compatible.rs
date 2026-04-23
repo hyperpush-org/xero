@@ -11,17 +11,22 @@ use crate::{
     provider_profiles::ProviderProfileRecord,
     runtime::{
         ResolvedRuntimeProvider, AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GEMINI_RUNTIME_KIND, OPENAI_API_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND,
+        GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        OPENAI_COMPATIBLE_RUNTIME_KIND,
     },
 };
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_GITHUB_MODELS_BASE_URL: &str = "https://models.inference.ai.azure.com";
+const DEFAULT_GITHUB_MODELS_CATALOG_URL: &str = "https://models.github.ai/catalog/models";
 const DEFAULT_GEMINI_AI_STUDIO_BASE_URL: &str =
     "https://generativelanguage.googleapis.com/v1beta/openai";
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleAuthConfig {
     pub openai_base_url: String,
+    pub github_models_base_url: String,
+    pub github_models_catalog_url: String,
     pub gemini_ai_studio_base_url: String,
     pub timeout: Duration,
 }
@@ -30,6 +35,8 @@ impl Default for OpenAiCompatibleAuthConfig {
     fn default() -> Self {
         Self {
             openai_base_url: DEFAULT_OPENAI_BASE_URL.into(),
+            github_models_base_url: DEFAULT_GITHUB_MODELS_BASE_URL.into(),
+            github_models_catalog_url: DEFAULT_GITHUB_MODELS_CATALOG_URL.into(),
             gemini_ai_studio_base_url: DEFAULT_GEMINI_AI_STUDIO_BASE_URL.into(),
             timeout: Duration::from_secs(10),
         }
@@ -71,10 +78,24 @@ pub struct ResolvedOpenAiCompatibleEndpoint {
     pub effective_base_url: String,
     pub api_version: Option<String>,
     pub model_list_strategy: OpenAiCompatibleModelListStrategy,
+    pub model_list_url_override: Option<String>,
 }
 
 impl ResolvedOpenAiCompatibleEndpoint {
     pub fn models_url(&self) -> Result<Url, AuthFlowError> {
+        if let Some(model_list_url) = self.model_list_url_override.as_deref() {
+            return Url::parse(model_list_url).map_err(|error| {
+                AuthFlowError::terminal(
+                    "openai_compatible_models_url_invalid",
+                    RuntimeAuthPhase::Failed,
+                    format!(
+                        "Cadence could not build the {} catalog endpoint because URL `{model_list_url}` was invalid: {error}",
+                        provider_display_label(self.provider_id.as_str())
+                    ),
+                )
+            });
+        }
+
         let base_url = normalize_base_url(&self.effective_base_url);
         let mut url = Url::parse(&format!("{base_url}/models")).map_err(|error| {
             AuthFlowError::terminal(
@@ -88,7 +109,8 @@ impl ResolvedOpenAiCompatibleEndpoint {
         })?;
 
         if let Some(api_version) = self.api_version.as_deref() {
-            url.query_pairs_mut().append_pair("api-version", api_version);
+            url.query_pairs_mut()
+                .append_pair("api-version", api_version);
         }
 
         Ok(url)
@@ -149,6 +171,14 @@ pub enum OpenAiCompatibleReconcileOutcome {
 #[serde(rename_all = "camelCase")]
 struct ModelsResponse {
     data: Vec<ModelSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitHubCatalogModelSummary {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -280,11 +310,13 @@ pub(crate) fn reconcile_openai_compatible_runtime_session(
     config: &OpenAiCompatibleAuthConfig,
 ) -> Result<OpenAiCompatibleReconcileOutcome, AuthFlowError> {
     let Some(api_key) = settings.provider_api_key.as_deref() else {
-        return Ok(OpenAiCompatibleReconcileOutcome::SignedOut(AuthDiagnostic {
-            code: missing_api_key_code(provider.provider_id).into(),
-            message: missing_api_key_message(provider.provider_id, "reconcile"),
-            retryable: false,
-        }));
+        return Ok(OpenAiCompatibleReconcileOutcome::SignedOut(
+            AuthDiagnostic {
+                code: missing_api_key_code(provider.provider_id).into(),
+                message: missing_api_key_message(provider.provider_id, "reconcile"),
+                retryable: false,
+            },
+        ));
     };
 
     resolve_openai_compatible_endpoint_for_settings(provider, settings, config)?;
@@ -330,7 +362,34 @@ pub(crate) fn fetch_openai_compatible_models(
         ));
     }
 
-    let models: ModelsResponse = response.json().map_err(|error| {
+    let body = response.text().map_err(|error| {
+        AuthFlowError::retryable(
+            provider_unavailable_code(endpoint.provider_id.as_str()),
+            RuntimeAuthPhase::Failed,
+            format!(
+                "Cadence could not read the {} catalog response body: {error}",
+                provider_display_label(endpoint.provider_id.as_str())
+            ),
+        )
+    })?;
+
+    if endpoint.provider_id == GITHUB_MODELS_PROVIDER_ID {
+        let models: Vec<GitHubCatalogModelSummary> =
+            serde_json::from_str(&body).map_err(|error| {
+                AuthFlowError::terminal(
+                    models_decode_failed_code(endpoint.provider_id.as_str()),
+                    RuntimeAuthPhase::Failed,
+                    format!(
+                        "Cadence could not decode the {} catalog response: {error}",
+                        provider_display_label(endpoint.provider_id.as_str())
+                    ),
+                )
+            })?;
+
+        return normalize_github_models_catalog(endpoint.provider_id.as_str(), models);
+    }
+
+    let models: ModelsResponse = serde_json::from_str(&body).map_err(|error| {
         AuthFlowError::terminal(
             models_decode_failed_code(endpoint.provider_id.as_str()),
             RuntimeAuthPhase::Failed,
@@ -358,32 +417,42 @@ fn resolve_openai_compatible_endpoint(
     let base_url = normalize_optional(base_url);
     let api_version = normalize_optional(api_version);
 
-    let (expected_runtime_kind, default_base_url, model_list_strategy) = match provider_id {
-        OPENAI_API_PROVIDER_ID => (
-            OPENAI_COMPATIBLE_RUNTIME_KIND,
-            Some(config.openai_base_url.as_str()),
-            OpenAiCompatibleModelListStrategy::Live,
-        ),
-        AZURE_OPENAI_PROVIDER_ID => (
-            OPENAI_COMPATIBLE_RUNTIME_KIND,
-            None,
-            OpenAiCompatibleModelListStrategy::Manual,
-        ),
-        GEMINI_AI_STUDIO_PROVIDER_ID => (
-            GEMINI_RUNTIME_KIND,
-            Some(config.gemini_ai_studio_base_url.as_str()),
-            OpenAiCompatibleModelListStrategy::Live,
-        ),
-        other => {
-            return Err(AuthFlowError::terminal(
+    let (expected_runtime_kind, default_base_url, model_list_strategy, model_list_url_override) =
+        match provider_id {
+            GITHUB_MODELS_PROVIDER_ID => (
+                OPENAI_COMPATIBLE_RUNTIME_KIND,
+                Some(config.github_models_base_url.as_str()),
+                OpenAiCompatibleModelListStrategy::Live,
+                Some(config.github_models_catalog_url.as_str()),
+            ),
+            OPENAI_API_PROVIDER_ID => (
+                OPENAI_COMPATIBLE_RUNTIME_KIND,
+                Some(config.openai_base_url.as_str()),
+                OpenAiCompatibleModelListStrategy::Live,
+                None,
+            ),
+            AZURE_OPENAI_PROVIDER_ID => (
+                OPENAI_COMPATIBLE_RUNTIME_KIND,
+                None,
+                OpenAiCompatibleModelListStrategy::Manual,
+                None,
+            ),
+            GEMINI_AI_STUDIO_PROVIDER_ID => (
+                GEMINI_RUNTIME_KIND,
+                Some(config.gemini_ai_studio_base_url.as_str()),
+                OpenAiCompatibleModelListStrategy::Live,
+                None,
+            ),
+            other => {
+                return Err(AuthFlowError::terminal(
                 "openai_compatible_provider_unsupported",
                 RuntimeAuthPhase::Failed,
                 format!(
                     "Cadence cannot resolve OpenAI-compatible endpoint metadata for unsupported provider `{other}`."
                 ),
             ));
-        }
-    };
+            }
+        };
 
     if runtime_kind != expected_runtime_kind {
         return Err(AuthFlowError::terminal(
@@ -396,7 +465,7 @@ fn resolve_openai_compatible_endpoint(
     }
 
     let effective_base_url = match provider_id {
-        OPENAI_API_PROVIDER_ID => base_url
+        GITHUB_MODELS_PROVIDER_ID | OPENAI_API_PROVIDER_ID => base_url
             .or(default_base_url)
             .ok_or_else(|| {
                 AuthFlowError::terminal(
@@ -453,6 +522,7 @@ fn resolve_openai_compatible_endpoint(
         effective_base_url,
         api_version: api_version.map(str::to_owned),
         model_list_strategy,
+        model_list_url_override: model_list_url_override.map(str::to_owned),
     })
 }
 
@@ -513,6 +583,61 @@ fn normalize_models(
     Ok(normalized)
 }
 
+fn normalize_github_models_catalog(
+    provider_id: &str,
+    response: Vec<GitHubCatalogModelSummary>,
+) -> Result<Vec<OpenAiCompatibleDiscoveredModel>, AuthFlowError> {
+    let mut model_ids = std::collections::BTreeSet::new();
+    let mut normalized = Vec::with_capacity(response.len());
+
+    for model in response {
+        let id = model.id.trim();
+        if id.is_empty() {
+            return Err(AuthFlowError::terminal(
+                models_decode_failed_code(provider_id),
+                RuntimeAuthPhase::Failed,
+                format!(
+                    "Cadence could not decode the {} catalog response because one model id was blank.",
+                    provider_display_label(provider_id)
+                ),
+            ));
+        }
+
+        if !model_ids.insert(id.to_owned()) {
+            return Err(AuthFlowError::terminal(
+                models_decode_failed_code(provider_id),
+                RuntimeAuthPhase::Failed,
+                format!(
+                    "Cadence could not decode the {} catalog response because model `{id}` appeared more than once.",
+                    provider_display_label(provider_id)
+                ),
+            ));
+        }
+
+        let display_name = model
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+            .to_owned();
+
+        normalized.push(OpenAiCompatibleDiscoveredModel {
+            id: id.to_owned(),
+            display_name,
+            thinking: unsupported_thinking_capability(),
+        });
+    }
+
+    normalized.sort_by(|left, right| {
+        left.display_name
+            .cmp(&right.display_name)
+            .then(left.id.cmp(&right.id))
+    });
+
+    Ok(normalized)
+}
+
 fn normalize_thinking_capability(
     endpoint: &ResolvedOpenAiCompatibleEndpoint,
     model_id: &str,
@@ -525,6 +650,10 @@ fn normalize_thinking_capability(
 
     if let Some(payload) = payload {
         return normalize_thinking_payload(endpoint.provider_id.as_str(), model_id, payload);
+    }
+
+    if endpoint.provider_id == GITHUB_MODELS_PROVIDER_ID {
+        return Ok(unsupported_thinking_capability());
     }
 
     if endpoint.provider_id == GEMINI_AI_STUDIO_PROVIDER_ID {
@@ -614,7 +743,9 @@ fn normalize_thinking_payload(
     })
 }
 
-fn default_gemini_thinking_capability(model_id: &str) -> OpenAiCompatibleDiscoveredThinkingCapability {
+fn default_gemini_thinking_capability(
+    model_id: &str,
+) -> OpenAiCompatibleDiscoveredThinkingCapability {
     let normalized = model_id.trim().to_ascii_lowercase();
     let supports_reasoning = normalized.starts_with("gemini-2.5")
         || normalized.starts_with("gemini-3")
@@ -694,7 +825,11 @@ fn synthetic_binding(
     OpenAiCompatibleRuntimeSessionBinding {
         provider_id: provider.provider_id.into(),
         account_id: format!("{}-acct-{}", provider.provider_id, &key_fingerprint[..16]),
-        session_id: format!("{}-session-{}", provider.provider_id, &session_fingerprint[..16]),
+        session_id: format!(
+            "{}-session-{}",
+            provider.provider_id,
+            &session_fingerprint[..16]
+        ),
         updated_at: crate::auth::now_timestamp(),
     }
 }
@@ -766,6 +901,7 @@ fn map_probe_status_error(provider_id: &str, status: u16, body: &str) -> AuthFlo
 
 fn provider_display_label(provider_id: &str) -> &'static str {
     match provider_id {
+        GITHUB_MODELS_PROVIDER_ID => "GitHub Models",
         OPENAI_API_PROVIDER_ID => "OpenAI-compatible",
         AZURE_OPENAI_PROVIDER_ID => "Azure OpenAI",
         GEMINI_AI_STUDIO_PROVIDER_ID => "Gemini AI Studio",
@@ -775,6 +911,7 @@ fn provider_display_label(provider_id: &str) -> &'static str {
 
 fn missing_api_key_code(provider_id: &str) -> &'static str {
     match provider_id {
+        GITHUB_MODELS_PROVIDER_ID => "github_models_token_missing",
         OPENAI_API_PROVIDER_ID => "openai_api_key_missing",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_api_key_missing",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_api_key_missing",
@@ -783,14 +920,20 @@ fn missing_api_key_code(provider_id: &str) -> &'static str {
 }
 
 fn missing_api_key_message(provider_id: &str, operation: &str) -> String {
-    format!(
-        "Cadence cannot {operation} the selected {} runtime because no app-local API key is configured for the active provider profile.",
-        provider_display_label(provider_id)
-    )
+    match provider_id {
+        GITHUB_MODELS_PROVIDER_ID => format!(
+            "Cadence cannot {operation} the selected GitHub Models runtime because no app-local GitHub token is configured for the active provider profile."
+        ),
+        _ => format!(
+            "Cadence cannot {operation} the selected {} runtime because no app-local API key is configured for the active provider profile.",
+            provider_display_label(provider_id)
+        ),
+    }
 }
 
 fn cloud_binding_stale_code(provider_id: &str) -> &'static str {
     match provider_id {
+        GITHUB_MODELS_PROVIDER_ID => "github_models_binding_stale",
         OPENAI_API_PROVIDER_ID => "openai_binding_stale",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_binding_stale",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_binding_stale",
@@ -800,6 +943,7 @@ fn cloud_binding_stale_code(provider_id: &str) -> &'static str {
 
 fn provider_unavailable_code(provider_id: &str) -> &'static str {
     match provider_id {
+        GITHUB_MODELS_PROVIDER_ID => "github_models_provider_unavailable",
         OPENAI_API_PROVIDER_ID => "openai_provider_unavailable",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_provider_unavailable",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_provider_unavailable",
@@ -809,6 +953,7 @@ fn provider_unavailable_code(provider_id: &str) -> &'static str {
 
 fn models_decode_failed_code(provider_id: &str) -> &'static str {
     match provider_id {
+        GITHUB_MODELS_PROVIDER_ID => "github_models_models_decode_failed",
         OPENAI_API_PROVIDER_ID => "openai_models_decode_failed",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_models_decode_failed",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_models_decode_failed",

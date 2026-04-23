@@ -67,25 +67,19 @@ fn normalize_node(value: &serde_json::Value) -> Option<UiNode> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    let enabled = obj
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    let enabled = obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
     let focused = obj
         .get("focused")
         .and_then(|v| v.as_bool())
         .or_else(|| obj.get("hasFocus").and_then(|v| v.as_bool()))
         .unwrap_or(false);
 
-    let bounds = obj
-        .get("frame")
-        .and_then(parse_frame)
-        .unwrap_or(Bounds {
-            x: 0,
-            y: 0,
-            w: 0,
-            h: 0,
-        });
+    let bounds = obj.get("frame").and_then(parse_frame).unwrap_or(Bounds {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+    });
 
     let children = obj
         .get("children")
@@ -166,7 +160,8 @@ mod tests {
 
     #[test]
     fn handles_missing_fields_gracefully() {
-        let raw = json!({ "type": "XCUIElementTypeOther", "frame": { "x": 0, "y": 0, "w": 0, "h": 0 } });
+        let raw =
+            json!({ "type": "XCUIElementTypeOther", "frame": { "x": 0, "y": 0, "w": 0, "h": 0 } });
         let tree = normalize_tree(raw).expect("ok");
         assert_eq!(tree.root.role, "view");
         assert!(tree.root.label.is_none());

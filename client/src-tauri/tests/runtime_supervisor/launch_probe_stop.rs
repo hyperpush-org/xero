@@ -287,7 +287,8 @@ pub(crate) fn detached_supervisor_marks_fast_nonzero_exit_as_failed_without_live
     );
 }
 
-pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_secret_free_persistence() {
+pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_secret_free_persistence(
+) {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-anthropic";
@@ -373,7 +374,8 @@ pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_
         response_dump(&frames)
     );
 
-    let database_bytes = std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
     let database_text = String::from_utf8_lossy(&database_bytes);
     assert!(!database_text.contains(secret));
 
@@ -421,7 +423,8 @@ pub(crate) fn detached_supervisor_rejects_anthropic_launch_without_api_key_env()
     );
 }
 
-pub(crate) fn detached_supervisor_launches_openai_compatible_child_with_context_env_and_secret_free_persistence() {
+pub(crate) fn detached_supervisor_launches_openai_compatible_child_with_context_env_and_secret_free_persistence(
+) {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-gemini";
@@ -476,20 +479,102 @@ pub(crate) fn detached_supervisor_launches_openai_compatible_child_with_context_
         .collect::<Vec<_>>();
 
     assert!(transcripts.iter().any(|text| *text == "key-present"));
-    assert!(transcripts.iter().any(|text| {
-        *text == "base:https://generativelanguage.googleapis.com/v1beta/openai"
-    }));
-    assert!(transcripts.iter().any(|text| *text == "provider:gemini_ai_studio"));
-    assert!(transcripts.iter().any(|text| *text == "model:gemini-2.5-flash"));
+    assert!(transcripts
+        .iter()
+        .any(|text| { *text == "base:https://generativelanguage.googleapis.com/v1beta/openai" }));
+    assert!(transcripts
+        .iter()
+        .any(|text| *text == "provider:gemini_ai_studio"));
+    assert!(transcripts
+        .iter()
+        .any(|text| *text == "model:gemini-2.5-flash"));
     assert!(transcripts.iter().any(|text| *text == "thinking:medium"));
 
-    let database_bytes = std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
     let database_text = String::from_utf8_lossy(&database_bytes);
     assert!(!database_text.contains(secret));
 
     let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
         .expect("stop openai-compatible detached runtime supervisor")
         .expect("openai-compatible runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_launches_github_models_child_with_context_env_and_secret_free_persistence(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-github-models";
+    let repo_root = seed_project(&root, project_id, "repo-github-models", "repo");
+    let state = DesktopState::default();
+    let secret = "github_pat_sidecar_secret";
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        openai_compatible_launch_request(
+            project_id,
+            &repo_root,
+            "run-github-models",
+            "github_models",
+            "openai_compatible",
+            "openai/gpt-4.1",
+            None,
+            Some(secret),
+            Some("https://models.inference.ai.azure.com"),
+            None,
+            &openai_compatible_environment_report_script(),
+        ),
+    )
+    .expect("launch github models detached runtime supervisor");
+
+    assert_eq!(launched.run.provider_id, "github_models");
+    assert_eq!(launched.run.runtime_kind, "openai_compatible");
+
+    let running = wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.run.transport.liveness
+                == project_store::RuntimeRunTransportLiveness::Reachable
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &running.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-github-models", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert_monotonic_sequences(&frames, "run-github-models");
+    let transcripts = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            SupervisorControlResponse::Event {
+                item: SupervisorLiveEventPayload::Transcript { text },
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(transcripts.iter().any(|text| *text == "key-present"));
+    assert!(transcripts
+        .iter()
+        .any(|text| *text == "base:https://models.inference.ai.azure.com"));
+    assert!(transcripts
+        .iter()
+        .any(|text| *text == "provider:github_models"));
+    assert!(transcripts
+        .iter()
+        .any(|text| *text == "model:openai/gpt-4.1"));
+
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains(secret));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop github models detached runtime supervisor")
+        .expect("github models runtime run should exist after stop");
     assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }
 
@@ -532,6 +617,48 @@ pub(crate) fn detached_supervisor_rejects_openai_compatible_launch_without_api_k
             .as_ref()
             .map(|error| error.code.as_str()),
         Some("openai_api_key_missing")
+    );
+}
+
+pub(crate) fn detached_supervisor_rejects_github_models_launch_without_token_env() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-github-missing-token";
+    let repo_root = seed_project(&root, project_id, "repo-github-missing-token", "repo");
+    let state = DesktopState::default();
+
+    let error = launch_detached_runtime_supervisor(
+        &state,
+        openai_compatible_launch_request(
+            project_id,
+            &repo_root,
+            "run-github-missing-token",
+            "github_models",
+            "openai_compatible",
+            "openai/gpt-4.1",
+            None,
+            None,
+            Some("https://models.inference.ai.azure.com"),
+            None,
+            &runtime_shell::script_sleep(5),
+        ),
+    )
+    .expect_err("github models detached launch should require token env");
+    assert_eq!(error.code, "github_models_token_missing");
+
+    let snapshot = project_store::load_runtime_run(&repo_root, project_id)
+        .expect("load failed github models runtime run")
+        .expect("failed github models runtime run should persist");
+    assert_eq!(snapshot.run.status, project_store::RuntimeRunStatus::Failed);
+    assert_eq!(snapshot.run.transport.endpoint, "launch-pending");
+    assert!(snapshot.run.last_heartbeat_at.is_none());
+    assert_eq!(
+        snapshot
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("github_models_token_missing")
     );
 }
 

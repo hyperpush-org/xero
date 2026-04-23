@@ -86,12 +86,9 @@ pub fn parse_xml(xml: &str) -> Result<UiTree> {
         buf.clear();
     }
 
-    let root = root.or_else(|| stack.pop()).ok_or_else(|| {
-        Error::new(
-            ErrorKind::InvalidData,
-            "uiautomator XML contained no nodes",
-        )
-    })?;
+    let root = root
+        .or_else(|| stack.pop())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "uiautomator XML contained no nodes"))?;
 
     Ok(UiTree { root })
 }
@@ -224,7 +221,8 @@ fn normalize_role(platform: Option<&str>) -> String {
         "GridView" => "grid",
         "ScrollView" | "HorizontalScrollView" | "NestedScrollView" => "scroll",
         "WebView" => "webview",
-        "LinearLayout" | "FrameLayout" | "RelativeLayout" | "ConstraintLayout" | "CoordinatorLayout" => "group",
+        "LinearLayout" | "FrameLayout" | "RelativeLayout" | "ConstraintLayout"
+        | "CoordinatorLayout" => "group",
         "ViewPager" | "ViewPager2" => "pager",
         "TabLayout" => "tablist",
         "Toolbar" | "ActionBar" => "toolbar",

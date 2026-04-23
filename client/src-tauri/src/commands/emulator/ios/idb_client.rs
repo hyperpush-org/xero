@@ -160,9 +160,7 @@ impl LogStreamHandle {
 fn grpc_unimplemented(method: &str, detail: &str) -> CommandError {
     CommandError::system_fault(
         "ios_idb_proto_missing",
-        format!(
-            "idb gRPC `{method}` is not yet wired up in this Cadence build. {detail}."
-        ),
+        format!("idb gRPC `{method}` is not yet wired up in this Cadence build. {detail}."),
     )
 }
 
@@ -199,8 +197,7 @@ mod grpc_impl {
     };
     use pb::video_stream_request::{Control, Format as VideoFormat, Start as VideoStart};
     use pb::{
-        AccessibilityInfoRequest, HidEvent as WireHidEvent, LogRequest, Point,
-        VideoStreamRequest,
+        AccessibilityInfoRequest, HidEvent as WireHidEvent, LogRequest, Point, VideoStreamRequest,
     };
 
     /// Tokio runtime + lazily-initialized tonic channel. The channel handshake

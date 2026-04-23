@@ -37,7 +37,12 @@ pub fn search_project<R: Runtime>(
     validate_non_empty(&request.query, "query")?;
 
     let project_root = resolve_project_root(&app, &state, &request.project_id)?;
-    let pattern = build_pattern(&request.query, request.case_sensitive, request.whole_word, request.regex)?;
+    let pattern = build_pattern(
+        &request.query,
+        request.case_sensitive,
+        request.whole_word,
+        request.regex,
+    )?;
     let include = build_globset(&request.include_globs, "includeGlobs")?;
     let exclude = build_globset(&request.exclude_globs, "excludeGlobs")?;
 
@@ -62,7 +67,9 @@ pub fn search_project<R: Runtime>(
 
     'walk: for entry in walker {
         let Ok(entry) = entry else { continue };
-        let Some(ft) = entry.file_type() else { continue };
+        let Some(ft) = entry.file_type() else {
+            continue;
+        };
         if !ft.is_file() {
             continue;
         }
@@ -156,7 +163,12 @@ pub fn replace_in_project<R: Runtime>(
     validate_non_empty(&request.query, "query")?;
 
     let project_root = resolve_project_root(&app, &state, &request.project_id)?;
-    let pattern = build_pattern(&request.query, request.case_sensitive, request.whole_word, request.regex)?;
+    let pattern = build_pattern(
+        &request.query,
+        request.case_sensitive,
+        request.whole_word,
+        request.regex,
+    )?;
     let include = build_globset(&request.include_globs, "includeGlobs")?;
     let exclude = build_globset(&request.exclude_globs, "excludeGlobs")?;
 
@@ -181,7 +193,9 @@ pub fn replace_in_project<R: Runtime>(
 
     for entry in walker {
         let Ok(entry) = entry else { continue };
-        let Some(ft) = entry.file_type() else { continue };
+        let Some(ft) = entry.file_type() else {
+            continue;
+        };
         if !ft.is_file() {
             continue;
         }

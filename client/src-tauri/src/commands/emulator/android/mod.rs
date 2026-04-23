@@ -105,11 +105,11 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<AndroidSession,
     let launch = EmulatorLaunch::new(device_id.clone());
     let (emulator, adb) = emulator_process::spawn(&emulator_bin, &adb_bin, &launch, BOOT_TIMEOUT)
         .map_err(|err| {
-            CommandError::system_fault(
-                "android_emulator_boot_failed",
-                format!("failed to boot {device_id}: {err}"),
-            )
-        })?;
+        CommandError::system_fault(
+            "android_emulator_boot_failed",
+            format!("failed to boot {device_id}: {err}"),
+        )
+    })?;
 
     emit_status(
         &app,
@@ -126,11 +126,7 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<AndroidSession,
     })?;
 
     let meta = connection.meta;
-    let scrcpy::ScrcpyConnection {
-        video,
-        control,
-        ..
-    } = connection;
+    let scrcpy::ScrcpyConnection { video, control, .. } = connection;
 
     let width = meta.width;
     let height = meta.height;

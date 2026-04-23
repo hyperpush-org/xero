@@ -74,10 +74,9 @@ impl AndroidLogStream {
         collector: LogCollector,
     ) -> std::io::Result<Self> {
         let mut child = adb.shell_spawn(["logcat", "-v", "threadtime"])?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "logcat stdout missing"))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "logcat stdout missing")
+        })?;
         let guard = ChildGuard::new("adb-logcat", child);
 
         let shutdown = Arc::new(AtomicBool::new(false));

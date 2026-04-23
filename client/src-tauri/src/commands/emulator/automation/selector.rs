@@ -75,7 +75,12 @@ mod tests {
                 value: None,
                 enabled: true,
                 focused: false,
-                bounds: Bounds { x: 0, y: 0, w: 100, h: 100 },
+                bounds: Bounds {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
                 platform_role: None,
                 children: vec![
                     UiNode {
@@ -85,7 +90,12 @@ mod tests {
                         value: None,
                         enabled: true,
                         focused: false,
-                        bounds: Bounds { x: 10, y: 10, w: 40, h: 20 },
+                        bounds: Bounds {
+                            x: 10,
+                            y: 10,
+                            w: 40,
+                            h: 20,
+                        },
                         platform_role: Some("android.widget.Button".to_string()),
                         children: vec![],
                     },
@@ -96,7 +106,12 @@ mod tests {
                         value: Some("hello".to_string()),
                         enabled: false,
                         focused: false,
-                        bounds: Bounds { x: 50, y: 10, w: 40, h: 20 },
+                        bounds: Bounds {
+                            x: 50,
+                            y: 10,
+                            w: 40,
+                            h: 20,
+                        },
                         platform_role: None,
                         children: vec![],
                     },
@@ -165,6 +180,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(hits.is_empty(), "disabled textfield should not match visible=true");
+        assert!(
+            hits.is_empty(),
+            "disabled textfield should not match visible=true"
+        );
     }
 }

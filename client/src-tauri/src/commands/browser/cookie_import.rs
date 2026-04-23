@@ -111,20 +111,18 @@ impl BrowserSource {
         {
             let app_support = home.join("Library").join("Application Support");
             match self {
-                BrowserSource::Chrome => vec![app_support
-                    .join("Google/Chrome/Default/Cookies")],
+                BrowserSource::Chrome => vec![app_support.join("Google/Chrome/Default/Cookies")],
                 BrowserSource::Chromium => vec![app_support.join("Chromium/Default/Cookies")],
-                BrowserSource::Brave => vec![app_support
-                    .join("BraveSoftware/Brave-Browser/Default/Cookies")],
-                BrowserSource::Edge => vec![app_support
-                    .join("Microsoft Edge/Default/Cookies")],
-                BrowserSource::Opera => vec![app_support
-                    .join("com.operasoftware.Opera/Cookies")],
-                BrowserSource::OperaGx => vec![app_support
-                    .join("com.operasoftware.OperaGX/Cookies")],
+                BrowserSource::Brave => {
+                    vec![app_support.join("BraveSoftware/Brave-Browser/Default/Cookies")]
+                }
+                BrowserSource::Edge => vec![app_support.join("Microsoft Edge/Default/Cookies")],
+                BrowserSource::Opera => vec![app_support.join("com.operasoftware.Opera/Cookies")],
+                BrowserSource::OperaGx => {
+                    vec![app_support.join("com.operasoftware.OperaGX/Cookies")]
+                }
                 BrowserSource::Vivaldi => vec![app_support.join("Vivaldi/Default/Cookies")],
-                BrowserSource::Arc => vec![app_support
-                    .join("Arc/User Data/Default/Cookies")],
+                BrowserSource::Arc => vec![app_support.join("Arc/User Data/Default/Cookies")],
                 BrowserSource::Firefox => mozilla_profile_cookies(&app_support, "Firefox"),
                 BrowserSource::LibreWolf => mozilla_profile_cookies(&app_support, "LibreWolf"),
                 BrowserSource::Zen => mozilla_profile_cookies(&app_support, "zen"),
@@ -166,14 +164,17 @@ impl BrowserSource {
             match self {
                 BrowserSource::Chrome => vec![config.join("google-chrome/Default/Cookies")],
                 BrowserSource::Chromium => vec![config.join("chromium/Default/Cookies")],
-                BrowserSource::Brave => vec![config
-                    .join("BraveSoftware/Brave-Browser/Default/Cookies")],
+                BrowserSource::Brave => {
+                    vec![config.join("BraveSoftware/Brave-Browser/Default/Cookies")]
+                }
                 BrowserSource::Edge => vec![config.join("microsoft-edge/Default/Cookies")],
                 BrowserSource::Opera => vec![config.join("opera/Cookies")],
                 BrowserSource::OperaGx => vec![config.join("opera-gx/Cookies")],
                 BrowserSource::Vivaldi => vec![config.join("vivaldi/Default/Cookies")],
                 BrowserSource::Arc => vec![],
-                BrowserSource::Firefox => mozilla_profile_cookies(&home.join(".mozilla"), "firefox"),
+                BrowserSource::Firefox => {
+                    mozilla_profile_cookies(&home.join(".mozilla"), "firefox")
+                }
                 BrowserSource::LibreWolf => mozilla_profile_cookies(&home.join(".librewolf"), ""),
                 BrowserSource::Zen => mozilla_profile_cookies(&home.join(".zen"), ""),
             }
@@ -382,12 +383,19 @@ fn run_helper(helper: &PathBuf, args: &[&str]) -> CommandResult<HelperOutput> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let last_line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let last_line = stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
 
     if last_line.is_empty() {
         return Err(CommandError::system_fault(
             "browser_cookie_helper_no_output",
-            format!("Cookie importer produced no output. stderr: {}", stderr.trim()),
+            format!(
+                "Cookie importer produced no output. stderr: {}",
+                stderr.trim()
+            ),
         ));
     }
 

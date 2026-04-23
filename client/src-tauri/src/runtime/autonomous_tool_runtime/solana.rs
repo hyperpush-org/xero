@@ -78,10 +78,7 @@ pub trait SolanaExecutor: Send + Sync + std::fmt::Debug {
         request: AutonomousSolanaClusterRequest,
     ) -> CommandResult<AutonomousSolanaOutput>;
 
-    fn logs(
-        &self,
-        request: AutonomousSolanaLogsRequest,
-    ) -> CommandResult<AutonomousSolanaOutput>;
+    fn logs(&self, request: AutonomousSolanaLogsRequest) -> CommandResult<AutonomousSolanaOutput>;
 }
 
 /// Executor that dispatches against a live `SolanaState`. Safe to clone
@@ -126,7 +123,8 @@ impl SolanaExecutor for StateSolanaExecutor {
             }
             AutonomousSolanaClusterAction::Start { kind, opts } => {
                 let (handle, _events) = self.inner.supervisor.start(kind, opts)?;
-                let value = serde_json::to_value::<ClusterHandle>(handle).unwrap_or(JsonValue::Null);
+                let value =
+                    serde_json::to_value::<ClusterHandle>(handle).unwrap_or(JsonValue::Null);
                 ("start".to_string(), value)
             }
             AutonomousSolanaClusterAction::Stop => {
@@ -135,12 +133,14 @@ impl SolanaExecutor for StateSolanaExecutor {
             }
             AutonomousSolanaClusterAction::Status => {
                 let status = self.inner.supervisor.status();
-                let value = serde_json::to_value::<ClusterStatus>(status).unwrap_or(JsonValue::Null);
+                let value =
+                    serde_json::to_value::<ClusterStatus>(status).unwrap_or(JsonValue::Null);
                 ("status".to_string(), value)
             }
             AutonomousSolanaClusterAction::SnapshotList => {
                 let metas = self.inner.snapshots.list()?;
-                let value = serde_json::to_value::<Vec<SnapshotMeta>>(metas).unwrap_or(JsonValue::Null);
+                let value =
+                    serde_json::to_value::<Vec<SnapshotMeta>>(metas).unwrap_or(JsonValue::Null);
                 ("snapshot_list".to_string(), value)
             }
             AutonomousSolanaClusterAction::SnapshotCreate {
@@ -184,23 +184,20 @@ impl SolanaExecutor for StateSolanaExecutor {
             }
             AutonomousSolanaClusterAction::RpcHealth => {
                 let snap = self.inner.router.refresh_health();
-                let value = serde_json::to_value::<Vec<EndpointHealth>>(snap).unwrap_or(JsonValue::Null);
+                let value =
+                    serde_json::to_value::<Vec<EndpointHealth>>(snap).unwrap_or(JsonValue::Null);
                 ("rpc_health".to_string(), value)
             }
         };
 
-        let value_json =
-            serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
         Ok(AutonomousSolanaOutput {
             action: action_name,
             value_json,
         })
     }
 
-    fn logs(
-        &self,
-        _request: AutonomousSolanaLogsRequest,
-    ) -> CommandResult<AutonomousSolanaOutput> {
+    fn logs(&self, _request: AutonomousSolanaLogsRequest) -> CommandResult<AutonomousSolanaOutput> {
         // Phase 1 surface: caller gets whatever status the supervisor
         // currently reports, so the agent can at least tell whether a
         // cluster is running. Phase 7 will wire the full validator log
@@ -231,10 +228,7 @@ impl SolanaExecutor for UnavailableSolanaExecutor {
         ))
     }
 
-    fn logs(
-        &self,
-        _request: AutonomousSolanaLogsRequest,
-    ) -> CommandResult<AutonomousSolanaOutput> {
+    fn logs(&self, _request: AutonomousSolanaLogsRequest) -> CommandResult<AutonomousSolanaOutput> {
         Err(CommandError::policy_denied(
             "Solana log streaming requires the desktop runtime; no SolanaState is wired.",
         ))
