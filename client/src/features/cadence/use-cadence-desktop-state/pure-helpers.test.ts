@@ -359,4 +359,96 @@ describe('runtime-provider helpers', () => {
     expect(getAgentSessionUnavailableReason(null, null, selectedProvider)).not.toContain('OpenAI')
     expect(getAgentMessagesUnavailableReason(null, null, null, selectedProvider)).not.toContain('OpenAI')
   })
+
+  it('keeps GitHub Models guidance specific across readiness, mismatch, and recovered-run fallbacks', () => {
+    const githubSelectedProvider = resolveSelectedRuntimeProvider(
+      {
+        activeProfileId: 'github-models-work',
+        profiles: [
+          {
+            profileId: 'github-models-work',
+            providerId: 'github_models',
+            runtimeKind: 'openai_compatible',
+            label: 'GitHub Models Work',
+            modelId: 'openai/gpt-4.1',
+            presetId: 'github_models',
+            baseUrl: null,
+            apiVersion: null,
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'malformed',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+        migration: null,
+      },
+      null,
+      null,
+    )
+
+    expect(getAgentSessionUnavailableReason(null, null, githubSelectedProvider)).toBe(
+      'Repair the selected GitHub Models profile credentials in Settings before Cadence can bind a project runtime session.',
+    )
+    expect(
+      getAgentMessagesUnavailableReason(
+        null,
+        null,
+        makeRuntimeRun({ providerId: 'github_models' }),
+        githubSelectedProvider,
+      ),
+    ).toBe(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired GitHub Models profile credentials for the selected provider.',
+    )
+
+    const mismatchedRuntimeSession = makeRuntimeSession({
+      providerId: 'openai_codex',
+      runtimeKind: 'openai_codex',
+    })
+    expect(getAgentMessagesUnavailableReason(mismatchedRuntimeSession, null, null, githubSelectedProvider)).toContain(
+      'GitHub Models Work (github-models-work)',
+    )
+    expect(getAgentMessagesUnavailableReason(mismatchedRuntimeSession, null, null, githubSelectedProvider)).toContain(
+      'OpenAI Codex',
+    )
+
+    const recoveredOnlySelectedProvider = resolveSelectedRuntimeProvider(null, null, null)
+    expect(
+      getAgentMessagesUnavailableReason(
+        null,
+        null,
+        makeRuntimeRun({
+          providerId: 'github_models',
+          controls: {
+            active: {
+              modelId: 'openai/gpt-4.1',
+              thinkingEffort: 'medium',
+              approvalMode: 'suggest',
+              revision: 1,
+              appliedAt: '2026-04-20T12:00:00Z',
+            },
+            pending: null,
+            selected: {
+              source: 'active',
+              modelId: 'openai/gpt-4.1',
+              thinkingEffort: 'medium',
+              approvalMode: 'suggest',
+              revision: 1,
+              effectiveAt: '2026-04-20T12:00:00Z',
+              queuedPrompt: null,
+              queuedPromptAt: null,
+              hasQueuedPrompt: false,
+            },
+            hasPendingControls: false,
+          },
+        }),
+        recoveredOnlySelectedProvider,
+      ),
+    ).toBe(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires a GitHub Models runtime bind for the recovered provider.',
+    )
+  })
 })

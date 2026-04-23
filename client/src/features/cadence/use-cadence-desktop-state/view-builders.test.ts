@@ -909,7 +909,7 @@ describe('view builders', () => {
     })
   })
 
-  it('buildAgentView projects Anthropic bind guidance and Claude thinking truth without OpenRouter fallback copy', () => {
+  it('buildAgentView keeps GitHub Models catalog grouping and bind copy explicit for namespaced model ids', () => {
     const project = makeProject()
 
     const result = buildAgentView({
@@ -917,13 +917,13 @@ describe('view builders', () => {
       activePhase: project.phases[0] ?? null,
       repositoryStatus: makeRepositoryStatus(),
       providerProfiles: makeProviderProfiles({
-        activeProfileId: 'anthropic-work',
+        activeProfileId: 'github-models-work',
         profiles: [
           {
-            profileId: 'anthropic-work',
-            providerId: 'anthropic',
-            label: 'Anthropic Work',
-            modelId: 'claude-3-7-sonnet-latest',
+            profileId: 'github-models-work',
+            providerId: 'github_models',
+            label: 'GitHub Models Work',
+            modelId: 'openai/gpt-4.1',
             active: true,
             readiness: {
               ready: true,
@@ -936,20 +936,15 @@ describe('view builders', () => {
         ],
       }),
       runtimeSession: null,
-      runtimeSettings: makeRuntimeSettings({
-        providerId: 'anthropic',
-        modelId: 'claude-3-7-sonnet-latest',
-        openrouterApiKeyConfigured: false,
-        anthropicApiKeyConfigured: true,
-      }),
+      runtimeSettings: makeRuntimeSettings(),
       activeProviderModelCatalog: makeProviderModelCatalog({
-        profileId: 'anthropic-work',
-        providerId: 'anthropic',
-        configuredModelId: 'claude-3-7-sonnet-latest',
+        profileId: 'github-models-work',
+        providerId: 'github_models',
+        configuredModelId: 'openai/gpt-4.1',
         models: [
           {
-            modelId: 'claude-3-7-sonnet-latest',
-            displayName: 'Claude 3.7 Sonnet',
+            modelId: 'openai/gpt-4.1',
+            displayName: 'GPT-4.1',
             thinking: {
               supported: true,
               effortOptions: ['low', 'medium', 'high'],
@@ -957,8 +952,8 @@ describe('view builders', () => {
             },
           },
           {
-            modelId: 'claude-3-5-haiku-latest',
-            displayName: 'Claude 3.5 Haiku',
+            modelId: 'meta/llama-4-maverick',
+            displayName: 'Llama 4 Maverick',
             thinking: {
               supported: false,
               effortOptions: [],
@@ -1001,37 +996,124 @@ describe('view builders', () => {
     })
 
     expect(result.view).toMatchObject({
-      selectedProfileId: 'anthropic-work',
-      selectedProfileLabel: 'Anthropic Work',
-      selectedProviderId: 'anthropic',
-      selectedProviderLabel: 'Anthropic',
-      selectedProviderSource: 'provider_profiles',
-      controlTruthSource: 'fallback',
-      selectedModelId: 'claude-3-7-sonnet-latest',
-      selectedThinkingEffort: 'medium',
+      selectedProfileId: 'github-models-work',
+      selectedProfileLabel: 'GitHub Models Work',
+      selectedProviderId: 'github_models',
+      selectedProviderLabel: 'GitHub Models',
       sessionUnavailableReason:
-        'Bind Anthropic with the selected app-local provider profile to create a project runtime session.',
-      runtimeRunUnavailableReason:
-        'Bind Anthropic first, then launch a supervised harness run to populate durable repo-local run state for this project.',
-      messagesUnavailableReason:
-        'Bind Anthropic from the Agent tab to establish the runtime session for this imported project.',
+        'Bind GitHub Models with the selected app-local provider profile to create a project runtime session.',
       providerModelCatalog: {
-        providerId: 'anthropic',
-        providerLabel: 'Anthropic',
+        providerId: 'github_models',
+        providerLabel: 'GitHub Models',
         state: 'live',
         stateLabel: 'Live catalog',
       },
       selectedModelOption: {
-        modelId: 'claude-3-7-sonnet-latest',
-        groupLabel: 'Anthropic',
+        modelId: 'openai/gpt-4.1',
+        groupLabel: 'GitHub Models · OpenAI',
         thinkingSupported: true,
         defaultThinkingEffort: 'medium',
       },
     })
-    expect(result.view?.selectedModelThinkingEffortOptions).toEqual(['low', 'medium', 'high'])
-    expect(result.view?.selectedModelDefaultThinkingEffort).toBe('medium')
-    expect(result.view?.sessionUnavailableReason).not.toContain('OpenAI')
-    expect(result.view?.messagesUnavailableReason).not.toContain('OpenRouter')
+    expect(result.view?.providerModelCatalog.models.map((model) => model.groupLabel)).toEqual([
+      'GitHub Models · OpenAI',
+      'GitHub Models · Meta',
+    ])
+    expect(result.view?.messagesUnavailableReason).toContain('GitHub Models')
+    expect(result.view?.messagesUnavailableReason).not.toContain('OpenAI-compatible')
+  })
+
+  it('buildAgentView keeps recovered GitHub Models run truth visible when current Settings point elsewhere', () => {
+    const project = makeProject()
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles(),
+      runtimeSession: makeRuntimeSession({ providerId: 'openrouter', runtimeKind: 'openrouter' }),
+      runtimeSettings: makeRuntimeSettings(),
+      activeProviderModelCatalog: makeProviderModelCatalog(),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
+      runtimeRun: makeRuntimeRun({
+        providerId: 'github_models',
+        controls: {
+          active: {
+            modelId: 'openai/gpt-4.1',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'suggest',
+            approvalModeLabel: 'Suggest',
+            revision: 1,
+            appliedAt: '2026-04-20T12:00:00Z',
+          },
+          pending: null,
+          selected: {
+            source: 'active',
+            modelId: 'openai/gpt-4.1',
+            thinkingEffort: 'medium',
+            thinkingEffortLabel: 'Medium',
+            approvalMode: 'suggest',
+            approvalModeLabel: 'Suggest',
+            revision: 1,
+            effectiveAt: '2026-04-20T12:00:00Z',
+            queuedPrompt: null,
+            queuedPromptAt: null,
+            hasQueuedPrompt: false,
+          },
+          hasPendingControls: false,
+        },
+      }),
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: [],
+      autonomousRecentArtifacts: [],
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: makeRuntimeStream(),
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view).toMatchObject({
+      selectedProviderId: 'openrouter',
+      selectedProviderLabel: 'OpenRouter',
+      controlTruthSource: 'runtime_run',
+      selectedModelId: 'openai/gpt-4.1',
+      providerModelCatalog: {
+        providerId: 'github_models',
+        providerLabel: 'GitHub Models',
+        state: 'unavailable',
+        stateLabel: 'Catalog unavailable',
+      },
+      selectedModelOption: {
+        modelId: 'openai/gpt-4.1',
+        availability: 'orphaned',
+        groupLabel: 'GitHub Models · Current selection',
+      },
+    })
+    expect(result.view?.providerModelCatalog.detail).toContain('GitHub Models run-scoped control truth')
+    expect(result.view?.providerModelCatalog.detail).not.toContain('provider defaults out of the live projection')
   })
 
   it('buildExecutionView keeps diff-scope counts and durable verification copy aligned with repository truth', () => {

@@ -48,6 +48,7 @@ import {
   getProviderMismatchCopy,
   getRuntimeProviderLabel,
   hasProviderMismatch,
+  isKnownRuntimeProviderId,
   resolveSelectedRuntimeProvider,
 } from './runtime-provider'
 import type {
@@ -281,28 +282,63 @@ function getCatalogOwnerLabel(selectedProvider: SelectedProviderProjection['sele
   return selectedProvider.providerLabel
 }
 
-function getModelGroupLabel(modelId: string, providerLabel: string): { groupId: string; groupLabel: string } {
+function getCatalogProjectionProvider(options: {
+  selectedProvider: SelectedProviderProjection['selectedProvider']
+  runtimeRun: RuntimeRunView | null
+  controlTruthSource: AgentRunControlProjection['source']
+}): SelectedProviderProjection['selectedProvider'] {
+  const runtimeRunProviderId = options.runtimeRun?.providerId?.trim() ?? ''
+  if (
+    options.controlTruthSource !== 'runtime_run' ||
+    runtimeRunProviderId.length === 0 ||
+    !isKnownRuntimeProviderId(runtimeRunProviderId) ||
+    runtimeRunProviderId === options.selectedProvider.providerId
+  ) {
+    return options.selectedProvider
+  }
+
+  return {
+    ...options.selectedProvider,
+    profileId: null,
+    profileLabel: null,
+    providerId: runtimeRunProviderId,
+    providerLabel: getRuntimeProviderLabel(runtimeRunProviderId),
+  }
+}
+
+function getGitHubScopedGroupLabel(providerLabel: string, groupLabel: string): string {
+  return providerLabel === groupLabel ? providerLabel : `${providerLabel} · ${groupLabel}`
+}
+
+function getModelGroupLabel(
+  modelId: string,
+  providerId: SelectedProviderProjection['selectedProvider']['providerId'],
+  providerLabel: string,
+): { groupId: string; groupLabel: string } {
+  const normalizedProviderLabel = providerLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'provider_models'
   const trimmedModelId = modelId.trim()
   const namespace = trimmedModelId.includes('/') ? trimmedModelId.split('/')[0]?.trim() ?? '' : ''
   if (namespace.length === 0) {
     return {
-      groupId: providerLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'provider_models',
+      groupId: normalizedProviderLabel,
       groupLabel: providerLabel,
     }
   }
 
   const normalizedNamespace = namespace.toLowerCase()
-  const knownLabel = MODEL_GROUP_LABELS[normalizedNamespace]
-  if (knownLabel) {
+  const knownLabel = MODEL_GROUP_LABELS[normalizedNamespace] ?? getRuntimeProviderLabel(namespace)
+  const groupId = normalizedNamespace.replace(/[^a-z0-9]+/g, '_')
+
+  if (providerId === 'github_models') {
     return {
-      groupId: normalizedNamespace.replace(/[^a-z0-9]+/g, '_'),
-      groupLabel: knownLabel,
+      groupId: `github_models_${groupId}`,
+      groupLabel: getGitHubScopedGroupLabel(providerLabel, knownLabel),
     }
   }
 
   return {
-    groupId: normalizedNamespace.replace(/[^a-z0-9]+/g, '_'),
-    groupLabel: getRuntimeProviderLabel(namespace),
+    groupId,
+    groupLabel: knownLabel,
   }
 }
 
@@ -323,6 +359,7 @@ function getThinkingEffortOptions(model: ProviderModelDto): ProviderModelThinkin
 
 function buildAgentProviderModel(
   model: ProviderModelDto,
+  providerId: SelectedProviderProjection['selectedProvider']['providerId'],
   providerLabel: string,
 ): AgentProviderModelView | null {
   const modelId = model.modelId.trim()
@@ -335,7 +372,7 @@ function buildAgentProviderModel(
     model.thinking.supported && model.thinking.defaultEffort && effortOptions.includes(model.thinking.defaultEffort)
       ? model.thinking.defaultEffort
       : effortOptions[0] ?? null
-  const { groupId, groupLabel } = getModelGroupLabel(modelId, providerLabel)
+  const { groupId, groupLabel } = getModelGroupLabel(modelId, providerId, providerLabel)
 
   return {
     modelId,
@@ -351,7 +388,11 @@ function buildAgentProviderModel(
   }
 }
 
-function buildOrphanedAgentProviderModel(modelId: string): AgentProviderModelView | null {
+function buildOrphanedAgentProviderModel(
+  modelId: string,
+  providerId: SelectedProviderProjection['selectedProvider']['providerId'],
+  providerLabel: string,
+): AgentProviderModelView | null {
   const trimmedModelId = modelId.trim()
   if (trimmedModelId.length === 0) {
     return null
@@ -361,8 +402,11 @@ function buildOrphanedAgentProviderModel(modelId: string): AgentProviderModelVie
     modelId: trimmedModelId,
     label: trimmedModelId,
     displayName: trimmedModelId,
-    groupId: 'current_selection',
-    groupLabel: 'Current selection',
+    groupId: providerId === 'github_models' ? 'github_models_current_selection' : 'current_selection',
+    groupLabel:
+      providerId === 'github_models'
+        ? getGitHubScopedGroupLabel(providerLabel, 'Current selection')
+        : 'Current selection',
     availability: 'orphaned',
     availabilityLabel: 'Unavailable',
     thinkingSupported: false,
@@ -468,7 +512,11 @@ function buildAgentProviderModelCatalog(options: {
   const seenModelIds = new Set<string>()
 
   for (const model of catalog?.models ?? []) {
-    const nextModel = buildAgentProviderModel(model, options.selectedProvider.providerLabel)
+    const nextModel = buildAgentProviderModel(
+      model,
+      options.selectedProvider.providerId,
+      options.selectedProvider.providerLabel,
+    )
     if (!nextModel || seenModelIds.has(nextModel.modelId)) {
       continue
     }
@@ -486,7 +534,14 @@ function buildAgentProviderModelCatalog(options: {
   const selectedDiscoveredModel =
     selectedModelId ? discoveredModels.find((model) => model.modelId === selectedModelId) ?? null : null
   const selectedModelOption =
-    selectedDiscoveredModel ?? (selectedModelId ? buildOrphanedAgentProviderModel(selectedModelId) : null)
+    selectedDiscoveredModel ??
+    (selectedModelId
+      ? buildOrphanedAgentProviderModel(
+          selectedModelId,
+          options.selectedProvider.providerId,
+          options.selectedProvider.providerLabel,
+        )
+      : null)
   const models = selectedModelOption && selectedModelOption.availability === 'orphaned'
     ? [selectedModelOption, ...discoveredModels]
     : discoveredModels
@@ -501,8 +556,7 @@ function buildAgentProviderModelCatalog(options: {
     : {
         state: 'unavailable' as const,
         stateLabel: 'Catalog unavailable',
-        detail:
-          'Cadence is showing durable run-scoped control truth from the active supervised run while keeping provider defaults out of the live projection.',
+        detail: `Cadence is showing durable ${options.selectedProvider.providerLabel} run-scoped control truth from the active supervised run while keeping the current Settings selection out of the live projection.`,
       }
 
   return {
@@ -676,10 +730,15 @@ export function buildAgentView({
     runtimeSession,
   )
   const controlProjection = getAgentRunControlProjection(runtimeRun)
+  const catalogProjectionProvider = getCatalogProjectionProvider({
+    selectedProvider,
+    runtimeRun,
+    controlTruthSource: controlProjection.source,
+  })
   const allowCatalogTruth =
     controlProjection.source === 'fallback' || runtimeRun?.providerId === selectedProvider.providerId
   const providerModelCatalogProjection = buildAgentProviderModelCatalog({
-    selectedProvider,
+    selectedProvider: catalogProjectionProvider,
     activeProviderModelCatalog,
     activeProviderModelCatalogLoadStatus,
     activeProviderModelCatalogLoadError,

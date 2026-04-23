@@ -1167,6 +1167,76 @@ describe('AgentRuntime current UI', () => {
     )
   })
 
+  it('keeps GitHub Models provider mismatch truthful without rendering fallback provider UI', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          selectedProfileId: 'github-models-work',
+          selectedProfileLabel: 'GitHub Models Work',
+          selectedProviderId: 'github_models',
+          selectedProviderLabel: 'GitHub Models',
+          selectedModelId: 'openai/gpt-4.1',
+          selectedProfileReadiness: {
+            ready: true,
+            status: 'ready',
+            credentialUpdatedAt: '2026-04-20T12:00:00Z',
+          },
+          providerMismatch: true,
+          providerMismatchReason:
+            'Settings now select provider profile GitHub Models Work (github-models-work), but the persisted runtime session still reflects OpenAI Codex.',
+          providerMismatchRecoveryCopy:
+            'Rebind the selected profile so durable runtime truth matches Settings.',
+          sessionUnavailableReason:
+            'Settings now select provider profile GitHub Models Work (github-models-work), but the persisted runtime session still reflects OpenAI Codex. Rebind the selected profile so durable runtime truth matches Settings.',
+          messagesUnavailableReason:
+            'Live runtime streaming is paused because Settings now select provider profile GitHub Models Work (github-models-work), but the persisted runtime session still reflects OpenAI Codex. Rebind the selected profile before trusting new stream activity.',
+          runtimeSession: makeRuntimeSession({
+            providerId: 'openai_codex',
+            runtimeKind: 'openai_codex',
+            phase: 'authenticated',
+          }),
+        })}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartRuntimeSession={vi.fn(async () => null)}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Start OpenAI login' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start run' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
+      'placeholder',
+      'Rebind GitHub Models before trusting new live activity.',
+    )
+  })
+
+  it('renders GitHub Models setup guidance in the centered agent empty state', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          selectedProviderId: 'github_models',
+          selectedProviderLabel: 'GitHub Models',
+          selectedModelId: 'openai/gpt-4.1',
+          selectedProfileReadiness: {
+            ready: false,
+            status: 'missing',
+            credentialUpdatedAt: null,
+          },
+          runtimeSession: null,
+          sessionUnavailableReason:
+            'Configure a GitHub Models API key in Settings before Cadence can bind a project runtime session.',
+          messagesUnavailableReason:
+            'Configure a GitHub Models API key in Settings before Cadence can establish a runtime session for this imported project.',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Configure agent runtime')).toBeVisible()
+    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
+      'placeholder',
+      'Configure a GitHub Models API key in Settings to start.',
+    )
+  })
+
   it('keeps Anthropic provider mismatch truthful without rendering provider-specific fallback UI', () => {
     render(
       <AgentRuntime

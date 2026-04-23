@@ -1462,6 +1462,39 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('error')).toHaveTextContent('runtime auth failed')
   })
 
+  it('hydrates recovered GitHub Models run truth without collapsing back to generic desktop-auth copy', async () => {
+    const setup = createMockAdapter({
+      runtimeSessionErrors: {
+        'project-1': new Error('runtime auth failed'),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', {
+          providerId: 'github_models',
+          controls: {
+            active: {
+              modelId: 'openai/gpt-4.1',
+              thinkingEffort: 'medium',
+              approvalMode: 'suggest',
+              revision: 1,
+              appliedAt: '2026-04-15T20:00:00Z',
+            },
+            pending: null,
+          },
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+
+    expect(screen.getByTestId('runtime-run-provider-id')).toHaveTextContent('github_models')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires a GitHub Models runtime bind for the recovered provider.',
+    )
+    expect(screen.getByTestId('messages-reason')).not.toHaveTextContent('desktop-authenticated runtime session')
+  })
+
   it('preserves the last truthful runtime-run view when a later run refresh fails', async () => {
     const setup = createMockAdapter({
       runtimeRuns: {

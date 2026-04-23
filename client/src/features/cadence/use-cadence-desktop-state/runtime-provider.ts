@@ -98,11 +98,37 @@ function getSelectedApiKeyProviderState(
     return null
   }
 
+  const readinessStatus =
+    selectedProvider.readiness?.status ??
+    (selectedProvider.source === 'runtime_session'
+      ? 'ready'
+      : hasSelectedApiKeyProviderConfigured(selectedProvider)
+        ? 'ready'
+        : 'missing')
+
   return {
     providerLabel: selectedProvider.providerLabel,
-    ready: selectedProvider.readiness?.ready ?? false,
-    readinessStatus: selectedProvider.readiness?.status ?? (hasSelectedApiKeyProviderConfigured(selectedProvider) ? 'ready' : 'missing'),
+    ready: selectedProvider.readiness?.ready ?? readinessStatus === 'ready',
+    readinessStatus,
   }
+}
+
+function getRecoveredRuntimeRunApiKeyProviderLabel(
+  runtimeRun: RuntimeRunView | null,
+  selectedProvider: SelectedRuntimeProviderView,
+): string | null {
+  const runtimeRunProviderId = runtimeRun?.providerId?.trim() ?? ''
+  if (runtimeRunProviderId.length === 0 || !isKnownRuntimeProviderId(runtimeRunProviderId)) {
+    return null
+  }
+
+  if (!isApiKeyCloudProvider(runtimeRunProviderId)) {
+    return null
+  }
+
+  return runtimeRunProviderId === selectedProvider.providerId
+    ? selectedProvider.providerLabel
+    : getRuntimeProviderLabel(runtimeRunProviderId)
 }
 
 function getSelectedRuntimeIdentityLabel(selectedProvider: SelectedRuntimeProviderView): string {
@@ -375,6 +401,10 @@ export function getAgentMessagesUnavailableReason(
 ): string {
   const providerMismatchCopy = getProviderMismatchCopy(selectedProvider, runtimeSession)
   const selectedApiKeyProvider = getSelectedApiKeyProviderState(selectedProvider)
+  const recoveredRuntimeRunApiKeyProviderLabel = getRecoveredRuntimeRunApiKeyProviderLabel(
+    runtimeRun,
+    selectedProvider,
+  )
 
   if (!runtimeSession) {
     if (selectedApiKeyProvider) {
@@ -392,6 +422,10 @@ export function getAgentMessagesUnavailableReason(
               selectedApiKeyProvider.providerLabel,
               ' before Cadence can establish a runtime session for this imported project.',
             )
+    }
+
+    if (runtimeRun && recoveredRuntimeRunApiKeyProviderLabel) {
+      return `Cadence recovered durable supervised-run state for this project, but live streaming still requires a ${recoveredRuntimeRunApiKeyProviderLabel} runtime bind for the recovered provider.`
     }
 
     return runtimeRun

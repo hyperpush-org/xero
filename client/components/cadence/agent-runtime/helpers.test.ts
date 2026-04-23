@@ -263,6 +263,34 @@ describe('agent-runtime helpers', () => {
     ).toBe('Rebind OpenRouter before trusting new live activity.')
   })
 
+  it('keeps GitHub Models placeholder copy grammatical and provider-specific', () => {
+    expect(
+      getComposerPlaceholder(null, 'idle', null, undefined, {
+        selectedProviderId: 'github_models',
+        selectedProfileReadiness: {
+          ready: false,
+          status: 'missing',
+          credentialUpdatedAt: null,
+        },
+        openrouterApiKeyConfigured: false,
+        providerMismatch: false,
+      }),
+    ).toBe('Configure a GitHub Models API key in Settings to start.')
+
+    expect(
+      getComposerPlaceholder(makeRuntimeSession({ isAuthenticated: true, isSignedOut: false }), 'idle', null, undefined, {
+        selectedProviderId: 'github_models',
+        selectedProfileReadiness: {
+          ready: true,
+          status: 'ready',
+          credentialUpdatedAt: '2026-04-20T12:00:00Z',
+        },
+        openrouterApiKeyConfigured: false,
+        providerMismatch: true,
+      }),
+    ).toBe('Rebind GitHub Models before trusting new live activity.')
+  })
+
   it('keeps the stream meta and degraded checkpoint alert copy stable', () => {
     const meta = getStreamStatusMeta(
       makeAgent({

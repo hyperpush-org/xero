@@ -358,6 +358,17 @@ function hasConfiguredApiKey(options: {
   return false
 }
 
+function getApiKeyArticle(providerLabel: string): 'a' | 'an' {
+  const normalizedProviderLabel = providerLabel.trim().toLowerCase()
+  return normalizedProviderLabel.startsWith('a') ||
+    normalizedProviderLabel.startsWith('e') ||
+    normalizedProviderLabel.startsWith('i') ||
+    normalizedProviderLabel.startsWith('o') ||
+    normalizedProviderLabel.startsWith('u')
+    ? 'an'
+    : 'a'
+}
+
 function getApiKeySetupPlaceholder(options: {
   selectedProviderId: string
   selectedProfileReadiness?: ProviderProfileReadinessDto | null
@@ -371,7 +382,7 @@ function getApiKeySetupPlaceholder(options: {
 
   return hasConfiguredApiKey(options)
     ? `Bind ${providerLabel} from the Agent tab to start.`
-    : `Configure an ${providerLabel} API key in Settings to start.`
+    : `Configure ${getApiKeyArticle(providerLabel)} ${providerLabel} API key in Settings to start.`
 }
 
 export function getSelectedProviderLabel(agent: AgentPaneView, runtimeSession: RuntimeSessionView | null): string {
