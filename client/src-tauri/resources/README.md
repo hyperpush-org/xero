@@ -5,40 +5,40 @@ build time. They are resolved at runtime via `app.path().resolve(..., Resource)`
 
 ## scrcpy-server-v2.7.jar
 
-**Required for the Android emulator sidebar to stream frames.**
+Required for the Android emulator sidebar to stream frames.
 
-Download the `scrcpy-server` JAR that matches the scrcpy client version
-referenced in `src/commands/emulator/android/scrcpy.rs::SCRCPY_VERSION`
-(currently **v2.7**):
+**Auto-fetched by `build.rs`**: the first `cargo build` downloads the jar
+from the pinned Genymobile release and verifies the SHA-256. The pinned
+version and digest live in `build.rs::SCRCPY_VERSION` / `SCRCPY_SHA256`;
+keep them in lockstep with `src/commands/emulator/android/scrcpy.rs::SCRCPY_VERSION`.
 
-```
-https://github.com/Genymobile/scrcpy/releases/download/v2.7/scrcpy-server-v2.7
-```
+To skip the fetch in a CI environment that handles sidecar caching
+itself (or to iterate offline once the jar is present), set
+`CADENCE_SKIP_SIDECAR_FETCH=1` in the build environment.
 
-Rename the download to `scrcpy-server-v2.7.jar` and drop it here. The Tauri
-build will embed it under the app resource directory; the Android pipeline
-locates it with `scrcpy::bundled_jar_path` at runtime.
+Manual override: drop `scrcpy-server-v2.7.jar` into this directory and
+the verification step will pick it up without fetching. SHA mismatch
+triggers a re-fetch.
 
-The jar is Apache-2.0 licensed (Genymobile) — a matching `NOTICE` file ships
-in Cadence's About dialog as required.
+Apache 2.0 licensed (Genymobile) — a matching `NOTICE` entry ships in
+Cadence's About dialog as required.
 
 ## idb_companion (macOS-only)
 
-**Required for the iOS simulator sidebar to stream frames.**
+Required for the iOS simulator sidebar to stream frames.
 
-Either install via Homebrew (`brew install facebook/fb/idb-companion`) — the
-SDK probe will pick it up from `/opt/homebrew/bin` or `/usr/local/bin` — or
-drop a universal binary here and reference it from `tauri.conf.json` as an
-`externalBin`. The iOS pipeline resolves `idb_companion` in this order:
+**Not auto-fetched** — the upstream macOS universal binary is ~50 MB and
+not consistently published as a release asset. Either:
+
+1. Install via Homebrew: `brew install facebook/fb/idb-companion`. The
+   SDK probe picks it up from `/opt/homebrew/bin` or `/usr/local/bin`.
+2. Drop a universal binary into `resources/binaries/idb_companion` and
+   reference it from `tauri.conf.json` as an `externalBin`.
+
+The iOS pipeline resolves `idb_companion` in this order:
 
 1. Tauri resource directory (this folder).
 2. `which idb_companion` on `PATH`.
 3. `/opt/homebrew/bin/idb_companion`, `/usr/local/bin/idb_companion`.
 
-The binary is MIT-licensed (Meta / facebook/idb).
-
----
-
-These binaries are intentionally **not** checked in. Grab them as part of
-your build environment — our `build.rs` warns (but does not fail) when they
-are missing so local dev builds keep working while CI can gate on presence.
+MIT-licensed (Meta / facebook/idb).

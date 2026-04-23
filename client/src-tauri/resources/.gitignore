@@ -1,0 +1,3 @@
+# Sidecar binaries are hydrated by build.rs — don't carry them in git.
+*.jar
+binaries/
