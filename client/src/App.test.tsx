@@ -195,12 +195,18 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
     providerId: 'openai_codex',
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
+    anthropicApiKeyConfigured: false,
     ...overrides,
   }
 }
 
 function makeProviderProfilesFromRuntimeSettings(runtimeSettings: RuntimeSettingsDto): ProviderProfilesDto {
-  const activeProfileId = runtimeSettings.providerId === 'openrouter' ? 'openrouter-default' : 'openai_codex-default'
+  const activeProfileId =
+    runtimeSettings.providerId === 'openrouter'
+      ? 'openrouter-default'
+      : runtimeSettings.providerId === 'anthropic'
+        ? 'anthropic-default'
+        : 'openai_codex-default'
 
   return {
     activeProfileId,
@@ -208,7 +214,12 @@ function makeProviderProfilesFromRuntimeSettings(runtimeSettings: RuntimeSetting
       {
         profileId: activeProfileId,
         providerId: runtimeSettings.providerId,
-        label: runtimeSettings.providerId === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex',
+        label:
+          runtimeSettings.providerId === 'openrouter'
+            ? 'OpenRouter'
+            : runtimeSettings.providerId === 'anthropic'
+              ? 'Anthropic'
+              : 'OpenAI Codex',
         modelId: runtimeSettings.modelId,
         active: true,
         readiness:
@@ -218,11 +229,17 @@ function makeProviderProfilesFromRuntimeSettings(runtimeSettings: RuntimeSetting
                 status: runtimeSettings.openrouterApiKeyConfigured ? 'ready' : 'missing',
                 credentialUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
               }
-            : {
-                ready: false,
-                status: 'missing',
-                credentialUpdatedAt: null,
-              },
+            : runtimeSettings.providerId === 'anthropic'
+              ? {
+                  ready: runtimeSettings.anthropicApiKeyConfigured,
+                  status: runtimeSettings.anthropicApiKeyConfigured ? 'ready' : 'missing',
+                  credentialUpdatedAt: runtimeSettings.anthropicApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+                }
+              : {
+                  ready: false,
+                  status: 'missing',
+                  credentialUpdatedAt: null,
+                },
         migratedFromLegacy: false,
         migratedAt: null,
       },
@@ -233,7 +250,8 @@ function makeProviderProfilesFromRuntimeSettings(runtimeSettings: RuntimeSetting
 
 function buildProviderModelCatalog(profile: ProviderProfilesDto['profiles'][number]): ProviderModelCatalogDto {
   const isOpenRouter = profile.providerId === 'openrouter'
-  const isReady = isOpenRouter ? profile.readiness.ready : true
+  const isAnthropic = profile.providerId === 'anthropic'
+  const isReady = isOpenRouter || isAnthropic ? profile.readiness.ready : true
 
   return {
     profileId: profile.profileId,
@@ -243,10 +261,10 @@ function buildProviderModelCatalog(profile: ProviderProfilesDto['profiles'][numb
     fetchedAt: isReady ? '2026-04-21T12:00:00Z' : null,
     lastSuccessAt: isReady ? '2026-04-21T12:00:00Z' : null,
     lastRefreshError:
-      isOpenRouter && !isReady
+      !isReady
         ? {
-            code: 'openrouter_credentials_missing',
-            message: 'Configure an OpenRouter API key before refreshing provider models.',
+            code: isOpenRouter ? 'openrouter_credentials_missing' : 'anthropic_api_key_missing',
+            message: `Configure an ${isOpenRouter ? 'OpenRouter' : 'Anthropic'} API key before refreshing provider models.`,
             retryable: false,
           }
         : null,
@@ -264,17 +282,40 @@ function buildProviderModelCatalog(profile: ProviderProfilesDto['profiles'][numb
             },
           ]
         : []
-      : [
-          {
-            modelId: 'openai_codex',
-            displayName: 'OpenAI Codex',
-            thinking: {
-              supported: true,
-              effortOptions: ['low', 'medium', 'high'],
-              defaultEffort: 'medium',
+      : isAnthropic
+        ? isReady
+          ? [
+              {
+                modelId: 'claude-3-7-sonnet-latest',
+                displayName: 'Claude 3.7 Sonnet',
+                thinking: {
+                  supported: true,
+                  effortOptions: ['low', 'medium', 'high', 'x_high'],
+                  defaultEffort: 'medium',
+                },
+              },
+              {
+                modelId: 'claude-3-5-haiku-latest',
+                displayName: 'Claude 3.5 Haiku',
+                thinking: {
+                  supported: false,
+                  effortOptions: [],
+                  defaultEffort: null,
+                },
+              },
+            ]
+          : []
+        : [
+            {
+              modelId: 'openai_codex',
+              displayName: 'OpenAI Codex',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
             },
-          },
-        ],
+          ],
   }
 }
 
@@ -694,6 +735,7 @@ function createAdapter(options?: {
       providerId: activeProfile.providerId,
       modelId: activeProfile.modelId,
       openrouterApiKeyConfigured: activeProfile.providerId === 'openrouter' ? activeProfile.readiness.ready : false,
+      anthropicApiKeyConfigured: activeProfile.providerId === 'anthropic' ? activeProfile.readiness.ready : false,
     }
   }
 
@@ -705,7 +747,7 @@ function createAdapter(options?: {
     runtimeRun.controls.pending ? { ...runtimeRun.controls.pending } : null
 
   const getRuntimeKindForProvider = (providerId: RuntimeSettingsDto['providerId']) =>
-    providerId === 'openrouter' ? 'openrouter' : 'openai_codex'
+    providerId === 'openrouter' || providerId === 'anthropic' ? providerId : 'openai_codex'
 
   const buildRuntimeRunControls = (options: {
     base: RuntimeRunDto['controls']['active']
@@ -884,6 +926,12 @@ function createAdapter(options?: {
             ? currentRuntimeSettings.openrouterApiKeyConfigured
             : request.openrouterApiKey.trim().length > 0
           : false,
+      anthropicApiKeyConfigured:
+        request.providerId === 'anthropic'
+          ? request.anthropicApiKey == null
+            ? currentRuntimeSettings.anthropicApiKeyConfigured
+            : request.anthropicApiKey.trim().length > 0
+          : false,
     }
     currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
     rebuildProviderModelCatalogs()
@@ -892,10 +940,11 @@ function createAdapter(options?: {
 
   const upsertProviderProfile = vi.fn(async (request: {
     profileId: string
-    providerId: 'openai_codex' | 'openrouter'
+    providerId: 'openai_codex' | 'openrouter' | 'anthropic'
     label: string
     modelId: string
     openrouterApiKey?: string | null
+    anthropicApiKey?: string | null
     activate?: boolean
   }) => {
     currentRuntimeSettings = {
@@ -906,7 +955,13 @@ function createAdapter(options?: {
           ? request.openrouterApiKey == null
             ? currentRuntimeSettings.openrouterApiKeyConfigured
             : request.openrouterApiKey.trim().length > 0
-          : currentRuntimeSettings.openrouterApiKeyConfigured,
+          : false,
+      anthropicApiKeyConfigured:
+        request.providerId === 'anthropic'
+          ? request.anthropicApiKey == null
+            ? currentRuntimeSettings.anthropicApiKeyConfigured
+            : request.anthropicApiKey.trim().length > 0
+          : false,
     }
     currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
     rebuildProviderModelCatalogs()
@@ -1380,6 +1435,19 @@ function createAdapter(options?: {
   }
 }
 
+function getProviderCard(label: string): HTMLElement {
+  const card = screen
+    .getAllByText(label)
+    .map((node) => node.closest('.rounded-lg'))
+    .find((value): value is HTMLElement => value instanceof HTMLElement)
+
+  if (!card) {
+    throw new Error(`Could not find provider card for ${label}`)
+  }
+
+  return card
+}
+
 describe('CadenceApp current UI', () => {
   it('shows the onboarding flow on a cold-start empty state', async () => {
     const { adapter } = createAdapter({
@@ -1433,8 +1501,8 @@ describe('CadenceApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'Configure providers' })).toBeVisible()
     expect(screen.getByText('Provider setup is app-wide. Choose the active profile for new runtime binds without rewriting project runtime history.')).toBeVisible()
     expect(screen.getByText('Active')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Set up' })).toBeVisible()
-    expect(screen.getAllByText('Unavailable')).toHaveLength(2)
+    expect(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Set up' })).toBeVisible()
+    expect(screen.getAllByText('Unavailable')).toHaveLength(1)
   })
 
   it('keeps onboarding provider review truthful before OpenAI is connected', async () => {
@@ -1458,6 +1526,62 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByText('OpenAI Codex · active profile')).toBeVisible()
   })
 
+  it('keeps onboarding provider review truthful for Anthropic API-key readiness', async () => {
+    const { adapter: missingKeyAdapter } = createAdapter({
+      projects: [],
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKeyConfigured: false,
+      }),
+      runtimeSession: makeRuntimeSession('project-1', {
+        providerId: 'anthropic',
+        runtimeKind: 'anthropic',
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+
+    render(<CadenceApp adapter={missingKeyAdapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
+    expect(screen.getByText('Anthropic · API key required')).toBeVisible()
+  })
+
+  it('keeps onboarding provider review truthful when an Anthropic API key is already saved', async () => {
+    const { adapter } = createAdapter({
+      projects: [],
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKeyConfigured: true,
+      }),
+      runtimeSession: makeRuntimeSession('project-1', {
+        providerId: 'anthropic',
+        runtimeKind: 'anthropic',
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+
+    render(<CadenceApp adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
+    expect(screen.getByText('Anthropic · API key saved')).toBeVisible()
+  })
+
   it('saves OpenRouter provider settings from onboarding', async () => {
     const { adapter, upsertProviderProfile } = createAdapter({
       projects: [],
@@ -1471,7 +1595,7 @@ describe('CadenceApp current UI', () => {
     render(<CadenceApp adapter={adapter} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Set up' }))
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'openai/gpt-4.1-mini' } })
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-or-v1-test-secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -1483,6 +1607,34 @@ describe('CadenceApp current UI', () => {
       label: 'OpenRouter',
       modelId: 'openai/gpt-4.1-mini',
       openrouterApiKey: 'sk-or-v1-test-secret',
+      activate: false,
+    })
+  })
+
+  it('saves Anthropic provider settings from onboarding', async () => {
+    const { adapter, upsertProviderProfile } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+
+    render(<CadenceApp adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Set up' }))
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-ant-test-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(upsertProviderProfile).toHaveBeenCalledTimes(1))
+    expect(upsertProviderProfile).toHaveBeenCalledWith({
+      profileId: 'anthropic-default',
+      providerId: 'anthropic',
+      label: 'Anthropic',
+      modelId: 'claude-3-7-sonnet-latest',
+      anthropicApiKey: 'sk-ant-test-secret',
       activate: false,
     })
   })

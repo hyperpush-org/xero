@@ -51,7 +51,7 @@ function getProviderReview(providerProfiles: ProviderProfilesDto | null, runtime
     }
   }
 
-  if (activeProfile.providerId === "openrouter") {
+  if (activeProfile.providerId === "openrouter" || activeProfile.providerId === "anthropic") {
     return activeProfile.readiness.ready
       ? {
           ready: true,

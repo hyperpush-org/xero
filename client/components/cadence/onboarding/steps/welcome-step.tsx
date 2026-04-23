@@ -7,7 +7,7 @@ interface WelcomeStepProps {
 }
 
 const HIGHLIGHTS: Array<{ Icon: React.ElementType; label: string; hint: string }> = [
-  { Icon: Sparkles, label: "Pick a provider", hint: "OpenAI or OpenRouter" },
+  { Icon: Sparkles, label: "Pick a provider", hint: "OpenAI, Anthropic, or OpenRouter" },
   { Icon: FolderGit2, label: "Import a project", hint: "Local Git repo" },
   { Icon: Bell, label: "Wire notifications", hint: "Optional, per project" },
 ]

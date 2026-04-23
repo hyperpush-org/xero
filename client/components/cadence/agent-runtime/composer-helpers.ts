@@ -8,6 +8,7 @@ import type {
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   ProviderModelThinkingEffortDto,
+  ProviderProfileReadinessDto,
   RuntimeRunApprovalModeDto,
   RuntimeRunControlInputDto,
   RuntimeRunView,
@@ -328,9 +329,56 @@ export function getSelectedProviderId(agent: AgentPaneView, runtimeSession: Runt
   return agent.selectedProviderId ?? runtimeSession?.providerId ?? 'openai_codex'
 }
 
+function getProviderDisplayLabel(providerId: string): string {
+  if (providerId === 'openrouter') {
+    return 'OpenRouter'
+  }
+
+  if (providerId === 'anthropic') {
+    return 'Anthropic'
+  }
+
+  return 'OpenAI Codex'
+}
+
+function isApiKeyProvider(providerId: string): providerId is 'openrouter' | 'anthropic' {
+  return providerId === 'openrouter' || providerId === 'anthropic'
+}
+
+function hasConfiguredApiKey(options: {
+  selectedProviderId: string
+  selectedProfileReadiness?: ProviderProfileReadinessDto | null
+  openrouterApiKeyConfigured: boolean
+}): boolean {
+  if (options.selectedProviderId === 'openrouter') {
+    return options.selectedProfileReadiness?.ready ?? options.openrouterApiKeyConfigured
+  }
+
+  if (options.selectedProviderId === 'anthropic') {
+    return options.selectedProfileReadiness?.ready ?? false
+  }
+
+  return false
+}
+
+function getApiKeySetupPlaceholder(options: {
+  selectedProviderId: string
+  selectedProfileReadiness?: ProviderProfileReadinessDto | null
+  openrouterApiKeyConfigured: boolean
+}): string {
+  const providerLabel = getProviderDisplayLabel(options.selectedProviderId)
+
+  if (options.selectedProfileReadiness?.status === 'malformed') {
+    return `Repair the ${providerLabel} API key in Settings to start.`
+  }
+
+  return hasConfiguredApiKey(options)
+    ? `Bind ${providerLabel} from the Agent tab to start.`
+    : `Configure an ${providerLabel} API key in Settings to start.`
+}
+
 export function getSelectedProviderLabel(agent: AgentPaneView, runtimeSession: RuntimeSessionView | null): string {
-  return agent.selectedProviderLabel ??
-    (getSelectedProviderId(agent, runtimeSession) === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex')
+  return agent.selectedProviderLabel ?? getProviderDisplayLabel(getSelectedProviderId(agent, runtimeSession))
 }
 
 export function getComposerPlaceholder(
@@ -338,34 +386,36 @@ export function getComposerPlaceholder(
   streamStatus: RuntimeStreamStatus,
   runtimeRun: RuntimeRunView | null,
   streamRunId: string | undefined,
-  options: { selectedProviderId: string; openrouterApiKeyConfigured: boolean; providerMismatch: boolean },
+  options: {
+    selectedProviderId: string
+    selectedProfileReadiness?: ProviderProfileReadinessDto | null
+    openrouterApiKeyConfigured: boolean
+    providerMismatch: boolean
+  },
 ): string {
+  const selectedProviderLabel = getProviderDisplayLabel(options.selectedProviderId)
+  const selectedProviderUsesApiKey = isApiKeyProvider(options.selectedProviderId)
+
   if (!runtimeSession) {
-    if (options.selectedProviderId === 'openrouter') {
-      return options.openrouterApiKeyConfigured
-        ? 'Bind OpenRouter from the Agent tab to start.'
-        : 'Configure an OpenRouter API key in Settings to start.'
+    if (selectedProviderUsesApiKey) {
+      return getApiKeySetupPlaceholder(options)
     }
 
     return 'Connect a provider to start.'
   }
 
   if (options.providerMismatch) {
-    return `Rebind ${options.selectedProviderId === 'openrouter' ? 'OpenRouter' : 'the selected provider'} before trusting new live activity.`
+    return `Rebind ${selectedProviderUsesApiKey ? selectedProviderLabel : 'the selected provider'} before trusting new live activity.`
   }
 
   if (!runtimeSession.isAuthenticated) {
     if (runtimeSession.isLoginInProgress) {
-      return options.selectedProviderId === 'openrouter'
-        ? 'Finish the OpenRouter bind to continue.'
+      return selectedProviderUsesApiKey
+        ? `Finish the ${selectedProviderLabel} bind to continue.`
         : 'Finish the login flow to continue.'
     }
 
-    return options.selectedProviderId === 'openrouter'
-      ? options.openrouterApiKeyConfigured
-        ? 'Bind OpenRouter from the Agent tab to start.'
-        : 'Configure an OpenRouter API key in Settings to start.'
-      : 'Connect a provider to start.'
+    return selectedProviderUsesApiKey ? getApiKeySetupPlaceholder(options) : 'Connect a provider to start.'
   }
 
   if (!hasUsableRuntimeRunId(runtimeRun)) {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 const { openUrlMock } = vi.hoisted(() => ({
@@ -65,6 +65,32 @@ function makeOpenRouterProfile(overrides: Partial<ProviderProfileDto> = {}): Pro
   }
 }
 
+function makeAnthropicProfile(overrides: Partial<ProviderProfileDto> = {}): ProviderProfileDto {
+  const ready = overrides.readiness?.ready ?? false
+
+  return {
+    profileId: 'anthropic-default',
+    providerId: 'anthropic',
+    label: 'Anthropic',
+    modelId: 'claude-3-7-sonnet-latest',
+    active: false,
+    readiness: ready
+      ? {
+          ready: true,
+          status: 'ready',
+          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+        }
+      : {
+          ready: false,
+          status: 'missing',
+          credentialUpdatedAt: null,
+        },
+    migratedFromLegacy: false,
+    migratedAt: null,
+    ...overrides,
+  }
+}
+
 function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): ProviderProfilesDto {
   return {
     activeProfileId: overrides.activeProfileId ?? 'openai_codex-default',
@@ -78,10 +104,20 @@ function makeProviderModelCatalog(
   profileId: string,
   overrides: Partial<ProviderModelCatalogDto> = {},
 ): ProviderModelCatalogDto {
-  const providerId = overrides.providerId ?? (profileId.startsWith('openrouter') ? 'openrouter' : 'openai_codex')
+  const providerId =
+    overrides.providerId ??
+    (profileId.startsWith('openrouter')
+      ? 'openrouter'
+      : profileId.startsWith('anthropic')
+        ? 'anthropic'
+        : 'openai_codex')
   const configuredModelId =
     overrides.configuredModelId ??
-    (providerId === 'openrouter' ? 'openai/gpt-4.1-mini' : 'openai_codex')
+    (providerId === 'openrouter'
+      ? 'openai/gpt-4.1-mini'
+      : providerId === 'anthropic'
+        ? 'claude-3-7-sonnet-latest'
+        : 'openai_codex')
 
   return {
     profileId,
@@ -114,17 +150,38 @@ function makeProviderModelCatalog(
               },
             },
           ]
-        : [
-            {
-              modelId: 'openai_codex',
-              displayName: 'OpenAI Codex',
-              thinking: {
-                supported: true,
-                effortOptions: ['low', 'medium', 'high'],
-                defaultEffort: 'medium',
+        : providerId === 'anthropic'
+          ? [
+              {
+                modelId: 'claude-3-7-sonnet-latest',
+                displayName: 'Claude 3.7 Sonnet',
+                thinking: {
+                  supported: true,
+                  effortOptions: ['low', 'medium', 'high', 'x_high'],
+                  defaultEffort: 'medium',
+                },
               },
-            },
-          ]),
+              {
+                modelId: 'claude-3-5-haiku-latest',
+                displayName: 'Claude 3.5 Haiku',
+                thinking: {
+                  supported: false,
+                  effortOptions: [],
+                  defaultEffort: null,
+                },
+              },
+            ]
+          : [
+              {
+                modelId: 'openai_codex',
+                displayName: 'OpenAI Codex',
+                thinking: {
+                  supported: true,
+                  effortOptions: ['low', 'medium', 'high'],
+                  defaultEffort: 'medium',
+                },
+              },
+            ]),
   }
 }
 
@@ -313,6 +370,19 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> = {}): 
   }
 }
 
+function getProviderCard(label: string): HTMLElement {
+  const card = screen
+    .getAllByText(label)
+    .map((node) => node.closest('.rounded-lg'))
+    .find((value): value is HTMLElement => value instanceof HTMLElement)
+
+  if (!card) {
+    throw new Error(`Could not find provider card for ${label}`)
+  }
+
+  return card
+}
+
 describe('SettingsDialog', () => {
   it('refreshes app-local provider profiles on open and keeps notifications project-bound when no project is selected', async () => {
     const onRefreshProviderProfiles = vi.fn(async () => makeProviderProfiles())
@@ -476,7 +546,7 @@ describe('SettingsDialog', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Set up' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Set up' }))
 
     const modelSelector = screen.getByLabelText('Model')
     const keyInput = screen.getByLabelText('API Key') as HTMLInputElement
@@ -511,7 +581,7 @@ describe('SettingsDialog', () => {
     )
 
     expect(screen.getByText('Ready')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Edit' }))
 
     const modelSelectorAfter = screen.getByLabelText('Model')
     const keyInputAfter = screen.getByLabelText('API Key') as HTMLInputElement
@@ -522,7 +592,7 @@ describe('SettingsDialog', () => {
     expect(screen.queryByText(secret)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Use this' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Use this' }))
 
     await waitFor(() => expect(onSetActiveProviderProfile).toHaveBeenCalledWith('openrouter-default'))
 
@@ -537,6 +607,130 @@ describe('SettingsDialog', () => {
     )
 
     expect(screen.getAllByText('Active').length).toBeGreaterThan(0)
+  })
+
+  it('lets Anthropic use the shared API-key save, edit, and activate flow', async () => {
+    const secret = 'sk-ant-test-secret'
+
+    let nextProviderProfiles = makeProviderProfiles({
+      activeProfileId: 'openai_codex-default',
+      profiles: [makeOpenAiProfile({ active: true }), makeOpenRouterProfile({ active: false })],
+    })
+
+    const onUpsertProviderProfile = vi.fn(async (request: UpsertProviderProfileRequestDto) => {
+      nextProviderProfiles = makeProviderProfiles({
+        activeProfileId: 'openai_codex-default',
+        profiles: [
+          makeOpenAiProfile({ active: true }),
+          makeOpenRouterProfile({ active: false }),
+          makeAnthropicProfile({
+            active: false,
+            label: request.label,
+            modelId: request.modelId,
+            readiness: request.anthropicApiKey === ''
+              ? {
+                  ready: false,
+                  status: 'missing',
+                  credentialUpdatedAt: null,
+                }
+              : {
+                  ready: true,
+                  status: 'ready',
+                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                },
+          }),
+        ],
+      })
+
+      return nextProviderProfiles
+    })
+
+    const onSetActiveProviderProfile = vi.fn(async (_profileId: string) => {
+      nextProviderProfiles = makeProviderProfiles({
+        activeProfileId: 'anthropic-default',
+        profiles: [
+          makeOpenAiProfile({ active: false }),
+          makeOpenRouterProfile({ active: false }),
+          makeAnthropicProfile({
+            active: true,
+            label: 'Anthropic Work',
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+          }),
+        ],
+      })
+
+      return nextProviderProfiles
+    })
+
+    const { rerender } = render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          providerProfiles: nextProviderProfiles,
+          onUpsertProviderProfile,
+          onSetActiveProviderProfile,
+        })}
+      />,
+    )
+
+    fireEvent.click(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Set up' }))
+
+    const labelInput = screen.getByLabelText('Profile label') as HTMLInputElement
+    const modelSelector = screen.getByLabelText('Model')
+    const keyInput = screen.getByLabelText('API Key') as HTMLInputElement
+
+    expect(labelInput).toHaveValue('Anthropic')
+    expect(modelSelector).toHaveTextContent('claude-3-7-sonnet-latest')
+    expect(keyInput).toHaveValue('')
+
+    fireEvent.change(labelInput, { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getByText('Profile label is required.')).toBeVisible()
+
+    fireEvent.change(labelInput, { target: { value: 'Anthropic Work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getByText('Anthropic requires an API key.')).toBeVisible()
+
+    fireEvent.change(keyInput, { target: { value: secret } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(onUpsertProviderProfile).toHaveBeenCalledWith({
+        profileId: 'anthropic-default',
+        providerId: 'anthropic',
+        label: 'Anthropic Work',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKey: secret,
+        activate: false,
+      }),
+    )
+
+    rerender(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          providerProfiles: nextProviderProfiles,
+          onUpsertProviderProfile,
+          onSetActiveProviderProfile,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Ready')).toBeVisible()
+    fireEvent.click(within(getProviderCard('Anthropic Work')).getByRole('button', { name: 'Edit' }))
+
+    const keyInputAfter = screen.getByLabelText('API Key') as HTMLInputElement
+
+    expect(keyInputAfter).toHaveValue('')
+    expect(screen.queryByDisplayValue(secret)).not.toBeInTheDocument()
+    expect(screen.queryByText(secret)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(getProviderCard('Anthropic Work')).getByRole('button', { name: 'Use this' }))
+
+    await waitFor(() => expect(onSetActiveProviderProfile).toHaveBeenCalledWith('anthropic-default'))
   })
 
   it('limits OpenAI auth controls to the selected profile and keeps typed auth failures inline', async () => {
@@ -616,7 +810,7 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('OpenRouter')).toBeVisible()
     expect(screen.getByText('OpenAI Codex')).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Edit' }))
 
     expect(screen.getByLabelText('Model')).toHaveTextContent('openrouter/meta-llama/llama-3.1-8b-instruct')
     expect(screen.getByText('Ready')).toBeVisible()

@@ -60,6 +60,8 @@ type ProviderDraft = {
   modelId: string
   openrouterApiKey: string
   clearOpenrouterApiKey: boolean
+  anthropicApiKey: string
+  clearAnthropicApiKey: boolean
 }
 
 interface ProviderCatalogEntry {
@@ -129,9 +131,11 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     id: "anthropic",
     label: "Anthropic",
-    description: "Coming soon.",
+    description: "App-global provider profile backed by a saved API key and live Claude model discovery.",
     Icon: AnthropicIcon,
-    supported: false,
+    supported: true,
+    defaultProfileId: "anthropic-default",
+    defaultModelId: "claude-3-7-sonnet-latest",
   },
   {
     id: "google",
@@ -174,6 +178,8 @@ function createDraft(card: ProviderProfileCard): ProviderDraft {
     modelId: card.profile?.modelId ?? card.catalog.defaultModelId ?? "",
     openrouterApiKey: "",
     clearOpenrouterApiKey: false,
+    anthropicApiKey: "",
+    clearAnthropicApiKey: false,
   }
 }
 
@@ -215,8 +221,8 @@ function getProfileCards(providerProfiles: ProviderProfilesDto | null): Provider
   return cards
 }
 
-function getOpenRouterReadinessBadge(profile: ProviderProfileDto | null) {
-  if (!profile || profile.providerId !== "openrouter") return null
+function getApiKeyProviderReadinessBadge(profile: ProviderProfileDto | null) {
+  if (!profile || (profile.providerId !== "openrouter" && profile.providerId !== "anthropic")) return null
 
   if (profile.readiness.status === "ready") {
     return {
@@ -278,7 +284,13 @@ function buildUpsertRequest(
         : draft.openrouterApiKey.trim().length > 0
           ? { openrouterApiKey: draft.openrouterApiKey.trim() }
           : {}
-      : {}),
+      : card.catalog.id === "anthropic"
+        ? draft.clearAnthropicApiKey
+          ? { anthropicApiKey: "" }
+          : draft.anthropicApiKey.trim().length > 0
+            ? { anthropicApiKey: draft.anthropicApiKey.trim() }
+            : {}
+        : {}),
     activate,
   }
 }
@@ -631,17 +643,20 @@ export function ProviderProfileForm({
       return
     }
 
-    if (card.catalog.id === "openrouter") {
-      const hasSavedKey = card.profile?.readiness.ready ?? false
-      const isClearingKey = draft.clearOpenrouterApiKey
+    if (card.catalog.id === "openrouter" || card.catalog.id === "anthropic") {
+      const hasSavedKey = card.profile?.providerId === card.catalog.id && card.profile.readiness.ready
+      const isClearingKey =
+        card.catalog.id === "openrouter" ? draft.clearOpenrouterApiKey : draft.clearAnthropicApiKey
+      const apiKeyValue =
+        card.catalog.id === "openrouter" ? draft.openrouterApiKey : draft.anthropicApiKey
 
       if (!draft.modelId.trim()) {
         setFormError("Choose a discovered model before saving.")
         return
       }
 
-      if (!hasSavedKey && !isClearingKey && !draft.openrouterApiKey.trim()) {
-        setFormError("OpenRouter requires an API key.")
+      if (!hasSavedKey && !isClearingKey && !apiKeyValue.trim()) {
+        setFormError(`${card.catalog.label} requires an API key.`)
         return
       }
     }
@@ -658,6 +673,7 @@ export function ProviderProfileForm({
       setDraft(card, {
         ...draft,
         openrouterApiKey: "",
+        anthropicApiKey: "",
       })
     }
   }
@@ -795,10 +811,14 @@ export function ProviderProfileForm({
           const draft = getDraft(card)
           const isEditing = editingCardKey === card.key
           const isOpenRouter = card.catalog.id === "openrouter"
+          const isAnthropic = card.catalog.id === "anthropic"
+          const isApiKeyProvider = isOpenRouter || isAnthropic
           const isOpenAi = card.catalog.id === "openai_codex"
           const isSelected = isCardSelected(providerProfiles, card)
-          const readinessBadge = getOpenRouterReadinessBadge(card.profile)
-          const hasSavedOpenRouterKey = Boolean(card.profile?.providerId === "openrouter" && card.profile.readiness.ready)
+          const readinessBadge = getApiKeyProviderReadinessBadge(card.profile)
+          const hasSavedApiKey = Boolean(
+            isApiKeyProvider && card.profile?.providerId === card.catalog.id && card.profile.readiness.ready,
+          )
           const shouldRenderOpenAiAuth = isOpenAi && isSelected && Boolean(onStartLogin && onLogout)
           const isSelectedRuntimeProvider = runtimeSession?.providerId === selectedProvider.providerId
           const selectedRuntimeErrorMessage = runtimeSession?.lastError?.message?.trim() || null
@@ -947,12 +967,12 @@ export function ProviderProfileForm({
                   ) : (
                     <Button
                       size="sm"
-                      variant={hasSavedOpenRouterKey ? "secondary" : "outline"}
+                      variant={hasSavedApiKey ? "secondary" : "outline"}
                       className="h-8 text-[12px]"
                       disabled={isSaving || isRefreshing}
                       onClick={() => openEditor(card)}
                     >
-                      {hasSavedOpenRouterKey ? "Edit" : "Set up"}
+                      {hasSavedApiKey ? "Edit" : "Set up"}
                     </Button>
                   )}
 
@@ -1081,13 +1101,13 @@ export function ProviderProfileForm({
                     )}
                   </div>
 
-                  {isOpenRouter ? (
+                  {isApiKeyProvider ? (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-3">
                         <Label htmlFor={`${card.key}-api-key`} className="text-[12px]">
                           API Key
                         </Label>
-                        {hasSavedOpenRouterKey ? (
+                        {hasSavedApiKey ? (
                           <Badge variant="secondary" className="gap-1.5 text-[11px]">
                             <Check className="h-3 w-3" strokeWidth={3} />
                             Key saved
@@ -1105,15 +1125,23 @@ export function ProviderProfileForm({
                           onChange={(event) =>
                             setDraft(card, {
                               ...draft,
-                              openrouterApiKey: event.target.value,
-                              clearOpenrouterApiKey:
-                                event.target.value.trim().length > 0 ? false : draft.clearOpenrouterApiKey,
+                              ...(isOpenRouter
+                                ? {
+                                    openrouterApiKey: event.target.value,
+                                    clearOpenrouterApiKey:
+                                      event.target.value.trim().length > 0 ? false : draft.clearOpenrouterApiKey,
+                                  }
+                                : {
+                                    anthropicApiKey: event.target.value,
+                                    clearAnthropicApiKey:
+                                      event.target.value.trim().length > 0 ? false : draft.clearAnthropicApiKey,
+                                  }),
                             })
                           }
-                          placeholder={hasSavedOpenRouterKey ? "Leave blank to keep current key" : "Paste API key"}
-                          value={draft.openrouterApiKey}
+                          placeholder={hasSavedApiKey ? "Leave blank to keep current key" : "Paste API key"}
+                          value={isOpenRouter ? draft.openrouterApiKey : draft.anthropicApiKey}
                         />
-                        {hasSavedOpenRouterKey ? (
+                        {hasSavedApiKey ? (
                           <Button
                             type="button"
                             variant="outline"
@@ -1123,26 +1151,37 @@ export function ProviderProfileForm({
                             onClick={() =>
                               setDraft(card, {
                                 ...draft,
-                                openrouterApiKey: "",
-                                clearOpenrouterApiKey: !draft.clearOpenrouterApiKey,
+                                ...(isOpenRouter
+                                  ? {
+                                      openrouterApiKey: "",
+                                      clearOpenrouterApiKey: !draft.clearOpenrouterApiKey,
+                                    }
+                                  : {
+                                      anthropicApiKey: "",
+                                      clearAnthropicApiKey: !draft.clearAnthropicApiKey,
+                                    }),
                               })
                             }
                           >
-                            {draft.clearOpenrouterApiKey ? "Keep" : "Clear"}
+                            {(isOpenRouter ? draft.clearOpenrouterApiKey : draft.clearAnthropicApiKey)
+                              ? "Keep"
+                              : "Clear"}
                           </Button>
                         ) : null}
                       </div>
                       <p
                         className={cn(
                           "text-[11px]",
-                          draft.clearOpenrouterApiKey ? "text-destructive/80" : "text-muted-foreground",
+                          (isOpenRouter ? draft.clearOpenrouterApiKey : draft.clearAnthropicApiKey)
+                            ? "text-destructive/80"
+                            : "text-muted-foreground",
                         )}
                       >
-                        {draft.clearOpenrouterApiKey
+                        {(isOpenRouter ? draft.clearOpenrouterApiKey : draft.clearAnthropicApiKey)
                           ? "Saved key will be removed"
-                          : hasSavedOpenRouterKey
+                          : hasSavedApiKey
                             ? "Blank keeps the current key"
-                            : "Required for OpenRouter"}
+                            : `Required for ${card.catalog.label}`}
                       </p>
                     </div>
                   ) : null}

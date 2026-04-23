@@ -224,6 +224,7 @@ export function AgentRuntime({
     streamRunId,
     {
       selectedProviderId,
+      selectedProfileReadiness: agent.selectedProfileReadiness ?? null,
       openrouterApiKeyConfigured,
       providerMismatch,
     },

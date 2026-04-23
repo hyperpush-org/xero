@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
@@ -58,6 +58,32 @@ function makeOpenRouterProfile(overrides: Partial<ProviderProfileDto> = {}): Pro
   }
 }
 
+function makeAnthropicProfile(overrides: Partial<ProviderProfileDto> = {}): ProviderProfileDto {
+  const ready = overrides.readiness?.ready ?? false
+
+  return {
+    profileId: 'anthropic-default',
+    providerId: 'anthropic',
+    label: 'Anthropic',
+    modelId: 'claude-3-7-sonnet-latest',
+    active: false,
+    readiness: ready
+      ? {
+          ready: true,
+          status: 'ready',
+          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+        }
+      : {
+          ready: false,
+          status: 'missing',
+          credentialUpdatedAt: null,
+        },
+    migratedFromLegacy: false,
+    migratedAt: null,
+    ...overrides,
+  }
+}
+
 function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): ProviderProfilesDto {
   return {
     activeProfileId: overrides.activeProfileId ?? 'openrouter-default',
@@ -71,10 +97,20 @@ function makeProviderModelCatalog(
   profileId: string,
   overrides: Partial<ProviderModelCatalogDto> = {},
 ): ProviderModelCatalogDto {
-  const providerId = overrides.providerId ?? (profileId.startsWith('openrouter') ? 'openrouter' : 'openai_codex')
+  const providerId =
+    overrides.providerId ??
+    (profileId.startsWith('openrouter')
+      ? 'openrouter'
+      : profileId.startsWith('anthropic')
+        ? 'anthropic'
+        : 'openai_codex')
   const configuredModelId =
     overrides.configuredModelId ??
-    (providerId === 'openrouter' ? 'openai/gpt-4.1-mini' : 'openai_codex')
+    (providerId === 'openrouter'
+      ? 'openai/gpt-4.1-mini'
+      : providerId === 'anthropic'
+        ? 'claude-3-7-sonnet-latest'
+        : 'openai_codex')
 
   return {
     profileId,
@@ -107,17 +143,38 @@ function makeProviderModelCatalog(
               },
             },
           ]
-        : [
-            {
-              modelId: 'openai_codex',
-              displayName: 'OpenAI Codex',
-              thinking: {
-                supported: true,
-                effortOptions: ['low', 'medium', 'high'],
-                defaultEffort: 'medium',
+        : providerId === 'anthropic'
+          ? [
+              {
+                modelId: 'claude-3-7-sonnet-latest',
+                displayName: 'Claude 3.7 Sonnet',
+                thinking: {
+                  supported: true,
+                  effortOptions: ['low', 'medium', 'high', 'x_high'],
+                  defaultEffort: 'medium',
+                },
               },
-            },
-          ]),
+              {
+                modelId: 'claude-3-5-haiku-latest',
+                displayName: 'Claude 3.5 Haiku',
+                thinking: {
+                  supported: false,
+                  effortOptions: [],
+                  defaultEffort: null,
+                },
+              },
+            ]
+          : [
+              {
+                modelId: 'openai_codex',
+                displayName: 'OpenAI Codex',
+                thinking: {
+                  supported: true,
+                  effortOptions: ['low', 'medium', 'high'],
+                  defaultEffort: 'medium',
+                },
+              },
+            ]),
   }
 }
 
@@ -176,6 +233,19 @@ function makeProvidersStepProps(overrides: Partial<Parameters<typeof ProvidersSt
   }
 }
 
+function getProviderCard(label: string): HTMLElement {
+  const card = screen
+    .getAllByText(label)
+    .map((node) => node.closest('.rounded-lg'))
+    .find((value): value is HTMLElement => value instanceof HTMLElement)
+
+  if (!card) {
+    throw new Error(`Could not find provider card for ${label}`)
+  }
+
+  return card
+}
+
 describe('ProvidersStep', () => {
   it('renders migrated active profiles, keeps saved keys blank, and validates label/model edits', async () => {
     const onUpsertProviderProfile = vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles())
@@ -190,9 +260,9 @@ describe('ProvidersStep', () => {
 
     expect(screen.getByText('Active')).toBeVisible()
     expect(screen.getByText('Ready')).toBeVisible()
-    expect(screen.getAllByText('Unavailable')).toHaveLength(2)
+    expect(screen.getAllByText('Unavailable')).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Edit' }))
 
     const labelInput = screen.getByLabelText('Profile label') as HTMLInputElement
     const modelSelector = screen.getByLabelText('Model')
@@ -217,6 +287,122 @@ describe('ProvidersStep', () => {
         providerId: 'openrouter',
         label: 'Team OpenRouter',
         modelId: 'openrouter/anthropic/claude-3.5-sonnet',
+        activate: true,
+      }),
+    )
+  })
+
+  it('creates and clears Anthropic profiles from the onboarding provider step without special-case UI', async () => {
+    const secret = 'sk-ant-test-secret'
+
+    let providerProfiles = makeProviderProfiles({
+      activeProfileId: 'openrouter-default',
+      profiles: [makeOpenAiProfile({ active: false }), makeOpenRouterProfile({ active: true })],
+    })
+
+    const onUpsertProviderProfile = vi.fn(async (request: UpsertProviderProfileRequestDto) => {
+      const anthropicReady = typeof request.anthropicApiKey === 'string' && request.anthropicApiKey.trim().length > 0
+      providerProfiles = makeProviderProfiles({
+        activeProfileId: request.activate ? 'anthropic-default' : providerProfiles.activeProfileId,
+        profiles: [
+          makeOpenAiProfile({ active: false }),
+          makeOpenRouterProfile({ active: !request.activate }),
+          makeAnthropicProfile({
+            active: Boolean(request.activate),
+            label: request.label,
+            modelId: request.modelId,
+            readiness: anthropicReady
+              ? {
+                  ready: true,
+                  status: 'ready',
+                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                }
+              : {
+                  ready: false,
+                  status: 'missing',
+                  credentialUpdatedAt: null,
+                },
+          }),
+        ],
+      })
+
+      return providerProfiles
+    })
+
+    const { rerender } = render(
+      <ProvidersStep
+        {...makeProvidersStepProps({
+          providerProfiles,
+          onRefreshProviderProfiles: vi.fn(async () => providerProfiles),
+          onUpsertProviderProfile,
+        })}
+      />,
+    )
+
+    fireEvent.click(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Use this' }))
+
+    await waitFor(() =>
+      expect(onUpsertProviderProfile).toHaveBeenCalledWith({
+        profileId: 'anthropic-default',
+        providerId: 'anthropic',
+        label: 'Anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        activate: true,
+      }),
+    )
+
+    rerender(
+      <ProvidersStep
+        {...makeProvidersStepProps({
+          providerProfiles,
+          onRefreshProviderProfiles: vi.fn(async () => providerProfiles),
+          onUpsertProviderProfile,
+        })}
+      />,
+    )
+
+    expect(within(getProviderCard('Anthropic')).getByText('Active')).toBeVisible()
+    expect(within(getProviderCard('Anthropic')).getByText('Needs key')).toBeVisible()
+
+    fireEvent.click(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Set up' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getByText('Anthropic requires an API key.')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: secret } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(onUpsertProviderProfile).toHaveBeenCalledWith({
+        profileId: 'anthropic-default',
+        providerId: 'anthropic',
+        label: 'Anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKey: secret,
+        activate: true,
+      }),
+    )
+
+    rerender(
+      <ProvidersStep
+        {...makeProvidersStepProps({
+          providerProfiles,
+          onRefreshProviderProfiles: vi.fn(async () => providerProfiles),
+          onUpsertProviderProfile,
+        })}
+      />,
+    )
+
+    fireEvent.click(within(getProviderCard('Anthropic')).getByRole('button', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(onUpsertProviderProfile).toHaveBeenCalledWith({
+        profileId: 'anthropic-default',
+        providerId: 'anthropic',
+        label: 'Anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKey: '',
         activate: true,
       }),
     )
@@ -247,7 +433,7 @@ describe('ProvidersStep', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Use this' }))
+    fireEvent.click(within(getProviderCard('OpenRouter')).getByRole('button', { name: 'Use this' }))
     await waitFor(() => expect(onSetActiveProviderProfile).toHaveBeenCalledWith('openrouter-default'))
 
     rerender(
