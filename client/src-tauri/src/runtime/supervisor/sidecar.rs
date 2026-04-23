@@ -9,6 +9,7 @@ use std::{
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use url::Url;
 
 use crate::{
     auth::now_timestamp,
@@ -29,8 +30,9 @@ use super::{
     validate_runtime_supervisor_launch_context, write_json_line, ANTHROPIC_API_KEY_ENV,
     CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
     CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
-    CADENCE_RUNTIME_THINKING_EFFORT_ENV, PtyEventNormalizer, RuntimeSupervisorSidecarArgs,
-    SharedPtyWriter, SidecarSharedState, SupervisorEventHub, HEARTBEAT_INTERVAL,
+    CADENCE_RUNTIME_THINKING_EFFORT_ENV, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV,
+    OPENAI_BASE_URL_ENV, PtyEventNormalizer, RuntimeSupervisorSidecarArgs, SharedPtyWriter,
+    SidecarSharedState, SupervisorEventHub, HEARTBEAT_INTERVAL,
     TERMINAL_ATTACH_GRACE_PERIOD,
 };
 use crate::runtime::protocol::{
@@ -154,17 +156,73 @@ fn emit_startup_error(error: CommandError) -> Result<(), CommandError> {
 fn validate_inherited_launch_environment(
     launch_context: &RuntimeSupervisorLaunchContext,
 ) -> Result<(), CommandError> {
-    if launch_context.provider_id == crate::runtime::ANTHROPIC_PROVIDER_ID {
-        let anthropic_api_key = std::env::var(ANTHROPIC_API_KEY_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-        if anthropic_api_key.is_none() {
-            return Err(CommandError::user_fixable(
-                "anthropic_api_key_missing",
-                "Cadence cannot launch the detached Anthropic runtime because the app-local API key was not injected into the launch environment.",
-            ));
+    match launch_context.provider_id.as_str() {
+        crate::runtime::ANTHROPIC_PROVIDER_ID => {
+            let anthropic_api_key = std::env::var(ANTHROPIC_API_KEY_ENV)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty());
+            if anthropic_api_key.is_none() {
+                return Err(CommandError::user_fixable(
+                    "anthropic_api_key_missing",
+                    "Cadence cannot launch the detached Anthropic runtime because the app-local API key was not injected into the launch environment.",
+                ));
+            }
         }
+        crate::runtime::OPENAI_API_PROVIDER_ID
+        | crate::runtime::AZURE_OPENAI_PROVIDER_ID
+        | crate::runtime::GEMINI_AI_STUDIO_PROVIDER_ID => {
+            let openai_api_key = std::env::var(OPENAI_API_KEY_ENV)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty());
+            if openai_api_key.is_none() {
+                return Err(CommandError::user_fixable(
+                    match launch_context.provider_id.as_str() {
+                        crate::runtime::OPENAI_API_PROVIDER_ID => "openai_api_key_missing",
+                        crate::runtime::AZURE_OPENAI_PROVIDER_ID => "azure_openai_api_key_missing",
+                        crate::runtime::GEMINI_AI_STUDIO_PROVIDER_ID => {
+                            "gemini_ai_studio_api_key_missing"
+                        }
+                        _ => "provider_api_key_missing",
+                    },
+                    "Cadence cannot launch the detached OpenAI-compatible runtime because the app-local API key was not injected into the launch environment.",
+                ));
+            }
+
+            let openai_base_url = std::env::var(OPENAI_BASE_URL_ENV)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    CommandError::user_fixable(
+                        "openai_compatible_base_url_missing",
+                        "Cadence cannot launch the detached OpenAI-compatible runtime because the compatibility base URL was not injected into the launch environment.",
+                    )
+                })?;
+            Url::parse(&openai_base_url).map_err(|error| {
+                CommandError::user_fixable(
+                    "openai_compatible_base_url_invalid",
+                    format!(
+                        "Cadence cannot launch the detached OpenAI-compatible runtime because OPENAI_BASE_URL `{openai_base_url}` was invalid: {error}"
+                    ),
+                )
+            })?;
+
+            if launch_context.provider_id == crate::runtime::AZURE_OPENAI_PROVIDER_ID {
+                let api_version = std::env::var(OPENAI_API_VERSION_ENV)
+                    .ok()
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty());
+                if api_version.is_none() {
+                    return Err(CommandError::user_fixable(
+                        "openai_compatible_api_version_missing",
+                        "Cadence cannot launch the detached Azure OpenAI runtime because OPENAI_API_VERSION was not injected into the launch environment.",
+                    ));
+                }
+            }
+        }
+        _ => {}
     }
 
     Ok(())
@@ -180,6 +238,9 @@ fn apply_launch_context_to_child_environment(
     builder.env_remove(CADENCE_RUNTIME_MODEL_ID_ENV);
     builder.env_remove(CADENCE_RUNTIME_THINKING_EFFORT_ENV);
     builder.env_remove(ANTHROPIC_API_KEY_ENV);
+    builder.env_remove(OPENAI_API_KEY_ENV);
+    builder.env_remove(OPENAI_BASE_URL_ENV);
+    builder.env_remove(OPENAI_API_VERSION_ENV);
 
     builder.env(CADENCE_RUNTIME_PROVIDER_ID_ENV, &launch_context.provider_id);
     builder.env(CADENCE_RUNTIME_SESSION_ID_ENV, &launch_context.session_id);
@@ -199,6 +260,24 @@ fn apply_launch_context_to_child_environment(
     if launch_context.provider_id == crate::runtime::ANTHROPIC_PROVIDER_ID {
         if let Ok(api_key) = std::env::var(ANTHROPIC_API_KEY_ENV) {
             builder.env(ANTHROPIC_API_KEY_ENV, api_key);
+        }
+        return;
+    }
+
+    if matches!(
+        launch_context.provider_id.as_str(),
+        crate::runtime::OPENAI_API_PROVIDER_ID
+            | crate::runtime::AZURE_OPENAI_PROVIDER_ID
+            | crate::runtime::GEMINI_AI_STUDIO_PROVIDER_ID
+    ) {
+        if let Ok(api_key) = std::env::var(OPENAI_API_KEY_ENV) {
+            builder.env(OPENAI_API_KEY_ENV, api_key);
+        }
+        if let Ok(base_url) = std::env::var(OPENAI_BASE_URL_ENV) {
+            builder.env(OPENAI_BASE_URL_ENV, base_url);
+        }
+        if let Ok(api_version) = std::env::var(OPENAI_API_VERSION_ENV) {
+            builder.env(OPENAI_API_VERSION_ENV, api_version);
         }
     }
 }

@@ -1264,6 +1264,9 @@ function createMockAdapter(options?: {
     emitRuntimeStreamError(index: number, error: CadenceDesktopError) {
       streamSubscriptions[index]?.onError?.(error)
     },
+    setProviderProfiles(nextProviderProfiles: ProviderProfilesDto) {
+      currentProviderProfiles.value = nextProviderProfiles
+    },
   }
 }
 
@@ -3374,6 +3377,90 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2')
     expect(screen.getByTestId('provider-model-catalog-active-source')).toHaveTextContent('live')
     expect(setup.getProviderModelCatalog).toHaveBeenLastCalledWith('openrouter-default', { forceRefresh: true })
+  })
+
+  it('force-refreshes the active provider-model catalog when endpoint metadata changes', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'openai-custom',
+        profiles: [
+          {
+            profileId: 'openai-custom',
+            providerId: 'openai_api',
+            label: 'OpenAI-compatible Custom',
+            modelId: 'gpt-4.1-mini',
+            presetId: null,
+            baseUrl: 'https://example-one.invalid/v1',
+            apiVersion: '2025-02-01',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      providerModelCatalogs: {
+        'openai-custom': makeProviderModelCatalog('openai-custom', {
+          providerId: 'openai_api',
+          configuredModelId: 'gpt-4.1-mini',
+          models: [
+            {
+              modelId: 'gpt-4.1-mini',
+              displayName: 'GPT-4.1 Mini',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openai-custom'))
+    expect(setup.getProviderModelCatalog).toHaveBeenCalledWith('openai-custom', { forceRefresh: false })
+
+    act(() => {
+      setup.setProviderProfiles(
+        makeProviderProfiles({
+          activeProfileId: 'openai-custom',
+          profiles: [
+            {
+              profileId: 'openai-custom',
+              providerId: 'openai_api',
+              label: 'OpenAI-compatible Custom',
+              modelId: 'gpt-4.1-mini',
+              presetId: null,
+              baseUrl: 'https://example-two.invalid/v1',
+              apiVersion: '2026-03-01',
+              active: true,
+              readiness: {
+                ready: true,
+                status: 'ready',
+                credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              },
+              migratedFromLegacy: false,
+              migratedAt: null,
+            },
+          ],
+        }),
+      )
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load provider profiles' }))
+
+    await waitFor(() =>
+      expect(setup.getProviderModelCatalog).toHaveBeenLastCalledWith('openai-custom', { forceRefresh: true }),
+    )
+    expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('openai-custom')
   })
 
   it('keeps the newly active provider-model catalog truthful when an older refresh resolves later', async () => {

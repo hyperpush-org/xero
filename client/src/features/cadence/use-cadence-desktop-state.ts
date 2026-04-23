@@ -261,6 +261,9 @@ function getProviderModelCatalogDependencyKey(
   return [
     profile.providerId,
     profile.modelId,
+    profile.presetId ?? 'none',
+    profile.baseUrl ?? 'none',
+    profile.apiVersion ?? 'none',
     profile.readiness.status,
     profile.readiness.ready ? 'ready' : 'not_ready',
     profile.readiness.credentialUpdatedAt ?? 'none',

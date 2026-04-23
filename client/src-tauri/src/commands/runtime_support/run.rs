@@ -4,6 +4,10 @@ use rand::RngCore;
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::{
+    auth::openai_compatible::{
+        missing_openai_compatible_api_key_error, resolve_openai_compatible_endpoint_for_profile,
+        resolve_openai_compatible_launch_env,
+    },
     commands::{
         get_runtime_session::reconcile_runtime_session,
         get_runtime_settings::runtime_settings_file_from_request,
@@ -28,11 +32,15 @@ use crate::{
         launch_detached_runtime_supervisor, probe_runtime_run, resolve_runtime_shell_selection,
         RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv,
         RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest, ANTHROPIC_PROVIDER_ID,
+        AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
     },
     state::DesktopState,
 };
 
-use super::{project::resolve_project_root, session::load_runtime_session_status};
+use super::{
+    project::resolve_project_root,
+    session::{command_error_from_auth, load_runtime_session_status},
+};
 
 pub(crate) const DEFAULT_RUNTIME_RUN_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT: Duration = Duration::from_millis(750);
@@ -420,6 +428,53 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
                     ),
                 ));
             }
+        }
+    } else if matches!(
+        runtime.provider_id.as_str(),
+        OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID
+    ) {
+        let readiness = active_profile.readiness(&provider_profiles.credentials);
+        let api_key = match readiness.status {
+            ProviderProfileReadinessStatus::Ready => provider_profiles
+                .matched_api_key_credential_for_profile(&active_profile.profile_id)
+                .ok_or_else(|| {
+                    CommandError::user_fixable(
+                        "provider_profile_credentials_unavailable",
+                        format!(
+                            "Cadence cannot launch the detached {} runtime because provider profile `{}` no longer matches the saved app-local secret state.",
+                            runtime.provider_id, active_profile.profile_id
+                        ),
+                    )
+                })?
+                .api_key
+                .clone(),
+            ProviderProfileReadinessStatus::Missing => {
+                return Err(command_error_from_auth(
+                    missing_openai_compatible_api_key_error(runtime.provider_id.as_str(), "launch"),
+                ));
+            }
+            ProviderProfileReadinessStatus::Malformed => {
+                return Err(CommandError::user_fixable(
+                    "provider_profile_credentials_unavailable",
+                    format!(
+                        "Cadence cannot launch the detached {} runtime because provider profile `{}` no longer matches the saved app-local secret state.",
+                        runtime.provider_id, active_profile.profile_id
+                    ),
+                ));
+            }
+        };
+
+        let endpoint = resolve_openai_compatible_endpoint_for_profile(
+            active_profile,
+            &state.openai_compatible_auth_config(),
+        )
+        .map_err(command_error_from_auth)?;
+        let env =
+            resolve_openai_compatible_launch_env(&api_key, &endpoint).map_err(command_error_from_auth)?;
+        launch_env.insert("OPENAI_API_KEY", env.api_key);
+        launch_env.insert("OPENAI_BASE_URL", env.base_url);
+        if let Some(api_version) = env.api_version {
+            launch_env.insert("OPENAI_API_VERSION", api_version);
         }
     }
 

@@ -13,6 +13,12 @@ use crate::{
         anthropic::{
             fetch_anthropic_models, AnthropicDiscoveredModel, AnthropicDiscoveredThinkingEffort,
         },
+        openai_compatible::{
+            fetch_openai_compatible_models, missing_openai_compatible_api_key_error,
+            resolve_openai_compatible_endpoint_for_profile,
+            OpenAiCompatibleDiscoveredModel, OpenAiCompatibleDiscoveredThinkingEffort,
+            OpenAiCompatibleModelListStrategy, ResolvedOpenAiCompatibleEndpoint,
+        },
         openrouter::{fetch_openrouter_models, OpenRouterDiscoveredModel},
     },
     commands::{
@@ -22,7 +28,10 @@ use crate::{
     provider_profiles::{
         ProviderProfileReadinessStatus, ProviderProfileRecord, ProviderProfilesSnapshot,
     },
-    runtime::{ANTHROPIC_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID},
+    runtime::{
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+    },
     state::DesktopState,
 };
 
@@ -36,6 +45,7 @@ const PROVIDER_MODEL_CACHE_OPERATION: &str = "provider_model_catalog_cache";
 pub enum ProviderModelCatalogSource {
     Live,
     Cache,
+    Manual,
     Unavailable,
 }
 
@@ -108,10 +118,27 @@ struct ProviderModelCatalogRefreshState {
     result: Option<ProviderModelCatalog>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CachedProviderModelCatalogScope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    configured_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effective_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_list_strategy: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CachedProviderModelCatalogRow {
     provider_id: String,
+    #[serde(default)]
+    scope: CachedProviderModelCatalogScope,
     fetched_at: String,
     last_success_at: String,
     models: Vec<ProviderModelRecord>,
@@ -141,6 +168,32 @@ struct ProviderModelCatalogCacheLoad {
     write_allowed: bool,
     file_error: Option<ProviderModelCatalogDiagnostic>,
     row_errors: BTreeMap<String, ProviderModelCatalogDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+enum ProviderModelCatalogRefreshTarget {
+    OpenAiCodex,
+    OpenRouter,
+    Anthropic,
+    OpenAiCompatible(ResolvedOpenAiCompatibleEndpoint),
+}
+
+impl ProviderModelCatalogRefreshTarget {
+    fn cache_scope(&self, profile: &ProviderProfileRecord) -> CachedProviderModelCatalogScope {
+        match self {
+            Self::OpenAiCompatible(endpoint) => CachedProviderModelCatalogScope {
+                preset_id: endpoint.preset_id.clone(),
+                configured_base_url: normalized_optional_string(profile.base_url.as_deref()),
+                effective_base_url: Some(endpoint.effective_base_url.clone()),
+                api_version: endpoint.api_version.clone(),
+                model_list_strategy: Some(match endpoint.model_list_strategy {
+                    OpenAiCompatibleModelListStrategy::Live => "live".into(),
+                    OpenAiCompatibleModelListStrategy::Manual => "manual".into(),
+                }),
+            },
+            _ => CachedProviderModelCatalogScope::default(),
+        }
+    }
 }
 
 impl ProviderModelCatalogRefreshRegistry {
@@ -198,10 +251,11 @@ impl ProviderModelCatalogCacheLoad {
     fn requested_cache_row(
         &self,
         profile: &ProviderProfileRecord,
+        expected_scope: &CachedProviderModelCatalogScope,
     ) -> Option<CachedProviderModelCatalogRow> {
         self.catalogs
             .get(&profile.profile_id)
-            .filter(|row| row.provider_id == profile.provider_id)
+            .filter(|row| row.provider_id == profile.provider_id && row.scope == *expected_scope)
             .cloned()
     }
 
@@ -237,13 +291,16 @@ pub fn load_provider_model_catalog<R: Runtime>(
 
     let cache_path = state.provider_model_catalog_cache_file(app)?;
     let cache_load = load_provider_model_catalog_cache(&cache_path);
-    let cached_row = cache_load.requested_cache_row(&profile);
+    let refresh_target = resolve_provider_model_catalog_refresh_target(&profile, state)
+        .map_err(diagnostic_into_command_error)?;
+    let expected_scope = refresh_target.cache_scope(&profile);
+    let cached_row = cache_load.requested_cache_row(&profile, &expected_scope);
     let profile_diagnostic = readiness_diagnostic(&profile, &provider_profiles);
 
     if let Some(diagnostic) = profile_diagnostic.clone() {
         return Ok(match cached_row.as_ref() {
             Some(cached) => catalog_from_cached_row(&profile, cached, Some(diagnostic)),
-            None => unavailable_catalog(&profile, Some(diagnostic)),
+            None => unavailable_or_manual_catalog(&profile, &refresh_target, Some(diagnostic)),
         });
     }
 
@@ -271,7 +328,13 @@ pub fn load_provider_model_catalog<R: Runtime>(
     Ok(state
         .provider_model_catalog_refresh_registry()
         .run(profile_id, move || {
-            refresh_provider_model_catalog(&profile, &provider_profiles, state, &refresh_context)
+            refresh_provider_model_catalog(
+                &profile,
+                &provider_profiles,
+                state,
+                &refresh_context,
+                &refresh_target,
+            )
         }))
 }
 
@@ -280,15 +343,16 @@ fn refresh_provider_model_catalog(
     provider_profiles: &ProviderProfilesSnapshot,
     state: &DesktopState,
     refresh_context: &ProviderModelCatalogRefreshContext,
+    refresh_target: &ProviderModelCatalogRefreshTarget,
 ) -> ProviderModelCatalog {
-    let live_models = match profile.provider_id.as_str() {
-        OPENAI_CODEX_PROVIDER_ID => Ok(openai_codex_projection()),
-        OPENROUTER_PROVIDER_ID => {
+    let live_models = match refresh_target {
+        ProviderModelCatalogRefreshTarget::OpenAiCodex => Ok(openai_codex_projection()),
+        ProviderModelCatalogRefreshTarget::OpenRouter => {
             let Some(secret) = provider_profiles.openrouter_credential(&profile.profile_id) else {
                 let diagnostic = missing_openrouter_credential_diagnostic(profile);
                 return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
-                    None => unavailable_catalog(profile, Some(diagnostic)),
+                    None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
                 };
             };
 
@@ -296,12 +360,12 @@ fn refresh_provider_model_catalog(
                 .map(normalize_openrouter_models)
                 .map_err(diagnostic_from_auth_error)
         }
-        ANTHROPIC_PROVIDER_ID => {
+        ProviderModelCatalogRefreshTarget::Anthropic => {
             let Some(secret) = provider_profiles.anthropic_credential(&profile.profile_id) else {
                 let diagnostic = missing_anthropic_credential_diagnostic(profile);
                 return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
-                    None => unavailable_catalog(profile, Some(diagnostic)),
+                    None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
                 };
             };
 
@@ -309,20 +373,50 @@ fn refresh_provider_model_catalog(
                 .map(normalize_anthropic_models)
                 .map_err(diagnostic_from_auth_error)
         }
-        other => Err(ProviderModelCatalogDiagnostic {
-            code: "provider_model_provider_unsupported".into(),
-            message: format!(
-                "Cadence cannot discover models for provider `{other}` because that provider is not supported by the desktop host yet."
-            ),
-            retryable: false,
-        }),
+        ProviderModelCatalogRefreshTarget::OpenAiCompatible(endpoint) => {
+            let Some(secret) = provider_profiles.matched_api_key_credential_for_profile(&profile.profile_id) else {
+                let diagnostic = diagnostic_from_auth_error(missing_openai_compatible_api_key_error(
+                    profile.provider_id.as_str(),
+                    "discover",
+                ));
+                return match refresh_context.cached_row.as_ref() {
+                    Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
+                    None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
+                };
+            };
+
+            match endpoint.model_list_strategy {
+                OpenAiCompatibleModelListStrategy::Live => {
+                    fetch_openai_compatible_models(
+                        &secret.api_key,
+                        endpoint,
+                        &state.openai_compatible_auth_config(),
+                    )
+                    .map(normalize_openai_compatible_models)
+                    .map_err(diagnostic_from_auth_error)
+                }
+                OpenAiCompatibleModelListStrategy::Manual => Ok(manual_openai_compatible_projection(profile)),
+            }
+        }
     };
 
     match live_models {
         Ok(models) => {
             let now = crate::auth::now_timestamp();
+            let source = if matches!(
+                refresh_target,
+                ProviderModelCatalogRefreshTarget::OpenAiCompatible(ResolvedOpenAiCompatibleEndpoint {
+                    model_list_strategy: OpenAiCompatibleModelListStrategy::Manual,
+                    ..
+                })
+            ) {
+                ProviderModelCatalogSource::Manual
+            } else {
+                ProviderModelCatalogSource::Live
+            };
             let new_row = CachedProviderModelCatalogRow {
                 provider_id: profile.provider_id.clone(),
+                scope: refresh_target.cache_scope(profile),
                 fetched_at: now.clone(),
                 last_success_at: now.clone(),
                 models: models.clone(),
@@ -332,14 +426,14 @@ fn refresh_provider_model_catalog(
                 profile_id: profile.profile_id.clone(),
                 provider_id: profile.provider_id.clone(),
                 configured_model_id: profile.model_id.clone(),
-                source: ProviderModelCatalogSource::Live,
+                source: source.clone(),
                 fetched_at: Some(now.clone()),
                 last_success_at: Some(now),
                 last_refresh_error: refresh_context.cache_read_diagnostic.clone(),
                 models,
             };
 
-            if !refresh_context.cache_write_allowed {
+            if source == ProviderModelCatalogSource::Manual || !refresh_context.cache_write_allowed {
                 return catalog;
             }
 
@@ -363,7 +457,7 @@ fn refresh_provider_model_catalog(
         }
         Err(diagnostic) => match refresh_context.cached_row.as_ref() {
             Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
-            None => unavailable_catalog(profile, Some(diagnostic)),
+            None => unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic)),
         },
     }
 }
@@ -418,6 +512,79 @@ fn normalize_anthropic_models(models: Vec<AnthropicDiscoveredModel>) -> Vec<Prov
             .then(left.model_id.cmp(&right.model_id))
     });
     normalized
+}
+
+fn normalize_openai_compatible_models(
+    models: Vec<OpenAiCompatibleDiscoveredModel>,
+) -> Vec<ProviderModelRecord> {
+    let mut normalized = models
+        .into_iter()
+        .map(|model| ProviderModelRecord {
+            model_id: model.id,
+            display_name: model.display_name,
+            thinking: openai_compatible_thinking_capability(&model),
+        })
+        .collect::<Vec<_>>();
+
+    normalized.sort_by(|left, right| {
+        left.display_name
+            .cmp(&right.display_name)
+            .then(left.model_id.cmp(&right.model_id))
+    });
+    normalized
+}
+
+fn manual_openai_compatible_projection(profile: &ProviderProfileRecord) -> Vec<ProviderModelRecord> {
+    vec![ProviderModelRecord {
+        model_id: profile.model_id.clone(),
+        display_name: profile.model_id.clone(),
+        thinking: unsupported_thinking_capability(),
+    }]
+}
+
+fn openai_compatible_thinking_capability(
+    model: &OpenAiCompatibleDiscoveredModel,
+) -> ProviderModelThinkingCapability {
+    if !model.thinking.supported {
+        return unsupported_thinking_capability();
+    }
+
+    ProviderModelThinkingCapability {
+        supported: true,
+        effort_options: model
+            .thinking
+            .effort_levels
+            .iter()
+            .map(|effort| match effort {
+                OpenAiCompatibleDiscoveredThinkingEffort::Minimal => {
+                    ProviderModelThinkingEffort::Minimal
+                }
+                OpenAiCompatibleDiscoveredThinkingEffort::Low => ProviderModelThinkingEffort::Low,
+                OpenAiCompatibleDiscoveredThinkingEffort::Medium => {
+                    ProviderModelThinkingEffort::Medium
+                }
+                OpenAiCompatibleDiscoveredThinkingEffort::High => {
+                    ProviderModelThinkingEffort::High
+                }
+                OpenAiCompatibleDiscoveredThinkingEffort::XHigh => {
+                    ProviderModelThinkingEffort::XHigh
+                }
+            })
+            .collect(),
+        default_effort: model.thinking.default_effort.map(|effort| match effort {
+            OpenAiCompatibleDiscoveredThinkingEffort::Minimal => {
+                ProviderModelThinkingEffort::Minimal
+            }
+            OpenAiCompatibleDiscoveredThinkingEffort::Low => ProviderModelThinkingEffort::Low,
+            OpenAiCompatibleDiscoveredThinkingEffort::Medium => {
+                ProviderModelThinkingEffort::Medium
+            }
+            OpenAiCompatibleDiscoveredThinkingEffort::High => ProviderModelThinkingEffort::High,
+            OpenAiCompatibleDiscoveredThinkingEffort::XHigh => {
+                ProviderModelThinkingEffort::XHigh
+            }
+        }),
+    }
 }
 
 fn anthropic_thinking_capability(
@@ -508,6 +675,29 @@ fn catalog_from_cached_row(
     }
 }
 
+fn unavailable_or_manual_catalog(
+    profile: &ProviderProfileRecord,
+    refresh_target: &ProviderModelCatalogRefreshTarget,
+    diagnostic: Option<ProviderModelCatalogDiagnostic>,
+) -> ProviderModelCatalog {
+    match refresh_target {
+        ProviderModelCatalogRefreshTarget::OpenAiCompatible(ResolvedOpenAiCompatibleEndpoint {
+            model_list_strategy: OpenAiCompatibleModelListStrategy::Manual,
+            ..
+        }) => ProviderModelCatalog {
+            profile_id: profile.profile_id.clone(),
+            provider_id: profile.provider_id.clone(),
+            configured_model_id: profile.model_id.clone(),
+            source: ProviderModelCatalogSource::Manual,
+            fetched_at: Some(profile.updated_at.clone()),
+            last_success_at: Some(profile.updated_at.clone()),
+            last_refresh_error: diagnostic,
+            models: manual_openai_compatible_projection(profile),
+        },
+        _ => unavailable_catalog(profile, diagnostic),
+    }
+}
+
 fn unavailable_catalog(
     profile: &ProviderProfileRecord,
     diagnostic: Option<ProviderModelCatalogDiagnostic>,
@@ -524,11 +714,39 @@ fn unavailable_catalog(
     }
 }
 
+fn resolve_provider_model_catalog_refresh_target(
+    profile: &ProviderProfileRecord,
+    state: &DesktopState,
+) -> Result<ProviderModelCatalogRefreshTarget, ProviderModelCatalogDiagnostic> {
+    match profile.provider_id.as_str() {
+        OPENAI_CODEX_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::OpenAiCodex),
+        OPENROUTER_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::OpenRouter),
+        ANTHROPIC_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::Anthropic),
+        OPENAI_API_PROVIDER_ID | AZURE_OPENAI_PROVIDER_ID | GEMINI_AI_STUDIO_PROVIDER_ID => {
+            resolve_openai_compatible_endpoint_for_profile(
+                profile,
+                &state.openai_compatible_auth_config(),
+            )
+            .map(ProviderModelCatalogRefreshTarget::OpenAiCompatible)
+            .map_err(diagnostic_from_auth_error)
+        }
+        other => Err(ProviderModelCatalogDiagnostic {
+            code: "provider_model_provider_unsupported".into(),
+            message: format!(
+                "Cadence cannot discover models for provider `{other}` because that provider is not supported by the desktop host yet."
+            ),
+            retryable: false,
+        }),
+    }
+}
+
 fn materially_changed(
     current: &CachedProviderModelCatalogRow,
     next: &CachedProviderModelCatalogRow,
 ) -> bool {
-    current.provider_id != next.provider_id || current.models != next.models
+    current.provider_id != next.provider_id
+        || current.scope != next.scope
+        || current.models != next.models
 }
 
 fn persist_provider_model_catalog_cache(

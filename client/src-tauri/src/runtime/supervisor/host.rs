@@ -36,7 +36,8 @@ use super::{
     runtime_supervisor_thinking_effort_env_value, validate_runtime_supervisor_launch_context,
     ANTHROPIC_API_KEY_ENV, CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
     CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
-    CADENCE_RUNTIME_THINKING_EFFORT_ENV, RuntimeSupervisorLaunchEnv,
+    CADENCE_RUNTIME_THINKING_EFFORT_ENV, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV,
+    OPENAI_BASE_URL_ENV, RuntimeSupervisorLaunchEnv,
     read_json_line_from_reader, write_json_line, DEFAULT_CONTROL_TIMEOUT,
     DEFAULT_STARTUP_TIMEOUT, DEFAULT_STOP_TIMEOUT,
 };
@@ -1042,7 +1043,10 @@ fn apply_sidecar_launch_environment(
         .env_remove(CADENCE_RUNTIME_FLOW_ID_ENV)
         .env_remove(CADENCE_RUNTIME_MODEL_ID_ENV)
         .env_remove(CADENCE_RUNTIME_THINKING_EFFORT_ENV)
-        .env_remove(ANTHROPIC_API_KEY_ENV);
+        .env_remove(ANTHROPIC_API_KEY_ENV)
+        .env_remove(OPENAI_API_KEY_ENV)
+        .env_remove(OPENAI_BASE_URL_ENV)
+        .env_remove(OPENAI_API_VERSION_ENV);
 
     sidecar.env(CADENCE_RUNTIME_PROVIDER_ID_ENV, &launch_context.provider_id);
     sidecar.env(CADENCE_RUNTIME_SESSION_ID_ENV, &launch_context.session_id);

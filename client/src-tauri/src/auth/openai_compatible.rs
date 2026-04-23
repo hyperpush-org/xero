@@ -95,7 +95,7 @@ impl ResolvedOpenAiCompatibleEndpoint {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenAiCompatibleDiscoveredThinkingEffort {
     Minimal,
     Low,
@@ -218,10 +218,9 @@ pub(crate) fn resolve_openai_compatible_launch_env(
 ) -> Result<OpenAiCompatibleLaunchEnv, AuthFlowError> {
     let api_key = api_key.trim();
     if api_key.is_empty() {
-        return Err(AuthFlowError::terminal(
-            missing_api_key_code(endpoint.provider_id.as_str()),
-            RuntimeAuthPhase::Failed,
-            missing_api_key_message(endpoint.provider_id.as_str(), "launch"),
+        return Err(missing_openai_compatible_api_key_error(
+            endpoint.provider_id.as_str(),
+            "prepare",
         ));
     }
 
@@ -241,6 +240,17 @@ pub(crate) fn resolve_openai_compatible_launch_env(
         base_url,
         api_version: endpoint.api_version.clone(),
     })
+}
+
+pub(crate) fn missing_openai_compatible_api_key_error(
+    provider_id: &str,
+    operation: &str,
+) -> AuthFlowError {
+    AuthFlowError::terminal(
+        missing_api_key_code(provider_id),
+        RuntimeAuthPhase::Failed,
+        missing_api_key_message(provider_id, operation),
+    )
 }
 
 pub(crate) fn bind_openai_compatible_runtime_session(

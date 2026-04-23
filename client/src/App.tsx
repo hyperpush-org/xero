@@ -402,6 +402,10 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       gamesOpen={gamesOpen}
       onToggleBrowser={toggleBrowser}
       browserOpen={browserOpen}
+      onToggleIos={toggleIos}
+      iosOpen={iosOpen}
+      onToggleAndroid={toggleAndroid}
+      androidOpen={androidOpen}
       sidebarCollapsed={sidebarCollapsed}
       onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
       platformOverride={platformOverride}

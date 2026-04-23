@@ -44,6 +44,9 @@ pub(crate) const CADENCE_RUNTIME_FLOW_ID_ENV: &str = "CADENCE_RUNTIME_FLOW_ID";
 pub(crate) const CADENCE_RUNTIME_MODEL_ID_ENV: &str = "CADENCE_RUNTIME_MODEL_ID";
 pub(crate) const CADENCE_RUNTIME_THINKING_EFFORT_ENV: &str = "CADENCE_RUNTIME_THINKING_EFFORT";
 pub(crate) const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+pub(crate) const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+pub(crate) const OPENAI_BASE_URL_ENV: &str = "OPENAI_BASE_URL";
+pub(crate) const OPENAI_API_VERSION_ENV: &str = "OPENAI_API_VERSION";
 
 mod boundary;
 mod control;

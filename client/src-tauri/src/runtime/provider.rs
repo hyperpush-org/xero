@@ -2,13 +2,16 @@ use tauri::{AppHandle, Runtime};
 
 use crate::{
     auth::{
-        bind_anthropic_runtime_session, bind_openrouter_runtime_session,
-        load_latest_openai_codex_session, load_openai_codex_session_for_profile_link,
-        reconcile_anthropic_runtime_session, reconcile_openrouter_runtime_session,
+        bind_anthropic_runtime_session, bind_openai_compatible_runtime_session,
+        bind_openrouter_runtime_session, load_latest_openai_codex_session,
+        load_openai_codex_session_for_profile_link, reconcile_anthropic_runtime_session,
+        reconcile_openai_compatible_runtime_session, reconcile_openrouter_runtime_session,
         refresh_provider_auth_session, remove_openai_codex_session, sync_openai_profile_link,
         AnthropicBindOutcome, AnthropicReconcileOutcome, AnthropicRuntimeSessionBinding,
-        AuthDiagnostic, AuthFlowError, OpenRouterBindOutcome, OpenRouterReconcileOutcome,
-        OpenRouterRuntimeSessionBinding, RuntimeAuthSession,
+        AuthDiagnostic, AuthFlowError, OpenAiCompatibleBindOutcome,
+        OpenAiCompatibleReconcileOutcome, OpenAiCompatibleRuntimeSessionBinding,
+        OpenRouterBindOutcome, OpenRouterReconcileOutcome, OpenRouterRuntimeSessionBinding,
+        RuntimeAuthSession,
     },
     commands::{get_runtime_settings::RuntimeSettingsSnapshot, RuntimeAuthPhase},
     provider_profiles::{ProviderProfileCredentialLink, ProviderProfilesSnapshot},
@@ -261,10 +264,31 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
         }
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
-        | RuntimeProvider::GeminiAiStudio => Err(unavailable_cloud_provider_binding_error(
-            provider,
-            "bind",
-        )),
+        | RuntimeProvider::GeminiAiStudio => {
+            let settings = settings.ok_or_else(|| {
+                AuthFlowError::terminal(
+                    "runtime_settings_missing",
+                    RuntimeAuthPhase::Failed,
+                    format!(
+                        "Cadence could not bind the selected {} runtime because the app-global runtime settings snapshot was missing.",
+                        provider.provider_id
+                    ),
+                )
+            })?;
+
+            match bind_openai_compatible_runtime_session(
+                provider,
+                settings,
+                &state.openai_compatible_auth_config(),
+            )? {
+                OpenAiCompatibleBindOutcome::Ready(binding) => {
+                    Ok(RuntimeProviderBindOutcome::Ready(binding.into()))
+                }
+                OpenAiCompatibleBindOutcome::SignedOut(diagnostic) => {
+                    Ok(RuntimeProviderBindOutcome::SignedOut(diagnostic))
+                }
+            }
+        }
     }
 }
 
@@ -327,10 +351,33 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
         }
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::AzureOpenAi
-        | RuntimeProvider::GeminiAiStudio => Err(unavailable_cloud_provider_binding_error(
-            provider,
-            "reconcile",
-        )),
+        | RuntimeProvider::GeminiAiStudio => {
+            let settings = settings.ok_or_else(|| {
+                AuthFlowError::terminal(
+                    "runtime_settings_missing",
+                    RuntimeAuthPhase::Failed,
+                    format!(
+                        "Cadence could not reconcile the selected {} runtime because the app-global runtime settings snapshot was missing.",
+                        provider.provider_id
+                    ),
+                )
+            })?;
+
+            match reconcile_openai_compatible_runtime_session(
+                provider,
+                account_id,
+                session_id,
+                settings,
+                &state.openai_compatible_auth_config(),
+            )? {
+                OpenAiCompatibleReconcileOutcome::Authenticated(binding) => Ok(
+                    RuntimeProviderReconcileOutcome::Authenticated(binding.into()),
+                ),
+                OpenAiCompatibleReconcileOutcome::SignedOut(diagnostic) => {
+                    Ok(RuntimeProviderReconcileOutcome::SignedOut(diagnostic))
+                }
+            }
+        }
     }
 }
 
@@ -368,20 +415,6 @@ pub fn logout_provider_runtime_session<R: Runtime>(
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GeminiAiStudio => Ok(()),
     }
-}
-
-fn unavailable_cloud_provider_binding_error(
-    provider: ResolvedRuntimeProvider,
-    operation: &str,
-) -> AuthFlowError {
-    AuthFlowError::terminal(
-        "runtime_provider_unavailable",
-        RuntimeAuthPhase::Failed,
-        format!(
-            "Cadence cannot {operation} runtime provider `{}` until provider-profile cloud bindings are available for its shared transport family `{}`.",
-            provider.provider_id, provider.runtime_kind
-        ),
-    )
 }
 
 fn bind_openai_codex_runtime_session<R: Runtime>(
@@ -652,6 +685,23 @@ fn current_unix_timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock should be after unix epoch")
         .as_secs() as i64
+}
+
+impl From<OpenAiCompatibleRuntimeSessionBinding> for RuntimeProviderSessionBinding {
+    fn from(binding: OpenAiCompatibleRuntimeSessionBinding) -> Self {
+        let provider = resolve_runtime_provider_identity(
+            Some(binding.provider_id.as_str()),
+            Some(binding.provider_id.as_str()),
+        )
+        .expect("openai-compatible binding provider id should resolve");
+
+        Self {
+            provider,
+            session_id: binding.session_id,
+            account_id: binding.account_id,
+            updated_at: binding.updated_at,
+        }
+    }
 }
 
 impl From<OpenRouterRuntimeSessionBinding> for RuntimeProviderSessionBinding {

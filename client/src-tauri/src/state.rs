@@ -4,8 +4,8 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{
     auth::{
-        ActiveAuthFlowRegistry, AnthropicAuthConfig, AuthFlowError, OpenAiCodexAuthConfig,
-        OpenRouterAuthConfig,
+        ActiveAuthFlowRegistry, AnthropicAuthConfig, AuthFlowError,
+        OpenAiCompatibleAuthConfig, OpenAiCodexAuthConfig, OpenRouterAuthConfig,
     },
     commands::CommandError,
     notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
@@ -51,6 +51,7 @@ pub struct DesktopState {
     autonomous_skill_cache_dir_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
     openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
+    openai_compatible_auth_config_override: Option<OpenAiCompatibleAuthConfig>,
     openrouter_auth_config_override: Option<OpenRouterAuthConfig>,
     anthropic_auth_config_override: Option<AnthropicAuthConfig>,
     autonomous_web_config_override: Option<AutonomousWebConfig>,
@@ -118,6 +119,14 @@ impl DesktopState {
         self
     }
 
+    pub fn with_openai_compatible_auth_config_override(
+        mut self,
+        config: OpenAiCompatibleAuthConfig,
+    ) -> Self {
+        self.openai_compatible_auth_config_override = Some(config);
+        self
+    }
+
     pub fn with_openrouter_auth_config_override(mut self, config: OpenRouterAuthConfig) -> Self {
         self.openrouter_auth_config_override = Some(config);
         self
@@ -171,6 +180,12 @@ impl DesktopState {
         self.openai_auth_config_override
             .clone()
             .unwrap_or_else(OpenAiCodexAuthConfig::for_platform)
+    }
+
+    pub fn openai_compatible_auth_config(&self) -> OpenAiCompatibleAuthConfig {
+        self.openai_compatible_auth_config_override
+            .clone()
+            .unwrap_or_else(OpenAiCompatibleAuthConfig::for_platform)
     }
 
     pub fn openrouter_auth_config(&self) -> OpenRouterAuthConfig {

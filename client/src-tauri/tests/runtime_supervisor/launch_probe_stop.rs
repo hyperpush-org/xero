@@ -493,6 +493,48 @@ pub(crate) fn detached_supervisor_launches_openai_compatible_child_with_context_
     assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }
 
+pub(crate) fn detached_supervisor_rejects_openai_compatible_launch_without_api_key_env() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-openai-missing-key";
+    let repo_root = seed_project(&root, project_id, "repo-openai-missing-key", "repo");
+    let state = DesktopState::default();
+
+    let error = launch_detached_runtime_supervisor(
+        &state,
+        openai_compatible_launch_request(
+            project_id,
+            &repo_root,
+            "run-openai-missing-key",
+            "openai_api",
+            "openai_compatible",
+            "gpt-4.1-mini",
+            Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+            None,
+            Some("https://api.openai.com/v1"),
+            None,
+            &runtime_shell::script_sleep(5),
+        ),
+    )
+    .expect_err("openai-compatible detached launch should require api key env");
+    assert_eq!(error.code, "openai_api_key_missing");
+
+    let snapshot = project_store::load_runtime_run(&repo_root, project_id)
+        .expect("load failed openai-compatible runtime run")
+        .expect("failed openai-compatible runtime run should persist");
+    assert_eq!(snapshot.run.status, project_store::RuntimeRunStatus::Failed);
+    assert_eq!(snapshot.run.transport.endpoint, "launch-pending");
+    assert!(snapshot.run.last_heartbeat_at.is_none());
+    assert_eq!(
+        snapshot
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("openai_api_key_missing")
+    );
+}
+
 pub(crate) fn detached_supervisor_rejects_openai_compatible_launch_without_base_url_env() {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
