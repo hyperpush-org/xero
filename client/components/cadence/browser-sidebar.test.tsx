@@ -110,7 +110,7 @@ describe("BrowserSidebar", () => {
     })
   })
 
-  it("enables back and forward buttons after a url_changed event reports history state", async () => {
+  it("enables back and forward buttons whenever a tab is active and dispatches the right command", async () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
@@ -136,27 +136,58 @@ describe("BrowserSidebar", () => {
 
     render(<BrowserSidebar open />)
 
-    // Wait for hydration so the event subscription picks up activeTabId = tab-1.
+    // Wait for hydration so activeTab is set; once it is, both buttons should be
+    // clickable (the webview safely no-ops at history endpoints).
     const input = (await screen.findByLabelText("Address")) as HTMLInputElement
     await waitFor(() => expect(input.value).toBe("https://example.com/"))
-
-    await act(async () => {
-      emitEvent("browser:url_changed", {
-        tabId: "tab-1",
-        url: "https://example.com/docs",
-        title: "Docs",
-        canGoBack: true,
-        canGoForward: false,
-      })
-    })
 
     const back = await screen.findByLabelText("Back")
     const forward = await screen.findByLabelText("Forward")
     await waitFor(() => expect(back).not.toBeDisabled())
-    expect(forward).toBeDisabled()
+    await waitFor(() => expect(forward).not.toBeDisabled())
 
     fireEvent.click(back)
     await waitFor(() => expect(invoked).toContain("back"))
+    fireEvent.click(forward)
+    await waitFor(() => expect(invoked).toContain("forward"))
+  })
+
+  it("disables back and forward when no tab is active", async () => {
+    registerInvoke("browser_tab_list", async () => [])
+    render(<BrowserSidebar open />)
+    const back = await screen.findByLabelText("Back")
+    const forward = await screen.findByLabelText("Forward")
+    expect(back).toBeDisabled()
+    expect(forward).toBeDisabled()
+  })
+
+  it("applies the resize handle inset to browser_show so the handle stays clickable", async () => {
+    registerInvoke("browser_tab_list", async () => [])
+    let recordedArgs: Record<string, unknown> | null = null
+    registerInvoke("browser_show", async (args) => {
+      recordedArgs = (args as Record<string, unknown>) ?? null
+      return {
+        id: "tab-1",
+        label: "cadence-browser",
+        title: null,
+        url: String((args as { url?: string })?.url ?? ""),
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      }
+    })
+
+    render(<BrowserSidebar open />)
+    const input = await screen.findByLabelText("Address")
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: "https://example.com" } })
+    const form = input.closest("form")!
+    fireEvent.submit(form)
+
+    await waitFor(() => expect(recordedArgs).not.toBeNull())
+    // The inset is 6px; the webview must start at least that far from the sidebar's left edge.
+    expect(Number(recordedArgs!.x)).toBeGreaterThanOrEqual(6)
   })
 
   it("updates the address bar when a load_state event delivers a new URL while unfocused", async () => {

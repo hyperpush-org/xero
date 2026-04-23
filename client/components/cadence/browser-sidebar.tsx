@@ -9,6 +9,12 @@ import { cn } from "@/lib/utils"
 const MIN_WIDTH = 320
 const RIGHT_PADDING = 200
 const DEFAULT_RATIO = 0.4
+// Pixel inset on the left of the content area reserved for the resize handle.
+// The native child webview paints on top of all HTML, so without this inset the
+// right half of the resize handle (which straddles the sidebar edge) would be
+// captured by the webview and the sidebar would become impossible to resize
+// once a URL had been loaded.
+const RESIZE_HANDLE_INSET = 6
 
 interface BrowserSidebarProps {
   open: boolean
@@ -113,9 +119,9 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
       if (node) {
         const rect = node.getBoundingClientRect()
         const next: ViewportRect = {
-          x: Math.round(rect.left),
+          x: Math.round(rect.left) + RESIZE_HANDLE_INSET,
           y: Math.round(rect.top),
-          width: Math.round(rect.width),
+          width: Math.max(1, Math.round(rect.width) - RESIZE_HANDLE_INSET),
           height: Math.round(rect.height),
         }
         if (next.width > 0 && next.height > 0 && !rectsEqual(lastSyncedRectRef.current, next)) {
@@ -297,9 +303,9 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
       const rect = node.getBoundingClientRect()
       const payload = {
         url: target,
-        x: Math.round(rect.left),
+        x: Math.round(rect.left) + RESIZE_HANDLE_INSET,
         y: Math.round(rect.top),
-        width: Math.max(1, Math.round(rect.width)),
+        width: Math.max(1, Math.round(rect.width) - RESIZE_HANDLE_INSET),
         height: Math.max(1, Math.round(rect.height)),
         tab_id: tabId ?? activeTabId ?? null,
       }
@@ -488,7 +494,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
         <button
           aria-label="Back"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-          disabled={!activeTab || !canGoBack}
+          disabled={!activeTab}
           onClick={handleBack}
           type="button"
         >
@@ -497,7 +503,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
         <button
           aria-label="Forward"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-          disabled={!activeTab || !canGoForward}
+          disabled={!activeTab}
           onClick={handleForward}
           type="button"
         >
