@@ -1,7 +1,11 @@
 use super::support::*;
-use cadence_desktop_lib::commands::{
-    ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
-    RuntimeRunControlInputDto, RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
+use cadence_desktop_lib::{
+    commands::{
+        ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+        RuntimeRunPendingControlSnapshotDto,
+    },
+    runtime::RuntimeSupervisorLaunchContext,
 };
 
 pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_nested_payloads() {
@@ -639,12 +643,48 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         })
     );
 
+    let anthropic_runtime_settings_request = serde_json::to_value(
+        cadence_desktop_lib::commands::UpsertRuntimeSettingsRequestDto {
+            provider_id: "anthropic".into(),
+            model_id: "claude-3-7-sonnet-latest".into(),
+            openrouter_api_key: None,
+            anthropic_api_key: Some("credential-value-ant-1".into()),
+        },
+    )
+    .expect("anthropic runtime settings request should serialize");
+    assert_eq!(
+        anthropic_runtime_settings_request,
+        json!({
+            "providerId": "anthropic",
+            "modelId": "claude-3-7-sonnet-latest",
+            "anthropicApiKey": "credential-value-ant-1"
+        })
+    );
+
+    let anthropic_runtime_settings_response =
+        serde_json::to_value(cadence_desktop_lib::commands::RuntimeSettingsDto {
+            provider_id: "anthropic".into(),
+            model_id: "claude-3-7-sonnet-latest".into(),
+            openrouter_api_key_configured: false,
+            anthropic_api_key_configured: true,
+        })
+        .expect("anthropic runtime settings response should serialize");
+    assert_eq!(
+        anthropic_runtime_settings_response,
+        json!({
+            "providerId": "anthropic",
+            "modelId": "claude-3-7-sonnet-latest",
+            "anthropicApiKeyConfigured": true
+        })
+    );
+
     let upsert_provider_profile_request = serde_json::to_value(UpsertProviderProfileRequestDto {
         profile_id: "openrouter-work".into(),
         provider_id: "openrouter".into(),
         label: "OpenRouter Work".into(),
         model_id: "openai/gpt-4.1-mini".into(),
         openrouter_api_key: Some("credential-value-2".into()),
+        anthropic_api_key: None,
         activate: true,
     })
     .expect("provider profile request should serialize");
@@ -657,6 +697,48 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "modelId": "openai/gpt-4.1-mini",
             "openrouterApiKey": "credential-value-2",
             "activate": true
+        })
+    );
+
+    let anthropic_provider_profile_request =
+        serde_json::to_value(UpsertProviderProfileRequestDto {
+            profile_id: "anthropic-work".into(),
+            provider_id: "anthropic".into(),
+            label: "Anthropic Work".into(),
+            model_id: "claude-3-7-sonnet-latest".into(),
+            openrouter_api_key: None,
+            anthropic_api_key: Some("credential-value-ant-2".into()),
+            activate: false,
+        })
+        .expect("anthropic provider profile request should serialize");
+    assert_eq!(
+        anthropic_provider_profile_request,
+        json!({
+            "profileId": "anthropic-work",
+            "providerId": "anthropic",
+            "label": "Anthropic Work",
+            "modelId": "claude-3-7-sonnet-latest",
+            "anthropicApiKey": "credential-value-ant-2",
+            "activate": false
+        })
+    );
+
+    let anthropic_launch_context = serde_json::to_value(RuntimeSupervisorLaunchContext {
+        provider_id: "anthropic".into(),
+        session_id: "anthropic-session-1".into(),
+        flow_id: Some("flow-anthropic-1".into()),
+        model_id: "claude-3-7-sonnet-latest".into(),
+        thinking_effort: Some(ProviderModelThinkingEffortDto::High),
+    })
+    .expect("anthropic launch context should serialize");
+    assert_eq!(
+        anthropic_launch_context,
+        json!({
+            "providerId": "anthropic",
+            "sessionId": "anthropic-session-1",
+            "flowId": "flow-anthropic-1",
+            "modelId": "claude-3-7-sonnet-latest",
+            "thinkingEffort": "high"
         })
     );
 

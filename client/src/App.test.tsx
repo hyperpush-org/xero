@@ -1254,6 +1254,9 @@ function createAdapter(options?: {
       automaticDispatch: undefined,
       phases: [],
     }),
+    browserEval: async () => undefined,
+    browserCurrentUrl: async () => null,
+    browserScreenshot: async () => '',
     subscribeRuntimeStream: async (
       projectId: string,
       itemKinds: RuntimeStreamEventDto['subscribedItemKinds'],

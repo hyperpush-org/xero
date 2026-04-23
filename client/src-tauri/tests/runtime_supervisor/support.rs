@@ -80,9 +80,21 @@ pub(crate) fn supervisor_binary_path() -> PathBuf {
 pub(crate) fn sample_runtime_run_controls(
     timestamp: &str,
 ) -> project_store::RuntimeRunControlStateRecord {
-    project_store::build_runtime_run_control_state(
+    sample_runtime_run_controls_for_model(
+        timestamp,
         "openai_codex",
         Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+    )
+}
+
+pub(crate) fn sample_runtime_run_controls_for_model(
+    timestamp: &str,
+    model_id: &str,
+    thinking_effort: Option<cadence_desktop_lib::commands::ProviderModelThinkingEffortDto>,
+) -> project_store::RuntimeRunControlStateRecord {
+    project_store::build_runtime_run_control_state(
+        model_id,
+        thinking_effort,
         cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
         timestamp,
         None,
@@ -112,30 +124,86 @@ pub(crate) fn launch_request(
     run_id: &str,
     command: &str,
 ) -> RuntimeSupervisorLaunchRequest {
-    let shell = runtime_shell::launch_script(command);
-    let timestamp = cadence_desktop_lib::auth::now_timestamp();
-    RuntimeSupervisorLaunchRequest {
-        project_id: project_id.into(),
-        repo_root: repo_root.to_path_buf(),
-        runtime_kind: "openai_codex".into(),
-        run_id: run_id.into(),
-        session_id: "session-1".into(),
-        flow_id: Some("flow-1".into()),
-        launch_context: sample_launch_context(
+    launch_request_with_context(
+        project_id,
+        repo_root,
+        run_id,
+        "openai_codex",
+        sample_launch_context(
             "openai_codex",
             "session-1",
             Some("flow-1"),
             "openai_codex",
             Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
         ),
-        launch_env: RuntimeSupervisorLaunchEnv::default(),
+        RuntimeSupervisorLaunchEnv::default(),
+        command,
+    )
+}
+
+pub(crate) fn launch_request_with_context(
+    project_id: &str,
+    repo_root: &Path,
+    run_id: &str,
+    runtime_kind: &str,
+    launch_context: RuntimeSupervisorLaunchContext,
+    launch_env: RuntimeSupervisorLaunchEnv,
+    command: &str,
+) -> RuntimeSupervisorLaunchRequest {
+    let shell = runtime_shell::launch_script(command);
+    let timestamp = cadence_desktop_lib::auth::now_timestamp();
+    let run_controls = sample_runtime_run_controls_for_model(
+        &timestamp,
+        &launch_context.model_id,
+        launch_context.thinking_effort.clone(),
+    );
+    RuntimeSupervisorLaunchRequest {
+        project_id: project_id.into(),
+        repo_root: repo_root.to_path_buf(),
+        runtime_kind: runtime_kind.into(),
+        run_id: run_id.into(),
+        session_id: launch_context.session_id.clone(),
+        flow_id: launch_context.flow_id.clone(),
+        launch_context,
+        launch_env,
         program: shell.program,
         args: shell.args,
         startup_timeout: Duration::from_secs(5),
         control_timeout: Duration::from_millis(750),
         supervisor_binary: Some(supervisor_binary_path()),
-        run_controls: sample_runtime_run_controls(&timestamp),
+        run_controls,
     }
+}
+
+pub(crate) fn anthropic_launch_request(
+    project_id: &str,
+    repo_root: &Path,
+    run_id: &str,
+    model_id: &str,
+    thinking_effort: Option<cadence_desktop_lib::commands::ProviderModelThinkingEffortDto>,
+    api_key: Option<&str>,
+    command: &str,
+) -> RuntimeSupervisorLaunchRequest {
+    let mut launch_env = RuntimeSupervisorLaunchEnv::default();
+    if let Some(api_key) = api_key {
+        launch_env.insert("ANTHROPIC_API_KEY", api_key);
+    }
+
+    launch_request_with_context(
+        project_id,
+        repo_root,
+        run_id,
+        "anthropic",
+        sample_launch_context(
+            "anthropic",
+            "anthropic-session-1",
+            Some("anthropic-flow-1"),
+            model_id,
+            thinking_effort,
+        ),
+        launch_env,
+        command,
+    )
 }
 
 pub(crate) fn probe_request(project_id: &str, repo_root: &Path) -> RuntimeSupervisorProbeRequest {

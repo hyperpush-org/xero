@@ -362,3 +362,91 @@ pub(crate) fn stop_runtime_run_returns_existing_terminal_snapshot_after_sidecar_
         Some("runtime_supervisor_exit_nonzero")
     );
 }
+
+pub(crate) fn start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secret_free_persistence() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let models_base_url = spawn_static_http_server_for_requests(
+        200,
+        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"medium":{"supported":true},"high":{"supported":true}}}}]}"#,
+        2,
+    );
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let state = state.with_anthropic_auth_config_override(anthropic_auth_config(format!(
+        "{models_base_url}/v1/models"
+    )));
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let secret = "sk-ant-api03-runtime-secret";
+
+    seed_anthropic_profile(
+        &app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        secret,
+    );
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind anthropic runtime session before run start");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "anthropic");
+    assert_eq!(runtime.runtime_kind, "anthropic");
+
+    let launched = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect("start anthropic runtime run");
+    assert_eq!(launched.provider_id, "anthropic");
+    assert_eq!(launched.runtime_kind, "anthropic");
+
+    let running = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+    assert_eq!(running.run_id, launched.run_id);
+    assert_eq!(running.provider_id, "anthropic");
+    assert_eq!(running.runtime_kind, "anthropic");
+    assert_eq!(running.controls.active.model_id, "claude-3-7-sonnet-latest");
+    assert_eq!(
+        running.controls.active.thinking_effort,
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium)
+    );
+
+    let database_bytes =
+        std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db bytes");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains(secret));
+
+    let (fresh_state, _fresh_registry_path, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+    let recovered = wait_for_runtime_run(&fresh_app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+    assert_eq!(recovered.run_id, launched.run_id);
+    assert_eq!(recovered.provider_id, "anthropic");
+    assert_eq!(recovered.runtime_kind, "anthropic");
+
+    let stopped = stop_runtime_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id,
+            run_id: launched.run_id,
+        },
+    )
+    .expect("stop recovered anthropic runtime run")
+    .expect("anthropic runtime run should still exist");
+    assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}

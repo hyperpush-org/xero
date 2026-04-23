@@ -7,7 +7,7 @@ use std::{
 };
 
 use cadence_desktop_lib::{
-    auth::OpenRouterAuthConfig,
+    auth::{AnthropicAuthConfig, OpenRouterAuthConfig},
     commands::{
         provider_model_catalog::get_provider_model_catalog,
         provider_profiles::upsert_provider_profile, GetProviderModelCatalogRequestDto,
@@ -52,6 +52,14 @@ fn openrouter_auth_config(models_url: String) -> OpenRouterAuthConfig {
     OpenRouterAuthConfig {
         models_url,
         timeout: Duration::from_secs(5),
+    }
+}
+
+fn anthropic_auth_config(models_url: String) -> AnthropicAuthConfig {
+    AnthropicAuthConfig {
+        models_url,
+        timeout: Duration::from_secs(5),
+        ..AnthropicAuthConfig::default()
     }
 }
 
@@ -104,6 +112,28 @@ fn seed_openrouter_profile(
         },
     )
     .expect("seed openrouter profile");
+}
+
+fn seed_anthropic_profile(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    profile_id: &str,
+    model_id: &str,
+    api_key: Option<&str>,
+) {
+    upsert_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpsertProviderProfileRequestDto {
+            profile_id: profile_id.into(),
+            provider_id: "anthropic".into(),
+            label: "Anthropic Work".into(),
+            model_id: model_id.into(),
+            openrouter_api_key: None,
+            anthropic_api_key: api_key.map(str::to_string),
+            activate: false,
+        },
+    )
+    .expect("seed anthropic profile");
 }
 
 #[test]
@@ -374,4 +404,204 @@ fn get_provider_model_catalog_ignores_corrupt_cache_row_and_stays_read_only_unti
 
     let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read cache file");
     assert_eq!(cache, corrupt);
+}
+
+#[test]
+fn get_provider_model_catalog_discovers_anthropic_profile_with_truthful_thinking_and_secret_free_cache() {
+    let models_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true}}}},{"id":"claude-3-5-haiku-latest","display_name":"Claude 3.5 Haiku"}]}"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let state = create_state(&root).with_anthropic_auth_config_override(anthropic_auth_config(
+        format!("{models_base_url}/v1/models"),
+    ));
+    let app = build_mock_app(state);
+    let secret = "sk-ant-api03-secret-value";
+    seed_anthropic_profile(
+        &app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        Some(secret),
+    );
+
+    let catalog = get_provider_model_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "anthropic-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("discover anthropic profile catalog");
+
+    assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Live);
+    assert_eq!(catalog.provider_id, "anthropic");
+    assert_eq!(catalog.configured_model_id, "claude-3-7-sonnet-latest");
+    assert_eq!(catalog.models.len(), 2);
+
+    let sonnet = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == "claude-3-7-sonnet-latest")
+        .expect("claude sonnet should be present");
+    assert!(sonnet.thinking.supported);
+    assert_eq!(
+        sonnet.thinking.default_effort,
+        Some(ProviderModelThinkingEffortDto::Medium)
+    );
+    assert!(sonnet
+        .thinking
+        .effort_options
+        .contains(&ProviderModelThinkingEffortDto::XHigh));
+
+    let haiku = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == "claude-3-5-haiku-latest")
+        .expect("claude haiku should be present");
+    assert!(!haiku.thinking.supported);
+
+    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    assert!(!cache.contains(secret));
+}
+
+#[test]
+fn get_provider_model_catalog_returns_unavailable_for_anthropic_profile_without_api_key() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    seed_anthropic_profile(&app, "anthropic-work", "claude-3-7-sonnet-latest", None);
+
+    let catalog = get_provider_model_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "anthropic-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("surface unavailable anthropic catalog without api key");
+
+    assert_eq!(catalog.source, ProviderModelCatalogSourceDto::Unavailable);
+    assert!(catalog.models.is_empty());
+    assert_eq!(
+        catalog
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("anthropic_api_key_missing")
+    );
+}
+
+#[test]
+fn get_provider_model_catalog_returns_cached_anthropic_snapshot_when_live_refresh_is_rate_limited() {
+    let success_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"medium":{"supported":true},"high":{"supported":true}}}}]}"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let first_state = create_state(&root).with_anthropic_auth_config_override(
+        anthropic_auth_config(format!("{success_base_url}/v1/models")),
+    );
+    let first_app = build_mock_app(first_state);
+    seed_anthropic_profile(
+        &first_app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        Some("sk-ant-api03-first"),
+    );
+
+    let first = get_provider_model_catalog(
+        first_app.handle().clone(),
+        first_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "anthropic-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("seed live anthropic catalog");
+
+    let failing_base_url = spawn_static_http_server(429, r#"{"error":"rate limited"}"#);
+    let second_state = create_state(&root).with_anthropic_auth_config_override(
+        anthropic_auth_config(format!("{failing_base_url}/v1/models")),
+    );
+    let second_app = build_mock_app(second_state);
+
+    let cached = get_provider_model_catalog(
+        second_app.handle().clone(),
+        second_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "anthropic-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("fall back to cached anthropic catalog");
+
+    assert_eq!(cached.source, ProviderModelCatalogSourceDto::Cache);
+    assert_eq!(cached.fetched_at, first.fetched_at);
+    assert_eq!(cached.last_success_at, first.last_success_at);
+    assert_eq!(
+        cached
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("anthropic_rate_limited")
+    );
+}
+
+#[test]
+fn get_provider_model_catalog_rejects_malformed_anthropic_live_payload_and_preserves_cached_snapshot() {
+    let success_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"effort":{"supported":true,"medium":{"supported":true},"high":{"supported":true}}}}]}"#,
+    );
+    let root = tempfile::tempdir().expect("temp dir");
+    let first_state = create_state(&root).with_anthropic_auth_config_override(
+        anthropic_auth_config(format!("{success_base_url}/v1/models")),
+    );
+    let first_app = build_mock_app(first_state);
+    seed_anthropic_profile(
+        &first_app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        Some("sk-ant-api03-first"),
+    );
+
+    get_provider_model_catalog(
+        first_app.handle().clone(),
+        first_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "anthropic-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("seed live anthropic catalog");
+
+    let malformed_base_url = spawn_static_http_server(
+        200,
+        r#"{"data":[{"id":"claude-3-7-sonnet-latest","display_name":"Claude 3.7 Sonnet","capabilities":{"thinking":{"supported":true}}}]}"#,
+    );
+    let second_state = create_state(&root).with_anthropic_auth_config_override(
+        anthropic_auth_config(format!("{malformed_base_url}/v1/models")),
+    );
+    let second_app = build_mock_app(second_state);
+
+    let cached = get_provider_model_catalog(
+        second_app.handle().clone(),
+        second_app.state::<DesktopState>(),
+        GetProviderModelCatalogRequestDto {
+            profile_id: "anthropic-work".into(),
+            force_refresh: true,
+        },
+    )
+    .expect("fall back to cached anthropic catalog after malformed payload");
+
+    assert_eq!(cached.source, ProviderModelCatalogSourceDto::Cache);
+    assert_eq!(
+        cached
+            .last_refresh_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("anthropic_models_decode_failed")
+    );
 }

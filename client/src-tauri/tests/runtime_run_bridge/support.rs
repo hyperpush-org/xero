@@ -162,29 +162,41 @@ pub(crate) fn anthropic_auth_config(models_url: String) -> AnthropicAuthConfig {
 }
 
 pub(crate) fn spawn_static_http_server(status: u16, body: &str) -> String {
+    spawn_static_http_server_for_requests(status, body, 1)
+}
+
+pub(crate) fn spawn_static_http_server_for_requests(
+    status: u16,
+    body: &str,
+    request_count: usize,
+) -> String {
+    assert!(request_count > 0, "request_count must be positive");
+
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test http server");
     let address = listener.local_addr().expect("test http server addr");
     let body = body.to_owned();
 
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept test http request");
-        let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line).expect("read request line");
-            if bytes == 0 || line == "\r\n" {
-                break;
+        for _ in 0..request_count {
+            let (mut stream, _) = listener.accept().expect("accept test http request");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let bytes = reader.read_line(&mut line).expect("read request line");
+                if bytes == 0 || line == "\r\n" {
+                    break;
+                }
             }
-        }
 
-        write!(
-            stream,
-            "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body,
-        )
-        .expect("write test http response");
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .expect("write test http response");
+        }
     });
 
     format!("http://{address}")

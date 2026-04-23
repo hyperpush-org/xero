@@ -177,6 +177,9 @@ const COMMANDS = {
   subscribeRuntimeStream: 'subscribe_runtime_stream',
   upsertWorkflowGraph: 'upsert_workflow_graph',
   applyWorkflowTransition: 'apply_workflow_transition',
+  browserEval: 'browser_eval',
+  browserCurrentUrl: 'browser_current_url',
+  browserScreenshot: 'browser_screenshot',
 } as const
 
 const EVENTS = {
@@ -192,6 +195,10 @@ const commandErrorSchema = z.object({
   message: z.string(),
   retryable: z.boolean(),
 })
+
+const browserEvalResponseSchema = z.null()
+const browserCurrentUrlResponseSchema = z.string().nullable()
+const browserScreenshotResponseSchema = z.string()
 
 const startOpenAiLoginRequestSchema = z
   .object({
@@ -324,6 +331,9 @@ export interface CadenceDesktopAdapter {
   syncNotificationAdapters(projectId: string): Promise<SyncNotificationAdaptersResponseDto>
   upsertWorkflowGraph(request: UpsertWorkflowGraphRequestDto): Promise<UpsertWorkflowGraphResponseDto>
   applyWorkflowTransition(request: ApplyWorkflowTransitionRequestDto): Promise<ApplyWorkflowTransitionResponseDto>
+  browserEval(js: string): Promise<void>
+  browserCurrentUrl(): Promise<string | null>
+  browserScreenshot(): Promise<string>
   subscribeRuntimeStream(
     projectId: string,
     itemKinds: RuntimeStreamItemKindDto[],
@@ -884,6 +894,25 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     return invokeTyped(COMMANDS.applyWorkflowTransition, applyWorkflowTransitionResponseSchema, {
       request: parsedRequest,
     })
+  },
+
+  async browserEval(js) {
+    if (typeof js !== 'string' || js.trim().length === 0) {
+      throw new CadenceDesktopError({
+        code: 'invalid_request',
+        errorClass: 'user_fixable',
+        message: 'browserEval requires a non-empty `js` string.',
+      })
+    }
+    await invokeTyped(COMMANDS.browserEval, browserEvalResponseSchema, { js })
+  },
+
+  browserCurrentUrl() {
+    return invokeTyped(COMMANDS.browserCurrentUrl, browserCurrentUrlResponseSchema)
+  },
+
+  browserScreenshot() {
+    return invokeTyped(COMMANDS.browserScreenshot, browserScreenshotResponseSchema)
   },
 
   subscribeRuntimeStream(projectId, itemKinds, handler, onError) {

@@ -181,3 +181,9 @@ fn get_runtime_run_fails_closed_for_malformed_control_state_without_fake_apply_t
 fn stop_runtime_run_returns_existing_terminal_snapshot_after_sidecar_exit() {
     runtime_recovery::stop_runtime_run_returns_existing_terminal_snapshot_after_sidecar_exit();
 }
+
+#[test]
+fn start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secret_free_persistence(
+) {
+    runtime_recovery::start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secret_free_persistence();
+}

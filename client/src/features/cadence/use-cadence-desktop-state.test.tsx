@@ -1141,6 +1141,9 @@ function createMockAdapter(options?: {
     applyWorkflowTransition: vi.fn(async () => {
       throw new Error('not used in use-cadence-desktop-state tests')
     }) as never,
+    browserEval: vi.fn(async () => undefined),
+    browserCurrentUrl: vi.fn(async () => null),
+    browserScreenshot: vi.fn(async () => ''),
     subscribeRuntimeStream,
     onProjectUpdated,
     onRepositoryStatusChanged,

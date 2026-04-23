@@ -1,5 +1,31 @@
 use super::support::*;
 
+fn anthropic_environment_report_script() -> String {
+    if cfg!(windows) {
+        [
+            "if not \"%ANTHROPIC_API_KEY%\"==\"\" (echo key-present) else (echo key-missing)"
+                .to_string(),
+            "echo provider:%CADENCE_RUNTIME_PROVIDER_ID%".to_string(),
+            "echo session:%CADENCE_RUNTIME_SESSION_ID%".to_string(),
+            "echo model:%CADENCE_RUNTIME_MODEL_ID%".to_string(),
+            "echo thinking:%CADENCE_RUNTIME_THINKING_EFFORT%".to_string(),
+            "timeout /T 5 /NOBREAK > NUL".to_string(),
+        ]
+        .join(" & ")
+    } else {
+        [
+            "if [ -n \"$ANTHROPIC_API_KEY\" ]; then printf '%s\\n' 'key-present'; else printf '%s\\n' 'key-missing'; fi"
+                .to_string(),
+            "printf '%s\\n' \"provider:$CADENCE_RUNTIME_PROVIDER_ID\"".to_string(),
+            "printf '%s\\n' \"session:$CADENCE_RUNTIME_SESSION_ID\"".to_string(),
+            "printf '%s\\n' \"model:$CADENCE_RUNTIME_MODEL_ID\"".to_string(),
+            "printf '%s\\n' \"thinking:$CADENCE_RUNTIME_THINKING_EFFORT\"".to_string(),
+            "sleep 5".to_string(),
+        ]
+        .join("; ")
+    }
+}
+
 pub(crate) fn detached_supervisor_launches_and_recovers_after_fresh_host_probe() {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
@@ -227,5 +253,135 @@ pub(crate) fn detached_supervisor_marks_fast_nonzero_exit_as_failed_without_live
     );
     assert!(
         terminal.run.transport.liveness == project_store::RuntimeRunTransportLiveness::Reachable
+    );
+}
+
+pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_secret_free_persistence() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-anthropic";
+    let repo_root = seed_project(&root, project_id, "repo-anthropic", "repo");
+    let state = DesktopState::default();
+    let secret = "sk-ant-api03-sidecar-secret";
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        anthropic_launch_request(
+            project_id,
+            &repo_root,
+            "run-anthropic",
+            "claude-3-7-sonnet-latest",
+            Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::High),
+            Some(secret),
+            &anthropic_environment_report_script(),
+        ),
+    )
+    .expect("launch anthropic detached runtime supervisor");
+
+    assert_eq!(launched.run.runtime_kind, "anthropic");
+
+    let running = wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.run.transport.liveness
+                == project_store::RuntimeRunTransportLiveness::Reachable
+            && snapshot.last_checkpoint_sequence >= 5
+    });
+    assert_eq!(running.run.runtime_kind, "anthropic");
+
+    let mut reader = attach_reader(
+        &running.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-anthropic", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert!(attached.replayed_count >= 5, "attach ack: {attached:?}");
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert_monotonic_sequences(&frames, "run-anthropic");
+    let transcripts = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            SupervisorControlResponse::Event {
+                item: SupervisorLiveEventPayload::Transcript { text },
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        transcripts.iter().any(|text| *text == "key-present"),
+        "missing key-present transcript in replay: {}",
+        response_dump(&frames)
+    );
+    assert!(
+        transcripts.iter().any(|text| *text == "provider:anthropic"),
+        "missing provider transcript in replay: {}",
+        response_dump(&frames)
+    );
+    assert!(
+        transcripts
+            .iter()
+            .any(|text| *text == "session:anthropic-session-1"),
+        "missing session transcript in replay: {}",
+        response_dump(&frames)
+    );
+    assert!(
+        transcripts
+            .iter()
+            .any(|text| *text == "model:claude-3-7-sonnet-latest"),
+        "missing model transcript in replay: {}",
+        response_dump(&frames)
+    );
+    assert!(
+        transcripts.iter().any(|text| *text == "thinking:high"),
+        "missing thinking transcript in replay: {}",
+        response_dump(&frames)
+    );
+
+    let database_bytes = std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
+    let database_text = String::from_utf8_lossy(&database_bytes);
+    assert!(!database_text.contains(secret));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop anthropic detached runtime supervisor")
+        .expect("anthropic runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_rejects_anthropic_launch_without_api_key_env() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-anthropic-missing";
+    let repo_root = seed_project(&root, project_id, "repo-anthropic-missing", "repo");
+    let state = DesktopState::default();
+
+    let error = launch_detached_runtime_supervisor(
+        &state,
+        anthropic_launch_request(
+            project_id,
+            &repo_root,
+            "run-anthropic-missing",
+            "claude-3-7-sonnet-latest",
+            Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+            None,
+            &runtime_shell::script_sleep(5),
+        ),
+    )
+    .expect_err("anthropic detached launch should require api key env");
+    assert_eq!(error.code, "anthropic_api_key_missing");
+
+    let snapshot = project_store::load_runtime_run(&repo_root, project_id)
+        .expect("load failed anthropic runtime run")
+        .expect("failed anthropic runtime run should persist");
+    assert_eq!(snapshot.run.status, project_store::RuntimeRunStatus::Failed);
+    assert_eq!(snapshot.run.transport.endpoint, "launch-pending");
+    assert!(snapshot.run.last_heartbeat_at.is_none());
+    assert_eq!(
+        snapshot
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("anthropic_api_key_missing")
     );
 }
