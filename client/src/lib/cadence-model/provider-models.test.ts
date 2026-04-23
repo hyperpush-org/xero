@@ -160,6 +160,57 @@ describe('provider-models', () => {
     expect(invalid.success).toBe(false)
   })
 
+  it('accepts Anthropic catalogs with truthful Claude thinking payloads and rejects malformed thinking rows', () => {
+    const anthropicCatalog = providerModelCatalogSchema.parse({
+      profileId: 'anthropic-work',
+      providerId: 'anthropic',
+      configuredModelId: 'claude-3-7-sonnet-latest',
+      source: 'live',
+      fetchedAt: '2026-04-21T12:00:00Z',
+      lastSuccessAt: '2026-04-21T12:00:00Z',
+      lastRefreshError: null,
+      models: [
+        {
+          modelId: 'claude-3-7-sonnet-latest',
+          displayName: 'Claude 3.7 Sonnet',
+          thinking: {
+            supported: true,
+            effortOptions: ['low', 'medium', 'high'],
+            defaultEffort: 'medium',
+          },
+        },
+        {
+          modelId: 'claude-3-5-haiku-latest',
+          displayName: 'Claude 3.5 Haiku',
+          thinking: {
+            supported: false,
+            effortOptions: [],
+            defaultEffort: null,
+          },
+        },
+      ],
+    })
+
+    expect(getProviderModelCatalogConfiguredModel(anthropicCatalog)?.modelId).toBe('claude-3-7-sonnet-latest')
+    expect(getProviderModelById(anthropicCatalog, 'claude-3-5-haiku-latest')?.displayName).toBe('Claude 3.5 Haiku')
+
+    const malformedAnthropic = providerModelCatalogSchema.safeParse({
+      ...anthropicCatalog,
+      models: [
+        {
+          modelId: 'claude-3-7-sonnet-latest',
+          displayName: 'Claude 3.7 Sonnet',
+          thinking: {
+            supported: true,
+            effortOptions: ['low', 'low'],
+            defaultEffort: 'low',
+          },
+        },
+      ],
+    })
+    expect(malformedAnthropic.success).toBe(false)
+  })
+
   it('builds typed request and unavailable catalog helpers', () => {
     expect(createProviderModelCatalogRequest('openrouter-work')).toEqual({
       profileId: 'openrouter-work',

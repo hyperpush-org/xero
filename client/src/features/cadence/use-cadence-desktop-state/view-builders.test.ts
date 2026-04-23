@@ -222,6 +222,7 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
     providerId: 'openrouter',
     modelId: 'openai/gpt-4.1-mini',
     openrouterApiKeyConfigured: true,
+    anthropicApiKeyConfigured: false,
     ...overrides,
   }
 }
@@ -423,6 +424,56 @@ describe('view builders', () => {
       providerMismatchRecoveryCopy:
         'Rebind the selected profile so durable runtime truth matches Settings.',
     })
+  })
+
+  it('buildWorkflowView keeps Anthropic selected-profile mismatch copy explicit', () => {
+    const project = makeProject()
+    const activePhase = project.phases[0] ?? null
+
+    const view = buildWorkflowView({
+      project,
+      activePhase,
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'anthropic-work',
+        profiles: [
+          {
+            profileId: 'anthropic-work',
+            providerId: 'anthropic',
+            label: 'Anthropic Work',
+            modelId: 'claude-3-7-sonnet-latest',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-20T11:58:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      runtimeSession: makeRuntimeSession({ providerId: 'openrouter', runtimeKind: 'openrouter' }),
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: true,
+      }),
+    })
+
+    expect(view).toMatchObject({
+      selectedProfileId: 'anthropic-work',
+      selectedProfileLabel: 'Anthropic Work',
+      selectedProviderId: 'anthropic',
+      selectedProviderLabel: 'Anthropic',
+      selectedProviderSource: 'provider_profiles',
+      providerMismatch: true,
+      providerMismatchReason:
+        'Settings now select provider profile Anthropic Work (anthropic-work), but the persisted runtime session still reflects OpenRouter.',
+      providerMismatchRecoveryCopy:
+        'Rebind the selected profile so durable runtime truth matches Settings.',
+    })
+    expect(view?.providerMismatchReason).not.toContain('OpenAI')
   })
 
   it('buildAgentView falls back to the last known trust snapshot when trust projection data is malformed', () => {
@@ -856,6 +907,131 @@ describe('view builders', () => {
       },
       runtimeRunPendingControls: null,
     })
+  })
+
+  it('buildAgentView projects Anthropic bind guidance and Claude thinking truth without OpenRouter fallback copy', () => {
+    const project = makeProject()
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'anthropic-work',
+        profiles: [
+          {
+            profileId: 'anthropic-work',
+            providerId: 'anthropic',
+            label: 'Anthropic Work',
+            modelId: 'claude-3-7-sonnet-latest',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-20T11:58:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      runtimeSession: null,
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: true,
+      }),
+      activeProviderModelCatalog: makeProviderModelCatalog({
+        profileId: 'anthropic-work',
+        providerId: 'anthropic',
+        configuredModelId: 'claude-3-7-sonnet-latest',
+        models: [
+          {
+            modelId: 'claude-3-7-sonnet-latest',
+            displayName: 'Claude 3.7 Sonnet',
+            thinking: {
+              supported: true,
+              effortOptions: ['low', 'medium', 'high'],
+              defaultEffort: 'medium',
+            },
+          },
+          {
+            modelId: 'claude-3-5-haiku-latest',
+            displayName: 'Claude 3.5 Haiku',
+            thinking: {
+              supported: false,
+              effortOptions: [],
+              defaultEffort: null,
+            },
+          },
+        ],
+      }),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
+      runtimeRun: null,
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: [],
+      autonomousRecentArtifacts: [],
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: null,
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view).toMatchObject({
+      selectedProfileId: 'anthropic-work',
+      selectedProfileLabel: 'Anthropic Work',
+      selectedProviderId: 'anthropic',
+      selectedProviderLabel: 'Anthropic',
+      selectedProviderSource: 'provider_profiles',
+      controlTruthSource: 'fallback',
+      selectedModelId: 'claude-3-7-sonnet-latest',
+      selectedThinkingEffort: 'medium',
+      sessionUnavailableReason:
+        'Bind Anthropic with the selected app-local provider profile to create a project runtime session.',
+      runtimeRunUnavailableReason:
+        'Bind Anthropic first, then launch a supervised harness run to populate durable repo-local run state for this project.',
+      messagesUnavailableReason:
+        'Bind Anthropic from the Agent tab to establish the runtime session for this imported project.',
+      providerModelCatalog: {
+        providerId: 'anthropic',
+        providerLabel: 'Anthropic',
+        state: 'live',
+        stateLabel: 'Live catalog',
+      },
+      selectedModelOption: {
+        modelId: 'claude-3-7-sonnet-latest',
+        groupLabel: 'Anthropic',
+        thinkingSupported: true,
+        defaultThinkingEffort: 'medium',
+      },
+    })
+    expect(result.view?.selectedModelThinkingEffortOptions).toEqual(['low', 'medium', 'high'])
+    expect(result.view?.selectedModelDefaultThinkingEffort).toBe('medium')
+    expect(result.view?.sessionUnavailableReason).not.toContain('OpenAI')
+    expect(result.view?.messagesUnavailableReason).not.toContain('OpenRouter')
   })
 
   it('buildExecutionView keeps diff-scope counts and durable verification copy aligned with repository truth', () => {

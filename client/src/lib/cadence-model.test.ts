@@ -27,6 +27,7 @@ import {
   mergeRuntimeUpdated,
   projectSnapshotResponseSchema,
   providerProfilesSchema,
+  projectRuntimeSettingsFromProviderProfiles,
   resolveOperatorActionRequestSchema,
   runtimeRunSchema,
   runtimeSessionSchema,
@@ -2940,6 +2941,99 @@ describe('cadence-model', () => {
     expect(() =>
       setActiveProviderProfileRequestSchema.parse({
         profileId: '   ',
+      }),
+    ).toThrow()
+  })
+
+  it('admits Anthropic runtime and provider-profile payloads while preserving fail-closed unknown-provider checks', () => {
+    const providerProfiles = providerProfilesSchema.parse({
+      ...makeProviderProfiles({
+        activeProfileId: 'anthropic-work',
+        profiles: [
+          {
+            profileId: 'anthropic-work',
+            providerId: 'anthropic',
+            label: 'Anthropic Work',
+            modelId: 'claude-3-7-sonnet-latest',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+          {
+            profileId: 'openrouter-default',
+            providerId: 'openrouter',
+            label: 'OpenRouter',
+            modelId: 'openai/gpt-4.1-mini',
+            active: false,
+            readiness: {
+              ready: false,
+              status: 'missing',
+              credentialUpdatedAt: null,
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    })
+
+    expect(projectRuntimeSettingsFromProviderProfiles(providerProfiles)).toEqual({
+      providerId: 'anthropic',
+      modelId: 'claude-3-7-sonnet-latest',
+      openrouterApiKeyConfigured: false,
+      anthropicApiKeyConfigured: true,
+    })
+
+    expect(
+      runtimeSettingsSchema.parse({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: true,
+      }),
+    ).toMatchObject({
+      providerId: 'anthropic',
+      modelId: 'claude-3-7-sonnet-latest',
+      anthropicApiKeyConfigured: true,
+    })
+
+    expect(
+      upsertProviderProfileRequestSchema.parse({
+        profileId: 'anthropic-work',
+        providerId: 'anthropic',
+        label: 'Anthropic Work',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKey: 'sk-ant-test-secret',
+        activate: true,
+      }),
+    ).toMatchObject({
+      providerId: 'anthropic',
+      modelId: 'claude-3-7-sonnet-latest',
+      activate: true,
+    })
+
+    expect(
+      upsertRuntimeSettingsRequestSchema.parse({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        anthropicApiKey: 'sk-ant-test-secret',
+      }),
+    ).toMatchObject({
+      providerId: 'anthropic',
+      modelId: 'claude-3-7-sonnet-latest',
+    })
+
+    expect(() =>
+      runtimeSettingsSchema.parse({
+        providerId: 'azure_openai',
+        modelId: 'azure_openai',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: false,
       }),
     ).toThrow()
   })

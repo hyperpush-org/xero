@@ -164,6 +164,7 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
     providerId: 'openai_codex',
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
+    anthropicApiKeyConfigured: false,
     ...overrides,
   }
 }
@@ -3546,6 +3547,127 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('session-reason')).toHaveTextContent('Configure an OpenRouter API key in Settings')
     expect(screen.getByTestId('messages-reason')).toHaveTextContent('Configure an OpenRouter API key in Settings')
     expect(screen.getByTestId('session-reason')).not.toHaveTextContent('OpenAI')
+    expect(screen.getByTestId('messages-reason')).not.toHaveTextContent('OpenAI')
+  })
+
+  it('derives Anthropic-first guidance and mismatch recovery without rewriting persisted runtime truth', async () => {
+    const anthropicProfiles = makeProviderProfiles({
+      activeProfileId: 'anthropic-work',
+      profiles: [
+        {
+          profileId: 'anthropic-work',
+          providerId: 'anthropic',
+          label: 'Anthropic Work',
+          modelId: 'claude-3-7-sonnet-latest',
+          active: true,
+          readiness: {
+            ready: true,
+            status: 'ready',
+            credentialUpdatedAt: '2026-04-16T14:05:00Z',
+          },
+          migratedFromLegacy: false,
+          migratedAt: null,
+        },
+      ],
+    })
+
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'anthropic',
+        modelId: 'claude-3-7-sonnet-latest',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: true,
+      }),
+      providerProfiles: anthropicProfiles,
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          providerId: 'openrouter',
+          runtimeKind: 'openrouter',
+          phase: 'authenticated',
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('anthropic'))
+    expect(screen.getByTestId('selected-provider-label')).toHaveTextContent('Anthropic')
+    expect(screen.getByTestId('selected-provider-source')).toHaveTextContent('provider_profiles')
+    expect(screen.getByTestId('provider-profiles-selected-profile-id')).toHaveTextContent('anthropic-work')
+    expect(screen.getByTestId('provider-profiles-selected-profile-label')).toHaveTextContent('Anthropic Work')
+    expect(screen.getByTestId('provider-mismatch')).toHaveTextContent('true')
+    expect(screen.getByTestId('provider-mismatch-reason')).toHaveTextContent(
+      'Settings now select provider profile Anthropic Work (anthropic-work)',
+    )
+    expect(screen.getByTestId('provider-mismatch-recovery-copy')).toHaveTextContent(
+      'Rebind the selected profile so durable runtime truth matches Settings.',
+    )
+    expect(screen.getByTestId('session-reason')).toHaveTextContent(
+      'Settings now select provider profile Anthropic Work (anthropic-work)',
+    )
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Rebind the selected profile before trusting new stream activity.',
+    )
+    expect(screen.getByTestId('session-reason')).not.toHaveTextContent('OpenAI')
+  })
+
+  it('derives missing-key Anthropic guidance without leaking OpenRouter or OpenAI copy', async () => {
+    const anthropicProfiles = makeProviderProfiles({
+      activeProfileId: 'anthropic-work',
+      profiles: [
+        {
+          profileId: 'anthropic-work',
+          providerId: 'anthropic',
+          label: 'Anthropic Work',
+          modelId: 'claude-3-5-haiku-latest',
+          active: true,
+          readiness: {
+            ready: false,
+            status: 'missing',
+            credentialUpdatedAt: null,
+          },
+          migratedFromLegacy: false,
+          migratedAt: null,
+        },
+      ],
+    })
+
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'anthropic',
+        modelId: 'claude-3-5-haiku-latest',
+        openrouterApiKeyConfigured: false,
+        anthropicApiKeyConfigured: false,
+      }),
+      providerProfiles: anthropicProfiles,
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          providerId: 'anthropic',
+          runtimeKind: 'anthropic',
+          flowId: null,
+          sessionId: null,
+          accountId: null,
+          phase: 'idle',
+          callbackBound: null,
+          authorizationUrl: null,
+          redirectUri: null,
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': null,
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('selected-provider-id')).toHaveTextContent('anthropic'))
+    expect(screen.getByTestId('session-reason')).toHaveTextContent('Configure an Anthropic API key in Settings')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent('Configure an Anthropic API key in Settings')
+    expect(screen.getByTestId('session-reason')).not.toHaveTextContent('OpenRouter')
     expect(screen.getByTestId('messages-reason')).not.toHaveTextContent('OpenAI')
   })
 })

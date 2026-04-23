@@ -125,6 +125,34 @@ function getSelectedAnthropicReadinessStatus(
   return selectedProvider.readiness?.status ?? null
 }
 
+interface SelectedApiKeyProviderState {
+  providerLabel: string
+  ready: boolean
+  readinessStatus: ProviderProfileReadinessDto['status'] | null
+}
+
+function getSelectedApiKeyProviderState(
+  selectedProvider: SelectedRuntimeProviderView,
+): SelectedApiKeyProviderState | null {
+  if (selectedProvider.providerId === 'openrouter') {
+    return {
+      providerLabel: selectedProvider.providerLabel,
+      ready: isSelectedOpenRouterReady(selectedProvider),
+      readinessStatus: getSelectedOpenRouterReadinessStatus(selectedProvider),
+    }
+  }
+
+  if (selectedProvider.providerId === 'anthropic') {
+    return {
+      providerLabel: selectedProvider.providerLabel,
+      ready: isSelectedAnthropicReady(selectedProvider),
+      readinessStatus: getSelectedAnthropicReadinessStatus(selectedProvider),
+    }
+  }
+
+  return null
+}
+
 function getSelectedRuntimeIdentityLabel(selectedProvider: SelectedRuntimeProviderView): string {
   const profileId = selectedProvider.profileId?.trim() ?? ''
   if (profileId.length === 0) {
@@ -235,30 +263,17 @@ export function getAgentSessionUnavailableReason(
   }
 
   const providerMismatchCopy = getProviderMismatchCopy(selectedProvider, runtimeSession)
-  const selectedOpenRouterReady = isSelectedOpenRouterReady(selectedProvider)
-  const selectedOpenRouterReadinessStatus = getSelectedOpenRouterReadinessStatus(selectedProvider)
-  const selectedAnthropicReady = isSelectedAnthropicReady(selectedProvider)
-  const selectedAnthropicReadinessStatus = getSelectedAnthropicReadinessStatus(selectedProvider)
+  const selectedApiKeyProvider = getSelectedApiKeyProviderState(selectedProvider)
 
   if (!runtimeSession) {
-    if (selectedProvider.providerId === 'openrouter') {
-      if (selectedOpenRouterReadinessStatus === 'malformed') {
-        return 'Repair the selected OpenRouter profile credentials in Settings before Cadence can bind a project runtime session.'
+    if (selectedApiKeyProvider) {
+      if (selectedApiKeyProvider.readinessStatus === 'malformed') {
+        return `Repair the selected ${selectedApiKeyProvider.providerLabel} profile credentials in Settings before Cadence can bind a project runtime session.`
       }
 
-      return selectedOpenRouterReady
-        ? 'Bind OpenRouter with the selected app-local provider profile to create a project runtime session.'
-        : 'Configure an OpenRouter API key in Settings before Cadence can bind a project runtime session.'
-    }
-
-    if (selectedProvider.providerId === 'anthropic') {
-      if (selectedAnthropicReadinessStatus === 'malformed') {
-        return 'Repair the selected Anthropic profile credentials in Settings before Cadence can bind a project runtime session.'
-      }
-
-      return selectedAnthropicReady
-        ? 'Bind Anthropic with the selected app-local provider profile to create a project runtime session.'
-        : 'Configure an Anthropic API key in Settings before Cadence can bind a project runtime session.'
+      return selectedApiKeyProvider.ready
+        ? `Bind ${selectedApiKeyProvider.providerLabel} with the selected app-local provider profile to create a project runtime session.`
+        : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before Cadence can bind a project runtime session.`
     }
 
     return 'Sign in with OpenAI to create or reuse a runtime session for this imported project.'
@@ -274,54 +289,54 @@ export function getAgentSessionUnavailableReason(
 
   switch (runtimeSession.phase) {
     case 'authenticated':
-      if (selectedProvider.providerId === 'openrouter') {
+      if (selectedApiKeyProvider) {
         return runtimeSession.sessionId
-          ? `Cadence validated the selected OpenRouter profile and bound session ${runtimeSession.sessionLabel} for model ${selectedProvider.modelId || 'the selected model'}.`
-          : `Cadence validated the selected OpenRouter profile for model ${selectedProvider.modelId || 'the selected model'}.`
+          ? `Cadence validated the selected ${selectedApiKeyProvider.providerLabel} profile and bound session ${runtimeSession.sessionLabel} for model ${selectedProvider.modelId || 'the selected model'}.`
+          : `Cadence validated the selected ${selectedApiKeyProvider.providerLabel} profile for model ${selectedProvider.modelId || 'the selected model'}.`
       }
 
       return runtimeSession.sessionId
         ? `Cadence is authenticated as ${runtimeSession.accountLabel} and bound to session ${runtimeSession.sessionLabel}.`
         : `Cadence is authenticated as ${runtimeSession.accountLabel}.`
     case 'awaiting_browser_callback':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'Cadence surfaced a browser-auth phase while OpenRouter is selected. Rebind the runtime from the Agent tab or switch providers in Settings.'
+      return selectedApiKeyProvider
+        ? `Cadence surfaced a browser-auth phase while ${selectedApiKeyProvider.providerLabel} is selected. Rebind the runtime from the Agent tab or switch providers in Settings.`
         : 'Cadence started the OpenAI login flow and is waiting for the browser callback to return.'
     case 'awaiting_manual_input':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'Cadence surfaced a manual-auth phase while OpenRouter is selected. Rebind the runtime from the Agent tab or switch providers in Settings.'
+      return selectedApiKeyProvider
+        ? `Cadence surfaced a manual-auth phase while ${selectedApiKeyProvider.providerLabel} is selected. Rebind the runtime from the Agent tab or switch providers in Settings.`
         : 'Cadence is waiting for the pasted OpenAI redirect URL to finish login for this project.'
     case 'starting':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'Cadence is validating the selected OpenRouter profile and binding a runtime session for this project.'
+      return selectedApiKeyProvider
+        ? `Cadence is validating the selected ${selectedApiKeyProvider.providerLabel} profile and binding a runtime session for this project.`
         : 'Cadence is opening the OpenAI login flow for this project.'
     case 'exchanging_code':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'Cadence is completing the selected OpenRouter runtime bind for this project.'
+      return selectedApiKeyProvider
+        ? `Cadence is completing the selected ${selectedApiKeyProvider.providerLabel} runtime bind for this project.`
         : 'Cadence is exchanging the OpenAI authorization code for a project-bound session.'
     case 'refreshing':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'Cadence is revalidating the selected OpenRouter binding for this project.'
+      return selectedApiKeyProvider
+        ? `Cadence is revalidating the selected ${selectedApiKeyProvider.providerLabel} binding for this project.`
         : 'Cadence is refreshing the stored OpenAI auth session for this project.'
     case 'idle':
-      if (selectedProvider.providerId === 'openrouter') {
-        if (selectedOpenRouterReadinessStatus === 'malformed') {
-          return 'Repair the selected OpenRouter profile credentials in Settings before Cadence can bind the selected provider for this imported project.'
+      if (selectedApiKeyProvider) {
+        if (selectedApiKeyProvider.readinessStatus === 'malformed') {
+          return `Repair the selected ${selectedApiKeyProvider.providerLabel} profile credentials in Settings before Cadence can bind the selected provider for this imported project.`
         }
 
-        return selectedOpenRouterReady
-          ? 'Bind OpenRouter from the Agent tab to create or refresh the runtime session for this imported project.'
-          : 'Configure an OpenRouter API key in Settings before Cadence can bind the selected provider for this imported project.'
+        return selectedApiKeyProvider.ready
+          ? `Bind ${selectedApiKeyProvider.providerLabel} from the Agent tab to create or refresh the runtime session for this imported project.`
+          : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before Cadence can bind the selected provider for this imported project.`
       }
 
       return 'Sign in with OpenAI to create or reuse a runtime session for this imported project.'
     case 'cancelled':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'The OpenRouter bind flow was cancelled before Cadence could refresh the project runtime session.'
+      return selectedApiKeyProvider
+        ? `The ${selectedApiKeyProvider.providerLabel} bind flow was cancelled before Cadence could refresh the project runtime session.`
         : 'The OpenAI login flow was cancelled before Cadence could create a runtime session.'
     case 'failed':
-      return selectedProvider.providerId === 'openrouter'
-        ? 'Cadence could not bind the OpenRouter runtime for this project.'
+      return selectedApiKeyProvider
+        ? `Cadence could not bind the ${selectedApiKeyProvider.providerLabel} runtime for this project.`
         : 'Cadence could not create a runtime session for this project.'
   }
 }
@@ -337,8 +352,7 @@ export function getAgentRuntimeRunUnavailableReason(
   }
 
   const providerMismatchCopy = getProviderMismatchCopy(selectedProvider, runtimeSession)
-  const selectedOpenRouterReady = isSelectedOpenRouterReady(selectedProvider)
-  const selectedOpenRouterReadinessStatus = getSelectedOpenRouterReadinessStatus(selectedProvider)
+  const selectedApiKeyProvider = getSelectedApiKeyProviderState(selectedProvider)
 
   if (!runtimeRun) {
     if (runtimeSession?.isAuthenticated && !providerMismatchCopy) {
@@ -349,14 +363,14 @@ export function getAgentRuntimeRunUnavailableReason(
       return `${providerMismatchCopy.reason} Rebind the selected ${selectedProvider.profileId ? 'profile' : 'provider'} before launching a supervised harness run for this project.`
     }
 
-    if (selectedProvider.providerId === 'openrouter') {
-      if (selectedOpenRouterReadinessStatus === 'malformed') {
-        return 'Repair the selected OpenRouter profile credentials in Settings and bind the provider before launching a supervised harness run for this project.'
+    if (selectedApiKeyProvider) {
+      if (selectedApiKeyProvider.readinessStatus === 'malformed') {
+        return `Repair the selected ${selectedApiKeyProvider.providerLabel} profile credentials in Settings and bind the provider before launching a supervised harness run for this project.`
       }
 
-      return selectedOpenRouterReady
-        ? 'Bind OpenRouter first, then launch a supervised harness run to populate durable repo-local run state for this project.'
-        : 'Configure an OpenRouter API key in Settings and bind the provider before launching a supervised harness run for this project.'
+      return selectedApiKeyProvider.ready
+        ? `Bind ${selectedApiKeyProvider.providerLabel} first, then launch a supervised harness run to populate durable repo-local run state for this project.`
+        : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings and bind the provider before launching a supervised harness run for this project.`
     }
 
     return 'Authenticate and launch a supervised harness run to populate durable repo-local run state for this project.'
@@ -388,22 +402,21 @@ export function getAgentMessagesUnavailableReason(
   selectedProvider: SelectedRuntimeProviderView,
 ): string {
   const providerMismatchCopy = getProviderMismatchCopy(selectedProvider, runtimeSession)
-  const selectedOpenRouterReady = isSelectedOpenRouterReady(selectedProvider)
-  const selectedOpenRouterReadinessStatus = getSelectedOpenRouterReadinessStatus(selectedProvider)
+  const selectedApiKeyProvider = getSelectedApiKeyProviderState(selectedProvider)
 
   if (!runtimeSession) {
-    if (selectedProvider.providerId === 'openrouter') {
-      if (selectedOpenRouterReadinessStatus === 'malformed') {
+    if (selectedApiKeyProvider) {
+      if (selectedApiKeyProvider.readinessStatus === 'malformed') {
         return runtimeRun
-          ? 'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired OpenRouter profile credentials for the selected provider.'
-          : 'Repair the selected OpenRouter profile credentials in Settings before Cadence can establish a runtime session for this imported project.'
+          ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired ${selectedApiKeyProvider.providerLabel} profile credentials for the selected provider.`
+          : `Repair the selected ${selectedApiKeyProvider.providerLabel} profile credentials in Settings before Cadence can establish a runtime session for this imported project.`
       }
 
       return runtimeRun
-        ? 'Cadence recovered durable supervised-run state for this project, but live streaming still requires an OpenRouter runtime bind for the selected provider.'
-        : selectedOpenRouterReady
-          ? 'Bind OpenRouter from the Agent tab to establish the runtime session for this imported project.'
-          : 'Configure an OpenRouter API key in Settings before Cadence can establish a runtime session for this imported project.'
+        ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires a ${selectedApiKeyProvider.providerLabel} runtime bind for the selected provider.`
+        : selectedApiKeyProvider.ready
+          ? `Bind ${selectedApiKeyProvider.providerLabel} from the Agent tab to establish the runtime session for this imported project.`
+          : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before Cadence can establish a runtime session for this imported project.`
     }
 
     return runtimeRun
@@ -416,22 +429,22 @@ export function getAgentMessagesUnavailableReason(
   }
 
   if (!runtimeSession.isAuthenticated) {
-    if (selectedProvider.providerId === 'openrouter') {
+    if (selectedApiKeyProvider) {
       if (runtimeSession.isLoginInProgress) {
-        return 'Cadence is binding the selected OpenRouter provider. Wait for the saved-key validation to finish before expecting live stream activity.'
+        return `Cadence is binding the selected ${selectedApiKeyProvider.providerLabel} provider. Wait for the saved-key validation to finish before expecting live stream activity.`
       }
 
-      if (selectedOpenRouterReadinessStatus === 'malformed') {
+      if (selectedApiKeyProvider.readinessStatus === 'malformed') {
         return runtimeRun
-          ? 'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired OpenRouter profile credentials.'
-          : 'Repair the selected OpenRouter profile credentials in Settings before live streaming can start for this imported project.'
+          ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired ${selectedApiKeyProvider.providerLabel} profile credentials.`
+          : `Repair the selected ${selectedApiKeyProvider.providerLabel} profile credentials in Settings before live streaming can start for this imported project.`
       }
 
       return runtimeRun
-        ? 'Cadence recovered durable supervised-run state for this project, but live streaming still requires an authenticated OpenRouter runtime binding.'
-        : selectedOpenRouterReady
-          ? 'Bind OpenRouter from the Agent tab to establish the runtime session for this imported project.'
-          : 'Configure an OpenRouter API key in Settings before live streaming can start for this imported project.'
+        ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires an authenticated ${selectedApiKeyProvider.providerLabel} runtime binding.`
+        : selectedApiKeyProvider.ready
+          ? `Bind ${selectedApiKeyProvider.providerLabel} from the Agent tab to establish the runtime session for this imported project.`
+          : `Configure an ${selectedApiKeyProvider.providerLabel} API key in Settings before live streaming can start for this imported project.`
     }
 
     if (runtimeSession.isLoginInProgress) {
@@ -446,8 +459,8 @@ export function getAgentMessagesUnavailableReason(
   if (!runtimeStream) {
     return runtimeRun?.hasCheckpoints
       ? 'Cadence recovered a supervised harness run, but the live runtime stream has not resumed yet. Durable checkpoints remain visible below.'
-      : selectedProvider.providerId === 'openrouter'
-        ? 'Cadence authenticated the selected OpenRouter provider, but the live runtime stream has not started yet.'
+      : selectedApiKeyProvider
+        ? `Cadence authenticated the selected ${selectedApiKeyProvider.providerLabel} provider, but the live runtime stream has not started yet.`
         : 'Cadence authenticated this project, but the live runtime stream has not started yet.'
   }
 
