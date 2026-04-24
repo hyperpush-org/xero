@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     commands::CommandError,
     db::database_path_for_repo,
-    runtime::protocol::{GitToolResultScope, McpCapabilityKind, ToolResultSummary},
+    runtime::protocol::{
+        BrowserComputerUseActionStatus, BrowserComputerUseSurface, GitToolResultScope,
+        McpCapabilityKind, ToolResultSummary,
+    },
 };
 
 use super::runtime::{
@@ -3509,6 +3512,60 @@ fn validate_autonomous_tool_result_summary(
                     "autonomous_run_request_invalid",
                 )?;
                 validate_autonomous_artifact_text(content_type, "tool_summary_web_content_type")?;
+            }
+        }
+        ToolResultSummary::BrowserComputerUse(summary) => {
+            if command_result.is_some() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires browser/computer-use tool_summary metadata to omit command_result payloads.",
+                ));
+            }
+
+            validate_non_empty_text(
+                &summary.action,
+                "tool_summary_browser_computer_use_action",
+                "autonomous_run_request_invalid",
+            )?;
+            validate_autonomous_artifact_text(
+                &summary.action,
+                "tool_summary_browser_computer_use_action",
+            )?;
+
+            if let Some(target) = summary.target.as_deref() {
+                validate_non_empty_text(
+                    target,
+                    "tool_summary_browser_computer_use_target",
+                    "autonomous_run_request_invalid",
+                )?;
+                validate_autonomous_artifact_text(
+                    target,
+                    "tool_summary_browser_computer_use_target",
+                )?;
+            }
+
+            if let Some(outcome) = summary.outcome.as_deref() {
+                validate_non_empty_text(
+                    outcome,
+                    "tool_summary_browser_computer_use_outcome",
+                    "autonomous_run_request_invalid",
+                )?;
+                validate_autonomous_artifact_text(
+                    outcome,
+                    "tool_summary_browser_computer_use_outcome",
+                )?;
+            }
+
+            match summary.surface {
+                BrowserComputerUseSurface::Browser | BrowserComputerUseSurface::ComputerUse => {}
+            }
+
+            match summary.status {
+                BrowserComputerUseActionStatus::Pending
+                | BrowserComputerUseActionStatus::Running
+                | BrowserComputerUseActionStatus::Succeeded
+                | BrowserComputerUseActionStatus::Failed
+                | BrowserComputerUseActionStatus::Blocked => {}
             }
         }
         ToolResultSummary::McpCapability(summary) => {

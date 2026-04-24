@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::solana::cluster::ClusterKind;
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1_800); // 30 min — verified builds are slow.
@@ -95,16 +96,18 @@ impl VerifiedBuildRunner for SystemVerifiedBuildRunner {
                 "Empty argv passed to solana-verify runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
+        let resolved_program = toolchain::resolve_command(program);
+        let mut cmd = Command::new(&resolved_program);
         cmd.args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_verified_build_spawn_failed",
                 format!(
-                    "Could not run `{program}`: {err}. Install solana-verify with `cargo install solana-verify`.",
+                    "Could not run `{program}`: {err}. Install solana-verify in the managed toolchain or with `cargo install solana-verify`.",
                 ),
             )
         })?;

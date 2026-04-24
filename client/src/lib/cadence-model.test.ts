@@ -2375,6 +2375,14 @@ describe('cadence-model', () => {
       contentType: 'text/html',
       truncated: false,
     })
+    const browserComputerUseSummary = toolResultSummarySchema.parse({
+      kind: 'browser_computer_use',
+      surface: 'browser',
+      action: 'click',
+      status: 'succeeded',
+      target: 'button[type=submit]',
+      outcome: 'Clicked submit and advanced to confirmation.',
+    })
     const mcpSummary = toolResultSummarySchema.parse({
       kind: 'mcp_capability',
       serverId: 'linear',
@@ -2383,12 +2391,13 @@ describe('cadence-model', () => {
       capabilityName: 'Summarize Context',
     })
 
-    expect([fileSummary.kind, gitSummary.kind, webSummary.kind, mcpSummary.kind]).toEqual([
-      'file',
-      'git',
-      'web',
-      'mcp_capability',
-    ])
+    expect([
+      fileSummary.kind,
+      gitSummary.kind,
+      webSummary.kind,
+      browserComputerUseSummary.kind,
+      mcpSummary.kind,
+    ]).toEqual(['file', 'git', 'web', 'browser_computer_use', 'mcp_capability'])
 
     const artifactPayloadBase = {
       kind: 'tool_result' as const,
@@ -2438,6 +2447,14 @@ describe('cadence-model', () => {
     expect(mcpSummary.capabilityKind).toBe('prompt')
     expect(mcpSummary.capabilityName).toBe('Summarize Context')
 
+    expect(browserComputerUseSummary.kind).toBe('browser_computer_use')
+    if (browserComputerUseSummary.kind !== 'browser_computer_use') {
+      throw new Error('Expected a browser/computer-use summary kind.')
+    }
+    expect(browserComputerUseSummary.surface).toBe('browser')
+    expect(browserComputerUseSummary.action).toBe('click')
+    expect(browserComputerUseSummary.status).toBe('succeeded')
+
     const legacyArtifact = mapAutonomousArtifact({
       ...artifactWithSummary,
       payload: autonomousToolResultPayloadSchema.parse(artifactPayloadBase),
@@ -2449,6 +2466,33 @@ describe('cadence-model', () => {
         kind: 'unknown',
         target: 'https://example.com',
         truncated: false,
+      }),
+    ).toThrow()
+
+    expect(() =>
+      toolResultSummarySchema.parse({
+        kind: 'browser_computer_use',
+        surface: 'browser',
+        action: 'click',
+        target: 'button[type=submit]',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      toolResultSummarySchema.parse({
+        kind: 'browser_computer_use',
+        surface: 'tab',
+        action: 'click',
+        status: 'succeeded',
+      }),
+    ).toThrow()
+
+    expect(() =>
+      toolResultSummarySchema.parse({
+        kind: 'browser_computer_use',
+        surface: 'computer_use',
+        action: 'click',
+        status: 'done',
       }),
     ).toThrow()
 

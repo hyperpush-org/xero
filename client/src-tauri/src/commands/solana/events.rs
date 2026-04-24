@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub const SOLANA_VALIDATOR_STATUS_EVENT: &str = "solana:validator:status";
 pub const SOLANA_VALIDATOR_LOG_EVENT: &str = "solana:validator:log";
 pub const SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT: &str = "solana:toolchain:changed";
+pub const SOLANA_TOOLCHAIN_INSTALL_EVENT: &str = "solana:toolchain:install";
 pub const SOLANA_RPC_HEALTH_EVENT: &str = "solana:rpc:health";
 pub const SOLANA_PERSONA_EVENT: &str = "solana:persona";
 pub const SOLANA_SCENARIO_EVENT: &str = "solana:scenario";

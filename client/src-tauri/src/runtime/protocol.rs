@@ -129,6 +129,33 @@ pub struct WebToolResultSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum BrowserComputerUseSurface {
+    Browser,
+    ComputerUse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserComputerUseActionStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserComputerUseToolResultSummary {
+    pub surface: BrowserComputerUseSurface,
+    pub action: String,
+    pub status: BrowserComputerUseActionStatus,
+    pub target: Option<String>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum McpCapabilityKind {
     Tool,
     Resource,
@@ -152,6 +179,7 @@ pub enum ToolResultSummary {
     File(FileToolResultSummary),
     Git(GitToolResultSummary),
     Web(WebToolResultSummary),
+    BrowserComputerUse(BrowserComputerUseToolResultSummary),
     McpCapability(McpCapabilityToolResultSummary),
 }
 

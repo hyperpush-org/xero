@@ -49,6 +49,7 @@ impl ValidatorLauncher for CliLauncher {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        toolchain::augment_command(&mut cmd);
 
         let child = cmd.spawn().map_err(|err| {
             CommandError::system_fault(
@@ -148,34 +149,18 @@ impl ValidatorCommand {
 }
 
 fn resolve_binary_optional(name: &str) -> CommandResult<Option<PathBuf>> {
-    let probe = toolchain::probe_tool(name, &["--version"]);
-    if !probe.present {
-        return Ok(None);
-    }
-    match probe.path {
-        Some(path) => Ok(Some(PathBuf::from(path))),
-        None => Err(CommandError::system_fault(
-            "solana_toolchain_path_unavailable",
-            format!("Could not resolve filesystem path for {name}."),
-        )),
-    }
+    Ok(toolchain::resolve_binary(name))
 }
 
 fn resolve_binary(name: &str) -> CommandResult<PathBuf> {
-    let probe = toolchain::probe_tool(name, &["--version"]);
-    if !probe.present {
-        return Err(CommandError::user_fixable(
+    toolchain::resolve_binary(name).ok_or_else(|| {
+        CommandError::user_fixable(
             "solana_toolchain_missing",
-            format!("{name} not found on PATH. Install the Solana CLI or surfpool."),
-        ));
-    }
-    match probe.path {
-        Some(path) => Ok(PathBuf::from(path)),
-        None => Err(CommandError::system_fault(
-            "solana_toolchain_path_unavailable",
-            format!("Could not resolve filesystem path for {name}."),
-        )),
-    }
+            format!(
+                "{name} not found in the bundled, managed, or host toolchain. Install the managed Solana tools or surfpool.",
+            ),
+        )
+    })
 }
 
 fn ensure_dir(dir: &Path) -> CommandResult<()> {

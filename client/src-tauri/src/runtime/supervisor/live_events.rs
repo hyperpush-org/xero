@@ -23,9 +23,11 @@ use super::{
     SHELL_OUTPUT_PREFIX, STRUCTURED_EVENT_PREFIX,
 };
 use crate::runtime::protocol::{
-    CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary, McpCapabilityKind,
-    McpCapabilityToolResultSummary, SupervisorLiveEventPayload, SupervisorSkillCacheStatus,
-    SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
+    BrowserComputerUseActionStatus, BrowserComputerUseSurface,
+    BrowserComputerUseToolResultSummary, CommandToolResultSummary, FileToolResultSummary,
+    GitToolResultSummary, McpCapabilityKind, McpCapabilityToolResultSummary,
+    SupervisorLiveEventPayload, SupervisorSkillCacheStatus, SupervisorSkillDiagnostic,
+    SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
     SupervisorSkillSourceMetadata, SupervisorToolCallState, ToolResultSummary,
     WebToolResultSummary,
 };
@@ -854,6 +856,17 @@ fn sanitize_tool_result_summary(
             content_type: sanitize_optional_tool_summary_text(summary.content_type)?,
             truncated: summary.truncated,
         })),
+        ToolResultSummary::BrowserComputerUse(summary) => {
+            Ok(ToolResultSummary::BrowserComputerUse(
+                BrowserComputerUseToolResultSummary {
+                    surface: sanitize_browser_computer_use_surface(summary.surface)?,
+                    action: sanitize_required_tool_summary_text(summary.action)?,
+                    status: sanitize_browser_computer_use_action_status(summary.status)?,
+                    target: sanitize_optional_tool_summary_text(summary.target)?,
+                    outcome: sanitize_optional_tool_summary_text(summary.outcome)?,
+                },
+            ))
+        }
         ToolResultSummary::McpCapability(summary) => Ok(ToolResultSummary::McpCapability(
             McpCapabilityToolResultSummary {
                 server_id: sanitize_required_tool_summary_text(summary.server_id)?,
@@ -896,6 +909,26 @@ fn sanitize_mcp_capability_kind(
     }
 }
 
+fn sanitize_browser_computer_use_surface(
+    surface: BrowserComputerUseSurface,
+) -> Result<BrowserComputerUseSurface, ToolSummaryDecodeError> {
+    match surface {
+        BrowserComputerUseSurface::Browser | BrowserComputerUseSurface::ComputerUse => Ok(surface),
+    }
+}
+
+fn sanitize_browser_computer_use_action_status(
+    status: BrowserComputerUseActionStatus,
+) -> Result<BrowserComputerUseActionStatus, ToolSummaryDecodeError> {
+    match status {
+        BrowserComputerUseActionStatus::Pending
+        | BrowserComputerUseActionStatus::Running
+        | BrowserComputerUseActionStatus::Succeeded
+        | BrowserComputerUseActionStatus::Failed
+        | BrowserComputerUseActionStatus::Blocked => Ok(status),
+    }
+}
+
 fn tool_result_summary_text_fragments(summary: &ToolResultSummary) -> Vec<&str> {
     match summary {
         ToolResultSummary::Command(CommandToolResultSummary { .. }) => Vec::new(),
@@ -910,6 +943,14 @@ fn tool_result_summary_text_fragments(summary: &ToolResultSummary) -> Vec<&str> 
             Some(summary.target.as_str()),
             summary.final_url.as_deref(),
             summary.content_type.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        ToolResultSummary::BrowserComputerUse(summary) => [
+            Some(summary.action.as_str()),
+            summary.target.as_deref(),
+            summary.outcome.as_deref(),
         ]
         .into_iter()
         .flatten()

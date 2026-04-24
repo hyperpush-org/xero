@@ -34,6 +34,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::handle_uri_scheme,
         )
         .setup(|app| {
+            commands::solana::toolchain::configure_tauri_roots(app.handle());
             window_state::configure_main_window(app.handle().clone());
 
             // Sweep leftover emulator-related processes from a previous
@@ -172,6 +173,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::emulator::emulator_logs_subscribe,
             commands::emulator::emulator_logs_unsubscribe,
             commands::emulator::emulator_logs_get_recent,
+            commands::solana::solana_toolchain_install,
+            commands::solana::solana_toolchain_install_status,
             commands::solana::solana_toolchain_status,
             commands::solana::solana_cluster_list,
             commands::solana::solana_cluster_start,

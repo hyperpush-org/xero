@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -116,7 +117,10 @@ impl SystemCodamaRunner {
     fn command(&self, invocation: &CodamaInvocation) -> Command {
         let (program, base_args) = match &self.binary_override {
             Some(path) => (path.clone(), Vec::<String>::new()),
-            None => (PathBuf::from("codama"), Vec::new()),
+            None => (
+                PathBuf::from(toolchain::resolve_command("codama")),
+                Vec::new(),
+            ),
         };
         let mut cmd = Command::new(program);
         for arg in base_args {
@@ -130,6 +134,7 @@ impl SystemCodamaRunner {
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
+        toolchain::augment_command(&mut cmd);
         cmd
     }
 }
@@ -142,7 +147,7 @@ impl CodamaRunner for SystemCodamaRunner {
             CommandError::user_fixable(
                 "solana_codama_spawn_failed",
                 format!(
-                    "Could not run the Codama CLI: {err}. Install `codama` via npm / pnpm and ensure it is on PATH, or pin it as a devDependency."
+                    "Could not run the Codama CLI: {err}. Install it in the managed toolchain, via npm / pnpm, or pin it as a devDependency."
                 ),
             )
         })?;

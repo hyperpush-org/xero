@@ -6,7 +6,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import {
-  Apple,
   Gamepad2,
   Globe,
   Maximize2,
@@ -14,11 +13,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
-  Smartphone,
-  Waves,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { AndroidLogoIcon, AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
 import type { View } from "./data"
 import { StatusFooter, type StatusFooterProps } from "./status-footer"
 
@@ -321,7 +319,7 @@ export function CadenceShell({
         title="iOS Simulator needs Xcode. Click to install."
         type="button"
       >
-        <Apple className="h-4 w-4" />
+        <AppleLogoIcon className="h-4 w-4" />
       </button>
     ) : (
       <button
@@ -336,16 +334,16 @@ export function CadenceShell({
         onClick={onToggleIos}
         type="button"
       >
-        <Apple className="h-4 w-4" />
+        <AppleLogoIcon className="h-4 w-4" />
       </button>
     )
   }
 
   // Android button stays visible on every platform — even without an
   // SDK installed, clicking it opens the sidebar, which surfaces the
-  // one-click provisioning flow. We tint the idle state amber when the
-  // SDK is known-missing so the user can tell setup is required
-  // without having to open the panel first.
+  // one-click provisioning flow. Setup-needed state is conveyed via the
+  // tooltip rather than an amber tint so the titlebar icons read as a
+  // uniform set.
   const androidSetupNeeded =
     desktopRuntime && !emulatorSdk.androidPresent && !androidOpen
   const AndroidBtn = (
@@ -356,9 +354,7 @@ export function CadenceShell({
         "rounded-md p-1.5 transition-colors",
         androidOpen
           ? "bg-primary/15 text-primary"
-          : androidSetupNeeded
-            ? "text-amber-300/80 hover:bg-amber-500/15 hover:text-amber-200"
-            : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
       )}
       onClick={onToggleAndroid}
       title={
@@ -368,7 +364,7 @@ export function CadenceShell({
       }
       type="button"
     >
-      <Smartphone className="h-4 w-4" />
+      <AndroidLogoIcon className="h-4 w-4" />
     </button>
   )
 
@@ -385,7 +381,7 @@ export function CadenceShell({
       onClick={onToggleSolana}
       type="button"
     >
-      <Waves className="h-4 w-4" />
+      <SolanaLogoIcon className="h-4 w-4" mono />
     </button>
   )
 

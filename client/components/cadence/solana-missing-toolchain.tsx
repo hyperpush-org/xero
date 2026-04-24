@@ -1,22 +1,43 @@
 "use client"
 
-import { ExternalLink, RefreshCw } from "lucide-react"
+import { Download, ExternalLink, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
-import type { ToolchainStatus } from "@/src/features/solana/use-solana-workbench"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Progress } from "@/components/ui/progress"
+import type {
+  ToolchainInstallEvent,
+  ToolchainStatus,
+} from "@/src/features/solana/use-solana-workbench"
 
 interface Props {
   status: ToolchainStatus | null
   loading: boolean
+  installing: boolean
+  installEvent: ToolchainInstallEvent | null
+  onInstall: () => void
   onRefresh: () => void
 }
 
 // Panel shown above the cluster picker when the host is missing the
 // minimum Solana toolchain (the Solana CLI). Other tools are only flagged
 // if they would be actively used by the current cluster flow.
-export function SolanaMissingToolchain({ status, loading, onRefresh }: Props) {
+export function SolanaMissingToolchain({
+  status,
+  loading,
+  installing,
+  installEvent,
+  onInstall,
+  onRefresh,
+}: Props) {
   if (!status) return null
   const panel = buildPanel(status)
   if (!panel) return null
+  const progress =
+    typeof installEvent?.progress === "number"
+      ? Math.round(installEvent.progress * 100)
+      : null
+  const canInstall = Boolean(status.installSupported ?? true)
 
   return (
     <div
@@ -26,32 +47,82 @@ export function SolanaMissingToolchain({ status, loading, onRefresh }: Props) {
     >
       <div className="font-medium text-amber-200">{panel.title}</div>
       <div className="text-muted-foreground">{panel.detail}</div>
-      <div className="flex flex-wrap items-center gap-2">
-        {panel.actions.map((action) => (
-          <a
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(status.installableComponents ?? []).map((component) => (
+          <Badge
             className={cn(
-              "inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 py-0.5",
-              "text-[11px] text-foreground transition-colors hover:border-primary/50 hover:text-primary",
+              "h-5 border-border/70 bg-background/50 px-1.5 text-[10px]",
+              component.installed
+                ? "text-emerald-300"
+                : "text-amber-200",
             )}
-            href={action.href}
-            key={action.label}
-            rel="noreferrer"
-            target="_blank"
+            key={component.component}
+            variant="outline"
           >
-            {action.label}
-            <ExternalLink className="h-3 w-3" />
-          </a>
+            {component.label}
+          </Badge>
         ))}
-        <button
+      </div>
+      {installing || installEvent ? (
+        <div className="space-y-1">
+          <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+            {installing ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            <span>
+              {installEvent?.error ??
+                installEvent?.message ??
+                "Preparing managed Solana tools"}
+            </span>
+          </div>
+          {installing ? (
+            <Progress
+              className={cn("h-1.5", progress == null && "opacity-70")}
+              value={progress ?? 0}
+            />
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          className="h-7 px-2 text-[11px]"
+          disabled={!canInstall || installing}
+          onClick={onInstall}
+          size="sm"
+          type="button"
+          variant="default"
+        >
+          {installing ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Download className="h-3 w-3" />
+          )}
+          Install managed tools
+        </Button>
+        {panel.actions.map((action) => (
+          <Button
+            asChild
+            className="h-7 px-2 text-[11px]"
+            key={action.label}
+            size="sm"
+            variant="outline"
+          >
+            <a href={action.href} rel="noreferrer" target="_blank">
+              {action.label}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </Button>
+        ))}
+        <Button
           aria-label="Re-detect toolchain"
-          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 py-0.5 text-[11px] text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
+          className="h-7 px-2 text-[11px]"
           disabled={loading}
           onClick={onRefresh}
+          size="sm"
           type="button"
+          variant="outline"
         >
           <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
           Re-detect
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -68,10 +139,10 @@ function buildPanel(status: ToolchainStatus): Panel | null {
     return {
       title: "Solana CLI not found",
       detail:
-        "Install the Solana tool suite (v1.18+) so Cadence can spin up a localnet and submit transactions. Cadence searches PATH and the default Solana install directory.",
+        "Install the managed Solana tool suite so Cadence can spin up local validators and submit transactions without relying on a host PATH setup.",
       actions: [
         {
-          label: "Install Solana CLI",
+          label: "Solana CLI docs",
           href: "https://docs.solanalabs.com/cli/install",
         },
       ],
@@ -84,10 +155,10 @@ function buildPanel(status: ToolchainStatus): Panel | null {
     return {
       title: "Program build tooling not found",
       detail:
-        "Install Anchor (for framework projects) or cargo-build-sbf (for raw Rust programs) when you're ready to build a deployable .so.",
+        "Install the managed build tools so Cadence can run Anchor or cargo-build-sbf for deployable .so artifacts.",
       actions: [
-        { label: "Install Anchor", href: "https://www.anchor-lang.com/docs/installation" },
-        { label: "Install cargo-build-sbf", href: "https://docs.solanalabs.com/cli/install" },
+        { label: "Anchor docs", href: "https://www.anchor-lang.com/docs/installation" },
+        { label: "Solana CLI docs", href: "https://docs.solanalabs.com/cli/install" },
       ],
     }
   }

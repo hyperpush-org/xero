@@ -60,6 +60,19 @@ pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_
         })
     );
 
+    assert_eq!(
+        serde_json::to_value(sample_browser_computer_use_tool_summary())
+            .expect("browser/computer-use tool summary should serialize"),
+        json!({
+            "kind": "browser_computer_use",
+            "surface": "browser",
+            "action": "click",
+            "status": "succeeded",
+            "target": "button[type=submit]",
+            "outcome": "Clicked submit and advanced to the confirmation view."
+        })
+    );
+
     let autonomous_tool_payload = serde_json::to_value(AutonomousToolResultPayloadDto {
         project_id: "project-1".into(),
         run_id: "run-1".into(),
@@ -83,6 +96,33 @@ pub(crate) fn tool_result_summary_contracts_remain_tagged_and_camel_case_across_
             "changedFiles": 3,
             "truncated": false,
             "baseRevision": "main~1"
+        })
+    );
+
+    let browser_tool_payload = serde_json::to_value(AutonomousToolResultPayloadDto {
+        project_id: "project-1".into(),
+        run_id: "run-1".into(),
+        unit_id: "run-1:unit:researcher".into(),
+        attempt_id: "run-1:unit:researcher:attempt:1".into(),
+        artifact_id: "artifact-browser-tool-result".into(),
+        tool_call_id: "tool-call-browser-1".into(),
+        tool_name: "browser".into(),
+        tool_state: AutonomousToolCallStateDto::Succeeded,
+        command_result: None,
+        tool_summary: Some(sample_browser_computer_use_tool_summary()),
+        action_id: Some("action-1".into()),
+        boundary_id: Some("boundary-1".into()),
+    })
+    .expect("browser tool payload should serialize");
+    assert_eq!(
+        browser_tool_payload["toolSummary"],
+        json!({
+            "kind": "browser_computer_use",
+            "surface": "browser",
+            "action": "click",
+            "status": "succeeded",
+            "target": "button[type=submit]",
+            "outcome": "Clicked submit and advanced to the confirmation view."
         })
     );
 

@@ -70,8 +70,8 @@ pub use events::{
     TxEventPayload, ValidatorLogLevel, ValidatorLogPayload, ValidatorPhase, ValidatorStatusPayload,
     SOLANA_AUDIT_EVENT, SOLANA_DEPLOY_PROGRESS_EVENT, SOLANA_IDL_CHANGED_EVENT,
     SOLANA_LOG_DECODED_EVENT, SOLANA_LOG_EVENT, SOLANA_PERSONA_EVENT, SOLANA_RPC_HEALTH_EVENT,
-    SOLANA_SCENARIO_EVENT, SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT, SOLANA_TX_EVENT,
-    SOLANA_VALIDATOR_LOG_EVENT, SOLANA_VALIDATOR_STATUS_EVENT,
+    SOLANA_SCENARIO_EVENT, SOLANA_TOOLCHAIN_INSTALL_EVENT, SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT,
+    SOLANA_TX_EVENT, SOLANA_VALIDATOR_LOG_EVENT, SOLANA_VALIDATOR_STATUS_EVENT,
 };
 pub use idl::{
     codama::{CodamaGenerationReport, CodamaGenerationRequest, CodamaTarget, CodamaTargetResult},
@@ -137,7 +137,10 @@ pub use token::{
     SystemTokenCreateRunner, TokenCreateInvocation, TokenCreateOutcome, TokenCreateRunner,
     TokenCreateSpec, TokenExtension, TokenExtensionConfig, TokenProgram, TokenServices,
 };
-pub use toolchain::{ToolProbe, ToolchainStatus};
+pub use toolchain::{
+    ToolProbe, ToolchainComponent, ToolchainComponentStatus, ToolchainInstallEvent,
+    ToolchainInstallPhase, ToolchainInstallRequest, ToolchainInstallStatus, ToolchainStatus,
+};
 pub use tx::{
     AccountMetaSpec, AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, AltRunner,
     BundleStatus, BundleSubmission, Commitment, CompiledComputeInstruction, ComputeBudgetPlan,
@@ -763,8 +766,25 @@ impl Drop for SolanaState {
 // ---------- Tauri commands --------------------------------------------------
 
 #[tauri::command]
-pub fn solana_toolchain_status() -> CommandResult<ToolchainStatus> {
+pub fn solana_toolchain_status<R: Runtime>(app: AppHandle<R>) -> CommandResult<ToolchainStatus> {
+    toolchain::configure_tauri_roots(&app);
     Ok(toolchain::probe())
+}
+
+#[tauri::command]
+pub fn solana_toolchain_install_status<R: Runtime>(
+    app: AppHandle<R>,
+) -> CommandResult<ToolchainInstallStatus> {
+    toolchain::configure_tauri_roots(&app);
+    Ok(toolchain::install_status())
+}
+
+#[tauri::command]
+pub fn solana_toolchain_install<R: Runtime>(
+    app: AppHandle<R>,
+    request: ToolchainInstallRequest,
+) -> CommandResult<ToolchainInstallStatus> {
+    toolchain::install(&app, request)
 }
 
 #[tauri::command]

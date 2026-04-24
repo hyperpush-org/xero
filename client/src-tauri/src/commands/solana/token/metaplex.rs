@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::commands::solana::cluster::ClusterKind;
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 /// What token standard to mint under. Umi handles all three; the worker
@@ -138,7 +139,8 @@ impl MetaplexMintRunner for SystemMetaplexRunner {
                 "Empty argv passed to metaplex mint runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
+        let resolved_program = toolchain::resolve_command(program);
+        let mut cmd = Command::new(&resolved_program);
         cmd.args(args)
             .current_dir(&invocation.cwd)
             .stdout(Stdio::piped())
@@ -147,11 +149,12 @@ impl MetaplexMintRunner for SystemMetaplexRunner {
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
         }
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_metaplex_mint_spawn_failed",
                 format!(
-                    "Could not run `{program}`: {err}. Install Node 20+ and ensure it is on PATH.",
+                    "Could not run `{program}`: {err}. Install Node 20+ in the managed toolchain or ensure it is on PATH.",
                 ),
             )
         })?;
@@ -215,7 +218,7 @@ pub fn mint_metaplex_nft(
     let node_bin = request
         .node_bin
         .clone()
-        .unwrap_or_else(|| "node".to_string());
+        .unwrap_or_else(|| toolchain::resolve_command("node"));
     let argv = vec![node_bin, worker_path.display().to_string()];
     let cwd = worker_root.to_path_buf();
 

@@ -23,6 +23,14 @@ export const optionalIsoTimestampSchema = isoTimestampSchema.nullable().optional
 
 export const gitToolResultScopeSchema = z.enum(['staged', 'unstaged', 'worktree'])
 export const webToolResultContentKindSchema = z.enum(['html', 'plain_text'])
+export const browserComputerUseSurfaceSchema = z.enum(['browser', 'computer_use'])
+export const browserComputerUseActionStatusSchema = z.enum([
+  'pending',
+  'running',
+  'succeeded',
+  'failed',
+  'blocked',
+])
 export const mcpCapabilityKindSchema = z.enum(['tool', 'resource', 'prompt', 'command'])
 
 export const toolResultSummarySchema = z.discriminatedUnion('kind', [
@@ -69,6 +77,16 @@ export const toolResultSummarySchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('browser_computer_use'),
+      surface: browserComputerUseSurfaceSchema,
+      action: z.string().trim().min(1),
+      status: browserComputerUseActionStatusSchema,
+      target: nonEmptyOptionalTextSchema,
+      outcome: nonEmptyOptionalTextSchema,
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('mcp_capability'),
       serverId: z.string().trim().min(1),
       capabilityKind: mcpCapabilityKindSchema,
@@ -80,6 +98,8 @@ export const toolResultSummarySchema = z.discriminatedUnion('kind', [
 
 export type GitToolResultScopeDto = z.infer<typeof gitToolResultScopeSchema>
 export type WebToolResultContentKindDto = z.infer<typeof webToolResultContentKindSchema>
+export type BrowserComputerUseSurfaceDto = z.infer<typeof browserComputerUseSurfaceSchema>
+export type BrowserComputerUseActionStatusDto = z.infer<typeof browserComputerUseActionStatusSchema>
 export type McpCapabilityKindDto = z.infer<typeof mcpCapabilityKindSchema>
 export type ToolResultSummaryDto = z.infer<typeof toolResultSummarySchema>
 

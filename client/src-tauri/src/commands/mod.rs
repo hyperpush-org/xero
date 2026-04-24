@@ -108,9 +108,9 @@ pub use solana::{
     solana_rpc_health, solana_scenario_list, solana_scenario_run, solana_secrets_patterns,
     solana_secrets_scan, solana_secrets_scope_check, solana_snapshot_create,
     solana_snapshot_delete, solana_snapshot_list, solana_snapshot_restore,
-    solana_squads_proposal_create, solana_subscribe_ready, solana_toolchain_status,
-    solana_tx_build, solana_tx_explain, solana_tx_send, solana_tx_simulate,
-    solana_verified_build_submit, SolanaState,
+    solana_squads_proposal_create, solana_subscribe_ready, solana_toolchain_install,
+    solana_toolchain_install_status, solana_toolchain_status, solana_tx_build, solana_tx_explain,
+    solana_tx_send, solana_tx_simulate, solana_verified_build_submit, SolanaState,
 };
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_openai_login::start_openai_login;

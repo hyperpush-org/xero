@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 /// Default release-build timeout. SBF builds of medium-sized Anchor
@@ -152,8 +153,9 @@ impl BuildRunner for SystemBuildRunner {
                 "Empty argv passed to program build runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
-        cmd.args(args)
+        let (resolved_program, resolved_args) = resolve_build_program(program, args);
+        let mut cmd = Command::new(&resolved_program);
+        cmd.args(&resolved_args)
             .current_dir(&invocation.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -161,11 +163,12 @@ impl BuildRunner for SystemBuildRunner {
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
         }
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_program_build_spawn_failed",
                 format!(
-                    "Could not run `{}`: {err}. Install Anchor / cargo-build-sbf and ensure they are on PATH.",
+                    "Could not run `{}`: {err}. Install the managed Solana toolchain or ensure Anchor / cargo-build-sbf are on PATH.",
                     program
                 ),
             )
@@ -186,6 +189,18 @@ impl BuildRunner for SystemBuildRunner {
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
     }
+}
+
+fn resolve_build_program(program: &str, args: &[String]) -> (String, Vec<String>) {
+    if program == "cargo" && args.first().map(String::as_str) == Some("build-sbf") {
+        if let Some(path) = toolchain::resolve_binary("cargo-build-sbf") {
+            return (
+                path.to_string_lossy().into_owned(),
+                args.iter().skip(1).cloned().collect(),
+            );
+        }
+    }
+    (toolchain::resolve_command(program), args.to_vec())
 }
 
 pub fn build(runner: &dyn BuildRunner, request: &BuildRequest) -> CommandResult<BuildReport> {

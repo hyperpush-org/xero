@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::solana::cluster::ClusterKind;
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -136,7 +137,8 @@ impl AnchorIdlRunner for SystemAnchorIdlRunner {
                 "Empty argv passed to Anchor IDL runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
+        let resolved_program = toolchain::resolve_command(program);
+        let mut cmd = Command::new(&resolved_program);
         cmd.args(args);
         if let Some(cwd) = &invocation.cwd {
             cmd.current_dir(cwd);
@@ -144,11 +146,12 @@ impl AnchorIdlRunner for SystemAnchorIdlRunner {
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_idl_publish_spawn_failed",
                 format!(
-                    "Could not run `{program}`: {err}. Install Anchor 0.30+ and ensure it is on PATH."
+                    "Could not run `{program}`: {err}. Install the managed Solana toolchain or ensure Anchor is on PATH."
                 ),
             )
         })?;

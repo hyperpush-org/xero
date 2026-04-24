@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::solana::cluster::ClusterKind;
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 pub use extensions::{
@@ -201,7 +202,8 @@ impl TokenCreateRunner for SystemTokenCreateRunner {
                 "Empty argv passed to token-create runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
+        let resolved_program = toolchain::resolve_command(program);
+        let mut cmd = Command::new(&resolved_program);
         cmd.args(args)
             .current_dir(&invocation.cwd)
             .stdout(Stdio::piped())
@@ -210,11 +212,12 @@ impl TokenCreateRunner for SystemTokenCreateRunner {
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
         }
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_token_create_spawn_failed",
                 format!(
-                    "Could not run `{program}`: {err}. Install the Solana CLI (`spl-token`) and ensure it is on PATH."
+                    "Could not run `{program}`: {err}. Install the managed Solana toolchain or ensure `spl-token` is on PATH."
                 ),
             )
         })?;
@@ -280,7 +283,7 @@ pub fn create_token(
     let cli = spec
         .spl_token_cli
         .clone()
-        .unwrap_or_else(|| "spl-token".to_string());
+        .unwrap_or_else(|| toolchain::resolve_command("spl-token"));
     let argv = assemble_argv(
         &cli,
         &resolved_rpc,

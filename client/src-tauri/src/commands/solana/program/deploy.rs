@@ -39,6 +39,7 @@ use crate::commands::solana::idl::{
         IdlPublishMode, IdlPublishReport, IdlPublishRequest, SystemAnchorIdlRunner,
     },
 };
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 use super::squads::{synthesize as synthesize_squads, SquadsProposalDescriptor};
@@ -269,7 +270,8 @@ impl DeployRunner for SystemDeployRunner {
                 "Empty argv passed to deploy runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
+        let resolved_program = toolchain::resolve_command(program);
+        let mut cmd = Command::new(&resolved_program);
         cmd.args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -280,11 +282,12 @@ impl DeployRunner for SystemDeployRunner {
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
         }
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_program_deploy_spawn_failed",
                 format!(
-                    "Could not run `{program}`: {err}. Install Solana CLI 1.18+ and ensure it is on PATH.",
+                    "Could not run `{program}`: {err}. Install the managed Solana toolchain or ensure the Solana CLI is on PATH.",
                 ),
             )
         })?;

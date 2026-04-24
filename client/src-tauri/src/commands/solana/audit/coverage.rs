@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(900);
@@ -144,8 +145,9 @@ impl CoverageRunner for SystemCoverageRunner {
                 "Empty argv passed to coverage runner.",
             )
         })?;
-        let mut cmd = Command::new(program);
-        cmd.args(args)
+        let (resolved_program, resolved_args) = resolve_coverage_program(program, args);
+        let mut cmd = Command::new(&resolved_program);
+        cmd.args(&resolved_args)
             .current_dir(&invocation.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -153,6 +155,7 @@ impl CoverageRunner for SystemCoverageRunner {
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
         }
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_audit_coverage_spawn_failed",
@@ -179,6 +182,18 @@ impl CoverageRunner for SystemCoverageRunner {
             lcov_path: invocation.lcov_out.clone(),
         })
     }
+}
+
+fn resolve_coverage_program(program: &str, args: &[String]) -> (String, Vec<String>) {
+    if program == "cargo" && args.first().map(String::as_str) == Some("llvm-cov") {
+        if let Some(path) = toolchain::resolve_binary("cargo-llvm-cov") {
+            return (
+                path.to_string_lossy().into_owned(),
+                args.iter().skip(1).cloned().collect(),
+            );
+        }
+    }
+    (toolchain::resolve_command(program), args.to_vec())
 }
 
 pub fn run(

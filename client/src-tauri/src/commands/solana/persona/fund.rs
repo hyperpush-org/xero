@@ -323,6 +323,7 @@ impl FundingBackend for DefaultFundingBackend {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::commands::solana::toolchain::augment_command(&mut cmd);
 
         let output = match cmd.output() {
             Ok(o) => o,
@@ -390,7 +391,8 @@ impl FundingBackend for DefaultFundingBackend {
         // This isn't full Metaplex metadata — that's Phase 8 work — but it
         // is a DAS-queryable NFT fixture that downstream tests can treat as
         // "the persona owns a collectible".
-        let create_output = match Command::new(&spl_token)
+        let mut create_cmd = Command::new(&spl_token);
+        create_cmd
             .arg("--url")
             .arg(&ctx.rpc_url)
             .arg("--fee-payer")
@@ -404,9 +406,9 @@ impl FundingBackend for DefaultFundingBackend {
             .arg("0")
             .arg("--mint-authority")
             .arg(&ctx.keypair_path)
-            .stdin(Stdio::null())
-            .output()
-        {
+            .stdin(Stdio::null());
+        crate::commands::solana::toolchain::augment_command(&mut create_cmd);
+        let create_output = match create_cmd.output() {
             Ok(o) => o,
             Err(err) => {
                 return Ok(FundingStep::NftFixture {
@@ -438,7 +440,8 @@ impl FundingBackend for DefaultFundingBackend {
             .clone()
             .unwrap_or_else(|| format!("{collection}-#{index}"));
 
-        let mint_output = Command::new(&spl_token)
+        let mut mint_cmd = Command::new(&spl_token);
+        mint_cmd
             .arg("--url")
             .arg(&ctx.rpc_url)
             .arg("--fee-payer")
@@ -454,8 +457,9 @@ impl FundingBackend for DefaultFundingBackend {
             .arg(&ctx.keypair_path)
             .arg("--recipient-owner")
             .arg(&ctx.recipient_pubkey)
-            .stdin(Stdio::null())
-            .output();
+            .stdin(Stdio::null());
+        crate::commands::solana::toolchain::augment_command(&mut mint_cmd);
+        let mint_output = mint_cmd.output();
 
         match mint_output {
             Ok(o) if o.status.success() => {

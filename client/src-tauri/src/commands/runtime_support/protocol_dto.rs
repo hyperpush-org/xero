@@ -3,9 +3,11 @@ use crate::{
         AutonomousSkillCacheStatusDto, AutonomousSkillLifecycleCacheDto,
         AutonomousSkillLifecycleDiagnosticDto, AutonomousSkillLifecycleResultDto,
         AutonomousSkillLifecycleSourceDto, AutonomousSkillLifecycleStageDto,
-        CommandToolResultSummaryDto, FileToolResultSummaryDto, GitToolResultScopeDto,
-        GitToolResultSummaryDto, McpCapabilityKindDto, McpCapabilityToolResultSummaryDto,
-        ToolResultSummaryDto, WebToolResultContentKindDto, WebToolResultSummaryDto,
+        BrowserComputerUseActionStatusDto, BrowserComputerUseSurfaceDto,
+        BrowserComputerUseToolResultSummaryDto, CommandToolResultSummaryDto,
+        FileToolResultSummaryDto, GitToolResultScopeDto, GitToolResultSummaryDto,
+        McpCapabilityKindDto, McpCapabilityToolResultSummaryDto, ToolResultSummaryDto,
+        WebToolResultContentKindDto, WebToolResultSummaryDto,
     },
     db::project_store::{
         AutonomousSkillCacheStatusRecord, AutonomousSkillLifecycleCacheRecord,
@@ -13,8 +15,9 @@ use crate::{
         AutonomousSkillLifecycleSourceRecord, AutonomousSkillLifecycleStageRecord,
     },
     runtime::protocol::{
-        GitToolResultScope, McpCapabilityKind, SupervisorSkillCacheStatus,
-        SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
+        BrowserComputerUseActionStatus, BrowserComputerUseSurface, GitToolResultScope,
+        McpCapabilityKind, SupervisorSkillCacheStatus, SupervisorSkillDiagnostic,
+        SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
         SupervisorSkillSourceMetadata, ToolResultSummary, WebToolResultContentKind,
     },
 };
@@ -57,6 +60,15 @@ pub(crate) fn tool_result_summary_dto_from_protocol(
             content_type: summary.content_type.clone(),
             truncated: summary.truncated,
         }),
+        ToolResultSummary::BrowserComputerUse(summary) => {
+            ToolResultSummaryDto::BrowserComputerUse(BrowserComputerUseToolResultSummaryDto {
+                surface: browser_computer_use_surface_dto(summary.surface.clone()),
+                action: summary.action.clone(),
+                status: browser_computer_use_action_status_dto(summary.status.clone()),
+                target: summary.target.clone(),
+                outcome: summary.outcome.clone(),
+            })
+        }
         ToolResultSummary::McpCapability(summary) => {
             ToolResultSummaryDto::McpCapability(McpCapabilityToolResultSummaryDto {
                 server_id: summary.server_id.clone(),
@@ -193,6 +205,25 @@ fn web_tool_result_content_kind_dto(kind: WebToolResultContentKind) -> WebToolRe
     match kind {
         WebToolResultContentKind::Html => WebToolResultContentKindDto::Html,
         WebToolResultContentKind::PlainText => WebToolResultContentKindDto::PlainText,
+    }
+}
+
+fn browser_computer_use_surface_dto(surface: BrowserComputerUseSurface) -> BrowserComputerUseSurfaceDto {
+    match surface {
+        BrowserComputerUseSurface::Browser => BrowserComputerUseSurfaceDto::Browser,
+        BrowserComputerUseSurface::ComputerUse => BrowserComputerUseSurfaceDto::ComputerUse,
+    }
+}
+
+fn browser_computer_use_action_status_dto(
+    status: BrowserComputerUseActionStatus,
+) -> BrowserComputerUseActionStatusDto {
+    match status {
+        BrowserComputerUseActionStatus::Pending => BrowserComputerUseActionStatusDto::Pending,
+        BrowserComputerUseActionStatus::Running => BrowserComputerUseActionStatusDto::Running,
+        BrowserComputerUseActionStatus::Succeeded => BrowserComputerUseActionStatusDto::Succeeded,
+        BrowserComputerUseActionStatus::Failed => BrowserComputerUseActionStatusDto::Failed,
+        BrowserComputerUseActionStatus::Blocked => BrowserComputerUseActionStatusDto::Blocked,
     }
 }
 

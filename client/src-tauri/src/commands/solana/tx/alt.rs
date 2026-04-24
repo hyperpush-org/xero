@@ -86,9 +86,9 @@ impl SolanaCliRunner {
     fn solana_path(&self) -> Option<String> {
         let mut guard = self.resolved.lock().expect("alt runner poisoned");
         if guard.is_none() {
-            use crate::commands::solana::toolchain::probe_tool;
-            let probe = probe_tool("solana", &["--version"]);
-            *guard = Some(probe.path);
+            let path = crate::commands::solana::toolchain::resolve_binary("solana")
+                .map(|p| p.display().to_string());
+            *guard = Some(path);
         }
         guard.clone().flatten()
     }
@@ -102,8 +102,8 @@ impl AltRunner for SolanaCliRunner {
                 "solana CLI is not on PATH — install the Solana CLI to create ALTs.",
             )
         })?;
-        let output = Command::new(&solana)
-            .arg("address-lookup-table")
+        let mut cmd = Command::new(&solana);
+        cmd.arg("address-lookup-table")
             .arg("create")
             .arg("--url")
             .arg(rpc_url)
@@ -111,14 +111,14 @@ impl AltRunner for SolanaCliRunner {
             .arg(authority_keypair)
             .arg("--output")
             .arg("json")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|err| {
-                CommandError::retryable(
-                    "solana_alt_create_spawn",
-                    format!("solana address-lookup-table create failed: {err}"),
-                )
-            })?;
+            .stdin(Stdio::null());
+        crate::commands::solana::toolchain::augment_command(&mut cmd);
+        let output = cmd.output().map_err(|err| {
+            CommandError::retryable(
+                "solana_alt_create_spawn",
+                format!("solana address-lookup-table create failed: {err}"),
+            )
+        })?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         if !output.status.success() {
@@ -171,6 +171,7 @@ impl AltRunner for SolanaCliRunner {
             .arg("--addresses")
             .arg(addresses.join(","))
             .stdin(Stdio::null());
+        crate::commands::solana::toolchain::augment_command(&mut cmd);
         let output = cmd.output().map_err(|err| {
             CommandError::retryable(
                 "solana_alt_extend_spawn",

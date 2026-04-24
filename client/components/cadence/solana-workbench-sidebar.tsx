@@ -17,10 +17,10 @@ import {
   Square,
   Users,
   Wallet,
-  Waves,
   Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SolanaLogoIcon } from "./brand-icons"
 import { SolanaAuditPanel } from "./solana-audit-panel"
 import { SolanaDeployPanel } from "./solana-deploy-panel"
 import { SolanaIdlPanel } from "./solana-idl-panel"
@@ -43,9 +43,10 @@ import {
   type SimulateRequest,
 } from "@/src/features/solana/use-solana-workbench"
 
-const MIN_WIDTH = 320
-const DEFAULT_WIDTH = 420
+const MIN_WIDTH = 360
+const DEFAULT_WIDTH = 440
 const MAX_WIDTH = 900
+const SIDEBAR_OPEN_ACTIVATION_DELAY_MS = 180
 const STORAGE_KEY = "cadence.solana.workbench.width"
 
 type TabId =
@@ -91,12 +92,26 @@ function writePersistedWidth(value: number) {
 export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
+  const [workbenchActive, setWorkbenchActive] = useState(open)
   const widthRef = useRef(width)
   widthRef.current = width
 
-  const workbench = useSolanaWorkbench({ active: open })
+  const workbench = useSolanaWorkbench({ active: workbenchActive })
   const [selectedKind, setSelectedKind] = useState<ClusterKind>("localnet")
   const [activeTab, setActiveTab] = useState<TabId>("personas")
+
+  useEffect(() => {
+    if (!open) {
+      setWorkbenchActive(false)
+      return
+    }
+
+    const activationTimer = window.setTimeout(
+      () => setWorkbenchActive(true),
+      SIDEBAR_OPEN_ACTIVATION_DELAY_MS,
+    )
+    return () => window.clearTimeout(activationTimer)
+  }, [open])
 
   useEffect(() => {
     if (!workbench.clusters.length) return
@@ -428,7 +443,7 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
     <aside
       aria-hidden={!open}
       className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
+        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar will-change-[width]",
         !isResizing && "transition-[width] duration-200 ease-out",
         !open && "border-l-0",
       )}
@@ -453,7 +468,7 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
 
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-border/70 pl-3 pr-2">
         <div className="flex items-center gap-2">
-          <Waves aria-hidden className="h-3.5 w-3.5 text-primary" />
+          <SolanaLogoIcon className="h-3.5 w-3.5 text-muted-foreground/90" mono />
           <span className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
             Solana Workbench
           </span>
@@ -475,12 +490,32 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
       </div>
 
       <SolanaMissingToolchain
+        installEvent={workbench.toolchainInstallEvent}
+        installing={workbench.toolchainInstalling}
         loading={workbench.toolchainLoading}
+        onInstall={() => void workbench.installToolchain()}
         onRefresh={() => void workbench.refreshToolchain()}
         status={workbench.toolchain}
       />
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
+      <div className="flex min-h-0 flex-1">
+        <div
+          role="tablist"
+          aria-label="Workbench tools"
+          aria-orientation="vertical"
+          className="flex w-10 shrink-0 flex-col items-stretch gap-0.5 overflow-x-hidden overflow-y-auto border-r border-border/70 bg-sidebar scrollbar-thin"
+        >
+          {tabs.map((tab) => (
+            <TabButton
+              key={tab.id}
+              tab={tab}
+              active={activeTab === tab.id}
+              onClick={() => setActiveTab(tab.id)}
+            />
+          ))}
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
         <section className="border-b border-border/70 px-3 py-3">
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             Cluster
@@ -596,21 +631,6 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
             </p>
           ) : null}
         </section>
-
-        <div
-          role="tablist"
-          aria-label="Workbench tools"
-          className="sticky top-0 z-10 flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/70 bg-sidebar px-2 scrollbar-thin"
-        >
-          {tabs.map((tab) => (
-            <TabButton
-              key={tab.id}
-              tab={tab}
-              active={activeTab === tab.id}
-              onClick={() => setActiveTab(tab.id)}
-            />
-          ))}
-        </div>
 
         <div
           role="tabpanel"
@@ -795,6 +815,7 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
             />
           ) : null}
         </div>
+        </div>
       </div>
     </aside>
   )
@@ -817,36 +838,35 @@ function TabButton({
   onClick: () => void
 }) {
   const Icon = tab.icon
+  const tooltip = tab.count != null ? `${tab.label} (${tab.count})` : tab.label
   return (
     <button
       id={`tab-${tab.id}`}
       role="tab"
       aria-selected={active}
+      aria-label={tab.label}
+      title={tooltip}
       type="button"
       onClick={onClick}
       className={cn(
-        "relative inline-flex shrink-0 items-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors",
+        "group relative inline-flex h-10 w-10 shrink-0 items-center justify-center transition-colors",
         active
-          ? "text-foreground"
-          : "text-muted-foreground hover:text-foreground",
+          ? "bg-primary/15 text-primary"
+          : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
       )}
     >
-      <Icon className="h-3.5 w-3.5" />
-      <span>{tab.label}</span>
+      <Icon className="h-4 w-4" />
       {tab.count != null ? (
         <span
           className={cn(
-            "rounded px-1 text-[9.5px] font-medium tabular-nums",
+            "pointer-events-none absolute right-0 top-0 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-[3px] text-[8.5px] font-semibold leading-none tabular-nums ring-1 ring-sidebar",
             active
-              ? "bg-primary/15 text-primary"
-              : "bg-secondary/60 text-muted-foreground",
+              ? "bg-primary text-primary-foreground"
+              : "bg-primary/70 text-primary-foreground",
           )}
         >
           {tab.count}
         </span>
-      ) : null}
-      {active ? (
-        <span className="absolute inset-x-1 -bottom-px h-px bg-primary" />
       ) : null}
     </button>
   )

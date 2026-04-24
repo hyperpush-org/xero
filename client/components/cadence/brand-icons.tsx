@@ -98,3 +98,65 @@ export function GitHubIcon({ className }: BrandIconProps) {
     </svg>
   )
 }
+
+export function AppleLogoIcon({ className }: BrandIconProps) {
+  return (
+    <svg
+      role="img"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="currentColor"
+      className={cn("h-4 w-4", className)}
+      aria-label="Apple"
+    >
+      <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+    </svg>
+  )
+}
+
+export function AndroidLogoIcon({ className }: BrandIconProps) {
+  return (
+    <svg
+      role="img"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="currentColor"
+      className={cn("h-4 w-4", className)}
+      aria-label="Android"
+    >
+      <path d="M17.523 15.3414c-.5511 0-.9993-.4486-.9993-.9997s.4482-.9993.9993-.9993c.5511 0 .9993.4482.9993.9993.0001.5511-.4482.9997-.9993.9997m-11.046 0c-.5511 0-.9993-.4486-.9993-.9997s.4482-.9993.9993-.9993c.5511 0 .9993.4482.9993.9993 0 .5511-.4482.9997-.9993.9997m11.4045-6.02l1.9973-3.4592a.416.416 0 00-.1521-.5676.416.416 0 00-.5676.1521l-2.0223 3.503C15.5902 8.2439 13.8533 7.8508 12 7.8508s-3.5902.3931-5.1367 1.0989L4.841 5.4467a.4161.4161 0 00-.5677-.1521.4157.4157 0 00-.1521.5676l1.9973 3.4592C2.6889 11.1867.3432 14.6589 0 18.761h24c-.3432-4.1021-2.6889-7.5743-6.1185-9.4396" />
+    </svg>
+  )
+}
+
+/**
+ * Solana brand mark — three angled bars. Uses the official Solana gradient
+ * (#00FFA3 → #DC1FFF) by default so the mark matches brand guidelines even
+ * when surrounding text color is muted. Pass a className with a `text-*`
+ * color to override with a monochrome tint when the gradient would clash.
+ */
+export function SolanaLogoIcon({ className, mono }: BrandIconProps & { mono?: boolean }) {
+  // Unique id so multiple instances on the page don't collide on gradient IDs.
+  const gradientId = `solana-grad-${Math.random().toString(36).slice(2, 9)}`
+  return (
+    <svg
+      role="img"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      fill={mono ? "currentColor" : `url(#${gradientId})`}
+      className={cn("h-4 w-4", className)}
+      aria-label="Solana"
+    >
+      {!mono ? (
+        <defs>
+          <linearGradient id={gradientId} x1="3" y1="21" x2="21" y2="3" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stopColor="#9945FF" />
+            <stop offset="0.5" stopColor="#14F195" />
+            <stop offset="1" stopColor="#00C2FF" />
+          </linearGradient>
+        </defs>
+      ) : null}
+      <path d="M23.876 18.362l-4.017 4.326a.93.93 0 01-.723.31H.452a.452.452 0 01-.33-.764l4.021-4.325a.93.93 0 01.72-.311h18.686a.452.452 0 01.328.764zM19.859 9.648a.93.93 0 00-.723-.31H.452a.452.452 0 00-.33.763l4.021 4.325a.93.93 0 00.72.31h18.686a.452.452 0 00.328-.764L19.859 9.65zM.452 6.574h18.684a.93.93 0 00.723-.31l4.017-4.326A.452.452 0 0023.6 1.175H4.915a.93.93 0 00-.72.31L.178 5.811a.452.452 0 00.274.763z" />
+    </svg>
+  )
+}

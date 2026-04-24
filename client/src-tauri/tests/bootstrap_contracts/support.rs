@@ -11,7 +11,9 @@ pub(crate) use cadence_desktop_lib::{
         AutonomousUnitAttemptDto, AutonomousUnitDto, AutonomousUnitHistoryEntryDto,
         AutonomousUnitKindDto, AutonomousUnitStatusDto, AutonomousWorkflowLinkageDto,
         BranchSummaryDto, CancelAutonomousRunRequestDto, ChangeKind, CommandError,
-        CommandErrorClass, CommandToolResultSummaryDto, FileToolResultSummaryDto,
+        CommandErrorClass, CommandToolResultSummaryDto,
+        BrowserComputerUseActionStatusDto, BrowserComputerUseSurfaceDto,
+        BrowserComputerUseToolResultSummaryDto, FileToolResultSummaryDto,
         GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, GitToolResultScopeDto,
         GitToolResultSummaryDto, ImportMcpServersRequestDto, ImportRepositoryRequestDto,
         ListNotificationDispatchesRequestDto, ListNotificationDispatchesResponseDto,
@@ -366,6 +368,16 @@ pub(crate) fn sample_web_tool_summary() -> ToolResultSummaryDto {
         content_kind: Some(WebToolResultContentKindDto::Html),
         content_type: Some("text/html".into()),
         truncated: false,
+    })
+}
+
+pub(crate) fn sample_browser_computer_use_tool_summary() -> ToolResultSummaryDto {
+    ToolResultSummaryDto::BrowserComputerUse(BrowserComputerUseToolResultSummaryDto {
+        surface: BrowserComputerUseSurfaceDto::Browser,
+        action: "click".into(),
+        status: BrowserComputerUseActionStatusDto::Succeeded,
+        target: Some("button[type=submit]".into()),
+        outcome: Some("Clicked submit and advanced to the confirmation view.".into()),
     })
 }
 

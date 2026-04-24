@@ -52,6 +52,19 @@ export interface ToolProbe {
   version?: string | null
 }
 
+export type ToolchainComponent = "agave" | "anchor"
+
+export interface ToolchainComponentStatus {
+  component: ToolchainComponent
+  label: string
+  detail: string
+  installed: boolean
+  installable: boolean
+  required: boolean
+  path?: string | null
+  version?: string | null
+}
+
 export interface ToolchainStatus {
   solanaCli: ToolProbe
   anchor: ToolProbe
@@ -64,6 +77,34 @@ export interface ToolchainStatus {
   codama: ToolProbe
   solanaVerify: ToolProbe
   wsl2?: ToolProbe | null
+  managedRoot?: string | null
+  bundledRoot?: string | null
+  installing?: boolean
+  installSupported?: boolean
+  installableComponents?: ToolchainComponentStatus[]
+}
+
+export type ToolchainInstallPhase =
+  | "starting"
+  | "downloading"
+  | "installing"
+  | "verifying"
+  | "completed"
+  | "skipped"
+  | "failed"
+
+export interface ToolchainInstallEvent {
+  component?: ToolchainComponent | null
+  phase: ToolchainInstallPhase
+  message?: string | null
+  progress?: number | null
+  error?: string | null
+}
+
+export interface ToolchainInstallStatus {
+  inProgress: boolean
+  managedRoot: string
+  components: ToolchainComponentStatus[]
 }
 
 export interface EndpointHealth {
@@ -1473,6 +1514,9 @@ export interface UseSolanaWorkbench {
   clusters: ClusterDescriptor[]
   toolchain: ToolchainStatus | null
   toolchainLoading: boolean
+  toolchainInstallStatus: ToolchainInstallStatus | null
+  toolchainInstallEvent: ToolchainInstallEvent | null
+  toolchainInstalling: boolean
   status: ClusterStatus
   lastEvent: ValidatorStatusPayload | null
   rpcHealth: EndpointHealth[]
@@ -1481,6 +1525,7 @@ export interface UseSolanaWorkbench {
   isStopping: boolean
   error: string | null
   refreshToolchain: () => Promise<void>
+  installToolchain: (components?: ToolchainComponent[]) => Promise<ToolchainInstallStatus | null>
   refreshRpcHealth: () => Promise<void>
   refreshSnapshots: () => Promise<void>
   start: (kind: ClusterKind, opts?: StartOpts) => Promise<ClusterHandle | null>
@@ -1784,6 +1829,7 @@ export interface UseSolanaWorkbench {
 }
 
 const SOLANA_VALIDATOR_STATUS_EVENT = "solana:validator:status"
+const SOLANA_TOOLCHAIN_INSTALL_EVENT = "solana:toolchain:install"
 const SOLANA_PERSONA_EVENT = "solana:persona"
 const SOLANA_SCENARIO_EVENT = "solana:scenario"
 const SOLANA_TX_EVENT = "solana:tx"
@@ -1824,6 +1870,11 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
   const [clusters, setClusters] = useState<ClusterDescriptor[]>([])
   const [toolchain, setToolchain] = useState<ToolchainStatus | null>(null)
   const [toolchainLoading, setToolchainLoading] = useState(false)
+  const [toolchainInstallStatus, setToolchainInstallStatus] =
+    useState<ToolchainInstallStatus | null>(null)
+  const [toolchainInstallEvent, setToolchainInstallEvent] =
+    useState<ToolchainInstallEvent | null>(null)
+  const [toolchainInstalling, setToolchainInstalling] = useState(false)
   const [status, setStatus] = useState<ClusterStatus>({ running: false })
   const [lastEvent, setLastEvent] = useState<ValidatorStatusPayload | null>(null)
   const [rpcHealth, setRpcHealth] = useState<EndpointHealth[]>([])
@@ -1955,12 +2006,50 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     try {
       const next = await invoke<ToolchainStatus>("solana_toolchain_status")
       setToolchain(next)
+      setToolchainInstalling(Boolean(next.installing))
     } catch (err) {
       setError(errorMessage(err))
     } finally {
       setToolchainLoading(false)
     }
   }, [])
+
+  const refreshToolchainInstallStatus = useCallback(async () => {
+    if (!isTauri()) return
+    const next = await tauriInvoke<ToolchainInstallStatus>(
+      "solana_toolchain_install_status",
+    )
+    if (next) {
+      setToolchainInstallStatus(next)
+      setToolchainInstalling(next.inProgress)
+    }
+  }, [])
+
+  const installToolchain = useCallback(
+    async (
+      components: ToolchainComponent[] = [],
+    ): Promise<ToolchainInstallStatus | null> => {
+      if (!isTauri()) return null
+      setToolchainInstalling(true)
+      setError(null)
+      try {
+        const status = await invoke<ToolchainInstallStatus>(
+          "solana_toolchain_install",
+          { request: { components } },
+        )
+        setToolchainInstallStatus(status)
+        setToolchainInstalling(status.inProgress)
+        await refreshToolchain()
+        return status
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        await refreshToolchainInstallStatus()
+      }
+    },
+    [refreshToolchain, refreshToolchainInstallStatus],
+  )
 
   const refreshClusters = useCallback(async () => {
     if (!isTauri()) return
@@ -3377,6 +3466,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     if (!active || !isTauri()) return
     void refreshClusters()
     void refreshToolchain()
+    void refreshToolchainInstallStatus()
     void refreshStatus()
     void refreshSnapshots()
     void refreshPersonaRoles()
@@ -3392,6 +3482,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     active,
     refreshClusters,
     refreshToolchain,
+    refreshToolchainInstallStatus,
     refreshStatus,
     refreshSnapshots,
     refreshPersonaRoles,
@@ -3410,6 +3501,31 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     if (!active || !isTauri()) return
     let cancelled = false
     const unsubs: UnlistenFn[] = []
+
+    void listen<ToolchainInstallEvent>(
+      SOLANA_TOOLCHAIN_INSTALL_EVENT,
+      (event) => {
+        if (cancelled) return
+        const payload = event.payload
+        setToolchainInstallEvent(payload)
+        setToolchainInstalling(
+          !["completed", "failed", "skipped"].includes(payload.phase),
+        )
+        if (payload.phase === "completed" || payload.phase === "skipped") {
+          void refreshToolchain()
+          void refreshToolchainInstallStatus()
+        }
+        if (payload.phase === "failed" && payload.error) {
+          setError(payload.error)
+        }
+      },
+    ).then((unsub) => {
+      if (cancelled) {
+        unsub()
+      } else {
+        unsubs.push(unsub)
+      }
+    })
 
     void listen<ValidatorStatusPayload>(
       SOLANA_VALIDATOR_STATUS_EVENT,
@@ -3567,7 +3683,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
       cancelled = true
       for (const unsub of unsubs) unsub()
     }
-  }, [active])
+  }, [active, refreshToolchain, refreshToolchainInstallStatus, mergeLogEntries])
 
   const start = useCallback(
     async (kind: ClusterKind, opts?: StartOpts): Promise<ClusterHandle | null> => {
@@ -3609,6 +3725,9 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     clusters,
     toolchain,
     toolchainLoading,
+    toolchainInstallStatus,
+    toolchainInstallEvent,
+    toolchainInstalling,
     status,
     lastEvent,
     rpcHealth,
@@ -3617,6 +3736,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     isStopping,
     error,
     refreshToolchain,
+    installToolchain,
     refreshRpcHealth,
     refreshSnapshots,
     start,

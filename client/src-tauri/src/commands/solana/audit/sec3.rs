@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use crate::commands::solana::toolchain;
 use crate::commands::{CommandError, CommandResult};
 
 use super::{Finding, FindingSeverity, FindingSource};
@@ -165,7 +166,8 @@ impl ExternalAnalyzerRunner for SystemExternalAnalyzerRunner {
     }
 
     fn run(&self, invocation: &AnalyzerInvocation) -> CommandResult<AnalyzerOutcome> {
-        let mut cmd = Command::new(&invocation.binary);
+        let resolved_binary = toolchain::resolve_command(&invocation.binary);
+        let mut cmd = Command::new(&resolved_binary);
         cmd.args(&invocation.argv)
             .current_dir(&invocation.cwd)
             .stdout(Stdio::piped())
@@ -174,6 +176,7 @@ impl ExternalAnalyzerRunner for SystemExternalAnalyzerRunner {
         for (k, v) in &invocation.envs {
             cmd.env(k, v);
         }
+        toolchain::augment_command(&mut cmd);
         let child = cmd.spawn().map_err(|err| {
             CommandError::user_fixable(
                 "solana_audit_external_spawn_failed",
@@ -495,26 +498,7 @@ fn wait_with_timeout(
 /// also consider the PATHEXT suffixes (`.exe`, `.cmd`, …). Shared shape
 /// with the toolchain probe so behaviour stays consistent.
 fn which_binary(name: &str) -> Option<String> {
-    if name.is_empty() {
-        return None;
-    }
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.display().to_string());
-        }
-        #[cfg(target_os = "windows")]
-        {
-            for ext in ["exe", "cmd", "bat", "ps1"] {
-                let with_ext = dir.join(format!("{name}.{ext}"));
-                if with_ext.is_file() {
-                    return Some(with_ext.display().to_string());
-                }
-            }
-        }
-    }
-    None
+    toolchain::resolve_binary(name).map(|path| path.display().to_string())
 }
 
 #[cfg(test)]
