@@ -13,6 +13,8 @@ use crate::{
 
 use super::{linkage, MAX_PROGRESSION_STEPS};
 
+const WORKFLOW_TRANSITION_GATE_UNMET_CODE: &str = "workflow_transition_gate_unmet";
+
 pub(super) fn collect_progression_states(
     repo_root: &Path,
     project_id: &str,
@@ -97,6 +99,18 @@ pub(super) fn collect_progression_states(
                     steps += 1;
                     continue;
                 }
+                WorkflowAutomaticDispatchOutcome::Skipped { code, .. }
+                    if code == WORKFLOW_TRANSITION_GATE_UNMET_CODE =>
+                {
+                    let package = ensure_transition_handoff(repo_root, project_id, &replay_event)?;
+                    graph = project_store::load_workflow_graph(repo_root, project_id)?;
+                    states.push(linkage::stage_state_from_transition(
+                        &graph.nodes,
+                        &replay_event,
+                        &package,
+                    )?);
+                    return Ok(states);
+                }
                 WorkflowAutomaticDispatchOutcome::NoContinuation
                 | WorkflowAutomaticDispatchOutcome::Skipped { .. } => {
                     let package = ensure_transition_handoff(repo_root, project_id, &replay_event)?;
@@ -180,6 +194,11 @@ pub(super) fn collect_progression_states(
                 states.push(state);
                 steps += 1;
                 continue;
+            }
+            WorkflowAutomaticDispatchOutcome::Skipped { code, .. }
+                if code == WORKFLOW_TRANSITION_GATE_UNMET_CODE =>
+            {
+                return Ok(states);
             }
             WorkflowAutomaticDispatchOutcome::NoContinuation
             | WorkflowAutomaticDispatchOutcome::Skipped { .. } => return Ok(states),

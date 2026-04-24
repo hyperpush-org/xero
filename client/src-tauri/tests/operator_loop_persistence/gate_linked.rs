@@ -1230,6 +1230,166 @@ pub(crate) fn plan_mode_required_resume_unblocks_implementation_continuation_wit
     );
 }
 
+pub(crate) fn plan_mode_required_missing_runtime_snapshot_replay_keeps_pending_approval_idempotent(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let project_id = "project-plan-mode-gate-linked-missing-runtime-1";
+    let repo_root = seed_project(
+        &root,
+        &app,
+        project_id,
+        "repo-plan-mode-gate-linked-missing-runtime-1",
+        "repo-plan-mode-gate-linked-missing-runtime",
+    );
+
+    project_store::upsert_workflow_graph(
+        &repo_root,
+        project_id,
+        &project_store::WorkflowGraphUpsertRecord {
+            nodes: vec![
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "requirements".into(),
+                    phase_id: 1,
+                    sort_order: 1,
+                    name: "Requirements".into(),
+                    description: "Lock requirement deltas.".into(),
+                    status: cadence_desktop_lib::commands::PhaseStatus::Active,
+                    current_step: Some(cadence_desktop_lib::commands::PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "roadmap".into(),
+                    phase_id: 2,
+                    sort_order: 2,
+                    name: "Roadmap".into(),
+                    description: "Plan downstream slices.".into(),
+                    status: cadence_desktop_lib::commands::PhaseStatus::Pending,
+                    current_step: Some(cadence_desktop_lib::commands::PhaseStep::Plan),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "implementation".into(),
+                    phase_id: 3,
+                    sort_order: 3,
+                    name: "Implementation".into(),
+                    description: "Implement approved changes.".into(),
+                    status: cadence_desktop_lib::commands::PhaseStatus::Pending,
+                    current_step: Some(cadence_desktop_lib::commands::PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+            ],
+            edges: vec![
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "requirements".into(),
+                    to_node_id: "roadmap".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "roadmap".into(),
+                    to_node_id: "implementation".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+            ],
+            gates: vec![],
+        },
+    )
+    .expect("seed plan-mode continuation workflow without runtime snapshot");
+
+    let request = ApplyWorkflowTransitionRequestDto {
+        project_id: project_id.into(),
+        transition_id: "requirements-roadmap-plan-mode-missing-runtime-1".into(),
+        causal_transition_id: None,
+        from_node_id: "requirements".into(),
+        to_node_id: "roadmap".into(),
+        transition_kind: "advance".into(),
+        gate_decision: "not_applicable".into(),
+        gate_decision_context: None,
+        gate_updates: vec![],
+        occurred_at: "2026-04-24T10:10:00Z".into(),
+    };
+
+    let paused = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request.clone(),
+    )
+    .expect("missing runtime snapshot should fail closed into deterministic gate pause");
+    assert_eq!(
+        paused.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+
+    let snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.into(),
+        },
+    )
+    .expect("load project snapshot after missing-runtime gate pause");
+
+    let pending = snapshot
+        .approval_requests
+        .iter()
+        .find(|approval| {
+            approval.gate_key.as_deref() == Some("plan_mode_required")
+                && approval.status == OperatorApprovalStatus::Pending
+        })
+        .expect("missing runtime snapshot should persist pending continuation approval")
+        .clone();
+
+    let pause_message = paused
+        .automatic_dispatch
+        .message
+        .as_deref()
+        .expect("missing-runtime gate pause diagnostics should include a message");
+    assert!(
+        pause_message.contains(pending.action_id.as_str()),
+        "expected pause diagnostics to include deterministic action id, got {pause_message}"
+    );
+
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, project_id, &pending.action_id),
+        1
+    );
+
+    let replayed = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request,
+    )
+    .expect("replayed missing-runtime transition should preserve deterministic gate pause");
+    assert_eq!(
+        replayed.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+
+    let replayed_message = replayed
+        .automatic_dispatch
+        .message
+        .as_deref()
+        .expect("replayed missing-runtime gate pause diagnostics should include message");
+    assert!(
+        replayed_message.contains(pending.action_id.as_str()),
+        "expected replayed diagnostics to include deterministic action id, got {replayed_message}"
+    );
+
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, project_id, &pending.action_id),
+        1
+    );
+}
+
 fn seed_runtime_scoped_resume_fixture(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,

@@ -138,6 +138,11 @@ fn plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked() {
 }
 
 #[test]
+fn plan_mode_required_missing_runtime_snapshot_pauses_and_replays_without_runtime_event_drift() {
+    workflow_progression::plan_mode_required_missing_runtime_snapshot_pauses_and_replays_without_runtime_event_drift();
+}
+
+#[test]
 fn start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage() {
     workflow_progression::start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage();
 }

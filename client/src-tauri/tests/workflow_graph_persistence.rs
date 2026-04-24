@@ -70,6 +70,11 @@ fn workflow_transition_rejects_malformed_target_gate_rows_and_preserves_state() 
 }
 
 #[test]
+fn workflow_transition_auto_dispatch_blocks_when_runtime_controls_are_malformed() {
+    transition_dispatch::workflow_transition_auto_dispatch_blocks_when_runtime_controls_are_malformed();
+}
+
+#[test]
 fn workflow_snapshot_projects_planning_lifecycle_with_gate_and_transition_metadata() {
     projection_decode::workflow_snapshot_projects_planning_lifecycle_with_gate_and_transition_metadata();
 }

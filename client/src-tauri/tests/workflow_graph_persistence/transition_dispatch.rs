@@ -1311,3 +1311,203 @@ pub(crate) fn workflow_transition_rejects_malformed_target_gate_rows_and_preserv
             .expect("load transition events after malformed gate rejection");
     assert!(events.is_empty());
 }
+
+pub(crate) fn workflow_transition_auto_dispatch_blocks_when_runtime_controls_are_malformed() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-graph-plan-mode-control-malformed-1";
+    let repo_root = seed_project(
+        &root,
+        project_id,
+        "repo-graph-plan-mode-control-malformed-1",
+        "repo-graph-plan-mode-control-malformed",
+    );
+
+    project_store::upsert_workflow_graph(
+        &repo_root,
+        project_id,
+        &project_store::WorkflowGraphUpsertRecord {
+            nodes: vec![
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "requirements".into(),
+                    phase_id: 1,
+                    sort_order: 1,
+                    name: "Requirements".into(),
+                    description: "Lock requirement deltas.".into(),
+                    status: PhaseStatus::Active,
+                    current_step: Some(PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "roadmap".into(),
+                    phase_id: 2,
+                    sort_order: 2,
+                    name: "Roadmap".into(),
+                    description: "Plan downstream slices.".into(),
+                    status: PhaseStatus::Pending,
+                    current_step: Some(PhaseStep::Plan),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "implementation".into(),
+                    phase_id: 3,
+                    sort_order: 3,
+                    name: "Implementation".into(),
+                    description: "Execute implementation tasks.".into(),
+                    status: PhaseStatus::Pending,
+                    current_step: Some(PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+            ],
+            edges: vec![
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "requirements".into(),
+                    to_node_id: "roadmap".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "roadmap".into(),
+                    to_node_id: "implementation".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+            ],
+            gates: vec![],
+        },
+    )
+    .expect("seed plan-mode continuation graph");
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: project_id.into(),
+                run_id: "run-plan-mode-control-malformed-1".into(),
+                runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
+                supervisor_kind: "detached_pty".into(),
+                status: project_store::RuntimeRunStatus::Running,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "tcp".into(),
+                    endpoint: "127.0.0.1:9".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Unknown,
+                },
+                started_at: "2026-04-24T10:00:00Z".into(),
+                last_heartbeat_at: Some("2026-04-24T10:00:01Z".into()),
+                stopped_at: None,
+                last_error: None,
+                updated_at: "2026-04-24T10:00:01Z".into(),
+            },
+            checkpoint: Some(project_store::RuntimeRunCheckpointRecord {
+                project_id: project_id.into(),
+                run_id: "run-plan-mode-control-malformed-1".into(),
+                sequence: 1,
+                kind: project_store::RuntimeRunCheckpointKind::Bootstrap,
+                summary: "Seeded runtime run.".into(),
+                created_at: "2026-04-24T10:00:01Z".into(),
+            }),
+            control_state: Some(
+                project_store::build_runtime_run_control_state_with_plan_mode(
+                    "openai_codex",
+                    None,
+                    cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+                    false,
+                    "2026-04-24T10:00:00Z",
+                    None,
+                )
+                .expect("seed runtime run controls"),
+            ),
+        },
+    )
+    .expect("seed runtime run");
+
+    let connection = open_state_connection(&repo_root);
+    connection
+        .execute(
+            "UPDATE runtime_runs SET control_state_json = ?2 WHERE project_id = ?1",
+            [project_id, "{malformed-json"],
+        )
+        .expect("corrupt runtime control-state payload");
+
+    let request = project_store::ApplyWorkflowTransitionRecord {
+        transition_id: "requirements-roadmap-plan-mode-control-malformed-1".into(),
+        causal_transition_id: None,
+        from_node_id: "requirements".into(),
+        to_node_id: "roadmap".into(),
+        transition_kind: "advance".into(),
+        gate_decision: project_store::WorkflowTransitionGateDecision::NotApplicable,
+        gate_decision_context: None,
+        gate_updates: vec![],
+        occurred_at: "2026-04-24T10:00:10Z".into(),
+    };
+
+    let first = project_store::apply_workflow_transition(&repo_root, project_id, &request)
+        .expect("malformed runtime controls should fail closed into deterministic gate pause");
+    let first_message = match &first.automatic_dispatch {
+        project_store::WorkflowAutomaticDispatchOutcome::Skipped { code, message } => {
+            assert_eq!(code, "workflow_transition_gate_unmet");
+            message
+        }
+        other => panic!("expected skipped automatic dispatch outcome, got {other:?}"),
+    };
+
+    let pending_action_id = open_state_connection(&repo_root)
+        .query_row(
+            "SELECT action_id FROM operator_approvals WHERE project_id = ?1 AND gate_key = 'plan_mode_required' AND status = 'pending'",
+            [project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("pending plan-mode approval should persist on malformed controls");
+    assert!(
+        first_message.contains(pending_action_id.as_str()),
+        "expected first skip diagnostics to include deterministic action id, got {first_message}"
+    );
+
+    assert_eq!(
+        open_state_connection(&repo_root)
+            .query_row(
+                "SELECT COUNT(*) FROM operator_approvals WHERE project_id = ?1 AND action_id = ?2",
+                [project_id, pending_action_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count pending approvals after first malformed-control pause"),
+        1
+    );
+
+    let replayed = project_store::apply_workflow_transition(&repo_root, project_id, &request)
+        .expect("replay should preserve deterministic malformed-control gate pause");
+    let replayed_message = match &replayed.automatic_dispatch {
+        project_store::WorkflowAutomaticDispatchOutcome::Skipped { code, message } => {
+            assert_eq!(code, "workflow_transition_gate_unmet");
+            message
+        }
+        other => panic!("expected skipped automatic dispatch outcome on replay, got {other:?}"),
+    };
+    assert!(
+        replayed_message.contains(pending_action_id.as_str()),
+        "expected replay diagnostics to include deterministic action id, got {replayed_message}"
+    );
+
+    assert_eq!(
+        open_state_connection(&repo_root)
+            .query_row(
+                "SELECT COUNT(*) FROM operator_approvals WHERE project_id = ?1 AND action_id = ?2",
+                [project_id, pending_action_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count pending approvals after replay malformed-control pause"),
+        1
+    );
+
+    let events =
+        project_store::load_recent_workflow_transition_events(&repo_root, project_id, None)
+            .expect("load transition events after malformed-control pause replay");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].transition_id, request.transition_id);
+}

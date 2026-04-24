@@ -137,6 +137,11 @@ fn plan_mode_required_resume_unblocks_implementation_continuation_without_duplic
 }
 
 #[test]
+fn plan_mode_required_missing_runtime_snapshot_replay_keeps_pending_approval_idempotent() {
+    gate_linked::plan_mode_required_missing_runtime_snapshot_replay_keeps_pending_approval_idempotent();
+}
+
+#[test]
 fn runtime_scoped_resume_rejects_run_identity_mismatch_without_resumed_evidence_drift() {
     gate_linked::runtime_scoped_resume_rejects_run_identity_mismatch_without_resumed_evidence_drift(
     );

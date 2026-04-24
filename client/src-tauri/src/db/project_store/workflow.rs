@@ -470,6 +470,13 @@ enum WorkflowAutomaticDispatchCandidateResolution {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowAutomaticDispatchPlanModeRequirement {
+    Disabled,
+    Required,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum WorkflowTransitionMutationApplyOutcome {
     Applied,
@@ -3888,7 +3895,7 @@ pub(crate) fn attempt_automatic_dispatch_after_transition(
         }
     };
 
-    let plan_mode_required = match resolve_plan_mode_required_for_automatic_dispatch(
+    let plan_mode_requirement = match resolve_plan_mode_required_for_automatic_dispatch(
         &transaction,
         database_path,
         project_id,
@@ -3902,7 +3909,7 @@ pub(crate) fn attempt_automatic_dispatch_after_transition(
         database_path,
         project_id,
         &trigger_transition.to_node_id,
-        plan_mode_required,
+        plan_mode_requirement,
     ) {
         Ok(WorkflowAutomaticDispatchCandidateResolution::NoContinuation) => {
             return WorkflowAutomaticDispatchOutcome::NoContinuation;
@@ -4170,11 +4177,21 @@ fn resolve_plan_mode_required_for_automatic_dispatch(
     transaction: &Transaction<'_>,
     database_path: &Path,
     project_id: &str,
-) -> Result<bool, CommandError> {
-    Ok(
-        read_runtime_run_snapshot(transaction, database_path, project_id)?
-            .is_some_and(|snapshot| snapshot.controls.active.plan_mode_required),
-    )
+) -> Result<WorkflowAutomaticDispatchPlanModeRequirement, CommandError> {
+    match read_runtime_run_snapshot(transaction, database_path, project_id) {
+        Ok(Some(snapshot)) => {
+            if snapshot.controls.active.plan_mode_required {
+                Ok(WorkflowAutomaticDispatchPlanModeRequirement::Required)
+            } else {
+                Ok(WorkflowAutomaticDispatchPlanModeRequirement::Disabled)
+            }
+        }
+        Ok(None) => Ok(WorkflowAutomaticDispatchPlanModeRequirement::Unknown),
+        Err(error) if error.code == "runtime_run_decode_failed" => {
+            Ok(WorkflowAutomaticDispatchPlanModeRequirement::Unknown)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn is_plan_mode_required_gate_key(gate_key: &str) -> bool {
@@ -4625,7 +4642,7 @@ fn resolve_automatic_dispatch_candidate(
     database_path: &Path,
     project_id: &str,
     completed_node_id: &str,
-    plan_mode_required: bool,
+    plan_mode_requirement: WorkflowAutomaticDispatchPlanModeRequirement,
 ) -> Result<WorkflowAutomaticDispatchCandidateResolution, CommandError> {
     let nodes = read_workflow_graph_nodes(transaction, database_path, project_id)?;
     if !nodes.iter().any(|node| node.node_id == completed_node_id) {
@@ -4690,13 +4707,32 @@ fn resolve_automatic_dispatch_candidate(
             .cloned()
             .unwrap_or_default();
 
-        let requires_plan_mode_gate =
-            plan_mode_required && is_plan_mode_required_implementation_continuation(&nodes, &edge);
+        let is_plan_mode_implementation_continuation =
+            is_plan_mode_required_implementation_continuation(&nodes, &edge);
+
+        if matches!(
+            plan_mode_requirement,
+            WorkflowAutomaticDispatchPlanModeRequirement::Unknown
+        ) && is_plan_mode_implementation_continuation
+        {
+            let to_node_id = edge.to_node_id.clone();
+            blocked_candidates.push(WorkflowAutomaticDispatchUnresolvedContinuationCandidate {
+                from_node_id: edge.from_node_id,
+                to_node_id: to_node_id.clone(),
+                transition_kind: edge.transition_kind,
+                gate_requirement: Some(PLAN_MODE_REQUIRED_GATE_KEY.to_string()),
+                unresolved_gates: vec![plan_mode_required_unresolved_gate_candidate(&to_node_id)],
+            });
+            continue;
+        }
+
+        let requires_plan_mode_gate = matches!(
+            plan_mode_requirement,
+            WorkflowAutomaticDispatchPlanModeRequirement::Required
+        ) && is_plan_mode_implementation_continuation;
 
         if let Some(required_gate) = edge.gate_requirement.as_deref() {
-            let required_gate_present = target_gates
-                .iter()
-                .any(|gate| gate.gate_key == required_gate);
+            let required_gate_present = target_gates.iter().any(|gate| gate.gate_key == required_gate);
 
             if !required_gate_present {
                 if requires_plan_mode_gate {

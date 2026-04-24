@@ -1183,6 +1183,119 @@ pub(crate) fn plan_mode_required_missing_required_gate_metadata_keeps_dispatch_b
     }));
 }
 
+pub(crate) fn plan_mode_required_missing_runtime_snapshot_pauses_and_replays_without_runtime_event_drift(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let recorder = attach_event_recorders(&app);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_plan_mode_continuation_workflow(&repo_root, &project_id, None, None);
+
+    let request = ApplyWorkflowTransitionRequestDto {
+        project_id: project_id.clone(),
+        transition_id: "requirements-roadmap-plan-mode-missing-runtime-1".into(),
+        causal_transition_id: None,
+        from_node_id: "requirements".into(),
+        to_node_id: "roadmap".into(),
+        transition_kind: "advance".into(),
+        gate_decision: "not_applicable".into(),
+        gate_decision_context: None,
+        gate_updates: Vec::new(),
+        occurred_at: "2026-04-24T10:20:00Z".into(),
+    };
+
+    recorder.clear();
+    let paused = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request.clone(),
+    )
+    .expect("missing runtime snapshot should fail closed into deterministic plan-mode pause");
+
+    assert_eq!(
+        paused.automatic_dispatch.status,
+        WorkflowAutomaticDispatchStatusDto::Skipped
+    );
+    assert_eq!(
+        paused.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+    let paused_message = paused
+        .automatic_dispatch
+        .message
+        .as_deref()
+        .expect("missing-runtime gate pause should include diagnostics");
+    assert!(
+        paused_message.contains("Persisted pending operator approval"),
+        "expected persisted pending-approval diagnostics, got {paused_message}"
+    );
+
+    assert_eq!(recorder.project_update_count(), 1);
+    assert_eq!(recorder.runtime_update_count(), 0);
+    assert_eq!(recorder.runtime_run_update_count(), 0);
+
+    let pause_snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load snapshot after missing-runtime gate pause");
+
+    let pending_plan_mode = pause_snapshot
+        .approval_requests
+        .iter()
+        .find(|approval| {
+            approval.gate_key.as_deref() == Some("plan_mode_required")
+                && approval.status == OperatorApprovalStatus::Pending
+        })
+        .expect("missing runtime snapshot should persist plan-mode pending approval")
+        .clone();
+
+    assert!(
+        paused_message.contains(pending_plan_mode.action_id.as_str()),
+        "expected paused diagnostics to include deterministic action id, got {paused_message}"
+    );
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, &project_id, &pending_plan_mode.action_id),
+        1
+    );
+
+    let replayed = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request,
+    )
+    .expect("replayed missing-runtime transition should keep deterministic gate pause");
+    assert_eq!(
+        replayed.automatic_dispatch.status,
+        WorkflowAutomaticDispatchStatusDto::Skipped
+    );
+    assert_eq!(
+        replayed.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+    let replayed_message = replayed
+        .automatic_dispatch
+        .message
+        .as_deref()
+        .expect("replayed missing-runtime gate pause diagnostics should include message");
+    assert!(
+        replayed_message.contains(pending_plan_mode.action_id.as_str()),
+        "expected replayed diagnostics to include deterministic action id, got {replayed_message}"
+    );
+
+    assert_eq!(count_workflow_transition_rows(&repo_root, &project_id), 1);
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, &project_id, &pending_plan_mode.action_id),
+        1
+    );
+}
+
 pub(crate) fn start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage() {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
