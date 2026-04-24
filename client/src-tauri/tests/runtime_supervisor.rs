@@ -191,6 +191,11 @@ fn detached_supervisor_live_event_drops_invalid_browser_computer_use_status_sema
 }
 
 #[test]
+fn detached_supervisor_live_event_drops_unclassified_browser_computer_use_failure_payload() {
+    live_boundary::detached_supervisor_live_event_drops_unclassified_browser_computer_use_failure_payload();
+}
+
+#[test]
 fn detached_supervisor_live_event_drops_unsupported_browser_computer_use_summary_payload() {
     live_boundary::detached_supervisor_live_event_drops_unsupported_browser_computer_use_summary_payload();
 }

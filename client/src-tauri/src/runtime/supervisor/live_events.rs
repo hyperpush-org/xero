@@ -5,8 +5,14 @@ use std::{
 
 use crate::{
     auth::now_timestamp,
+    commands::browser::bridge::{BROWSER_BRIDGE_TIMEOUT_CODE, BROWSER_SCRIPT_ERROR_CODE},
     db::project_store::{self, RuntimeRunStatus},
-    runtime::autonomous_orchestrator,
+    runtime::{
+        autonomous_orchestrator,
+        autonomous_tool_runtime::browser::{
+            BROWSER_NOT_OPEN_ERROR_CODE, BROWSER_POLICY_DENIED_CODE,
+        },
+    },
 };
 
 use super::{
@@ -270,7 +276,9 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
             };
             let tool_summary = value
                 .get("tool_summary")
-                .map(|summary| sanitize_tool_result_summary_value(summary, &tool_state))
+                .map(|summary| {
+                    sanitize_tool_result_summary_value(summary, &tool_state, detail.as_deref())
+                })
                 .transpose();
             let tool_summary = match tool_summary {
                 Ok(tool_summary) => tool_summary,
@@ -293,6 +301,13 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
                         "runtime_supervisor_live_event_invalid",
                         "Live output fragment dropped",
                         "Cadence dropped a structured tool payload with invalid tool_summary metadata.",
+                    );
+                }
+                Err(ToolSummaryDecodeError::AdvancedBrowserFailureClassification) => {
+                    return diagnostic_live_event(
+                        "runtime_supervisor_live_event_invalid",
+                        "Live output fragment dropped",
+                        "Cadence dropped a structured browser/computer-use failure payload with unsupported or malformed failure classification metadata.",
                     );
                 }
             };
@@ -813,11 +828,44 @@ enum ToolSummaryDecodeError {
     Invalid,
     Oversized,
     Unsupported,
+    AdvancedBrowserFailureClassification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdvancedBrowserFailureClass {
+    Timeout,
+    PolicyPermission,
+    ValidationRuntime,
+}
+
+impl AdvancedBrowserFailureClass {
+    fn diagnostic_code(self) -> &'static str {
+        match self {
+            Self::Timeout => "advanced_browser_failure_timeout",
+            Self::PolicyPermission => "advanced_browser_failure_policy_permission",
+            Self::ValidationRuntime => "advanced_browser_failure_validation_runtime",
+        }
+    }
+
+    fn remediation(self) -> &'static str {
+        match self {
+            Self::Timeout => {
+                "Browser action timed out. Retry with a higher timeout_ms or resume from the same boundary."
+            }
+            Self::PolicyPermission => {
+                "Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+            }
+            Self::ValidationRuntime => {
+                "Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry."
+            }
+        }
+    }
 }
 
 fn sanitize_tool_result_summary_value(
     value: &serde_json::Value,
     tool_state: &SupervisorToolCallState,
+    detail: Option<&str>,
 ) -> Result<ToolResultSummary, ToolSummaryDecodeError> {
     let parsed = serde_json::from_value::<ToolResultSummary>(value.clone()).map_err(|error| {
         let details = error.to_string();
@@ -827,12 +875,13 @@ fn sanitize_tool_result_summary_value(
             ToolSummaryDecodeError::Invalid
         }
     })?;
-    sanitize_tool_result_summary(parsed, tool_state)
+    sanitize_tool_result_summary(parsed, tool_state, detail)
 }
 
 fn sanitize_tool_result_summary(
     summary: ToolResultSummary,
     tool_state: &SupervisorToolCallState,
+    detail: Option<&str>,
 ) -> Result<ToolResultSummary, ToolSummaryDecodeError> {
     match summary {
         ToolResultSummary::Command(summary) => Ok(ToolResultSummary::Command(summary)),
@@ -860,13 +909,15 @@ fn sanitize_tool_result_summary(
         ToolResultSummary::BrowserComputerUse(summary) => {
             let status = sanitize_browser_computer_use_action_status(summary.status)?;
             sanitize_browser_computer_use_status_for_tool_state(tool_state, &status)?;
+            let outcome = sanitize_optional_tool_summary_text(summary.outcome)?;
+            let outcome = normalize_advanced_browser_failure_outcome(tool_state, &status, detail, outcome)?;
             Ok(ToolResultSummary::BrowserComputerUse(
                 BrowserComputerUseToolResultSummary {
                     surface: sanitize_browser_computer_use_surface(summary.surface)?,
                     action: sanitize_required_tool_summary_text(summary.action)?,
                     status,
                     target: sanitize_optional_tool_summary_text(summary.target)?,
-                    outcome: sanitize_optional_tool_summary_text(summary.outcome)?,
+                    outcome,
                 },
             ))
         }
@@ -879,6 +930,89 @@ fn sanitize_tool_result_summary(
             },
         )),
     }
+}
+
+fn normalize_advanced_browser_failure_outcome(
+    tool_state: &SupervisorToolCallState,
+    status: &BrowserComputerUseActionStatus,
+    detail: Option<&str>,
+    outcome: Option<String>,
+) -> Result<Option<String>, ToolSummaryDecodeError> {
+    if !matches!(tool_state, SupervisorToolCallState::Failed)
+        || !matches!(
+            status,
+            BrowserComputerUseActionStatus::Failed | BrowserComputerUseActionStatus::Blocked
+        )
+    {
+        return Ok(outcome);
+    }
+
+    let classification = classify_advanced_browser_failure(status, detail, outcome.as_deref())
+        .ok_or(ToolSummaryDecodeError::AdvancedBrowserFailureClassification)?;
+
+    let normalized = format!(
+        "{}: {}",
+        classification.diagnostic_code(),
+        classification.remediation()
+    );
+
+    sanitize_required_tool_summary_text(normalized)
+        .map(Some)
+        .map_err(|error| match error {
+            ToolSummaryDecodeError::Oversized => ToolSummaryDecodeError::Oversized,
+            _ => ToolSummaryDecodeError::AdvancedBrowserFailureClassification,
+        })
+}
+
+fn classify_advanced_browser_failure(
+    status: &BrowserComputerUseActionStatus,
+    detail: Option<&str>,
+    outcome: Option<&str>,
+) -> Option<AdvancedBrowserFailureClass> {
+    let normalized_fragments = [detail, outcome]
+        .into_iter()
+        .flatten()
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+
+    let has_signal = |signal: &str| normalized_fragments.iter().any(|fragment| fragment.contains(signal));
+
+    if has_signal(BROWSER_BRIDGE_TIMEOUT_CODE)
+        || has_signal("timeout")
+        || has_signal("timed out")
+        || has_signal("deadline exceeded")
+    {
+        return Some(AdvancedBrowserFailureClass::Timeout);
+    }
+
+    if has_signal(BROWSER_POLICY_DENIED_CODE)
+        || has_signal("policy_denied")
+        || has_signal("permission denied")
+        || has_signal("access denied")
+        || has_signal("not permitted")
+        || has_signal("not allowed")
+        || has_signal(BROWSER_NOT_OPEN_ERROR_CODE)
+        || matches!(status, BrowserComputerUseActionStatus::Blocked)
+    {
+        return Some(AdvancedBrowserFailureClass::PolicyPermission);
+    }
+
+    if has_signal(BROWSER_SCRIPT_ERROR_CODE)
+        || has_signal("browser_invalid_")
+        || has_signal("browser_selector_")
+        || has_signal("browser_text_")
+        || has_signal("browser_payload_encode_failed")
+        || has_signal("browser_bridge_eval_failed")
+        || has_signal("invalid_request")
+        || has_signal("element not found")
+        || has_signal("not editable")
+        || has_signal("validation")
+        || has_signal("runtime")
+    {
+        return Some(AdvancedBrowserFailureClass::ValidationRuntime);
+    }
+
+    None
 }
 
 fn sanitize_optional_tool_summary_text(

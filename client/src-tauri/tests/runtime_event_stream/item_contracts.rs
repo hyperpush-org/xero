@@ -592,7 +592,184 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             && summary.action == "drag"
             && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Blocked
             && summary.target.as_deref() == Some("Desktop icon")
-            && summary.outcome.as_deref() == Some("Permission denied")
+            && summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+            )
+    ));
+
+    stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);
+}
+
+pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotonic_sequence() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime = seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+
+    let live_lines = vec![
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-1",
+                "tool_name": "browser.click",
+                "tool_state": "running",
+                "detail": "Clicking primary action",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "click",
+                    "status": "running",
+                    "target": "button#primary",
+                    "outcome": null
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-1",
+                "tool_name": "browser.click",
+                "tool_state": "failed",
+                "detail": "browser_bridge_timeout",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "click",
+                    "status": "failed",
+                    "target": "button#primary",
+                    "outcome": "Browser script did not reply within 12000 ms."
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-2",
+                "tool_name": "browser.navigate",
+                "tool_state": "failed",
+                "detail": "policy_denied_browser_permissions",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "navigate",
+                    "status": "blocked",
+                    "target": "https://example.com/private",
+                    "outcome": "Permission denied"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-3",
+                "tool_name": "browser.type",
+                "tool_state": "failed",
+                "detail": "browser_script_error: element not found",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "type",
+                    "status": "failed",
+                    "target": "input#missing",
+                    "outcome": "element not found"
+                }
+            })
+        ),
+    ];
+
+    let launched = launch_supervised_run(
+        app.state::<DesktopState>().inner(),
+        &project_id,
+        &repo_root,
+        "run-browser-stream-mixed-failures",
+        &runtime_shell::script_print_lines_and_sleep(&live_lines, 3),
+    );
+
+    wait_for_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        |snapshot| {
+            snapshot.run.status == RuntimeRunStatus::Running
+                && snapshot.last_checkpoint_sequence >= 4
+        },
+    );
+
+    let (channel, receiver) = capture_stream_channel();
+    start_direct_runtime_stream(
+        &app,
+        &project_id,
+        &repo_root,
+        &runtime,
+        &launched.run.run_id,
+        vec![RuntimeStreamItemKind::Tool, RuntimeStreamItemKind::Complete],
+        channel,
+    );
+
+    let items = collect_until_terminal(receiver);
+    assert_monotonic_sequences(&items, &launched.run.run_id);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Complete,
+        ]
+    );
+
+    assert_eq!(items[0].tool_call_id.as_deref(), Some("tool-browser-1"));
+    assert_eq!(items[1].tool_call_id.as_deref(), Some("tool-browser-1"));
+    assert_eq!(items[0].tool_state, Some(RuntimeToolCallState::Running));
+    assert_eq!(items[1].tool_state, Some(RuntimeToolCallState::Failed));
+
+    let timeout_summary = items[1]
+        .tool_summary
+        .as_ref()
+        .expect("timeout tool summary")
+        .clone();
+    assert!(matches!(
+        timeout_summary,
+        ToolResultSummaryDto::BrowserComputerUse(summary)
+            if summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_timeout: Browser action timed out. Retry with a higher timeout_ms or resume from the same boundary."
+            )
+    ));
+
+    let policy_summary = items[2]
+        .tool_summary
+        .as_ref()
+        .expect("policy tool summary")
+        .clone();
+    assert!(matches!(
+        policy_summary,
+        ToolResultSummaryDto::BrowserComputerUse(summary)
+            if summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+            )
+    ));
+
+    let validation_summary = items[3]
+        .tool_summary
+        .as_ref()
+        .expect("validation tool summary")
+        .clone();
+    assert!(matches!(
+        validation_summary,
+        ToolResultSummaryDto::BrowserComputerUse(summary)
+            if summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_validation_runtime: Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry."
+            )
     ));
 
     stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);

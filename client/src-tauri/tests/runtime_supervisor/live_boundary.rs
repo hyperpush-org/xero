@@ -454,6 +454,42 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
                 }
             })
         ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-timeout",
+                "tool_name": "browser.wait_for_selector",
+                "tool_state": "failed",
+                "detail": "browser_bridge_timeout",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "wait_for_selector",
+                    "status": "failed",
+                    "target": "#slow-panel",
+                    "outcome": "Browser script did not reply within 12000 ms."
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-validation",
+                "tool_name": "browser.type",
+                "tool_state": "failed",
+                "detail": "browser_script_error: element not found",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "type",
+                    "status": "failed",
+                    "target": "input#missing",
+                    "outcome": "element not found"
+                }
+            })
+        ),
     ];
 
     let launched = launch_detached_runtime_supervisor(
@@ -469,7 +505,7 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
 
     wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
         snapshot.run.status == project_store::RuntimeRunStatus::Running
-            && snapshot.last_checkpoint_sequence >= 3
+            && snapshot.last_checkpoint_sequence >= 5
     });
 
     let mut reader = attach_reader(
@@ -477,7 +513,7 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
         SupervisorControlRequest::attach(project_id, "run-browser-summary-valid", None),
     );
     let attached = expect_attach_ack(read_supervisor_response(&mut reader));
-    assert_eq!(attached.replayed_count, 3);
+    assert_eq!(attached.replayed_count, 5);
 
     let frames = read_event_frames(&mut reader, attached.replayed_count);
     assert_monotonic_sequences(&frames, "run-browser-summary-valid");
@@ -536,7 +572,59 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
                 cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
             )
             && summary.target.as_deref() == Some("Desktop icon")
-            && summary.outcome.as_deref() == Some("Permission denied")
+            && summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+            )
+    ));
+
+    assert!(matches!(
+        &frames[3],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-browser-timeout"
+            && tool_name == "browser.wait_for_selector"
+            && matches!(tool_state, SupervisorToolCallState::Failed)
+            && matches!(
+                summary.status,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Failed
+            )
+            && summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_timeout: Browser action timed out. Retry with a higher timeout_ms or resume from the same boundary."
+            )
+    ));
+
+    assert!(matches!(
+        &frames[4],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-browser-validation"
+            && tool_name == "browser.type"
+            && matches!(tool_state, SupervisorToolCallState::Failed)
+            && matches!(
+                summary.status,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Failed
+            )
+            && summary.outcome.as_deref() == Some(
+                "advanced_browser_failure_validation_runtime: Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry."
+            )
     ));
 
     let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
@@ -610,6 +698,83 @@ pub(crate) fn detached_supervisor_live_event_drops_invalid_browser_computer_use_
 
     let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
         .expect("stop invalid browser summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_unclassified_browser_computer_use_failure_payload(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-browser-summary-unclassified-failure";
+    let repo_root = seed_project(
+        &root,
+        project_id,
+        "repo-browser-summary-unclassified-failure",
+        "repo",
+    );
+    let state = DesktopState::default();
+
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-browser-unclassified-failure",
+            "tool_name": "browser.click",
+            "tool_state": "failed",
+            "detail": "Unexpected browser crash",
+            "tool_summary": {
+                "kind": "browser_computer_use",
+                "surface": "browser",
+                "action": "click",
+                "status": "failed",
+                "target": "button#primary",
+                "outcome": "crashed abruptly"
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-browser-summary-unclassified-failure",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch unclassified browser failure runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(
+            project_id,
+            "run-browser-summary-unclassified-failure",
+            None,
+        ),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, detail, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_invalid"
+            && detail
+                .as_deref()
+                .is_some_and(|value| value.contains("failure classification metadata"))
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop unclassified browser failure runtime supervisor")
         .expect("runtime run should exist after stop");
     assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }

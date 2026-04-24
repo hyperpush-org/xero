@@ -13,6 +13,9 @@ pub const AUTONOMOUS_TOOL_BROWSER: &str = "browser";
 pub const DEFAULT_BROWSER_ACTION_TIMEOUT_MS: u64 = 10_000;
 pub const MAX_BROWSER_ACTION_TIMEOUT_MS: u64 = 60_000;
 
+pub const BROWSER_NOT_OPEN_ERROR_CODE: &str = "browser_not_open";
+pub const BROWSER_POLICY_DENIED_CODE: &str = "policy_denied";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum AutonomousBrowserAction {
@@ -352,7 +355,7 @@ fn action_tool_name(action: &AutonomousBrowserAction) -> String {
 
 fn require_open_error() -> CommandError {
     CommandError::user_fixable(
-        "browser_not_open",
+        BROWSER_NOT_OPEN_ERROR_CODE,
         "The in-app browser is not currently open.",
     )
 }

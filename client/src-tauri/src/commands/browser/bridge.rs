@@ -18,6 +18,9 @@ use super::tabs::BrowserTabs;
 pub const BRIDGE_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 pub const BRIDGE_MAX_TIMEOUT_MS: u64 = 60_000;
 
+pub const BROWSER_BRIDGE_TIMEOUT_CODE: &str = "browser_bridge_timeout";
+pub const BROWSER_SCRIPT_ERROR_CODE: &str = "browser_script_error";
+
 #[derive(Debug, Clone)]
 pub struct BridgeReply {
     pub ok: bool,
@@ -126,7 +129,7 @@ pub fn run_script<R: Runtime>(
         .map_err(|_| {
             waiters.cancel(&request_id);
             CommandError::retryable(
-                "browser_bridge_timeout",
+                BROWSER_BRIDGE_TIMEOUT_CODE,
                 format!("Browser script did not reply within {timeout} ms."),
             )
         })?;
@@ -135,7 +138,7 @@ pub fn run_script<R: Runtime>(
         Ok(reply.value.unwrap_or(JsonValue::Null))
     } else {
         Err(CommandError::user_fixable(
-            "browser_script_error",
+            BROWSER_SCRIPT_ERROR_CODE,
             reply
                 .error
                 .unwrap_or_else(|| "Browser script rejected without a message.".to_string()),

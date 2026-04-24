@@ -67,6 +67,11 @@ fn runtime_stream_replays_browser_computer_use_tool_summary_variant_with_monoton
 }
 
 #[test]
+fn runtime_stream_replays_mixed_browser_failure_classes_with_monotonic_sequence() {
+    item_contracts::runtime_stream_replays_mixed_browser_failure_classes_with_monotonic_sequence();
+}
+
+#[test]
 fn runtime_stream_emits_typed_failure_when_supervisor_sequence_is_invalid() {
     attach_replay::runtime_stream_emits_typed_failure_when_supervisor_sequence_is_invalid();
 }
