@@ -126,14 +126,17 @@ impl From<&RuntimeSettingsSnapshot> for AnthropicFamilyProfileInput {
 
 impl AnthropicFamilyProfileInput {
     fn provider(&self) -> Result<crate::runtime::ResolvedRuntimeProvider, AuthFlowError> {
-        resolve_runtime_provider_identity(Some(self.provider_id.as_str()), Some(ANTHROPIC_PROVIDER_ID))
-            .map_err(|diagnostic| {
-                AuthFlowError::terminal(
-                    "runtime_provider_mismatch",
-                    RuntimeAuthPhase::Failed,
-                    diagnostic.message,
-                )
-            })
+        resolve_runtime_provider_identity(
+            Some(self.provider_id.as_str()),
+            Some(ANTHROPIC_PROVIDER_ID),
+        )
+        .map_err(|diagnostic| {
+            AuthFlowError::terminal(
+                "runtime_provider_mismatch",
+                RuntimeAuthPhase::Failed,
+                diagnostic.message,
+            )
+        })
     }
 
     fn effective_timestamp(&self) -> &str {
@@ -248,9 +251,9 @@ pub(crate) fn reconcile_anthropic_runtime_session<R: Runtime>(
     if account_id != Some(expected.account_id.as_str())
         || session_id != Some(expected.session_id.as_str())
     {
-        return Ok(AnthropicReconcileOutcome::SignedOut(binding_stale_diagnostic(
-            profile.provider_id.as_str(),
-        )));
+        return Ok(AnthropicReconcileOutcome::SignedOut(
+            binding_stale_diagnostic(profile.provider_id.as_str()),
+        ));
     }
 
     validate_anthropic_family_models_probe(&profile, &state.anthropic_auth_config())?;
@@ -291,9 +294,7 @@ pub(crate) fn discovered_anthropic_family_models(
         other => Err(AuthFlowError::terminal(
             "runtime_provider_mismatch",
             RuntimeAuthPhase::Failed,
-            format!(
-                "Cadence cannot use the Anthropic family bridge for provider `{other}`."
-            ),
+            format!("Cadence cannot use the Anthropic family bridge for provider `{other}`."),
         )),
     }
 }
@@ -376,7 +377,10 @@ fn validate_anthropic_family_models_probe(
 ) -> Result<(), AuthFlowError> {
     let models = discovered_anthropic_family_models(profile, config)?;
 
-    if !models.iter().any(|model| model.id.trim() == profile.model_id.trim()) {
+    if !models
+        .iter()
+        .any(|model| model.id.trim() == profile.model_id.trim())
+    {
         return Err(AuthFlowError::terminal(
             model_unavailable_code(profile.provider_id.as_str()),
             RuntimeAuthPhase::Failed,
@@ -607,8 +611,8 @@ fn synthetic_binding(
                 "runtime_provider_mismatch",
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence cannot derive an Anthropic family runtime binding for provider `{other}`."
-                ),
+                "Cadence cannot derive an Anthropic family runtime binding for provider `{other}`."
+            ),
             ))
         }
     };
@@ -626,7 +630,11 @@ fn synthetic_binding(
     Ok(AnthropicRuntimeSessionBinding {
         provider_id: provider.provider_id.into(),
         account_id: format!("{}-acct-{}", provider.provider_id, &auth_fingerprint[..16]),
-        session_id: format!("{}-session-{}", provider.provider_id, &session_fingerprint[..16]),
+        session_id: format!(
+            "{}-session-{}",
+            provider.provider_id,
+            &session_fingerprint[..16]
+        ),
         updated_at: crate::auth::now_timestamp(),
     })
 }
@@ -730,7 +738,10 @@ fn default_vertex_adc_path() -> Option<PathBuf> {
         std::env::var("APPDATA")
             .ok()
             .map(PathBuf::from)
-            .map(|base| base.join("gcloud").join("application_default_credentials.json"))
+            .map(|base| {
+                base.join("gcloud")
+                    .join("application_default_credentials.json")
+            })
     } else {
         dirs::home_dir().map(|home| {
             home.join(".config")

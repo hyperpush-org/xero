@@ -33,7 +33,10 @@ fn whale_spec() -> PersonaSpec {
 
 pub fn whale_persona_created_under_budget_on_localnet() {
     let fixture = fixture_with_persona_store();
-    let funding = fixture.funding.clone().expect("persona fixture has funding");
+    let funding = fixture
+        .funding
+        .clone()
+        .expect("persona fixture has funding");
     let supervisor = fixture.state.supervisor();
     supervisor
         .start(ClusterKind::Localnet, StartOpts::default())
@@ -46,7 +49,10 @@ pub fn whale_persona_created_under_budget_on_localnet() {
         .create(whale_spec(), Some("http://127.0.0.1:8899".into()))
         .expect("whale persona should be created");
 
-    assert!(Instant::now() < deadline, "phase-2 budget: <5s for whale creation");
+    assert!(
+        Instant::now() < deadline,
+        "phase-2 budget: <5s for whale creation"
+    );
 
     // Every whale preset step should land cleanly on the mock backend.
     assert!(receipt.succeeded);
@@ -189,10 +195,7 @@ pub fn self_contained_scenario_runs_end_to_end() {
     assert_eq!(run.status, ScenarioStatus::Succeeded);
     // One airdrop step, two NFT mint steps.
     assert!(!run.signatures.is_empty());
-    assert!(run
-        .funding_receipts
-        .iter()
-        .all(|r| r.succeeded));
+    assert!(run.funding_receipts.iter().all(|r| r.succeeded));
 }
 
 pub fn pipeline_scenario_pre_stages_on_mainnet_fork() {

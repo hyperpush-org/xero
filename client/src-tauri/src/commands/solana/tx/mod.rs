@@ -34,7 +34,9 @@ use crate::commands::{CommandError, CommandResult};
 use super::cluster::ClusterKind;
 use super::rpc_router::RpcRouter;
 
-pub use alt::{AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, AltRunner, AltSuggestion};
+pub use alt::{
+    AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, AltRunner, AltSuggestion,
+};
 pub use compute_budget::ComputeBudgetPlan;
 pub use cpi_resolver::{AccountMetaSpec, CpiResolution, KnownProgramLookup, ResolveArgs};
 pub use decoder::{DecodedLogs, Explanation, IdlErrorMap};
@@ -383,7 +385,10 @@ impl TxPipeline {
             json!([request.transaction_base64, config]),
         );
         let response = self.transport.post(&rpc_url, body)?;
-        let value = response.pointer("/result/value").cloned().unwrap_or(Value::Null);
+        let value = response
+            .pointer("/result/value")
+            .cloned()
+            .unwrap_or(Value::Null);
         let err = value.get("err").cloned().filter(|v| !v.is_null());
         let logs: Vec<String> = value
             .get("logs")
@@ -603,12 +608,14 @@ impl TxPipeline {
         authority_persona: &str,
         rpc_url: Option<String>,
     ) -> CommandResult<AltCreateResult> {
-        let rpc_url = rpc_url.or_else(|| self.resolve_rpc_url(cluster)).ok_or_else(|| {
-            CommandError::user_fixable(
-                "solana_tx_no_rpc",
-                "No RPC URL available — start a cluster or provide rpcUrl.",
-            )
-        })?;
+        let rpc_url = rpc_url
+            .or_else(|| self.resolve_rpc_url(cluster))
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "solana_tx_no_rpc",
+                    "No RPC URL available — start a cluster or provide rpcUrl.",
+                )
+            })?;
         let keypair = self.personas.keypair_path(cluster, authority_persona)?;
         self.alt_runner
             .create(&rpc_url, keypair.to_string_lossy().as_ref())
@@ -622,19 +629,17 @@ impl TxPipeline {
         authority_persona: &str,
         rpc_url: Option<String>,
     ) -> CommandResult<AltExtendResult> {
-        let rpc_url = rpc_url.or_else(|| self.resolve_rpc_url(cluster)).ok_or_else(|| {
-            CommandError::user_fixable(
-                "solana_tx_no_rpc",
-                "No RPC URL available — start a cluster or provide rpcUrl.",
-            )
-        })?;
+        let rpc_url = rpc_url
+            .or_else(|| self.resolve_rpc_url(cluster))
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "solana_tx_no_rpc",
+                    "No RPC URL available — start a cluster or provide rpcUrl.",
+                )
+            })?;
         let keypair = self.personas.keypair_path(cluster, authority_persona)?;
-        self.alt_runner.extend(
-            &rpc_url,
-            alt,
-            addresses,
-            keypair.to_string_lossy().as_ref(),
-        )
+        self.alt_runner
+            .extend(&rpc_url, alt, addresses, keypair.to_string_lossy().as_ref())
     }
 
     fn send_raw_transaction(&self, rpc_url: &str, signed_tx_base64: &str) -> CommandResult<String> {
@@ -679,7 +684,12 @@ impl TxPipeline {
             if !value.is_null() {
                 last_status = Some(value.clone());
                 if let Some(err) = value.get("err").filter(|v| !v.is_null()).cloned() {
-                    return Ok((value.get("slot").and_then(|v| v.as_u64()), Some("failed".into()), Some(err), Vec::new()));
+                    return Ok((
+                        value.get("slot").and_then(|v| v.as_u64()),
+                        Some("failed".into()),
+                        Some(err),
+                        Vec::new(),
+                    ));
                 }
                 if let Some(status) = value.get("confirmationStatus").and_then(|v| v.as_str()) {
                     let meets = match (target, status) {
@@ -789,15 +799,12 @@ mod tests {
 
     fn make_pipeline(
         transport: Arc<dyn RpcTransport>,
-    ) -> (
-        TxPipeline,
-        Arc<PersonaStore>,
-        Arc<RpcRouter>,
-        TempDir,
-    ) {
+    ) -> (TxPipeline, Arc<PersonaStore>, Arc<RpcRouter>, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let keypairs =
-            KeypairStore::new(tmp.path().join("keypairs"), Box::new(DeterministicProvider::new()));
+        let keypairs = KeypairStore::new(
+            tmp.path().join("keypairs"),
+            Box::new(DeterministicProvider::new()),
+        );
         let funding: Box<dyn FundingBackend> = Box::new(MockFundingBackend::new());
         let personas = Arc::new(PersonaStore::new(tmp.path(), keypairs, funding));
         let router = Arc::new(RpcRouter::new_with_default_pool());
@@ -1015,11 +1022,7 @@ mod tests {
     #[test]
     fn explain_returns_not_found_for_missing_signature() {
         let transport = Arc::new(ScriptedTransport::new());
-        transport.set(
-            "http://rpc.test",
-            "getTransaction",
-            json!({"result": null}),
-        );
+        transport.set("http://rpc.test", "getTransaction", json!({"result": null}));
         let transport_dyn: Arc<dyn RpcTransport> = transport.clone();
         let (pipeline, _, _, _tmp) = make_pipeline(transport_dyn);
         let err = pipeline
@@ -1045,12 +1048,7 @@ mod tests {
         let transport_dyn: Arc<dyn RpcTransport> = transport.clone();
         let (pipeline, _, _, _tmp) = make_pipeline(transport_dyn);
         let fee = pipeline
-            .priority_fee_estimate(
-                ClusterKind::Localnet,
-                &[],
-                SamplePercentile::Median,
-                None,
-            )
+            .priority_fee_estimate(ClusterKind::Localnet, &[], SamplePercentile::Median, None)
             .unwrap();
         assert_eq!(fee.recommended_micro_lamports, 42);
     }

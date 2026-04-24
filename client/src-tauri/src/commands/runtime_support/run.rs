@@ -5,9 +5,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::{
     auth::{
-        anthropic::{
-            resolve_anthropic_family_launch_env, AnthropicFamilyProfileInput,
-        },
+        anthropic::{resolve_anthropic_family_launch_env, AnthropicFamilyProfileInput},
         openai_compatible::{
             resolve_openai_compatible_endpoint_for_profile, resolve_openai_compatible_launch_env,
         },
@@ -17,12 +15,13 @@ use crate::{
         get_runtime_settings::{
             runtime_settings_file_from_request, runtime_settings_snapshot_from_provider_profiles,
         },
-        provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult,
-        RuntimeAuthPhase, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
-        RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto,
-        RuntimeRunControlStateDto, RuntimeRunDiagnosticDto, RuntimeRunDto,
-        RuntimeRunPendingControlSnapshotDto, RuntimeRunStatusDto, RuntimeRunTransportDto,
-        RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto, RUNTIME_RUN_UPDATED_EVENT,
+        provider_profiles::load_provider_profiles_snapshot,
+        CommandError, CommandResult, RuntimeAuthPhase, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunApprovalModeDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
+        RuntimeRunControlInputDto, RuntimeRunControlStateDto, RuntimeRunDiagnosticDto,
+        RuntimeRunDto, RuntimeRunPendingControlSnapshotDto, RuntimeRunStatusDto,
+        RuntimeRunTransportDto, RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto,
+        RUNTIME_RUN_UPDATED_EVENT,
     },
     db::project_store::{
         self, build_runtime_run_control_state, RuntimeRunCheckpointKind,
@@ -62,6 +61,12 @@ pub(crate) struct RuntimeRunLaunchOutcome {
 struct PreparedRuntimeSupervisorLaunch {
     launch_context: RuntimeSupervisorLaunchContext,
     launch_env: RuntimeSupervisorLaunchEnv,
+}
+
+struct ActiveProviderProfileSelection {
+    profile_id: String,
+    provider_id: String,
+    model_id: String,
 }
 
 pub(crate) fn load_persisted_runtime_run(
@@ -209,7 +214,29 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime>(
         });
     }
 
+    let active_profile = load_active_provider_profile_selection(app, state)?;
+    if let Some(existing) = current
+        .as_ref()
+        .filter(|snapshot| requires_matching_provider_for_new_launch(snapshot))
+    {
+        if existing.run.provider_id != active_profile.provider_id {
+            return Err(runtime_supervisor_existing_run_provider_mismatch(
+                &active_profile,
+                existing,
+            ));
+        }
+    }
+
     let runtime = load_runtime_session_status(state, &repo_root, project_id)?;
+    if runtime.phase == RuntimeAuthPhase::Authenticated
+        && runtime.provider_id != active_profile.provider_id
+    {
+        return Err(runtime_supervisor_session_provider_mismatch(
+            &active_profile,
+            &runtime,
+        ));
+    }
+
     let runtime = reconcile_runtime_session(app, state, &repo_root, runtime)?;
     ensure_runtime_run_auth_ready(&runtime.phase)?;
     let session_id = runtime.session_id.clone().ok_or_else(|| {
@@ -294,6 +321,69 @@ pub(crate) fn is_reconnectable_runtime_run(
             | crate::db::project_store::RuntimeRunStatus::Running
     ) && snapshot.run.transport.liveness
         == crate::db::project_store::RuntimeRunTransportLiveness::Reachable
+}
+
+fn requires_matching_provider_for_new_launch(
+    snapshot: &crate::db::project_store::RuntimeRunSnapshotRecord,
+) -> bool {
+    matches!(
+        snapshot.run.status,
+        crate::db::project_store::RuntimeRunStatus::Starting
+            | crate::db::project_store::RuntimeRunStatus::Running
+            | crate::db::project_store::RuntimeRunStatus::Stale
+    )
+}
+
+fn load_active_provider_profile_selection<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> CommandResult<ActiveProviderProfileSelection> {
+    let provider_profiles = load_provider_profiles_snapshot(app, state)?;
+    let active_profile = provider_profiles.active_profile().ok_or_else(|| {
+        CommandError::user_fixable(
+            "provider_profiles_invalid",
+            "Cadence could not determine the active provider profile before launching or reconnecting a runtime run.",
+        )
+    })?;
+
+    Ok(ActiveProviderProfileSelection {
+        profile_id: active_profile.profile_id.clone(),
+        provider_id: active_profile.provider_id.clone(),
+        model_id: active_profile.model_id.clone(),
+    })
+}
+
+fn runtime_supervisor_existing_run_provider_mismatch(
+    active_profile: &ActiveProviderProfileSelection,
+    snapshot: &crate::db::project_store::RuntimeRunSnapshotRecord,
+) -> CommandError {
+    CommandError::user_fixable(
+        "runtime_supervisor_provider_mismatch",
+        format!(
+            "Cadence cannot launch runtime run `{}` because active provider profile `{}` targets `{}` while durable runtime run `{}` is still attributable to `{}`. Reconnect or stop the existing run before switching providers.",
+            active_profile.model_id,
+            active_profile.profile_id,
+            active_profile.provider_id,
+            snapshot.run.run_id,
+            snapshot.run.provider_id,
+        ),
+    )
+}
+
+fn runtime_supervisor_session_provider_mismatch(
+    active_profile: &ActiveProviderProfileSelection,
+    runtime: &crate::commands::RuntimeSessionDto,
+) -> CommandError {
+    CommandError::user_fixable(
+        "runtime_supervisor_provider_mismatch",
+        format!(
+            "Cadence cannot launch runtime run `{}` because active provider profile `{}` targets `{}` while the authenticated runtime session is still bound to `{}`. Rebind the runtime session or switch back to the matching provider profile.",
+            active_profile.model_id,
+            active_profile.profile_id,
+            active_profile.provider_id,
+            runtime.provider_id,
+        ),
+    )
 }
 
 pub(crate) fn ensure_runtime_run_auth_ready(phase: &RuntimeAuthPhase) -> CommandResult<()> {
@@ -400,7 +490,10 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
         ANTHROPIC_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID
     ) {
         if runtime.provider_id == ANTHROPIC_PROVIDER_ID {
-            match active_profile.readiness(&provider_profiles.credentials).status {
+            match active_profile
+                .readiness(&provider_profiles.credentials)
+                .status
+            {
                 ProviderProfileReadinessStatus::Ready => {}
                 ProviderProfileReadinessStatus::Missing => {
                     return Err(CommandError::user_fixable(
@@ -423,10 +516,8 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
             }
         }
 
-        let runtime_settings =
-            runtime_settings_snapshot_from_provider_profiles(&provider_profiles).map_err(|error| {
-                CommandError::user_fixable(error.code, error.message)
-            })?;
+        let runtime_settings = runtime_settings_snapshot_from_provider_profiles(&provider_profiles)
+            .map_err(|error| CommandError::user_fixable(error.code, error.message))?;
         let profile_input = AnthropicFamilyProfileInput::from(&runtime_settings);
         let launch_vars =
             resolve_anthropic_family_launch_env(&profile_input).map_err(command_error_from_auth)?;

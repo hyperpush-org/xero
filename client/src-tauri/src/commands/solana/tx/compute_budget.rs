@@ -95,10 +95,16 @@ pub fn encode_set_compute_unit_price(micro_lamports: u64) -> Vec<u8> {
 pub fn encode_plan(plan: &ComputeBudgetPlan) -> Vec<(&'static str, Vec<u8>)> {
     let mut out = Vec::with_capacity(2);
     if let Some(limit) = plan.compute_unit_limit {
-        out.push((COMPUTE_BUDGET_PROGRAM_ID, encode_set_compute_unit_limit(limit)));
+        out.push((
+            COMPUTE_BUDGET_PROGRAM_ID,
+            encode_set_compute_unit_limit(limit),
+        ));
     }
     if let Some(price) = plan.compute_unit_price_micro_lamports {
-        out.push((COMPUTE_BUDGET_PROGRAM_ID, encode_set_compute_unit_price(price)));
+        out.push((
+            COMPUTE_BUDGET_PROGRAM_ID,
+            encode_set_compute_unit_price(price),
+        ));
     }
     out
 }
@@ -112,10 +118,7 @@ mod tests {
         let bytes = encode_set_compute_unit_limit(200_000);
         assert_eq!(bytes[0], 0x02);
         assert_eq!(bytes.len(), 5);
-        assert_eq!(
-            u32::from_le_bytes(bytes[1..5].try_into().unwrap()),
-            200_000
-        );
+        assert_eq!(u32::from_le_bytes(bytes[1..5].try_into().unwrap()), 200_000);
     }
 
     #[test]
@@ -123,10 +126,7 @@ mod tests {
         let bytes = encode_set_compute_unit_price(1_000);
         assert_eq!(bytes[0], 0x03);
         assert_eq!(bytes.len(), 9);
-        assert_eq!(
-            u64::from_le_bytes(bytes[1..9].try_into().unwrap()),
-            1_000
-        );
+        assert_eq!(u64::from_le_bytes(bytes[1..9].try_into().unwrap()), 1_000);
     }
 
     #[test]

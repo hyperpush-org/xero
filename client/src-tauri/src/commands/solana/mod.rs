@@ -8,6 +8,8 @@
 
 pub mod cluster;
 pub mod events;
+pub mod idl;
+pub mod pda;
 pub mod persona;
 pub mod rpc_router;
 pub mod scenario;
@@ -16,7 +18,7 @@ pub mod toolchain;
 pub mod tx;
 pub mod validator;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -26,11 +28,24 @@ use crate::commands::{CommandError, CommandResult};
 
 pub use cluster::{descriptors as cluster_descriptors, ClusterDescriptor, ClusterKind};
 pub use events::{
-    PersonaEventKind, PersonaEventPayload, ScenarioEventKind, ScenarioEventPayload,
-    TxEventKind, TxEventPayload, ValidatorLogLevel, ValidatorLogPayload, ValidatorPhase,
-    ValidatorStatusPayload, SOLANA_PERSONA_EVENT, SOLANA_RPC_HEALTH_EVENT,
-    SOLANA_SCENARIO_EVENT, SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT, SOLANA_TX_EVENT,
-    SOLANA_VALIDATOR_LOG_EVENT, SOLANA_VALIDATOR_STATUS_EVENT,
+    PersonaEventKind, PersonaEventPayload, ScenarioEventKind, ScenarioEventPayload, TxEventKind,
+    TxEventPayload, ValidatorLogLevel, ValidatorLogPayload, ValidatorPhase, ValidatorStatusPayload,
+    SOLANA_DEPLOY_PROGRESS_EVENT, SOLANA_IDL_CHANGED_EVENT, SOLANA_PERSONA_EVENT,
+    SOLANA_RPC_HEALTH_EVENT, SOLANA_SCENARIO_EVENT, SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT,
+    SOLANA_TX_EVENT, SOLANA_VALIDATOR_LOG_EVENT, SOLANA_VALIDATOR_STATUS_EVENT,
+};
+pub use idl::{
+    codama::{CodamaGenerationReport, CodamaGenerationRequest, CodamaTarget, CodamaTargetResult},
+    publish::{
+        DeployProgressPayload, DeployProgressPhase, DeployProgressSink, IdlPublishMode,
+        IdlPublishReport, IdlPublishRequest, NullProgressSink,
+    },
+    DriftChange, DriftReport, DriftSeverity, FetchedIdl, Idl, IdlChangePhase, IdlChangedEvent,
+    IdlEventSink, IdlFetcher, IdlRegistry, IdlSource, IdlSubscriptionToken, RpcIdlFetcher,
+};
+pub use pda::{
+    analyse_bump, predict_cross_cluster, scan_project as pda_scan_project, BumpAnalysis,
+    ClusterPda, DerivedAddress, PdaSite, PdaSiteSeedKind, SeedPart,
 };
 pub use persona::fund::{
     DefaultFundingBackend, FundingBackend, FundingDelta, FundingReceipt, FundingStep,
@@ -54,9 +69,9 @@ pub use tx::{
     AccountMetaSpec, AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, AltRunner,
     BundleStatus, BundleSubmission, Commitment, CompiledComputeInstruction, ComputeBudgetPlan,
     CpiResolution, DecodedLogs, ExplainRequest, Explanation, FeeEstimate, FeeSample,
-    HttpRpcTransport, IdlErrorMap, KnownProgramLookup, LandingStrategy, PercentileFee,
-    ResolveArgs, RpcTransport, SamplePercentile, SendRequest, SimulateRequest, SimulationResult,
-    TxPipeline, TxPlan, TxResult, TxSpec,
+    HttpRpcTransport, IdlErrorMap, KnownProgramLookup, LandingStrategy, PercentileFee, ResolveArgs,
+    RpcTransport, SamplePercentile, SendRequest, SimulateRequest, SimulationResult, TxPipeline,
+    TxPlan, TxResult, TxSpec,
 };
 pub use validator::{
     ClusterHandle, ClusterStatus, StartOpts, ValidatorLauncher, ValidatorSession,
@@ -72,22 +87,45 @@ pub struct SolanaState {
     personas: Arc<PersonaStore>,
     scenarios: Arc<ScenarioEngine>,
     tx_pipeline: Arc<TxPipeline>,
+    idl_registry: Arc<IdlRegistry>,
 }
 
 fn build_tx_pipeline(
     supervisor: &Arc<ValidatorSupervisor>,
     router: &Arc<RpcRouter>,
     personas: &Arc<PersonaStore>,
-) -> Arc<TxPipeline> {
+) -> (Arc<TxPipeline>, Arc<dyn RpcTransport>) {
     let transport: Arc<dyn RpcTransport> = Arc::new(HttpRpcTransport::new());
     let alt_runner: Arc<dyn AltRunner> = Arc::new(tx::alt::SolanaCliRunner::new());
-    Arc::new(TxPipeline::new(
+    (
+        Arc::new(TxPipeline::new(
+            Arc::clone(&transport),
+            Arc::clone(router),
+            Arc::clone(personas),
+            Arc::clone(supervisor),
+            alt_runner,
+        )),
         transport,
-        Arc::clone(router),
-        Arc::clone(personas),
-        Arc::clone(supervisor),
-        alt_runner,
-    ))
+    )
+}
+
+fn build_idl_registry(transport: Arc<dyn RpcTransport>) -> Arc<IdlRegistry> {
+    let fetcher: Arc<dyn IdlFetcher> = Arc::new(RpcIdlFetcher::new(transport));
+    Arc::new(IdlRegistry::new(fetcher))
+}
+
+#[derive(Debug)]
+struct NoopIdlFetcher;
+
+impl IdlFetcher for NoopIdlFetcher {
+    fn fetch(
+        &self,
+        _cluster: ClusterKind,
+        _rpc_url: &str,
+        _program_id: &str,
+    ) -> CommandResult<Option<FetchedIdl>> {
+        Ok(None)
+    }
 }
 
 impl Default for SolanaState {
@@ -104,10 +142,8 @@ impl Default for SolanaState {
             // Same fallback reasoning as snapshots: never block the app
             // from booting because the OS data dir is missing.
             let scratch = std::env::temp_dir().join("cadence-solana-personas");
-            let keypairs = KeypairStore::new(
-                scratch.join("keypairs"),
-                Box::new(OsRngKeypairProvider),
-            );
+            let keypairs =
+                KeypairStore::new(scratch.join("keypairs"), Box::new(OsRngKeypairProvider));
             PersonaStore::new(scratch, keypairs, Box::new(DefaultFundingBackend::new()))
         });
         let personas = Arc::new(personas);
@@ -116,7 +152,8 @@ impl Default for SolanaState {
             Arc::clone(&supervisor),
         ));
         let rpc_router = Arc::new(RpcRouter::new_with_default_pool());
-        let tx_pipeline = build_tx_pipeline(&supervisor, &rpc_router, &personas);
+        let (tx_pipeline, transport) = build_tx_pipeline(&supervisor, &rpc_router, &personas);
+        let idl_registry = build_idl_registry(transport);
         Self {
             supervisor,
             rpc_router,
@@ -124,6 +161,7 @@ impl Default for SolanaState {
             personas,
             scenarios,
             tx_pipeline,
+            idl_registry,
         }
     }
 }
@@ -136,10 +174,8 @@ impl SolanaState {
     ) -> Self {
         let personas = PersonaStore::with_default_root().unwrap_or_else(|_| {
             let scratch = std::env::temp_dir().join("cadence-solana-personas-test");
-            let keypairs = KeypairStore::new(
-                scratch.join("keypairs"),
-                Box::new(OsRngKeypairProvider),
-            );
+            let keypairs =
+                KeypairStore::new(scratch.join("keypairs"), Box::new(OsRngKeypairProvider));
             PersonaStore::new(scratch, keypairs, Box::new(DefaultFundingBackend::new()))
         });
         let personas = Arc::new(personas);
@@ -147,7 +183,8 @@ impl SolanaState {
             Arc::clone(&personas),
             Arc::clone(&supervisor),
         ));
-        let tx_pipeline = build_tx_pipeline(&supervisor, &rpc_router, &personas);
+        let (tx_pipeline, transport) = build_tx_pipeline(&supervisor, &rpc_router, &personas);
+        let idl_registry = build_idl_registry(transport);
         Self {
             supervisor,
             rpc_router,
@@ -155,6 +192,7 @@ impl SolanaState {
             personas,
             scenarios,
             tx_pipeline,
+            idl_registry,
         }
     }
 
@@ -170,7 +208,8 @@ impl SolanaState {
             Arc::clone(&personas),
             Arc::clone(&supervisor),
         ));
-        let tx_pipeline = build_tx_pipeline(&supervisor, &rpc_router, &personas);
+        let (tx_pipeline, transport) = build_tx_pipeline(&supervisor, &rpc_router, &personas);
+        let idl_registry = build_idl_registry(transport);
         Self {
             supervisor,
             rpc_router,
@@ -178,6 +217,7 @@ impl SolanaState {
             personas,
             scenarios,
             tx_pipeline,
+            idl_registry,
         }
     }
 
@@ -195,6 +235,9 @@ impl SolanaState {
             Arc::clone(&personas),
             Arc::clone(&supervisor),
         ));
+        let idl_registry = Arc::new(IdlRegistry::new(
+            Arc::new(NoopIdlFetcher) as Arc<dyn IdlFetcher>
+        ));
         Self {
             supervisor,
             rpc_router,
@@ -202,6 +245,7 @@ impl SolanaState {
             personas,
             scenarios,
             tx_pipeline,
+            idl_registry,
         }
     }
 
@@ -227,6 +271,10 @@ impl SolanaState {
 
     pub fn tx_pipeline(&self) -> Arc<TxPipeline> {
         Arc::clone(&self.tx_pipeline)
+    }
+
+    pub fn idl_registry(&self) -> Arc<IdlRegistry> {
+        Arc::clone(&self.idl_registry)
     }
 
     /// Resolve the RPC URL the persona / scenario commands should use when
@@ -466,13 +514,14 @@ pub fn solana_persona_create<R: Runtime>(
         .or_else(|| state.resolve_rpc_url(request.spec.cluster));
     let cluster = request.spec.cluster;
     let (persona, receipt) = state.personas.create(request.spec, rpc_url)?;
-    let payload = PersonaEventPayload::new(PersonaEventKind::Created, cluster.as_str(), &persona.name)
-        .with_pubkey(&persona.pubkey)
-        .with_message(format!(
-            "funded {} steps, success={}",
-            receipt.steps.len(),
-            receipt.succeeded
-        ));
+    let payload =
+        PersonaEventPayload::new(PersonaEventKind::Created, cluster.as_str(), &persona.name)
+            .with_pubkey(&persona.pubkey)
+            .with_message(format!(
+                "funded {} steps, success={}",
+                receipt.steps.len(),
+                receipt.succeeded
+            ));
     let _ = app.emit(SOLANA_PERSONA_EVENT, payload);
     Ok(PersonaCreateResponse { persona, receipt })
 }
@@ -656,17 +705,14 @@ pub fn solana_scenario_run<R: Runtime>(
         ScenarioStatus::Failed => ScenarioEventKind::Failed,
         ScenarioStatus::PendingPipeline => ScenarioEventKind::PendingPipeline,
     };
-    let message = run.pipeline_hint.clone().unwrap_or_else(|| {
-        format!("{} steps completed", run.steps.len())
-    });
-    let payload = ScenarioEventPayload::new(
-        finished_kind,
-        &run.id,
-        run.cluster.as_str(),
-        &run.persona,
-    )
-    .with_message(message)
-    .with_signature_count(run.signatures.len().min(u32::MAX as usize) as u32);
+    let message = run
+        .pipeline_hint
+        .clone()
+        .unwrap_or_else(|| format!("{} steps completed", run.steps.len()));
+    let payload =
+        ScenarioEventPayload::new(finished_kind, &run.id, run.cluster.as_str(), &run.persona)
+            .with_message(message)
+            .with_signature_count(run.signatures.len().min(u32::MAX as usize) as u32);
     let _ = app.emit(SOLANA_SCENARIO_EVENT, payload);
     Ok(run)
 }
@@ -830,11 +876,9 @@ pub fn solana_alt_create(
     state: State<'_, SolanaState>,
     request: AltCreateRequest,
 ) -> CommandResult<AltCreateResult> {
-    state.tx_pipeline.alt_create(
-        request.cluster,
-        &request.authority_persona,
-        request.rpc_url,
-    )
+    state
+        .tx_pipeline
+        .alt_create(request.cluster, &request.authority_persona, request.rpc_url)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -878,6 +922,295 @@ pub fn solana_alt_resolve(
     Ok(state
         .tx_pipeline
         .alt_suggest(&request.addresses, &request.candidates))
+}
+
+// ---------- IDL commands (Phase 4) -----------------------------------------
+
+/// Sink that bridges the IdlRegistry's watcher events onto a Tauri
+/// `AppHandle` so the frontend's `solana:idl:changed` listener hears
+/// them.
+#[derive(Clone)]
+struct TauriIdlEventSink<R: Runtime> {
+    app: AppHandle<R>,
+}
+
+impl<R: Runtime> std::fmt::Debug for TauriIdlEventSink<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TauriIdlEventSink").finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> IdlEventSink for TauriIdlEventSink<R> {
+    fn emit(&self, event: IdlChangedEvent) {
+        let _ = self.app.emit(SOLANA_IDL_CHANGED_EVENT, event);
+    }
+}
+
+#[derive(Clone)]
+struct TauriDeployProgressSink<R: Runtime> {
+    app: AppHandle<R>,
+}
+
+impl<R: Runtime> std::fmt::Debug for TauriDeployProgressSink<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TauriDeployProgressSink")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> DeployProgressSink for TauriDeployProgressSink<R> {
+    fn emit(&self, payload: DeployProgressPayload) {
+        let _ = self.app.emit(SOLANA_DEPLOY_PROGRESS_EVENT, payload);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlLoadRequest {
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn solana_idl_load(
+    state: State<'_, SolanaState>,
+    request: IdlLoadRequest,
+) -> CommandResult<Idl> {
+    state.idl_registry.load_file(Path::new(&request.path))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlFetchRequest {
+    pub program_id: String,
+    pub cluster: ClusterKind,
+    #[serde(default)]
+    pub rpc_url: Option<String>,
+}
+
+#[tauri::command]
+pub fn solana_idl_fetch(
+    state: State<'_, SolanaState>,
+    request: IdlFetchRequest,
+) -> CommandResult<Option<Idl>> {
+    let rpc_url = request
+        .rpc_url
+        .or_else(|| state.resolve_rpc_url(request.cluster))
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "solana_idl_no_rpc",
+                "No RPC URL available — start a cluster or provide rpcUrl explicitly.",
+            )
+        })?;
+    state
+        .idl_registry
+        .fetch_on_chain(request.cluster, &rpc_url, &request.program_id)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlGetRequest {
+    pub program_id: String,
+    #[serde(default)]
+    pub cluster: Option<ClusterKind>,
+}
+
+#[tauri::command]
+pub fn solana_idl_get(
+    state: State<'_, SolanaState>,
+    request: IdlGetRequest,
+) -> CommandResult<Option<Idl>> {
+    Ok(state
+        .idl_registry
+        .get_cached(&request.program_id, request.cluster))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlWatchRequest {
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn solana_idl_watch<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: IdlWatchRequest,
+) -> CommandResult<IdlSubscriptionToken> {
+    state
+        .idl_registry
+        .set_sink(Arc::new(TauriIdlEventSink { app }) as Arc<dyn IdlEventSink>);
+    state.idl_registry.watch_path(Path::new(&request.path))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlUnwatchRequest {
+    pub token: IdlSubscriptionToken,
+}
+
+#[tauri::command]
+pub fn solana_idl_unwatch(
+    state: State<'_, SolanaState>,
+    request: IdlUnwatchRequest,
+) -> CommandResult<bool> {
+    state.idl_registry.unwatch(&request.token)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlDriftRequest {
+    pub program_id: String,
+    pub cluster: ClusterKind,
+    pub local_path: String,
+    #[serde(default)]
+    pub rpc_url: Option<String>,
+}
+
+#[tauri::command]
+pub fn solana_idl_drift(
+    state: State<'_, SolanaState>,
+    request: IdlDriftRequest,
+) -> CommandResult<DriftReport> {
+    let local = state
+        .idl_registry
+        .load_file(Path::new(&request.local_path))?;
+    let rpc_url = request
+        .rpc_url
+        .or_else(|| state.resolve_rpc_url(request.cluster))
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "solana_idl_no_rpc",
+                "No RPC URL available — start a cluster or provide rpcUrl explicitly.",
+            )
+        })?;
+    let chain =
+        state
+            .idl_registry
+            .fetch_on_chain(request.cluster, &rpc_url, &request.program_id)?;
+    Ok(idl::drift::classify(&local, chain.as_ref()))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdlPublishArgs {
+    pub program_id: String,
+    pub cluster: ClusterKind,
+    pub idl_path: String,
+    pub authority_persona: String,
+    pub mode: IdlPublishMode,
+    #[serde(default)]
+    pub rpc_url: Option<String>,
+}
+
+#[tauri::command]
+pub fn solana_idl_publish<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: IdlPublishArgs,
+) -> CommandResult<IdlPublishReport> {
+    let rpc_url = request
+        .rpc_url
+        .or_else(|| state.resolve_rpc_url(request.cluster))
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "solana_idl_no_rpc",
+                "No RPC URL available — start a cluster or provide rpcUrl explicitly.",
+            )
+        })?;
+    let keypair = state
+        .personas
+        .keypair_path(request.cluster, &request.authority_persona)?;
+    let runner = idl::publish::SystemAnchorIdlRunner::new();
+    let sink = TauriDeployProgressSink { app };
+    let publish_request = IdlPublishRequest {
+        program_id: request.program_id,
+        cluster: request.cluster,
+        idl_path: request.idl_path,
+        authority_keypair_path: keypair.display().to_string(),
+        rpc_url,
+        mode: request.mode,
+    };
+    idl::publish::publish(&runner, &sink, &publish_request)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodamaGenerateRequest {
+    pub idl_path: String,
+    pub targets: Vec<CodamaTarget>,
+    pub output_dir: String,
+}
+
+#[tauri::command]
+pub fn solana_codama_generate(
+    request: CodamaGenerateRequest,
+) -> CommandResult<CodamaGenerationReport> {
+    let runner = idl::codama::SystemCodamaRunner::new();
+    idl::codama::generate(
+        &runner,
+        &CodamaGenerationRequest {
+            idl_path: request.idl_path,
+            targets: request.targets,
+            output_dir: request.output_dir,
+        },
+    )
+}
+
+// ---------- PDA commands (Phase 4) -----------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PdaDeriveRequest {
+    pub program_id: String,
+    pub seeds: Vec<SeedPart>,
+    #[serde(default)]
+    pub bump: Option<u8>,
+}
+
+#[tauri::command]
+pub fn solana_pda_derive(request: PdaDeriveRequest) -> CommandResult<DerivedAddress> {
+    match request.bump {
+        Some(bump) => pda::create_program_address(&request.program_id, &request.seeds, bump),
+        None => pda::find_program_address(&request.program_id, &request.seeds),
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PdaScanRequest {
+    pub project_root: String,
+}
+
+#[tauri::command]
+pub fn solana_pda_scan(request: PdaScanRequest) -> CommandResult<Vec<PdaSite>> {
+    pda::scan(Path::new(&request.project_root))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PdaPredictRequest {
+    pub program_id: String,
+    pub seeds: Vec<SeedPart>,
+    pub clusters: Vec<ClusterKind>,
+}
+
+#[tauri::command]
+pub fn solana_pda_predict(request: PdaPredictRequest) -> CommandResult<Vec<ClusterPda>> {
+    pda::predict(&request.program_id, &request.seeds, &request.clusters)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PdaAnalyseBumpRequest {
+    pub program_id: String,
+    pub seeds: Vec<SeedPart>,
+    #[serde(default)]
+    pub bump: Option<u8>,
+}
+
+#[tauri::command]
+pub fn solana_pda_analyse_bump(request: PdaAnalyseBumpRequest) -> CommandResult<BumpAnalysis> {
+    pda::analyse_bump(&request.program_id, &request.seeds, request.bump)
 }
 
 /// Lightweight acknowledgement that the frontend can call when it opens

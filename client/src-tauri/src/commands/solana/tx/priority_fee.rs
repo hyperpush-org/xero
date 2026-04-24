@@ -23,11 +23,11 @@ use super::transport::{rpc_request, RpcTransport};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SamplePercentile {
-    Low,       // p25
-    Median,    // p50
-    High,      // p75
-    VeryHigh,  // p90
-    Max,       // p99
+    Low,      // p25
+    Median,   // p50
+    High,     // p75
+    VeryHigh, // p90
+    Max,      // p99
 }
 
 impl SamplePercentile {
@@ -105,9 +105,7 @@ fn parse_samples(value: &Value) -> CommandResult<Vec<FeeSample>> {
     let mut out = Vec::with_capacity(array.len());
     for entry in array {
         let slot = entry.get("slot").and_then(|v| v.as_u64());
-        let fee = entry
-            .get("prioritizationFee")
-            .and_then(|v| v.as_u64());
+        let fee = entry.get("prioritizationFee").and_then(|v| v.as_u64());
         if let (Some(slot), Some(fee)) = (slot, fee) {
             out.push(FeeSample {
                 slot,
@@ -192,13 +190,9 @@ mod tests {
             "getRecentPrioritizationFees",
             json!({"result": []}),
         );
-        let out = estimate_priority_fee(
-            &transport,
-            "http://rpc.test",
-            &[],
-            SamplePercentile::Median,
-        )
-        .unwrap();
+        let out =
+            estimate_priority_fee(&transport, "http://rpc.test", &[], SamplePercentile::Median)
+                .unwrap();
         assert_eq!(out.recommended_micro_lamports, 0);
         assert_eq!(out.samples.len(), 0);
         assert_eq!(out.percentiles.len(), 5);
@@ -212,13 +206,8 @@ mod tests {
             "getRecentPrioritizationFees",
             samples_value(&[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]),
         );
-        let out = estimate_priority_fee(
-            &transport,
-            "http://rpc.test",
-            &[],
-            SamplePercentile::High,
-        )
-        .unwrap();
+        let out = estimate_priority_fee(&transport, "http://rpc.test", &[], SamplePercentile::High)
+            .unwrap();
         // p75 of 1..=5 → index 3 → 4
         assert_eq!(out.recommended_micro_lamports, 4);
         assert_eq!(out.percentiles[0].micro_lamports, 2); // p25
@@ -245,10 +234,7 @@ mod tests {
         assert_eq!(calls.len(), 1);
         // Params must be [[<program>]], not [<program>], per Solana RPC.
         let params = &calls[0].1;
-        assert_eq!(
-            params[0][0],
-            "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
-        );
+        assert_eq!(params[0][0], "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB");
     }
 
     #[test]
@@ -264,13 +250,9 @@ mod tests {
                 {"slot": 3, "prioritizationFee": 30}
             ]}),
         );
-        let out = estimate_priority_fee(
-            &transport,
-            "http://rpc.test",
-            &[],
-            SamplePercentile::Median,
-        )
-        .unwrap();
+        let out =
+            estimate_priority_fee(&transport, "http://rpc.test", &[], SamplePercentile::Median)
+                .unwrap();
         assert_eq!(out.samples.len(), 2);
     }
 }

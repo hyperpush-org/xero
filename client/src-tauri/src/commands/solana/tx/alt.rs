@@ -61,11 +61,7 @@ pub struct AltResolveReport {
 /// Narrow trait so tests can stub `solana address-lookup-table create` /
 /// `extend` without shelling out. Production uses `SolanaCliRunner`.
 pub trait AltRunner: Send + Sync + std::fmt::Debug {
-    fn create(
-        &self,
-        rpc_url: &str,
-        authority_keypair: &str,
-    ) -> CommandResult<AltCreateResult>;
+    fn create(&self, rpc_url: &str, authority_keypair: &str) -> CommandResult<AltCreateResult>;
 
     fn extend(
         &self,
@@ -99,11 +95,7 @@ impl SolanaCliRunner {
 }
 
 impl AltRunner for SolanaCliRunner {
-    fn create(
-        &self,
-        rpc_url: &str,
-        authority_keypair: &str,
-    ) -> CommandResult<AltCreateResult> {
+    fn create(&self, rpc_url: &str, authority_keypair: &str) -> CommandResult<AltCreateResult> {
         let solana = self.solana_path().ok_or_else(|| {
             CommandError::user_fixable(
                 "solana_alt_cli_missing",
@@ -209,10 +201,7 @@ impl AltRunner for SolanaCliRunner {
 
 /// Rank ALT candidates by how many tx addresses they'd cover. Returns a
 /// sorted suggestion list plus the leader (if any).
-pub fn suggest_entries(
-    tx_addresses: &[String],
-    candidates: &[AltCandidate],
-) -> AltResolveReport {
+pub fn suggest_entries(tx_addresses: &[String], candidates: &[AltCandidate]) -> AltResolveReport {
     let mut suggestions: Vec<AltSuggestion> = candidates
         .iter()
         .map(|candidate| {
@@ -341,11 +330,7 @@ pub(crate) mod test_support {
     }
 
     impl AltRunner for MockAltRunner {
-        fn create(
-            &self,
-            rpc_url: &str,
-            authority_keypair: &str,
-        ) -> CommandResult<AltCreateResult> {
+        fn create(&self, rpc_url: &str, authority_keypair: &str) -> CommandResult<AltCreateResult> {
             self.create_calls
                 .lock()
                 .unwrap()
@@ -438,9 +423,8 @@ mod tests {
 
     #[test]
     fn parse_alt_create_output_handles_human_output() {
-        let (pk, sig) = parse_alt_create_output(
-            "Lookup Table: MyLookupTable111111111\nSignature: mysig\n",
-        );
+        let (pk, sig) =
+            parse_alt_create_output("Lookup Table: MyLookupTable111111111\nSignature: mysig\n");
         assert_eq!(pk.as_deref(), Some("MyLookupTable111111111"));
         assert_eq!(sig.as_deref(), Some("mysig"));
     }

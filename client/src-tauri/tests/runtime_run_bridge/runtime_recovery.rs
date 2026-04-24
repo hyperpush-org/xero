@@ -140,6 +140,279 @@ pub(crate) fn start_runtime_run_reconnects_existing_run_without_duplicate_launch
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
 }
 
+pub(crate) fn start_runtime_run_reconnects_original_provider_run_after_active_profile_switch_and_fresh_host_reload(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let models_base_url = spawn_static_http_server_for_requests(
+        200,
+        r#"{"data":[{"id":"gpt-4.1-mini","display_name":"GPT-4.1 Mini","capabilities":{"reasoning":{"supported":true,"effortOptions":["low","medium","high"],"defaultEffort":"medium"}}}]}"#,
+        4,
+    );
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_openai_compatible_profile(
+        &app,
+        "openai-compatible-work",
+        "openai_api",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("openai_api"),
+        Some(&models_base_url),
+        Some("2025-03-01-preview"),
+        "sk-openai-runtime-secret",
+    );
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind openai runtime session before run start");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "openai_api");
+
+    let launched = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect("start openai runtime run");
+    assert_eq!(launched.provider_id, "openai_api");
+    assert_eq!(launched.runtime_kind, "openai_compatible");
+
+    let running = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+    assert_eq!(running.run_id, launched.run_id);
+    assert_eq!(running.provider_id, "openai_api");
+    assert_eq!(running.runtime_kind, "openai_compatible");
+    assert_eq!(running.controls.active.model_id, "gpt-4.1-mini");
+
+    seed_anthropic_profile(
+        &app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        "sk-ant-api03-runtime-secret",
+    );
+
+    let (fresh_state, _fresh_registry_path, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+    let recovered = wait_for_runtime_run(&fresh_app, &project_id, |runtime_run| {
+        runtime_run.status == RuntimeRunStatusDto::Running
+            && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+    });
+    assert_eq!(recovered.run_id, launched.run_id);
+    assert_eq!(recovered.provider_id, "openai_api");
+    assert_eq!(recovered.runtime_kind, "openai_compatible");
+    assert_eq!(recovered.controls.active.model_id, "gpt-4.1-mini");
+
+    let reconnected = start_runtime_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect("profile switch should reconnect original durable run");
+    assert_eq!(reconnected.run_id, launched.run_id);
+    assert_eq!(reconnected.provider_id, "openai_api");
+    assert_eq!(reconnected.runtime_kind, "openai_compatible");
+    assert_eq!(count_runtime_run_rows(&repo_root), 1);
+
+    let stopped = stop_runtime_run(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id,
+            run_id: launched.run_id,
+        },
+    )
+    .expect("stop recovered openai runtime run")
+    .expect("reconnected runtime run should still exist");
+    assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}
+
+pub(crate) fn start_runtime_run_fails_closed_when_active_profile_switches_provider_before_first_launch(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let models_base_url = spawn_static_http_server_for_requests(
+        200,
+        r#"{"data":[{"id":"gpt-4.1-mini","display_name":"GPT-4.1 Mini","capabilities":{"reasoning":{"supported":true,"effortOptions":["low","medium","high"],"defaultEffort":"medium"}}}]}"#,
+        2,
+    );
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_openai_compatible_profile(
+        &app,
+        "openai-compatible-work",
+        "openai_api",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("openai_api"),
+        Some(&models_base_url),
+        Some("2025-03-01-preview"),
+        "sk-openai-runtime-secret",
+    );
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind openai runtime session before profile switch");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "openai_api");
+    assert_eq!(runtime.runtime_kind, "openai_compatible");
+
+    seed_anthropic_profile(
+        &app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        "sk-ant-api03-runtime-secret",
+    );
+
+    let error = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect_err("cross-provider launch should fail closed");
+    assert_eq!(error.code, "runtime_supervisor_provider_mismatch");
+    assert!(error.message.contains("anthropic"));
+    assert!(error.message.contains("openai_api"));
+    assert_eq!(count_runtime_run_rows(&repo_root), 0);
+
+    let stored_runtime = project_store::load_runtime_session(&repo_root, &project_id)
+        .expect("load persisted runtime session after mismatch")
+        .expect("authenticated runtime session should remain persisted");
+    assert_eq!(stored_runtime.provider_id, "openai_api");
+    assert_eq!(stored_runtime.runtime_kind, "openai_compatible");
+    assert_eq!(stored_runtime.auth_phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(
+        stored_runtime.session_id.as_deref(),
+        runtime.session_id.as_deref()
+    );
+}
+
+pub(crate) fn start_runtime_run_fails_closed_for_stale_cross_provider_run_without_smearing_durable_identity(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let models_base_url = spawn_static_http_server_for_requests(
+        200,
+        r#"{"data":[{"id":"gpt-4.1-mini","display_name":"GPT-4.1 Mini","capabilities":{"reasoning":{"supported":true,"effortOptions":["low","medium","high"],"defaultEffort":"medium"}}}]}"#,
+        2,
+    );
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_openai_compatible_profile(
+        &app,
+        "openai-compatible-work",
+        "openai_api",
+        "openai_compatible",
+        "gpt-4.1-mini",
+        Some("openai_api"),
+        Some(&models_base_url),
+        Some("2025-03-01-preview"),
+        "sk-openai-runtime-secret",
+    );
+
+    let runtime = start_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("bind openai runtime session before stale recovery attempt");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.provider_id, "openai_api");
+
+    seed_unreachable_runtime_run_with_identity(
+        &repo_root,
+        &project_id,
+        "run-openai-stale",
+        "openai_compatible",
+        "openai_api",
+        "gpt-4.1-mini",
+        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+    );
+
+    seed_anthropic_profile(
+        &app,
+        "anthropic-work",
+        "claude-3-7-sonnet-latest",
+        "sk-ant-api03-runtime-secret",
+    );
+
+    let error = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect_err("stale cross-provider run should fail closed");
+    assert_eq!(error.code, "runtime_supervisor_provider_mismatch");
+    assert!(error.message.contains("run-openai-stale"));
+    assert!(error.message.contains("openai_api"));
+    assert!(error.message.contains("anthropic"));
+    assert_eq!(count_runtime_run_rows(&repo_root), 1);
+
+    let runtime_run = project_store::load_runtime_run(&repo_root, &project_id)
+        .expect("load durable runtime run after mismatch")
+        .expect("stale runtime run should remain persisted");
+    assert_eq!(runtime_run.run.run_id, "run-openai-stale");
+    assert_eq!(runtime_run.run.provider_id, "openai_api");
+    assert_eq!(runtime_run.run.runtime_kind, "openai_compatible");
+    assert_eq!(
+        runtime_run.run.status,
+        project_store::RuntimeRunStatus::Stale
+    );
+    assert_eq!(
+        runtime_run.run.transport.liveness,
+        project_store::RuntimeRunTransportLiveness::Unreachable
+    );
+    assert_eq!(
+        runtime_run
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("runtime_supervisor_connect_failed")
+    );
+    assert_eq!(runtime_run.controls.active.model_id, "gpt-4.1-mini");
+
+    let stored_runtime = project_store::load_runtime_session(&repo_root, &project_id)
+        .expect("load persisted runtime session after stale mismatch")
+        .expect("authenticated runtime session should remain persisted");
+    assert_eq!(stored_runtime.provider_id, "openai_api");
+    assert_eq!(stored_runtime.runtime_kind, "openai_compatible");
+    assert_eq!(stored_runtime.auth_phase, RuntimeAuthPhase::Authenticated);
+}
+
 pub(crate) fn get_runtime_run_recovers_truthful_running_state_after_fresh_host_reload() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, auth_store_path) = create_state(&root);
@@ -587,7 +860,10 @@ pub(crate) fn start_runtime_run_launches_vertex_with_truthful_provider_identity_
             assert_eq!(running.run_id, launched.run_id);
             assert_eq!(running.provider_id, "vertex");
             assert_eq!(running.runtime_kind, "anthropic");
-            assert_eq!(running.controls.active.model_id, "claude-3-7-sonnet@20250219");
+            assert_eq!(
+                running.controls.active.model_id,
+                "claude-3-7-sonnet@20250219"
+            );
 
             let stopped = stop_runtime_run(
                 app.handle().clone(),
@@ -635,7 +911,10 @@ pub(crate) fn start_runtime_run_surfaces_typed_vertex_adc_missing_diagnostic_bef
             )
             .expect("surface vertex adc diagnostic before run start");
             assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
-            assert_eq!(runtime.last_error_code.as_deref(), Some("vertex_adc_missing"));
+            assert_eq!(
+                runtime.last_error_code.as_deref(),
+                Some("vertex_adc_missing")
+            );
 
             let error = start_runtime_run(
                 app.handle().clone(),

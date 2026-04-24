@@ -737,7 +737,10 @@ fn validate_provider_profiles_metadata(
     metadata: ProviderProfilesMetadataFile,
     path: &Path,
 ) -> CommandResult<ProviderProfilesMetadataFile> {
-    if metadata.version != 1 && metadata.version != 2 && metadata.version != PROVIDER_PROFILES_SCHEMA_VERSION {
+    if metadata.version != 1
+        && metadata.version != 2
+        && metadata.version != PROVIDER_PROFILES_SCHEMA_VERSION
+    {
         return Err(CommandError::user_fixable(
             "provider_profiles_invalid",
             format!(

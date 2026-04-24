@@ -21,8 +21,18 @@ fn detached_supervisor_probe_marks_unreachable_run_stale() {
 }
 
 #[test]
+fn detached_supervisor_probe_preserves_provider_identity_after_stale_recovery() {
+    launch_probe_stop::detached_supervisor_probe_preserves_provider_identity_after_stale_recovery();
+}
+
+#[test]
 fn detached_supervisor_rejects_missing_shell_program() {
     launch_probe_stop::detached_supervisor_rejects_missing_shell_program();
+}
+
+#[test]
+fn detached_supervisor_rejects_provider_runtime_kind_mismatch_launch_context() {
+    launch_probe_stop::detached_supervisor_rejects_provider_runtime_kind_mismatch_launch_context();
 }
 
 #[test]
@@ -47,7 +57,8 @@ fn detached_supervisor_rejects_anthropic_launch_without_api_key_env() {
 
 #[test]
 fn detached_supervisor_launches_bedrock_child_with_context_env_and_ambient_auth() {
-    launch_probe_stop::detached_supervisor_launches_bedrock_child_with_context_env_and_ambient_auth();
+    launch_probe_stop::detached_supervisor_launches_bedrock_child_with_context_env_and_ambient_auth(
+    );
 }
 
 #[test]
@@ -57,7 +68,8 @@ fn detached_supervisor_rejects_bedrock_launch_without_aws_credentials() {
 
 #[test]
 fn detached_supervisor_launches_vertex_child_with_context_env_and_ambient_auth() {
-    launch_probe_stop::detached_supervisor_launches_vertex_child_with_context_env_and_ambient_auth();
+    launch_probe_stop::detached_supervisor_launches_vertex_child_with_context_env_and_ambient_auth(
+    );
 }
 
 #[test]

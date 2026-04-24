@@ -11,8 +11,8 @@ use crate::{
     provider_profiles::ProviderProfileRecord,
     runtime::{
         ResolvedRuntimeProvider, AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
-        OPENAI_API_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND,
+        GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        OPENAI_COMPATIBLE_RUNTIME_KIND,
     },
 };
 
@@ -367,7 +367,11 @@ pub(crate) fn fetch_openai_compatible_models(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().unwrap_or_default();
-        return Err(map_probe_status_error(endpoint, status.as_u16(), body.trim()));
+        return Err(map_probe_status_error(
+            endpoint,
+            status.as_u16(),
+            body.trim(),
+        ));
     }
 
     let body = response.text().map_err(|error| {

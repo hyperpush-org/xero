@@ -363,8 +363,8 @@ mod grpc_impl {
             loop {
                 let tx = self.ensure_hid_stream();
                 let events = wire_events.clone();
-                let send_result: Result<(), mpsc::error::SendError<WireHidEvent>> = rt
-                    .block_on(async {
+                let send_result: Result<(), mpsc::error::SendError<WireHidEvent>> =
+                    rt.block_on(async {
                         for ev in events {
                             tx.send(ev).await?;
                         }
@@ -376,10 +376,7 @@ mod grpc_impl {
                     Err(_) if attempts == 0 => {
                         // Stream died mid-send — drop the stale sender so
                         // `ensure_hid_stream` opens a fresh RPC next pass.
-                        self.hid_tx
-                            .lock()
-                            .expect("idb hid sender mutex")
-                            .take();
+                        self.hid_tx.lock().expect("idb hid sender mutex").take();
                         attempts += 1;
                     }
                     Err(_) => {

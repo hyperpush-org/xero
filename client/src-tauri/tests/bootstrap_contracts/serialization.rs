@@ -688,8 +688,8 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         preset_id: Some("openrouter".into()),
         base_url: None,
         api_version: None,
-            region: None,
-            project_id: None,
+        region: None,
+        project_id: None,
         api_key: Some("credential-value-2".into()),
         activate: true,
     })
@@ -783,8 +783,10 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             readiness: ProviderProfileReadinessDto {
                 ready: true,
                 status: ProviderProfileReadinessStatusDto::Ready,
-                proof: Some(cadence_desktop_lib::commands::ProviderProfileReadinessProofDto::StoredSecret),
-                    proof_updated_at: Some("2026-04-21T02:00:05Z".into()),
+                proof: Some(
+                    cadence_desktop_lib::commands::ProviderProfileReadinessProofDto::StoredSecret,
+                ),
+                proof_updated_at: Some("2026-04-21T02:00:05Z".into()),
             },
             migrated_from_legacy: true,
             migrated_at: Some("2026-04-21T02:00:00Z".into()),

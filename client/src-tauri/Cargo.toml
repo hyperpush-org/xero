@@ -61,6 +61,7 @@ bs58 = "0.5"
 byteorder = "1"
 dirs = "5"
 ed25519-dalek = { version = "2", default-features = false, features = ["fast", "std", "rand_core"] }
+flate2 = "1"
 git2 = "0.20"
 globset = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

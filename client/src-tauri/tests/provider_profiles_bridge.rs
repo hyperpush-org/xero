@@ -7,9 +7,9 @@ use cadence_desktop_lib::{
     provider_profiles::{
         load_or_migrate_provider_profiles_from_paths, ProviderProfileCredentialLink,
         ProviderProfileReadinessProof, ProviderProfileReadinessStatus,
-        ANTHROPIC_DEFAULT_PROFILE_ID,
-        GITHUB_MODELS_DEFAULT_PROFILE_ID, OPENAI_CODEX_DEFAULT_PROFILE_ID,
-        OPENROUTER_DEFAULT_PROFILE_ID, OPENROUTER_FALLBACK_MODEL_ID,
+        ANTHROPIC_DEFAULT_PROFILE_ID, GITHUB_MODELS_DEFAULT_PROFILE_ID,
+        OPENAI_CODEX_DEFAULT_PROFILE_ID, OPENROUTER_DEFAULT_PROFILE_ID,
+        OPENROUTER_FALLBACK_MODEL_ID,
     },
     state::ImportFailpoints,
 };
@@ -650,7 +650,6 @@ fn github_models_profile_store_rejects_api_version_override() {
     assert!(error.message.contains("field `apiVersion` is not allowed"));
 }
 
-
 #[test]
 fn ollama_profile_store_accepts_local_readiness_without_secret_files() {
     let root = tempfile::tempdir().expect("temp dir");
@@ -696,7 +695,10 @@ fn ollama_profile_store_accepts_local_readiness_without_secret_files() {
     let readiness = profile.readiness(&snapshot.credentials);
     assert_eq!(readiness.status, ProviderProfileReadinessStatus::Ready);
     assert_eq!(readiness.proof, Some(ProviderProfileReadinessProof::Local));
-    assert_eq!(readiness.proof_updated_at.as_deref(), Some("2026-04-21T06:00:00Z"));
+    assert_eq!(
+        readiness.proof_updated_at.as_deref(),
+        Some("2026-04-21T06:00:00Z")
+    );
     assert!(!paths.provider_profile_credentials_path.exists());
 }
 
@@ -737,7 +739,9 @@ fn bedrock_profile_store_accepts_ambient_readiness_without_secret_files() {
     )
     .expect("load bedrock provider profiles");
 
-    let profile = snapshot.profile("bedrock-default").expect("bedrock profile");
+    let profile = snapshot
+        .profile("bedrock-default")
+        .expect("bedrock profile");
     assert_eq!(profile.region.as_deref(), Some("us-east-1"));
     assert!(matches!(
         profile.credential_link,
@@ -745,8 +749,14 @@ fn bedrock_profile_store_accepts_ambient_readiness_without_secret_files() {
     ));
     let readiness = profile.readiness(&snapshot.credentials);
     assert_eq!(readiness.status, ProviderProfileReadinessStatus::Ready);
-    assert_eq!(readiness.proof, Some(ProviderProfileReadinessProof::Ambient));
-    assert_eq!(readiness.proof_updated_at.as_deref(), Some("2026-04-21T06:10:00Z"));
+    assert_eq!(
+        readiness.proof,
+        Some(ProviderProfileReadinessProof::Ambient)
+    );
+    assert_eq!(
+        readiness.proof_updated_at.as_deref(),
+        Some("2026-04-21T06:10:00Z")
+    );
     assert!(!paths.provider_profile_credentials_path.exists());
 }
 

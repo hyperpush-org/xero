@@ -87,13 +87,16 @@ pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
 pub use solana::{
     solana_alt_create, solana_alt_extend, solana_alt_resolve, solana_cluster_list,
-    solana_cluster_start, solana_cluster_status, solana_cluster_stop, solana_cpi_resolve,
-    solana_persona_create, solana_persona_delete, solana_persona_export_keypair,
-    solana_persona_fund, solana_persona_import_keypair, solana_persona_list, solana_persona_roles,
-    solana_priority_fee_estimate, solana_rpc_endpoints_set, solana_rpc_health, solana_scenario_list,
-    solana_scenario_run, solana_snapshot_create, solana_snapshot_delete, solana_snapshot_list,
-    solana_snapshot_restore, solana_subscribe_ready, solana_toolchain_status, solana_tx_build,
-    solana_tx_explain, solana_tx_send, solana_tx_simulate, SolanaState,
+    solana_cluster_start, solana_cluster_status, solana_cluster_stop, solana_codama_generate,
+    solana_cpi_resolve, solana_idl_drift, solana_idl_fetch, solana_idl_get, solana_idl_load,
+    solana_idl_publish, solana_idl_unwatch, solana_idl_watch, solana_pda_analyse_bump,
+    solana_pda_derive, solana_pda_predict, solana_pda_scan, solana_persona_create,
+    solana_persona_delete, solana_persona_export_keypair, solana_persona_fund,
+    solana_persona_import_keypair, solana_persona_list, solana_persona_roles,
+    solana_priority_fee_estimate, solana_rpc_endpoints_set, solana_rpc_health,
+    solana_scenario_list, solana_scenario_run, solana_snapshot_create, solana_snapshot_delete,
+    solana_snapshot_list, solana_snapshot_restore, solana_subscribe_ready, solana_toolchain_status,
+    solana_tx_build, solana_tx_explain, solana_tx_send, solana_tx_simulate, SolanaState,
 };
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_openai_login::start_openai_login;

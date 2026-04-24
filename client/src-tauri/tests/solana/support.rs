@@ -11,7 +11,7 @@ use std::time::Instant;
 use cadence_desktop_lib::commands::solana::persona::fund::{
     FundingBackend, FundingContext, FundingStep,
 };
-use cadence_desktop_lib::commands::solana::persona::keygen::{KeypairProvider, KeypairBytes};
+use cadence_desktop_lib::commands::solana::persona::keygen::{KeypairBytes, KeypairProvider};
 use cadence_desktop_lib::commands::solana::{
     AccountFetcher, AccountRecord, ClusterHandle, ClusterKind, KeypairStore, PersonaStore,
     RpcRouter, SnapshotStore, SolanaState, StartOpts, ValidatorLauncher, ValidatorSession,
@@ -379,11 +379,10 @@ impl FundingBackend for TestFundingBackend {
         collection: &str,
         index: u32,
     ) -> CommandResult<FundingStep> {
-        self.nfts.lock().unwrap().push((
-            ctx.persona_name.clone(),
-            collection.to_string(),
-            index,
-        ));
+        self.nfts
+            .lock()
+            .unwrap()
+            .push((ctx.persona_name.clone(), collection.to_string(), index));
         Ok(FundingStep::NftFixture {
             collection: collection.to_string(),
             mint: Some(format!(

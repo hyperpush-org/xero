@@ -37,9 +37,15 @@ pub enum DecodedLogEntry {
         raw: String,
     },
     /// `Program log: <msg>` — free-form log output from the program.
-    Log { program_id: Option<String>, message: String },
+    Log {
+        program_id: Option<String>,
+        message: String,
+    },
     /// `Program data: <base64>` — emitted events (Anchor `emit!` etc.)
-    Data { program_id: Option<String>, base64: String },
+    Data {
+        program_id: Option<String>,
+        base64: String,
+    },
     /// `Program <pid> consumed X of Y compute units` — CU accounting.
     ComputeUsage {
         program_id: String,
@@ -247,26 +253,22 @@ pub fn explain_simulation(
     idl_errors: Option<&IdlErrorMap>,
 ) -> Explanation {
     let decoded = decode_logs(logs, idl_errors);
-    let primary_error = decoded
-        .entries
-        .iter()
-        .rev()
-        .find_map(|entry| match entry {
-            DecodedLogEntry::Failure {
-                program_id,
-                program_label,
-                code,
-                idl_variant,
-                raw,
-            } => Some(ErrorDetail {
-                program_id: program_id.clone(),
-                program_label: program_label.clone(),
-                code: *code,
-                idl_variant: idl_variant.clone(),
-                raw: raw.clone(),
-            }),
-            _ => None,
-        });
+    let primary_error = decoded.entries.iter().rev().find_map(|entry| match entry {
+        DecodedLogEntry::Failure {
+            program_id,
+            program_label,
+            code,
+            idl_variant,
+            raw,
+        } => Some(ErrorDetail {
+            program_id: program_id.clone(),
+            program_label: program_label.clone(),
+            code: *code,
+            idl_variant: idl_variant.clone(),
+            raw: raw.clone(),
+        }),
+        _ => None,
+    });
 
     let ok = err_blob.map(|v| v.is_null()).unwrap_or(true) && primary_error.is_none();
 
@@ -326,10 +328,7 @@ mod tests {
         let decoded = decode_logs(&logs, None);
         assert_eq!(decoded.programs_invoked.len(), 1);
         assert_eq!(decoded.total_compute_units, 2345);
-        assert!(matches!(
-            decoded.entries[0],
-            DecodedLogEntry::Invoke { .. }
-        ));
+        assert!(matches!(decoded.entries[0], DecodedLogEntry::Invoke { .. }));
         assert!(matches!(
             decoded.entries[3],
             DecodedLogEntry::Success { .. }
@@ -344,7 +343,11 @@ mod tests {
         ]);
         let decoded = decode_logs(&logs, None);
         match &decoded.entries[1] {
-            DecodedLogEntry::Failure { code, program_label, .. } => {
+            DecodedLogEntry::Failure {
+                code,
+                program_label,
+                ..
+            } => {
                 assert_eq!(*code, Some(0x1770));
                 assert_eq!(program_label.as_deref(), Some("SPL Governance"));
             }
@@ -368,9 +371,7 @@ mod tests {
         let decoded = decode_logs(&logs, Some(&map));
         match &decoded.entries[1] {
             DecodedLogEntry::Failure {
-                idl_variant,
-                code,
-                ..
+                idl_variant, code, ..
             } => {
                 assert_eq!(*code, Some(0x1770));
                 assert_eq!(idl_variant.as_deref(), Some("InvalidVoteRecord"));
@@ -421,7 +422,11 @@ mod tests {
             "Program Gov111 invoke [1]",
             "Program Gov111 failed: custom program error: 0x1770",
         ]);
-        let expl = explain_simulation(&logs, Some(&json!({"InstructionError": [0, "Custom"]})), Some(&map));
+        let expl = explain_simulation(
+            &logs,
+            Some(&json!({"InstructionError": [0, "Custom"]})),
+            Some(&map),
+        );
         assert!(!expl.ok);
         assert!(expl.summary.contains("InvalidVoteRecord"));
     }

@@ -139,11 +139,7 @@ pub struct FundingContext {
 }
 
 pub trait FundingBackend: Send + Sync + Debug {
-    fn airdrop(
-        &self,
-        ctx: &FundingContext,
-        lamports: u64,
-    ) -> CommandResult<FundingStep>;
+    fn airdrop(&self, ctx: &FundingContext, lamports: u64) -> CommandResult<FundingStep>;
 
     fn ensure_token_balance(
         &self,
@@ -197,11 +193,7 @@ impl DefaultFundingBackend {
 }
 
 impl FundingBackend for DefaultFundingBackend {
-    fn airdrop(
-        &self,
-        ctx: &FundingContext,
-        lamports: u64,
-    ) -> CommandResult<FundingStep> {
+    fn airdrop(&self, ctx: &FundingContext, lamports: u64) -> CommandResult<FundingStep> {
         if lamports == 0 {
             return Ok(FundingStep::Airdrop {
                 signature: None,
@@ -520,7 +512,10 @@ fn confirm_signature(client: &Client, rpc_url: &str, signature: &str) -> Result<
             return Err(format!("signature status rpc error: {err}"));
         }
 
-        let value = resp.pointer("/result/value/0").cloned().unwrap_or(Value::Null);
+        let value = resp
+            .pointer("/result/value/0")
+            .cloned()
+            .unwrap_or(Value::Null);
         if !value.is_null() {
             if let Some(err) = value.get("err").filter(|e| !e.is_null()) {
                 return Err(format!("transaction reverted: {err}"));
@@ -655,11 +650,7 @@ pub(crate) mod test_support {
     }
 
     impl FundingBackend for MockFundingBackend {
-        fn airdrop(
-            &self,
-            ctx: &FundingContext,
-            lamports: u64,
-        ) -> CommandResult<FundingStep> {
+        fn airdrop(&self, ctx: &FundingContext, lamports: u64) -> CommandResult<FundingStep> {
             self.airdrops
                 .lock()
                 .unwrap()
@@ -731,8 +722,14 @@ pub(crate) mod test_support {
             }
             Ok(FundingStep::NftFixture {
                 collection: collection.to_string(),
-                mint: Some(format!("mock-nft-{}-{}-{}", ctx.persona_name, collection, index)),
-                signature: Some(format!("sig-nft-{}-{}-{}", ctx.persona_name, collection, index)),
+                mint: Some(format!(
+                    "mock-nft-{}-{}-{}",
+                    ctx.persona_name, collection, index
+                )),
+                signature: Some(format!(
+                    "sig-nft-{}-{}-{}",
+                    ctx.persona_name, collection, index
+                )),
                 ok: true,
                 error: None,
             })
@@ -793,7 +790,6 @@ pub fn apply_delta(
 
     Ok(receipt)
 }
-
 
 #[cfg(test)]
 mod tests {

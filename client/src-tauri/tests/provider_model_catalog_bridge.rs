@@ -1019,10 +1019,13 @@ fn get_provider_model_catalog_discovers_openai_compatible_profile_with_live_mode
 
 #[test]
 fn get_provider_model_catalog_discovers_localhost_openai_compatible_profile_without_api_key() {
-    let base_url = format!("{}/v1", spawn_static_http_server(
-        200,
-        r#"{"data":[{"id":"llama3.2","display_name":"Llama 3.2"}]}"#,
-    ));
+    let base_url = format!(
+        "{}/v1",
+        spawn_static_http_server(
+            200,
+            r#"{"data":[{"id":"llama3.2","display_name":"Llama 3.2"}]}"#,
+        )
+    );
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     seed_openai_compatible_profile(
@@ -1089,14 +1092,12 @@ fn get_provider_model_catalog_returns_typed_unreachable_error_for_ollama_without
             .map(|error| error.code.as_str()),
         Some("ollama_provider_unavailable")
     );
-    assert!(
-        !catalog
-            .last_refresh_error
-            .as_ref()
-            .expect("ollama refresh error")
-            .message
-            .contains("API key")
-    );
+    assert!(!catalog
+        .last_refresh_error
+        .as_ref()
+        .expect("ollama refresh error")
+        .message
+        .contains("API key"));
 }
 
 #[test]

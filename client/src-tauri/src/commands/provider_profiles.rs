@@ -156,8 +156,12 @@ fn map_readiness_status(
 
 fn map_readiness_proof(proof: ProviderProfileReadinessProof) -> ProviderProfileReadinessProofDto {
     match proof {
-        ProviderProfileReadinessProof::OAuthSession => ProviderProfileReadinessProofDto::OAuthSession,
-        ProviderProfileReadinessProof::StoredSecret => ProviderProfileReadinessProofDto::StoredSecret,
+        ProviderProfileReadinessProof::OAuthSession => {
+            ProviderProfileReadinessProofDto::OAuthSession
+        }
+        ProviderProfileReadinessProof::StoredSecret => {
+            ProviderProfileReadinessProofDto::StoredSecret
+        }
         ProviderProfileReadinessProof::Local => ProviderProfileReadinessProofDto::Local,
         ProviderProfileReadinessProof::Ambient => ProviderProfileReadinessProofDto::Ambient,
     }
@@ -244,24 +248,25 @@ fn apply_provider_profile_upsert(
         return Err(CommandError::invalid_request("apiKey"));
     }
 
-    let next_api_key_secret = if !supports_api_key || provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
-        None
-    } else if explicit_api_key_clear {
-        None
-    } else if let Some(api_key) = requested_api_key {
-        Some(ProviderApiKeyCredentialEntry {
-            profile_id: profile_id.to_owned(),
-            api_key: api_key.to_owned(),
-            updated_at: api_key_updated_at(current_api_key_secret.as_ref(), Some(api_key)),
-        })
-    } else if current_profile
-        .as_ref()
-        .is_some_and(|profile| profile.provider_id != OPENAI_CODEX_PROVIDER_ID)
-    {
-        current_api_key_secret.clone()
-    } else {
-        None
-    };
+    let next_api_key_secret =
+        if !supports_api_key || provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
+            None
+        } else if explicit_api_key_clear {
+            None
+        } else if let Some(api_key) = requested_api_key {
+            Some(ProviderApiKeyCredentialEntry {
+                profile_id: profile_id.to_owned(),
+                api_key: api_key.to_owned(),
+                updated_at: api_key_updated_at(current_api_key_secret.as_ref(), Some(api_key)),
+            })
+        } else if current_profile
+            .as_ref()
+            .is_some_and(|profile| profile.provider_id != OPENAI_CODEX_PROVIDER_ID)
+        {
+            current_api_key_secret.clone()
+        } else {
+            None
+        };
 
     let next_credential_link = next_provider_profile_credential_link(
         provider.provider_id,
@@ -393,7 +398,9 @@ fn next_provider_profile_credential_link(
     if provider_uses_local_readiness(provider_id, base_url) && next_api_key_secret.is_none() {
         let updated_at = current_profile
             .and_then(|profile| match profile.credential_link.as_ref() {
-                Some(ProviderProfileCredentialLink::Local { updated_at }) => Some(updated_at.clone()),
+                Some(ProviderProfileCredentialLink::Local { updated_at }) => {
+                    Some(updated_at.clone())
+                }
                 _ => None,
             })
             .unwrap_or_else(crate::auth::now_timestamp);
@@ -419,8 +426,7 @@ fn next_provider_profile_credential_link(
 
 fn provider_uses_local_readiness(provider_id: &str, base_url: Option<&str>) -> bool {
     provider_id == OLLAMA_PROVIDER_ID
-        || (provider_id == OPENAI_API_PROVIDER_ID
-            && base_url.is_some_and(is_local_openai_base_url))
+        || (provider_id == OPENAI_API_PROVIDER_ID && base_url.is_some_and(is_local_openai_base_url))
 }
 
 fn provider_uses_ambient_readiness(provider_id: &str) -> bool {

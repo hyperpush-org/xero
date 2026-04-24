@@ -51,13 +51,13 @@ impl PersonaRole {
         match self {
             PersonaRole::Whale => RolePreset {
                 display_label: "Whale".into(),
-                description:
-                    "Large SOL + stablecoin balance for stressing liquidity-driven paths.".into(),
+                description: "Large SOL + stablecoin balance for stressing liquidity-driven paths."
+                    .into(),
                 lamports: sol_to_lamports(10_000.0),
                 tokens: vec![
                     TokenAllocation::by_symbol("USDC", 1_000_000_000_000), // 1M USDC (6 decimals)
                     TokenAllocation::by_symbol("USDT", 1_000_000_000_000), // 1M USDT (6 decimals)
-                    TokenAllocation::by_symbol("mSOL", 5_000_000_000_000),  // 5k mSOL (9 decimals)
+                    TokenAllocation::by_symbol("mSOL", 5_000_000_000_000), // 5k mSOL (9 decimals)
                 ],
                 nfts: vec![NftAllocation {
                     collection: "cadence-whale-fixture".to_string(),
@@ -66,8 +66,7 @@ impl PersonaRole {
             },
             PersonaRole::Lp => RolePreset {
                 display_label: "Liquidity Provider".into(),
-                description:
-                    "Balanced SOL + USDC + USDT position for seeding AMM pools.".into(),
+                description: "Balanced SOL + USDC + USDT position for seeding AMM pools.".into(),
                 lamports: sol_to_lamports(2_500.0),
                 tokens: vec![
                     TokenAllocation::by_symbol("USDC", 250_000_000_000), // 250k USDC
@@ -257,7 +256,10 @@ mod tests {
     #[test]
     fn token_allocation_prefers_explicit_mint() {
         let alloc = TokenAllocation::by_mint("MyMint11111111111111111111111111111", 5);
-        assert_eq!(alloc.resolve_mint().as_deref(), Some("MyMint11111111111111111111111111111"));
+        assert_eq!(
+            alloc.resolve_mint().as_deref(),
+            Some("MyMint11111111111111111111111111111")
+        );
     }
 
     #[test]

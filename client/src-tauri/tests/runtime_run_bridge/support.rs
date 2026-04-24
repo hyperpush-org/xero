@@ -85,7 +85,10 @@ pub(crate) fn supervisor_test_guard() -> SupervisorTestGuard {
     }
 }
 
-pub(crate) fn with_scoped_env<T>(entries: &[(&str, Option<&str>)], operation: impl FnOnce() -> T) -> T {
+pub(crate) fn with_scoped_env<T>(
+    entries: &[(&str, Option<&str>)],
+    operation: impl FnOnce() -> T,
+) -> T {
     let _guard = supervisor_test_guard();
     let previous = entries
         .iter()
@@ -968,14 +971,34 @@ pub(crate) fn wait_for_notification_dispatches_for_action(
 }
 
 pub(crate) fn seed_unreachable_runtime_run(repo_root: &Path, project_id: &str, run_id: &str) {
+    seed_unreachable_runtime_run_with_identity(
+        repo_root,
+        project_id,
+        run_id,
+        "openai_codex",
+        "openai_codex",
+        "openai_codex",
+        None,
+    );
+}
+
+pub(crate) fn seed_unreachable_runtime_run_with_identity(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    runtime_kind: &str,
+    provider_id: &str,
+    model_id: &str,
+    thinking_effort: Option<cadence_desktop_lib::commands::ProviderModelThinkingEffortDto>,
+) {
     project_store::upsert_runtime_run(
         repo_root,
         &project_store::RuntimeRunUpsertRecord {
             run: project_store::RuntimeRunRecord {
                 project_id: project_id.into(),
                 run_id: run_id.into(),
-                runtime_kind: "openai_codex".into(),
-                provider_id: "openai_codex".into(),
+                runtime_kind: runtime_kind.into(),
+                provider_id: provider_id.into(),
                 supervisor_kind: "detached_pty".into(),
                 status: project_store::RuntimeRunStatus::Running,
                 transport: project_store::RuntimeRunTransportRecord {
@@ -999,8 +1022,8 @@ pub(crate) fn seed_unreachable_runtime_run(repo_root: &Path, project_id: &str, r
             }),
             control_state: Some(
                 project_store::build_runtime_run_control_state(
-                    "openai_codex",
-                    None,
+                    model_id,
+                    thinking_effort,
                     cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
                     "2026-04-15T19:00:00Z",
                     None,

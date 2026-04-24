@@ -135,9 +135,7 @@ pub fn required_tokens(scenario_id: &str) -> Vec<TokenAllocation> {
             TokenAllocation::by_symbol("USDC", 100_000_000_000),
             TokenAllocation::by_symbol("mSOL", 10_000_000_000),
         ],
-        "add_liquidity_orca" => vec![
-            TokenAllocation::by_symbol("USDC", 50_000_000_000),
-        ],
+        "add_liquidity_orca" => vec![TokenAllocation::by_symbol("USDC", 50_000_000_000)],
         "governance_vote" => vec![TokenAllocation::by_symbol("JTO", 10_000_000_000)],
         _ => vec![],
     }
@@ -163,7 +161,11 @@ mod tests {
     #[test]
     fn every_scenario_has_a_supported_cluster() {
         for s in scenarios() {
-            assert!(!s.supported_clusters.is_empty(), "scenario {} has no cluster", s.id);
+            assert!(
+                !s.supported_clusters.is_empty(),
+                "scenario {} has no cluster",
+                s.id
+            );
         }
     }
 

@@ -10,6 +10,8 @@ pub const SOLANA_RPC_HEALTH_EVENT: &str = "solana:rpc:health";
 pub const SOLANA_PERSONA_EVENT: &str = "solana:persona";
 pub const SOLANA_SCENARIO_EVENT: &str = "solana:scenario";
 pub const SOLANA_TX_EVENT: &str = "solana:tx";
+pub const SOLANA_IDL_CHANGED_EVENT: &str = "solana:idl:changed";
+pub const SOLANA_DEPLOY_PROGRESS_EVENT: &str = "solana:deploy:progress";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -191,12 +193,7 @@ pub struct ScenarioEventPayload {
 }
 
 impl ScenarioEventPayload {
-    pub fn new(
-        kind: ScenarioEventKind,
-        id: &str,
-        cluster: &str,
-        persona: &str,
-    ) -> Self {
+    pub fn new(kind: ScenarioEventKind, id: &str, cluster: &str, persona: &str) -> Self {
         Self {
             kind,
             id: id.to_string(),

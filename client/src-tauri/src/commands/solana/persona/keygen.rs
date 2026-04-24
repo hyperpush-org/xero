@@ -60,10 +60,7 @@ impl KeypairBytes {
         if parsed.len() != 64 {
             return Err(CommandError::user_fixable(
                 "solana_persona_keypair_wrong_length",
-                format!(
-                    "Keypair JSON must contain 64 bytes, got {}.",
-                    parsed.len()
-                ),
+                format!("Keypair JSON must contain 64 bytes, got {}.", parsed.len()),
             ));
         }
         let mut out = [0u8; 64];
@@ -176,10 +173,9 @@ impl KeypairStore {
     }
 
     pub fn path_for(&self, cluster: &str, name: &str) -> PathBuf {
-        self.root.join(sanitize_segment(cluster)).join(format!(
-            "{}.json",
-            sanitize_segment(name)
-        ))
+        self.root
+            .join(sanitize_segment(cluster))
+            .join(format!("{}.json", sanitize_segment(name)))
     }
 
     fn write_file(
@@ -192,10 +188,7 @@ impl KeypairStore {
         fs::create_dir_all(&cluster_dir).map_err(|err| {
             CommandError::system_fault(
                 "solana_persona_keypair_dir_create_failed",
-                format!(
-                    "Could not create {}: {err}",
-                    cluster_dir.display()
-                ),
+                format!("Could not create {}: {err}", cluster_dir.display()),
             )
         })?;
 
@@ -332,8 +325,10 @@ mod tests {
     #[test]
     fn keypair_store_writes_and_reads_round_trip() {
         let tmp = TempDir::new().unwrap();
-        let store =
-            KeypairStore::new(tmp.path().to_path_buf(), Box::new(DeterministicProvider::new()));
+        let store = KeypairStore::new(
+            tmp.path().to_path_buf(),
+            Box::new(DeterministicProvider::new()),
+        );
         let (bytes, path) = store.generate("localnet", "alice").unwrap();
         assert!(path.is_file());
 
@@ -344,8 +339,10 @@ mod tests {
     #[test]
     fn keypair_store_rejects_malformed_file() {
         let tmp = TempDir::new().unwrap();
-        let store =
-            KeypairStore::new(tmp.path().to_path_buf(), Box::new(DeterministicProvider::new()));
+        let store = KeypairStore::new(
+            tmp.path().to_path_buf(),
+            Box::new(DeterministicProvider::new()),
+        );
         let cluster_dir = tmp.path().join("localnet");
         fs::create_dir_all(&cluster_dir).unwrap();
         fs::write(cluster_dir.join("busted.json"), b"\"not-an-array\"").unwrap();
@@ -366,8 +363,10 @@ mod tests {
     #[test]
     fn import_bytes_writes_same_file_as_generate() {
         let tmp = TempDir::new().unwrap();
-        let store =
-            KeypairStore::new(tmp.path().to_path_buf(), Box::new(DeterministicProvider::new()));
+        let store = KeypairStore::new(
+            tmp.path().to_path_buf(),
+            Box::new(DeterministicProvider::new()),
+        );
         let (bytes, generated_path) = store.generate("localnet", "from-generate").unwrap();
         let imported_path = store
             .import_bytes("localnet", "from-import", bytes.clone())
@@ -381,8 +380,10 @@ mod tests {
     #[test]
     fn delete_is_idempotent() {
         let tmp = TempDir::new().unwrap();
-        let store =
-            KeypairStore::new(tmp.path().to_path_buf(), Box::new(DeterministicProvider::new()));
+        let store = KeypairStore::new(
+            tmp.path().to_path_buf(),
+            Box::new(DeterministicProvider::new()),
+        );
         store.delete("localnet", "nonexistent").unwrap();
         store.generate("localnet", "alice").unwrap();
         store.delete("localnet", "alice").unwrap();

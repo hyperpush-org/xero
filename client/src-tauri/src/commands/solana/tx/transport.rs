@@ -157,10 +157,7 @@ pub(crate) mod test_support {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<unknown>")
                 .to_string();
-            let params = body
-                .get("params")
-                .cloned()
-                .unwrap_or(Value::Null);
+            let params = body.get("params").cloned().unwrap_or(Value::Null);
             self.requests
                 .lock()
                 .unwrap()
@@ -200,11 +197,7 @@ mod tests {
     #[test]
     fn scripted_transport_records_method_calls() {
         let transport = ScriptedTransport::new();
-        transport.set(
-            "http://rpc.test",
-            "getSlot",
-            json!({"result": 123}),
-        );
+        transport.set("http://rpc.test", "getSlot", json!({"result": 123}));
         let _ = transport.post("http://rpc.test", rpc_request("getSlot", json!([])));
         let calls = transport.calls_for("getSlot");
         assert_eq!(calls.len(), 1);

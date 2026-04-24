@@ -1757,7 +1757,10 @@ fn start_runtime_session_surfaces_typed_vertex_adc_missing_diagnostic() {
             assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
             assert_eq!(runtime.provider_id, "vertex");
             assert_eq!(runtime.runtime_kind, "anthropic");
-            assert_eq!(runtime.last_error_code.as_deref(), Some("vertex_adc_missing"));
+            assert_eq!(
+                runtime.last_error_code.as_deref(),
+                Some("vertex_adc_missing")
+            );
             assert!(runtime.session_id.is_none());
         },
     );
@@ -2272,7 +2275,10 @@ fn get_runtime_session_rejects_stale_ollama_binding_after_endpoint_change() {
 
     assert_eq!(reconciled.phase, RuntimeAuthPhase::Idle);
     assert_eq!(reconciled.provider_id, "ollama");
-    assert_eq!(reconciled.last_error_code.as_deref(), Some("ollama_binding_stale"));
+    assert_eq!(
+        reconciled.last_error_code.as_deref(),
+        Some("ollama_binding_stale")
+    );
     assert!(reconciled.session_id.is_none());
 }
 

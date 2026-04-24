@@ -131,16 +131,19 @@ impl ScenarioEngine {
             ));
         }
 
-        let persona = self.personas.get(spec.cluster, &spec.persona)?.ok_or_else(|| {
-            CommandError::user_fixable(
-                "solana_scenario_persona_missing",
-                format!(
-                    "Persona '{}' does not exist on cluster {}. Create it first.",
-                    spec.persona,
-                    spec.cluster.as_str()
-                ),
-            )
-        })?;
+        let persona = self
+            .personas
+            .get(spec.cluster, &spec.persona)?
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "solana_scenario_persona_missing",
+                    format!(
+                        "Persona '{}' does not exist on cluster {}. Create it first.",
+                        spec.persona,
+                        spec.cluster.as_str()
+                    ),
+                )
+            })?;
 
         let rpc_url = self.require_rpc_url_for(spec.cluster)?;
 
@@ -176,7 +179,8 @@ impl ScenarioEngine {
                     ..FundingDelta::default()
                 };
                 let receipt =
-                    self.personas.fund(persona.cluster, &persona.name, &airdrop, rpc_url)?;
+                    self.personas
+                        .fund(persona.cluster, &persona.name, &airdrop, rpc_url)?;
                 if !receipt.succeeded {
                     run.status = ScenarioStatus::Failed;
                 }
@@ -204,7 +208,8 @@ impl ScenarioEngine {
                     }],
                 };
                 let receipt =
-                    self.personas.fund(persona.cluster, &persona.name, &mint_delta, rpc_url)?;
+                    self.personas
+                        .fund(persona.cluster, &persona.name, &mint_delta, rpc_url)?;
                 if !receipt.succeeded {
                     run.status = ScenarioStatus::Failed;
                 }
@@ -224,7 +229,8 @@ impl ScenarioEngine {
                     nfts: vec![],
                 };
                 let receipt =
-                    self.personas.fund(persona.cluster, &persona.name, &delta, rpc_url)?;
+                    self.personas
+                        .fund(persona.cluster, &persona.name, &delta, rpc_url)?;
                 if !receipt.succeeded {
                     run.status = ScenarioStatus::Failed;
                 }
@@ -347,7 +353,9 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::commands::solana::persona::fund::test_support::MockFundingBackend;
-    use crate::commands::solana::persona::keygen::{test_support::DeterministicProvider, KeypairStore};
+    use crate::commands::solana::persona::keygen::{
+        test_support::DeterministicProvider, KeypairStore,
+    };
     use crate::commands::solana::persona::roles::PersonaRole;
     use crate::commands::solana::persona::{FundingBackend, PersonaSpec};
     use crate::commands::solana::validator::{
@@ -378,7 +386,8 @@ mod tests {
                 .arg("3600")
                 .spawn()
                 .expect("sleep should spawn in test env");
-            let guard = crate::commands::emulator::process::ChildGuard::new("test-validator", child);
+            let guard =
+                crate::commands::emulator::process::ChildGuard::new("test-validator", child);
             let ledger = std::env::temp_dir().join("cadence-scenario-test");
             let handle = ClusterHandle {
                 kind,
@@ -397,10 +406,15 @@ mod tests {
         }
     }
 
-    fn make_engine(tmp: &TempDir, kind: ClusterKind) -> (Arc<PersonaStore>, Arc<ValidatorSupervisor>, ScenarioEngine) {
+    fn make_engine(
+        tmp: &TempDir,
+        kind: ClusterKind,
+    ) -> (Arc<PersonaStore>, Arc<ValidatorSupervisor>, ScenarioEngine) {
         let root = tmp.path().to_path_buf();
-        let keypairs =
-            KeypairStore::new(root.join("keypairs"), Box::new(DeterministicProvider::new()));
+        let keypairs = KeypairStore::new(
+            root.join("keypairs"),
+            Box::new(DeterministicProvider::new()),
+        );
         let funding: Box<dyn FundingBackend> = Box::new(MockFundingBackend::new());
         let personas = Arc::new(PersonaStore::new(root, keypairs, funding));
 
@@ -498,7 +512,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(run.status, ScenarioStatus::Succeeded);
-        assert!(!run.signatures.is_empty(), "should collect airdrop + mint sigs");
+        assert!(
+            !run.signatures.is_empty(),
+            "should collect airdrop + mint sigs"
+        );
         assert!(run.funding_receipts.iter().all(|r| r.succeeded));
         assert!(run.steps.iter().any(|s| s.contains("Minting 2 NFT")));
     }

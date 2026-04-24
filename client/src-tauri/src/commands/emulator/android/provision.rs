@@ -510,7 +510,12 @@ fn install_cmdline_tools<R: Runtime>(app: &AppHandle<R>, root: &Path) -> Command
     let zip_path = root.join(format!(
         "cmdline-tools-{host_slug}-{CMDLINE_TOOLS_VERSION}.zip"
     ));
-    download_with_progress(app, &url, &zip_path, ProvisionPhase::DownloadingCmdlineTools)?;
+    download_with_progress(
+        app,
+        &url,
+        &zip_path,
+        ProvisionPhase::DownloadingCmdlineTools,
+    )?;
     verify_sha256(&zip_path, expected_sha)?;
 
     emit_provision(
@@ -589,10 +594,7 @@ fn accept_licenses<R: Runtime>(
         &sdkmanager,
         java_home,
         root,
-        &[
-            &format!("--sdk_root={}", root.display()),
-            "--licenses",
-        ],
+        &[&format!("--sdk_root={}", root.display()), "--licenses"],
         true,
     )?;
 
@@ -1215,16 +1217,18 @@ pub fn emulator_android_provision_status<R: Runtime>(
         .join("bin")
         .join(sdkmanager_binary())
         .is_file();
-    let platform_tools = root.join("platform-tools").join(if cfg!(windows) {
-        "adb.exe"
-    } else {
-        "adb"
-    }).is_file();
-    let emulator = root.join("emulator").join(if cfg!(windows) {
-        "emulator.exe"
-    } else {
-        "emulator"
-    }).is_file();
+    let platform_tools = root
+        .join("platform-tools")
+        .join(if cfg!(windows) { "adb.exe" } else { "adb" })
+        .is_file();
+    let emulator = root
+        .join("emulator")
+        .join(if cfg!(windows) {
+            "emulator.exe"
+        } else {
+            "emulator"
+        })
+        .is_file();
     let avd_present = default_avd_home()
         .map(|dir| dir.join(format!("{DEFAULT_AVD_NAME}.ini")).is_file())
         .unwrap_or(false);

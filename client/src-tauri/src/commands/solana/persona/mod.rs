@@ -209,9 +209,7 @@ impl PersonaStore {
             ));
         }
 
-        let (bytes, path) = self
-            .keypairs
-            .generate(spec.cluster.as_str(), &spec.name)?;
+        let (bytes, path) = self.keypairs.generate(spec.cluster.as_str(), &spec.name)?;
         let pubkey = bytes.pubkey_base58();
         let seed = spec.effective_seed();
 
@@ -296,7 +294,10 @@ impl PersonaStore {
         if self.get(cluster, name)?.is_some() {
             return Err(CommandError::user_fixable(
                 "solana_persona_already_exists",
-                format!("Persona '{name}' already exists on cluster {}.", cluster.as_str()),
+                format!(
+                    "Persona '{name}' already exists on cluster {}.",
+                    cluster.as_str()
+                ),
             ));
         }
 
@@ -319,11 +320,7 @@ impl PersonaStore {
         Ok(persona)
     }
 
-    pub fn export_keypair_path(
-        &self,
-        cluster: ClusterKind,
-        name: &str,
-    ) -> CommandResult<PathBuf> {
+    pub fn export_keypair_path(&self, cluster: ClusterKind, name: &str) -> CommandResult<PathBuf> {
         policy_ok(PersonaOp::ExportKeypair, cluster)?;
         // Belt-and-braces: only local clusters ever expose the keypair path
         // back to callers. Devnet/Mainnet personas cannot be exported even
@@ -417,11 +414,8 @@ impl PersonaStore {
 }
 
 fn registry_path(root: &Path, cluster: ClusterKind) -> PathBuf {
-    root.join("registry").join(format!(
-        "{}-{}",
-        cluster.as_str(),
-        PERSONA_REGISTRY_FILE
-    ))
+    root.join("registry")
+        .join(format!("{}-{}", cluster.as_str(), PERSONA_REGISTRY_FILE))
 }
 
 fn load_registry(path: &Path) -> CommandResult<RegistryFile> {
@@ -443,11 +437,7 @@ fn load_registry(path: &Path) -> CommandResult<RegistryFile> {
     Ok(parsed)
 }
 
-fn persist_registry(
-    root: &Path,
-    cluster: ClusterKind,
-    file: &RegistryFile,
-) -> CommandResult<()> {
+fn persist_registry(root: &Path, cluster: ClusterKind, file: &RegistryFile) -> CommandResult<()> {
     let path = registry_path(root, cluster);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {

@@ -40,6 +40,22 @@ fn start_runtime_run_reconnects_existing_run_without_duplicate_launch_or_auth_ev
 }
 
 #[test]
+fn start_runtime_run_reconnects_original_provider_run_after_active_profile_switch_and_fresh_host_reload(
+) {
+    runtime_recovery::start_runtime_run_reconnects_original_provider_run_after_active_profile_switch_and_fresh_host_reload();
+}
+
+#[test]
+fn start_runtime_run_fails_closed_when_active_profile_switches_provider_before_first_launch() {
+    runtime_recovery::start_runtime_run_fails_closed_when_active_profile_switches_provider_before_first_launch();
+}
+
+#[test]
+fn start_runtime_run_fails_closed_for_stale_cross_provider_run_without_smearing_durable_identity() {
+    runtime_recovery::start_runtime_run_fails_closed_for_stale_cross_provider_run_without_smearing_durable_identity();
+}
+
+#[test]
 fn get_runtime_run_recovers_truthful_running_state_after_fresh_host_reload() {
     runtime_recovery::get_runtime_run_recovers_truthful_running_state_after_fresh_host_reload();
 }
@@ -189,7 +205,8 @@ fn start_runtime_run_launches_anthropic_with_truthful_provider_identity_and_secr
 }
 
 #[test]
-fn start_runtime_run_launches_bedrock_with_truthful_provider_identity_and_ambient_launch_metadata() {
+fn start_runtime_run_launches_bedrock_with_truthful_provider_identity_and_ambient_launch_metadata()
+{
     runtime_recovery::start_runtime_run_launches_bedrock_with_truthful_provider_identity_and_ambient_launch_metadata();
 }
 
@@ -200,7 +217,8 @@ fn start_runtime_run_launches_vertex_with_truthful_provider_identity_and_ambient
 
 #[test]
 fn start_runtime_run_surfaces_typed_vertex_adc_missing_diagnostic_before_launch() {
-    runtime_recovery::start_runtime_run_surfaces_typed_vertex_adc_missing_diagnostic_before_launch();
+    runtime_recovery::start_runtime_run_surfaces_typed_vertex_adc_missing_diagnostic_before_launch(
+    );
 }
 
 #[test]
@@ -210,8 +228,7 @@ fn start_runtime_run_launches_openai_compatible_with_truthful_provider_identity_
 }
 
 #[test]
-fn start_runtime_run_launches_ollama_with_truthful_provider_identity_and_secret_free_persistence(
-) {
+fn start_runtime_run_launches_ollama_with_truthful_provider_identity_and_secret_free_persistence() {
     runtime_recovery::start_runtime_run_launches_ollama_with_truthful_provider_identity_and_secret_free_persistence();
 }
 

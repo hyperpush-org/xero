@@ -607,8 +607,8 @@ fn upsert_runtime_settings_treats_missing_api_key_linkage_as_unconfigured() {
                 preset_id: Some("openrouter".into()),
                 base_url: None,
                 api_version: None,
-            region: None,
-            project_id: None,
+                region: None,
+                project_id: None,
                 credential_link: Some(ProviderProfileCredentialLink::ApiKey {
                     updated_at: "2026-04-21T01:00:00Z".into(),
                 }),
@@ -652,7 +652,6 @@ fn upsert_runtime_settings_treats_missing_api_key_linkage_as_unconfigured() {
         }
     );
 }
-
 
 #[test]
 fn get_runtime_settings_projects_ollama_provider_profiles_without_fake_api_keys() {

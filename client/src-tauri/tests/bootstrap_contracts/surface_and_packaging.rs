@@ -186,15 +186,15 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
                 preset_id: None,
                 base_url: None,
                 api_version: None,
-            region: None,
-            project_id: None,
+                region: None,
+                project_id: None,
                 active: true,
                 readiness: cadence_desktop_lib::commands::ProviderProfileReadinessDto {
                     ready: false,
                     status:
                         cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing,
                     proof: None,
-                        proof_updated_at: None,
+                    proof_updated_at: None,
                 },
                 migrated_from_legacy: false,
                 migrated_at: None,

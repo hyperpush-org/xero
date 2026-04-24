@@ -20,7 +20,8 @@ use crate::commands::{CommandError, CommandResult};
 
 use super::transport::{rpc_request, RpcTransport};
 
-pub const JITO_DEFAULT_BLOCK_ENGINE_URL: &str = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
+pub const JITO_DEFAULT_BLOCK_ENGINE_URL: &str =
+    "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
 
 /// Canonical Jito tip accounts (mainnet). A bundle must transfer tip
 /// lamports to one of these accounts in its tail tx or the block engine
@@ -84,10 +85,7 @@ pub fn submit_bundle(
         .ok_or_else(|| {
             CommandError::retryable(
                 "solana_jito_bundle_malformed",
-                format!(
-                    "Jito bundle response had no string result: {}",
-                    response
-                ),
+                format!("Jito bundle response had no string result: {}", response),
             )
         })?
         .to_string();
@@ -187,11 +185,7 @@ mod tests {
             "sendBundle",
             json!({"result": "b"}),
         );
-        let _ = submit_bundle(
-            &transport,
-            JITO_DEFAULT_BLOCK_ENGINE_URL,
-            &["tx1".into()],
-        );
+        let _ = submit_bundle(&transport, JITO_DEFAULT_BLOCK_ENGINE_URL, &["tx1".into()]);
         let calls = transport.calls_for("sendBundle");
         assert_eq!(calls.len(), 1);
         // Jito expects params = [[tx1, tx2, ...]]

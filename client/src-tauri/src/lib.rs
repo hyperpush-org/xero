@@ -191,6 +191,18 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::solana_alt_create,
             commands::solana::solana_alt_extend,
             commands::solana::solana_alt_resolve,
+            commands::solana::solana_idl_load,
+            commands::solana::solana_idl_fetch,
+            commands::solana::solana_idl_get,
+            commands::solana::solana_idl_watch,
+            commands::solana::solana_idl_unwatch,
+            commands::solana::solana_idl_drift,
+            commands::solana::solana_idl_publish,
+            commands::solana::solana_codama_generate,
+            commands::solana::solana_pda_derive,
+            commands::solana::solana_pda_scan,
+            commands::solana::solana_pda_predict,
+            commands::solana::solana_pda_analyse_bump,
             commands::solana::solana_subscribe_ready,
         ])
 }

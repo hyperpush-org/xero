@@ -232,6 +232,74 @@ pub(crate) fn detached_supervisor_probe_marks_unreachable_run_stale() {
     );
 }
 
+pub(crate) fn detached_supervisor_probe_preserves_provider_identity_after_stale_recovery() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-gemini-stale";
+    let repo_root = seed_project(&root, project_id, "repo-gemini-stale", "repo");
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: project_id.into(),
+                run_id: "run-gemini-stale".into(),
+                runtime_kind: "gemini".into(),
+                provider_id: "gemini_ai_studio".into(),
+                supervisor_kind: "detached_pty".into(),
+                status: project_store::RuntimeRunStatus::Running,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "tcp".into(),
+                    endpoint: "127.0.0.1:9".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Unknown,
+                },
+                started_at: "2026-04-15T19:00:00Z".into(),
+                last_heartbeat_at: Some("2026-04-15T19:00:10Z".into()),
+                stopped_at: None,
+                last_error: None,
+                updated_at: "2026-04-15T19:00:10Z".into(),
+            },
+            checkpoint: Some(project_store::RuntimeRunCheckpointRecord {
+                project_id: project_id.into(),
+                run_id: "run-gemini-stale".into(),
+                sequence: 1,
+                kind: project_store::RuntimeRunCheckpointKind::Bootstrap,
+                summary: "Supervisor boot recorded.".into(),
+                created_at: "2026-04-15T19:00:10Z".into(),
+            }),
+            control_state: Some(sample_runtime_run_controls_for_model(
+                "2026-04-15T19:00:10Z",
+                "gemini-2.5-flash",
+                Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+            )),
+        },
+    )
+    .expect("seed gemini stale runtime run");
+
+    let state = DesktopState::default();
+    let recovered = probe_runtime_run(&state, probe_request(project_id, &repo_root))
+        .expect("probe stale gemini runtime run")
+        .expect("gemini runtime run should exist after stale probe");
+
+    assert_eq!(recovered.run.run_id, "run-gemini-stale");
+    assert_eq!(recovered.run.provider_id, "gemini_ai_studio");
+    assert_eq!(recovered.run.runtime_kind, "gemini");
+    assert_eq!(recovered.controls.active.model_id, "gemini-2.5-flash");
+    assert_eq!(recovered.run.status, project_store::RuntimeRunStatus::Stale);
+    assert_eq!(
+        recovered.run.transport.liveness,
+        project_store::RuntimeRunTransportLiveness::Unreachable
+    );
+    assert_eq!(
+        recovered
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("runtime_supervisor_connect_failed")
+    );
+}
+
 pub(crate) fn detached_supervisor_rejects_missing_shell_program() {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
@@ -267,6 +335,44 @@ pub(crate) fn detached_supervisor_rejects_missing_shell_program() {
     .expect_err("missing shell program should fail");
 
     assert_eq!(error.code, "invalid_request");
+}
+
+pub(crate) fn detached_supervisor_rejects_provider_runtime_kind_mismatch_launch_context() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-provider-mismatch";
+    let repo_root = seed_project(&root, project_id, "repo-provider-mismatch", "repo");
+    let state = DesktopState::default();
+
+    let error = launch_detached_runtime_supervisor(
+        &state,
+        launch_request_with_context(
+            project_id,
+            &repo_root,
+            "run-provider-mismatch",
+            "openai_compatible",
+            sample_launch_context(
+                "bedrock",
+                "session-1",
+                Some("flow-1"),
+                "gpt-4.1-mini",
+                Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+            ),
+            RuntimeSupervisorLaunchEnv::default(),
+            &runtime_shell::script_sleep(5),
+        ),
+    )
+    .expect_err("mismatched provider/runtime kind should fail closed");
+
+    assert_eq!(error.code, "runtime_supervisor_provider_mismatch");
+    assert!(error.message.contains("bedrock"));
+    assert!(error.message.contains("openai_compatible"));
+    assert!(
+        project_store::load_runtime_run(&repo_root, project_id)
+            .expect("load runtime run after launch validation failure")
+            .is_none(),
+        "malformed launch context should be rejected before any durable run row is written"
+    );
 }
 
 pub(crate) fn detached_supervisor_rejects_duplicate_running_project_launches() {
@@ -542,9 +648,13 @@ pub(crate) fn detached_supervisor_launches_bedrock_child_with_context_env_and_am
             assert!(transcripts.iter().any(|text| *text == "aws-auth-present"));
             assert!(transcripts.iter().any(|text| *text == "mode:1"));
             assert!(transcripts.iter().any(|text| *text == "region:us-east-1"));
-            assert!(transcripts.iter().any(|text| *text == "default-region:us-east-1"));
+            assert!(transcripts
+                .iter()
+                .any(|text| *text == "default-region:us-east-1"));
             assert!(transcripts.iter().any(|text| *text == "provider:bedrock"));
-            assert!(transcripts.iter().any(|text| *text == "model:anthropic.claude-3-7-sonnet-20250219-v1:0"));
+            assert!(transcripts
+                .iter()
+                .any(|text| *text == "model:anthropic.claude-3-7-sonnet-20250219-v1:0"));
             assert!(transcripts.iter().any(|text| *text == "thinking:high"));
 
             let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
@@ -650,9 +760,13 @@ pub(crate) fn detached_supervisor_launches_vertex_child_with_context_env_and_amb
             assert!(transcripts.iter().any(|text| *text == "adc-present"));
             assert!(transcripts.iter().any(|text| *text == "mode:1"));
             assert!(transcripts.iter().any(|text| *text == "region:us-central1"));
-            assert!(transcripts.iter().any(|text| *text == "project:vertex-project"));
+            assert!(transcripts
+                .iter()
+                .any(|text| *text == "project:vertex-project"));
             assert!(transcripts.iter().any(|text| *text == "provider:vertex"));
-            assert!(transcripts.iter().any(|text| *text == "model:claude-3-7-sonnet@20250219"));
+            assert!(transcripts
+                .iter()
+                .any(|text| *text == "model:claude-3-7-sonnet@20250219"));
             assert!(transcripts.iter().any(|text| *text == "thinking:medium"));
 
             let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))

@@ -58,7 +58,10 @@ pub(crate) fn supervisor_test_guard() -> SupervisorTestGuard {
     }
 }
 
-pub(crate) fn with_scoped_env<T>(entries: &[(&str, Option<&str>)], operation: impl FnOnce() -> T) -> T {
+pub(crate) fn with_scoped_env<T>(
+    entries: &[(&str, Option<&str>)],
+    operation: impl FnOnce() -> T,
+) -> T {
     let _guard = supervisor_test_guard();
     let previous = entries
         .iter()

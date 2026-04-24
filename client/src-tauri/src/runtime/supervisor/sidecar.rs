@@ -29,13 +29,12 @@ use super::{
     control::spawn_control_listener, runtime_supervisor_thinking_effort_env_value,
     validate_runtime_supervisor_launch_context, write_json_line, PtyEventNormalizer,
     RuntimeSupervisorSidecarArgs, SharedPtyWriter, SidecarSharedState, SupervisorEventHub,
-    ANTHROPIC_API_KEY_ENV, BEDROCK_BASE_URL_ENV, BEDROCK_DEFAULT_REGION_ENV,
-    BEDROCK_ENABLE_ENV, BEDROCK_REGION_ENV, CADENCE_RUNTIME_FLOW_ID_ENV,
-    CADENCE_RUNTIME_MODEL_ID_ENV, CADENCE_RUNTIME_PROVIDER_ID_ENV,
-    CADENCE_RUNTIME_SESSION_ID_ENV, CADENCE_RUNTIME_THINKING_EFFORT_ENV,
-    HEARTBEAT_INTERVAL, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV, OPENAI_BASE_URL_ENV,
-    TERMINAL_ATTACH_GRACE_PERIOD, VERTEX_BASE_URL_ENV, VERTEX_ENABLE_ENV,
-    VERTEX_PROJECT_ENV, VERTEX_REGION_ENV,
+    ANTHROPIC_API_KEY_ENV, BEDROCK_BASE_URL_ENV, BEDROCK_DEFAULT_REGION_ENV, BEDROCK_ENABLE_ENV,
+    BEDROCK_REGION_ENV, CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
+    CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
+    CADENCE_RUNTIME_THINKING_EFFORT_ENV, HEARTBEAT_INTERVAL, OPENAI_API_KEY_ENV,
+    OPENAI_API_VERSION_ENV, OPENAI_BASE_URL_ENV, TERMINAL_ATTACH_GRACE_PERIOD, VERTEX_BASE_URL_ENV,
+    VERTEX_ENABLE_ENV, VERTEX_PROJECT_ENV, VERTEX_REGION_ENV,
 };
 use crate::runtime::protocol::{
     RuntimeSupervisorLaunchContext, SupervisorProcessStatus, SupervisorStartupMessage,
@@ -365,7 +364,10 @@ fn default_vertex_adc_path() -> Option<PathBuf> {
         std::env::var("APPDATA")
             .ok()
             .map(PathBuf::from)
-            .map(|base| base.join("gcloud").join("application_default_credentials.json"))
+            .map(|base| {
+                base.join("gcloud")
+                    .join("application_default_credentials.json")
+            })
     } else {
         dirs::home_dir().map(|home| {
             home.join(".config")

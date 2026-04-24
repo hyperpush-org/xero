@@ -149,11 +149,7 @@ pub struct ResolveArgs {
     pub extras: std::collections::BTreeMap<String, String>,
 }
 
-pub fn resolve(
-    program_id: &str,
-    instruction: &str,
-    args: &ResolveArgs,
-) -> KnownProgramLookup {
+pub fn resolve(program_id: &str, instruction: &str, args: &ResolveArgs) -> KnownProgramLookup {
     let label = match known_program_label(program_id) {
         Some(l) => l,
         None => {
@@ -242,7 +238,9 @@ struct Partial {
 
 fn meta(label: &str, pubkey: Option<&str>, is_signer: bool, is_writable: bool) -> AccountMetaSpec {
     match pubkey {
-        Some(key) if !key.is_empty() => AccountMetaSpec::labeled(key, label, is_signer, is_writable),
+        Some(key) if !key.is_empty() => {
+            AccountMetaSpec::labeled(key, label, is_signer, is_writable)
+        }
         _ => AccountMetaSpec::placeholder(label, is_signer, is_writable),
     }
 }
@@ -325,7 +323,12 @@ fn resolve_associated_token(instruction: &str, args: &ResolveArgs) -> Option<Par
         "create" | "createIdempotent" => Some(Partial {
             accounts: vec![
                 meta("payer", args.payer.as_deref(), true, true),
-                meta("associatedAccount", args.destination.as_deref(), false, true),
+                meta(
+                    "associatedAccount",
+                    args.destination.as_deref(),
+                    false,
+                    true,
+                ),
                 meta("owner", args.owner.as_deref(), false, false),
                 meta("mint", args.mint.as_deref(), false, false),
                 AccountMetaSpec::labeled(SYSTEM_PROGRAM, "systemProgram", false, false),
@@ -411,7 +414,12 @@ fn resolve_orca(instruction: &str, args: &ResolveArgs) -> Option<Partial> {
                 AccountMetaSpec::placeholder("whirlpool", false, true),
                 meta("tokenOwnerAccountA", args.source.as_deref(), false, true),
                 AccountMetaSpec::placeholder("tokenVaultA", false, true),
-                meta("tokenOwnerAccountB", args.destination.as_deref(), false, true),
+                meta(
+                    "tokenOwnerAccountB",
+                    args.destination.as_deref(),
+                    false,
+                    true,
+                ),
                 AccountMetaSpec::placeholder("tokenVaultB", false, true),
                 AccountMetaSpec::placeholder("tickArray0", false, true),
                 AccountMetaSpec::placeholder("tickArray1", false, true),
@@ -423,7 +431,11 @@ fn resolve_orca(instruction: &str, args: &ResolveArgs) -> Option<Partial> {
             ],
         }),
         "twoHopSwap" => Some(Partial {
-            accounts: vec![AccountMetaSpec::placeholder("twoHopSwap accounts (24+)", false, false)],
+            accounts: vec![AccountMetaSpec::placeholder(
+                "twoHopSwap accounts (24+)",
+                false,
+                false,
+            )],
             notes: vec!["Two-hop swaps need the double set of swap accounts; see Orca docs."],
         }),
         _ => None,
@@ -470,7 +482,11 @@ fn resolve_spl_governance(instruction: &str, args: &ResolveArgs) -> Option<Parti
             notes: vec!["vote record PDA = ['governance', proposal, token_owner_record]."],
         }),
         "createProposal" | "executeTransaction" => Some(Partial {
-            accounts: vec![AccountMetaSpec::placeholder("realm-scoped accounts", false, false)],
+            accounts: vec![AccountMetaSpec::placeholder(
+                "realm-scoped accounts",
+                false,
+                false,
+            )],
             notes: vec!["Varies with governance version; see spl-governance client docs."],
         }),
         _ => None,

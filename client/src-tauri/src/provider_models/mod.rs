@@ -575,9 +575,7 @@ fn manual_openai_compatible_projection(
     }]
 }
 
-fn manual_anthropic_family_projection(
-    profile: &ProviderProfileRecord,
-) -> Vec<ProviderModelRecord> {
+fn manual_anthropic_family_projection(profile: &ProviderProfileRecord) -> Vec<ProviderModelRecord> {
     let supports_thinking = profile.model_id.to_ascii_lowercase().contains("claude");
     let thinking = if supports_thinking {
         supported_thinking_capability(vec![
