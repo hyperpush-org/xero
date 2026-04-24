@@ -12,6 +12,7 @@ vi.mock('@tauri-apps/plugin-opener', () => ({
 import { SettingsDialog, type SettingsDialogProps } from '@/components/cadence/settings-dialog'
 import type { AgentPaneView, OperatorActionErrorView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
+  McpRegistryDto,
   ProviderModelCatalogDto,
   ProviderProfileDto,
   ProviderProfilesDto,
@@ -20,6 +21,7 @@ import type {
 } from '@/src/lib/cadence-model'
 
 type NotificationRouteRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertNotificationRoute']>>[0]
+type McpUpsertRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertMcpServer']>>[0]
 
 function makeOpenAiProfile(overrides: Partial<ProviderProfileDto> = {}): ProviderProfileDto {
   return {
@@ -328,6 +330,42 @@ function makeNotificationRoute(
   }
 }
 
+function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDto {
+  return {
+    updatedAt: '2026-04-24T04:00:00Z',
+    servers: [
+      {
+        id: 'memory',
+        name: 'Memory Server',
+        transport: {
+          kind: 'stdio',
+          command: 'npx',
+          args: ['@modelcontextprotocol/server-memory'],
+        },
+        env: [
+          {
+            key: 'OPENAI_API_KEY',
+            fromEnv: 'OPENAI_API_KEY',
+          },
+        ],
+        cwd: null,
+        connection: {
+          status: 'stale',
+          diagnostic: {
+            code: 'mcp_status_unchecked',
+            message: 'Cadence has not checked this MCP server yet.',
+            retryable: true,
+          },
+          lastCheckedAt: null,
+          lastHealthyAt: null,
+        },
+        updatedAt: '2026-04-24T04:00:00Z',
+      },
+    ],
+    ...overrides,
+  }
+}
+
 function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
   return {
     project: {
@@ -452,6 +490,18 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> = {}): 
     onSetActiveProviderProfile: vi.fn(async (_profileId: string) => makeProviderProfiles()),
     onStartLogin: vi.fn(async () => makeRuntimeSession()),
     onLogout: vi.fn(async () => makeRuntimeSession({ sessionId: null, accountId: null })),
+    mcpRegistry: makeMcpRegistry(),
+    mcpImportDiagnostics: [],
+    mcpRegistryLoadStatus: 'ready',
+    mcpRegistryLoadError: null,
+    mcpRegistryMutationStatus: 'idle',
+    pendingMcpServerId: null,
+    mcpRegistryMutationError: null,
+    onRefreshMcpRegistry: vi.fn(async () => makeMcpRegistry()),
+    onUpsertMcpServer: vi.fn(async (_request: McpUpsertRequest) => makeMcpRegistry()),
+    onRemoveMcpServer: vi.fn(async (_serverId: string) => makeMcpRegistry()),
+    onImportMcpServers: vi.fn(async (_path: string) => ({ registry: makeMcpRegistry(), diagnostics: [] })),
+    onRefreshMcpServerStatuses: vi.fn(async (_options?: { serverIds?: string[] }) => makeMcpRegistry()),
     ...overrides,
   }
 }
@@ -1076,6 +1126,132 @@ describe('SettingsDialog', () => {
     ).toBeVisible()
     expect(screen.getByText('OpenAI Alt')).toBeVisible()
     expect(screen.getAllByText('Active').length).toBeGreaterThan(0)
+  })
+
+  it('manages MCP servers from settings with validation, import, remove, and status refresh actions', async () => {
+    const onUpsertMcpServer = vi.fn(async (_request: McpUpsertRequest) => makeMcpRegistry())
+    const onRemoveMcpServer = vi.fn(async (_serverId: string) => makeMcpRegistry({ servers: [] }))
+    const onImportMcpServers = vi.fn(async (_path: string) => ({
+      registry: makeMcpRegistry(),
+      diagnostics: [
+        {
+          index: 1,
+          serverId: 'duplicate-memory',
+          code: 'mcp_registry_import_invalid',
+          message: 'Server id `memory` is duplicated in the import file.',
+        },
+      ],
+    }))
+    const onRefreshMcpServerStatuses = vi.fn(async (_options?: { serverIds?: string[] }) => makeMcpRegistry())
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          onUpsertMcpServer,
+          onRemoveMcpServer,
+          onImportMcpServers,
+          onRefreshMcpServerStatuses,
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+
+    expect(screen.getByText('Memory Server')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create server' }))
+
+    expect(screen.getByText('Server id is required.')).toBeVisible()
+    expect(screen.getByText('Server name is required.')).toBeVisible()
+    expect(screen.getByText('stdio transport requires a command.')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Server id'), { target: { value: 'filesystem' } })
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Filesystem Server' } })
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'node' } })
+    fireEvent.change(screen.getByLabelText('Args (one per line)'), {
+      target: { value: '/opt/mcp/server-filesystem.js' },
+    })
+    fireEvent.change(screen.getByLabelText('Env mappings (KEY=ENV_VAR)'), {
+      target: { value: 'OPENAI_API_KEY=OPENAI_API_KEY' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create server' }))
+
+    await waitFor(() =>
+      expect(onUpsertMcpServer).toHaveBeenCalledWith({
+        id: 'filesystem',
+        name: 'Filesystem Server',
+        transport: {
+          kind: 'stdio',
+          command: 'node',
+          args: ['/opt/mcp/server-filesystem.js'],
+        },
+        env: [
+          {
+            key: 'OPENAI_API_KEY',
+            fromEnv: 'OPENAI_API_KEY',
+          },
+        ],
+        cwd: null,
+      }),
+    )
+
+    fireEvent.change(screen.getByLabelText('Import JSON file'), {
+      target: { value: '/tmp/mcp-import.json' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }))
+
+    await waitFor(() => expect(onImportMcpServers).toHaveBeenCalledWith('/tmp/mcp-import.json'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh statuses' }))
+    await waitFor(() => expect(onRefreshMcpServerStatuses).toHaveBeenCalledWith({ serverIds: [] }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(onRemoveMcpServer).toHaveBeenCalledWith('memory'))
+  })
+
+  it('keeps the last truthful MCP snapshot visible when typed load or mutation errors are projected', () => {
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          mcpRegistry: makeMcpRegistry({
+            servers: [
+              {
+                ...makeMcpRegistry().servers[0],
+                connection: {
+                  status: 'failed',
+                  diagnostic: {
+                    code: 'mcp_probe_failed',
+                    message: 'Cadence could not connect to this MCP endpoint.',
+                    retryable: true,
+                  },
+                  lastCheckedAt: '2026-04-24T05:00:00Z',
+                  lastHealthyAt: '2026-04-24T04:58:00Z',
+                },
+              },
+            ],
+          }),
+          mcpRegistryLoadStatus: 'error',
+          mcpRegistryLoadError: makeError({
+            code: 'mcp_registry_timeout',
+            message: 'Cadence timed out while loading app-local MCP registry.',
+          }),
+          mcpRegistryMutationError: makeError({
+            code: 'mcp_status_refresh_failed',
+            message: 'Cadence could not refresh MCP server statuses.',
+          }),
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+
+    expect(screen.getByText('Cadence timed out while loading app-local MCP registry.')).toBeVisible()
+    expect(screen.getByText('Cadence could not refresh MCP server statuses.')).toBeVisible()
+    expect(screen.getByText('Memory Server')).toBeVisible()
+    expect(screen.getByText('Failed')).toBeVisible()
+    expect(screen.getByText('Cadence could not connect to this MCP endpoint.')).toBeVisible()
   })
 
   it('keeps the last truthful provider snapshot visible when a typed load error is present', () => {

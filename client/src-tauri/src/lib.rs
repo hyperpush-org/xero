@@ -215,6 +215,13 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::solana_program_rollback,
             commands::solana::solana_squads_proposal_create,
             commands::solana::solana_verified_build_submit,
+            commands::solana::solana_audit_static,
+            commands::solana::solana_audit_external,
+            commands::solana::solana_audit_fuzz,
+            commands::solana::solana_audit_fuzz_scaffold,
+            commands::solana::solana_audit_coverage,
+            commands::solana::solana_replay_exploit,
+            commands::solana::solana_replay_list,
             commands::solana::solana_subscribe_ready,
         ])
 }

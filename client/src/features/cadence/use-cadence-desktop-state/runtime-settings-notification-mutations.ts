@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 
+import { type McpRegistryDto } from '@/src/lib/cadence-model/mcp'
 import { projectRuntimeSettingsFromProviderProfiles } from '@/src/lib/cadence-model/provider-profiles'
 import type {
   CadenceDesktopMutationActions,
@@ -10,6 +11,14 @@ import {
   getOperatorActionError,
 } from './mutation-support'
 
+function createMcpRegistrySyncKey(registry: McpRegistryDto | null): string {
+  if (!registry) {
+    return 'none'
+  }
+
+  return JSON.stringify(registry)
+}
+
 export function useRuntimeSettingsNotificationMutations({
   adapter,
   refs,
@@ -17,6 +26,7 @@ export function useRuntimeSettingsNotificationMutations({
   operations,
   providerProfilesLoadStatus,
   runtimeSettingsLoadStatus,
+  mcpRegistryLoadStatus,
 }: UseCadenceDesktopMutationsArgs): Pick<
   CadenceDesktopMutationActions,
   | 'refreshProviderProfiles'
@@ -24,6 +34,11 @@ export function useRuntimeSettingsNotificationMutations({
   | 'setActiveProviderProfile'
   | 'refreshRuntimeSettings'
   | 'upsertRuntimeSettings'
+  | 'refreshMcpRegistry'
+  | 'upsertMcpServer'
+  | 'removeMcpServer'
+  | 'importMcpServers'
+  | 'refreshMcpServerStatuses'
   | 'refreshNotificationRoutes'
   | 'upsertNotificationRoute'
 > {
@@ -33,6 +48,8 @@ export function useRuntimeSettingsNotificationMutations({
     providerProfilesLoadInFlightRef,
     runtimeSettingsRef,
     runtimeSettingsLoadInFlightRef,
+    mcpRegistryRef,
+    mcpRegistryLoadInFlightRef,
   } = refs
   const {
     setNotificationRoutes,
@@ -51,6 +68,13 @@ export function useRuntimeSettingsNotificationMutations({
     setRuntimeSettingsLoadError,
     setRuntimeSettingsSaveStatus,
     setRuntimeSettingsSaveError,
+    setMcpRegistry,
+    setMcpImportDiagnostics,
+    setMcpRegistryLoadStatus,
+    setMcpRegistryLoadError,
+    setMcpRegistryMutationStatus,
+    setPendingMcpServerId,
+    setMcpRegistryMutationError,
   } = setters
   const { loadNotificationRoutes } = operations
 
@@ -78,6 +102,25 @@ export function useRuntimeSettingsNotificationMutations({
       setRuntimeSettingsLoadError,
       setRuntimeSettingsLoadStatus,
     ],
+  )
+
+  const applyMcpRegistrySnapshot = useCallback(
+    (response: McpRegistryDto) => {
+      const currentRegistry = mcpRegistryRef.current
+      const nextSyncKey = createMcpRegistrySyncKey(response)
+      const currentSyncKey = createMcpRegistrySyncKey(currentRegistry)
+
+      // Load-profile guard: avoid replacing unchanged registry snapshots during frequent refreshes.
+      if (nextSyncKey !== currentSyncKey) {
+        setMcpRegistry(response)
+      }
+
+      setMcpRegistryLoadStatus('ready')
+      setMcpRegistryLoadError(null)
+
+      return nextSyncKey === currentSyncKey && currentRegistry ? currentRegistry : response
+    },
+    [mcpRegistryRef, setMcpRegistry, setMcpRegistryLoadError, setMcpRegistryLoadStatus],
   )
 
   const refreshProviderProfiles = useCallback(
@@ -285,6 +328,199 @@ export function useRuntimeSettingsNotificationMutations({
     ],
   )
 
+  const refreshMcpRegistry = useCallback(
+    async (options: { force?: boolean } = {}) => {
+      if (mcpRegistryLoadInFlightRef.current) {
+        return mcpRegistryLoadInFlightRef.current
+      }
+
+      const cachedRegistry = mcpRegistryRef.current
+      if (!options.force && cachedRegistry && mcpRegistryLoadStatus === 'ready') {
+        return cachedRegistry
+      }
+
+      setMcpRegistryLoadStatus('loading')
+      setMcpRegistryLoadError(null)
+
+      const loadPromise = (async () => {
+        try {
+          const response = await adapter.listMcpServers()
+          return applyMcpRegistrySnapshot(response)
+        } catch (error) {
+          setMcpRegistryLoadStatus('error')
+          setMcpRegistryLoadError(
+            getOperatorActionError(error, 'Cadence could not load app-local MCP registry.'),
+          )
+          throw error
+        } finally {
+          mcpRegistryLoadInFlightRef.current = null
+        }
+      })()
+
+      mcpRegistryLoadInFlightRef.current = loadPromise
+      return loadPromise
+    },
+    [
+      adapter,
+      applyMcpRegistrySnapshot,
+      mcpRegistryLoadInFlightRef,
+      mcpRegistryLoadStatus,
+      mcpRegistryRef,
+      setMcpRegistryLoadError,
+      setMcpRegistryLoadStatus,
+    ],
+  )
+
+  const upsertMcpServer = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['upsertMcpServer']>[0]) => {
+      const pendingServerId = request.id.trim()
+      setMcpRegistryMutationStatus('running')
+      setPendingMcpServerId(pendingServerId.length > 0 ? pendingServerId : null)
+      setMcpRegistryMutationError(null)
+
+      try {
+        const response = await adapter.upsertMcpServer(request)
+        const snapshot = applyMcpRegistrySnapshot(response)
+        setMcpRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setMcpRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not save the MCP server definition.'),
+        )
+
+        try {
+          await refreshMcpRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful MCP snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setMcpRegistryMutationStatus('idle')
+        setPendingMcpServerId(null)
+      }
+    },
+    [
+      adapter,
+      applyMcpRegistrySnapshot,
+      refreshMcpRegistry,
+      setMcpRegistryMutationError,
+      setMcpRegistryMutationStatus,
+      setPendingMcpServerId,
+    ],
+  )
+
+  const removeMcpServer = useCallback(
+    async (serverId: string) => {
+      const pendingServerId = serverId.trim()
+      setMcpRegistryMutationStatus('running')
+      setPendingMcpServerId(pendingServerId.length > 0 ? pendingServerId : null)
+      setMcpRegistryMutationError(null)
+
+      try {
+        const response = await adapter.removeMcpServer(serverId)
+        const snapshot = applyMcpRegistrySnapshot(response)
+        setMcpRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setMcpRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not remove the MCP server definition.'),
+        )
+
+        try {
+          await refreshMcpRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful MCP snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setMcpRegistryMutationStatus('idle')
+        setPendingMcpServerId(null)
+      }
+    },
+    [
+      adapter,
+      applyMcpRegistrySnapshot,
+      refreshMcpRegistry,
+      setMcpRegistryMutationError,
+      setMcpRegistryMutationStatus,
+      setPendingMcpServerId,
+    ],
+  )
+
+  const importMcpServers = useCallback(
+    async (path: string) => {
+      setMcpRegistryMutationStatus('running')
+      setPendingMcpServerId(null)
+      setMcpRegistryMutationError(null)
+
+      try {
+        const response = await adapter.importMcpServers(path)
+        applyMcpRegistrySnapshot(response.registry)
+        setMcpImportDiagnostics(response.diagnostics)
+        setMcpRegistryMutationError(null)
+        return response
+      } catch (error) {
+        setMcpRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not import MCP servers from that file.'),
+        )
+
+        try {
+          await refreshMcpRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful MCP snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setMcpRegistryMutationStatus('idle')
+      }
+    },
+    [
+      adapter,
+      applyMcpRegistrySnapshot,
+      refreshMcpRegistry,
+      setMcpImportDiagnostics,
+      setMcpRegistryMutationError,
+      setMcpRegistryMutationStatus,
+      setPendingMcpServerId,
+    ],
+  )
+
+  const refreshMcpServerStatuses = useCallback(
+    async (options: { serverIds?: string[] } = {}) => {
+      const serverIds = options.serverIds ?? []
+      const pendingServerId = serverIds.length === 1 ? serverIds[0] ?? null : null
+
+      setMcpRegistryMutationStatus('running')
+      setPendingMcpServerId(pendingServerId)
+      setMcpRegistryMutationError(null)
+
+      try {
+        const response = await adapter.refreshMcpServerStatuses({ serverIds })
+        const snapshot = applyMcpRegistrySnapshot(response)
+        setMcpRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setMcpRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not refresh MCP server statuses.'),
+        )
+        throw error
+      } finally {
+        setMcpRegistryMutationStatus('idle')
+        setPendingMcpServerId(null)
+      }
+    },
+    [
+      adapter,
+      applyMcpRegistrySnapshot,
+      setMcpRegistryMutationError,
+      setMcpRegistryMutationStatus,
+      setPendingMcpServerId,
+    ],
+  )
+
   const refreshNotificationRoutes = useCallback(
     async (options: { force?: boolean } = {}) => {
       const projectId = getActiveProjectId(
@@ -394,6 +630,11 @@ export function useRuntimeSettingsNotificationMutations({
     setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
+    refreshMcpRegistry,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   }

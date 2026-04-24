@@ -16,16 +16,19 @@ use serde_json::Value as JsonValue;
 
 use crate::commands::solana::{
     idl::{self, codama::CodamaGenerationRequest},
-    pda, program, AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, BuildKind,
-    BuildProfile, BuildReport, BuildRequest, BumpAnalysis, ClusterHandle, ClusterKind, ClusterPda,
-    ClusterStatus, CodamaGenerationReport, CodamaTarget, DeployAuthority, DeployResult,
-    DeployServices, DeploySpec, DerivedAddress, DriftReport, EndpointHealth, ExplainRequest,
-    FeeEstimate, Idl, IdlPublishMode, IdlPublishReport, IdlPublishRequest, IdlRegistry,
-    IdlSubscriptionToken, KnownProgramLookup, PdaSite, PostDeployOptions, ResolveArgs,
-    RollbackRequest, RollbackResult, RpcRouter, RpcTransport, SamplePercentile, SeedPart,
-    SendRequest, SimulateRequest, SimulationResult, SnapshotMeta, SnapshotStore,
-    SquadsProposalDescriptor, SquadsProposalRequest, SolanaState, StartOpts, TxPipeline, TxPlan,
-    TxResult, TxSpec, UpgradeSafetyReport, UpgradeSafetyRequest, ValidatorSupervisor,
+    pda, program, AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, AnalyzerKind,
+    AuditEngine, BuildKind, BuildProfile, BuildReport, BuildRequest, BumpAnalysis, ClusterHandle,
+    ClusterKind, ClusterPda, ClusterStatus, CodamaGenerationReport, CodamaTarget, CoverageReport,
+    CoverageRequest, DeployAuthority, DeployResult, DeployServices, DeploySpec, DerivedAddress,
+    DriftReport, EndpointHealth, ExplainRequest, ExploitDescriptor, ExploitKey,
+    ExternalAnalyzerReport, ExternalAnalyzerRequest, FeeEstimate, FuzzReport, FuzzRequest, Idl,
+    IdlPublishMode, IdlPublishReport, IdlPublishRequest, IdlRegistry, IdlSubscriptionToken,
+    KnownProgramLookup, NullAuditEventSink, PdaSite, PostDeployOptions, ReplayReport,
+    ReplayRequest, ResolveArgs, RollbackRequest, RollbackResult, RpcRouter, RpcTransport,
+    SamplePercentile, SeedPart, SendRequest, SimulateRequest, SimulationResult, SnapshotMeta,
+    SnapshotStore, SolanaState, SquadsProposalDescriptor, SquadsProposalRequest, StartOpts,
+    StaticLintReport, StaticLintRequest, TridentHarnessRequest, TridentHarnessResult, TxPipeline,
+    TxPlan, TxResult, TxSpec, UpgradeSafetyReport, UpgradeSafetyRequest, ValidatorSupervisor,
     VerifiedBuildRequest, VerifiedBuildResult,
 };
 use crate::commands::{CommandError, CommandResult};
@@ -44,6 +47,11 @@ pub const AUTONOMOUS_TOOL_SOLANA_DEPLOY: &str = "solana_deploy";
 pub const AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK: &str = "solana_upgrade_check";
 pub const AUTONOMOUS_TOOL_SOLANA_SQUADS: &str = "solana_squads";
 pub const AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD: &str = "solana_verified_build";
+pub const AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC: &str = "solana_audit_static";
+pub const AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL: &str = "solana_audit_external";
+pub const AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ: &str = "solana_audit_fuzz";
+pub const AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE: &str = "solana_audit_coverage";
+pub const AUTONOMOUS_TOOL_SOLANA_REPLAY: &str = "solana_replay";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "action")]
@@ -367,6 +375,89 @@ pub struct AutonomousSolanaVerifiedBuildRequest {
     pub skip_remote_submit: bool,
 }
 
+// ---------- Audit / fuzz / coverage / replay (Phase 6) --------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum AutonomousSolanaAuditAction {
+    Static {
+        project_root: String,
+        #[serde(default)]
+        rule_ids: Vec<String>,
+        #[serde(default)]
+        skip_paths: Vec<String>,
+    },
+    External {
+        project_root: String,
+        #[serde(default)]
+        analyzer: AnalyzerKind,
+        #[serde(default)]
+        timeout_s: Option<u64>,
+    },
+    Fuzz {
+        project_root: String,
+        target: String,
+        #[serde(default)]
+        duration_s: Option<u64>,
+        #[serde(default)]
+        corpus: Option<String>,
+        #[serde(default)]
+        baseline_coverage_lines: Option<u64>,
+    },
+    FuzzScaffold {
+        project_root: String,
+        target: String,
+        #[serde(default)]
+        idl_path: Option<String>,
+        #[serde(default)]
+        overwrite: bool,
+    },
+    Coverage {
+        project_root: String,
+        #[serde(default)]
+        package: Option<String>,
+        #[serde(default)]
+        test_filter: Option<String>,
+        #[serde(default)]
+        lcov_path: Option<String>,
+        #[serde(default)]
+        instruction_names: Vec<String>,
+        #[serde(default)]
+        timeout_s: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutonomousSolanaAuditRequest {
+    #[serde(flatten)]
+    pub action: AutonomousSolanaAuditAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum AutonomousSolanaReplayAction {
+    List,
+    Run {
+        exploit: ExploitKey,
+        target_program: String,
+        cluster: ClusterKind,
+        #[serde(default)]
+        rpc_url: Option<String>,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        snapshot_slot: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutonomousSolanaReplayRequest {
+    #[serde(flatten)]
+    pub action: AutonomousSolanaReplayAction,
+}
+
 pub trait SolanaExecutor: Send + Sync + std::fmt::Debug {
     fn cluster(
         &self,
@@ -422,6 +513,16 @@ pub trait SolanaExecutor: Send + Sync + std::fmt::Debug {
         &self,
         request: AutonomousSolanaVerifiedBuildRequest,
     ) -> CommandResult<AutonomousSolanaOutput>;
+
+    fn audit(
+        &self,
+        request: AutonomousSolanaAuditRequest,
+    ) -> CommandResult<AutonomousSolanaOutput>;
+
+    fn replay(
+        &self,
+        request: AutonomousSolanaReplayRequest,
+    ) -> CommandResult<AutonomousSolanaOutput>;
 }
 
 /// Executor that dispatches against a live `SolanaState`. Safe to clone
@@ -441,6 +542,7 @@ struct StateInner {
     idl_registry: Arc<IdlRegistry>,
     transport: Arc<dyn RpcTransport>,
     deploy_services: Arc<DeployServices>,
+    audit_engine: Arc<AuditEngine>,
 }
 
 impl StateSolanaExecutor {
@@ -454,6 +556,7 @@ impl StateSolanaExecutor {
                 idl_registry: state.idl_registry(),
                 transport: state.transport(),
                 deploy_services: state.deploy_services(),
+                audit_engine: state.audit_engine(),
             }),
         }
     }
@@ -1082,6 +1185,178 @@ impl SolanaExecutor for StateSolanaExecutor {
             value_json,
         })
     }
+
+    fn audit(
+        &self,
+        request: AutonomousSolanaAuditRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let sink = NullAuditEventSink;
+        let (action_name, value) = match request.action {
+            AutonomousSolanaAuditAction::Static {
+                project_root,
+                rule_ids,
+                skip_paths,
+            } => {
+                let report = self.inner.audit_engine.run_static_lints(
+                    &StaticLintRequest {
+                        project_root,
+                        rule_ids,
+                        skip_paths,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_static".to_string(),
+                    serde_json::to_value::<StaticLintReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::External {
+                project_root,
+                analyzer,
+                timeout_s,
+            } => {
+                let report = self.inner.audit_engine.run_external_analyzer(
+                    &ExternalAnalyzerRequest {
+                        project_root,
+                        analyzer,
+                        timeout_s,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_external".to_string(),
+                    serde_json::to_value::<ExternalAnalyzerReport>(report)
+                        .unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::Fuzz {
+                project_root,
+                target,
+                duration_s,
+                corpus,
+                baseline_coverage_lines,
+            } => {
+                let report = self.inner.audit_engine.run_fuzz(
+                    &FuzzRequest {
+                        project_root,
+                        target,
+                        duration_s,
+                        corpus,
+                        baseline_coverage_lines,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_fuzz".to_string(),
+                    serde_json::to_value::<FuzzReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::FuzzScaffold {
+                project_root,
+                target,
+                idl_path,
+                overwrite,
+            } => {
+                let result =
+                    self.inner
+                        .audit_engine
+                        .generate_fuzz_harness(&TridentHarnessRequest {
+                            project_root,
+                            target,
+                            idl_path,
+                            overwrite,
+                        })?;
+                (
+                    "audit_fuzz_scaffold".to_string(),
+                    serde_json::to_value::<TridentHarnessResult>(result)
+                        .unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::Coverage {
+                project_root,
+                package,
+                test_filter,
+                lcov_path,
+                instruction_names,
+                timeout_s,
+            } => {
+                let report = self.inner.audit_engine.run_coverage(
+                    &CoverageRequest {
+                        project_root,
+                        package,
+                        test_filter,
+                        lcov_path,
+                        instruction_names,
+                        timeout_s,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_coverage".to_string(),
+                    serde_json::to_value::<CoverageReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+        };
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: action_name,
+            value_json,
+        })
+    }
+
+    fn replay(
+        &self,
+        request: AutonomousSolanaReplayRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let sink = NullAuditEventSink;
+        let (action_name, value) = match request.action {
+            AutonomousSolanaReplayAction::List => {
+                let descriptors: Vec<ExploitDescriptor> = self
+                    .inner
+                    .audit_engine
+                    .library()
+                    .all()
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                (
+                    "replay_list".to_string(),
+                    serde_json::to_value::<Vec<ExploitDescriptor>>(descriptors)
+                        .unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaReplayAction::Run {
+                exploit,
+                target_program,
+                cluster,
+                rpc_url,
+                dry_run,
+                snapshot_slot,
+            } => {
+                let rpc_url = rpc_url.or_else(|| self.resolve_rpc_url(cluster));
+                let report = self.inner.audit_engine.run_replay(
+                    &ReplayRequest {
+                        exploit,
+                        target_program,
+                        cluster,
+                        rpc_url,
+                        dry_run,
+                        snapshot_slot,
+                    },
+                    &sink,
+                )?;
+                (
+                    "replay_run".to_string(),
+                    serde_json::to_value::<ReplayReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+        };
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: action_name,
+            value_json,
+        })
+    }
 }
 
 /// No-op executor. Returns `policy_denied` for every action so environments
@@ -1218,6 +1493,175 @@ impl SolanaExecutor for UnavailableSolanaExecutor {
         Err(CommandError::policy_denied(
             "Solana verified-build submission requires the desktop runtime; no SolanaState is wired.",
         ))
+    }
+
+    fn audit(
+        &self,
+        request: AutonomousSolanaAuditRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        // Every audit surface is filesystem-only; drive a local engine
+        // so the autonomous runtime can still run lints + harness scaffolds
+        // even without a registered SolanaState.
+        let sink = NullAuditEventSink;
+        let engine = AuditEngine::system();
+        let (action_name, value) = match request.action {
+            AutonomousSolanaAuditAction::Static {
+                project_root,
+                rule_ids,
+                skip_paths,
+            } => {
+                let report = engine.run_static_lints(
+                    &StaticLintRequest {
+                        project_root,
+                        rule_ids,
+                        skip_paths,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_static".to_string(),
+                    serde_json::to_value::<StaticLintReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::External {
+                project_root,
+                analyzer,
+                timeout_s,
+            } => {
+                let report = engine.run_external_analyzer(
+                    &ExternalAnalyzerRequest {
+                        project_root,
+                        analyzer,
+                        timeout_s,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_external".to_string(),
+                    serde_json::to_value::<ExternalAnalyzerReport>(report)
+                        .unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::Fuzz {
+                project_root,
+                target,
+                duration_s,
+                corpus,
+                baseline_coverage_lines,
+            } => {
+                let report = engine.run_fuzz(
+                    &FuzzRequest {
+                        project_root,
+                        target,
+                        duration_s,
+                        corpus,
+                        baseline_coverage_lines,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_fuzz".to_string(),
+                    serde_json::to_value::<FuzzReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::FuzzScaffold {
+                project_root,
+                target,
+                idl_path,
+                overwrite,
+            } => {
+                let result = engine.generate_fuzz_harness(&TridentHarnessRequest {
+                    project_root,
+                    target,
+                    idl_path,
+                    overwrite,
+                })?;
+                (
+                    "audit_fuzz_scaffold".to_string(),
+                    serde_json::to_value::<TridentHarnessResult>(result)
+                        .unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaAuditAction::Coverage {
+                project_root,
+                package,
+                test_filter,
+                lcov_path,
+                instruction_names,
+                timeout_s,
+            } => {
+                let report = engine.run_coverage(
+                    &CoverageRequest {
+                        project_root,
+                        package,
+                        test_filter,
+                        lcov_path,
+                        instruction_names,
+                        timeout_s,
+                    },
+                    &sink,
+                )?;
+                (
+                    "audit_coverage".to_string(),
+                    serde_json::to_value::<CoverageReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+        };
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: action_name,
+            value_json,
+        })
+    }
+
+    fn replay(
+        &self,
+        request: AutonomousSolanaReplayRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        // The replay library is pure data; the runner is a stub until a
+        // SolanaState is wired. Catalogue lookups still work offline.
+        let sink = NullAuditEventSink;
+        let engine = AuditEngine::system();
+        let (action_name, value) = match request.action {
+            AutonomousSolanaReplayAction::List => {
+                let descriptors: Vec<ExploitDescriptor> =
+                    engine.library().all().into_iter().cloned().collect();
+                (
+                    "replay_list".to_string(),
+                    serde_json::to_value::<Vec<ExploitDescriptor>>(descriptors)
+                        .unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaReplayAction::Run {
+                exploit,
+                target_program,
+                cluster,
+                rpc_url,
+                dry_run,
+                snapshot_slot,
+            } => {
+                let report = engine.run_replay(
+                    &ReplayRequest {
+                        exploit,
+                        target_program,
+                        cluster,
+                        rpc_url,
+                        dry_run,
+                        snapshot_slot,
+                    },
+                    &sink,
+                )?;
+                (
+                    "replay_run".to_string(),
+                    serde_json::to_value::<ReplayReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+        };
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: action_name,
+            value_json,
+        })
     }
 }
 

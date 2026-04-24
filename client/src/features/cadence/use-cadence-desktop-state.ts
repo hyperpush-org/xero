@@ -24,6 +24,8 @@ import {
   type CreateProjectEntryResponseDto,
   type DeleteProjectEntryResponseDto,
   type ListProjectFilesResponseDto,
+  type McpImportDiagnosticDto,
+  type McpRegistryDto,
   type NotificationDispatchDto,
   type NotificationDispatchView,
   type NotificationRouteCredentialReadinessDto,
@@ -115,6 +117,8 @@ import type {
   RuntimeRunActionStatus,
   RuntimeSettingsLoadStatus,
   RuntimeSettingsSaveStatus,
+  McpRegistryLoadStatus,
+  McpRegistryMutationStatus,
   UseCadenceDesktopStateOptions,
   UseCadenceDesktopStateResult,
   WorkflowPaneView,
@@ -147,6 +151,8 @@ export type {
   RuntimeRunActionStatus,
   RuntimeSettingsLoadStatus,
   RuntimeSettingsSaveStatus,
+  McpRegistryLoadStatus,
+  McpRegistryMutationStatus,
   UseCadenceDesktopStateOptions,
   UseCadenceDesktopStateResult,
   WorkflowPaneView,
@@ -365,6 +371,14 @@ export function useCadenceDesktopState(
   const [runtimeSettingsLoadError, setRuntimeSettingsLoadError] = useState<OperatorActionErrorView | null>(null)
   const [runtimeSettingsSaveStatus, setRuntimeSettingsSaveStatus] = useState<RuntimeSettingsSaveStatus>('idle')
   const [runtimeSettingsSaveError, setRuntimeSettingsSaveError] = useState<OperatorActionErrorView | null>(null)
+  const [mcpRegistry, setMcpRegistry] = useState<McpRegistryDto | null>(null)
+  const [mcpImportDiagnostics, setMcpImportDiagnostics] = useState<McpImportDiagnosticDto[]>([])
+  const [mcpRegistryLoadStatus, setMcpRegistryLoadStatus] = useState<McpRegistryLoadStatus>('idle')
+  const [mcpRegistryLoadError, setMcpRegistryLoadError] = useState<OperatorActionErrorView | null>(null)
+  const [mcpRegistryMutationStatus, setMcpRegistryMutationStatus] =
+    useState<McpRegistryMutationStatus>('idle')
+  const [pendingMcpServerId, setPendingMcpServerId] = useState<string | null>(null)
+  const [mcpRegistryMutationError, setMcpRegistryMutationError] = useState<OperatorActionErrorView | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
@@ -408,6 +422,8 @@ export function useCadenceDesktopState(
   const activeProviderProfileIdRef = useRef<string | null>(null)
   const runtimeSettingsRef = useRef<RuntimeSettingsDto | null>(null)
   const runtimeSettingsLoadInFlightRef = useRef<Promise<RuntimeSettingsDto> | null>(null)
+  const mcpRegistryRef = useRef<McpRegistryDto | null>(null)
+  const mcpRegistryLoadInFlightRef = useRef<Promise<McpRegistryDto> | null>(null)
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockedNotificationSyncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockedNotificationSyncPollTargetRef = useRef<BlockedNotificationSyncPollTarget | null>(null)
@@ -499,6 +515,10 @@ export function useCadenceDesktopState(
   useEffect(() => {
     runtimeSettingsRef.current = runtimeSettings
   }, [runtimeSettings])
+
+  useEffect(() => {
+    mcpRegistryRef.current = mcpRegistry
+  }, [mcpRegistry])
 
   const supersedeInFlightProjectLoad = useCallback((projectId: string) => {
     if (activeProjectIdRef.current !== projectId) {
@@ -1203,6 +1223,11 @@ export function useCadenceDesktopState(
     setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
+    refreshMcpRegistry,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   } = useCadenceDesktopMutations({
@@ -1215,6 +1240,8 @@ export function useCadenceDesktopState(
       providerProfilesLoadInFlightRef,
       runtimeSettingsRef,
       runtimeSettingsLoadInFlightRef,
+      mcpRegistryRef,
+      mcpRegistryLoadInFlightRef,
     },
     setters: {
       setProjects,
@@ -1248,6 +1275,13 @@ export function useCadenceDesktopState(
       setRuntimeSettingsLoadError,
       setRuntimeSettingsSaveStatus,
       setRuntimeSettingsSaveError,
+      setMcpRegistry,
+      setMcpImportDiagnostics,
+      setMcpRegistryLoadStatus,
+      setMcpRegistryLoadError,
+      setMcpRegistryMutationStatus,
+      setPendingMcpServerId,
+      setMcpRegistryMutationError,
     },
     operations: {
       bootstrap,
@@ -1262,6 +1296,7 @@ export function useCadenceDesktopState(
     },
     providerProfilesLoadStatus,
     runtimeSettingsLoadStatus,
+    mcpRegistryLoadStatus,
   })
 
   useEffect(() => {
@@ -1279,6 +1314,14 @@ export function useCadenceDesktopState(
 
     void refreshRuntimeSettings().catch(() => undefined)
   }, [refreshRuntimeSettings, runtimeSettingsLoadStatus])
+
+  useEffect(() => {
+    if (mcpRegistryLoadStatus !== 'idle') {
+      return
+    }
+
+    void refreshMcpRegistry().catch(() => undefined)
+  }, [mcpRegistryLoadStatus, refreshMcpRegistry])
 
   useEffect(() => {
     const nextDependencyKeys = getProviderModelCatalogDependencyKeys(providerProfiles)
@@ -1635,6 +1678,13 @@ export function useCadenceDesktopState(
     runtimeSettingsLoadError,
     runtimeSettingsSaveStatus,
     runtimeSettingsSaveError,
+    mcpRegistry,
+    mcpImportDiagnostics,
+    mcpRegistryLoadStatus,
+    mcpRegistryLoadError,
+    mcpRegistryMutationStatus,
+    pendingMcpServerId,
+    mcpRegistryMutationError,
     refreshSource,
     isDesktopRuntime: adapter.isDesktopRuntime(),
     operatorActionStatus,
@@ -1678,6 +1728,11 @@ export function useCadenceDesktopState(
     setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
+    refreshMcpRegistry,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   }

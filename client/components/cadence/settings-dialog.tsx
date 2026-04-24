@@ -3,20 +3,26 @@
 import { useEffect, useState } from "react"
 import type {
   AgentPaneView,
+  McpRegistryLoadStatus,
+  McpRegistryMutationStatus,
   OperatorActionErrorView,
   ProviderModelCatalogLoadStatus,
   ProviderProfilesLoadStatus,
   ProviderProfilesSaveStatus,
 } from "@/src/features/cadence/use-cadence-desktop-state"
 import type {
+  ImportMcpServersResponseDto,
+  McpImportDiagnosticDto,
+  McpRegistryDto,
   ProviderModelCatalogDto,
   ProviderProfilesDto,
   RuntimeSessionView,
+  UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
   UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
 import type { PlatformVariant } from "@/components/cadence/shell"
-import { Bell, Code2, Globe, KeyRound, Palette } from "lucide-react"
+import { Bell, Code2, Globe, KeyRound, Palette, PlugZap } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -27,15 +33,17 @@ import {
 import { cn } from "@/lib/utils"
 import { BrowserSection } from "@/components/cadence/settings-dialog/browser-section"
 import { DevelopmentSection } from "@/components/cadence/settings-dialog/development-section"
+import { McpSection } from "@/components/cadence/settings-dialog/mcp-section"
 import { NotificationsSection } from "@/components/cadence/settings-dialog/notifications-section"
 import { ProvidersSection } from "@/components/cadence/settings-dialog/providers-section"
 import { ThemesSection } from "@/components/cadence/settings-dialog/themes-section"
 
-type SettingsSection = "providers" | "notifications" | "browser" | "themes" | "development"
+type SettingsSection = "providers" | "notifications" | "mcp" | "browser" | "themes" | "development"
 
 const NAV_BASE: Array<{ id: SettingsSection; label: string; icon: React.ElementType }> = [
   { id: "providers", label: "Providers", icon: KeyRound },
   { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "mcp", label: "MCP", icon: PlugZap },
   { id: "browser", label: "Browser", icon: Globe },
   { id: "themes", label: "Themes", icon: Palette },
 ]
@@ -66,6 +74,18 @@ export interface SettingsDialogProps {
   onStartLogin?: () => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
+  mcpRegistry?: McpRegistryDto | null
+  mcpImportDiagnostics?: McpImportDiagnosticDto[]
+  mcpRegistryLoadStatus?: McpRegistryLoadStatus
+  mcpRegistryLoadError?: OperatorActionErrorView | null
+  mcpRegistryMutationStatus?: McpRegistryMutationStatus
+  pendingMcpServerId?: string | null
+  mcpRegistryMutationError?: OperatorActionErrorView | null
+  onRefreshMcpRegistry?: (options?: { force?: boolean }) => Promise<McpRegistryDto>
+  onUpsertMcpServer?: (request: UpsertMcpServerRequestDto) => Promise<McpRegistryDto>
+  onRemoveMcpServer?: (serverId: string) => Promise<McpRegistryDto>
+  onImportMcpServers?: (path: string) => Promise<ImportMcpServersResponseDto>
+  onRefreshMcpServerStatuses?: (options?: { serverIds?: string[] }) => Promise<McpRegistryDto>
   platformOverride?: PlatformVariant | null
   onPlatformOverrideChange?: (value: PlatformVariant | null) => void
   onStartOnboarding?: () => void
@@ -90,6 +110,18 @@ export function SettingsDialog({
   onStartLogin,
   onLogout,
   onUpsertNotificationRoute,
+  mcpRegistry = null,
+  mcpImportDiagnostics = [],
+  mcpRegistryLoadStatus = "idle",
+  mcpRegistryLoadError = null,
+  mcpRegistryMutationStatus = "idle",
+  pendingMcpServerId = null,
+  mcpRegistryMutationError = null,
+  onRefreshMcpRegistry,
+  onUpsertMcpServer,
+  onRemoveMcpServer,
+  onImportMcpServers,
+  onRefreshMcpServerStatuses,
   platformOverride,
   onPlatformOverrideChange,
   onStartOnboarding,
@@ -107,6 +139,14 @@ export function SettingsDialog({
 
     void onRefreshProviderProfiles({ force: true }).catch(() => undefined)
   }, [open, onRefreshProviderProfiles])
+
+  useEffect(() => {
+    if (!open || !onRefreshMcpRegistry) {
+      return
+    }
+
+    void onRefreshMcpRegistry({ force: true }).catch(() => undefined)
+  }, [onRefreshMcpRegistry, open])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -192,6 +232,21 @@ export function SettingsDialog({
                     body="Provider settings are app-global, but notification routes stay project-bound so Cadence never writes cross-project delivery state into the wrong repository view."
                   />
                 )
+              ) : section === "mcp" ? (
+                <McpSection
+                  mcpRegistry={mcpRegistry}
+                  mcpImportDiagnostics={mcpImportDiagnostics}
+                  mcpRegistryLoadStatus={mcpRegistryLoadStatus}
+                  mcpRegistryLoadError={mcpRegistryLoadError}
+                  mcpRegistryMutationStatus={mcpRegistryMutationStatus}
+                  pendingMcpServerId={pendingMcpServerId}
+                  mcpRegistryMutationError={mcpRegistryMutationError}
+                  onRefreshMcpRegistry={onRefreshMcpRegistry}
+                  onUpsertMcpServer={onUpsertMcpServer}
+                  onRemoveMcpServer={onRemoveMcpServer}
+                  onImportMcpServers={onImportMcpServers}
+                  onRefreshMcpServerStatuses={onRefreshMcpServerStatuses}
+                />
               ) : section === "browser" ? (
                 <BrowserSection />
               ) : section === "themes" ? (

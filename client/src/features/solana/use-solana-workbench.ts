@@ -754,6 +754,243 @@ export interface VerifiedBuildResult {
   elapsedMs: number
 }
 
+// Phase 6 — audit / fuzz / coverage / replay types.
+export type FindingSeverity =
+  | "critical"
+  | "high"
+  | "medium"
+  | "low"
+  | "informational"
+
+export type FindingSource = "anchor_lints" | "external" | "fuzz" | "replay"
+
+export interface Finding {
+  id: string
+  source: FindingSource
+  ruleId: string
+  severity: FindingSeverity
+  title: string
+  message: string
+  file?: string | null
+  line?: number | null
+  column?: number | null
+  fixHint?: string | null
+  referenceUrl?: string | null
+}
+
+export interface SeverityCounts {
+  critical: number
+  high: number
+  medium: number
+  low: number
+  informational: number
+}
+
+export type AuditRunKind =
+  | "static"
+  | "external"
+  | "fuzz"
+  | "coverage"
+  | "replay"
+
+export type AuditEventPhase = "started" | "progress" | "completed" | "failed"
+
+export interface AuditEventPayload {
+  runId: string
+  kind: AuditRunKind
+  phase: AuditEventPhase
+  finding?: Finding | null
+  message?: string | null
+  tsMs: number
+}
+
+export type StaticLintRuleId =
+  | "missing_signer"
+  | "missing_owner_check"
+  | "missing_has_one"
+  | "unchecked_account_info"
+  | "arithmetic_overflow"
+  | "realloc_without_rent"
+  | "seed_spoof"
+
+export interface AnchorFinding {
+  rule: StaticLintRuleId
+  file: string
+  line: number
+  column: number
+  snippet: string
+  context: string
+}
+
+export interface StaticLintReport {
+  runId: string
+  projectRoot: string
+  rules: string[]
+  findings: Finding[]
+  anchorFindings: AnchorFinding[]
+  filesScanned: number
+  elapsedMs: number
+  severityCounts: SeverityCounts
+}
+
+export type AnalyzerKind = "auto" | "sec3" | "soteria" | "aderyn"
+
+export interface ExternalAnalyzerReport {
+  runId: string
+  analyzer: AnalyzerKind
+  analyzerInstalled: boolean
+  binaryPath?: string | null
+  argv: string[]
+  exitCode?: number | null
+  elapsedMs: number
+  findings: Finding[]
+  stdoutExcerpt: string
+  stderrExcerpt: string
+  summary: string
+}
+
+export interface FuzzCrash {
+  id: string
+  instruction?: string | null
+  panicMessage?: string | null
+  reproducerArgv: string[]
+  backtraceExcerpt: string
+}
+
+export interface FuzzReport {
+  runId: string
+  target: string
+  projectRoot: string
+  argv: string[]
+  exitCode?: number | null
+  success: boolean
+  durationS: number
+  elapsedMs: number
+  crashes: FuzzCrash[]
+  coverageLines: number
+  coverageDelta: number
+  findings: Finding[]
+  stdoutExcerpt: string
+  stderrExcerpt: string
+}
+
+export interface TridentHarnessResult {
+  root: string
+  generatedFiles: string[]
+  skippedFiles: string[]
+  target: string
+}
+
+export interface FunctionCoverage {
+  name: string
+  line: number
+  hits: number
+}
+
+export interface LcovRecord {
+  file: string
+  linesFound: number
+  linesHit: number
+  functionsFound: number
+  functionsHit: number
+  branchesFound: number
+  branchesHit: number
+  functions: FunctionCoverage[]
+}
+
+export interface InstructionCoverage {
+  instruction: string
+  functionsFound: number
+  functionsHit: number
+  linesFound: number
+  linesHit: number
+  files: string[]
+}
+
+export interface CoverageReport {
+  runId: string
+  projectRoot: string
+  argv: string[]
+  exitCode?: number | null
+  success: boolean
+  elapsedMs: number
+  lineCoveragePercent: number
+  functionCoveragePercent: number
+  totalLinesFound: number
+  totalLinesHit: number
+  totalFunctionsFound: number
+  totalFunctionsHit: number
+  files: LcovRecord[]
+  instructions: InstructionCoverage[]
+  stdoutExcerpt: string
+  stderrExcerpt: string
+  lcovPath?: string | null
+}
+
+export type ExploitKey =
+  | "wormhole_sig_skip"
+  | "cashio_fake_collateral"
+  | "mango_oracle_manip"
+  | "nirvana_flash_loan"
+
+export type ReplayStep =
+  | { kind: "fork"; slot: number; note: string }
+  | { kind: "clone_account"; address: string; note: string }
+  | {
+      kind: "send_tx"
+      label: string
+      description: string
+      affectedProgram: string
+      rationale: string
+    }
+  | {
+      kind: "assert_bad_state"
+      description: string
+      rationale: string
+    }
+
+export interface ExploitDescriptor {
+  key: ExploitKey
+  slug: string
+  title: string
+  summary: string
+  exploitSlot: number
+  referenceUrl: string
+  impactedProgram: string
+  cloneAccounts: string[]
+  clonePrograms: string[]
+  steps: ReplayStep[]
+  expectedBadState: string
+}
+
+export type ReplayOutcome =
+  | "expected_bad_state"
+  | "mitigated"
+  | "unexpected_failure"
+  | "inconclusive"
+
+export interface ReplayStepTrace {
+  stepIndex: number
+  label: string
+  success: boolean
+  message: string
+  signature?: string | null
+}
+
+export interface ReplayReport {
+  runId: string
+  exploit: ExploitKey
+  targetProgram: string
+  cluster: ClusterKind
+  snapshotSlot: number
+  outcome: ReplayOutcome
+  dryRun: boolean
+  steps: ReplayStepTrace[]
+  summary: string
+  findings: Finding[]
+  referenceUrl: string
+}
+
 // PDA types.
 export type SeedPart =
   | { kind: "utf8"; value: string }
@@ -991,6 +1228,57 @@ export interface UseSolanaWorkbench {
     libraryName?: string | null
     skipRemoteSubmit?: boolean
   }) => Promise<VerifiedBuildResult | null>
+  // Phase 6 — audit / fuzz / coverage / replay.
+  auditBusy: boolean
+  auditFindings: Finding[]
+  auditEvents: AuditEventPayload[]
+  lastStaticReport: StaticLintReport | null
+  lastExternalReport: ExternalAnalyzerReport | null
+  lastFuzzReport: FuzzReport | null
+  lastCoverageReport: CoverageReport | null
+  lastReplayReport: ReplayReport | null
+  replayCatalog: ExploitDescriptor[]
+  clearAuditFeed: () => void
+  refreshReplayCatalog: () => Promise<void>
+  runStaticAudit: (args: {
+    projectRoot: string
+    ruleIds?: string[]
+    skipPaths?: string[]
+  }) => Promise<StaticLintReport | null>
+  runExternalAudit: (args: {
+    projectRoot: string
+    analyzer?: AnalyzerKind
+    timeoutS?: number | null
+  }) => Promise<ExternalAnalyzerReport | null>
+  runFuzzAudit: (args: {
+    projectRoot: string
+    target: string
+    durationS?: number | null
+    corpus?: string | null
+    baselineCoverageLines?: number | null
+  }) => Promise<FuzzReport | null>
+  scaffoldFuzzHarness: (args: {
+    projectRoot: string
+    target: string
+    idlPath?: string | null
+    overwrite?: boolean
+  }) => Promise<TridentHarnessResult | null>
+  runCoverageAudit: (args: {
+    projectRoot: string
+    package?: string | null
+    testFilter?: string | null
+    lcovPath?: string | null
+    instructionNames?: string[]
+    timeoutS?: number | null
+  }) => Promise<CoverageReport | null>
+  runReplay: (args: {
+    exploit: ExploitKey
+    targetProgram: string
+    cluster: ClusterKind
+    dryRun?: boolean
+    snapshotSlot?: number | null
+    rpcUrl?: string | null
+  }) => Promise<ReplayReport | null>
 }
 
 const SOLANA_VALIDATOR_STATUS_EVENT = "solana:validator:status"
@@ -999,6 +1287,10 @@ const SOLANA_SCENARIO_EVENT = "solana:scenario"
 const SOLANA_TX_EVENT = "solana:tx"
 const SOLANA_IDL_CHANGED_EVENT = "solana:idl:changed"
 const SOLANA_DEPLOY_PROGRESS_EVENT = "solana:deploy:progress"
+const SOLANA_AUDIT_EVENT = "solana:audit"
+
+const MAX_AUDIT_FEED_EVENTS = 200
+const MAX_AUDIT_FEED_FINDINGS = 500
 
 interface Options {
   /** When false, the hook releases listeners and doesn't probe. */
@@ -1075,6 +1367,21 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
   const [lastVerifiedBuild, setLastVerifiedBuild] =
     useState<VerifiedBuildResult | null>(null)
   const [lastRollback, setLastRollback] = useState<RollbackResult | null>(null)
+
+  // Phase 6 — audit / fuzz / coverage / replay.
+  const [auditBusy, setAuditBusy] = useState(false)
+  const [auditFindings, setAuditFindings] = useState<Finding[]>([])
+  const [auditEvents, setAuditEvents] = useState<AuditEventPayload[]>([])
+  const [lastStaticReport, setLastStaticReport] =
+    useState<StaticLintReport | null>(null)
+  const [lastExternalReport, setLastExternalReport] =
+    useState<ExternalAnalyzerReport | null>(null)
+  const [lastFuzzReport, setLastFuzzReport] = useState<FuzzReport | null>(null)
+  const [lastCoverageReport, setLastCoverageReport] =
+    useState<CoverageReport | null>(null)
+  const [lastReplayReport, setLastReplayReport] =
+    useState<ReplayReport | null>(null)
+  const [replayCatalog, setReplayCatalog] = useState<ExploitDescriptor[]>([])
 
   const activeRef = useRef(active)
   activeRef.current = active
@@ -1801,6 +2108,246 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     [],
   )
 
+  const clearAuditFeed = useCallback(() => {
+    setAuditFindings([])
+    setAuditEvents([])
+  }, [])
+
+  const refreshReplayCatalog = useCallback(async () => {
+    if (!isTauri()) return
+    const next = await tauriInvoke<ExploitDescriptor[]>("solana_replay_list")
+    if (next) setReplayCatalog(next)
+  }, [])
+
+  const mergeFindings = useCallback((incoming: Finding[]) => {
+    if (incoming.length === 0) return
+    setAuditFindings((current) => {
+      const seen = new Set(current.map((f) => f.id))
+      const next = [...current]
+      for (const finding of incoming) {
+        if (seen.has(finding.id)) continue
+        next.push(finding)
+        seen.add(finding.id)
+      }
+      if (next.length > MAX_AUDIT_FEED_FINDINGS) {
+        return next.slice(next.length - MAX_AUDIT_FEED_FINDINGS)
+      }
+      return next
+    })
+  }, [])
+
+  const runStaticAudit = useCallback(
+    async (args: {
+      projectRoot: string
+      ruleIds?: string[]
+      skipPaths?: string[]
+    }): Promise<StaticLintReport | null> => {
+      if (!isTauri()) return null
+      setAuditBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<StaticLintReport>("solana_audit_static", {
+          request: {
+            request: {
+              projectRoot: args.projectRoot,
+              ruleIds: args.ruleIds ?? [],
+              skipPaths: args.skipPaths ?? [],
+            },
+          },
+        })
+        setLastStaticReport(report)
+        mergeFindings(report.findings)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setAuditBusy(false)
+      }
+    },
+    [mergeFindings],
+  )
+
+  const runExternalAudit = useCallback(
+    async (args: {
+      projectRoot: string
+      analyzer?: AnalyzerKind
+      timeoutS?: number | null
+    }): Promise<ExternalAnalyzerReport | null> => {
+      if (!isTauri()) return null
+      setAuditBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<ExternalAnalyzerReport>(
+          "solana_audit_external",
+          {
+            request: {
+              request: {
+                projectRoot: args.projectRoot,
+                analyzer: args.analyzer ?? "auto",
+                timeoutS: args.timeoutS ?? null,
+              },
+            },
+          },
+        )
+        setLastExternalReport(report)
+        mergeFindings(report.findings)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setAuditBusy(false)
+      }
+    },
+    [mergeFindings],
+  )
+
+  const runFuzzAudit = useCallback(
+    async (args: {
+      projectRoot: string
+      target: string
+      durationS?: number | null
+      corpus?: string | null
+      baselineCoverageLines?: number | null
+    }): Promise<FuzzReport | null> => {
+      if (!isTauri()) return null
+      setAuditBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<FuzzReport>("solana_audit_fuzz", {
+          request: {
+            request: {
+              projectRoot: args.projectRoot,
+              target: args.target,
+              durationS: args.durationS ?? null,
+              corpus: args.corpus ?? null,
+              baselineCoverageLines: args.baselineCoverageLines ?? null,
+            },
+          },
+        })
+        setLastFuzzReport(report)
+        mergeFindings(report.findings)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setAuditBusy(false)
+      }
+    },
+    [mergeFindings],
+  )
+
+  const scaffoldFuzzHarness = useCallback(
+    async (args: {
+      projectRoot: string
+      target: string
+      idlPath?: string | null
+      overwrite?: boolean
+    }): Promise<TridentHarnessResult | null> => {
+      if (!isTauri()) return null
+      setAuditBusy(true)
+      setError(null)
+      try {
+        return await invoke<TridentHarnessResult>(
+          "solana_audit_fuzz_scaffold",
+          {
+            request: {
+              request: {
+                projectRoot: args.projectRoot,
+                target: args.target,
+                idlPath: args.idlPath ?? null,
+                overwrite: args.overwrite ?? false,
+              },
+            },
+          },
+        )
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setAuditBusy(false)
+      }
+    },
+    [],
+  )
+
+  const runCoverageAudit = useCallback(
+    async (args: {
+      projectRoot: string
+      package?: string | null
+      testFilter?: string | null
+      lcovPath?: string | null
+      instructionNames?: string[]
+      timeoutS?: number | null
+    }): Promise<CoverageReport | null> => {
+      if (!isTauri()) return null
+      setAuditBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<CoverageReport>("solana_audit_coverage", {
+          request: {
+            request: {
+              projectRoot: args.projectRoot,
+              package: args.package ?? null,
+              testFilter: args.testFilter ?? null,
+              lcovPath: args.lcovPath ?? null,
+              instructionNames: args.instructionNames ?? [],
+              timeoutS: args.timeoutS ?? null,
+            },
+          },
+        })
+        setLastCoverageReport(report)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setAuditBusy(false)
+      }
+    },
+    [],
+  )
+
+  const runReplay = useCallback(
+    async (args: {
+      exploit: ExploitKey
+      targetProgram: string
+      cluster: ClusterKind
+      dryRun?: boolean
+      snapshotSlot?: number | null
+      rpcUrl?: string | null
+    }): Promise<ReplayReport | null> => {
+      if (!isTauri()) return null
+      setAuditBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<ReplayReport>("solana_replay_exploit", {
+          request: {
+            request: {
+              exploit: args.exploit,
+              targetProgram: args.targetProgram,
+              cluster: args.cluster,
+              dryRun: args.dryRun ?? true,
+              snapshotSlot: args.snapshotSlot ?? null,
+              rpcUrl: args.rpcUrl ?? null,
+            },
+          },
+        })
+        setLastReplayReport(report)
+        mergeFindings(report.findings)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setAuditBusy(false)
+      }
+    },
+    [mergeFindings],
+  )
+
   const submitVerifiedBuild = useCallback(
     async (args: {
       programId: string
@@ -1850,6 +2397,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     void refreshSnapshots()
     void refreshPersonaRoles()
     void refreshScenarios()
+    void refreshReplayCatalog()
   }, [
     active,
     refreshClusters,
@@ -1858,6 +2406,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     refreshSnapshots,
     refreshPersonaRoles,
     refreshScenarios,
+    refreshReplayCatalog,
   ])
 
   // Listen for status events while the sidebar is visible.
@@ -1951,6 +2500,33 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
         setLastDeployProgress(event.payload)
       },
     ).then((unsub) => {
+      if (cancelled) {
+        unsub()
+      } else {
+        unsubs.push(unsub)
+      }
+    })
+
+    void listen<AuditEventPayload>(SOLANA_AUDIT_EVENT, (event) => {
+      if (cancelled) return
+      const payload = event.payload
+      setAuditEvents((current) => {
+        const next = [...current, payload]
+        return next.length > MAX_AUDIT_FEED_EVENTS
+          ? next.slice(next.length - MAX_AUDIT_FEED_EVENTS)
+          : next
+      })
+      if (payload.finding) {
+        const incoming = payload.finding
+        setAuditFindings((current) => {
+          if (current.some((f) => f.id === incoming.id)) return current
+          const next = [...current, incoming]
+          return next.length > MAX_AUDIT_FEED_FINDINGS
+            ? next.slice(next.length - MAX_AUDIT_FEED_FINDINGS)
+            : next
+        })
+      }
+    }).then((unsub) => {
       if (cancelled) {
         unsub()
       } else {
@@ -2080,5 +2656,22 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     rollbackProgram,
     createSquadsProposal,
     submitVerifiedBuild,
+    auditBusy,
+    auditFindings,
+    auditEvents,
+    lastStaticReport,
+    lastExternalReport,
+    lastFuzzReport,
+    lastCoverageReport,
+    lastReplayReport,
+    replayCatalog,
+    clearAuditFeed,
+    refreshReplayCatalog,
+    runStaticAudit,
+    runExternalAudit,
+    runFuzzAudit,
+    scaffoldFuzzHarness,
+    runCoverageAudit,
+    runReplay,
   }
 }

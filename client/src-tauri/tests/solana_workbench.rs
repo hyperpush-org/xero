@@ -31,6 +31,9 @@ mod toolchain_shape;
 #[path = "solana/persona_lifecycle.rs"]
 mod persona_lifecycle;
 
+#[path = "solana/audit_engine.rs"]
+mod audit_engine;
+
 #[test]
 fn spin_restore_cycle_runs_three_consecutive_times() {
     spin_restore_cycle::spin_restore_cycle_runs_three_consecutive_times();
@@ -99,4 +102,46 @@ fn pipeline_scenario_pre_stages_on_mainnet_fork() {
 #[test]
 fn fund_command_rejects_empty_delta() {
     persona_lifecycle::fund_command_rejects_empty_delta();
+}
+
+// -- Phase 6 — audit engine ------------------------------------------------
+
+#[test]
+fn audit_static_lints_stream_findings_in_phase_order() {
+    audit_engine::static_lints_stream_findings_in_phase_order();
+}
+
+#[test]
+fn audit_external_analyzer_not_installed_returns_informational_finding() {
+    audit_engine::external_analyzer_not_installed_returns_informational_finding();
+}
+
+#[test]
+fn audit_external_analyzer_parses_scripted_json_output() {
+    audit_engine::external_analyzer_parses_scripted_json_output();
+}
+
+#[test]
+fn audit_fuzz_reports_crashes_with_reproducer() {
+    audit_engine::fuzz_engine_reports_crashes_with_reproducer();
+}
+
+#[test]
+fn audit_coverage_parses_instruction_rollups() {
+    audit_engine::coverage_parses_instruction_rollups();
+}
+
+#[test]
+fn audit_replay_catalog_returns_four_exploits_and_refuses_mainnet() {
+    audit_engine::replay_catalog_returns_four_exploits_and_refuses_mainnet();
+}
+
+#[test]
+fn audit_replay_scripted_runner_emits_expected_bad_state_finding() {
+    audit_engine::replay_scripted_runner_emits_expected_bad_state_finding();
+}
+
+#[test]
+fn audit_twenty_instruction_anchor_program_audit_is_fast() {
+    audit_engine::twenty_instruction_anchor_program_audit_is_fast();
 }

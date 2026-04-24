@@ -1,10 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  type ImportMcpServersResponseDto,
   type ImportRepositoryResponseDto,
   type ListNotificationDispatchesResponseDto,
   type ListNotificationRoutesResponseDto,
   type ListProjectsResponseDto,
+  type McpRegistryDto,
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
   type ProviderModelCatalogDto,
@@ -305,6 +307,42 @@ function makeProviderModelCatalog(
   }
 }
 
+function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDto {
+  return {
+    updatedAt: '2026-04-24T04:00:00Z',
+    servers: [
+      {
+        id: 'memory',
+        name: 'Memory Server',
+        transport: {
+          kind: 'stdio',
+          command: 'npx',
+          args: ['@modelcontextprotocol/server-memory'],
+        },
+        env: [
+          {
+            key: 'OPENAI_API_KEY',
+            fromEnv: 'OPENAI_API_KEY',
+          },
+        ],
+        cwd: null,
+        connection: {
+          status: 'stale',
+          diagnostic: {
+            code: 'mcp_status_unchecked',
+            message: 'Cadence has not checked this MCP server yet.',
+            retryable: true,
+          },
+          lastCheckedAt: null,
+          lastHealthyAt: null,
+        },
+        updatedAt: '2026-04-24T04:00:00Z',
+      },
+    ],
+    ...overrides,
+  }
+}
+
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
@@ -443,6 +481,7 @@ function createMockAdapter(options?: {
   runtimeSessions?: Record<string, RuntimeSessionDto>
   runtimeRuns?: Record<string, RuntimeRunDto | null>
   runtimeSettings?: RuntimeSettingsDto
+  mcpRegistry?: McpRegistryDto
   providerProfiles?: ProviderProfilesDto
   providerModelCatalogs?: Record<string, ProviderModelCatalogDto>
   providerModelCatalogErrors?: Record<string, Error>
@@ -508,6 +547,9 @@ function createMockAdapter(options?: {
   }
   const currentRuntimeSettings = {
     value: options?.runtimeSettings ?? makeRuntimeSettings(),
+  }
+  const currentMcpRegistry = {
+    value: options?.mcpRegistry ?? makeMcpRegistry(),
   }
   const currentProviderProfiles = {
     value: options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value),
@@ -587,6 +629,81 @@ function createMockAdapter(options?: {
   )
   const getRuntimeSession = vi.fn(async (projectId: string) => runtimeSessions[projectId])
   const getRuntimeSettings = vi.fn(async () => currentRuntimeSettings.value)
+  const listMcpServers = vi.fn(async () => currentMcpRegistry.value)
+  const upsertMcpServer = vi.fn(async (request: {
+    id: string
+    name: string
+    transport: McpRegistryDto['servers'][number]['transport']
+    env?: McpRegistryDto['servers'][number]['env']
+    cwd?: string | null
+  }) => {
+    const now = '2026-04-24T05:00:00Z'
+    const existing = currentMcpRegistry.value.servers.filter((server) => server.id !== request.id)
+    const previous = currentMcpRegistry.value.servers.find((server) => server.id === request.id)
+
+    currentMcpRegistry.value = {
+      updatedAt: now,
+      servers: [
+        {
+          id: request.id,
+          name: request.name,
+          transport: request.transport,
+          env: request.env ?? [],
+          cwd: request.cwd ?? null,
+          connection: previous?.connection ?? {
+            status: 'stale',
+            diagnostic: {
+              code: 'mcp_status_unchecked',
+              message: 'Cadence has not checked this MCP server yet.',
+              retryable: true,
+            },
+            lastCheckedAt: null,
+            lastHealthyAt: null,
+          },
+          updatedAt: now,
+        },
+        ...existing,
+      ],
+    }
+
+    return currentMcpRegistry.value
+  })
+  const removeMcpServer = vi.fn(async (serverId: string) => {
+    currentMcpRegistry.value = {
+      ...currentMcpRegistry.value,
+      updatedAt: '2026-04-24T05:01:00Z',
+      servers: currentMcpRegistry.value.servers.filter((server) => server.id !== serverId),
+    }
+
+    return currentMcpRegistry.value
+  })
+  const importMcpServers = vi.fn(async (_path: string) => ({
+    registry: currentMcpRegistry.value,
+    diagnostics: [],
+  }))
+  const refreshMcpServerStatuses = vi.fn(async (options?: { serverIds?: string[] }) => {
+    const serverIds = options?.serverIds ?? []
+    const shouldRefresh = (id: string) => serverIds.length === 0 || serverIds.includes(id)
+    currentMcpRegistry.value = {
+      ...currentMcpRegistry.value,
+      updatedAt: '2026-04-24T05:02:00Z',
+      servers: currentMcpRegistry.value.servers.map((server) =>
+        shouldRefresh(server.id)
+          ? {
+              ...server,
+              connection: {
+                status: 'connected',
+                diagnostic: null,
+                lastCheckedAt: '2026-04-24T05:02:00Z',
+                lastHealthyAt: '2026-04-24T05:02:00Z',
+              },
+            }
+          : server,
+      ),
+    }
+
+    return currentMcpRegistry.value
+  })
   const getProviderModelCatalog = vi.fn(
     async (
       profileId: string,
@@ -1095,6 +1212,11 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings,
+    listMcpServers,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     getProviderModelCatalog,
     getProviderProfiles,
     startOpenAiLogin,
@@ -1213,6 +1335,11 @@ function createMockAdapter(options?: {
     getRuntimeRun,
     getRuntimeSession,
     getRuntimeSettings,
+    listMcpServers,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     getProviderModelCatalog,
     getProviderProfiles,
     listProjectFiles,
@@ -1366,6 +1493,17 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="runtime-settings-save-status">{state.runtimeSettingsSaveStatus}</div>
       <div data-testid="runtime-settings-save-error-code">{state.runtimeSettingsSaveError?.code ?? 'none'}</div>
       <div data-testid="runtime-settings-save-error-message">{state.runtimeSettingsSaveError?.message ?? 'none'}</div>
+      <div data-testid="mcp-registry-count">{String(state.mcpRegistry?.servers.length ?? 0)}</div>
+      <div data-testid="mcp-registry-first-status">{state.mcpRegistry?.servers[0]?.connection.status ?? 'none'}</div>
+      <div data-testid="mcp-registry-first-id">{state.mcpRegistry?.servers[0]?.id ?? 'none'}</div>
+      <div data-testid="mcp-registry-load-status">{state.mcpRegistryLoadStatus}</div>
+      <div data-testid="mcp-registry-load-error-code">{state.mcpRegistryLoadError?.code ?? 'none'}</div>
+      <div data-testid="mcp-registry-load-error-message">{state.mcpRegistryLoadError?.message ?? 'none'}</div>
+      <div data-testid="mcp-registry-mutation-status">{state.mcpRegistryMutationStatus}</div>
+      <div data-testid="mcp-registry-mutation-error-code">{state.mcpRegistryMutationError?.code ?? 'none'}</div>
+      <div data-testid="mcp-registry-mutation-error-message">{state.mcpRegistryMutationError?.message ?? 'none'}</div>
+      <div data-testid="mcp-pending-server-id">{state.pendingMcpServerId ?? 'none'}</div>
+      <div data-testid="mcp-import-diagnostics-count">{String(state.mcpImportDiagnostics.length)}</div>
       <div data-testid="refresh-source">{state.refreshSource ?? 'none'}</div>
       <div data-testid="project-count">{String(state.projects.length)}</div>
       <div data-testid="workflow-has-phases">{String(state.workflowView?.hasPhases ?? false)}</div>
@@ -1526,6 +1664,63 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
         type="button"
       >
         Clear OpenRouter runtime key
+      </button>
+      <button
+        onClick={() => {
+          void state.refreshMcpRegistry({ force: true }).catch(() => undefined)
+        }}
+        type="button"
+      >
+        Load MCP registry
+      </button>
+      <button
+        onClick={() => {
+          void state
+            .upsertMcpServer({
+              id: 'filesystem',
+              name: 'Filesystem Server',
+              transport: {
+                kind: 'stdio',
+                command: 'node',
+                args: ['/opt/mcp/server-filesystem.js'],
+              },
+              env: [
+                {
+                  key: 'OPENAI_API_KEY',
+                  fromEnv: 'OPENAI_API_KEY',
+                },
+              ],
+              cwd: null,
+            })
+            .catch(() => undefined)
+        }}
+        type="button"
+      >
+        Save MCP server
+      </button>
+      <button
+        onClick={() => {
+          void state.removeMcpServer('memory').catch(() => undefined)
+        }}
+        type="button"
+      >
+        Remove MCP server
+      </button>
+      <button
+        onClick={() => {
+          void state.importMcpServers('/tmp/mcp-import.json').catch(() => undefined)
+        }}
+        type="button"
+      >
+        Import MCP servers
+      </button>
+      <button
+        onClick={() => {
+          void state.refreshMcpServerStatuses({ serverIds: ['memory'] }).catch(() => undefined)
+        }}
+        type="button"
+      >
+        Refresh MCP statuses
       </button>
       <button
         onClick={() => {
@@ -3107,6 +3302,121 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('runtime-settings-provider-id')).toHaveTextContent('openrouter')
     expect(screen.getByTestId('runtime-settings-model-id')).toHaveTextContent('meta-llama/llama-3.1-8b-instruct')
     expect(screen.getByTestId('runtime-settings-key-configured')).toHaveTextContent('true')
+  })
+
+  it('loads MCP registry truth and applies upsert/remove/import/refresh mutations from desktop state', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      mcpRegistry: makeMcpRegistry(),
+    })
+
+    setup.importMcpServers.mockResolvedValueOnce({
+      registry: makeMcpRegistry(),
+      diagnostics: [
+        {
+          index: 1,
+          serverId: 'duplicate-memory',
+          code: 'mcp_registry_import_invalid',
+          message: 'Server id `memory` is duplicated in the import file.',
+        },
+      ],
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(screen.getByTestId('mcp-registry-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('mcp-registry-first-id')).toHaveTextContent('memory')
+    expect(setup.listMcpServers).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save MCP server' }))
+
+    await waitFor(() =>
+      expect(setup.upsertMcpServer).toHaveBeenCalledWith({
+        id: 'filesystem',
+        name: 'Filesystem Server',
+        transport: {
+          kind: 'stdio',
+          command: 'node',
+          args: ['/opt/mcp/server-filesystem.js'],
+        },
+        env: [
+          {
+            key: 'OPENAI_API_KEY',
+            fromEnv: 'OPENAI_API_KEY',
+          },
+        ],
+        cwd: null,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import MCP servers' }))
+    await waitFor(() => expect(setup.importMcpServers).toHaveBeenCalledWith('/tmp/mcp-import.json'))
+    expect(screen.getByTestId('mcp-import-diagnostics-count')).toHaveTextContent('1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh MCP statuses' }))
+    await waitFor(() => expect(setup.refreshMcpServerStatuses).toHaveBeenCalledWith({ serverIds: ['memory'] }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove MCP server' }))
+    await waitFor(() => expect(setup.removeMcpServer).toHaveBeenCalledWith('memory'))
+  })
+
+  it('keeps the last truthful MCP snapshot visible when refresh or contract-parse checks fail', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      mcpRegistry: makeMcpRegistry({
+        servers: [
+          {
+            ...makeMcpRegistry().servers[0],
+            connection: {
+              status: 'stale',
+              diagnostic: {
+                code: 'mcp_status_unchecked',
+                message: 'Cadence has not checked this MCP server yet.',
+                retryable: true,
+              },
+              lastCheckedAt: null,
+              lastHealthyAt: null,
+            },
+          },
+        ],
+      }),
+    })
+
+    setup.refreshMcpServerStatuses.mockRejectedValueOnce(
+      new CadenceDesktopError({
+        code: 'mcp_status_refresh_failed',
+        errorClass: 'retryable',
+        message: 'Cadence could not refresh MCP server statuses.',
+        retryable: true,
+      }),
+    )
+    setup.listMcpServers.mockRejectedValueOnce(
+      new CadenceDesktopError({
+        code: 'adapter_contract_mismatch',
+        errorClass: 'adapter_contract_mismatch',
+        message: 'Command list_mcp_servers returned an unexpected payload shape.',
+        retryable: false,
+      }),
+    )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('mcp-registry-first-status')).toHaveTextContent('stale'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh MCP statuses' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('mcp-registry-mutation-error-code')).toHaveTextContent('mcp_status_refresh_failed'),
+    )
+    expect(screen.getByTestId('mcp-registry-first-status')).toHaveTextContent('stale')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load MCP registry' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('mcp-registry-load-error-code')).toHaveTextContent('adapter_contract_mismatch'),
+    )
+    expect(screen.getByTestId('mcp-registry-first-status')).toHaveTextContent('stale')
   })
 
   it('projects active provider-profile identity without mutating repo-local runtime truth', async () => {

@@ -46,6 +46,11 @@ export function useCadenceDesktopMutations(
     setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
+    refreshMcpRegistry,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   } = useRuntimeSettingsNotificationMutations(args)
@@ -78,6 +83,11 @@ export function useCadenceDesktopMutations(
     setActiveProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
+    refreshMcpRegistry,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   }

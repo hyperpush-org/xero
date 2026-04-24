@@ -4,7 +4,10 @@ import type {
   CreateProjectEntryRequestDto,
   CreateProjectEntryResponseDto,
   DeleteProjectEntryResponseDto,
+  ImportMcpServersResponseDto,
   ListProjectFilesResponseDto,
+  McpImportDiagnosticDto,
+  McpRegistryDto,
   NotificationRouteCredentialReadinessDto,
   NotificationRouteDto,
   NotificationRouteKindDto,
@@ -47,6 +50,7 @@ import type {
   RuntimeStreamView,
   RuntimeStreamViewItem,
   SyncNotificationAdaptersResponseDto,
+  UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
   UpsertProviderProfileRequestDto,
   UpsertRuntimeSettingsRequestDto,
@@ -95,6 +99,8 @@ export type ProviderProfilesSaveStatus = 'idle' | 'running'
 export type ProviderModelCatalogLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsSaveStatus = 'idle' | 'running'
+export type McpRegistryLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
+export type McpRegistryMutationStatus = 'idle' | 'running'
 export type NotificationRouteHealthState = 'disabled' | 'idle' | 'pending' | 'healthy' | 'degraded'
 export type AgentTrustSignalState = 'healthy' | 'degraded' | 'unavailable'
 export type AgentRunControlTruthSource = 'runtime_run' | 'fallback'
@@ -400,6 +406,13 @@ export interface UseCadenceDesktopStateResult {
   runtimeSettingsLoadError: OperatorActionErrorView | null
   runtimeSettingsSaveStatus: RuntimeSettingsSaveStatus
   runtimeSettingsSaveError: OperatorActionErrorView | null
+  mcpRegistry: McpRegistryDto | null
+  mcpImportDiagnostics: McpImportDiagnosticDto[]
+  mcpRegistryLoadStatus: McpRegistryLoadStatus
+  mcpRegistryLoadError: OperatorActionErrorView | null
+  mcpRegistryMutationStatus: McpRegistryMutationStatus
+  pendingMcpServerId: string | null
+  mcpRegistryMutationError: OperatorActionErrorView | null
   refreshSource: RefreshSource
   isDesktopRuntime: boolean
   operatorActionStatus: OperatorActionStatus
@@ -453,6 +466,11 @@ export interface UseCadenceDesktopStateResult {
   setActiveProviderProfile: (profileId: string) => Promise<ProviderProfilesDto>
   refreshRuntimeSettings: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
   upsertRuntimeSettings: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
+  refreshMcpRegistry: (options?: { force?: boolean }) => Promise<McpRegistryDto>
+  upsertMcpServer: (request: UpsertMcpServerRequestDto) => Promise<McpRegistryDto>
+  removeMcpServer: (serverId: string) => Promise<McpRegistryDto>
+  importMcpServers: (path: string) => Promise<ImportMcpServersResponseDto>
+  refreshMcpServerStatuses: (options?: { serverIds?: string[] }) => Promise<McpRegistryDto>
   refreshNotificationRoutes: (options?: { force?: boolean }) => Promise<NotificationRouteDto[]>
   upsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, 'projectId'>,

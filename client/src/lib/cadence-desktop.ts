@@ -31,6 +31,17 @@ import {
   type UpsertNotificationRouteResponseDto,
 } from '@/src/lib/cadence-model/notifications'
 import {
+  importMcpServersRequestSchema,
+  importMcpServersResponseSchema,
+  mcpRegistrySchema,
+  refreshMcpServerStatusesRequestSchema,
+  removeMcpServerRequestSchema,
+  upsertMcpServerRequestSchema,
+  type ImportMcpServersResponseDto,
+  type McpRegistryDto,
+  type UpsertMcpServerRequestDto,
+} from '@/src/lib/cadence-model/mcp'
+import {
   resolveOperatorActionRequestSchema,
   resolveOperatorActionResponseSchema,
   resumeOperatorRunRequestSchema,
@@ -151,6 +162,11 @@ const COMMANDS = {
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
   getRuntimeSettings: 'get_runtime_settings',
+  listMcpServers: 'list_mcp_servers',
+  upsertMcpServer: 'upsert_mcp_server',
+  removeMcpServer: 'remove_mcp_server',
+  importMcpServers: 'import_mcp_servers',
+  refreshMcpServerStatuses: 'refresh_mcp_server_statuses',
   getProviderModelCatalog: 'get_provider_model_catalog',
   listProviderProfiles: 'list_provider_profiles',
   upsertProviderProfile: 'upsert_provider_profile',
@@ -365,6 +381,11 @@ export interface CadenceDesktopAdapter {
   getRuntimeRun(projectId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   getRuntimeSettings(): Promise<RuntimeSettingsDto>
+  listMcpServers(): Promise<McpRegistryDto>
+  upsertMcpServer(request: UpsertMcpServerRequestDto): Promise<McpRegistryDto>
+  removeMcpServer(serverId: string): Promise<McpRegistryDto>
+  importMcpServers(path: string): Promise<ImportMcpServersResponseDto>
+  refreshMcpServerStatuses(options?: { serverIds?: string[] }): Promise<McpRegistryDto>
   getProviderModelCatalog(
     profileId: string,
     options?: { forceRefresh?: boolean },
@@ -817,6 +838,41 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   getRuntimeSettings() {
     return invokeTyped(COMMANDS.getRuntimeSettings, runtimeSettingsSchema)
+  },
+
+  listMcpServers() {
+    return invokeTyped(COMMANDS.listMcpServers, mcpRegistrySchema)
+  },
+
+  upsertMcpServer(request) {
+    const parsedRequest = upsertMcpServerRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.upsertMcpServer, mcpRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  removeMcpServer(serverId) {
+    const request = removeMcpServerRequestSchema.parse({ serverId })
+    return invokeTyped(COMMANDS.removeMcpServer, mcpRegistrySchema, {
+      request,
+    })
+  },
+
+  importMcpServers(path) {
+    const request = importMcpServersRequestSchema.parse({ path })
+    return invokeTyped(COMMANDS.importMcpServers, importMcpServersResponseSchema, {
+      request,
+    })
+  },
+
+  refreshMcpServerStatuses(options) {
+    const request = refreshMcpServerStatusesRequestSchema.parse({
+      serverIds: options?.serverIds ?? [],
+    })
+
+    return invokeTyped(COMMANDS.refreshMcpServerStatuses, mcpRegistrySchema, {
+      request,
+    })
   },
 
   getProviderModelCatalog(profileId, options) {

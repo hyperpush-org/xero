@@ -63,6 +63,13 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     providerModelCatalogs,
     providerModelCatalogLoadStatuses,
     providerModelCatalogLoadErrors,
+    mcpRegistry,
+    mcpImportDiagnostics,
+    mcpRegistryLoadStatus,
+    mcpRegistryLoadError,
+    mcpRegistryMutationStatus,
+    pendingMcpServerId,
+    mcpRegistryMutationError,
     isDesktopRuntime,
     selectProject,
     importProject,
@@ -92,6 +99,11 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     refreshProviderModelCatalog,
     upsertProviderProfile,
     setActiveProviderProfile,
+    refreshMcpRegistry,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   } = useCadenceDesktopState({ adapter })
@@ -476,6 +488,18 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onUpsertNotificationRoute={(request) =>
           upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
         }
+        mcpRegistry={mcpRegistry}
+        mcpImportDiagnostics={mcpImportDiagnostics}
+        mcpRegistryLoadStatus={mcpRegistryLoadStatus}
+        mcpRegistryLoadError={mcpRegistryLoadError}
+        mcpRegistryMutationStatus={mcpRegistryMutationStatus}
+        pendingMcpServerId={pendingMcpServerId}
+        mcpRegistryMutationError={mcpRegistryMutationError}
+        onRefreshMcpRegistry={(options) => refreshMcpRegistry(options)}
+        onUpsertMcpServer={(request) => upsertMcpServer(request)}
+        onRemoveMcpServer={(serverId) => removeMcpServer(serverId)}
+        onImportMcpServers={(path) => importMcpServers(path)}
+        onRefreshMcpServerStatuses={(options) => refreshMcpServerStatuses(options)}
         platformOverride={platformOverride}
         onPlatformOverrideChange={setPlatformOverride}
         onStartOnboarding={() => {

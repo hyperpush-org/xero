@@ -5,6 +5,10 @@ import {
   type CadenceDesktopAdapter,
 } from '@/src/lib/cadence-desktop'
 import { mapAutonomousRunInspection } from '@/src/lib/cadence-model/autonomous'
+import {
+  type McpImportDiagnosticDto,
+  type McpRegistryDto,
+} from '@/src/lib/cadence-model/mcp'
 import { type NotificationRouteDto } from '@/src/lib/cadence-model/notifications'
 import { type ProjectListItem } from '@/src/lib/cadence-model/project'
 import {
@@ -34,6 +38,8 @@ import type {
   RuntimeRunActionStatus,
   RuntimeSettingsLoadStatus,
   RuntimeSettingsSaveStatus,
+  McpRegistryLoadStatus,
+  McpRegistryMutationStatus,
   UseCadenceDesktopStateResult,
 } from './types'
 
@@ -72,6 +78,11 @@ export type CadenceDesktopMutationActions = Pick<
   | 'setActiveProviderProfile'
   | 'refreshRuntimeSettings'
   | 'upsertRuntimeSettings'
+  | 'refreshMcpRegistry'
+  | 'upsertMcpServer'
+  | 'removeMcpServer'
+  | 'importMcpServers'
+  | 'refreshMcpServerStatuses'
   | 'refreshNotificationRoutes'
   | 'upsertNotificationRoute'
 >
@@ -84,6 +95,8 @@ export interface UseCadenceDesktopMutationsRefs {
   providerProfilesLoadInFlightRef: MutableRefObject<Promise<ProviderProfilesDto> | null>
   runtimeSettingsRef: MutableRefObject<RuntimeSettingsDto | null>
   runtimeSettingsLoadInFlightRef: MutableRefObject<Promise<RuntimeSettingsDto> | null>
+  mcpRegistryRef: MutableRefObject<McpRegistryDto | null>
+  mcpRegistryLoadInFlightRef: MutableRefObject<Promise<McpRegistryDto> | null>
 }
 
 export interface UseCadenceDesktopMutationsSetters {
@@ -118,6 +131,13 @@ export interface UseCadenceDesktopMutationsSetters {
   setRuntimeSettingsLoadError: SetState<OperatorActionErrorView | null>
   setRuntimeSettingsSaveStatus: SetState<RuntimeSettingsSaveStatus>
   setRuntimeSettingsSaveError: SetState<OperatorActionErrorView | null>
+  setMcpRegistry: SetState<McpRegistryDto | null>
+  setMcpImportDiagnostics: SetState<McpImportDiagnosticDto[]>
+  setMcpRegistryLoadStatus: SetState<McpRegistryLoadStatus>
+  setMcpRegistryLoadError: SetState<OperatorActionErrorView | null>
+  setMcpRegistryMutationStatus: SetState<McpRegistryMutationStatus>
+  setPendingMcpServerId: SetState<string | null>
+  setMcpRegistryMutationError: SetState<OperatorActionErrorView | null>
 }
 
 export interface UseCadenceDesktopMutationsOperations {
@@ -153,6 +173,7 @@ export interface UseCadenceDesktopMutationsArgs {
   operations: UseCadenceDesktopMutationsOperations
   providerProfilesLoadStatus: ProviderProfilesLoadStatus
   runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
+  mcpRegistryLoadStatus: McpRegistryLoadStatus
 }
 
 export function getActiveProjectId(

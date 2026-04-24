@@ -11,12 +11,14 @@ import {
   Rocket,
   Search,
   Server,
+  ShieldCheck,
   Square,
   Users,
   Waves,
   Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SolanaAuditPanel } from "./solana-audit-panel"
 import { SolanaDeployPanel } from "./solana-deploy-panel"
 import { SolanaIdlPanel } from "./solana-idl-panel"
 import { SolanaMissingToolchain } from "./solana-missing-toolchain"
@@ -38,7 +40,14 @@ const DEFAULT_WIDTH = 420
 const MAX_WIDTH = 900
 const STORAGE_KEY = "cadence.solana.workbench.width"
 
-type TabId = "personas" | "scenarios" | "tx" | "idl" | "deploy" | "rpc"
+type TabId =
+  | "personas"
+  | "scenarios"
+  | "tx"
+  | "idl"
+  | "deploy"
+  | "audit"
+  | "rpc"
 
 interface SolanaWorkbenchSidebarProps {
   open: boolean
@@ -308,6 +317,12 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
       id: "deploy",
       icon: Rocket,
       label: "Deploy",
+    },
+    {
+      id: "audit",
+      icon: ShieldCheck,
+      label: "Audit",
+      count: workbench.auditFindings.length || undefined,
     },
     {
       id: "rpc",
@@ -591,6 +606,29 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
               onDeploy={handleDeploy}
               onSubmitVerified={handleSubmitVerified}
               onRollback={handleRollback}
+            />
+          ) : null}
+
+          {activeTab === "audit" ? (
+            <SolanaAuditPanel
+              cluster={selectedKind}
+              clusterRunning={clusterRunning}
+              busy={workbench.auditBusy}
+              findings={workbench.auditFindings}
+              events={workbench.auditEvents}
+              lastStatic={workbench.lastStaticReport}
+              lastExternal={workbench.lastExternalReport}
+              lastFuzz={workbench.lastFuzzReport}
+              lastCoverage={workbench.lastCoverageReport}
+              lastReplay={workbench.lastReplayReport}
+              replayCatalog={workbench.replayCatalog}
+              onClearFeed={workbench.clearAuditFeed}
+              onRunStatic={workbench.runStaticAudit}
+              onRunExternal={workbench.runExternalAudit}
+              onRunFuzz={workbench.runFuzzAudit}
+              onScaffoldFuzz={workbench.scaffoldFuzzHarness}
+              onRunCoverage={workbench.runCoverageAudit}
+              onRunReplay={workbench.runReplay}
             />
           ) : null}
 

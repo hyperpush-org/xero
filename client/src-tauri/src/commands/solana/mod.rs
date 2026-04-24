@@ -6,6 +6,7 @@
 //! future autonomous-runtime tool wrapper can drive the same surface that
 //! the UI drives.
 
+pub mod audit;
 pub mod cluster;
 pub mod events;
 pub mod idl;
@@ -27,13 +28,23 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::commands::{CommandError, CommandResult};
 
+pub use audit::{
+    coverage::{CoverageReport, CoverageRequest, FunctionCoverage, InstructionCoverage, LcovRecord},
+    replay::{ExploitDescriptor, ExploitKey, ReplayOutcome, ReplayReport, ReplayRequest, ReplayStep},
+    sec3::{AnalyzerKind, ExternalAnalyzerReport, ExternalAnalyzerRequest},
+    static_lints::{AnchorFinding, StaticLintReport, StaticLintRequest, StaticLintRule},
+    trident::{FuzzCrash, FuzzReport, FuzzRequest, TridentHarnessRequest, TridentHarnessResult},
+    AuditEngine, AuditEventPayload, AuditEventPhase, AuditEventSink, AuditRunKind, Finding,
+    FindingSeverity, FindingSource, NullAuditEventSink, SeverityCounts,
+};
 pub use cluster::{descriptors as cluster_descriptors, ClusterDescriptor, ClusterKind};
 pub use events::{
     PersonaEventKind, PersonaEventPayload, ScenarioEventKind, ScenarioEventPayload, TxEventKind,
     TxEventPayload, ValidatorLogLevel, ValidatorLogPayload, ValidatorPhase, ValidatorStatusPayload,
-    SOLANA_DEPLOY_PROGRESS_EVENT, SOLANA_IDL_CHANGED_EVENT, SOLANA_PERSONA_EVENT,
-    SOLANA_RPC_HEALTH_EVENT, SOLANA_SCENARIO_EVENT, SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT,
-    SOLANA_TX_EVENT, SOLANA_VALIDATOR_LOG_EVENT, SOLANA_VALIDATOR_STATUS_EVENT,
+    SOLANA_AUDIT_EVENT, SOLANA_DEPLOY_PROGRESS_EVENT, SOLANA_IDL_CHANGED_EVENT,
+    SOLANA_PERSONA_EVENT, SOLANA_RPC_HEALTH_EVENT, SOLANA_SCENARIO_EVENT,
+    SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT, SOLANA_TX_EVENT, SOLANA_VALIDATOR_LOG_EVENT,
+    SOLANA_VALIDATOR_STATUS_EVENT,
 };
 pub use idl::{
     codama::{CodamaGenerationReport, CodamaGenerationRequest, CodamaTarget, CodamaTargetResult},
@@ -111,6 +122,9 @@ pub struct SolanaState {
     /// these out via `with_deploy_services` to script `solana program
     /// ...`, `anchor idl ...`, and `codama` invocations.
     deploy_services: Arc<DeployServices>,
+    /// Phase 6 — audit engine. Tests inject scripted runners via
+    /// `with_audit_engine`.
+    audit_engine: Arc<AuditEngine>,
 }
 
 fn build_tx_pipeline(
@@ -187,6 +201,7 @@ impl Default for SolanaState {
             idl_registry,
             transport,
             deploy_services: Arc::new(DeployServices::system()),
+            audit_engine: Arc::new(AuditEngine::system()),
         }
     }
 }
@@ -220,6 +235,7 @@ impl SolanaState {
             idl_registry,
             transport,
             deploy_services: Arc::new(DeployServices::system()),
+            audit_engine: Arc::new(AuditEngine::system()),
         }
     }
 
@@ -247,6 +263,7 @@ impl SolanaState {
             idl_registry,
             transport,
             deploy_services: Arc::new(DeployServices::system()),
+            audit_engine: Arc::new(AuditEngine::system()),
         }
     }
 
@@ -278,6 +295,7 @@ impl SolanaState {
             idl_registry,
             transport,
             deploy_services: Arc::new(DeployServices::system()),
+            audit_engine: Arc::new(AuditEngine::system()),
         }
     }
 
@@ -308,7 +326,16 @@ impl SolanaState {
             idl_registry,
             transport,
             deploy_services,
+            audit_engine: Arc::new(AuditEngine::system()),
         }
+    }
+
+    /// Test/integration constructor that lets the caller inject a
+    /// scripted `AuditEngine` (so unit tests can drive the Phase 6
+    /// surface without hitting external binaries).
+    pub fn with_audit_engine(mut self, engine: Arc<AuditEngine>) -> Self {
+        self.audit_engine = engine;
+        self
     }
 
     pub fn supervisor(&self) -> Arc<ValidatorSupervisor> {
@@ -345,6 +372,10 @@ impl SolanaState {
 
     pub fn deploy_services(&self) -> Arc<DeployServices> {
         Arc::clone(&self.deploy_services)
+    }
+
+    pub fn audit_engine(&self) -> Arc<AuditEngine> {
+        Arc::clone(&self.audit_engine)
     }
 
     /// Resolve the RPC URL the persona / scenario commands should use when
@@ -1524,6 +1555,136 @@ pub fn solana_verified_build_submit(
             skip_remote_submit: request.skip_remote_submit,
         },
     )
+}
+
+// ---------- Audit commands (Phase 6) ---------------------------------------
+
+/// Sink that bridges `AuditEngine` events onto the Tauri event bus so
+/// the frontend renders streaming findings live.
+#[derive(Clone)]
+struct TauriAuditEventSink<R: Runtime> {
+    app: AppHandle<R>,
+}
+
+impl<R: Runtime> std::fmt::Debug for TauriAuditEventSink<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TauriAuditEventSink").finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> AuditEventSink for TauriAuditEventSink<R> {
+    fn emit(&self, payload: AuditEventPayload) {
+        let _ = self.app.emit(SOLANA_AUDIT_EVENT, payload);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditStaticArgs {
+    pub request: StaticLintRequest,
+}
+
+#[tauri::command]
+pub fn solana_audit_static<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: AuditStaticArgs,
+) -> CommandResult<StaticLintReport> {
+    let sink = TauriAuditEventSink { app };
+    state.audit_engine.run_static_lints(&request.request, &sink)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditExternalArgs {
+    pub request: ExternalAnalyzerRequest,
+}
+
+#[tauri::command]
+pub fn solana_audit_external<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: AuditExternalArgs,
+) -> CommandResult<ExternalAnalyzerReport> {
+    let sink = TauriAuditEventSink { app };
+    state
+        .audit_engine
+        .run_external_analyzer(&request.request, &sink)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditFuzzArgs {
+    pub request: FuzzRequest,
+}
+
+#[tauri::command]
+pub fn solana_audit_fuzz<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: AuditFuzzArgs,
+) -> CommandResult<FuzzReport> {
+    let sink = TauriAuditEventSink { app };
+    state.audit_engine.run_fuzz(&request.request, &sink)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditFuzzHarnessArgs {
+    pub request: TridentHarnessRequest,
+}
+
+#[tauri::command]
+pub fn solana_audit_fuzz_scaffold(
+    state: State<'_, SolanaState>,
+    request: AuditFuzzHarnessArgs,
+) -> CommandResult<TridentHarnessResult> {
+    state
+        .audit_engine
+        .generate_fuzz_harness(&request.request)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditCoverageArgs {
+    pub request: CoverageRequest,
+}
+
+#[tauri::command]
+pub fn solana_audit_coverage<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: AuditCoverageArgs,
+) -> CommandResult<CoverageReport> {
+    let sink = TauriAuditEventSink { app };
+    state.audit_engine.run_coverage(&request.request, &sink)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditReplayArgs {
+    pub request: ReplayRequest,
+}
+
+#[tauri::command]
+pub fn solana_replay_exploit<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, SolanaState>,
+    request: AuditReplayArgs,
+) -> CommandResult<ReplayReport> {
+    let sink = TauriAuditEventSink { app };
+    state.audit_engine.run_replay(&request.request, &sink)
+}
+
+#[tauri::command]
+pub fn solana_replay_list(state: State<'_, SolanaState>) -> CommandResult<Vec<ExploitDescriptor>> {
+    Ok(state
+        .audit_engine
+        .library()
+        .all()
+        .into_iter()
+        .cloned()
+        .collect())
 }
 
 /// Lightweight acknowledgement that the frontend can call when it opens
