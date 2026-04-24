@@ -1985,6 +1985,8 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     await waitFor(() => expect(screen.getByTestId('recent-unit-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('recent-unit-first-id')).toHaveTextContent('unit-history-2')
+    expect(screen.getByTestId('recent-unit-first-workflow-state')).toHaveTextContent('Snapshot lag')
+    expect(screen.getByTestId('recent-unit-window-label')).toHaveTextContent('Showing 1 durable unit')
     expect(screen.getByTestId('recent-unit-first-linkage-source')).toHaveTextContent('attempt')
     expect(screen.getByTestId('recent-unit-first-attempt-id')).toHaveTextContent('unit-history-2:attempt:1')
     expect(screen.getByTestId('recent-unit-first-workflow-transition-id')).toHaveTextContent('unit-history-2:transition:1')
@@ -1997,6 +1999,8 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('autonomous refresh failed'))
     expect(screen.getByTestId('recent-unit-count')).toHaveTextContent('1')
     expect(screen.getByTestId('recent-unit-first-id')).toHaveTextContent('unit-history-2')
+    expect(screen.getByTestId('recent-unit-first-workflow-state')).toHaveTextContent('Snapshot lag')
+    expect(screen.getByTestId('recent-unit-window-label')).toHaveTextContent('Showing 1 durable unit')
     expect(screen.getByTestId('recent-unit-first-linkage-source')).toHaveTextContent('attempt')
     expect(screen.getByTestId('recent-unit-first-attempt-id')).toHaveTextContent('unit-history-2:attempt:1')
     expect(screen.getByTestId('recent-unit-first-workflow-transition-id')).toHaveTextContent('unit-history-2:transition:1')

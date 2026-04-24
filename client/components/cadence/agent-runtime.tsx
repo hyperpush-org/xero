@@ -29,6 +29,7 @@ import {
   getComposerThinkingOptions,
   getSelectedProviderId,
 } from './agent-runtime/composer-helpers'
+import { RecentAutonomousUnitsSection } from './agent-runtime/recent-autonomous-units-section'
 import { ComposerDock } from './agent-runtime/composer-dock'
 import {
   getStreamRunId,
@@ -180,6 +181,8 @@ export function AgentRuntime({
       runtimeStream?.completion ||
       runtimeStream?.failure,
   )
+  const recentAutonomousUnits = agent.recentAutonomousUnits ?? null
+  const showRecentAutonomousUnitsSection = Boolean(recentAutonomousUnits)
   const checkpointControlLoop = agent.checkpointControlLoop ?? createEmptyCheckpointControlLoop()
   const checkpointControlLoopRecoveryAlert = getCheckpointControlLoopRecoveryAlertMeta({
     controlLoop: checkpointControlLoop,
@@ -248,6 +251,9 @@ export function AgentRuntime({
                   toolCalls={toolCalls}
                   transcriptItems={transcriptItems}
                 />
+              ) : null}
+              {showRecentAutonomousUnitsSection && recentAutonomousUnits ? (
+                <RecentAutonomousUnitsSection recentAutonomousUnits={recentAutonomousUnits} />
               ) : null}
               {showCheckpointControlLoopSection ? (
                 <CheckpointControlLoopSection

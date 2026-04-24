@@ -737,6 +737,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Inspect truth' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Cancel autonomous run' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Remote escalation trust' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Recent autonomous workers' })).not.toBeInTheDocument()
   })
 
   it('keeps the recovered runtime snapshot visible without rendering removed debug panels', () => {
@@ -856,6 +857,99 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
     expect(screen.getByText('Review worktree changes')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Resume run' })).toBeVisible()
+  })
+
+  it('renders worker lifecycle cards with truthful lag and handoff-pending linkage states', () => {
+    const recentAutonomousUnits = makeRecentAutonomousUnits({
+      items: [
+        makeRecentAutonomousUnits().items[0],
+        {
+          unitId: 'unit-history-3',
+          sequence: 3,
+          sequenceLabel: '#3',
+          kindLabel: 'Planner worker',
+          status: 'active',
+          statusLabel: 'Active',
+          summary: 'Planner worker is staging the next transition while handoff linkage catches up.',
+          boundaryId: 'boundary-3',
+          updatedAt: '2026-04-16T20:06:00Z',
+          latestAttemptOnlyLabel: 'Only the latest attempt is shown for this unit.',
+          latestAttemptLabel: 'Latest attempt unavailable',
+          latestAttemptStatusLabel: 'Not recorded',
+          latestAttemptUpdatedAt: null,
+          latestAttemptSummary: 'Cadence has not persisted a latest-attempt row for this unit yet.',
+          latestAttemptId: null,
+          latestAttemptNumber: null,
+          latestAttemptChildSessionId: null,
+          workflowState: 'awaiting_handoff',
+          workflowStateLabel: 'Handoff pending',
+          workflowNodeLabel: 'Research',
+          workflowLinkageLabel: 'Unit linkage',
+          workflowLinkageSource: 'unit',
+          workflowNodeId: 'workflow-research',
+          workflowTransitionId: 'unit-history-3:transition:1',
+          workflowCausalTransitionId: 'unit-history-3:causal:1',
+          workflowHandoffTransitionId: null,
+          workflowHandoffPackageHash: null,
+          workflowDetail:
+            'Cadence persisted workflow linkage for this unit, but the linked handoff package is not visible in the selected project snapshot yet.',
+          evidenceCount: 0,
+          evidenceStateLabel: 'No durable evidence in bounded window',
+          evidenceSummary:
+            'Cadence has not retained a matching artifact for this unit inside the bounded evidence window.',
+          latestEvidenceAt: null,
+          evidencePreviews: [],
+        },
+      ],
+      totalCount: 4,
+      visibleCount: 2,
+      hiddenCount: 2,
+      isTruncated: true,
+      windowLabel: 'Showing 2 of 4 durable units in the bounded recent-history window.',
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          recentAutonomousUnits,
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Recent autonomous workers' })).toBeVisible()
+    expect(screen.getByText('Snapshot lag')).toBeVisible()
+    expect(screen.getByText('Handoff pending')).toBeVisible()
+    expect(screen.getByText('Only the latest durable attempt per unit is shown here.')).toBeVisible()
+    expect(screen.getByText('Showing 2 of 4 durable units in the bounded recent-history window.')).toBeVisible()
+    expect(screen.getByText('+2 older units')).toBeVisible()
+    expect(screen.getAllByText('Pending durable linkage').length).toBeGreaterThan(0)
+  })
+
+  it('renders the empty worker lifecycle state when no bounded recent-unit rows are available', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          recentAutonomousUnits: makeRecentAutonomousUnits({
+            items: [],
+            totalCount: 0,
+            visibleCount: 0,
+            hiddenCount: 0,
+            isTruncated: false,
+            windowLabel: 'No durable recent units are available yet.',
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Recent autonomous workers' })).toBeVisible()
+    expect(screen.getByText('No recent autonomous units recorded')).toBeVisible()
+    expect(
+      screen.getByText('Cadence has not persisted a bounded autonomous unit history for this project yet.'),
+    ).toBeVisible()
   })
 
   it('renders recovered durable denial cards on the Agent tab', () => {
