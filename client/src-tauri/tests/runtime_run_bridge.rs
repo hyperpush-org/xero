@@ -122,6 +122,21 @@ fn planning_lifecycle_gate_pause_branch_requires_explicit_resume_without_duplica
 }
 
 #[test]
+fn plan_mode_required_false_keeps_implementation_continuation_auto_dispatch_behavior() {
+    workflow_progression::plan_mode_required_false_keeps_implementation_continuation_auto_dispatch_behavior();
+}
+
+#[test]
+fn plan_mode_required_true_pauses_and_requires_explicit_resolve_resume() {
+    workflow_progression::plan_mode_required_true_pauses_and_requires_explicit_resolve_resume();
+}
+
+#[test]
+fn plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked() {
+    workflow_progression::plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked();
+}
+
+#[test]
 fn start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage() {
     workflow_progression::start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage();
 }

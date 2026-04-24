@@ -42,11 +42,12 @@ pub use workflow::*;
 pub(crate) use workflow::{
     apply_workflow_transition_mutation, attempt_automatic_dispatch_after_transition,
     compute_workflow_handoff_package_hash, decode_operator_resume_transition_context,
-    derive_resume_transition_id, read_latest_transition_id, read_project_row,
-    read_transition_event_by_transition_id, read_workflow_handoff_package_by_transition_id,
-    resolve_operator_approval_gate_link, validate_non_empty_text,
-    validate_workflow_handoff_package_hash, validate_workflow_handoff_package_transition_linkage,
-    OperatorApprovalGateLink, ResolveOperatorAnswerRequirement, RuntimeOperatorResumeTarget,
+    derive_resume_transition_id, is_plan_mode_required_gate_key, read_latest_transition_id,
+    read_project_row, read_transition_event_by_transition_id,
+    read_workflow_handoff_package_by_transition_id, resolve_operator_approval_gate_link,
+    validate_non_empty_text, validate_workflow_handoff_package_hash,
+    validate_workflow_handoff_package_transition_linkage, OperatorApprovalGateLink,
+    ResolveOperatorAnswerRequirement, RuntimeOperatorResumeTarget,
     WorkflowTransitionGateMutationRecord, WorkflowTransitionMutationApplyOutcome,
     WorkflowTransitionMutationRecord, OPERATOR_RESUME_MUTATION_ERROR_PROFILE,
 };

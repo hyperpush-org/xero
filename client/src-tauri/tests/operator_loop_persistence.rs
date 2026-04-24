@@ -132,6 +132,11 @@ fn repeated_action_type_uses_gate_scoped_action_ids() {
 }
 
 #[test]
+fn plan_mode_required_resume_unblocks_implementation_continuation_without_duplicate_rows() {
+    gate_linked::plan_mode_required_resume_unblocks_implementation_continuation_without_duplicate_rows();
+}
+
+#[test]
 fn notification_dispatch_claim_flow_is_idempotent_for_pending_operator_approvals() {
     notification_claims::notification_dispatch_claim_flow_is_idempotent_for_pending_operator_approvals();
 }

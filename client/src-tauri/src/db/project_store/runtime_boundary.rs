@@ -11,7 +11,8 @@ use super::{
     apply_workflow_transition_mutation, attempt_automatic_dispatch_after_transition,
     decode_operator_resume_transition_context, derive_operator_scope_prefix,
     derive_resume_transition_id, enqueue_notification_dispatches_best_effort_with_connection,
-    find_prohibited_transition_diagnostic_content, map_operator_loop_commit_error,
+    find_prohibited_transition_diagnostic_content, is_plan_mode_required_gate_key,
+    map_operator_loop_commit_error,
     map_operator_loop_transaction_error, map_operator_loop_write_error,
     map_runtime_run_write_error, normalize_runtime_checkpoint_summary, open_project_database,
     operator_approval_status_label, read_latest_transition_id, read_operator_approval_by_action_id,
@@ -568,6 +569,22 @@ pub fn resume_operator_run_with_user_answer(
             let causal_transition_id =
                 read_latest_transition_id(&transaction, &database_path, project_id)?;
 
+            let (required_gate_requirement, gate_updates) =
+                if is_plan_mode_required_gate_key(&context.gate_key) {
+                    (None, Vec::new())
+                } else {
+                    (
+                        Some(context.gate_key.clone()),
+                        vec![WorkflowTransitionGateMutationRecord {
+                            node_id: context.gate_node_id.clone(),
+                            gate_key: context.gate_key.clone(),
+                            gate_state: WorkflowGateState::Satisfied,
+                            decision_context: Some(context.user_answer.clone()),
+                            require_pending_or_blocked: true,
+                        }],
+                    )
+                };
+
             let transition = WorkflowTransitionMutationRecord {
                 transition_id,
                 causal_transition_id,
@@ -576,14 +593,8 @@ pub fn resume_operator_run_with_user_answer(
                 transition_kind: context.transition_kind.clone(),
                 gate_decision: WorkflowTransitionGateDecision::Approved,
                 gate_decision_context: Some(context.user_answer.clone()),
-                gate_updates: vec![WorkflowTransitionGateMutationRecord {
-                    node_id: context.gate_node_id.clone(),
-                    gate_key: context.gate_key.clone(),
-                    gate_state: WorkflowGateState::Satisfied,
-                    decision_context: Some(context.user_answer.clone()),
-                    require_pending_or_blocked: true,
-                }],
-                required_gate_requirement: Some(context.gate_key.clone()),
+                gate_updates,
+                required_gate_requirement,
                 occurred_at: created_at.clone(),
             };
 

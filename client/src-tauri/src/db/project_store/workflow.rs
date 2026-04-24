@@ -23,14 +23,19 @@ use super::{
     map_snapshot_decode_error, open_project_database, parse_phase_status, parse_phase_step,
     planning_lifecycle_stage_label, read_operator_approval_by_action_id, read_operator_approvals,
     read_phase_summaries, read_planning_lifecycle_projection, read_resume_history,
-    read_runtime_session_row, require_non_empty_owned, sqlite_path_suffix,
-    NotificationDispatchEnqueueRecord, ProjectSummaryRow,
+    read_runtime_run_snapshot, read_runtime_session_row, require_non_empty_owned,
+    sqlite_path_suffix, NotificationDispatchEnqueueRecord, ProjectSummaryRow,
 };
 
 const MAX_WORKFLOW_TRANSITION_EVENT_ROWS: i64 = 200;
 const MAX_WORKFLOW_HANDOFF_PACKAGE_ROWS: i64 = 200;
 pub(crate) const MAX_LIFECYCLE_TRANSITION_EVENT_ROWS: i64 = 64;
 const WORKFLOW_HANDOFF_PACKAGE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const PLAN_MODE_REQUIRED_GATE_KEY: &str = "plan_mode_required";
+const PLAN_MODE_REQUIRED_ACTION_TYPE: &str = "approve_plan_mode";
+const PLAN_MODE_REQUIRED_TITLE: &str = "Approve implementation continuation";
+const PLAN_MODE_REQUIRED_DETAIL: &str =
+    "Plan mode requires explicit approval before implementation can continue.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowGateState {
@@ -3883,11 +3888,21 @@ pub(crate) fn attempt_automatic_dispatch_after_transition(
         }
     };
 
+    let plan_mode_required = match resolve_plan_mode_required_for_automatic_dispatch(
+        &transaction,
+        database_path,
+        project_id,
+    ) {
+        Ok(required) => required,
+        Err(error) => return automatic_dispatch_outcome_from_error(error),
+    };
+
     let candidate = match resolve_automatic_dispatch_candidate(
         &transaction,
         database_path,
         project_id,
         &trigger_transition.to_node_id,
+        plan_mode_required,
     ) {
         Ok(WorkflowAutomaticDispatchCandidateResolution::NoContinuation) => {
             return WorkflowAutomaticDispatchOutcome::NoContinuation;
@@ -4149,6 +4164,21 @@ fn automatic_dispatch_package_outcome_from_error(
         code: error.code,
         message: error.message,
     }
+}
+
+fn resolve_plan_mode_required_for_automatic_dispatch(
+    transaction: &Transaction<'_>,
+    database_path: &Path,
+    project_id: &str,
+) -> Result<bool, CommandError> {
+    Ok(
+        read_runtime_run_snapshot(transaction, database_path, project_id)?
+            .is_some_and(|snapshot| snapshot.controls.active.plan_mode_required),
+    )
+}
+
+pub(crate) fn is_plan_mode_required_gate_key(gate_key: &str) -> bool {
+    gate_key.trim() == PLAN_MODE_REQUIRED_GATE_KEY
 }
 
 fn format_unresolved_dispatch_candidate_summary(
@@ -4595,6 +4625,7 @@ fn resolve_automatic_dispatch_candidate(
     database_path: &Path,
     project_id: &str,
     completed_node_id: &str,
+    plan_mode_required: bool,
 ) -> Result<WorkflowAutomaticDispatchCandidateResolution, CommandError> {
     let nodes = read_workflow_graph_nodes(transaction, database_path, project_id)?;
     if !nodes.iter().any(|node| node.node_id == completed_node_id) {
@@ -4659,12 +4690,28 @@ fn resolve_automatic_dispatch_candidate(
             .cloned()
             .unwrap_or_default();
 
+        let requires_plan_mode_gate =
+            plan_mode_required && is_plan_mode_required_implementation_continuation(&nodes, &edge);
+
         if let Some(required_gate) = edge.gate_requirement.as_deref() {
             let required_gate_present = target_gates
                 .iter()
                 .any(|gate| gate.gate_key == required_gate);
 
             if !required_gate_present {
+                if requires_plan_mode_gate {
+                    blocked_candidates.push(
+                        WorkflowAutomaticDispatchUnresolvedContinuationCandidate {
+                            from_node_id: edge.from_node_id,
+                            to_node_id: edge.to_node_id,
+                            transition_kind: edge.transition_kind,
+                            gate_requirement: Some(required_gate.to_string()),
+                            unresolved_gates: Vec::new(),
+                        },
+                    );
+                    continue;
+                }
+
                 return Err(CommandError::system_fault(
                     "workflow_transition_auto_dispatch_gate_mapping_invalid",
                     format!(
@@ -4676,6 +4723,16 @@ fn resolve_automatic_dispatch_candidate(
                     ),
                 ));
             }
+        } else if requires_plan_mode_gate {
+            let to_node_id = edge.to_node_id.clone();
+            blocked_candidates.push(WorkflowAutomaticDispatchUnresolvedContinuationCandidate {
+                from_node_id: edge.from_node_id,
+                to_node_id: to_node_id.clone(),
+                transition_kind: edge.transition_kind,
+                gate_requirement: Some(PLAN_MODE_REQUIRED_GATE_KEY.to_string()),
+                unresolved_gates: vec![plan_mode_required_unresolved_gate_candidate(&to_node_id)],
+            });
+            continue;
         }
 
         let unresolved_gates: Vec<WorkflowAutomaticDispatchUnresolvedGateCandidate> = target_gates
@@ -4744,6 +4801,73 @@ fn resolve_automatic_dispatch_candidate(
             ))
         }
     }
+}
+
+fn plan_mode_required_unresolved_gate_candidate(
+    gate_node_id: &str,
+) -> WorkflowAutomaticDispatchUnresolvedGateCandidate {
+    WorkflowAutomaticDispatchUnresolvedGateCandidate {
+        gate_node_id: gate_node_id.to_string(),
+        gate_key: PLAN_MODE_REQUIRED_GATE_KEY.to_string(),
+        gate_state: WorkflowGateState::Pending,
+        action_type: Some(PLAN_MODE_REQUIRED_ACTION_TYPE.to_string()),
+        title: Some(PLAN_MODE_REQUIRED_TITLE.to_string()),
+        detail: Some(PLAN_MODE_REQUIRED_DETAIL.to_string()),
+    }
+}
+
+fn is_plan_mode_required_implementation_continuation(
+    nodes: &[WorkflowGraphNodeRecord],
+    edge: &WorkflowGraphEdgeRecord,
+) -> bool {
+    let Some(from_node) = nodes.iter().find(|node| node.node_id == edge.from_node_id) else {
+        return false;
+    };
+    let Some(to_node) = nodes.iter().find(|node| node.node_id == edge.to_node_id) else {
+        return false;
+    };
+
+    is_planning_lifecycle_node_id(&from_node.node_id)
+        && !is_planning_lifecycle_node_id(&to_node.node_id)
+        && is_implementation_node(to_node)
+}
+
+fn is_planning_lifecycle_node_id(node_id: &str) -> bool {
+    let normalized = node_id.trim().to_ascii_lowercase().replace('_', "-");
+    matches!(
+        normalized.as_str(),
+        "discussion"
+            | "discuss"
+            | "plan-discussion"
+            | "planning-discussion"
+            | "workflow-discussion"
+            | "lifecycle-discussion"
+            | "research"
+            | "plan-research"
+            | "planning-research"
+            | "workflow-research"
+            | "lifecycle-research"
+            | "requirements"
+            | "requirement"
+            | "plan-requirements"
+            | "planning-requirements"
+            | "workflow-requirements"
+            | "lifecycle-requirements"
+            | "roadmap"
+            | "plan-roadmap"
+            | "planning-roadmap"
+            | "workflow-roadmap"
+            | "lifecycle-roadmap"
+    )
+}
+
+fn is_implementation_node(node: &WorkflowGraphNodeRecord) -> bool {
+    if matches!(node.current_step, Some(PhaseStep::Execute)) {
+        return true;
+    }
+
+    let normalized = node.node_id.trim().to_ascii_lowercase().replace('_', "-");
+    normalized.contains("implement") || normalized.contains("execute")
 }
 
 fn automatic_dispatch_outcome_from_error(error: CommandError) -> WorkflowAutomaticDispatchOutcome {

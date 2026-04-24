@@ -1030,3 +1030,201 @@ pub(crate) fn repeated_action_type_uses_gate_scoped_action_ids() {
     assert_eq!(first.gate_key.as_deref(), Some("execute_gate"));
     assert_eq!(second.gate_key.as_deref(), Some("verify_gate"));
 }
+
+pub(crate) fn plan_mode_required_resume_unblocks_implementation_continuation_without_duplicate_rows()
+{
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let project_id = "project-plan-mode-gate-linked-1";
+    let repo_root = seed_project(
+        &root,
+        &app,
+        project_id,
+        "repo-plan-mode-gate-linked-1",
+        "repo-plan-mode-gate-linked",
+    );
+
+    project_store::upsert_workflow_graph(
+        &repo_root,
+        project_id,
+        &project_store::WorkflowGraphUpsertRecord {
+            nodes: vec![
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "requirements".into(),
+                    phase_id: 1,
+                    sort_order: 1,
+                    name: "Requirements".into(),
+                    description: "Lock requirement deltas.".into(),
+                    status: cadence_desktop_lib::commands::PhaseStatus::Active,
+                    current_step: Some(cadence_desktop_lib::commands::PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "roadmap".into(),
+                    phase_id: 2,
+                    sort_order: 2,
+                    name: "Roadmap".into(),
+                    description: "Plan downstream slices.".into(),
+                    status: cadence_desktop_lib::commands::PhaseStatus::Pending,
+                    current_step: Some(cadence_desktop_lib::commands::PhaseStep::Plan),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "implementation".into(),
+                    phase_id: 3,
+                    sort_order: 3,
+                    name: "Implementation".into(),
+                    description: "Implement approved changes.".into(),
+                    status: cadence_desktop_lib::commands::PhaseStatus::Pending,
+                    current_step: Some(cadence_desktop_lib::commands::PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+            ],
+            edges: vec![
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "requirements".into(),
+                    to_node_id: "roadmap".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "roadmap".into(),
+                    to_node_id: "implementation".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+            ],
+            gates: vec![],
+        },
+    )
+    .expect("seed plan-mode continuation workflow for operator loop persistence test");
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: project_id.into(),
+                run_id: "run-plan-mode-gate-linked-1".into(),
+                runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
+                supervisor_kind: "detached_pty".into(),
+                status: project_store::RuntimeRunStatus::Running,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "tcp".into(),
+                    endpoint: "127.0.0.1:9".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Unknown,
+                },
+                started_at: "2026-04-24T07:50:00Z".into(),
+                last_heartbeat_at: Some("2026-04-24T07:50:01Z".into()),
+                stopped_at: None,
+                last_error: None,
+                updated_at: "2026-04-24T07:50:01Z".into(),
+            },
+            checkpoint: Some(project_store::RuntimeRunCheckpointRecord {
+                project_id: project_id.into(),
+                run_id: "run-plan-mode-gate-linked-1".into(),
+                sequence: 1,
+                kind: project_store::RuntimeRunCheckpointKind::Bootstrap,
+                summary: "Seeded runtime run.".into(),
+                created_at: "2026-04-24T07:50:01Z".into(),
+            }),
+            control_state: Some(
+                project_store::build_runtime_run_control_state_with_plan_mode(
+                    "openai_codex",
+                    None,
+                    cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+                    true,
+                    "2026-04-24T07:50:00Z",
+                    None,
+                )
+                .expect("build seeded plan-mode runtime controls"),
+            ),
+        },
+    )
+    .expect("seed plan-mode runtime run");
+
+    let paused = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ApplyWorkflowTransitionRequestDto {
+            project_id: project_id.into(),
+            transition_id: "requirements-roadmap-plan-mode-gate-linked-1".into(),
+            causal_transition_id: None,
+            from_node_id: "requirements".into(),
+            to_node_id: "roadmap".into(),
+            transition_kind: "advance".into(),
+            gate_decision: "not_applicable".into(),
+            gate_decision_context: None,
+            gate_updates: vec![],
+            occurred_at: "2026-04-24T07:50:10Z".into(),
+        },
+    )
+    .expect("plan mode should pause implementation continuation");
+    assert_eq!(
+        paused.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+
+    let snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.into(),
+        },
+    )
+    .expect("load project snapshot after plan-mode gate pause");
+
+    let pending = snapshot
+        .approval_requests
+        .iter()
+        .find(|approval| {
+            approval.gate_key.as_deref() == Some("plan_mode_required")
+                && approval.status == OperatorApprovalStatus::Pending
+        })
+        .expect("plan mode should persist pending continuation approval")
+        .clone();
+
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, project_id, &pending.action_id),
+        1
+    );
+
+    resolve_operator_action(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResolveOperatorActionRequestDto {
+            project_id: project_id.into(),
+            action_id: pending.action_id.clone(),
+            decision: "approve".into(),
+            user_answer: Some("Proceed with implementation.".into()),
+        },
+    )
+    .expect("resolve pending plan-mode approval");
+
+    let resumed = resume_operator_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResumeOperatorRunRequestDto {
+            project_id: project_id.into(),
+            action_id: pending.action_id.clone(),
+            user_answer: None,
+        },
+    )
+    .expect("resume should unblock plan-mode implementation continuation");
+    assert_eq!(resumed.resume_entry.status, ResumeHistoryStatus::Started);
+
+    let events = project_store::load_recent_workflow_transition_events(&repo_root, project_id, None)
+        .expect("load transitions after plan-mode resume");
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, project_id, &pending.action_id),
+        1
+    );
+}

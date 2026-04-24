@@ -865,6 +865,321 @@ pub(crate) fn planning_lifecycle_gate_pause_branch_requires_explicit_resume_with
     );
 }
 
+pub(crate) fn plan_mode_required_false_keeps_implementation_continuation_auto_dispatch_behavior() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_plan_mode_continuation_workflow(&repo_root, &project_id, None, None);
+    seed_unreachable_runtime_run_with_identity_and_plan_mode(
+        &repo_root,
+        &project_id,
+        "run-plan-mode-false",
+        "openai_codex",
+        "openai_codex",
+        "openai_codex",
+        None,
+        false,
+    );
+
+    let applied = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ApplyWorkflowTransitionRequestDto {
+            project_id: project_id.clone(),
+            transition_id: "requirements-roadmap-plan-mode-false-1".into(),
+            causal_transition_id: None,
+            from_node_id: "requirements".into(),
+            to_node_id: "roadmap".into(),
+            transition_kind: "advance".into(),
+            gate_decision: "not_applicable".into(),
+            gate_decision_context: None,
+            gate_updates: Vec::new(),
+            occurred_at: "2026-04-24T07:40:00Z".into(),
+        },
+    )
+    .expect("planModeRequired=false should keep automatic continuation behavior");
+
+    assert_eq!(
+        applied.automatic_dispatch.status,
+        WorkflowAutomaticDispatchStatusDto::Applied
+    );
+    let continuation = applied
+        .automatic_dispatch
+        .transition_event
+        .as_ref()
+        .expect("automatic continuation transition should persist when plan mode is disabled");
+    assert_eq!(continuation.from_node_id, "roadmap");
+    assert_eq!(continuation.to_node_id, "implementation");
+    assert!(continuation.transition_id.starts_with("auto:"));
+    assert_eq!(count_workflow_transition_rows(&repo_root, &project_id), 2);
+
+    let snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load snapshot after planModeRequired=false continuation");
+    assert!(snapshot.approval_requests.iter().all(|approval| {
+        !(approval.gate_key.as_deref() == Some("plan_mode_required")
+            && approval.status == OperatorApprovalStatus::Pending)
+    }));
+}
+
+pub(crate) fn plan_mode_required_true_pauses_and_requires_explicit_resolve_resume() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_plan_mode_continuation_workflow(&repo_root, &project_id, None, None);
+    seed_unreachable_runtime_run_with_identity_and_plan_mode(
+        &repo_root,
+        &project_id,
+        "run-plan-mode-true",
+        "openai_codex",
+        "openai_codex",
+        "openai_codex",
+        None,
+        true,
+    );
+
+    let request = ApplyWorkflowTransitionRequestDto {
+        project_id: project_id.clone(),
+        transition_id: "requirements-roadmap-plan-mode-true-1".into(),
+        causal_transition_id: None,
+        from_node_id: "requirements".into(),
+        to_node_id: "roadmap".into(),
+        transition_kind: "advance".into(),
+        gate_decision: "not_applicable".into(),
+        gate_decision_context: None,
+        gate_updates: Vec::new(),
+        occurred_at: "2026-04-24T07:41:00Z".into(),
+    };
+
+    let paused = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request.clone(),
+    )
+    .expect("planModeRequired=true should pause implementation continuation");
+
+    assert_eq!(
+        paused.automatic_dispatch.status,
+        WorkflowAutomaticDispatchStatusDto::Skipped
+    );
+    assert_eq!(
+        paused.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+    let paused_message = paused
+        .automatic_dispatch
+        .message
+        .as_deref()
+        .expect("plan-mode pause should include diagnostics");
+    assert!(paused_message.contains("Persisted pending operator approval"));
+    assert_eq!(count_workflow_transition_rows(&repo_root, &project_id), 1);
+
+    let pause_snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load snapshot after plan-mode pause");
+
+    let pending_plan_mode = pause_snapshot
+        .approval_requests
+        .iter()
+        .find(|approval| {
+            approval.gate_key.as_deref() == Some("plan_mode_required")
+                && approval.status == OperatorApprovalStatus::Pending
+        })
+        .expect("plan-mode pause should persist deterministic pending approval");
+    assert_eq!(pending_plan_mode.transition_from_node_id.as_deref(), Some("roadmap"));
+    assert_eq!(
+        pending_plan_mode.transition_to_node_id.as_deref(),
+        Some("implementation")
+    );
+    assert_eq!(pending_plan_mode.transition_kind.as_deref(), Some("advance"));
+
+    let pending_action_id = pending_plan_mode.action_id.clone();
+    assert!(paused_message.contains(pending_action_id.as_str()));
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, &project_id, &pending_action_id),
+        1
+    );
+
+    let replayed_pause = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request,
+    )
+    .expect("replaying trigger should keep plan-mode pause idempotent");
+    assert_eq!(
+        replayed_pause.automatic_dispatch.status,
+        WorkflowAutomaticDispatchStatusDto::Skipped
+    );
+    let replayed_message = replayed_pause
+        .automatic_dispatch
+        .message
+        .as_deref()
+        .expect("replayed pause diagnostics should include message");
+    assert!(replayed_message.contains(pending_action_id.as_str()));
+    assert_eq!(count_workflow_transition_rows(&repo_root, &project_id), 1);
+    assert_eq!(
+        count_operator_approval_rows_for_action(&repo_root, &project_id, &pending_action_id),
+        1
+    );
+
+    let missing_approval_error = resume_operator_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResumeOperatorRunRequestDto {
+            project_id: project_id.clone(),
+            action_id: pending_action_id.clone(),
+            user_answer: None,
+        },
+    )
+    .expect_err("resume should remain blocked until pending plan-mode approval is resolved");
+    assert_eq!(
+        missing_approval_error.code,
+        "operator_resume_requires_approved_action"
+    );
+
+    resolve_operator_action(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResolveOperatorActionRequestDto {
+            project_id: project_id.clone(),
+            action_id: pending_action_id.clone(),
+            decision: "approve".into(),
+            user_answer: Some("Planning outputs are accepted for implementation.".into()),
+        },
+    )
+    .expect("resolve plan-mode pending approval");
+
+    let resumed = resume_operator_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResumeOperatorRunRequestDto {
+            project_id: project_id.clone(),
+            action_id: pending_action_id.clone(),
+            user_answer: None,
+        },
+    )
+    .expect("resolved plan-mode approval should unblock continuation through resume");
+    assert_eq!(resumed.resume_entry.status, ResumeHistoryStatus::Started);
+
+    let events =
+        project_store::load_recent_workflow_transition_events(&repo_root, &project_id, None)
+            .expect("load transition events after plan-mode resume");
+    assert_eq!(events.len(), 2);
+    let resumed_transition = events
+        .iter()
+        .find(|event| event.from_node_id == "roadmap" && event.to_node_id == "implementation")
+        .expect("resume should persist roadmap -> implementation transition");
+    assert!(resumed_transition.transition_id.starts_with("resume:"));
+    assert_eq!(
+        resumed_transition.causal_transition_id.as_deref(),
+        Some("requirements-roadmap-plan-mode-true-1")
+    );
+
+    let resumed_snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto { project_id },
+    )
+    .expect("load snapshot after plan-mode resume");
+    assert!(resumed_snapshot.approval_requests.iter().all(|approval| {
+        !(approval.gate_key.as_deref() == Some("plan_mode_required")
+            && approval.status == OperatorApprovalStatus::Pending)
+    }));
+}
+
+pub(crate) fn plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_plan_mode_continuation_workflow(
+        &repo_root,
+        &project_id,
+        Some("implementation_gate"),
+        None,
+    );
+    seed_unreachable_runtime_run_with_identity_and_plan_mode(
+        &repo_root,
+        &project_id,
+        "run-plan-mode-malformed",
+        "openai_codex",
+        "openai_codex",
+        "openai_codex",
+        None,
+        true,
+    );
+
+    let blocked = apply_workflow_transition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ApplyWorkflowTransitionRequestDto {
+            project_id: project_id.clone(),
+            transition_id: "requirements-roadmap-plan-mode-malformed-1".into(),
+            causal_transition_id: None,
+            from_node_id: "requirements".into(),
+            to_node_id: "roadmap".into(),
+            transition_kind: "advance".into(),
+            gate_decision: "not_applicable".into(),
+            gate_decision_context: None,
+            gate_updates: Vec::new(),
+            occurred_at: "2026-04-24T07:42:00Z".into(),
+        },
+    )
+    .expect("missing implementation gate metadata should block continuation fail-closed");
+
+    assert_eq!(
+        blocked.automatic_dispatch.status,
+        WorkflowAutomaticDispatchStatusDto::Skipped
+    );
+    assert_eq!(
+        blocked.automatic_dispatch.code.as_deref(),
+        Some("workflow_transition_gate_unmet")
+    );
+    assert!(
+        blocked
+            .automatic_dispatch
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("required gate linkage could not be resolved")),
+        "expected malformed gate-linkage diagnostics, got {:?}",
+        blocked.automatic_dispatch.message
+    );
+
+    assert_eq!(count_workflow_transition_rows(&repo_root, &project_id), 1);
+
+    let snapshot = get_project_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("load snapshot after malformed plan-mode gate mapping");
+    assert!(snapshot.approval_requests.iter().all(|approval| {
+        !(approval.transition_from_node_id.as_deref() == Some("roadmap")
+            && approval.transition_to_node_id.as_deref() == Some("implementation")
+            && approval.status == OperatorApprovalStatus::Pending)
+    }));
+}
+
 pub(crate) fn start_autonomous_run_mints_fresh_child_unit_and_attempt_identity_per_stage() {
     let _guard = supervisor_test_guard();
     let root = tempfile::tempdir().expect("temp dir");

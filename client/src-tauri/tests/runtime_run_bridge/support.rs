@@ -776,6 +776,91 @@ pub(crate) fn seed_planning_lifecycle_workflow(
     .expect("seed planning lifecycle workflow");
 }
 
+pub(crate) fn seed_plan_mode_continuation_workflow(
+    repo_root: &Path,
+    project_id: &str,
+    implementation_gate_requirement: Option<&str>,
+    implementation_gate_state: Option<project_store::WorkflowGateState>,
+) {
+    let mut gates = Vec::new();
+    if let (Some(gate_key), Some(gate_state)) =
+        (implementation_gate_requirement, implementation_gate_state)
+    {
+        gates.push(project_store::WorkflowGateMetadataRecord {
+            node_id: "implementation".into(),
+            gate_key: gate_key.into(),
+            gate_state,
+            action_type: Some("approve_implementation".into()),
+            title: Some("Approve implementation continuation".into()),
+            detail: Some(
+                "Confirm planning outputs before implementation continuation.".into(),
+            ),
+            decision_context: None,
+        });
+    }
+
+    project_store::upsert_workflow_graph(
+        repo_root,
+        project_id,
+        &project_store::WorkflowGraphUpsertRecord {
+            nodes: vec![
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "requirements".into(),
+                    phase_id: 1,
+                    sort_order: 1,
+                    name: "Requirements".into(),
+                    description: "Lock requirement deltas.".into(),
+                    status: PhaseStatus::Active,
+                    current_step: Some(PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "roadmap".into(),
+                    phase_id: 2,
+                    sort_order: 2,
+                    name: "Roadmap".into(),
+                    description: "Plan downstream slices.".into(),
+                    status: PhaseStatus::Pending,
+                    current_step: Some(PhaseStep::Plan),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+                project_store::WorkflowGraphNodeRecord {
+                    node_id: "implementation".into(),
+                    phase_id: 3,
+                    sort_order: 3,
+                    name: "Implementation".into(),
+                    description: "Execute implementation tasks.".into(),
+                    status: PhaseStatus::Pending,
+                    current_step: Some(PhaseStep::Execute),
+                    task_count: 1,
+                    completed_tasks: 0,
+                    summary: None,
+                },
+            ],
+            edges: vec![
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "requirements".into(),
+                    to_node_id: "roadmap".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: None,
+                },
+                project_store::WorkflowGraphEdgeRecord {
+                    from_node_id: "roadmap".into(),
+                    to_node_id: "implementation".into(),
+                    transition_kind: "advance".into(),
+                    gate_requirement: implementation_gate_requirement.map(str::to_string),
+                },
+            ],
+            gates,
+        },
+    )
+    .expect("seed plan-mode continuation workflow");
+}
+
 pub(crate) fn replay_transition_request(
     project_id: &str,
     transition: &cadence_desktop_lib::commands::WorkflowTransitionEventDto,
@@ -1026,6 +1111,29 @@ pub(crate) fn seed_unreachable_runtime_run_with_identity(
     model_id: &str,
     thinking_effort: Option<cadence_desktop_lib::commands::ProviderModelThinkingEffortDto>,
 ) {
+    seed_unreachable_runtime_run_with_identity_and_plan_mode(
+        repo_root,
+        project_id,
+        run_id,
+        runtime_kind,
+        provider_id,
+        model_id,
+        thinking_effort,
+        false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn seed_unreachable_runtime_run_with_identity_and_plan_mode(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    runtime_kind: &str,
+    provider_id: &str,
+    model_id: &str,
+    thinking_effort: Option<cadence_desktop_lib::commands::ProviderModelThinkingEffortDto>,
+    plan_mode_required: bool,
+) {
     project_store::upsert_runtime_run(
         repo_root,
         &project_store::RuntimeRunUpsertRecord {
@@ -1056,10 +1164,11 @@ pub(crate) fn seed_unreachable_runtime_run_with_identity(
                 created_at: "2026-04-15T19:00:10Z".into(),
             }),
             control_state: Some(
-                project_store::build_runtime_run_control_state(
+                project_store::build_runtime_run_control_state_with_plan_mode(
                     model_id,
                     thinking_effort,
                     cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+                    plan_mode_required,
                     "2026-04-15T19:00:00Z",
                     None,
                 )

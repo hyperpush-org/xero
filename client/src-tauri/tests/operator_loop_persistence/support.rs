@@ -85,6 +85,21 @@ pub(crate) fn open_state_connection(repo_root: &Path) -> Connection {
     Connection::open(database_path_for_repo(repo_root)).expect("open repo-local database")
 }
 
+pub(crate) fn count_operator_approval_rows_for_action(
+    repo_root: &Path,
+    project_id: &str,
+    action_id: &str,
+) -> i64 {
+    let connection = open_state_connection(repo_root);
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM operator_approvals WHERE project_id = ?1 AND action_id = ?2",
+            [project_id, action_id],
+            |row| row.get(0),
+        )
+        .expect("count operator approval rows for action")
+}
+
 pub(crate) fn insert_operator_loop_rows(repo_root: &Path, project_id: &str) {
     let connection = open_state_connection(repo_root);
 
