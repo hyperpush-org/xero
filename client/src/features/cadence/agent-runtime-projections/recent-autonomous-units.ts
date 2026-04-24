@@ -15,6 +15,7 @@ export const MAX_RECENT_AUTONOMOUS_UNITS = 5
 const MAX_RECENT_AUTONOMOUS_EVIDENCE_PREVIEWS = 2
 
 export type RecentAutonomousUnitWorkflowState = AutonomousWorkflowContextState | 'unlinked'
+export type RecentAutonomousUnitLinkageSource = 'attempt' | 'unit' | 'none'
 
 export interface RecentAutonomousUnitEvidencePreview {
   artifactId: string
@@ -39,10 +40,19 @@ export interface RecentAutonomousUnitCardView {
   latestAttemptStatusLabel: string
   latestAttemptUpdatedAt: string | null
   latestAttemptSummary: string
+  latestAttemptId: string | null
+  latestAttemptNumber: number | null
+  latestAttemptChildSessionId: string | null
   workflowState: RecentAutonomousUnitWorkflowState
   workflowStateLabel: string
   workflowNodeLabel: string
   workflowLinkageLabel: string
+  workflowLinkageSource: RecentAutonomousUnitLinkageSource
+  workflowNodeId: string | null
+  workflowTransitionId: string | null
+  workflowCausalTransitionId: string | null
+  workflowHandoffTransitionId: string | null
+  workflowHandoffPackageHash: string | null
   workflowDetail: string
   evidenceCount: number
   evidenceStateLabel: string
@@ -68,6 +78,12 @@ interface RecentAutonomousUnitWorkflowContext {
   stateLabel: string
   nodeLabel: string
   linkageLabel: string
+  linkageSource: RecentAutonomousUnitLinkageSource
+  workflowNodeId: string | null
+  workflowTransitionId: string | null
+  workflowCausalTransitionId: string | null
+  workflowHandoffTransitionId: string | null
+  workflowHandoffPackageHash: string | null
   detail: string
 }
 
@@ -147,35 +163,68 @@ function getRecentUnitWorkflowContext(options: {
       stateLabel: getWorkflowStateLabel('unlinked'),
       nodeLabel: 'Not linked',
       linkageLabel: 'Workflow linkage missing',
+      linkageSource: 'none',
+      workflowNodeId: null,
+      workflowTransitionId: null,
+      workflowCausalTransitionId: null,
+      workflowHandoffTransitionId: null,
+      workflowHandoffPackageHash: null,
       detail: 'Cadence has not persisted workflow-node and handoff linkage for this unit yet.',
     }
   }
 
-  const linkedStage = options.maps.stageByNodeId.get(linkage.workflowNodeId) ?? null
+  const linkageSource: RecentAutonomousUnitLinkageSource = attemptLinkage ? 'attempt' : 'unit'
+  const workflowNodeId = normalizeText(linkage.workflowNodeId) || null
+  const workflowTransitionId = normalizeText(linkage.transitionId) || null
+  const workflowCausalTransitionId = normalizeText(linkage.causalTransitionId) || null
+  const workflowHandoffTransitionId = normalizeText(linkage.handoffTransitionId) || null
+  const workflowHandoffPackageHash = normalizeText(linkage.handoffPackageHash) || null
+
+  const linkedStage = workflowNodeId ? options.maps.stageByNodeId.get(workflowNodeId) ?? null : null
   const activeLifecycleStage = options.lifecycle.activeStage
-  const handoff = options.maps.handoffByTransitionId.get(linkage.handoffTransitionId) ?? null
-  const pendingApproval = options.maps.pendingApprovalByNodeId.get(linkage.workflowNodeId) ?? null
-  const activeStageMismatch = Boolean(activeLifecycleStage && activeLifecycleStage.nodeId !== linkage.workflowNodeId)
-  const handoffHashMismatch = Boolean(handoff && handoff.packageHash !== linkage.handoffPackageHash)
+  const handoff = workflowHandoffTransitionId
+    ? options.maps.handoffByTransitionId.get(workflowHandoffTransitionId) ?? null
+    : null
+  const pendingApproval = workflowNodeId
+    ? options.maps.pendingApprovalByNodeId.get(workflowNodeId) ?? null
+    : null
+  const activeStageMismatch = Boolean(activeLifecycleStage && workflowNodeId && activeLifecycleStage.nodeId !== workflowNodeId)
+  const handoffHashMismatch = Boolean(handoff && workflowHandoffPackageHash && handoff.packageHash !== workflowHandoffPackageHash)
 
   let state: RecentAutonomousUnitWorkflowState
   let detail: string
 
-  if (!linkedStage) {
+  if (!workflowNodeId) {
+    state = 'awaiting_snapshot'
+    detail =
+      'Cadence persisted a workflow linkage row for this unit, but the workflow node id is missing, so lifecycle correlation stays anchored to snapshot truth.'
+  } else if (!workflowTransitionId) {
+    state = 'awaiting_snapshot'
+    detail =
+      'Cadence persisted a workflow linkage row for this unit, but the workflow transition id is missing, so linkage identity remains pending until recovery catches up.'
+  } else if (!linkedStage) {
     state = 'awaiting_snapshot'
     detail =
       'Cadence has persisted workflow linkage for this unit, but the selected project snapshot has not exposed the linked lifecycle node yet.'
   } else if (activeStageMismatch) {
     state = 'awaiting_snapshot'
     detail = `Cadence is keeping lifecycle progression anchored to snapshot truth while the linked node \`${linkedStage.stageLabel}\` waits for the active lifecycle stage to catch up.`
-  } else if (handoffHashMismatch) {
-    state = 'awaiting_snapshot'
+  } else if (!workflowHandoffTransitionId) {
+    state = 'awaiting_handoff'
     detail =
-      'Cadence found the linked handoff transition in the selected project snapshot, but the persisted handoff hash has not caught up to this unit yet.'
+      'Cadence persisted workflow linkage for this unit, but the handoff transition id is missing, so handoff correlation remains pending.'
   } else if (!handoff) {
     state = 'awaiting_handoff'
     detail =
       'Cadence has persisted workflow linkage for this unit, but the linked handoff package is not visible in the selected project snapshot yet.'
+  } else if (!workflowHandoffPackageHash) {
+    state = 'awaiting_snapshot'
+    detail =
+      'Cadence found the linked handoff transition in the selected project snapshot, but the persisted handoff hash is missing for this unit.'
+  } else if (handoffHashMismatch) {
+    state = 'awaiting_snapshot'
+    detail =
+      'Cadence found the linked handoff transition in the selected project snapshot, but the persisted handoff hash has not caught up to this unit yet.'
   } else {
     state = 'ready'
     detail = 'Lifecycle stage, autonomous linkage, and handoff package all agree on backend truth for this unit.'
@@ -188,8 +237,14 @@ function getRecentUnitWorkflowContext(options: {
   return {
     state,
     stateLabel: getWorkflowStateLabel(state),
-    nodeLabel: linkedStage?.stageLabel ?? linkage.workflowNodeId,
-    linkageLabel: attemptLinkage ? 'Attempt linkage' : 'Unit linkage',
+    nodeLabel: linkedStage?.stageLabel ?? workflowNodeId ?? 'Workflow node unavailable',
+    linkageLabel: linkageSource === 'attempt' ? 'Attempt linkage' : 'Unit linkage',
+    linkageSource,
+    workflowNodeId,
+    workflowTransitionId,
+    workflowCausalTransitionId,
+    workflowHandoffTransitionId,
+    workflowHandoffPackageHash,
     detail,
   }
 }
@@ -300,7 +355,13 @@ function getEvidenceProjection(options: {
 
 function getLatestAttemptProjection(entry: AutonomousUnitHistoryEntryView): Pick<
   RecentAutonomousUnitCardView,
-  'latestAttemptLabel' | 'latestAttemptStatusLabel' | 'latestAttemptUpdatedAt' | 'latestAttemptSummary'
+  | 'latestAttemptLabel'
+  | 'latestAttemptStatusLabel'
+  | 'latestAttemptUpdatedAt'
+  | 'latestAttemptSummary'
+  | 'latestAttemptId'
+  | 'latestAttemptNumber'
+  | 'latestAttemptChildSessionId'
 > {
   const latestAttempt = entry.latestAttempt
   if (!latestAttempt) {
@@ -309,14 +370,26 @@ function getLatestAttemptProjection(entry: AutonomousUnitHistoryEntryView): Pick
       latestAttemptStatusLabel: 'Not recorded',
       latestAttemptUpdatedAt: null,
       latestAttemptSummary: 'Cadence has not persisted a latest-attempt row for this unit yet.',
+      latestAttemptId: null,
+      latestAttemptNumber: null,
+      latestAttemptChildSessionId: null,
     }
   }
 
+  const latestAttemptId = normalizeText(latestAttempt.attemptId) || null
+  const latestAttemptNumber = Number.isFinite(latestAttempt.attemptNumber) ? latestAttempt.attemptNumber : null
+  const latestAttemptChildSessionId = normalizeText(latestAttempt.childSessionId) || null
+
   return {
-    latestAttemptLabel: `Attempt #${latestAttempt.attemptNumber}`,
+    latestAttemptLabel: latestAttemptNumber != null ? `Attempt #${latestAttemptNumber}` : 'Attempt unavailable',
     latestAttemptStatusLabel: latestAttempt.statusLabel,
     latestAttemptUpdatedAt: latestAttempt.updatedAt,
-    latestAttemptSummary: `Latest durable attempt is ${latestAttempt.statusLabel.toLowerCase()} for child session ${latestAttempt.childSessionId}.`,
+    latestAttemptSummary: latestAttemptChildSessionId
+      ? `Latest durable attempt is ${latestAttempt.statusLabel.toLowerCase()} for child session ${latestAttemptChildSessionId}.`
+      : `Latest durable attempt is ${latestAttempt.statusLabel.toLowerCase()}, but child-session linkage is unavailable.`,
+    latestAttemptId,
+    latestAttemptNumber,
+    latestAttemptChildSessionId,
   }
 }
 
@@ -388,10 +461,19 @@ export function projectRecentAutonomousUnits(options: {
       latestAttemptStatusLabel: latestAttempt.latestAttemptStatusLabel,
       latestAttemptUpdatedAt: latestAttempt.latestAttemptUpdatedAt,
       latestAttemptSummary: latestAttempt.latestAttemptSummary,
+      latestAttemptId: latestAttempt.latestAttemptId,
+      latestAttemptNumber: latestAttempt.latestAttemptNumber,
+      latestAttemptChildSessionId: latestAttempt.latestAttemptChildSessionId,
       workflowState: workflow.state,
       workflowStateLabel: workflow.stateLabel,
       workflowNodeLabel: workflow.nodeLabel,
       workflowLinkageLabel: workflow.linkageLabel,
+      workflowLinkageSource: workflow.linkageSource,
+      workflowNodeId: workflow.workflowNodeId,
+      workflowTransitionId: workflow.workflowTransitionId,
+      workflowCausalTransitionId: workflow.workflowCausalTransitionId,
+      workflowHandoffTransitionId: workflow.workflowHandoffTransitionId,
+      workflowHandoffPackageHash: workflow.workflowHandoffPackageHash,
       workflowDetail: workflow.detail,
       evidenceCount: evidence.evidenceCount,
       evidenceStateLabel: evidence.evidenceStateLabel,

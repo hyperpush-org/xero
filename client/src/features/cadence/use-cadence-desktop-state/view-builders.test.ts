@@ -605,6 +605,162 @@ describe('view builders', () => {
     expect(result.view?.checkpointControlLoop?.totalCount).toBe(0)
   })
 
+  it('buildAgentView projects explicit recent-unit linkage identity fields for agent runtime cards', () => {
+    const lifecycle = makeLifecycle({
+      stages: [
+        {
+          stage: 'research',
+          stageLabel: 'Research',
+          nodeId: 'workflow-research',
+          status: 'active',
+          statusLabel: 'Active',
+          actionRequired: false,
+          lastTransitionAt: '2026-04-20T12:00:00Z',
+        },
+      ],
+      activeStage: {
+        stage: 'research',
+        stageLabel: 'Research',
+        nodeId: 'workflow-research',
+        status: 'active',
+        statusLabel: 'Active',
+        actionRequired: false,
+        lastTransitionAt: '2026-04-20T12:00:00Z',
+      },
+    })
+
+    const project = makeProject({
+      lifecycle,
+      handoffPackages: [
+        {
+          id: 1,
+          projectId: 'project-1',
+          handoffTransitionId: 'handoff-1',
+          causalTransitionId: 'causal-1',
+          fromNodeId: 'workflow-discussion',
+          toNodeId: 'workflow-research',
+          transitionKind: 'advance',
+          packagePayload: '{"schemaVersion":1}',
+          packageHash: 'hash-1',
+          createdAt: '2026-04-20T12:00:00Z',
+        },
+      ],
+      autonomousHistory: [
+        {
+          unit: {
+            projectId: 'project-1',
+            runId: 'auto-project-1',
+            unitId: 'unit-1',
+            sequence: 1,
+            kind: 'executor',
+            kindLabel: 'Executor worker',
+            status: 'completed',
+            statusLabel: 'Completed',
+            summary: 'Recovered repository context.',
+            boundaryId: 'boundary-1',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-1',
+              causalTransitionId: 'causal-1',
+              handoffTransitionId: 'handoff-1',
+              handoffPackageHash: 'hash-1',
+            },
+            startedAt: '2026-04-20T11:59:00Z',
+            finishedAt: '2026-04-20T12:00:00Z',
+            updatedAt: '2026-04-20T12:00:00Z',
+            lastErrorCode: null,
+            lastError: null,
+            isActive: false,
+            isTerminal: true,
+            isFailed: false,
+          },
+          latestAttempt: {
+            projectId: 'project-1',
+            runId: 'auto-project-1',
+            unitId: 'unit-1',
+            attemptId: 'unit-1:attempt-1',
+            attemptNumber: 1,
+            childSessionId: 'child-session-1',
+            status: 'completed',
+            statusLabel: 'Completed',
+            boundaryId: 'boundary-1',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-1',
+              causalTransitionId: 'causal-1',
+              handoffTransitionId: 'handoff-1',
+              handoffPackageHash: 'hash-1',
+            },
+            startedAt: '2026-04-20T11:59:30Z',
+            finishedAt: '2026-04-20T12:00:00Z',
+            updatedAt: '2026-04-20T12:00:00Z',
+            lastErrorCode: null,
+            lastError: null,
+            isActive: false,
+            isTerminal: true,
+            isFailed: false,
+          },
+          artifacts: [],
+        },
+      ],
+      autonomousRecentArtifacts: [],
+    })
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles(),
+      runtimeSession: makeRuntimeSession({ providerId: 'openrouter', runtimeKind: 'openrouter' }),
+      runtimeSettings: makeRuntimeSettings(),
+      activeProviderModelCatalog: makeProviderModelCatalog(),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
+      runtimeRun: makeRuntimeRun({ providerId: 'openrouter' }),
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: project.autonomousHistory,
+      autonomousRecentArtifacts: project.autonomousRecentArtifacts,
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: makeRuntimeStream(),
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view?.recentAutonomousUnits?.items[0]).toMatchObject({
+      latestAttemptId: 'unit-1:attempt-1',
+      latestAttemptNumber: 1,
+      latestAttemptChildSessionId: 'child-session-1',
+      workflowLinkageSource: 'attempt',
+      workflowNodeId: 'workflow-research',
+      workflowTransitionId: 'transition-1',
+      workflowCausalTransitionId: 'causal-1',
+      workflowHandoffTransitionId: 'handoff-1',
+      workflowHandoffPackageHash: 'hash-1',
+      workflowStateLabel: 'In sync',
+    })
+  })
+
   it('buildAgentView keeps manual local catalog truth attributable to Ollama', () => {
     const project = makeProject()
 

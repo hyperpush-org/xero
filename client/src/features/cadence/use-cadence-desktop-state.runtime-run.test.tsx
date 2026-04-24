@@ -1250,6 +1250,30 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="recent-unit-first-evidence-state">
         {state.agentView?.recentAutonomousUnits?.items[0]?.evidenceStateLabel ?? 'none'}
       </div>
+      <div data-testid="recent-unit-first-linkage-source">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.workflowLinkageSource ?? 'none'}
+      </div>
+      <div data-testid="recent-unit-first-attempt-id">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.latestAttemptId ?? 'none'}
+      </div>
+      <div data-testid="recent-unit-first-attempt-number">
+        {String(state.agentView?.recentAutonomousUnits?.items[0]?.latestAttemptNumber ?? 'none')}
+      </div>
+      <div data-testid="recent-unit-first-child-session-id">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.latestAttemptChildSessionId ?? 'none'}
+      </div>
+      <div data-testid="recent-unit-first-workflow-node-id">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.workflowNodeId ?? 'none'}
+      </div>
+      <div data-testid="recent-unit-first-workflow-transition-id">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.workflowTransitionId ?? 'none'}
+      </div>
+      <div data-testid="recent-unit-first-workflow-handoff-transition-id">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.workflowHandoffTransitionId ?? 'none'}
+      </div>
+      <div data-testid="recent-unit-first-workflow-handoff-hash">
+        {state.agentView?.recentAutonomousUnits?.items[0]?.workflowHandoffPackageHash ?? 'none'}
+      </div>
       <div data-testid="checkpoint-loop-count">{String(checkpointControlLoop?.items.length ?? 0)}</div>
       <div data-testid="checkpoint-loop-window-label">{checkpointControlLoop?.windowLabel ?? 'none'}</div>
       <div data-testid="checkpoint-loop-first-action-id">{firstCheckpointCard?.actionId ?? 'none'}</div>
@@ -1925,6 +1949,14 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('recent-unit-first-id')).toHaveTextContent('unit-history-2')
     expect(screen.getByTestId('recent-unit-first-workflow-state')).toHaveTextContent('Snapshot lag')
     expect(screen.getByTestId('recent-unit-first-evidence-state')).toHaveTextContent('1 recent evidence row')
+    expect(screen.getByTestId('recent-unit-first-linkage-source')).toHaveTextContent('attempt')
+    expect(screen.getByTestId('recent-unit-first-attempt-id')).toHaveTextContent('unit-history-2:attempt:1')
+    expect(screen.getByTestId('recent-unit-first-attempt-number')).toHaveTextContent('1')
+    expect(screen.getByTestId('recent-unit-first-child-session-id')).toHaveTextContent('child-2')
+    expect(screen.getByTestId('recent-unit-first-workflow-node-id')).toHaveTextContent('workflow-research')
+    expect(screen.getByTestId('recent-unit-first-workflow-transition-id')).toHaveTextContent('unit-history-2:transition:1')
+    expect(screen.getByTestId('recent-unit-first-workflow-handoff-transition-id')).toHaveTextContent('handoff-history-2')
+    expect(screen.getByTestId('recent-unit-first-workflow-handoff-hash')).toHaveTextContent('hash-history-2')
     expect(screen.getByTestId('recent-unit-window-label')).toHaveTextContent('Showing 2 durable units')
   })
 
@@ -1952,6 +1984,12 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('recent-unit-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('recent-unit-first-id')).toHaveTextContent('unit-history-2')
+    expect(screen.getByTestId('recent-unit-first-linkage-source')).toHaveTextContent('attempt')
+    expect(screen.getByTestId('recent-unit-first-attempt-id')).toHaveTextContent('unit-history-2:attempt:1')
+    expect(screen.getByTestId('recent-unit-first-workflow-transition-id')).toHaveTextContent('unit-history-2:transition:1')
+    expect(screen.getByTestId('recent-unit-first-workflow-handoff-transition-id')).toHaveTextContent('handoff-history-2')
+    expect(screen.getByTestId('recent-unit-first-workflow-handoff-hash')).toHaveTextContent('hash-history-2')
 
     setup.getAutonomousRun.mockRejectedValueOnce(new Error('autonomous refresh failed'))
     fireEvent.click(screen.getByRole('button', { name: 'Retry state' }))
@@ -1959,6 +1997,11 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('autonomous refresh failed'))
     expect(screen.getByTestId('recent-unit-count')).toHaveTextContent('1')
     expect(screen.getByTestId('recent-unit-first-id')).toHaveTextContent('unit-history-2')
+    expect(screen.getByTestId('recent-unit-first-linkage-source')).toHaveTextContent('attempt')
+    expect(screen.getByTestId('recent-unit-first-attempt-id')).toHaveTextContent('unit-history-2:attempt:1')
+    expect(screen.getByTestId('recent-unit-first-workflow-transition-id')).toHaveTextContent('unit-history-2:transition:1')
+    expect(screen.getByTestId('recent-unit-first-workflow-handoff-transition-id')).toHaveTextContent('handoff-history-2')
+    expect(screen.getByTestId('recent-unit-first-workflow-handoff-hash')).toHaveTextContent('hash-history-2')
   })
 
   it('resubscribes on runtime_run:updated when the active session receives a new run id', async () => {

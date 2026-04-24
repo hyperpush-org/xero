@@ -5,6 +5,7 @@ export {
   type RecentAutonomousUnitEvidencePreview,
   type RecentAutonomousUnitsProjectionView,
   type RecentAutonomousUnitWorkflowState,
+  type RecentAutonomousUnitLinkageSource,
 } from './agent-runtime-projections/recent-autonomous-units'
 
 export {

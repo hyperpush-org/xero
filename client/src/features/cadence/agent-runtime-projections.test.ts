@@ -385,6 +385,15 @@ describe('projectRecentAutonomousUnits', () => {
     expect(projection.items[0].unitId).toBe('unit-newer')
     expect(projection.items[0].workflowStateLabel).toBe('In sync')
     expect(projection.items[0].workflowLinkageLabel).toBe('Attempt linkage')
+    expect(projection.items[0].workflowLinkageSource).toBe('attempt')
+    expect(projection.items[0].workflowNodeId).toBe('workflow-research')
+    expect(projection.items[0].workflowTransitionId).toBe('transition-1')
+    expect(projection.items[0].workflowCausalTransitionId).toBe('causal-1')
+    expect(projection.items[0].workflowHandoffTransitionId).toBe('handoff-1')
+    expect(projection.items[0].workflowHandoffPackageHash).toBe('hash-1')
+    expect(projection.items[0].latestAttemptId).toBe('unit-newer:attempt-2')
+    expect(projection.items[0].latestAttemptNumber).toBe(2)
+    expect(projection.items[0].latestAttemptChildSessionId).toBe('child-session-newer')
     expect(projection.items[0].evidenceCount).toBe(1)
     expect(projection.items[0].evidencePreviews[0]?.summary).toBe('Captured operator approval evidence.')
     expect(projection.items[0].latestAttemptSummary).toContain('child-session-newer')
@@ -441,6 +450,13 @@ describe('projectRecentAutonomousUnits', () => {
       (item) => item.unitId === `unit-${MAX_RECENT_AUTONOMOUS_UNITS + 2}`,
     )
     expect(missingAttemptUnit?.latestAttemptStatusLabel).toBe('Not recorded')
+    expect(missingAttemptUnit?.latestAttemptId).toBeNull()
+    expect(missingAttemptUnit?.latestAttemptNumber).toBeNull()
+    expect(missingAttemptUnit?.latestAttemptChildSessionId).toBeNull()
+    expect(missingAttemptUnit?.workflowLinkageSource).toBe('none')
+    expect(missingAttemptUnit?.workflowNodeId).toBeNull()
+    expect(missingAttemptUnit?.workflowHandoffTransitionId).toBeNull()
+    expect(missingAttemptUnit?.workflowHandoffPackageHash).toBeNull()
     expect(missingAttemptUnit?.latestAttemptSummary).toBe(
       'Cadence has not persisted a latest-attempt row for this unit yet.',
     )
@@ -511,10 +527,133 @@ describe('projectRecentAutonomousUnits', () => {
     const handoffPendingUnit = projection.items.find((item) => item.unitId === 'unit-handoff-pending')
 
     expect(snapshotLagUnit?.workflowStateLabel).toBe('Snapshot lag')
+    expect(snapshotLagUnit?.workflowLinkageSource).toBe('attempt')
     expect(snapshotLagUnit?.workflowNodeLabel).toBe('workflow-requirements')
+    expect(snapshotLagUnit?.workflowNodeId).toBe('workflow-requirements')
+    expect(snapshotLagUnit?.workflowTransitionId).toBe('transition-2')
+    expect(snapshotLagUnit?.workflowHandoffTransitionId).toBe('handoff-2')
+    expect(snapshotLagUnit?.workflowHandoffPackageHash).toBe('hash-2')
     expect(snapshotLagUnit?.workflowDetail).toContain('selected project snapshot has not exposed the linked lifecycle node yet')
     expect(handoffPendingUnit?.workflowStateLabel).toBe('Handoff pending')
+    expect(handoffPendingUnit?.workflowLinkageSource).toBe('attempt')
+    expect(handoffPendingUnit?.workflowTransitionId).toBe('transition-3')
+    expect(handoffPendingUnit?.workflowHandoffTransitionId).toBe('handoff-missing')
+    expect(handoffPendingUnit?.workflowHandoffPackageHash).toBe('hash-missing')
     expect(handoffPendingUnit?.workflowDetail).toContain('linked handoff package is not visible')
+  })
+
+  it('fails closed on malformed linkage identities while keeping deterministic fields for troubleshooting', () => {
+    const projection = projectRecentAutonomousUnits({
+      autonomousHistory: [
+        makeHistoryEntry({
+          unit: makeUnit({
+            unitId: 'unit-missing-handoff-transition',
+            sequence: 3,
+            updatedAt: '2026-04-16T12:03:00Z',
+          }),
+          latestAttempt: makeAttempt({
+            unitId: 'unit-missing-handoff-transition',
+            attemptId: 'unit-missing-handoff-transition:attempt-1',
+            childSessionId: '   ',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-missing-handoff-transition',
+              causalTransitionId: 'causal-missing-handoff-transition',
+              handoffTransitionId: '   ',
+              handoffPackageHash: '   ',
+            },
+          }),
+        }),
+        makeHistoryEntry({
+          unit: makeUnit({
+            unitId: 'unit-missing-handoff-hash',
+            sequence: 2,
+            updatedAt: '2026-04-16T12:02:00Z',
+          }),
+          latestAttempt: makeAttempt({
+            unitId: 'unit-missing-handoff-hash',
+            attemptId: 'unit-missing-handoff-hash:attempt-1',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-missing-hash',
+              causalTransitionId: 'causal-missing-hash',
+              handoffTransitionId: 'handoff-missing-hash',
+              handoffPackageHash: '   ',
+            },
+          }),
+        }),
+        makeHistoryEntry({
+          unit: makeUnit({
+            unitId: 'unit-handoff-hash-mismatch',
+            sequence: 1,
+            updatedAt: '2026-04-16T12:01:00Z',
+          }),
+          latestAttempt: makeAttempt({
+            unitId: 'unit-handoff-hash-mismatch',
+            attemptId: 'unit-handoff-hash-mismatch:attempt-1',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-hash-mismatch',
+              causalTransitionId: 'causal-hash-mismatch',
+              handoffTransitionId: 'handoff-hash-mismatch',
+              handoffPackageHash: 'hash-not-current',
+            },
+          }),
+        }),
+      ],
+      autonomousRecentArtifacts: [],
+      lifecycle: makeLifecycle({
+        stages: [
+          makeStage({
+            stage: 'research',
+            stageLabel: 'Research',
+            nodeId: 'workflow-research',
+            nodeLabel: 'Research',
+          }),
+        ],
+        activeStage: makeStage({
+          stage: 'research',
+          stageLabel: 'Research',
+          nodeId: 'workflow-research',
+          nodeLabel: 'Research',
+        }),
+      }),
+      handoffPackages: [
+        makeHandoff({ handoffTransitionId: 'handoff-missing-hash', packageHash: 'hash-missing-hash' }),
+        makeHandoff({ handoffTransitionId: 'handoff-hash-mismatch', packageHash: 'hash-current' }),
+      ],
+      approvalRequests: [],
+    })
+
+    const missingHandoffTransitionUnit = projection.items.find(
+      (item) => item.unitId === 'unit-missing-handoff-transition',
+    )
+    const missingHandoffHashUnit = projection.items.find((item) => item.unitId === 'unit-missing-handoff-hash')
+    const mismatchUnit = projection.items.find((item) => item.unitId === 'unit-handoff-hash-mismatch')
+
+    expect(missingHandoffTransitionUnit).toMatchObject({
+      workflowStateLabel: 'Handoff pending',
+      workflowLinkageSource: 'attempt',
+      workflowNodeId: 'workflow-research',
+      workflowTransitionId: 'transition-missing-handoff-transition',
+      workflowHandoffTransitionId: null,
+      workflowHandoffPackageHash: null,
+      latestAttemptChildSessionId: null,
+    })
+    expect(missingHandoffTransitionUnit?.latestAttemptSummary).toContain('child-session linkage is unavailable')
+    expect(missingHandoffHashUnit).toMatchObject({
+      workflowStateLabel: 'Snapshot lag',
+      workflowLinkageSource: 'attempt',
+      workflowHandoffTransitionId: 'handoff-missing-hash',
+      workflowHandoffPackageHash: null,
+    })
+    expect(missingHandoffHashUnit?.workflowDetail).toContain('persisted handoff hash is missing')
+    expect(mismatchUnit).toMatchObject({
+      workflowStateLabel: 'Snapshot lag',
+      workflowHandoffTransitionId: 'handoff-hash-mismatch',
+      workflowHandoffPackageHash: 'hash-not-current',
+    })
+    expect(mismatchUnit?.workflowDetail).toContain('persisted handoff hash has not caught up')
   })
 })
 
