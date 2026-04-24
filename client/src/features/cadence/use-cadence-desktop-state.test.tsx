@@ -3660,6 +3660,171 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('provider-model-catalog-active-provider-id')).toHaveTextContent('openai_codex')
   })
 
+  it('keeps the newly active provider-model catalog truthful when a local-provider refresh resolves after switching to an ambient profile', async () => {
+    let resolveOllamaCatalog: ((value: ProviderModelCatalogDto) => void) | null = null
+    let resolveBedrockCatalog: ((value: ProviderModelCatalogDto) => void) | null = null
+
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'ollama-work',
+        profiles: [
+          {
+            profileId: 'ollama-work',
+            providerId: 'ollama',
+            runtimeKind: 'openai_compatible',
+            label: 'Ollama Work',
+            modelId: 'llama3.2',
+            presetId: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434/v1',
+            apiVersion: null,
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              proof: 'local',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+          {
+            profileId: 'bedrock-work',
+            providerId: 'bedrock',
+            runtimeKind: 'anthropic',
+            label: 'Amazon Bedrock Work',
+            modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+            presetId: 'bedrock',
+            baseUrl: null,
+            apiVersion: null,
+            region: 'us-east-1',
+            active: false,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              proof: 'ambient',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
+              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+    })
+
+    setup.getProviderModelCatalog.mockImplementation(
+      async (profileId: string, options?: { forceRefresh?: boolean }) =>
+        new Promise<ProviderModelCatalogDto>((resolve) => {
+          if (profileId === 'ollama-work' && options?.forceRefresh === false) {
+            resolveOllamaCatalog = resolve
+            return
+          }
+
+          if (profileId === 'bedrock-work') {
+            resolveBedrockCatalog = resolve
+            return
+          }
+
+          resolve(
+            makeProviderModelCatalog(profileId, {
+              providerId: profileId === 'ollama-work' ? 'ollama' : 'bedrock',
+              configuredModelId:
+                profileId === 'ollama-work'
+                  ? 'llama3.2'
+                  : 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+            }),
+          )
+        }),
+    )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('ollama-work'))
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-load-status')).toHaveTextContent('loading'))
+
+    act(() => {
+      setup.setProviderProfiles(
+        makeProviderProfiles({
+          activeProfileId: 'bedrock-work',
+          profiles: [
+            {
+              profileId: 'ollama-work',
+              providerId: 'ollama',
+              runtimeKind: 'openai_compatible',
+              label: 'Ollama Work',
+              modelId: 'llama3.2',
+              presetId: 'ollama',
+              baseUrl: 'http://127.0.0.1:11434/v1',
+              apiVersion: null,
+              active: false,
+              readiness: {
+                ready: true,
+                status: 'ready',
+                proof: 'local',
+                proofUpdatedAt: '2026-04-16T14:05:00Z',
+                credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              },
+              migratedFromLegacy: false,
+              migratedAt: null,
+            },
+            {
+              profileId: 'bedrock-work',
+              providerId: 'bedrock',
+              runtimeKind: 'anthropic',
+              label: 'Amazon Bedrock Work',
+              modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+              presetId: 'bedrock',
+              baseUrl: null,
+              apiVersion: null,
+              region: 'us-east-1',
+              active: true,
+              readiness: {
+                ready: true,
+                status: 'ready',
+                proof: 'ambient',
+                proofUpdatedAt: '2026-04-16T14:05:00Z',
+                credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              },
+              migratedFromLegacy: false,
+              migratedAt: null,
+            },
+          ],
+        }),
+      )
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load provider profiles' }))
+
+    await waitFor(() => expect(screen.getByTestId('provider-profiles-active-profile-id')).toHaveTextContent('bedrock-work'))
+
+    act(() => {
+      resolveBedrockCatalog?.(
+        makeProviderModelCatalog('bedrock-work', {
+          providerId: 'bedrock',
+          configuredModelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('bedrock-work'))
+    expect(screen.getByTestId('provider-model-catalog-active-provider-id')).toHaveTextContent('bedrock')
+
+    act(() => {
+      resolveOllamaCatalog?.(
+        makeProviderModelCatalog('ollama-work', {
+          providerId: 'ollama',
+          configuredModelId: 'llama3.2',
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByTestId('provider-model-catalog-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('provider-model-catalog-active-profile-id')).toHaveTextContent('bedrock-work')
+    expect(screen.getByTestId('provider-model-catalog-active-provider-id')).toHaveTextContent('bedrock')
+  })
+
   it('derives OpenRouter-first guidance and mismatch recovery from app-global settings', async () => {
     const setup = createMockAdapter({
       listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },

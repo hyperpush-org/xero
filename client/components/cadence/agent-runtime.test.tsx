@@ -761,6 +761,44 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('heading', { name: 'Remote escalation trust' })).not.toBeInTheDocument()
   })
 
+  it('renders recovered local-provider repair guidance without collapsing to generic credential copy', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          selectedProfileId: 'ollama-work',
+          selectedProfileLabel: 'Ollama Work',
+          selectedProviderId: 'ollama',
+          selectedProviderLabel: 'Ollama',
+          selectedProfileReadiness: {
+            ready: false,
+            status: 'malformed',
+            proof: 'local',
+            proofUpdatedAt: '2026-04-20T12:00:00Z',
+            credentialUpdatedAt: '2026-04-20T12:00:00Z',
+          },
+          runtimeSession: null,
+          runtimeRun: makeRuntimeRun({
+            providerId: 'ollama',
+            runtimeKind: 'openai_compatible',
+            runtimeLabel: 'Ollama · Supervisor running',
+          }),
+          runtimeStream: makeRuntimeStream({ status: 'idle' }),
+          runtimeRunUnavailableReason:
+            'Cadence recovered a supervised harness run and its durable checkpoints before the live runtime feed resumed.',
+          messagesUnavailableReason:
+            'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired Ollama local-endpoint metadata for the selected provider.',
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Configure agent runtime')).toBeVisible()
+    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
+      'placeholder',
+      'Repair the Ollama local endpoint metadata in Settings to start.',
+    )
+    expect(screen.queryByText(/profile credentials/i)).not.toBeInTheDocument()
+  })
+
   it('renders checkpoint control-loop cards with resume actions bound to the same action and boundary', async () => {
     const onResumeOperatorRun = vi.fn(async () => undefined)
     const checkpointCard = makeCheckpointControlLoopCard({

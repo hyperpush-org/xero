@@ -605,27 +605,49 @@ describe('view builders', () => {
     expect(result.view?.checkpointControlLoop?.totalCount).toBe(0)
   })
 
-  it('buildAgentView preserves an orphaned configured model and cached catalog state when discovery cannot confirm it', () => {
+  it('buildAgentView keeps manual local catalog truth attributable to Ollama', () => {
     const project = makeProject()
 
     const result = buildAgentView({
       project,
       activePhase: project.phases[0] ?? null,
       repositoryStatus: makeRepositoryStatus(),
-      providerProfiles: makeProviderProfiles(),
-      runtimeSession: makeRuntimeSession({ providerId: 'openai_codex', runtimeKind: 'openai_codex' }),
-      runtimeSettings: makeRuntimeSettings(),
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'ollama-work',
+        profiles: [
+          {
+            profileId: 'ollama-work',
+            providerId: 'ollama',
+            label: 'Ollama Work',
+            modelId: 'llama3.2',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              proof: 'local',
+              proofUpdatedAt: '2026-04-20T11:58:00Z',
+              credentialUpdatedAt: '2026-04-20T11:58:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      runtimeSession: makeRuntimeSession({ providerId: 'ollama', runtimeKind: 'openai_compatible' }),
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'ollama',
+        modelId: 'llama3.2',
+        openrouterApiKeyConfigured: false,
+      }),
       activeProviderModelCatalog: makeProviderModelCatalog({
-        source: 'cache',
-        lastRefreshError: {
-          code: 'provider_model_catalog_failed',
-          message: 'OpenRouter discovery timed out.',
-          retryable: true,
-        },
+        profileId: 'ollama-work',
+        providerId: 'ollama',
+        configuredModelId: 'llama3.2',
+        source: 'manual',
         models: [
           {
-            modelId: 'mistral/devstral-medium',
-            displayName: 'mistral/devstral-medium',
+            modelId: 'llama3.2',
+            displayName: 'llama3.2',
             thinking: {
               supported: false,
               effortOptions: [],
@@ -633,23 +655,19 @@ describe('view builders', () => {
             },
           },
           {
-            modelId: ' ',
-            displayName: 'broken-row',
+            modelId: 'codellama:13b',
+            displayName: 'codellama:13b',
             thinking: {
-              supported: true,
-              effortOptions: ['low'],
-              defaultEffort: 'low',
+              supported: false,
+              effortOptions: [],
+              defaultEffort: null,
             },
-          } as never,
+          },
         ],
       }),
-      activeProviderModelCatalogLoadStatus: 'error',
-      activeProviderModelCatalogLoadError: makeOperatorActionError({
-        code: 'provider_model_catalog_failed',
-        message: 'OpenRouter discovery timed out.',
-        retryable: true,
-      }),
-      runtimeRun: makeRuntimeRun(),
+      activeProviderModelCatalogLoadStatus: 'ready',
+      activeProviderModelCatalogLoadError: null,
+      runtimeRun: null,
       autonomousRun: null,
       autonomousUnit: null,
       autonomousAttempt: null,
@@ -658,7 +676,7 @@ describe('view builders', () => {
       runtimeErrorMessage: null,
       runtimeRunErrorMessage: null,
       autonomousRunErrorMessage: null,
-      runtimeStream: makeRuntimeStream(),
+      runtimeStream: null,
       notificationRoutes: [],
       notificationRouteLoadStatus: 'idle',
       notificationRouteError: null,
@@ -681,32 +699,135 @@ describe('view builders', () => {
     })
 
     expect(result.view?.providerModelCatalog).toMatchObject({
+      providerId: 'ollama',
+      providerLabel: 'Ollama',
+      source: 'manual',
+      state: 'live',
+      stateLabel: 'Manual catalog',
+    })
+    expect(result.view?.providerModelCatalog.detail).toContain('configured model truth for Ollama')
+    expect(result.view?.selectedModelOption).toMatchObject({
+      modelId: 'llama3.2',
+      availability: 'available',
+      groupLabel: 'Ollama',
+    })
+  })
+
+  it('buildAgentView keeps cached ambient catalog ownership and orphaned current selection attributable to Bedrock', () => {
+    const project = makeProject()
+
+    const result = buildAgentView({
+      project,
+      activePhase: project.phases[0] ?? null,
+      repositoryStatus: makeRepositoryStatus(),
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'bedrock-work',
+        profiles: [
+          {
+            profileId: 'bedrock-work',
+            providerId: 'bedrock',
+            label: 'Amazon Bedrock Work',
+            modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+            active: true,
+            readiness: {
+              ready: true,
+              status: 'ready',
+              proof: 'ambient',
+              proofUpdatedAt: '2026-04-20T11:58:00Z',
+              credentialUpdatedAt: '2026-04-20T11:58:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      runtimeSession: makeRuntimeSession({ providerId: 'bedrock', runtimeKind: 'anthropic' }),
+      runtimeSettings: makeRuntimeSettings({
+        providerId: 'bedrock',
+        modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+        openrouterApiKeyConfigured: false,
+      }),
+      activeProviderModelCatalog: makeProviderModelCatalog({
+        profileId: 'bedrock-work',
+        providerId: 'bedrock',
+        configuredModelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+        source: 'cache',
+        lastRefreshError: {
+          code: 'provider_model_catalog_failed',
+          message: 'Amazon Bedrock discovery timed out.',
+          retryable: true,
+        },
+        models: [
+          {
+            modelId: 'anthropic.claude-3-haiku-20240307-v1:0',
+            displayName: 'anthropic.claude-3-haiku-20240307-v1:0',
+            thinking: {
+              supported: false,
+              effortOptions: [],
+              defaultEffort: null,
+            },
+          },
+        ],
+      }),
+      activeProviderModelCatalogLoadStatus: 'error',
+      activeProviderModelCatalogLoadError: makeOperatorActionError({
+        code: 'provider_model_catalog_failed',
+        message: 'Amazon Bedrock discovery timed out.',
+        retryable: true,
+      }),
+      runtimeRun: null,
+      autonomousRun: null,
+      autonomousUnit: null,
+      autonomousAttempt: null,
+      autonomousHistory: [],
+      autonomousRecentArtifacts: [],
+      runtimeErrorMessage: null,
+      runtimeRunErrorMessage: null,
+      autonomousRunErrorMessage: null,
+      runtimeStream: null,
+      notificationRoutes: [],
+      notificationRouteLoadStatus: 'idle',
+      notificationRouteError: null,
+      notificationSyncSummary: null,
+      notificationSyncError: null,
+      blockedNotificationSyncPollTarget: null,
+      notificationRouteMutationStatus: 'idle',
+      pendingNotificationRouteId: null,
+      notificationRouteMutationError: null,
+      previousTrustSnapshot: null,
+      operatorActionStatus: 'idle',
+      pendingOperatorActionId: null,
+      operatorActionError: null,
+      autonomousRunActionStatus: 'idle',
+      pendingAutonomousRunAction: null,
+      autonomousRunActionError: null,
+      runtimeRunActionStatus: 'idle',
+      pendingRuntimeRunAction: null,
+      runtimeRunActionError: null,
+    })
+
+    expect(result.view?.providerModelCatalog).toMatchObject({
+      providerId: 'bedrock',
+      providerLabel: 'Amazon Bedrock',
+      source: 'cache',
       state: 'stale',
       stateLabel: 'Cached catalog',
-      source: 'cache',
       lastRefreshError: {
         code: 'provider_model_catalog_failed',
-        message: 'OpenRouter discovery timed out.',
+        message: 'Amazon Bedrock discovery timed out.',
         retryable: true,
       },
     })
-    expect(result.view?.providerModelCatalog.models).toHaveLength(2)
+    expect(result.view?.providerModelCatalog.detail).toContain('Amazon Bedrock')
     expect(result.view?.providerModelCatalog.models[0]).toMatchObject({
-      modelId: 'openai/gpt-4.1-mini',
+      modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
       availability: 'orphaned',
       groupLabel: 'Current selection',
     })
-    expect(result.view?.providerModelCatalog.models[1]).toMatchObject({
-      modelId: 'mistral/devstral-medium',
-      availability: 'available',
-    })
     expect(result.view?.selectedModelOption).toMatchObject({
-      modelId: 'openai/gpt-4.1-mini',
+      modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
       availability: 'orphaned',
-      thinkingSupported: false,
     })
-    expect(result.view?.selectedModelThinkingEffortOptions).toEqual([])
-    expect(result.view?.selectedModelDefaultThinkingEffort).toBeNull()
   })
 
   it('buildAgentView prefers non-terminal runtime-run controls over provider defaults and keeps active-versus-pending truth separate', () => {

@@ -360,6 +360,33 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
   }
 }
 
+function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): ProviderProfilesDto {
+  const activeProfileId = overrides.activeProfileId ?? 'openai_codex-default'
+  const profiles = overrides.profiles ?? [
+    {
+      profileId: 'openai_codex-default',
+      providerId: 'openai_codex',
+      runtimeKind: 'openai_codex',
+      label: 'OpenAI Codex',
+      modelId: 'openai_codex',
+      active: activeProfileId === 'openai_codex-default',
+      readiness: {
+        ready: false,
+        status: 'missing',
+        credentialUpdatedAt: null,
+      },
+      migratedFromLegacy: false,
+      migratedAt: null,
+    },
+  ]
+
+  return {
+    activeProfileId,
+    profiles,
+    migration: overrides.migration ?? null,
+  }
+}
+
 function makeAutonomousRunState(
   projectId: string,
   overrides: Partial<NonNullable<AutonomousRunStateDto['run']>> = {},
@@ -616,6 +643,7 @@ function createMockAdapter(options?: {
   autonomousStates?: Record<string, AutonomousRunStateDto | null>
   runtimeSessionErrors?: Record<string, Error>
   runtimeRunErrors?: Record<string, Error>
+  providerProfiles?: ProviderProfilesDto
   notificationDispatches?: Record<string, ListNotificationDispatchesResponseDto['dispatches']>
   notificationRoutes?: Record<string, ListNotificationRoutesResponseDto['routes']>
   notificationDispatchErrors?: Record<string, Error>
@@ -807,26 +835,7 @@ function createMockAdapter(options?: {
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
   }
-  const providerProfiles: ProviderProfilesDto = {
-    activeProfileId: 'openai_codex-default',
-    profiles: [
-      {
-        profileId: 'openai_codex-default',
-        providerId: 'openai_codex',
-        label: 'OpenAI Codex',
-        modelId: 'openai_codex',
-        active: true,
-        readiness: {
-          ready: false,
-          status: 'missing',
-          credentialUpdatedAt: null,
-        },
-        migratedFromLegacy: false,
-        migratedAt: null,
-      },
-    ],
-    migration: null,
-  }
+  const providerProfiles = options?.providerProfiles ?? makeProviderProfiles()
   const upsertNotificationRouteCredentials = vi.fn(
     async (
       request: UpsertNotificationRouteCredentialsRequestDto,
@@ -1493,6 +1502,125 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
       'Cadence recovered durable supervised-run state for this project, but live streaming still requires a GitHub Models runtime bind for the recovered provider.',
     )
     expect(screen.getByTestId('messages-reason')).not.toHaveTextContent('desktop-authenticated runtime session')
+  })
+
+  it('hydrates recovered Ollama run truth with local-endpoint repair copy after auth-session failure', async () => {
+    const setup = createMockAdapter({
+      runtimeSessionErrors: {
+        'project-1': new Error('runtime auth failed'),
+      },
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'ollama-work',
+        profiles: [
+          {
+            profileId: 'ollama-work',
+            providerId: 'ollama',
+            runtimeKind: 'openai_compatible',
+            label: 'Ollama Work',
+            modelId: 'llama3.2',
+            presetId: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434/v1',
+            apiVersion: null,
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'malformed',
+              proof: 'local',
+              proofUpdatedAt: '2026-04-20T12:00:00Z',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', {
+          providerId: 'ollama',
+          runtimeKind: 'openai_compatible',
+          controls: {
+            active: {
+              modelId: 'llama3.2',
+              thinkingEffort: 'medium',
+              approvalMode: 'suggest',
+              revision: 1,
+              appliedAt: '2026-04-15T20:00:00Z',
+            },
+            pending: null,
+          },
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+
+    expect(screen.getByTestId('runtime-run-provider-id')).toHaveTextContent('ollama')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired Ollama local-endpoint metadata for the selected provider.',
+    )
+    expect(screen.getByTestId('messages-reason')).not.toHaveTextContent('profile credentials')
+  })
+
+  it('hydrates recovered Bedrock run truth with ambient-auth repair copy after auth-session failure', async () => {
+    const setup = createMockAdapter({
+      runtimeSessionErrors: {
+        'project-1': new Error('runtime auth failed'),
+      },
+      providerProfiles: makeProviderProfiles({
+        activeProfileId: 'bedrock-work',
+        profiles: [
+          {
+            profileId: 'bedrock-work',
+            providerId: 'bedrock',
+            runtimeKind: 'anthropic',
+            label: 'Amazon Bedrock Work',
+            modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+            presetId: 'bedrock',
+            baseUrl: null,
+            apiVersion: null,
+            region: 'us-east-1',
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'malformed',
+              proof: 'ambient',
+              proofUpdatedAt: '2026-04-20T12:00:00Z',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+      }),
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', {
+          providerId: 'bedrock',
+          runtimeKind: 'anthropic',
+          controls: {
+            active: {
+              modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+              thinkingEffort: 'medium',
+              approvalMode: 'suggest',
+              revision: 1,
+              appliedAt: '2026-04-15T20:00:00Z',
+            },
+            pending: null,
+          },
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+
+    expect(screen.getByTestId('runtime-run-provider-id')).toHaveTextContent('bedrock')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired Amazon Bedrock ambient-auth metadata for the selected provider.',
+    )
+    expect(screen.getByTestId('messages-reason')).not.toHaveTextContent('profile credentials')
   })
 
   it('preserves the last truthful runtime-run view when a later run refresh fails', async () => {

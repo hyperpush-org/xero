@@ -451,4 +451,118 @@ describe('runtime-provider helpers', () => {
       'Cadence recovered durable supervised-run state for this project, but live streaming still requires a GitHub Models runtime bind for the recovered provider.',
     )
   })
+
+  it('keeps recovered local and ambient malformed-profile guidance provider-specific', () => {
+    const ollamaSelectedProvider = resolveSelectedRuntimeProvider(
+      {
+        activeProfileId: 'ollama-work',
+        profiles: [
+          {
+            profileId: 'ollama-work',
+            providerId: 'ollama',
+            runtimeKind: 'openai_compatible',
+            label: 'Ollama Work',
+            modelId: 'llama3.2',
+            presetId: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434/v1',
+            apiVersion: null,
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'malformed',
+              proof: 'local',
+              proofUpdatedAt: '2026-04-20T12:00:00Z',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+        migration: null,
+      },
+      null,
+      null,
+    )
+    const bedrockSelectedProvider = resolveSelectedRuntimeProvider(
+      {
+        activeProfileId: 'bedrock-work',
+        profiles: [
+          {
+            profileId: 'bedrock-work',
+            providerId: 'bedrock',
+            runtimeKind: 'anthropic',
+            label: 'Amazon Bedrock Work',
+            modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+            presetId: 'bedrock',
+            baseUrl: null,
+            apiVersion: null,
+            region: 'us-east-1',
+            active: true,
+            readiness: {
+              ready: false,
+              status: 'malformed',
+              proof: 'ambient',
+              proofUpdatedAt: '2026-04-20T12:00:00Z',
+              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            },
+            migratedFromLegacy: false,
+            migratedAt: null,
+          },
+        ],
+        migration: null,
+      },
+      null,
+      null,
+    )
+
+    expect(
+      getAgentMessagesUnavailableReason(
+        null,
+        null,
+        makeRuntimeRun({ providerId: 'ollama' }),
+        ollamaSelectedProvider,
+      ),
+    ).toBe(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired Ollama local-endpoint metadata for the selected provider.',
+    )
+    expect(
+      getAgentMessagesUnavailableReason(
+        makeRuntimeSession({
+          providerId: 'bedrock',
+          runtimeKind: 'anthropic',
+          phase: 'idle',
+          isAuthenticated: false,
+          isLoginInProgress: false,
+          sessionId: null,
+          sessionLabel: null,
+          accountLabel: null,
+        }),
+        null,
+        makeRuntimeRun({ providerId: 'bedrock' }),
+        bedrockSelectedProvider,
+      ),
+    ).toBe(
+      'Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired Amazon Bedrock ambient-auth metadata.',
+    )
+    expect(getAgentMessagesUnavailableReason(null, null, makeRuntimeRun({ providerId: 'ollama' }), ollamaSelectedProvider)).not.toContain(
+      'profile credentials',
+    )
+    expect(
+      getAgentMessagesUnavailableReason(
+        makeRuntimeSession({
+          providerId: 'bedrock',
+          runtimeKind: 'anthropic',
+          phase: 'idle',
+          isAuthenticated: false,
+          isLoginInProgress: false,
+          sessionId: null,
+          sessionLabel: null,
+          accountLabel: null,
+        }),
+        null,
+        makeRuntimeRun({ providerId: 'bedrock' }),
+        bedrockSelectedProvider,
+      ),
+    ).not.toContain('profile credentials')
+  })
 })

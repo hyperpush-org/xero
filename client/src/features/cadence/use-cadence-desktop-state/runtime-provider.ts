@@ -220,6 +220,19 @@ function getRepairConfiguredProviderCopy(
   }
 }
 
+function getRecoveredRepairConfiguredProviderRequirement(
+  state: SelectedConfiguredProviderState,
+): string {
+  switch (state.authMode) {
+    case 'api_key':
+      return `repaired ${state.providerLabel} profile credentials`
+    case 'local':
+      return `repaired ${state.providerLabel} local-endpoint metadata`
+    case 'ambient':
+      return `repaired ${state.providerLabel} ambient-auth metadata`
+  }
+}
+
 function getSetupConfiguredProviderCopy(
   state: SelectedConfiguredProviderState,
   providerId: RuntimeSettingsDto['providerId'],
@@ -537,7 +550,7 @@ export function getAgentMessagesUnavailableReason(
     if (selectedConfiguredProvider) {
       if (selectedConfiguredProvider.readinessStatus === 'malformed') {
         return runtimeRun
-          ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired ${selectedConfiguredProvider.providerLabel} profile credentials for the selected provider.`
+          ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires ${getRecoveredRepairConfiguredProviderRequirement(selectedConfiguredProvider)} for the selected provider.`
           : getRepairConfiguredProviderCopy(
               selectedConfiguredProvider,
               ' before Cadence can establish a runtime session for this imported project.',
@@ -579,7 +592,7 @@ export function getAgentMessagesUnavailableReason(
 
       if (selectedConfiguredProvider.readinessStatus === 'malformed') {
         return runtimeRun
-          ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires repaired ${selectedConfiguredProvider.providerLabel} profile credentials.`
+          ? `Cadence recovered durable supervised-run state for this project, but live streaming still requires ${getRecoveredRepairConfiguredProviderRequirement(selectedConfiguredProvider)}.`
           : getRepairConfiguredProviderCopy(
               selectedConfiguredProvider,
               ' before live streaming can start for this imported project.',
