@@ -1,4 +1,5 @@
 use super::support::*;
+use tauri::Manager;
 
 pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_shapes() {
     let (app, _temp_root) = build_mock_app();

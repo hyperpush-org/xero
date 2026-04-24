@@ -892,6 +892,196 @@ impl SolanaExecutor for StateSolanaExecutor {
             value_json,
         })
     }
+
+    fn program(
+        &self,
+        request: AutonomousSolanaProgramRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let (action_name, value) = match request.action {
+            AutonomousSolanaProgramAction::Build {
+                manifest_path,
+                profile,
+                kind,
+                program: program_filter,
+            } => {
+                let runner = program::build::SystemBuildRunner::new();
+                let report = program::build::build(
+                    &runner,
+                    &BuildRequest {
+                        manifest_path,
+                        profile: profile.unwrap_or_default(),
+                        kind,
+                        program: program_filter,
+                    },
+                )?;
+                (
+                    "build".to_string(),
+                    serde_json::to_value::<BuildReport>(report).unwrap_or(JsonValue::Null),
+                )
+            }
+            AutonomousSolanaProgramAction::Rollback {
+                program_id,
+                cluster,
+                previous_sha256,
+                authority,
+                program_archive_root,
+                post,
+                rpc_url,
+            } => {
+                let rpc_url = rpc_url
+                    .or_else(|| self.resolve_rpc_url(cluster))
+                    .ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "solana_program_rollback_no_rpc",
+                            "No RPC URL available — start a cluster or provide rpcUrl.",
+                        )
+                    })?;
+                let req = RollbackRequest {
+                    program_id,
+                    cluster,
+                    rpc_url,
+                    previous_sha256,
+                    authority,
+                    program_archive_root,
+                    post: post.unwrap_or_default(),
+                };
+                let sink = idl::publish::NullProgressSink;
+                let result =
+                    program::deploy::rollback(self.inner.deploy_services.as_ref(), &sink, &req)?;
+                (
+                    "rollback".to_string(),
+                    serde_json::to_value::<RollbackResult>(result).unwrap_or(JsonValue::Null),
+                )
+            }
+        };
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: action_name,
+            value_json,
+        })
+    }
+
+    fn deploy(
+        &self,
+        request: AutonomousSolanaDeployRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let rpc_url = request
+            .rpc_url
+            .or_else(|| self.resolve_rpc_url(request.cluster))
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "solana_program_deploy_no_rpc",
+                    "No RPC URL available — start a cluster or provide rpcUrl.",
+                )
+            })?;
+        let spec = DeploySpec {
+            program_id: request.program_id,
+            cluster: request.cluster,
+            rpc_url,
+            so_path: request.so_path,
+            idl_path: request.idl_path,
+            authority: request.authority,
+            is_first_deploy: request.is_first_deploy,
+            post: request.post.unwrap_or_default(),
+        };
+        let sink = idl::publish::NullProgressSink;
+        let result = program::deploy::deploy(self.inner.deploy_services.as_ref(), &sink, &spec)?;
+        let value = serde_json::to_value::<DeployResult>(result).unwrap_or(JsonValue::Null);
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: "deploy".to_string(),
+            value_json,
+        })
+    }
+
+    fn upgrade_check(
+        &self,
+        request: AutonomousSolanaUpgradeCheckRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let rpc_url = request
+            .rpc_url
+            .or_else(|| self.resolve_rpc_url(request.cluster))
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "solana_upgrade_check_no_rpc",
+                    "No RPC URL available — start a cluster or provide rpcUrl.",
+                )
+            })?;
+        let chain_idl = self
+            .inner
+            .idl_registry
+            .fetch_on_chain(request.cluster, &rpc_url, &request.program_id)
+            .ok()
+            .flatten();
+        let safety_request = UpgradeSafetyRequest {
+            program_id: request.program_id,
+            cluster: request.cluster,
+            rpc_url,
+            local_so_path: request.local_so_path,
+            local_idl_path: request.local_idl_path,
+            chain_idl,
+            local_idl: None,
+            expected_authority: request.expected_authority,
+            max_program_size_bytes: request.max_program_size_bytes,
+            local_so_size_bytes: request.local_so_size_bytes,
+        };
+        let report = program::upgrade_safety::check(&self.inner.transport, &safety_request)?;
+        let value = serde_json::to_value::<UpgradeSafetyReport>(report).unwrap_or(JsonValue::Null);
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: "upgrade_check".to_string(),
+            value_json,
+        })
+    }
+
+    fn squads(
+        &self,
+        request: AutonomousSolanaSquadsRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let descriptor = program::squads::synthesize(&SquadsProposalRequest {
+            program_id: request.program_id,
+            cluster: request.cluster,
+            multisig_pda: request.multisig_pda,
+            buffer: request.buffer,
+            spill: request.spill,
+            creator: request.creator,
+            vault_index: request.vault_index,
+            memo: request.memo,
+        })?;
+        let value =
+            serde_json::to_value::<SquadsProposalDescriptor>(descriptor).unwrap_or(JsonValue::Null);
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: "proposal_create".to_string(),
+            value_json,
+        })
+    }
+
+    fn verified_build(
+        &self,
+        request: AutonomousSolanaVerifiedBuildRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        let runner = program::verified_build::SystemVerifiedBuildRunner::new();
+        let report = program::verified_build::submit(
+            &runner,
+            &VerifiedBuildRequest {
+                program_id: request.program_id,
+                cluster: request.cluster,
+                manifest_path: request.manifest_path,
+                github_url: request.github_url,
+                commit_hash: request.commit_hash,
+                library_name: request.library_name,
+                skip_remote_submit: request.skip_remote_submit,
+            },
+        )?;
+        let value =
+            serde_json::to_value::<VerifiedBuildResult>(report).unwrap_or(JsonValue::Null);
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: "verified_build_submit".to_string(),
+            value_json,
+        })
+    }
 }
 
 /// No-op executor. Returns `policy_denied` for every action so environments
@@ -966,6 +1156,69 @@ impl SolanaExecutor for UnavailableSolanaExecutor {
             "Solana PDA actions require the desktop runtime; no SolanaState is wired.",
         ))
     }
+
+    fn program(
+        &self,
+        _request: AutonomousSolanaProgramRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        Err(CommandError::policy_denied(
+            "Solana program build/rollback requires the desktop runtime; no SolanaState is wired.",
+        ))
+    }
+
+    fn deploy(
+        &self,
+        _request: AutonomousSolanaDeployRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        Err(CommandError::policy_denied(
+            "Solana deploy requires the desktop runtime; no SolanaState is wired.",
+        ))
+    }
+
+    fn upgrade_check(
+        &self,
+        _request: AutonomousSolanaUpgradeCheckRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        Err(CommandError::policy_denied(
+            "Solana upgrade check requires the desktop runtime; no SolanaState is wired.",
+        ))
+    }
+
+    fn squads(
+        &self,
+        _request: AutonomousSolanaSquadsRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        // Squads proposal synthesis is pure (no validator dependency) so
+        // we can just run it directly without a SolanaState. This matches
+        // the user-visible expectation that an offline workbench can still
+        // produce a proposal payload to hand off.
+        let descriptor = program::squads::synthesize(&SquadsProposalRequest {
+            program_id: _request.program_id,
+            cluster: _request.cluster,
+            multisig_pda: _request.multisig_pda,
+            buffer: _request.buffer,
+            spill: _request.spill,
+            creator: _request.creator,
+            vault_index: _request.vault_index,
+            memo: _request.memo,
+        })?;
+        let value =
+            serde_json::to_value::<SquadsProposalDescriptor>(descriptor).unwrap_or(JsonValue::Null);
+        let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
+        Ok(AutonomousSolanaOutput {
+            action: "proposal_create".to_string(),
+            value_json,
+        })
+    }
+
+    fn verified_build(
+        &self,
+        _request: AutonomousSolanaVerifiedBuildRequest,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        Err(CommandError::policy_denied(
+            "Solana verified-build submission requires the desktop runtime; no SolanaState is wired.",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -1031,6 +1284,79 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err.code, "solana_snapshot_accounts_empty");
+    }
+
+    #[test]
+    fn squads_synthesis_works_on_unavailable_executor() {
+        let exec = UnavailableSolanaExecutor;
+        let valid = bs58::encode([1u8; 32]).into_string();
+        let out = exec
+            .squads(AutonomousSolanaSquadsRequest {
+                program_id: valid.clone(),
+                cluster: ClusterKind::Devnet,
+                multisig_pda: valid.clone(),
+                buffer: valid.clone(),
+                spill: valid.clone(),
+                creator: valid,
+                vault_index: None,
+                memo: None,
+            })
+            .unwrap();
+        assert_eq!(out.action, "proposal_create");
+        let parsed: serde_json::Value = serde_json::from_str(&out.value_json).unwrap();
+        assert!(parsed.get("vaultPda").is_some());
+    }
+
+    #[test]
+    fn unavailable_executor_blocks_program_deploy_upgrade_check_verified_build() {
+        let exec = UnavailableSolanaExecutor;
+        for err in [
+            exec.program(AutonomousSolanaProgramRequest {
+                action: AutonomousSolanaProgramAction::Build {
+                    manifest_path: "/nope".into(),
+                    profile: None,
+                    kind: None,
+                    program: None,
+                },
+            })
+            .unwrap_err(),
+            exec.deploy(AutonomousSolanaDeployRequest {
+                program_id: "X".into(),
+                cluster: ClusterKind::Devnet,
+                so_path: "/nope".into(),
+                authority: DeployAuthority::DirectKeypair {
+                    keypair_path: "/nope".into(),
+                },
+                idl_path: None,
+                is_first_deploy: false,
+                post: None,
+                rpc_url: None,
+            })
+            .unwrap_err(),
+            exec.upgrade_check(AutonomousSolanaUpgradeCheckRequest {
+                program_id: "X".into(),
+                cluster: ClusterKind::Devnet,
+                local_so_path: "/nope".into(),
+                expected_authority: "Y".into(),
+                local_idl_path: None,
+                max_program_size_bytes: None,
+                local_so_size_bytes: None,
+                rpc_url: None,
+            })
+            .unwrap_err(),
+            exec.verified_build(AutonomousSolanaVerifiedBuildRequest {
+                program_id: "X".into(),
+                cluster: ClusterKind::Devnet,
+                manifest_path: "/nope".into(),
+                github_url: "https://github.com/x/y".into(),
+                commit_hash: None,
+                library_name: None,
+                skip_remote_submit: false,
+            })
+            .unwrap_err(),
+        ] {
+            assert_eq!(err.class, crate::commands::CommandErrorClass::PolicyDenied);
+        }
     }
 
     #[test]

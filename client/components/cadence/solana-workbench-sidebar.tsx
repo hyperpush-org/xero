@@ -8,6 +8,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Rocket,
   Search,
   Server,
   Square,
@@ -16,6 +17,7 @@ import {
   Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SolanaDeployPanel } from "./solana-deploy-panel"
 import { SolanaIdlPanel } from "./solana-idl-panel"
 import { SolanaMissingToolchain } from "./solana-missing-toolchain"
 import { SolanaPersonaPanel } from "./solana-persona-panel"
@@ -25,6 +27,7 @@ import {
   useSolanaWorkbench,
   type ClusterKind,
   type CodamaTarget,
+  type DeployAuthority,
   type FundingDelta,
   type PersonaRole,
   type SimulateRequest,
@@ -35,7 +38,7 @@ const DEFAULT_WIDTH = 420
 const MAX_WIDTH = 900
 const STORAGE_KEY = "cadence.solana.workbench.width"
 
-type TabId = "personas" | "scenarios" | "tx" | "idl" | "rpc"
+type TabId = "personas" | "scenarios" | "tx" | "idl" | "deploy" | "rpc"
 
 interface SolanaWorkbenchSidebarProps {
   open: boolean
@@ -214,6 +217,61 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
     [workbench, selectedKind],
   )
 
+  const handleBuildProgram = useCallback(
+    async (args: { manifestPath: string; profile: "dev" | "release"; program: string | null }) =>
+      workbench.buildProgram({
+        manifestPath: args.manifestPath,
+        profile: args.profile,
+        program: args.program,
+      }),
+    [workbench],
+  )
+
+  const handleUpgradeCheck = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      localSoPath: string
+      expectedAuthority: string
+      localIdlPath: string | null
+    }) => workbench.upgradeCheck(args),
+    [workbench],
+  )
+
+  const handleDeploy = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      soPath: string
+      authority: DeployAuthority
+      idlPath: string | null
+      isFirstDeploy: boolean
+    }) => workbench.deployProgram(args),
+    [workbench],
+  )
+
+  const handleSubmitVerified = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      manifestPath: string
+      githubUrl: string
+      commitHash: string | null
+      libraryName: string | null
+    }) => workbench.submitVerifiedBuild(args),
+    [workbench],
+  )
+
+  const handleRollback = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      previousSha256: string
+      authority: DeployAuthority
+    }) => workbench.rollbackProgram(args),
+    [workbench],
+  )
+
   const scenariosForCluster = useMemo(
     () =>
       workbench.scenarios.filter((s) =>
@@ -245,6 +303,11 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
       icon: FileJson,
       label: "IDL",
       count: Object.keys(workbench.idls).length || undefined,
+    },
+    {
+      id: "deploy",
+      icon: Rocket,
+      label: "Deploy",
     },
     {
       id: "rpc",
@@ -508,6 +571,26 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
               onPublish={handlePublishIdl}
               onStartWatch={workbench.startIdlWatch}
               onStopWatch={workbench.stopIdlWatch}
+            />
+          ) : null}
+
+          {activeTab === "deploy" ? (
+            <SolanaDeployPanel
+              busy={workbench.programBusy}
+              cluster={selectedKind}
+              clusterRunning={clusterRunning}
+              personaNames={workbench.personas.map((p) => p.name)}
+              lastBuildReport={workbench.lastBuildReport}
+              lastUpgradeSafety={workbench.lastUpgradeSafety}
+              lastDeployResult={workbench.lastDeployResult}
+              lastSquadsProposal={workbench.lastSquadsProposal}
+              lastVerifiedBuild={workbench.lastVerifiedBuild}
+              lastRollback={workbench.lastRollback}
+              onBuild={handleBuildProgram}
+              onUpgradeCheck={handleUpgradeCheck}
+              onDeploy={handleDeploy}
+              onSubmitVerified={handleSubmitVerified}
+              onRollback={handleRollback}
             />
           ) : null}
 

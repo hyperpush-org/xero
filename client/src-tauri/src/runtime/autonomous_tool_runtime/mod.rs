@@ -35,14 +35,19 @@ pub use browser::{
 pub use repo_scope::{resolve_imported_repo_root, resolve_imported_repo_root_from_registry};
 pub use solana::{
     AutonomousSolanaAltAction, AutonomousSolanaAltRequest, AutonomousSolanaClusterAction,
-    AutonomousSolanaClusterRequest, AutonomousSolanaCodamaRequest, AutonomousSolanaExplainRequest,
-    AutonomousSolanaIdlAction, AutonomousSolanaIdlRequest, AutonomousSolanaLogsRequest,
-    AutonomousSolanaOutput, AutonomousSolanaPdaAction, AutonomousSolanaPdaRequest,
-    AutonomousSolanaSimulateRequest, AutonomousSolanaTxAction, AutonomousSolanaTxRequest,
-    SolanaExecutor, StateSolanaExecutor, UnavailableSolanaExecutor, AUTONOMOUS_TOOL_SOLANA_ALT,
-    AUTONOMOUS_TOOL_SOLANA_CLUSTER, AUTONOMOUS_TOOL_SOLANA_CODAMA, AUTONOMOUS_TOOL_SOLANA_EXPLAIN,
-    AUTONOMOUS_TOOL_SOLANA_IDL, AUTONOMOUS_TOOL_SOLANA_LOGS, AUTONOMOUS_TOOL_SOLANA_PDA,
-    AUTONOMOUS_TOOL_SOLANA_SIMULATE, AUTONOMOUS_TOOL_SOLANA_TX,
+    AutonomousSolanaClusterRequest, AutonomousSolanaCodamaRequest, AutonomousSolanaDeployRequest,
+    AutonomousSolanaExplainRequest, AutonomousSolanaIdlAction, AutonomousSolanaIdlRequest,
+    AutonomousSolanaLogsRequest, AutonomousSolanaOutput, AutonomousSolanaPdaAction,
+    AutonomousSolanaPdaRequest, AutonomousSolanaProgramAction, AutonomousSolanaProgramRequest,
+    AutonomousSolanaSimulateRequest, AutonomousSolanaSquadsRequest, AutonomousSolanaTxAction,
+    AutonomousSolanaTxRequest, AutonomousSolanaUpgradeCheckRequest,
+    AutonomousSolanaVerifiedBuildRequest, SolanaExecutor, StateSolanaExecutor,
+    UnavailableSolanaExecutor, AUTONOMOUS_TOOL_SOLANA_ALT, AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+    AUTONOMOUS_TOOL_SOLANA_CODAMA, AUTONOMOUS_TOOL_SOLANA_DEPLOY,
+    AUTONOMOUS_TOOL_SOLANA_EXPLAIN, AUTONOMOUS_TOOL_SOLANA_IDL, AUTONOMOUS_TOOL_SOLANA_LOGS,
+    AUTONOMOUS_TOOL_SOLANA_PDA, AUTONOMOUS_TOOL_SOLANA_PROGRAM, AUTONOMOUS_TOOL_SOLANA_SIMULATE,
+    AUTONOMOUS_TOOL_SOLANA_SQUADS, AUTONOMOUS_TOOL_SOLANA_TX,
+    AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK, AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
 };
 
 pub const AUTONOMOUS_TOOL_READ: &str = "read";

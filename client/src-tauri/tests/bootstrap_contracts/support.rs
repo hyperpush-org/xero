@@ -13,11 +13,10 @@ pub(crate) use cadence_desktop_lib::{
         BranchSummaryDto, CancelAutonomousRunRequestDto, ChangeKind, CommandError,
         CommandErrorClass, CommandToolResultSummaryDto, FileToolResultSummaryDto,
         GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, GitToolResultScopeDto,
-        GitToolResultSummaryDto, ImportMcpServersRequestDto, ImportMcpServersResponseDto,
-        ImportRepositoryRequestDto, ListNotificationDispatchesRequestDto,
-        ListNotificationDispatchesResponseDto, ListNotificationRoutesRequestDto,
-        ListNotificationRoutesResponseDto, ListProjectsResponseDto, McpRegistryDto,
-        NotificationDispatchDto,
+        GitToolResultSummaryDto, ImportMcpServersRequestDto, ImportRepositoryRequestDto,
+        ListNotificationDispatchesRequestDto, ListNotificationDispatchesResponseDto,
+        ListNotificationRoutesRequestDto, ListNotificationRoutesResponseDto,
+        ListProjectsResponseDto, NotificationDispatchDto,
         NotificationDispatchOutcomeStatusDto, NotificationDispatchStatusDto,
         NotificationReplyClaimDto, NotificationReplyClaimStatusDto, NotificationRouteDto,
         NotificationRouteKindDto, OperatorApprovalDto, OperatorApprovalStatus,
@@ -63,6 +62,7 @@ pub(crate) use cadence_desktop_lib::{
         LIST_NOTIFICATION_ROUTES_COMMAND, LIST_PROJECTS_COMMAND, LIST_PROJECT_FILES_COMMAND,
         PROJECT_UPDATED_EVENT, READ_PROJECT_FILE_COMMAND,
         RECORD_NOTIFICATION_DISPATCH_OUTCOME_COMMAND, REFRESH_MCP_SERVER_STATUSES_COMMAND,
+        REPOSITORY_STATUS_CHANGED_EVENT,
         REFRESH_OPENAI_CODEX_AUTH_COMMAND, REGISTERED_COMMAND_NAMES,
         REMOVE_MCP_SERVER_COMMAND, REMOVE_PROJECT_COMMAND, RENAME_PROJECT_ENTRY_COMMAND,
         RESOLVE_OPERATOR_ACTION_COMMAND, RESUME_OPERATOR_RUN_COMMAND, RUNTIME_RUN_UPDATED_EVENT,
@@ -98,6 +98,21 @@ pub(crate) fn build_mock_app() -> (tauri::App<tauri::test::MockRuntime>, TempDir
         .path()
         .join("app-data")
         .join("openrouter-credentials.json");
+
+    if let Some(parent) = mcp_registry_path.parent() {
+        std::fs::create_dir_all(parent).expect("create mcp registry parent");
+    }
+    std::fs::write(
+        &mcp_registry_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "servers": [],
+            "updatedAt": "2026-04-24T00:00:00Z"
+        }))
+        .expect("serialize deterministic mcp registry"),
+    )
+    .expect("write deterministic mcp registry");
+
     let state = DesktopState::default()
         .with_registry_file_override(registry_path)
         .with_auth_store_file_override(auth_store_path)

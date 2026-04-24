@@ -5,8 +5,7 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::now_timestamp,
     commands::{
-        CommandError, CommandResult, McpConnectionDiagnosticDto, McpConnectionStateDto,
-        McpConnectionStatusDto, McpEnvironmentReferenceDto, McpRegistryDto, McpServerDto,
+        CommandError, CommandResult, McpEnvironmentReferenceDto, McpRegistryDto,
         McpTransportDto, UpsertMcpServerRequestDto,
     },
     mcp::{

@@ -566,6 +566,194 @@ export interface IdlPublishReport {
   argv: string[]
 }
 
+// Phase 5 — program build / upgrade-safety / deploy / Squads / verified-build.
+export type BuildKind = "anchor" | "cargo_build_sbf"
+export type BuildProfile = "dev" | "release"
+
+export interface BuiltArtifact {
+  program: string
+  soPath: string
+  soSizeBytes: number
+  soSha256: string
+  idlPath?: string | null
+}
+
+export interface BuildReport {
+  kind: BuildKind
+  profile: BuildProfile
+  manifestPath: string
+  argv: string[]
+  success: boolean
+  exitCode?: number | null
+  stdoutExcerpt: string
+  stderrExcerpt: string
+  elapsedMs: number
+  artifacts: BuiltArtifact[]
+}
+
+export type AuthorityCheckOutcome =
+  | "match"
+  | "mismatch"
+  | "immutable"
+  | "program_not_deployed"
+  | "indeterminate"
+
+export type SizeCheckOutcome =
+  | "fits"
+  | "over_program_data_allocation"
+  | "over_absolute_cap"
+  | "first_deploy"
+  | "indeterminate"
+
+export type UpgradeSafetyVerdict = "ok" | "warn" | "block"
+
+export interface AuthorityCheck {
+  outcome: AuthorityCheckOutcome
+  expectedAuthority: string
+  onChainAuthority?: string | null
+  programDataAddress?: string | null
+  detail: string
+}
+
+export interface SizeCheck {
+  outcome: SizeCheckOutcome
+  localSoSizeBytes: number
+  onChainProgramDataBytes?: number | null
+  absoluteCapBytes: number
+  detail: string
+}
+
+export interface LayoutCheck {
+  drift?: DriftReport | null
+  skipped: boolean
+  detail: string
+}
+
+export interface UpgradeSafetyReport {
+  programId: string
+  cluster: ClusterKind
+  verdict: UpgradeSafetyVerdict
+  layout: LayoutCheck
+  size: SizeCheck
+  authority: AuthorityCheck
+  breakingChanges: DriftChange[]
+}
+
+export type DeployAuthority =
+  | { kind: "direct_keypair"; keypairPath: string }
+  | {
+      kind: "squads_vault"
+      multisigPda: string
+      vaultIndex?: number | null
+      creator: string
+      creatorKeypairPath: string
+      spill?: string | null
+      memo?: string | null
+    }
+
+export interface PostDeployOptions {
+  publishIdl?: boolean
+  idlPublishMode?: IdlPublishMode | null
+  runCodama?: boolean
+  codamaTargets?: CodamaTarget[]
+  codamaOutputDir?: string | null
+  archiveArtifact?: boolean
+  programArchiveRoot?: string | null
+}
+
+export interface DirectDeployOutcome {
+  argv: string[]
+  success: boolean
+  exitCode?: number | null
+  signature?: string | null
+  stdoutExcerpt: string
+  stderrExcerpt: string
+  elapsedMs: number
+}
+
+export interface BufferWriteOutcome {
+  argv: string[]
+  success: boolean
+  exitCode?: number | null
+  bufferAddress?: string | null
+  stdoutExcerpt: string
+  stderrExcerpt: string
+  elapsedMs: number
+}
+
+export interface ArchiveRecord {
+  path: string
+  sha256: string
+  sizeBytes: number
+}
+
+export interface UpgradeInstructionAccount {
+  pubkey: string
+  isSigner: boolean
+  isWritable: boolean
+  label: string
+}
+
+export interface UpgradeInstruction {
+  programId: string
+  instructionTag: number
+  accounts: UpgradeInstructionAccount[]
+  dataHex: string
+}
+
+export interface SquadsProposalDescriptor {
+  programId: string
+  cluster: ClusterKind
+  multisigPda: string
+  vaultPda: string
+  vaultIndex: number
+  programDataAddress: string
+  upgradeInstruction: UpgradeInstruction
+  vaultTransactionCreateArgv: string[]
+  proposalCreateArgv: string[]
+  squadsAppUrl: string
+  summary: string
+}
+
+export type DeployResult =
+  | {
+      kind: "direct"
+      programId: string
+      cluster: ClusterKind
+      outcome: DirectDeployOutcome
+      idlPublish?: IdlPublishReport | null
+      codama?: CodamaGenerationReport | null
+      archive?: ArchiveRecord | null
+    }
+  | {
+      kind: "squads"
+      programId: string
+      cluster: ClusterKind
+      bufferWrite: BufferWriteOutcome
+      proposal: SquadsProposalDescriptor
+      archive?: ArchiveRecord | null
+    }
+
+export interface RollbackResult {
+  programId: string
+  cluster: ClusterKind
+  restoredSha256: string
+  deploy: DeployResult
+}
+
+export interface VerifiedBuildResult {
+  programId: string
+  cluster: ClusterKind
+  argv: string[]
+  success: boolean
+  exitCode?: number | null
+  programHash?: string | null
+  registryUrl?: string | null
+  stdoutExcerpt: string
+  stderrExcerpt: string
+  elapsedMs: number
+}
+
 // PDA types.
 export type SeedPart =
   | { kind: "utf8"; value: string }
@@ -741,6 +929,68 @@ export interface UseSolanaWorkbench {
     seeds: SeedPart[],
     bump?: number | null,
   ) => Promise<BumpAnalysis | null>
+  // Phase 5 — program build / deploy / upgrade-safety / Squads / verified-build.
+  programBusy: boolean
+  lastBuildReport: BuildReport | null
+  lastUpgradeSafety: UpgradeSafetyReport | null
+  lastDeployResult: DeployResult | null
+  lastSquadsProposal: SquadsProposalDescriptor | null
+  lastVerifiedBuild: VerifiedBuildResult | null
+  lastRollback: RollbackResult | null
+  buildProgram: (args: {
+    manifestPath: string
+    profile?: BuildProfile
+    kind?: BuildKind | null
+    program?: string | null
+  }) => Promise<BuildReport | null>
+  upgradeCheck: (args: {
+    programId: string
+    cluster: ClusterKind
+    localSoPath: string
+    expectedAuthority: string
+    localIdlPath?: string | null
+    maxProgramSizeBytes?: number | null
+    localSoSizeBytes?: number | null
+    rpcUrl?: string | null
+  }) => Promise<UpgradeSafetyReport | null>
+  deployProgram: (args: {
+    programId: string
+    cluster: ClusterKind
+    soPath: string
+    authority: DeployAuthority
+    idlPath?: string | null
+    isFirstDeploy?: boolean
+    post?: PostDeployOptions | null
+    rpcUrl?: string | null
+  }) => Promise<DeployResult | null>
+  rollbackProgram: (args: {
+    programId: string
+    cluster: ClusterKind
+    previousSha256: string
+    authority: DeployAuthority
+    programArchiveRoot?: string | null
+    post?: PostDeployOptions | null
+    rpcUrl?: string | null
+  }) => Promise<RollbackResult | null>
+  createSquadsProposal: (args: {
+    programId: string
+    cluster: ClusterKind
+    multisigPda: string
+    buffer: string
+    spill: string
+    creator: string
+    vaultIndex?: number | null
+    memo?: string | null
+  }) => Promise<SquadsProposalDescriptor | null>
+  submitVerifiedBuild: (args: {
+    programId: string
+    cluster: ClusterKind
+    manifestPath: string
+    githubUrl: string
+    commitHash?: string | null
+    libraryName?: string | null
+    skipRemoteSubmit?: boolean
+  }) => Promise<VerifiedBuildResult | null>
 }
 
 const SOLANA_VALIDATOR_STATUS_EVENT = "solana:validator:status"
@@ -812,6 +1062,19 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
   const [lastDeployProgress, setLastDeployProgress] =
     useState<DeployProgressPayload | null>(null)
   const [activeIdlWatches, setActiveIdlWatches] = useState<string[]>([])
+
+  // Phase 5 — program build / deploy / upgrade-safety / Squads / verified-build.
+  const [programBusy, setProgramBusy] = useState(false)
+  const [lastBuildReport, setLastBuildReport] = useState<BuildReport | null>(null)
+  const [lastUpgradeSafety, setLastUpgradeSafety] =
+    useState<UpgradeSafetyReport | null>(null)
+  const [lastDeployResult, setLastDeployResult] =
+    useState<DeployResult | null>(null)
+  const [lastSquadsProposal, setLastSquadsProposal] =
+    useState<SquadsProposalDescriptor | null>(null)
+  const [lastVerifiedBuild, setLastVerifiedBuild] =
+    useState<VerifiedBuildResult | null>(null)
+  const [lastRollback, setLastRollback] = useState<RollbackResult | null>(null)
 
   const activeRef = useRef(active)
   activeRef.current = active
@@ -1343,6 +1606,241 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     [],
   )
 
+  const buildProgram = useCallback(
+    async (args: {
+      manifestPath: string
+      profile?: BuildProfile
+      kind?: BuildKind | null
+      program?: string | null
+    }): Promise<BuildReport | null> => {
+      if (!isTauri()) return null
+      setProgramBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<BuildReport>("solana_program_build", {
+          request: {
+            manifestPath: args.manifestPath,
+            profile: args.profile ?? "release",
+            kind: args.kind ?? null,
+            program: args.program ?? null,
+          },
+        })
+        setLastBuildReport(report)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setProgramBusy(false)
+      }
+    },
+    [],
+  )
+
+  const upgradeCheck = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      localSoPath: string
+      expectedAuthority: string
+      localIdlPath?: string | null
+      maxProgramSizeBytes?: number | null
+      localSoSizeBytes?: number | null
+      rpcUrl?: string | null
+    }): Promise<UpgradeSafetyReport | null> => {
+      if (!isTauri()) return null
+      setProgramBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<UpgradeSafetyReport>(
+          "solana_program_upgrade_check",
+          {
+            request: {
+              programId: args.programId,
+              cluster: args.cluster,
+              localSoPath: args.localSoPath,
+              expectedAuthority: args.expectedAuthority,
+              localIdlPath: args.localIdlPath ?? null,
+              maxProgramSizeBytes: args.maxProgramSizeBytes ?? null,
+              localSoSizeBytes: args.localSoSizeBytes ?? null,
+              rpcUrl: args.rpcUrl ?? null,
+            },
+          },
+        )
+        setLastUpgradeSafety(report)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setProgramBusy(false)
+      }
+    },
+    [],
+  )
+
+  const deployProgram = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      soPath: string
+      authority: DeployAuthority
+      idlPath?: string | null
+      isFirstDeploy?: boolean
+      post?: PostDeployOptions | null
+      rpcUrl?: string | null
+    }): Promise<DeployResult | null> => {
+      if (!isTauri()) return null
+      setProgramBusy(true)
+      setError(null)
+      try {
+        const result = await invoke<DeployResult>("solana_program_deploy", {
+          request: {
+            programId: args.programId,
+            cluster: args.cluster,
+            soPath: args.soPath,
+            authority: args.authority,
+            idlPath: args.idlPath ?? null,
+            isFirstDeploy: args.isFirstDeploy ?? false,
+            post: args.post ?? null,
+            rpcUrl: args.rpcUrl ?? null,
+          },
+        })
+        setLastDeployResult(result)
+        if (result.kind === "squads") {
+          setLastSquadsProposal(result.proposal)
+        }
+        return result
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setProgramBusy(false)
+      }
+    },
+    [],
+  )
+
+  const rollbackProgram = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      previousSha256: string
+      authority: DeployAuthority
+      programArchiveRoot?: string | null
+      post?: PostDeployOptions | null
+      rpcUrl?: string | null
+    }): Promise<RollbackResult | null> => {
+      if (!isTauri()) return null
+      setProgramBusy(true)
+      setError(null)
+      try {
+        const result = await invoke<RollbackResult>("solana_program_rollback", {
+          request: {
+            programId: args.programId,
+            cluster: args.cluster,
+            previousSha256: args.previousSha256,
+            authority: args.authority,
+            programArchiveRoot: args.programArchiveRoot ?? null,
+            post: args.post ?? null,
+            rpcUrl: args.rpcUrl ?? null,
+          },
+        })
+        setLastRollback(result)
+        setLastDeployResult(result.deploy)
+        return result
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setProgramBusy(false)
+      }
+    },
+    [],
+  )
+
+  const createSquadsProposal = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      multisigPda: string
+      buffer: string
+      spill: string
+      creator: string
+      vaultIndex?: number | null
+      memo?: string | null
+    }): Promise<SquadsProposalDescriptor | null> => {
+      if (!isTauri()) return null
+      setProgramBusy(true)
+      setError(null)
+      try {
+        const descriptor = await invoke<SquadsProposalDescriptor>(
+          "solana_squads_proposal_create",
+          {
+            request: {
+              programId: args.programId,
+              cluster: args.cluster,
+              multisigPda: args.multisigPda,
+              buffer: args.buffer,
+              spill: args.spill,
+              creator: args.creator,
+              vaultIndex: args.vaultIndex ?? null,
+              memo: args.memo ?? null,
+            },
+          },
+        )
+        setLastSquadsProposal(descriptor)
+        return descriptor
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setProgramBusy(false)
+      }
+    },
+    [],
+  )
+
+  const submitVerifiedBuild = useCallback(
+    async (args: {
+      programId: string
+      cluster: ClusterKind
+      manifestPath: string
+      githubUrl: string
+      commitHash?: string | null
+      libraryName?: string | null
+      skipRemoteSubmit?: boolean
+    }): Promise<VerifiedBuildResult | null> => {
+      if (!isTauri()) return null
+      setProgramBusy(true)
+      setError(null)
+      try {
+        const report = await invoke<VerifiedBuildResult>(
+          "solana_verified_build_submit",
+          {
+            request: {
+              programId: args.programId,
+              cluster: args.cluster,
+              manifestPath: args.manifestPath,
+              githubUrl: args.githubUrl,
+              commitHash: args.commitHash ?? null,
+              libraryName: args.libraryName ?? null,
+              skipRemoteSubmit: args.skipRemoteSubmit ?? false,
+            },
+          },
+        )
+        setLastVerifiedBuild(report)
+        return report
+      } catch (err) {
+        setError(errorMessage(err))
+        return null
+      } finally {
+        setProgramBusy(false)
+      }
+    },
+    [],
+  )
+
   // Mount: probe toolchain + cluster catalogue + status + persona catalog.
   useEffect(() => {
     if (!active || !isTauri()) return
@@ -1569,5 +2067,18 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     scanPda,
     predictPda,
     analyseBumpPda,
+    programBusy,
+    lastBuildReport,
+    lastUpgradeSafety,
+    lastDeployResult,
+    lastSquadsProposal,
+    lastVerifiedBuild,
+    lastRollback,
+    buildProgram,
+    upgradeCheck,
+    deployProgram,
+    rollbackProgram,
+    createSquadsProposal,
+    submitVerifiedBuild,
   }
 }
