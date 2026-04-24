@@ -92,6 +92,49 @@ export function getCheckpointControlLoopEvidenceBadgeVariant(card: CheckpointCon
   return card.evidenceCount > 0 ? 'outline' : 'secondary'
 }
 
+export function getCheckpointControlLoopFailureBadgeVariant(card: CheckpointControlLoopCard): BadgeVariant {
+  switch (card.advancedFailureClass) {
+    case 'timeout':
+      return 'secondary'
+    case 'policy_permission':
+      return 'destructive'
+    case 'validation_runtime':
+      return 'outline'
+    default:
+      return 'outline'
+  }
+}
+
+export function getCheckpointControlLoopResumabilityBadgeVariant(card: CheckpointControlLoopCard): BadgeVariant {
+  switch (card.resumability) {
+    case 'resumable':
+      return 'default'
+    case 'awaiting_approval':
+      return 'secondary'
+    case 'not_resumable':
+      return 'destructive'
+    case 'unknown':
+      return 'outline'
+    default:
+      return 'outline'
+  }
+}
+
+export function getCheckpointControlLoopRecoveryBadgeVariant(card: CheckpointControlLoopCard): BadgeVariant {
+  switch (card.recoveryRecommendation) {
+    case 'approve_resume':
+      return 'default'
+    case 'retry':
+      return 'secondary'
+    case 'fix_permissions_policy':
+      return 'destructive'
+    case 'observe':
+      return 'outline'
+    default:
+      return 'outline'
+  }
+}
+
 export function getCheckpointControlLoopRecoveryAlertMeta(options: {
   controlLoop: NonNullable<AgentPaneView['checkpointControlLoop']>
   trustSnapshot: Pick<AgentTrustSnapshotView, 'syncState' | 'syncReason'>

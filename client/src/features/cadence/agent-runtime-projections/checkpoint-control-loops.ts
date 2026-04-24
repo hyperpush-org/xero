@@ -1,4 +1,6 @@
 import type {
+  AutonomousAdvancedFailureClass,
+  AutonomousAdvancedFailureRecoveryRecommendation,
   AutonomousUnitArtifactView,
   AutonomousUnitHistoryEntryView,
   NotificationBrokerActionView,
@@ -19,6 +21,12 @@ export type CheckpointControlLoopTruthSource =
   | 'live_hint_only'
   | 'durable_only'
   | 'recovered_durable'
+
+export type CheckpointControlLoopResumability = 'resumable' | 'awaiting_approval' | 'not_resumable' | 'unknown'
+
+export type CheckpointControlLoopRecoveryRecommendation =
+  | AutonomousAdvancedFailureRecoveryRecommendation
+  | 'observe'
 
 export interface CheckpointControlLoopEvidencePreview {
   artifactId: string
@@ -57,6 +65,16 @@ export interface CheckpointControlLoopCardView {
   resumeStateLabel: string
   resumeDetail: string
   resumeUpdatedAt: string | null
+  resumability: CheckpointControlLoopResumability
+  resumabilityLabel: string
+  resumabilityDetail: string
+  isResumable: boolean
+  advancedFailureClass: AutonomousAdvancedFailureClass | null
+  advancedFailureClassLabel: string | null
+  advancedFailureDiagnosticCode: string | null
+  recoveryRecommendation: CheckpointControlLoopRecoveryRecommendation
+  recoveryRecommendationLabel: string
+  recoveryRecommendationDetail: string
   brokerAction: NotificationBrokerActionView | null
   brokerStateLabel: string
   brokerStateDetail: string
@@ -291,6 +309,126 @@ function getLatestPolicyDeniedArtifact(
   card: CheckpointControlLoopCardAccumulator,
 ): AutonomousUnitArtifactView | null {
   return card.evidence.find((artifact) => artifact.isPolicyDenied) ?? null
+}
+
+function getLatestAdvancedFailureArtifact(
+  card: CheckpointControlLoopCardAccumulator,
+): AutonomousUnitArtifactView | null {
+  return card.evidence.find((artifact) => artifact.advancedFailureClass !== null) ?? null
+}
+
+function getCheckpointResumability(card: CheckpointControlLoopCardAccumulator): {
+  resumability: CheckpointControlLoopResumability
+  resumabilityLabel: string
+  resumabilityDetail: string
+  isResumable: boolean
+} {
+  const latestPolicyDenied = getLatestPolicyDeniedArtifact(card)
+
+  if (card.approval?.isPending || card.liveActionRequired) {
+    return {
+      resumability: 'awaiting_approval',
+      resumabilityLabel: 'Awaiting approval',
+      resumabilityDetail:
+        'This boundary is resumable once operator approval and durable resume rows are recorded.',
+      isResumable: true,
+    }
+  }
+
+  if (card.approval?.canResume || card.latestResume?.status === 'failed' || card.latestResume?.status === 'started') {
+    return {
+      resumability: 'resumable',
+      resumabilityLabel: 'Resumable',
+      resumabilityDetail:
+        'Cadence has a durable resume path for this action using the existing approve/reject/resume controls.',
+      isResumable: true,
+    }
+  }
+
+  if (latestPolicyDenied) {
+    return {
+      resumability: 'not_resumable',
+      resumabilityLabel: 'Not resumable',
+      resumabilityDetail:
+        'Cadence recorded a hard denial for this action, so no operator resume path is available for this boundary.',
+      isResumable: false,
+    }
+  }
+
+  return {
+    resumability: 'unknown',
+    resumabilityLabel: 'Resumability unknown',
+    resumabilityDetail:
+      'Cadence has not observed enough durable approval or resume evidence to determine whether this boundary is resumable.',
+    isResumable: false,
+  }
+}
+
+function getCheckpointRecoveryRecommendationLabel(
+  recommendation: CheckpointControlLoopRecoveryRecommendation,
+): string {
+  switch (recommendation) {
+    case 'retry':
+      return 'Retry'
+    case 'approve_resume':
+      return 'Approve / resume'
+    case 'fix_permissions_policy':
+      return 'Fix permissions / policy'
+    case 'observe':
+      return 'Observe durable state'
+  }
+}
+
+function getCheckpointRecoveryState(options: {
+  card: CheckpointControlLoopCardAccumulator
+  resumability: ReturnType<typeof getCheckpointResumability>
+}): {
+  advancedFailureClass: AutonomousAdvancedFailureClass | null
+  advancedFailureClassLabel: string | null
+  advancedFailureDiagnosticCode: string | null
+  recoveryRecommendation: CheckpointControlLoopRecoveryRecommendation
+  recoveryRecommendationLabel: string
+  recoveryRecommendationDetail: string
+} {
+  const advancedFailureArtifact = getLatestAdvancedFailureArtifact(options.card)
+
+  if (options.resumability.resumability === 'awaiting_approval' || options.resumability.resumability === 'resumable') {
+    const recommendation: CheckpointControlLoopRecoveryRecommendation = 'approve_resume'
+    return {
+      advancedFailureClass: advancedFailureArtifact?.advancedFailureClass ?? null,
+      advancedFailureClassLabel: advancedFailureArtifact?.advancedFailureClassLabel ?? null,
+      advancedFailureDiagnosticCode: advancedFailureArtifact?.advancedFailureDiagnosticCode ?? null,
+      recoveryRecommendation: recommendation,
+      recoveryRecommendationLabel: getCheckpointRecoveryRecommendationLabel(recommendation),
+      recoveryRecommendationDetail:
+        'Use the existing approve/reject/resume controls for this action. Cadence will refresh durable truth after the decision is persisted.',
+    }
+  }
+
+  const artifactRecommendation = advancedFailureArtifact?.advancedFailureRecommendation
+  if (artifactRecommendation) {
+    return {
+      advancedFailureClass: advancedFailureArtifact?.advancedFailureClass ?? null,
+      advancedFailureClassLabel: advancedFailureArtifact?.advancedFailureClassLabel ?? null,
+      advancedFailureDiagnosticCode: advancedFailureArtifact?.advancedFailureDiagnosticCode ?? null,
+      recoveryRecommendation: artifactRecommendation,
+      recoveryRecommendationLabel: getCheckpointRecoveryRecommendationLabel(artifactRecommendation),
+      recoveryRecommendationDetail:
+        advancedFailureArtifact?.advancedFailureRecommendationDetail ??
+        'Cadence projected durable recovery guidance for this action from advanced failure evidence.',
+    }
+  }
+
+  const recommendation: CheckpointControlLoopRecoveryRecommendation = 'observe'
+  return {
+    advancedFailureClass: null,
+    advancedFailureClassLabel: null,
+    advancedFailureDiagnosticCode: null,
+    recoveryRecommendation: recommendation,
+    recoveryRecommendationLabel: getCheckpointRecoveryRecommendationLabel(recommendation),
+    recoveryRecommendationDetail:
+      'No typed advanced failure metadata is available yet. Keep the current durable state visible and wait for canonical evidence before retrying.',
+  }
 }
 
 function getCheckpointTruthSource(card: CheckpointControlLoopCardAccumulator): {
@@ -746,6 +884,8 @@ export function projectCheckpointControlLoops(options: {
       const liveState = getCheckpointLiveState(card)
       const durableState = getCheckpointDurableState(card)
       const resumeState = getCheckpointResumeState(card)
+      const resumability = getCheckpointResumability(card)
+      const recoveryState = getCheckpointRecoveryState({ card, resumability })
       const brokerState = getCheckpointBrokerState(card)
       const evidenceState = getCheckpointEvidenceState(card)
       const sortTimestamp = getCheckpointSortTimestamp(card)
@@ -772,6 +912,16 @@ export function projectCheckpointControlLoops(options: {
         resumeStateLabel: resumeState.resumeStateLabel,
         resumeDetail: resumeState.resumeDetail,
         resumeUpdatedAt: resumeState.resumeUpdatedAt,
+        resumability: resumability.resumability,
+        resumabilityLabel: resumability.resumabilityLabel,
+        resumabilityDetail: resumability.resumabilityDetail,
+        isResumable: resumability.isResumable,
+        advancedFailureClass: recoveryState.advancedFailureClass,
+        advancedFailureClassLabel: recoveryState.advancedFailureClassLabel,
+        advancedFailureDiagnosticCode: recoveryState.advancedFailureDiagnosticCode,
+        recoveryRecommendation: recoveryState.recoveryRecommendation,
+        recoveryRecommendationLabel: recoveryState.recoveryRecommendationLabel,
+        recoveryRecommendationDetail: recoveryState.recoveryRecommendationDetail,
         brokerAction: card.brokerAction,
         brokerStateLabel: brokerState.brokerStateLabel,
         brokerStateDetail: brokerState.brokerStateDetail,

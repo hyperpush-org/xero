@@ -457,6 +457,11 @@ export type AutonomousUnitAttemptDto = z.infer<typeof autonomousUnitAttemptSchem
 export type AutonomousUnitArtifactDto = z.infer<typeof autonomousUnitArtifactSchema>
 export type AutonomousUnitHistoryEntryDto = z.infer<typeof autonomousUnitHistoryEntrySchema>
 export type AutonomousRunStateDto = z.infer<typeof autonomousRunStateSchema>
+export type AutonomousAdvancedFailureClass = 'timeout' | 'policy_permission' | 'validation_runtime'
+export type AutonomousAdvancedFailureRecoveryRecommendation =
+  | 'retry'
+  | 'approve_resume'
+  | 'fix_permissions_policy'
 
 export interface AutonomousLifecycleReasonView {
   code: string
@@ -609,6 +614,12 @@ export interface AutonomousUnitArtifactView {
   verificationOutcome: AutonomousVerificationOutcomeDto | null
   verificationOutcomeLabel: string | null
   diagnosticCode: string | null
+  advancedFailureClass: AutonomousAdvancedFailureClass | null
+  advancedFailureClassLabel: string | null
+  advancedFailureDiagnosticCode: string | null
+  advancedFailureRecommendation: AutonomousAdvancedFailureRecoveryRecommendation | null
+  advancedFailureRecommendationLabel: string | null
+  advancedFailureRecommendationDetail: string | null
   actionId: string | null
   boundaryId: string | null
   isToolResult: boolean
@@ -971,6 +982,107 @@ function mapAutonomousCommandResult(commandResult: AutonomousCommandResultDto): 
   }
 }
 
+const ADVANCED_BROWSER_FAILURE_CODE_TO_CLASS: Record<string, AutonomousAdvancedFailureClass> = {
+  advanced_browser_failure_timeout: 'timeout',
+  advanced_browser_failure_policy_permission: 'policy_permission',
+  advanced_browser_failure_validation_runtime: 'validation_runtime',
+}
+
+function parseAdvancedBrowserFailureDiagnosticCode(value: string | null | undefined): string | null {
+  const normalizedValue = normalizeOptionalText(value)
+  if (!normalizedValue) {
+    return null
+  }
+
+  const [candidate] = normalizedValue.split(':', 1)
+  const normalizedCandidate = normalizeOptionalText(candidate)
+  if (!normalizedCandidate) {
+    return null
+  }
+
+  return normalizedCandidate in ADVANCED_BROWSER_FAILURE_CODE_TO_CLASS ? normalizedCandidate : null
+}
+
+function getAutonomousAdvancedFailureClassLabel(failureClass: AutonomousAdvancedFailureClass): string {
+  switch (failureClass) {
+    case 'timeout':
+      return 'Timeout'
+    case 'policy_permission':
+      return 'Policy / permission'
+    case 'validation_runtime':
+      return 'Validation / runtime'
+  }
+}
+
+function getAutonomousAdvancedFailureRecommendationLabel(
+  recommendation: AutonomousAdvancedFailureRecoveryRecommendation,
+): string {
+  switch (recommendation) {
+    case 'retry':
+      return 'Retry'
+    case 'approve_resume':
+      return 'Approve / resume'
+    case 'fix_permissions_policy':
+      return 'Fix permissions / policy'
+  }
+}
+
+function getAutonomousAdvancedFailureRecommendationDetail(
+  failureClass: AutonomousAdvancedFailureClass,
+): string {
+  switch (failureClass) {
+    case 'timeout':
+      return 'Browser/computer-use action timed out. Retry this boundary, increasing timeout if needed.'
+    case 'policy_permission':
+      return 'Browser/computer-use action was blocked by policy or permissions. Fix access or policy before retrying.'
+    case 'validation_runtime':
+      return 'Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry.'
+  }
+}
+
+function getAutonomousAdvancedFailureEvidence(artifact: AutonomousUnitArtifactDto): {
+  advancedFailureClass: AutonomousAdvancedFailureClass
+  advancedFailureDiagnosticCode: string
+  advancedFailureRecommendation: AutonomousAdvancedFailureRecoveryRecommendation
+} | null {
+  const payload = artifact.payload
+  if (!payload) {
+    return null
+  }
+
+  let advancedFailureDiagnosticCode: string | null = null
+
+  if (payload.kind === 'tool_result') {
+    const toolSummary = payload.toolSummary
+    if (toolSummary?.kind !== 'browser_computer_use') {
+      return null
+    }
+
+    if (toolSummary.status !== 'failed' && toolSummary.status !== 'blocked') {
+      return null
+    }
+
+    advancedFailureDiagnosticCode = parseAdvancedBrowserFailureDiagnosticCode(toolSummary.outcome)
+  }
+
+  if (payload.kind === 'policy_denied') {
+    advancedFailureDiagnosticCode = parseAdvancedBrowserFailureDiagnosticCode(payload.diagnosticCode)
+  }
+
+  if (!advancedFailureDiagnosticCode) {
+    return null
+  }
+
+  const advancedFailureClass = ADVANCED_BROWSER_FAILURE_CODE_TO_CLASS[advancedFailureDiagnosticCode]
+
+  return {
+    advancedFailureClass,
+    advancedFailureDiagnosticCode,
+    advancedFailureRecommendation:
+      advancedFailureClass === 'policy_permission' ? 'fix_permissions_policy' : 'retry',
+  }
+}
+
 function getAutonomousArtifactDetail(
   artifact: AutonomousUnitArtifactDto,
   commandResult: AutonomousCommandResultView | null,
@@ -1007,6 +1119,12 @@ export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): Auto
   let verificationOutcome: AutonomousVerificationOutcomeDto | null = null
   let verificationOutcomeLabel: string | null = null
   let diagnosticCode: string | null = null
+  let advancedFailureClass: AutonomousAdvancedFailureClass | null = null
+  let advancedFailureClassLabel: string | null = null
+  let advancedFailureDiagnosticCode: string | null = null
+  let advancedFailureRecommendation: AutonomousAdvancedFailureRecoveryRecommendation | null = null
+  let advancedFailureRecommendationLabel: string | null = null
+  let advancedFailureRecommendationDetail: string | null = null
   let actionId: string | null = null
   let boundaryId: string | null = null
 
@@ -1034,6 +1152,16 @@ export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): Auto
       break
   }
 
+  const advancedFailureEvidence = getAutonomousAdvancedFailureEvidence(artifact)
+  if (advancedFailureEvidence) {
+    advancedFailureClass = advancedFailureEvidence.advancedFailureClass
+    advancedFailureClassLabel = getAutonomousAdvancedFailureClassLabel(advancedFailureClass)
+    advancedFailureDiagnosticCode = advancedFailureEvidence.advancedFailureDiagnosticCode
+    advancedFailureRecommendation = advancedFailureEvidence.advancedFailureRecommendation
+    advancedFailureRecommendationLabel = getAutonomousAdvancedFailureRecommendationLabel(advancedFailureRecommendation)
+    advancedFailureRecommendationDetail = getAutonomousAdvancedFailureRecommendationDetail(advancedFailureClass)
+  }
+
   return {
     projectId: artifact.projectId,
     runId: artifact.runId,
@@ -1059,6 +1187,12 @@ export function mapAutonomousArtifact(artifact: AutonomousUnitArtifactDto): Auto
     verificationOutcome,
     verificationOutcomeLabel,
     diagnosticCode,
+    advancedFailureClass,
+    advancedFailureClassLabel,
+    advancedFailureDiagnosticCode,
+    advancedFailureRecommendation,
+    advancedFailureRecommendationLabel,
+    advancedFailureRecommendationDetail,
     actionId,
     boundaryId,
     isToolResult: artifact.artifactKind === 'tool_result',

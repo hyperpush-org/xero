@@ -11,7 +11,10 @@ import {
   getCheckpointControlLoopCoverageAlertMeta,
   getCheckpointControlLoopDurableBadgeVariant,
   getCheckpointControlLoopEvidenceBadgeVariant,
+  getCheckpointControlLoopFailureBadgeVariant,
   getCheckpointControlLoopRecoveryAlertMeta,
+  getCheckpointControlLoopRecoveryBadgeVariant,
+  getCheckpointControlLoopResumabilityBadgeVariant,
   getCheckpointControlLoopTruthBadgeVariant,
   getPerActionResumeStateMeta,
 } from './checkpoint-control-loop-helpers'
@@ -201,6 +204,17 @@ function CheckpointControlLoopCardView({
             <p className="text-sm font-semibold text-foreground">{card.title}</p>
             <Badge variant={getCheckpointControlLoopTruthBadgeVariant(card.truthSource)}>{card.truthSourceLabel}</Badge>
             <Badge variant={getCheckpointControlLoopDurableBadgeVariant(card)}>{card.durableStateLabel}</Badge>
+            {card.advancedFailureClassLabel ? (
+              <Badge variant={getCheckpointControlLoopFailureBadgeVariant(card)}>
+                {card.advancedFailureClassLabel}
+              </Badge>
+            ) : null}
+            <Badge variant={getCheckpointControlLoopResumabilityBadgeVariant(card)}>
+              {displayValue(card.resumabilityLabel, 'Resumability unknown')}
+            </Badge>
+            <Badge variant={getCheckpointControlLoopRecoveryBadgeVariant(card)}>
+              {displayValue(card.recoveryRecommendationLabel, 'Observe durable state')}
+            </Badge>
             <Badge variant={resumeMeta.badgeVariant}>{resumeMeta.label}</Badge>
           </div>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{card.detail}</p>
@@ -209,6 +223,21 @@ function CheckpointControlLoopCardView({
           </p>
           {card.gateLinkageLabel ? <p className="mt-2 text-[11px] text-muted-foreground">{card.gateLinkageLabel}</p> : null}
           <p className="mt-2 text-[11px] text-muted-foreground">{card.truthSourceDetail}</p>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Failure class {displayValue(card.advancedFailureClassLabel, 'Not classified')}
+            {card.advancedFailureDiagnosticCode ? ` · ${card.advancedFailureDiagnosticCode}` : ''}
+          </p>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Resumability {displayValue(card.resumabilityLabel, 'Resumability unknown')} ·{' '}
+            {displayValue(card.resumabilityDetail, 'Cadence has not observed enough durable approval or resume evidence yet.')}
+          </p>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Recovery guidance {displayValue(card.recoveryRecommendationLabel, 'Observe durable state')} ·{' '}
+            {displayValue(
+              card.recoveryRecommendationDetail,
+              'No typed advanced failure metadata is available yet. Keep the current durable state visible and wait for canonical evidence before retrying.',
+            )}
+          </p>
         </div>
       </div>
 

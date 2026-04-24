@@ -3,67 +3,69 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Xero x Helius Partnership Pitch Deck</title>
+    <title>Xero × Helius · Partnership proposal</title>
     <style>
       @font-face {
         font-family: "Geist";
         src: url("../landing/node_modules/.pnpm/next@16.2.0_react-dom@19.2.4_react@19.2.4__react@19.2.4/node_modules/next/dist/next-devtools/server/font/geist-latin.woff2") format("woff2");
         font-weight: 100 900;
+        font-display: swap;
       }
 
       @font-face {
         font-family: "Geist Mono";
         src: url("../landing/node_modules/.pnpm/next@16.2.0_react-dom@19.2.4_react@19.2.4__react@19.2.4/node_modules/next/dist/next-devtools/server/font/geist-mono-latin.woff2") format("woff2");
         font-weight: 100 900;
+        font-display: swap;
       }
 
       :root {
         --w: 1600px;
         --h: 900px;
-        --bg: #101010;
-        --bg-2: #121212;
-        --panel: #1a1a1a;
-        --panel-2: #242423;
-        --line: #2d2d2d;
-        --line-2: rgba(212, 165, 116, 0.26);
+
+        --bg: #121212;
+        --bg-deep: #0d0d0d;
+        --card: #1a1a1a;
+        --card-soft: rgba(26, 26, 26, 0.64);
+        --elev: #242423;
+
+        --line: rgba(45, 45, 45, 0.9);
+        --line-soft: rgba(45, 45, 45, 0.55);
+        --line-gold: rgba(212, 165, 116, 0.22);
+
         --text: #f8f9fa;
+        --text-dim: #d6d8dc;
         --muted: #a8aeb5;
-        --muted-2: #6f747b;
+        --muted-2: #7a7f86;
+
         --gold: #d4a574;
-        --gold-2: #e8c890;
-        --brown: #4e3f30;
-        --green: #14f195;
-        --cyan: #00c2ff;
-        --pink: #dc1fff;
-        --red: #ef4444;
-        --radius: 18px;
+        --gold-soft: rgba(212, 165, 116, 0.08);
+        --gold-ring: rgba(212, 165, 116, 0.32);
+
+        --radius: 14px;
+        --radius-lg: 22px;
+
         font-family: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
 
-      html,
-      body {
+      html, body {
         margin: 0;
         background: #050505;
         color: var(--text);
         letter-spacing: 0;
+        font-feature-settings: "ss01", "cv11";
       }
 
-      body {
-        width: var(--w);
-      }
+      body { width: var(--w); }
 
       @page {
         size: 1600px 900px;
         margin: 0;
       }
 
-      .deck {
-        width: var(--w);
-      }
+      .deck { width: var(--w); }
 
       .slide {
         position: relative;
@@ -73,737 +75,835 @@
         isolation: isolate;
         page-break-after: always;
         break-after: page;
-        background:
-          linear-gradient(rgba(212, 165, 116, 0.045) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(212, 165, 116, 0.045) 1px, transparent 1px),
-          linear-gradient(135deg, #101010 0%, #121212 45%, #090909 100%);
-        background-size: 48px 48px, 48px 48px, auto;
+        background: var(--bg);
       }
 
+      /* Subtle grid + radial fade — matches landing utilities */
       .slide::before {
         content: "";
         position: absolute;
         inset: 0;
-        z-index: -2;
-        background:
-          linear-gradient(180deg, rgba(212, 165, 116, 0.11), transparent 34%),
-          linear-gradient(120deg, transparent 0%, rgba(20, 241, 149, 0.06) 46%, transparent 70%),
-          linear-gradient(300deg, transparent 0%, rgba(0, 194, 255, 0.05) 42%, transparent 68%);
+        z-index: 0;
+        background-image:
+          linear-gradient(to right, rgba(45, 45, 45, 0.6) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(45, 45, 45, 0.6) 1px, transparent 1px);
+        background-size: 56px 56px;
+        opacity: 0.22;
+        mask-image: radial-gradient(ellipse at center, black 15%, transparent 78%);
       }
 
       .slide::after {
         content: "";
         position: absolute;
         inset: 0;
-        z-index: -1;
-        background:
-          linear-gradient(90deg, rgba(0, 0, 0, 0.42), transparent 20%, transparent 80%, rgba(0, 0, 0, 0.36)),
-          linear-gradient(180deg, rgba(0, 0, 0, 0.22), transparent 28%, rgba(0, 0, 0, 0.35));
+        z-index: 0;
+        background: radial-gradient(ellipse at top, rgba(212, 165, 116, 0.06) 0%, transparent 55%);
       }
 
       .frame {
         position: absolute;
-        inset: 54px 70px 46px 70px;
+        inset: 58px 80px 60px 80px;
+        z-index: 1;
         display: flex;
         flex-direction: column;
       }
 
-      .brand-bar {
+      /* -------- Top brand strip -------- */
+      .strip {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 34px;
+        height: 30px;
         color: var(--muted);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 15px;
       }
 
-      .brand-mini {
+      .mark {
         display: flex;
         align-items: center;
-        gap: 12px;
-        min-width: 0;
+        gap: 14px;
       }
 
-      .brand-mini img {
-        width: 92px;
+      .mark img {
+        width: 76px;
         height: auto;
         display: block;
+        opacity: 0.95;
       }
 
-      .brand-mini .slash {
+      .mark .sep {
         width: 1px;
-        height: 20px;
+        height: 16px;
         background: var(--line);
       }
 
-      .confidential {
-        text-transform: uppercase;
-        letter-spacing: 0.17em;
+      .mark .tag {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
-        color: #7e838a;
+        letter-spacing: 0.02em;
+        color: var(--muted);
       }
 
-      h1,
-      h2,
-      h3,
-      p {
-        margin: 0;
+      .meta {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted-2);
+      }
+
+      /* -------- Typography -------- */
+      h1, h2, h3, p, ul { margin: 0; padding: 0; }
+
+      .eyebrow {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.22em;
+        color: var(--gold);
       }
 
       h1 {
-        font-size: 84px;
-        line-height: 0.95;
-        font-weight: 560;
+        font-size: 88px;
+        line-height: 0.96;
+        font-weight: 500;
+        letter-spacing: -0.02em;
         max-width: 1080px;
       }
 
       h2 {
-        font-size: 60px;
-        line-height: 1;
-        font-weight: 540;
-        max-width: 1040px;
+        font-size: 54px;
+        line-height: 1.02;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        max-width: 1020px;
       }
 
       h3 {
-        font-size: 27px;
-        line-height: 1.08;
-        font-weight: 520;
+        font-size: 22px;
+        line-height: 1.2;
+        font-weight: 500;
+        letter-spacing: -0.005em;
       }
 
-      .eyebrow {
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        color: var(--gold);
-        text-transform: uppercase;
-        letter-spacing: 0.2em;
-        font-size: 13px;
-        font-weight: 600;
+      .lead {
+        margin-top: 20px;
+        color: var(--text-dim);
+        font-size: 22px;
+        line-height: 1.4;
+        max-width: 880px;
+        font-weight: 400;
       }
 
-      .subhead {
-        margin-top: 24px;
-        color: #c8cbd0;
-        font-size: 27px;
-        line-height: 1.28;
-        max-width: 960px;
-      }
+      .muted { color: var(--muted); }
+      .dim { color: var(--text-dim); }
+      .gold { color: var(--gold); }
+      .mono { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-      .muted {
-        color: var(--muted);
-      }
-
-      .gold {
-        color: var(--gold);
-      }
-
-      .green {
-        color: var(--green);
-      }
-
-      .cyan {
-        color: var(--cyan);
-      }
-
-      .mono {
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      }
-
-      .pill {
+      /* -------- Chips / pills -------- */
+      .chip {
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        border: 1px solid rgba(212, 165, 116, 0.28);
-        background: rgba(36, 36, 35, 0.72);
-        color: #d8dadf;
+        border: 1px solid var(--line);
+        background: rgba(36, 36, 35, 0.48);
+        color: var(--muted);
         border-radius: 999px;
-        padding: 8px 13px;
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 13px;
-        white-space: nowrap;
+        padding: 5px 12px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
       }
 
-      .dot {
-        width: 7px;
-        height: 7px;
+      .chip .d {
+        width: 5px;
+        height: 5px;
         border-radius: 999px;
         background: var(--gold);
-        box-shadow: 0 0 16px rgba(212, 165, 116, 0.7);
+        box-shadow: 0 0 10px rgba(212, 165, 116, 0.6);
       }
 
-      .tiny-source {
+      .chip.gold {
+        border-color: var(--gold-ring);
+        background: var(--gold-soft);
+        color: var(--text);
+      }
+
+      /* -------- Footer -------- */
+      .foot-num {
         position: absolute;
-        left: 70px;
-        right: 70px;
-        bottom: 25px;
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        right: 80px;
+        bottom: 30px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--muted-2);
+        letter-spacing: 0.08em;
+        z-index: 2;
+      }
+
+      .source {
+        position: absolute;
+        left: 80px;
+        right: 180px;
+        bottom: 30px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 10px;
-        line-height: 1.45;
-        color: rgba(168, 174, 181, 0.62);
+        line-height: 1.5;
+        color: rgba(168, 174, 181, 0.5);
+        letter-spacing: 0.01em;
+        z-index: 2;
       }
 
-      .footer-num {
-        position: absolute;
-        right: 70px;
-        bottom: 25px;
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 12px;
-        color: rgba(168, 174, 181, 0.55);
-      }
-
+      /* =========================================================
+         SLIDE 01 — Cover
+         ========================================================= */
       .cover-grid {
         flex: 1;
         display: grid;
-        grid-template-columns: 0.96fr 1.04fr;
-        gap: 48px;
+        grid-template-columns: 1fr 1fr;
+        gap: 60px;
         align-items: center;
+        margin-top: 10px;
       }
 
       .cover-logo {
-        width: 220px;
+        width: 140px;
         height: auto;
-        margin-bottom: 34px;
+        margin-bottom: 48px;
+        opacity: 0.98;
       }
 
       .cover-title {
-        font-size: 94px;
+        font-size: 92px;
         line-height: 0.94;
-        font-weight: 560;
-        max-width: 720px;
+        font-weight: 500;
+        letter-spacing: -0.022em;
+        max-width: 680px;
       }
 
-      .cover-subline {
-        margin-top: 24px;
-        max-width: 820px;
-        font-size: 25px;
-        line-height: 1.27;
-        color: #cfd2d6;
-      }
+      .cover-title .soft { color: var(--muted); }
 
-      .cover-meta {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-        margin-top: 28px;
-      }
-
-      .signal-panel {
-        position: relative;
-        height: 565px;
-        border: 1px solid rgba(212, 165, 116, 0.18);
-        background: rgba(16, 16, 16, 0.72);
-        border-radius: 30px;
-        overflow: hidden;
-        box-shadow: 0 50px 140px rgba(0, 0, 0, 0.55);
-      }
-
-      .signal-panel::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background:
-          linear-gradient(90deg, rgba(212, 165, 116, 0.07) 1px, transparent 1px),
-          linear-gradient(rgba(212, 165, 116, 0.07) 1px, transparent 1px);
-        background-size: 60px 60px;
-        mask-image: linear-gradient(180deg, black, transparent 95%);
-      }
-
-      .signal-code {
-        position: absolute;
-        left: 34px;
-        right: 34px;
-        top: 28px;
-        display: grid;
-        gap: 11px;
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 14px;
-        color: #d7d2c8;
-      }
-
-      .code-row {
-        display: grid;
-        grid-template-columns: 82px 1fr;
-        gap: 16px;
-        padding: 12px 16px;
-        border: 1px solid rgba(45, 45, 45, 0.86);
-        background: rgba(26, 26, 26, 0.72);
-        border-radius: 12px;
-      }
-
-      .code-row strong {
-        color: var(--gold);
-        font-weight: 560;
-      }
-
-      .signal-bottom {
-        position: absolute;
-        left: 34px;
-        right: 34px;
-        bottom: 24px;
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 14px;
-      }
-
-      .metric-chip {
-        border: 1px solid rgba(212, 165, 116, 0.2);
-        background: rgba(212, 165, 116, 0.07);
-        border-radius: 16px;
-        padding: 14px;
-      }
-
-      .metric-chip .value {
-        font-size: 32px;
-        font-weight: 560;
-        color: var(--text);
-      }
-
-      .metric-chip .label {
-        margin-top: 6px;
-        font-size: 11px;
-        line-height: 1.35;
-        color: var(--muted);
-      }
-
-      .two-col {
-        flex: 1;
-        display: grid;
-        grid-template-columns: 0.92fr 1.08fr;
-        gap: 58px;
-        align-items: center;
-      }
-
-      .flow-map {
-        position: relative;
-        height: 620px;
-      }
-
-      .flow-node {
-        position: absolute;
-        min-width: 224px;
-        border: 1px solid rgba(168, 174, 181, 0.18);
-        background: rgba(26, 26, 26, 0.74);
-        border-radius: 17px;
-        padding: 18px 18px 16px;
-        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.25);
-      }
-
-      .flow-node.primary {
-        border-color: rgba(212, 165, 116, 0.36);
-        background: rgba(212, 165, 116, 0.1);
-      }
-
-      .flow-node strong {
-        display: block;
+      .cover-sub {
+        margin-top: 26px;
+        max-width: 580px;
+        color: var(--text-dim);
         font-size: 20px;
-        font-weight: 540;
+        line-height: 1.45;
       }
 
-      .flow-node span {
-        display: block;
-        margin-top: 7px;
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.35;
-      }
-
-      .flow-line {
-        position: absolute;
-        height: 2px;
-        transform-origin: left center;
-        background: linear-gradient(90deg, rgba(212, 165, 116, 0.72), rgba(20, 241, 149, 0.22));
-      }
-
-      .pain-list {
-        display: grid;
-        gap: 16px;
-      }
-
-      .pain {
-        display: grid;
-        grid-template-columns: 40px 1fr;
-        gap: 16px;
-        align-items: start;
-      }
-
-      .pain-index {
-        display: grid;
-        place-items: center;
-        width: 40px;
-        height: 40px;
-        border-radius: 12px;
-        color: var(--gold);
-        border: 1px solid rgba(212, 165, 116, 0.25);
-        background: rgba(212, 165, 116, 0.08);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 13px;
-      }
-
-      .pain h3 {
-        font-size: 23px;
-      }
-
-      .pain p {
-        margin-top: 7px;
-        color: var(--muted);
-        font-size: 18px;
-        line-height: 1.38;
-      }
-
-      .window {
-        overflow: hidden;
-        border: 1px solid rgba(212, 165, 116, 0.19);
-        background: rgba(18, 18, 18, 0.92);
-        border-radius: 18px;
-        box-shadow: 0 45px 120px rgba(0, 0, 0, 0.48);
-      }
-
-      .window-top {
-        height: 44px;
+      .cover-chips {
         display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 0 18px;
-        border-bottom: 1px solid rgba(45, 45, 45, 0.88);
-        background: rgba(36, 36, 35, 0.5);
-      }
-
-      .traffic {
-        display: flex;
-        gap: 7px;
-      }
-
-      .traffic span {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-      }
-
-      .traffic span:nth-child(1) { background: rgba(255, 95, 87, 0.84); }
-      .traffic span:nth-child(2) { background: rgba(254, 188, 46, 0.84); }
-      .traffic span:nth-child(3) { background: rgba(40, 200, 64, 0.84); }
-
-      .window-path {
-        margin-left: auto;
-        margin-right: auto;
-        border: 1px solid rgba(45, 45, 45, 0.88);
-        border-radius: 8px;
-        background: rgba(16, 16, 16, 0.74);
-        padding: 6px 14px;
-        color: var(--muted);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 12px;
-      }
-
-      .window-body {
-        display: grid;
-        grid-template-columns: 220px 1fr 316px;
-        min-height: 560px;
-      }
-
-      .rail {
-        border-right: 1px solid rgba(45, 45, 45, 0.82);
-        padding: 18px 14px;
-      }
-
-      .rail-title {
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-        font-size: 10px;
-        margin-bottom: 12px;
-      }
-
-      .file {
-        display: flex;
-        align-items: center;
         gap: 8px;
-        min-height: 28px;
-        border-radius: 7px;
-        padding: 6px 9px;
+        flex-wrap: wrap;
+        margin-top: 34px;
+      }
+
+      .loop-panel {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--card-soft);
+        border-radius: var(--radius-lg);
+        padding: 28px 30px;
+        box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.6);
+      }
+
+      .loop-panel .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--line-soft);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
         color: var(--muted);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 12px;
+        letter-spacing: 0.02em;
       }
 
-      .file.active {
-        color: var(--text);
-        background: rgba(36, 36, 35, 0.9);
+      .loop-panel .head .live {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--gold);
       }
 
-      .file .marker {
-        margin-left: auto;
+      .loop-panel .head .live::before {
+        content: "";
         width: 6px;
         height: 6px;
         border-radius: 50%;
         background: var(--gold);
+        box-shadow: 0 0 12px rgba(212, 165, 116, 0.7);
       }
 
-      .main-pane {
-        padding: 22px;
-        border-right: 1px solid rgba(45, 45, 45, 0.82);
+      .loop-rows {
+        display: grid;
+        gap: 0;
+        padding: 6px 0;
       }
 
-      .cluster-line {
-        display: flex;
+      .loop-row {
+        display: grid;
+        grid-template-columns: 84px 1fr auto;
+        gap: 18px;
+        padding: 14px 0;
         align-items: center;
-        justify-content: space-between;
-        border: 1px solid rgba(212, 165, 116, 0.24);
-        background: rgba(212, 165, 116, 0.065);
-        border-radius: 14px;
-        padding: 14px 16px;
+        border-bottom: 1px dashed var(--line-soft);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
       }
 
-      .cluster-line strong {
-        font-size: 18px;
-        font-weight: 540;
+      .loop-row:last-child { border-bottom: 0; }
+
+      .loop-row .step {
+        color: var(--gold);
+        letter-spacing: 0.06em;
+        text-transform: lowercase;
+        font-size: 11px;
       }
 
-      .cluster-line span {
+      .loop-row .desc { color: var(--text-dim); }
+
+      .loop-row .ok {
+        font-size: 10px;
+        color: var(--muted-2);
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .loop-row.active .desc { color: var(--text); }
+      .loop-row.active { background: linear-gradient(90deg, rgba(212, 165, 116, 0.06), transparent 70%); }
+
+      .loop-footer {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .loop-footer .cell {
+        padding-right: 18px;
+        border-right: 1px solid var(--line-soft);
+      }
+
+      .loop-footer .cell:last-child { border-right: 0; padding-right: 0; padding-left: 18px; }
+      .loop-footer .cell:not(:first-child) { padding-left: 18px; }
+
+      .loop-footer .num {
+        font-size: 36px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        color: var(--text);
+      }
+
+      .loop-footer .cap {
+        margin-top: 4px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
         color: var(--muted);
-        font-size: 13px;
+        line-height: 1.4;
+        letter-spacing: 0.04em;
       }
 
-      .trace {
-        margin-top: 20px;
-        display: grid;
-        gap: 10px;
+      /* =========================================================
+         SLIDE 02 — The gap
+         ========================================================= */
+      .top {
+        padding-top: 40px;
       }
 
-      .trace-row {
+      .top .eyebrow + h2 { margin-top: 18px; }
+      .top h2 + .lead { margin-top: 22px; }
+
+      .body-2col {
+        flex: 1;
         display: grid;
-        grid-template-columns: 86px 1fr 58px;
+        grid-template-columns: 1fr 1fr;
+        gap: 80px;
         align-items: center;
-        gap: 12px;
-        border: 1px solid rgba(45, 45, 45, 0.88);
-        background: rgba(26, 26, 26, 0.7);
-        border-radius: 11px;
-        padding: 12px 14px;
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 13px;
+        padding-top: 40px;
       }
 
-      .trace-row .phase {
+      .fragments {
+        position: relative;
+        height: 520px;
+      }
+
+      .frag {
+        position: absolute;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius);
+        padding: 18px 20px;
+        min-width: 220px;
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.35);
+      }
+
+      .frag .lbl {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
         color: var(--gold);
       }
 
-      .trace-row .ok {
-        color: var(--green);
-        text-align: right;
+      .frag strong {
+        display: block;
+        margin-top: 10px;
+        font-size: 20px;
+        font-weight: 500;
       }
 
-      .side-pane {
+      .frag span {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .frag-line {
+        position: absolute;
+        height: 1px;
+        transform-origin: left center;
+        background: linear-gradient(90deg, var(--line-gold), transparent);
+      }
+
+      .pains {
+        display: grid;
+        gap: 26px;
+      }
+
+      .pain {
+        display: grid;
+        grid-template-columns: 44px 1fr;
+        gap: 18px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+      }
+
+      .pain .idx {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        padding-top: 4px;
+      }
+
+      .pain h3 { font-size: 22px; letter-spacing: -0.01em; }
+
+      .pain p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.45;
+      }
+
+      /* =========================================================
+         SLIDE 03 — App window mock
+         ========================================================= */
+      .window {
+        margin-top: 36px;
+        flex: 1;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 40px 100px -20px rgba(0, 0, 0, 0.65);
+      }
+
+      .win-top {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(36, 36, 35, 0.4);
+      }
+
+      .win-top .dots { display: flex; gap: 7px; }
+      .win-top .dots span {
+        width: 11px; height: 11px; border-radius: 50%;
+      }
+      .win-top .dots span:nth-child(1) { background: rgba(255, 95, 87, 0.82); }
+      .win-top .dots span:nth-child(2) { background: rgba(254, 188, 46, 0.82); }
+      .win-top .dots span:nth-child(3) { background: rgba(40, 200, 64, 0.82); }
+
+      .win-path {
+        margin: 0 auto;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: rgba(16, 16, 16, 0.7);
+        padding: 5px 14px;
+        color: var(--muted);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+
+      .win-path .branch { color: var(--gold); }
+
+      .win-mem {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+
+      .win-body {
+        display: grid;
+        grid-template-columns: 240px 1fr 330px;
+        min-height: 520px;
+      }
+
+      .win-rail {
+        border-right: 1px solid var(--line);
+        padding: 18px 16px;
+      }
+
+      .rail-h {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted-2);
+        margin: 0 0 10px 6px;
+      }
+
+      .rail-h + .rail-h { margin-top: 22px; }
+
+      .file-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 10px;
+        margin: 1px 0;
+        border-radius: 6px;
+        color: var(--muted);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .file-row.on {
+        color: var(--text);
+        background: rgba(212, 165, 116, 0.08);
+      }
+
+      .file-row .dot {
+        margin-left: auto;
+        width: 5px; height: 5px;
+        border-radius: 50%;
+        background: var(--gold);
+      }
+
+      .win-main {
+        padding: 22px;
+        border-right: 1px solid var(--line);
+      }
+
+      .main-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid var(--line-gold);
+        background: var(--gold-soft);
+        border-radius: 12px;
+        padding: 14px 16px;
+      }
+
+      .main-head strong {
+        font-size: 17px;
+        font-weight: 500;
+      }
+
+      .main-head .sub {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        letter-spacing: 0.01em;
+      }
+
+      .trace {
+        margin-top: 18px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .tr {
+        display: grid;
+        grid-template-columns: 88px 1fr 56px;
+        align-items: center;
+        gap: 14px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        background: rgba(16, 16, 16, 0.55);
+        border-radius: 10px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .tr .ph { color: var(--gold); letter-spacing: 0.04em; }
+      .tr .m { color: var(--text-dim); }
+      .tr .ok { color: var(--gold); text-align: right; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+
+      .outcomes {
+        margin-top: 22px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0;
+      }
+
+      .outc {
+        padding: 14px 20px 4px 0;
+        border-right: 1px solid var(--line);
+      }
+
+      .outc:last-child { border-right: 0; padding-right: 0; }
+      .outc:not(:first-child) { padding-left: 20px; }
+
+      .outc strong {
+        display: block;
+        font-size: 15px;
+        font-weight: 500;
+        color: var(--text);
+      }
+
+      .outc span {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .win-side {
         padding: 20px;
       }
 
-      .chat-card {
-        border: 1px solid rgba(45, 45, 45, 0.88);
-        background: rgba(16, 16, 16, 0.72);
-        border-radius: 16px;
+      .chat {
+        border: 1px solid var(--line);
+        background: rgba(16, 16, 16, 0.5);
+        border-radius: 12px;
         overflow: hidden;
       }
 
       .chat-head {
         display: flex;
-        align-items: center;
         justify-content: space-between;
         padding: 12px 14px;
-        border-bottom: 1px solid rgba(45, 45, 45, 0.88);
-        font-size: 13px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
       }
 
-      .chat-body {
-        display: grid;
-        gap: 12px;
-        padding: 14px;
+      .chat-head strong { font-weight: 500; }
+      .chat-head .live {
+        display: inline-flex; align-items: center; gap: 6px;
+        color: var(--gold);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
       }
+
+      .chat-head .live::before {
+        content: "";
+        width: 5px; height: 5px;
+        border-radius: 50%;
+        background: var(--gold);
+        box-shadow: 0 0 10px rgba(212, 165, 116, 0.6);
+      }
+
+      .chat-body { padding: 12px; display: grid; gap: 10px; }
 
       .bubble {
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.42;
+      }
+
+      .bubble.u { background: rgba(36, 36, 35, 0.7); color: var(--text-dim); }
+      .bubble.a {
+        background: rgba(212, 165, 116, 0.07);
+        border: 1px solid var(--line-gold);
+        color: var(--text-dim);
+      }
+
+      .credits {
+        margin-top: 16px;
+        border: 1px solid var(--line-gold);
+        background: var(--gold-soft);
         border-radius: 12px;
-        padding: 12px;
-        font-size: 13px;
-        line-height: 1.35;
-      }
-
-      .bubble.user {
-        background: rgba(36, 36, 35, 0.9);
-        color: #d7d9dc;
-      }
-
-      .bubble.lana {
-        background: rgba(20, 241, 149, 0.08);
-        border: 1px solid rgba(20, 241, 149, 0.18);
-      }
-
-      .meter {
-        margin-top: 18px;
-        border: 1px solid rgba(212, 165, 116, 0.24);
-        background: rgba(212, 165, 116, 0.06);
-        border-radius: 14px;
         padding: 14px;
       }
 
-      .meter-top {
-        display: flex;
-        justify-content: space-between;
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 12px;
+      .credits-h {
+        display: flex; justify-content: space-between;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
         color: var(--muted);
       }
 
-      .meter-bar {
-        margin-top: 12px;
-        height: 8px;
+      .bar {
+        margin-top: 10px;
+        height: 5px;
         border-radius: 999px;
-        background: rgba(45, 45, 45, 0.88);
+        background: rgba(45, 45, 45, 0.7);
         overflow: hidden;
       }
 
-      .meter-bar span {
+      .bar span {
         display: block;
         width: 62%;
         height: 100%;
-        background: linear-gradient(90deg, var(--gold), var(--green));
+        background: linear-gradient(90deg, var(--gold), rgba(212, 165, 116, 0.5));
       }
 
-      .benefit-strip {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 18px;
-        margin-top: 26px;
-      }
-
-      .benefit {
-        border-top: 1px solid rgba(212, 165, 116, 0.28);
-        padding-top: 16px;
-      }
-
-      .benefit strong {
-        display: block;
-        font-size: 21px;
-        font-weight: 530;
-      }
-
-      .benefit span {
-        display: block;
-        margin-top: 6px;
+      .credits p {
+        margin-top: 10px;
         color: var(--muted);
-        font-size: 15px;
-        line-height: 1.34;
+        font-size: 11px;
+        line-height: 1.4;
       }
 
-      .proof-layout {
+      /* =========================================================
+         SLIDE 04 — Product proof
+         ========================================================= */
+      .proof {
         flex: 1;
         display: grid;
-        grid-template-columns: 0.7fr 1.3fr;
-        gap: 46px;
+        grid-template-columns: 0.72fr 1.28fr;
+        gap: 64px;
         align-items: center;
+        padding-top: 36px;
       }
 
       .big-stat {
-        border-left: 3px solid var(--gold);
+        border-left: 2px solid var(--gold);
         padding-left: 28px;
       }
 
-      .big-stat .num {
-        font-size: 156px;
-        line-height: 0.9;
-        font-weight: 560;
+      .big-stat .n {
+        font-size: 168px;
+        line-height: 0.86;
+        font-weight: 500;
+        letter-spacing: -0.04em;
       }
 
-      .big-stat .caption {
-        margin-top: 18px;
-        font-size: 26px;
-        line-height: 1.2;
-        color: #d4d6da;
+      .big-stat .cap {
+        margin-top: 22px;
+        color: var(--text-dim);
+        font-size: 22px;
+        line-height: 1.35;
+        max-width: 340px;
       }
 
-      .capability-grid {
+      .caps {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 16px;
+        gap: 14px;
       }
 
-      .cap {
-        min-height: 154px;
-        border: 1px solid rgba(168, 174, 181, 0.16);
-        background: rgba(26, 26, 26, 0.68);
-        border-radius: 16px;
-        padding: 18px;
+      .cap-card {
+        padding: 20px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius);
+        min-height: 170px;
       }
 
-      .cap .tag {
-        display: inline-flex;
+      .cap-card .t {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
         color: var(--gold);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 11px;
         text-transform: uppercase;
-        letter-spacing: 0.13em;
-        margin-bottom: 13px;
+        letter-spacing: 0.18em;
       }
 
-      .cap h3 {
-        font-size: 22px;
+      .cap-card h3 {
+        margin-top: 12px;
+        font-size: 19px;
+        font-weight: 500;
       }
 
-      .cap p {
+      .cap-card p {
         margin-top: 9px;
         color: var(--muted);
-        font-size: 15px;
-        line-height: 1.36;
+        font-size: 13px;
+        line-height: 1.45;
       }
 
-      .hook-grid {
+      /* =========================================================
+         SLIDE 05 — LanaAI integration
+         ========================================================= */
+      .hooks {
         flex: 1;
         display: grid;
         grid-template-columns: repeat(2, 1fr);
-        gap: 22px;
+        gap: 0;
+        padding-top: 36px;
         align-content: center;
       }
 
       .hook {
-        display: grid;
-        grid-template-columns: 72px 1fr;
-        gap: 18px;
-        border-top: 1px solid rgba(212, 165, 116, 0.22);
-        padding-top: 22px;
+        padding: 26px 28px 26px 0;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
       }
 
-      .hook .hook-num {
-        font-size: 48px;
-        line-height: 1;
-        font-weight: 560;
-        color: rgba(212, 165, 116, 0.9);
+      .hook:nth-child(2n) { padding-right: 0; padding-left: 28px; border-right: 0; }
+      .hook:nth-child(n+3) { padding-bottom: 8px; }
+      .hook:nth-last-child(-n+2) { border-bottom: 0; padding-top: 28px; padding-bottom: 0; }
+
+      .hook .rowh {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
       }
 
-      .hook h3 {
-        font-size: 26px;
+      .hook .n {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 13px;
+        letter-spacing: 0.14em;
       }
+
+      .hook h3 { font-size: 24px; font-weight: 500; letter-spacing: -0.01em; }
 
       .hook p {
         margin-top: 10px;
-        font-size: 18px;
-        line-height: 1.38;
         color: var(--muted);
+        font-size: 16px;
+        line-height: 1.44;
+        max-width: 520px;
       }
 
       .banner {
-        border: 1px solid rgba(20, 241, 149, 0.2);
-        background: linear-gradient(90deg, rgba(20, 241, 149, 0.09), rgba(212, 165, 116, 0.06));
-        border-radius: 17px;
-        padding: 20px 24px;
-        color: #d8e5dc;
-        font-size: 22px;
-        line-height: 1.25;
+        margin-top: 26px;
+        border: 1px solid var(--line-gold);
+        background: linear-gradient(90deg, rgba(212, 165, 116, 0.08), rgba(212, 165, 116, 0.02));
+        border-radius: var(--radius);
+        padding: 20px 26px;
+        color: var(--text-dim);
+        font-size: 18px;
+        line-height: 1.45;
       }
 
-      .pricing-layout {
+      .banner .hi { color: var(--gold); }
+
+      /* =========================================================
+         SLIDE 06 — Pricing & bundle
+         ========================================================= */
+      .pricing {
         flex: 1;
         display: grid;
-        grid-template-columns: 0.95fr 1.05fr;
-        gap: 38px;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 42px;
         align-items: stretch;
-        margin-top: 36px;
+        padding-top: 36px;
       }
 
       .tiers {
@@ -813,781 +913,1239 @@
       }
 
       .tier {
-        border: 1px solid rgba(168, 174, 181, 0.16);
-        background: rgba(26, 26, 26, 0.74);
-        border-radius: 17px;
-        padding: 20px;
-        min-height: 370px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: 18px;
+        padding: 24px 22px;
+        min-height: 420px;
+        display: flex;
+        flex-direction: column;
       }
 
-      .tier.highlight {
-        border-color: rgba(212, 165, 116, 0.42);
-        background: rgba(212, 165, 116, 0.075);
+      .tier.hi {
+        border-color: var(--gold-ring);
+        background: rgba(212, 165, 116, 0.06);
+        box-shadow: 0 30px 80px -30px rgba(212, 165, 116, 0.18);
       }
 
       .tier .name {
-        font-size: 22px;
-        font-weight: 540;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 17px;
+        font-weight: 500;
+      }
+
+      .tier .ribbon {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        color: var(--gold);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
       }
 
       .tier .price {
-        margin-top: 26px;
-        font-size: 54px;
+        margin-top: 22px;
+        font-size: 48px;
         line-height: 1;
-        font-weight: 560;
+        letter-spacing: -0.025em;
+        font-weight: 500;
       }
 
-      .tier .period {
+      .tier .per {
+        margin-left: 6px;
+        font-size: 14px;
         color: var(--muted);
-        font-size: 15px;
       }
 
-      .tier p {
-        margin-top: 17px;
+      .tier .blurb {
+        margin-top: 14px;
         color: var(--muted);
-        font-size: 15px;
-        line-height: 1.36;
+        font-size: 13px;
+        line-height: 1.45;
+        min-height: 56px;
       }
 
-      .tier ul,
-      .partner-list ul {
-        margin: 20px 0 0;
-        padding: 0;
+      .tier ul {
         list-style: none;
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
         display: grid;
-        gap: 10px;
+        gap: 9px;
       }
 
-      .tier li,
-      .partner-list li {
+      .tier li {
         position: relative;
         padding-left: 18px;
-        color: #d8dadd;
-        font-size: 14px;
-        line-height: 1.32;
+        font-size: 12.5px;
+        color: var(--text-dim);
+        line-height: 1.38;
       }
 
-      .tier li::before,
-      .partner-list li::before {
+      .tier li::before {
         content: "";
         position: absolute;
         left: 0;
-        top: 0.62em;
-        width: 6px;
-        height: 6px;
+        top: 0.55em;
+        width: 5px; height: 5px;
         border-radius: 50%;
         background: var(--gold);
       }
 
-      .partner-list {
-        display: grid;
-        grid-template-rows: auto 1fr;
-        gap: 18px;
-        border: 1px solid rgba(20, 241, 149, 0.16);
-        background: rgba(20, 241, 149, 0.045);
+      .partner {
+        border: 1px solid var(--line);
+        background: var(--card-soft);
         border-radius: 18px;
-        padding: 24px;
-      }
-
-      .partner-list h3 {
-        font-size: 30px;
-      }
-
-      .partner-list .split {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 18px;
-      }
-
-      .market-layout {
-        flex: 1;
-        display: grid;
-        grid-template-columns: 0.96fr 1.04fr;
-        gap: 42px;
-        align-items: center;
-      }
-
-      .market-stat {
-        display: grid;
-        gap: 10px;
-      }
-
-      .stat-line {
-        padding: 0 0 16px;
-        border-bottom: 1px solid rgba(168, 174, 181, 0.17);
-      }
-
-      .stat-line .value {
-        font-size: 70px;
-        line-height: 0.95;
-        font-weight: 560;
-      }
-
-      .stat-line .label {
-        margin-top: 8px;
-        color: var(--muted);
-        font-size: 18px;
-        line-height: 1.25;
-      }
-
-      .why-now {
-        border: 1px solid rgba(212, 165, 116, 0.2);
-        background: rgba(26, 26, 26, 0.66);
-        border-radius: 20px;
         padding: 28px;
-      }
-
-      .why-now h3 {
-        font-size: 32px;
-      }
-
-      .why-now .row {
-        display: grid;
-        grid-template-columns: 120px 1fr;
-        gap: 20px;
-        padding: 19px 0;
-        border-bottom: 1px solid rgba(168, 174, 181, 0.13);
-      }
-
-      .why-now .row:last-child {
-        border-bottom: 0;
-        padding-bottom: 0;
-      }
-
-      .why-now .k {
-        color: var(--gold);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-      }
-
-      .why-now .v {
-        color: #d5d7db;
-        font-size: 19px;
-        line-height: 1.35;
-      }
-
-      .gtm-layout {
-        flex: 1;
-        display: grid;
-        grid-template-columns: 0.82fr 1.18fr;
-        gap: 42px;
-        align-items: stretch;
-        margin-top: 34px;
-      }
-
-      .rev-card {
-        border: 1px solid rgba(212, 165, 116, 0.2);
-        background: rgba(26, 26, 26, 0.68);
-        border-radius: 19px;
-        padding: 28px;
-      }
-
-      .rev-card h3 {
-        font-size: 31px;
-        margin-bottom: 22px;
-      }
-
-      .rev-card .line {
         display: flex;
-        justify-content: space-between;
-        gap: 18px;
-        padding: 14px 0;
-        border-bottom: 1px solid rgba(168, 174, 181, 0.13);
-        font-size: 18px;
+        flex-direction: column;
+        gap: 22px;
       }
 
-      .rev-card .line span:last-child {
-        color: var(--gold);
-        text-align: right;
+      .partner h3 {
+        font-size: 26px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
       }
 
-      .timeline {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 14px;
-      }
-
-      .week {
-        min-height: 326px;
-        border: 1px solid rgba(168, 174, 181, 0.16);
-        background: rgba(26, 26, 26, 0.64);
-        border-radius: 17px;
-        padding: 20px;
-      }
-
-      .week .range {
-        color: var(--gold);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 13px;
-      }
-
-      .week h3 {
-        margin-top: 18px;
-        font-size: 24px;
-      }
-
-      .week p {
-        margin-top: 14px;
+      .partner .intro {
         color: var(--muted);
-        font-size: 16px;
+        font-size: 15px;
+        line-height: 1.5;
+      }
+
+      .partner .pair {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 22px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+
+      .partner .pair h4 {
+        margin: 0 0 12px 0;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        color: var(--gold);
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        font-weight: 500;
+      }
+
+      .partner ul {
+        list-style: none;
+        display: grid;
+        gap: 8px;
+      }
+
+      .partner li {
+        position: relative;
+        padding-left: 16px;
+        color: var(--text-dim);
+        font-size: 13px;
         line-height: 1.38;
       }
 
-      .success {
-        margin-top: 18px;
-        border: 1px solid rgba(20, 241, 149, 0.22);
-        background: rgba(20, 241, 149, 0.06);
-        border-radius: 16px;
-        padding: 18px 20px;
-        font-size: 20px;
-        line-height: 1.32;
-        color: #d9eadf;
+      .partner li::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.55em;
+        width: 4px; height: 4px;
+        border-radius: 50%;
+        background: var(--gold);
       }
 
-      .mert-layout {
+      /* =========================================================
+         SLIDE 07 — Why now
+         ========================================================= */
+      .why {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 64px;
+        align-items: center;
+        padding-top: 36px;
+      }
+
+      .stats {
+        display: grid;
+        gap: 14px;
+        margin-top: 28px;
+      }
+
+      .stat {
+        padding: 20px 0;
+        border-bottom: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: 170px 1fr;
+        gap: 24px;
+        align-items: baseline;
+      }
+
+      .stat:last-child { border-bottom: 0; }
+
+      .stat .v {
+        font-size: 62px;
+        line-height: 0.9;
+        letter-spacing: -0.035em;
+        font-weight: 500;
+      }
+
+      .stat .l {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.45;
+      }
+
+      .why-card {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        padding: 30px 32px;
+      }
+
+      .why-card h3 {
+        font-size: 24px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+
+      .why-card .row {
+        display: grid;
+        grid-template-columns: 110px 1fr;
+        gap: 22px;
+        padding: 16px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .why-card .row:first-of-type { margin-top: 16px; padding-top: 0; }
+      .why-card .row:last-child { border-bottom: 0; padding-bottom: 0; }
+
+      .why-card .k {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--gold);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        padding-top: 3px;
+      }
+
+      .why-card .v {
+        color: var(--text-dim);
+        font-size: 15.5px;
+        line-height: 1.45;
+      }
+
+      /* =========================================================
+         SLIDE 08 — Pilot
+         ========================================================= */
+      .pilot {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 0.75fr 1.25fr;
+        gap: 40px;
+        padding-top: 32px;
+        align-items: stretch;
+      }
+
+      .rev {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        padding: 30px 32px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .rev h3 {
+        font-size: 24px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+
+      .rev .line {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 15px;
+      }
+
+      .rev .line:last-child { border-bottom: 0; padding-bottom: 0; }
+
+      .rev .line .k { color: var(--text-dim); }
+      .rev .line .v { color: var(--gold); font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; text-align: right; }
+
+      .rev .lines { margin-top: 12px; }
+
+      .weeks {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+
+      .week {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius);
+        padding: 22px 20px;
+        min-height: 310px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .week .r {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        color: var(--gold);
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .week h3 {
+        margin-top: 16px;
+        font-size: 19px;
+        font-weight: 500;
+      }
+
+      .week p {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.45;
+      }
+
+      .target {
+        grid-column: 1 / -1;
+        margin-top: 14px;
+        border: 1px solid var(--line-gold);
+        background: var(--gold-soft);
+        border-radius: var(--radius);
+        padding: 18px 22px;
+        color: var(--text-dim);
+        font-size: 15.5px;
+        line-height: 1.45;
+      }
+
+      .target strong { color: var(--gold); font-weight: 500; }
+
+      /* =========================================================
+         SLIDE 09 — Founder note
+         ========================================================= */
+      .founder {
         flex: 1;
         display: grid;
         grid-template-columns: 0.9fr 1.1fr;
-        gap: 56px;
+        gap: 64px;
         align-items: center;
+        padding-top: 20px;
       }
 
-      .direct {
-        font-size: 54px;
-        line-height: 1.04;
-        font-weight: 540;
+      .letter {
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
       }
 
-      .reason-list {
+      .letter .quote {
+        font-size: 44px;
+        line-height: 1.12;
+        letter-spacing: -0.02em;
+        font-weight: 500;
+        color: var(--text);
+      }
+
+      .letter .quote .soft { color: var(--muted); }
+
+      .reasons {
         display: grid;
-        gap: 18px;
+        gap: 20px;
       }
 
       .reason {
         display: grid;
-        grid-template-columns: 46px 1fr;
-        gap: 16px;
-        align-items: start;
+        grid-template-columns: 48px 1fr;
+        gap: 18px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
       }
 
       .reason .n {
-        display: grid;
-        place-items: center;
-        width: 46px;
-        height: 46px;
-        border-radius: 14px;
-        border: 1px solid rgba(212, 165, 116, 0.25);
-        background: rgba(212, 165, 116, 0.07);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--gold);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        padding-top: 5px;
       }
 
-      .reason h3 {
-        font-size: 25px;
-      }
+      .reason h3 { font-size: 22px; font-weight: 500; letter-spacing: -0.01em; }
 
       .reason p {
-        margin-top: 7px;
+        margin-top: 8px;
         color: var(--muted);
-        font-size: 18px;
-        line-height: 1.35;
+        font-size: 16px;
+        line-height: 1.45;
+        max-width: 540px;
       }
 
-      .ask-layout {
+      /* =========================================================
+         SLIDE 10 — The ask
+         ========================================================= */
+      .ask {
         flex: 1;
         display: grid;
-        grid-template-columns: 1fr 0.85fr;
-        gap: 48px;
+        grid-template-columns: 1.12fr 0.88fr;
+        gap: 56px;
         align-items: center;
+        padding-top: 36px;
       }
 
       .ask-list {
         display: grid;
-        gap: 15px;
+        gap: 0;
       }
 
       .ask-item {
         display: grid;
-        grid-template-columns: 42px 1fr;
-        gap: 16px;
-        align-items: start;
-        padding-bottom: 14px;
-        border-bottom: 1px solid rgba(168, 174, 181, 0.14);
+        grid-template-columns: 52px 1fr;
+        gap: 18px;
+        padding: 22px 0;
+        border-bottom: 1px solid var(--line);
       }
+
+      .ask-item:last-child { border-bottom: 0; }
+      .ask-item:first-child { padding-top: 0; }
 
       .ask-item .n {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--gold);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 18px;
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        padding-top: 5px;
       }
 
-      .ask-item h3 {
-        font-size: 24px;
-      }
+      .ask-item h3 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 
       .ask-item p {
         margin-top: 6px;
         color: var(--muted);
-        font-size: 17px;
-        line-height: 1.34;
-      }
-
-      .next-box {
-        border: 1px solid rgba(212, 165, 116, 0.28);
-        background: rgba(212, 165, 116, 0.07);
-        border-radius: 24px;
-        padding: 34px;
-      }
-
-      .next-box h3 {
-        font-size: 34px;
-      }
-
-      .next-box p {
-        margin-top: 18px;
-        color: #d9dadd;
-        font-size: 22px;
-        line-height: 1.35;
-      }
-
-      .signature {
-        margin-top: 34px;
-        color: var(--muted);
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 16px;
+        font-size: 14.5px;
         line-height: 1.45;
+        max-width: 520px;
+      }
+
+      .next {
+        border: 1px solid var(--gold-ring);
+        background: linear-gradient(160deg, rgba(212, 165, 116, 0.08) 0%, rgba(212, 165, 116, 0.02) 60%);
+        border-radius: var(--radius-lg);
+        padding: 34px 34px 30px 34px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        box-shadow: 0 40px 90px -30px rgba(212, 165, 116, 0.14);
+      }
+
+      .next .tag {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--gold);
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+
+      .next h3 {
+        font-size: 30px;
+        line-height: 1.1;
+        letter-spacing: -0.015em;
+        font-weight: 500;
+      }
+
+      .next p {
+        color: var(--text-dim);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .next .sign {
+        margin-top: 6px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .next .sign b {
+        color: var(--text);
+        font-weight: 500;
+      }
+
+      .next .cta {
+        align-self: flex-start;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        background: var(--gold);
+        color: #0a0e12;
+        font-size: 13px;
+        font-weight: 500;
       }
     </style>
   </head>
   <body>
     <main class="deck">
-      <section class="slide cover" data-slide="01">
+
+      <!-- ============================== SLIDE 01 · Cover ============================== -->
+      <section class="slide" data-slide="01">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini">
+          <div class="strip">
+            <div class="mark">
               <img src="../landing/public/logo.svg" alt="Xero" />
-              <span class="slash"></span>
-              <span>partnership proposal</span>
+              <span class="sep"></span>
+              <span class="tag">partnership proposal</span>
             </div>
-            <div class="confidential">confidential &middot; april 2026</div>
+            <div class="meta">confidential · april 2026</div>
           </div>
 
           <div class="cover-grid">
             <div>
               <img class="cover-logo" src="../landing/public/logo.svg" alt="Xero" />
-              <div class="eyebrow">Xero x Helius</div>
-              <h1 class="cover-title">The agentic operating system for Solana builders.</h1>
-              <p class="cover-subline">
-                Deep LanaAI integration. Bundled Helius infrastructure credits.
-                One subscription for the complete local-to-mainnet agent workflow.
+              <div class="eyebrow">Xero × Helius</div>
+              <h1 class="cover-title" style="margin-top: 20px;">
+                The agentic studio <span class="soft">for Solana builders.</span>
+              </h1>
+              <p class="cover-sub">
+                One desktop app. LanaAI on the inside. Helius on the wire. A friendly proposal
+                from the Xero team for Mert and the Helius crew.
               </p>
-              <div class="cover-meta">
-                <span class="pill"><span class="dot"></span>local-first</span>
-                <span class="pill"><span class="dot"></span>agent-native</span>
-                <span class="pill"><span class="dot"></span>Solana-maximalist</span>
+              <div class="cover-chips">
+                <span class="chip"><span class="d"></span>local-first</span>
+                <span class="chip"><span class="d"></span>agent-native</span>
+                <span class="chip"><span class="d"></span>solana-maximalist</span>
               </div>
             </div>
 
-            <div class="signal-panel" aria-hidden="true">
-              <div class="signal-code">
-                <div class="code-row"><strong>fork</strong><span>surfpool mainnet-fork &middot; personas seeded</span></div>
-                <div class="code-row"><strong>build</strong><span>solana_tx_build &rarr; compute budget tuned</span></div>
-                <div class="code-row"><strong>inspect</strong><span>LanaAI explains account flows + wallet history</span></div>
-                <div class="code-row"><strong>land</strong><span>Helius Sender + priority fee estimate</span></div>
-                <div class="code-row"><strong>audit</strong><span>IDL drift, Trident fuzz, exploit replay</span></div>
+            <div class="loop-panel" aria-hidden="true">
+              <div class="head">
+                <span>xero / squads-liquidator</span>
+                <span class="live">agent run</span>
               </div>
-              <div class="signal-bottom">
-                <div class="metric-chip"><div class="value">78</div><div class="label">registered Solana Tauri commands</div></div>
-                <div class="metric-chip"><div class="value">1</div><div class="label">shared UI + agent command surface</div></div>
-                <div class="metric-chip"><div class="value">90</div><div class="label">day pilot proposal</div></div>
+
+              <div class="loop-rows">
+                <div class="loop-row">
+                  <span class="step">fork</span>
+                  <span class="desc">surfpool · mainnet-fork, 5 personas seeded</span>
+                  <span class="ok">ready</span>
+                </div>
+                <div class="loop-row">
+                  <span class="step">build</span>
+                  <span class="desc">tx pipeline · compute-budget + ALT</span>
+                  <span class="ok">ok</span>
+                </div>
+                <div class="loop-row active">
+                  <span class="step">inspect</span>
+                  <span class="desc">lanaai · wallet flow + oracle risk</span>
+                  <span class="ok">live</span>
+                </div>
+                <div class="loop-row">
+                  <span class="step">land</span>
+                  <span class="desc">helius sender · priority fee api</span>
+                  <span class="ok">queued</span>
+                </div>
+                <div class="loop-row">
+                  <span class="step">audit</span>
+                  <span class="desc">idl drift · trident fuzz · exploit replay</span>
+                  <span class="ok">clean</span>
+                </div>
+              </div>
+
+              <div class="loop-footer">
+                <div class="cell">
+                  <div class="num">78</div>
+                  <div class="cap">solana_* commands, live today</div>
+                </div>
+                <div class="cell">
+                  <div class="num">1</div>
+                  <div class="cap">surface for UI + autonomous runs</div>
+                </div>
+                <div class="cell">
+                  <div class="num">90</div>
+                  <div class="cap">day pilot we're proposing</div>
+                </div>
               </div>
             </div>
           </div>
         </div>
-        <div class="tiny-source">Prepared for Mert Mumtaz, CEO @ Helius</div>
-        <div class="footer-num">01 / 10</div>
+        <div class="source">Prepared for Mert Mumtaz · CEO, Helius Labs</div>
+        <div class="foot-num">01 / 10</div>
       </section>
 
+      <!-- ============================== SLIDE 02 · The gap ============================== -->
       <section class="slide" data-slide="02">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>problem</span></div>
-            <div class="confidential">Xero x Helius</div>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">the gap</span>
+            </div>
+            <div class="meta">02 — problem</div>
           </div>
-          <div style="margin-top: 54px;">
-            <div class="eyebrow">The gap</div>
-            <h2>The Solana dev stack is powerful, but fragmented.</h2>
-            <p class="subhead">
-              Helius and LanaAI are world-class at infrastructure and exploration.
-              The missing layer is the environment where a builder's agent can keep
-              repo context, chain context, and deploy safety in one loop.
+
+          <div class="top">
+            <div class="eyebrow">What's missing</div>
+            <h2>Solana's tools are great. They just don't sit in the same window.</h2>
+            <p class="lead">
+              Helius and LanaAI each nail their layer. But the place where a builder's
+              agent actually keeps context — repo, chain state, deploy safety, all in one loop —
+              still isn't a product. That's the seam we want to close together.
             </p>
           </div>
-          <div class="two-col">
-            <div class="flow-map" aria-label="Fragmented Solana development workflow">
-              <div class="flow-line" style="left: 185px; top: 163px; width: 245px; transform: rotate(18deg);"></div>
-              <div class="flow-line" style="left: 424px; top: 247px; width: 250px; transform: rotate(18deg);"></div>
-              <div class="flow-line" style="left: 190px; top: 388px; width: 288px; transform: rotate(-18deg);"></div>
-              <div class="flow-line" style="left: 432px; top: 306px; width: 250px; transform: rotate(46deg);"></div>
-              <div class="flow-node primary" style="left: 16px; top: 72px;"><strong>IDE</strong><span>Code and tests live here, but chain state rarely does.</span></div>
-              <div class="flow-node" style="right: 72px; top: 155px;"><strong>Terminal</strong><span>Validator, Anchor, SPL, and deploy scripts split context.</span></div>
-              <div class="flow-node" style="left: 26px; bottom: 120px;"><strong>Explorer</strong><span>Wallets, txs, logs, and account traces are manual lookups.</span></div>
-              <div class="flow-node" style="right: 0; bottom: 58px;"><strong>RPC dashboard</strong><span>Usage, endpoints, webhooks, credits, and keys sit elsewhere.</span></div>
+
+          <div class="body-2col">
+            <div class="fragments" aria-label="Scattered tool surfaces">
+              <div class="frag-line" style="left: 220px; top: 150px; width: 210px; transform: rotate(22deg);"></div>
+              <div class="frag-line" style="left: 230px; top: 310px; width: 200px; transform: rotate(-18deg);"></div>
+              <div class="frag-line" style="left: 30px; top: 360px; width: 220px; transform: rotate(-42deg);"></div>
+              <div class="frag-line" style="left: 30px; top: 200px; width: 260px; transform: rotate(36deg);"></div>
+
+              <div class="frag" style="left: 4px; top: 72px;">
+                <div class="lbl">editor</div>
+                <strong>Code + tests</strong>
+                <span>Where the work starts, but the chain never quite arrives here.</span>
+              </div>
+              <div class="frag" style="right: 0; top: 148px;">
+                <div class="lbl">terminal</div>
+                <strong>Validator scripts</strong>
+                <span>Anchor, SPL, cargo build — each one in its own tab.</span>
+              </div>
+              <div class="frag" style="left: 8px; bottom: 54px;">
+                <div class="lbl">explorer</div>
+                <strong>Tx + wallets</strong>
+                <span>Copy signature. Paste into browser. Ctrl+F through logs.</span>
+              </div>
+              <div class="frag" style="right: 10px; bottom: 22px;">
+                <div class="lbl">dashboard</div>
+                <strong>RPC usage</strong>
+                <span>Endpoints, webhooks, credits — somewhere else entirely.</span>
+              </div>
             </div>
-            <div class="pain-list">
-              <div class="pain"><div class="pain-index">01</div><div><h3>Agents lose working memory between tools.</h3><p>A tx failure starts in code, moves through logs, then into a browser or chat. By the time the answer arrives, the agent has lost the full state.</p></div></div>
-              <div class="pain"><div class="pain-index">02</div><div><h3>Local simulation and production infra are disconnected.</h3><p>Builders fork, seed, simulate, and audit locally, then rewire everything when they need reliable mainnet reads and sends.</p></div></div>
-              <div class="pain"><div class="pain-index">03</div><div><h3>Subscriptions multiply before velocity does.</h3><p>RPC, explorers, indexers, cloud agents, wallet tooling, and deploy safety are bought as separate tools with separate support paths.</p></div></div>
+
+            <div class="pains">
+              <div class="pain">
+                <div class="idx">01</div>
+                <div>
+                  <h3>Context evaporates between tools.</h3>
+                  <p>A tx fails in code. Moves to logs. Then to a browser. By the time the answer shows up, the agent has forgotten why it was asking.</p>
+                </div>
+              </div>
+              <div class="pain">
+                <div class="idx">02</div>
+                <div>
+                  <h3>Local and mainnet feel like two products.</h3>
+                  <p>You fork, seed, simulate, audit locally — then rewire everything to get reliable reads and confident sends on real infra.</p>
+                </div>
+              </div>
+              <div class="pain">
+                <div class="idx">03</div>
+                <div>
+                  <h3>Every piece is its own invoice.</h3>
+                  <p>RPC, explorer, indexer, deploy safety, cloud agents — five logins, five bills, five support threads. Velocity tax.</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        <div class="footer-num">02 / 10</div>
+        <div class="foot-num">02 / 10</div>
       </section>
 
+      <!-- ============================== SLIDE 03 · One window ============================== -->
       <section class="slide" data-slide="03">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>solution</span></div>
-            <div class="confidential">one agentic environment</div>
-          </div>
-          <div style="margin-top: 46px;">
-            <div class="eyebrow">The product move</div>
-            <h2>Xero + LanaAI + Helius becomes the default stack.</h2>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">the fix</span>
+            </div>
+            <div class="meta">03 — solution</div>
           </div>
 
-          <div style="margin-top: 36px;" class="window">
-            <div class="window-top">
-              <div class="traffic"><span></span><span></span><span></span></div>
-              <div class="window-path">Xero / squads-liquidator &middot; main</div>
+          <div class="top" style="padding-top: 28px;">
+            <div class="eyebrow">The product move</div>
+            <h2 style="margin-top: 14px;">One desktop app. Every step of the loop.</h2>
+          </div>
+
+          <div class="window">
+            <div class="win-top">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <div class="win-path">Xero / squads-liquidator · <span class="branch">main</span></div>
+              <div class="win-mem">42mb · claude-opus-4.7</div>
             </div>
-            <div class="window-body">
-              <aside class="rail">
-                <div class="rail-title">Project</div>
-                <div class="file active">src/ <span class="marker"></span></div>
-                <div class="file" style="padding-left: 22px;">programs/</div>
-                <div class="file" style="padding-left: 34px;">liquidator.rs</div>
-                <div class="file" style="padding-left: 22px;">tests/</div>
-                <div class="file" style="padding-left: 34px;">whale-flow.ts</div>
-                <div class="rail-title" style="margin-top: 28px;">Workbench</div>
-                <div class="file active">Personas</div>
-                <div class="file">Tx inspector</div>
-                <div class="file">Deploy safety</div>
-                <div class="file">Audit replay</div>
+            <div class="win-body">
+              <aside class="win-rail">
+                <div class="rail-h">Project</div>
+                <div class="file-row">src/</div>
+                <div class="file-row" style="padding-left: 22px;">programs/</div>
+                <div class="file-row on" style="padding-left: 34px;">liquidator.rs<span class="dot"></span></div>
+                <div class="file-row" style="padding-left: 22px;">tests/</div>
+                <div class="file-row" style="padding-left: 34px;">whale-flow.ts</div>
+
+                <div class="rail-h">Workbench</div>
+                <div class="file-row on">Personas</div>
+                <div class="file-row">Tx inspector</div>
+                <div class="file-row">Deploy safety</div>
+                <div class="file-row">Audit + replay</div>
               </aside>
-              <section class="main-pane">
-                <div class="cluster-line">
-                  <div><strong>Surfpool mainnet-fork</strong><br /><span>slot 331,804,110 &middot; 3,891 TPS &middot; 5 personas</span></div>
-                  <span class="pill"><span class="dot"></span>ready</span>
+
+              <section class="win-main">
+                <div class="main-head">
+                  <div>
+                    <strong>Surfpool mainnet-fork</strong>
+                    <span class="sub">slot 331,804,110 · 3,891 tps · 5 personas</span>
+                  </div>
+                  <span class="chip gold"><span class="d"></span>ready</span>
                 </div>
+
                 <div class="trace">
-                  <div class="trace-row"><span class="phase">build</span><span>solana_tx_build &middot; v0 tx + ALT hints</span><span class="ok">ok</span></div>
-                  <div class="trace-row"><span class="phase">simulate</span><span>auto CU limit 384k &middot; fee percentile high</span><span class="ok">ok</span></div>
-                  <div class="trace-row"><span class="phase">inspect</span><span>lana_query whale wallet, token flow, risk context</span><span class="ok">ok</span></div>
-                  <div class="trace-row"><span class="phase">gate</span><span>IDL drift clean &middot; Squads authority verified</span><span class="ok">ok</span></div>
-                  <div class="trace-row"><span class="phase">send</span><span>land via Helius Sender + priority fee API</span><span class="ok">queued</span></div>
+                  <div class="tr"><span class="ph">build</span><span class="m">solana_tx_build — v0 tx + ALT hints</span><span class="ok">ok</span></div>
+                  <div class="tr"><span class="ph">simulate</span><span class="m">auto CU 384k · fee percentile high</span><span class="ok">ok</span></div>
+                  <div class="tr"><span class="ph">inspect</span><span class="m">lanaai — whale wallet + token flow</span><span class="ok">ok</span></div>
+                  <div class="tr"><span class="ph">gate</span><span class="m">idl drift clean · squads authority ok</span><span class="ok">ok</span></div>
+                  <div class="tr"><span class="ph">send</span><span class="m">helius sender · priority fee api</span><span class="ok">queued</span></div>
                 </div>
-                <div class="benefit-strip">
-                  <div class="benefit"><strong>One workflow</strong><span>Code, fork, inspect, audit, deploy, and monitor stay in the same agent run.</span></div>
-                  <div class="benefit"><strong>One surface</strong><span>The UI and autonomous runtime call the exact same Tauri commands.</span></div>
-                  <div class="benefit"><strong>One account</strong><span>Solana Pro bundles the infra spend builders already need.</span></div>
-                </div>
-              </section>
-              <aside class="side-pane">
-                <div class="chat-card">
-                  <div class="chat-head"><strong>LanaAI</strong><span class="green">live</span></div>
-                  <div class="chat-body">
-                    <div class="bubble user">Show me large transfers from this whale before the failed liquidation tx.</div>
-                    <div class="bubble lana">3 related transfers detected. The failing tx writes to the same collateral PDA and likely needs an extra oracle account.</div>
+
+                <div class="outcomes">
+                  <div class="outc">
+                    <strong>One loop</strong>
+                    <span>Code, fork, inspect, land, and audit — same run, no tab switching.</span>
+                  </div>
+                  <div class="outc">
+                    <strong>One surface</strong>
+                    <span>UI and autonomous agent call the same Tauri commands, same way.</span>
+                  </div>
+                  <div class="outc">
+                    <strong>One bill</strong>
+                    <span>Solana Pro bundles the infra spend builders already have.</span>
                   </div>
                 </div>
-                <div class="meter">
-                  <div class="meter-top"><span>Helius credit pool</span><span>62%</span></div>
-                  <div class="meter-bar"><span></span></div>
-                  <p style="margin-top: 12px; color: var(--muted); font-size: 13px; line-height: 1.35;">Auto top-up enabled. Public RPC fallback stays available for non-critical reads.</p>
+              </section>
+
+              <aside class="win-side">
+                <div class="chat">
+                  <div class="chat-head">
+                    <strong>LanaAI</strong>
+                    <span class="live">live</span>
+                  </div>
+                  <div class="chat-body">
+                    <div class="bubble u">What did this whale do in the minutes before the failed liquidation?</div>
+                    <div class="bubble a">Three related transfers. The failing tx writes to the same collateral PDA — looks like it's missing an oracle account.</div>
+                  </div>
+                </div>
+
+                <div class="credits">
+                  <div class="credits-h">
+                    <span>Helius credits</span>
+                    <span>62%</span>
+                  </div>
+                  <div class="bar"><span></span></div>
+                  <p>Auto top-up on. Public RPCs stay available as fallback for non-critical reads.</p>
                 </div>
               </aside>
             </div>
           </div>
         </div>
-        <div class="footer-num">03 / 10</div>
+        <div class="foot-num">03 / 10</div>
       </section>
 
+      <!-- ============================== SLIDE 04 · Already built ============================== -->
       <section class="slide" data-slide="04">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>product proof</span></div>
-            <div class="confidential">built surface</div>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">already built</span>
+            </div>
+            <div class="meta">04 — product proof</div>
           </div>
-          <div style="margin-top: 48px;">
-            <div class="eyebrow">What Xero already has</div>
-            <h2>This is not a speculative workbench.</h2>
-            <p class="subhead">
-              The repo already contains a first-class Solana sidebar, a Rust command surface,
-              local persistence, provider profiles, notification routing, and a Tauri backend
-              designed for agent-callable workflows.
+
+          <div class="top">
+            <div class="eyebrow">What's live today</div>
+            <h2>This isn't a pitch for a workbench. The workbench is done.</h2>
+            <p class="lead">
+              Xero already has the Rust command surface, the mainnet-fork lifecycle, persona
+              seeding, the tx pipeline, the audit engine, and the deploy gates — all wired
+              through a Tauri app that ships as a single binary.
             </p>
           </div>
 
-          <div class="proof-layout">
+          <div class="proof">
             <div class="big-stat">
-              <div class="num">78</div>
-              <div class="caption">registered <span class="mono gold">solana_*</span> commands wired through the Tauri app.</div>
+              <div class="n">78</div>
+              <div class="cap"><span class="mono gold">solana_*</span> commands registered through the Tauri app today.</div>
             </div>
-            <div class="capability-grid">
-              <div class="cap"><span class="tag">Desktop substrate</span><h3>Rust + Tauri core</h3><p>React/Vite frontend, Rust backend orchestration, local SQLite persistence, ShadCN/Radix/Tailwind UI.</p></div>
-              <div class="cap"><span class="tag">Clusters</span><h3>Local to forked mainnet</h3><p>Toolchain probes, managed install flow, localnet/mainnet-fork lifecycle, snapshots, RPC health, cost ledger.</p></div>
-              <div class="cap"><span class="tag">Personas</span><h3>Seeded actors</h3><p>Whale, LP, voter, liquidator, new user, custom keypairs, SOL/SPL/NFT funding receipts, scenario runs.</p></div>
-              <div class="cap"><span class="tag">Tx pipeline</span><h3>Build, simulate, land</h3><p>Priority fee estimates, compute-budget plans, ALT helpers, CPI resolver, decoder, Jito transport hooks.</p></div>
-              <div class="cap"><span class="tag">Deploy safety</span><h3>IDL and upgrade gates</h3><p>Codama generation, IDL fetch/publish/drift, program build, upgrade checks, Squads proposals, verified builds.</p></div>
-              <div class="cap"><span class="tag">Security loop</span><h3>Audit and replay</h3><p>Static lints, Trident fuzzing, coverage, exploit replay library, PDA scans, secret scans, cluster drift.</p></div>
+
+            <div class="caps">
+              <div class="cap-card">
+                <div class="t">Desktop substrate</div>
+                <h3>Rust + Tauri core</h3>
+                <p>React/Vite frontend, Rust backend, local SQLite journaling, ShadCN/Radix UI.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Clusters</div>
+                <h3>Local to mainnet-fork</h3>
+                <p>Toolchain probes, managed installs, localnet + fork lifecycle, snapshots, cost ledger.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Personas</div>
+                <h3>Seeded actors</h3>
+                <p>Whale, LP, voter, liquidator, new user — SOL/SPL/NFT funding receipts, scenario runs.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Tx pipeline</div>
+                <h3>Build, simulate, land</h3>
+                <p>Priority fee tuning, compute-budget plans, ALT helpers, CPI resolver, Jito hooks.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Deploy safety</div>
+                <h3>IDL + upgrade gates</h3>
+                <p>Codama gen, IDL fetch/publish/drift, upgrade checks, Squads proposals, verified builds.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Security</div>
+                <h3>Audit + replay</h3>
+                <p>Static lints, Trident fuzz, coverage, exploit replay, PDA scans, secret detection.</p>
+              </div>
             </div>
           </div>
         </div>
-        <div class="tiny-source">Project evidence: README, SOLANA_WORKBENCH_PLAN.md, client/src-tauri/src/lib.rs command registration, and Solana workbench source tree.</div>
-        <div class="footer-num">04 / 10</div>
+        <div class="source">Evidence: README, SOLANA_WORKBENCH_PLAN.md, client/src-tauri/src/lib.rs command registration, workbench source tree.</div>
+        <div class="foot-num">04 / 10</div>
       </section>
 
+      <!-- ============================== SLIDE 05 · Where Lana plugs in ============================== -->
       <section class="slide" data-slide="05">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>LanaAI integration</span></div>
-            <div class="confidential">distribution for on-chain intelligence</div>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">lanaai inside</span>
+            </div>
+            <div class="meta">05 — integration</div>
           </div>
-          <div style="margin-top: 50px;">
-            <div class="eyebrow">Integration thesis</div>
-            <h2>LanaAI becomes the embedded intelligence layer for every Solana run.</h2>
-            <p class="subhead">
-              LanaAI replaces static exploration with conversational on-chain reasoning.
-              Xero puts that reasoning inside the builder's live repo, validator, tx pipeline,
-              and deploy gate.
+
+          <div class="top">
+            <div class="eyebrow">Where LanaAI plugs in</div>
+            <h2>LanaAI becomes the on-chain intelligence every run calls.</h2>
+            <p class="lead">
+              We don't want to wrap LanaAI. We want to give it a home inside the workflow builders
+              already use — so a conversational explorer turns into the agent's working memory.
             </p>
           </div>
 
-          <div class="hook-grid">
-            <div class="hook"><div class="hook-num">01</div><div><h3>Tx Inspector + Decoder</h3><p>After simulation or failure, Xero sends signature, logs, IDL, writable accounts, and persona context to LanaAI for a plain-English trace.</p></div></div>
-            <div class="hook"><div class="hook-num">02</div><div><h3>Audit + Exploit Replay</h3><p>AuditEngine asks LanaAI for related attack patterns, historic account flows, and explainable replay notes before a risky deploy.</p></div></div>
-            <div class="hook"><div class="hook-num">03</div><div><h3>Deploy Safety Gate</h3><p>Program upgrade checks can query LanaAI for authority history, recent program activity, suspicious token flows, and IDL drift context.</p></div></div>
-            <div class="hook"><div class="hook-num">04</div><div><h3>Persona + Scenario Seeding</h3><p>Builders describe a market, wallet, protocol, or incident. Xero turns it into funded personas and fork-ready scenarios backed by LanaAI context.</p></div></div>
+          <div class="hooks">
+            <div class="hook">
+              <div class="rowh">
+                <span class="n">01</span>
+                <h3>Tx inspector + decoder</h3>
+              </div>
+              <p>After simulation or failure, Xero hands LanaAI the signature, logs, IDL, writable accounts, and persona context — and gets a plain-English trace back.</p>
+            </div>
+
+            <div class="hook">
+              <div class="rowh">
+                <span class="n">02</span>
+                <h3>Audit + exploit replay</h3>
+              </div>
+              <p>Before a risky deploy, the audit engine asks LanaAI for similar attack patterns, related account flows, and a short replay note humans can skim in 30 seconds.</p>
+            </div>
+
+            <div class="hook">
+              <div class="rowh">
+                <span class="n">03</span>
+                <h3>Deploy-safety gate</h3>
+              </div>
+              <p>Program upgrade checks query LanaAI for authority history, recent program activity, suspicious token flows, and IDL drift context — all before the button goes green.</p>
+            </div>
+
+            <div class="hook">
+              <div class="rowh">
+                <span class="n">04</span>
+                <h3>Persona + scenario seeding</h3>
+              </div>
+              <p>A builder describes a market, a wallet, an incident. Xero turns it into funded personas and a fork-ready scenario, with LanaAI filling in the on-chain context.</p>
+            </div>
           </div>
 
           <div class="banner">
-            For Helius: every Xero Solana session becomes a LanaAI power session. Human prompts become agent loops, and agent loops multiply query volume.
+            <span class="hi">The upshot for Helius —</span> every Xero Solana session becomes a LanaAI power session. Human prompts turn into agent loops. Agent loops multiply query volume.
           </div>
         </div>
-        <div class="tiny-source">Sources checked: lana.ai public site and public r/solana launch post linking Mert's April 21, 2026 announcement.</div>
-        <div class="footer-num">05 / 10</div>
+        <div class="source">Sources: lana.ai public site · public r/solana launch post citing Mert's Apr 21, 2026 announcement.</div>
+        <div class="foot-num">05 / 10</div>
       </section>
 
+      <!-- ============================== SLIDE 06 · Bundle ============================== -->
       <section class="slide" data-slide="06">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>credit bundle</span></div>
-            <div class="confidential">commercial model</div>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">commercial shape</span>
+            </div>
+            <div class="meta">06 — bundle</div>
           </div>
-          <div style="margin-top: 48px;">
-            <div class="eyebrow">Bundle the infra where the workflow begins</div>
+
+          <div class="top">
+            <div class="eyebrow">One subscription, infra included</div>
             <h2>Make Helius the default paid rail inside Xero Solana Pro.</h2>
           </div>
 
-          <div class="pricing-layout">
-            <div>
-              <div class="tiers">
-                <div class="tier">
-                  <div class="name">Free</div>
-                  <div class="price">$0</div>
-                  <div class="period">forever</div>
-                  <p>Local desktop studio for builders who bring their own model and infra keys.</p>
-                  <ul><li>Unlimited local projects</li><li>Local autonomous runtime</li><li>BYO model providers</li></ul>
-                </div>
-                <div class="tier">
-                  <div class="name">Pro</div>
-                  <div class="price">$20</div>
-                  <div class="period">/ month</div>
-                  <p>Cloud runtime, sync, durable background runs, and hosted run history.</p>
-                  <ul><li>Everything in Free</li><li>Parallel workers</li><li>Priority support</li></ul>
-                </div>
-                <div class="tier highlight">
-                  <div class="name">Solana Pro</div>
-                  <div class="price">$50</div>
-                  <div class="period">/ month</div>
-                  <p>Pro plus the on-chain workbench bundle for serious Solana builds.</p>
-                  <ul><li>Workbench access</li><li>RPC/indexer/webhook bundle</li><li>Cost alerts and deploy safety</li></ul>
-                </div>
+          <div class="pricing">
+            <div class="tiers">
+              <div class="tier">
+                <div class="name">Free</div>
+                <div><span class="price">$0</span><span class="per">forever</span></div>
+                <p class="blurb">Local desktop studio for builders bringing their own model + infra keys.</p>
+                <ul>
+                  <li>Unlimited local projects</li>
+                  <li>Local autonomous runtime</li>
+                  <li>Bring your own model providers</li>
+                  <li>Discord + Telegram pings</li>
+                </ul>
+              </div>
+
+              <div class="tier">
+                <div class="name">Pro</div>
+                <div><span class="price">$20</span><span class="per">/ month</span></div>
+                <p class="blurb">Cloud runtime, sync, and durable background runs. Everything keeps moving while you sleep.</p>
+                <ul>
+                  <li>Everything in Free</li>
+                  <li>Parallel workers · up to 16</li>
+                  <li>Hosted run history + replay</li>
+                  <li>Priority support</li>
+                </ul>
+              </div>
+
+              <div class="tier hi">
+                <div class="name">Solana Pro <span class="ribbon">bundle</span></div>
+                <div><span class="price">$50</span><span class="per">/ month</span></div>
+                <p class="blurb">Pro plus the on-chain workbench — and Helius credits that Just Work from the app.</p>
+                <ul>
+                  <li>Managed Helius RPC + Sender + Webhooks</li>
+                  <li>Hosted forks and reusable snapshots</li>
+                  <li>Deploy safety, Squads, verified builds</li>
+                  <li>Cost alerts, drift alerts, priority fee tuning</li>
+                </ul>
               </div>
             </div>
-            <div class="partner-list">
+
+            <aside class="partner">
               <div>
-                <h3>Partnership mechanics</h3>
-                <p style="margin-top: 12px; color: var(--muted); font-size: 18px; line-height: 1.36;">
-                  Xero handles subscription UX, metering, invoicing, and L1 support.
-                  Helius provides the infra rail and wholesale credit economics.
-                </p>
+                <h3>How the partnership works</h3>
+                <p class="intro">Xero owns the subscription UX, metering, invoicing, and first-line support. Helius provides the infra rail and wholesale credit economics. One bill for the builder, clean accounting between us.</p>
               </div>
-              <div class="split">
+
+              <div class="pair">
                 <div>
-                  <div class="eyebrow" style="font-size: 11px;">For builders</div>
+                  <h4>For builders</h4>
                   <ul>
                     <li>Single invoice for app + Solana infra</li>
                     <li>Automatic top-ups and cost panels</li>
-                    <li>Priority Fee, Sender, RPC, Webhooks path</li>
-                    <li>Graceful fallback to public RPCs for non-critical work</li>
+                    <li>Priority Fee + Sender + RPC + Webhooks</li>
+                    <li>Graceful public-RPC fallback</li>
                   </ul>
                 </div>
                 <div>
-                  <div class="eyebrow" style="font-size: 11px;">For Helius</div>
+                  <h4>For Helius</h4>
                   <ul>
-                    <li>New paid acquisition channel at point of creation</li>
+                    <li>Paid acquisition at the point of creation</li>
                     <li>Predictable wholesale volume</li>
-                    <li>Higher stickiness through daily workflow</li>
-                    <li>Path to dedicated node and enterprise upsells</li>
+                    <li>Stickier daily workflow usage</li>
+                    <li>Path to dedicated nodes + enterprise</li>
                   </ul>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+        <div class="source">Xero pricing: landing/components/landing/pricing.tsx. Helius products: docs for RPC endpoints, Priority Fee API, Sender, Webhooks.</div>
+        <div class="foot-num">06 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 07 · Why now ============================== -->
+      <section class="slide" data-slide="07">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">why now</span>
+            </div>
+            <div class="meta">07 — timing</div>
+          </div>
+
+          <div class="why">
+            <div>
+              <div class="eyebrow">The moment</div>
+              <h2 style="margin-top: 14px; font-size: 50px;">Agents don't use infra once. They use it on a loop.</h2>
+              <p class="lead" style="max-width: 620px;">
+                The next Solana dev platform isn't a dashboard. It's an environment where an agent
+                reads, simulates, explains, lands, and watches — over and over, all day long.
+              </p>
+
+              <div class="stats">
+                <div class="stat">
+                  <div class="v">6,000</div>
+                  <div class="l">active Solana developers reached in 2025</div>
+                </div>
+                <div class="stat">
+                  <div class="v">3,830</div>
+                  <div class="l">new developers joined the ecosystem in 2025</div>
+                </div>
+                <div class="stat">
+                  <div class="v">10×</div>
+                  <div class="l">query multiplier when agents drive exploration instead of humans clicking</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="why-card">
+              <h3>Why this window is unusually good</h3>
+              <div class="row">
+                <div class="k">LanaAI</div>
+                <div class="v">A conversational Solana explorer is live today — exactly the integration surface agentic dev sessions need.</div>
+              </div>
+              <div class="row">
+                <div class="k">Agents</div>
+                <div class="v">Coding agents are graduating from chat helpers to persistent workers that need reliable reads and tx landing.</div>
+              </div>
+              <div class="row">
+                <div class="k">Local-first</div>
+                <div class="v">Serious builders want forked state, seeded scenarios, fast simulation, and safety checks before mainnet spend.</div>
+              </div>
+              <div class="row">
+                <div class="k">Helius</div>
+                <div class="v">You already own the trusted infra layer: RPC, Sender, LaserStream, Webhooks, DAS, priority fees.</div>
+              </div>
+              <div class="row">
+                <div class="k">Xero</div>
+                <div class="v">We sit at the daily point of creation — repo, agent, tooling, notifications, emulators, and now the Solana workbench.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="source">Sources: Solana Foundation 2023 developer ecosystem report · SolanaFloor/Syndica 2025 developer report coverage · Helius docs.</div>
+        <div class="foot-num">07 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 08 · Pilot ============================== -->
+      <section class="slide" data-slide="08">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">90-day pilot</span>
+            </div>
+            <div class="meta">08 — plan</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">Pilot + go-to-market</div>
+            <h2>Ninety days. A beta cohort. Real numbers on the table.</h2>
+          </div>
+
+          <div class="pilot">
+            <div class="rev">
+              <h3>How the money works</h3>
+              <div class="lines">
+                <div class="line"><span class="k">Xero SaaS</span><span class="v">$0 · $20 · $50</span></div>
+                <div class="line"><span class="k">Helius credits</span><span class="v">wholesale or rev-share</span></div>
+                <div class="line"><span class="k">Team plans</span><span class="v">seats + pooled credits</span></div>
+                <div class="line"><span class="k">Enterprise</span><span class="v">dedicated nodes + support</span></div>
+                <div class="line"><span class="k">Future</span><span class="v">MCP tool-surface licensing</span></div>
+              </div>
+
+              <div style="margin-top: auto; padding-top: 28px; color: var(--muted); font-size: 13px; line-height: 1.5;">
+                Simple principle: Xero covers the app, Helius covers the infra.
+                Nobody asks the other for freebies. Wholesale pricing makes the bundle fair.
+              </div>
+            </div>
+
+            <div>
+              <div class="weeks">
+                <div class="week">
+                  <div class="r">Weeks 0–2</div>
+                  <h3>Agree the shape</h3>
+                  <p>Scope LanaAI calls, credit metering, Helius account linking, privacy boundaries, and who owns support for what.</p>
+                </div>
+                <div class="week">
+                  <div class="r">Weeks 3–5</div>
+                  <h3>Ship the pilot</h3>
+                  <p>Embed LanaAI tx inspection, Helius credit ledger, Sender path, and priority fee defaults — all behind a beta flag.</p>
+                </div>
+                <div class="week">
+                  <div class="r">Weeks 6–8</div>
+                  <h3>Run with builders</h3>
+                  <p>Invite top Solana teams. Watch agent query volume, landing quality, workflow retention, and credit conversion.</p>
+                </div>
+                <div class="week">
+                  <div class="r">Weeks 9–12</div>
+                  <h3>Co-launch</h3>
+                  <p>Docs, examples, demo day. A co-branded Solana Pro beta launch, powered by Helius and LanaAI.</p>
+                </div>
+                <div class="target">
+                  <strong>Pilot target:</strong> 500 qualified builders · 300 Solana Pro seats · $180k ARR run-rate · 3× lift in Helius credit consumption from the Xero cohort.
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <div class="tiny-source">Xero pricing source: landing pricing component. Helius product source: Helius docs for RPC endpoints, Priority Fee API, Sender, and Webhooks.</div>
-        <div class="footer-num">06 / 10</div>
+        <div class="foot-num">08 / 10</div>
       </section>
 
-      <section class="slide" data-slide="07">
-        <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>market timing</span></div>
-            <div class="confidential">why now</div>
-          </div>
-          <div class="market-layout">
-            <div>
-              <div class="eyebrow">Opportunity</div>
-              <h2>Agents make infrastructure usage compound.</h2>
-              <p class="subhead" style="max-width: 640px;">
-                The next Solana developer platform is not just a dashboard. It is an agentic
-                environment that repeatedly reads, simulates, explains, sends, and monitors on-chain state.
-              </p>
-              <div class="market-stat" style="margin-top: 26px;">
-                <div class="stat-line"><div class="value">6,000</div><div class="label">active Solana developers reached in 2025.</div></div>
-                <div class="stat-line"><div class="value">3,830</div><div class="label">new Solana developers welcomed in 2025.</div></div>
-                <div class="stat-line"><div class="value">10x</div><div class="label">modeled query multiplier when agents drive exploration instead of humans clicking.</div></div>
-              </div>
-            </div>
-
-            <div class="why-now">
-              <h3>Why this window is unusually good</h3>
-              <div class="row"><div class="k">LanaAI</div><div class="v">A conversational Solana explorer is live now, creating the perfect integration surface for agentic dev sessions.</div></div>
-              <div class="row"><div class="k">Agents</div><div class="v">Coding agents are moving from chat helpers to persistent workers that need reliable chain reads and tx landing.</div></div>
-              <div class="row"><div class="k">Local-first</div><div class="v">Serious builders want forked state, seeded scenarios, fast simulation, and safety checks before mainnet spend.</div></div>
-              <div class="row"><div class="k">Helius</div><div class="v">Helius already owns the trusted Solana infra layer: RPC, Sender, LaserStream, Webhooks, DAS, and fee tooling.</div></div>
-              <div class="row"><div class="k">Xero wedge</div><div class="v">Xero sits at the daily point of creation: repo, agent, terminal-equivalent tools, notifications, emulators, and now Solana.</div></div>
-            </div>
-          </div>
-        </div>
-        <div class="tiny-source">Sources: Solana Foundation 2023 developer ecosystem report; SolanaFloor/Syndica 2025 developer report coverage; Helius docs homepage and product docs.</div>
-        <div class="footer-num">07 / 10</div>
-      </section>
-
-      <section class="slide" data-slide="08">
-        <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>pilot plan</span></div>
-            <div class="confidential">90 days</div>
-          </div>
-          <div style="margin-top: 48px;">
-            <div class="eyebrow">Business model and GTM</div>
-            <h2>A contained pilot that can become the default Helius workflow channel.</h2>
-          </div>
-
-          <div class="gtm-layout">
-            <div class="rev-card">
-              <h3>Revenue model</h3>
-              <div class="line"><span>Xero SaaS</span><span>$0 / $20 / $50</span></div>
-              <div class="line"><span>Helius credit bundle</span><span>wholesale or rev-share</span></div>
-              <div class="line"><span>Team plans</span><span>seats + pooled credits</span></div>
-              <div class="line"><span>Enterprise</span><span>dedicated nodes + support</span></div>
-              <div class="line"><span>Future MCP licensing</span><span>tool surface distribution</span></div>
-            </div>
-            <div>
-              <div class="timeline">
-                <div class="week"><div class="range">Weeks 0-2</div><h3>Contract the surface</h3><p>Define LanaAI calls, credit metering, Helius account linking, privacy boundaries, and support ownership.</p></div>
-                <div class="week"><div class="range">Weeks 3-5</div><h3>Wire the pilot</h3><p>Ship embedded LanaAI tx inspection, Helius credit ledger, Sender path, and Priority Fee defaults behind a beta flag.</p></div>
-                <div class="week"><div class="range">Weeks 6-8</div><h3>Run with builders</h3><p>Invite top Solana teams, measure agent query volume, landing quality, workflow retention, and credit conversion.</p></div>
-                <div class="week"><div class="range">Weeks 9-12</div><h3>Co-launch</h3><p>Publish docs, examples, demos, and a co-branded Solana Pro beta launch powered by Helius and LanaAI.</p></div>
-              </div>
-              <div class="success">
-                Pilot target: 500 qualified builders, 300 Solana Pro seats, $180k ARR run-rate, and a 3x lift in Helius credit consumption from the Xero cohort.
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="footer-num">08 / 10</div>
-      </section>
-
+      <!-- ============================== SLIDE 09 · Founder note ============================== -->
       <section class="slide" data-slide="09">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>why this partnership</span></div>
-            <div class="confidential">for Mert</div>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">founder to founder</span>
+            </div>
+            <div class="meta">09 — a note for mert</div>
           </div>
-          <div class="mert-layout">
-            <div>
-              <div class="eyebrow">Founder-to-founder</div>
-              <p class="direct">
-                Mert, LanaAI changes how builders explore Solana.
-                The next battle is where they build for eight hours a day.
+
+          <div class="founder">
+            <div class="letter">
+              <div class="eyebrow">A quick, honest pitch</div>
+              <p class="quote">
+                Mert — LanaAI changes how people <em>explore</em> Solana.
+                <span class="soft">The next fight is over where they spend their eight hours a day actually building on it.</span>
               </p>
-              <div class="banner" style="margin-top: 34px;">
-                We do not want to compete with Helius. We want Xero to be the reason every serious Solana builder has a Helius account and asks LanaAI daily.
+              <div class="banner" style="margin-top: 0;">
+                <span class="hi">We're not trying to compete with Helius.</span>
+                We want Xero to be the reason every serious Solana builder has a Helius account open and asks LanaAI something new every day.
               </div>
             </div>
-            <div class="reason-list">
-              <div class="reason"><div class="n">01</div><div><h3>Distribution at the point of creation</h3><p>Helius moves from infra dashboard to the default rail inside the builder's repo, tx pipeline, and deploy process.</p></div></div>
-              <div class="reason"><div class="n">02</div><div><h3>Agent multiplier effect</h3><p>Agents do not ask one question. They inspect repeatedly: accounts, logs, fees, histories, risks, and landing outcomes.</p></div></div>
-              <div class="reason"><div class="n">03</div><div><h3>Local to mainnet flywheel</h3><p>Xero starts free and local, then naturally graduates teams into Helius when reliability, speed, webhooks, and Sender matter.</p></div></div>
-              <div class="reason"><div class="n">04</div><div><h3>Shared DNA</h3><p>Local-first craft, Solana-native bias, infra honesty, and a preference for tools builders actually use every day.</p></div></div>
+
+            <div class="reasons">
+              <div class="reason">
+                <div class="n">01</div>
+                <div>
+                  <h3>Distribution, at the point of creation</h3>
+                  <p>Helius moves from an infra dashboard to the default rail inside the builder's repo, tx pipeline, and deploy gate.</p>
+                </div>
+              </div>
+              <div class="reason">
+                <div class="n">02</div>
+                <div>
+                  <h3>Agents are a volume multiplier</h3>
+                  <p>Agents don't ask one question. They inspect on a loop — accounts, logs, fees, histories, risks, landings. All on your infra.</p>
+                </div>
+              </div>
+              <div class="reason">
+                <div class="n">03</div>
+                <div>
+                  <h3>Local-to-mainnet flywheel</h3>
+                  <p>Xero starts free and local. When reliability, speed, Sender, and webhooks start mattering — teams graduate straight into Helius.</p>
+                </div>
+              </div>
+              <div class="reason">
+                <div class="n">04</div>
+                <div>
+                  <h3>Shared DNA</h3>
+                  <p>Local-first craft. Solana-native bias. Honest about infra tradeoffs. Preference for tools builders actually use every day.</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        <div class="footer-num">09 / 10</div>
+        <div class="foot-num">09 / 10</div>
       </section>
 
+      <!-- ============================== SLIDE 10 · The ask ============================== -->
       <section class="slide" data-slide="10">
         <div class="frame">
-          <div class="brand-bar">
-            <div class="brand-mini"><img src="../landing/public/logo.svg" alt="Xero" /><span class="slash"></span><span>the ask</span></div>
-            <div class="confidential">next steps</div>
-          </div>
-          <div style="margin-top: 48px;">
-            <div class="eyebrow">The ask</div>
-            <h2>Start with a focused 90-day technical pilot.</h2>
-          </div>
-          <div class="ask-layout">
-            <div class="ask-list">
-              <div class="ask-item"><div class="n">01</div><div><h3>Technical pilot</h3><p>LanaAI integration surface, Helius account linking, credit metering, and Sender/Priority Fee defaults.</p></div></div>
-              <div class="ask-item"><div class="n">02</div><div><h3>Wholesale pricing agreement</h3><p>Clear credit economics for Solana Pro, Team, and enterprise paths without asking Helius for free infra.</p></div></div>
-              <div class="ask-item"><div class="n">03</div><div><h3>Co-branded launch</h3><p>"Powered by Helius and LanaAI" inside Xero Solana Pro, with docs, demos, and launch content.</p></div></div>
-              <div class="ask-item"><div class="n">04</div><div><h3>Mutual builder intros</h3><p>Run the pilot with top Solana teams who will stress the workbench and produce credible usage data.</p></div></div>
-              <div class="ask-item"><div class="n">05</div><div><h3>Optional upside discussion</h3><p>Equity, rev-share, or strategic distribution terms once the pilot proves demand.</p></div></div>
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">the ask</span>
             </div>
-            <div class="next-box">
-              <h3>Next step</h3>
-              <p>
-                A 30-minute call this week to scope the LanaAI hooks, credit metering contract,
-                and beta cohort. We can share the full Solana Workbench implementation plan and command surface.
-              </p>
-              <p style="color: var(--gold);">
-                Ready when you are, Mert. Let's make Solana the easiest chain to build on for agents and humans alike.
-              </p>
-              <div class="signature">
-                Xero Team<br />
+            <div class="meta">10 — next steps</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">Start small, ship together</div>
+            <h2>A focused 90-day technical pilot. Nothing more than that to start.</h2>
+          </div>
+
+          <div class="ask">
+            <div class="ask-list">
+              <div class="ask-item">
+                <div class="n">01</div>
+                <div>
+                  <h3>Technical pilot</h3>
+                  <p>LanaAI integration surface, Helius account linking, credit metering, Sender + priority-fee defaults.</p>
+                </div>
+              </div>
+              <div class="ask-item">
+                <div class="n">02</div>
+                <div>
+                  <h3>Wholesale pricing</h3>
+                  <p>Clear credit economics for Solana Pro, Team, and enterprise tiers — no one asking anyone for freebies.</p>
+                </div>
+              </div>
+              <div class="ask-item">
+                <div class="n">03</div>
+                <div>
+                  <h3>Co-branded launch</h3>
+                  <p>"Powered by Helius and LanaAI" inside Xero Solana Pro — joint docs, demos, and launch content.</p>
+                </div>
+              </div>
+              <div class="ask-item">
+                <div class="n">04</div>
+                <div>
+                  <h3>Builder intros</h3>
+                  <p>Run the pilot with top Solana teams who will stress the workbench and produce credible usage data.</p>
+                </div>
+              </div>
+              <div class="ask-item">
+                <div class="n">05</div>
+                <div>
+                  <h3>Upside — when it's earned</h3>
+                  <p>Equity, rev-share, or strategic distribution — a conversation for after the pilot proves demand.</p>
+                </div>
+              </div>
+            </div>
+
+            <aside class="next">
+              <div class="tag">next step</div>
+              <h3>A 30-minute call this week.</h3>
+              <p>We'd scope the LanaAI hooks, credit metering contract, and the beta cohort. We'll bring the full Solana Workbench plan and command surface.</p>
+              <span class="cta">Ready when you are, Mert →</span>
+              <div class="sign">
+                <b>Xero Team</b><br />
                 team@Xero.sh<br />
                 @xero_dev
               </div>
-            </div>
+            </aside>
           </div>
         </div>
-        <div class="footer-num">10 / 10</div>
+        <div class="foot-num">10 / 10</div>
       </section>
+
     </main>
   </body>
 </html>

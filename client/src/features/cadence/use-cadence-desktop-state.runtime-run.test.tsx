@@ -1283,6 +1283,21 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="checkpoint-loop-first-durable-state">{firstCheckpointCard?.durableStateLabel ?? 'none'}</div>
       <div data-testid="checkpoint-loop-first-broker-state">{firstCheckpointCard?.brokerStateLabel ?? 'none'}</div>
       <div data-testid="checkpoint-loop-first-resume-state">{firstCheckpointCard?.resumeStateLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-resumability">{firstCheckpointCard?.resumability ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-resumability-label">{firstCheckpointCard?.resumabilityLabel ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-failure-class">{firstCheckpointCard?.advancedFailureClass ?? 'none'}</div>
+      <div data-testid="checkpoint-loop-first-failure-class-label">
+        {firstCheckpointCard?.advancedFailureClassLabel ?? 'none'}
+      </div>
+      <div data-testid="checkpoint-loop-first-failure-code">
+        {firstCheckpointCard?.advancedFailureDiagnosticCode ?? 'none'}
+      </div>
+      <div data-testid="checkpoint-loop-first-recovery-recommendation">
+        {firstCheckpointCard?.recoveryRecommendation ?? 'none'}
+      </div>
+      <div data-testid="checkpoint-loop-first-recovery-recommendation-label">
+        {firstCheckpointCard?.recoveryRecommendationLabel ?? 'none'}
+      </div>
       <div data-testid="checkpoint-loop-first-evidence-state">{firstCheckpointCard?.evidenceStateLabel ?? 'none'}</div>
       <div data-testid="messages-reason">{state.agentView?.messagesUnavailableReason ?? 'none'}</div>
       <div data-testid="stream-status">{state.agentView?.runtimeStreamStatus ?? 'idle'}</div>
@@ -3823,6 +3838,8 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('live_and_durable')
     expect(screen.getByTestId('checkpoint-loop-first-live-state')).toHaveTextContent('Live action required')
     expect(screen.getByTestId('checkpoint-loop-first-resume-state')).toHaveTextContent('Resume failed')
+    expect(screen.getByTestId('checkpoint-loop-first-resumability')).toHaveTextContent('awaiting_approval')
+    expect(screen.getByTestId('checkpoint-loop-first-recovery-recommendation')).toHaveTextContent('approve_resume')
     expect(screen.getByTestId('sync-polling-action-id')).toHaveTextContent(actionId)
     expect(screen.getByTestId('sync-polling-boundary-id')).toHaveTextContent('boundary-1')
     expect(screen.getByTestId('latest-resume-status')).toHaveTextContent('failed')
@@ -3880,6 +3897,164 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     const syncCallsAfterBoundaryClear = project1SyncCount()
     await new Promise((resolve) => setTimeout(resolve, BLOCKED_NOTIFICATION_SYNC_POLL_MS + 250))
     expect(project1SyncCount()).toBe(syncCallsAfterBoundaryClear)
+  })
+
+  it('projects typed advanced browser failure recovery guidance on checkpoint cards', async () => {
+    const actionId = 'flow:flow-1:run:run-project-1:boundary:boundary-advanced:browser_click'
+    const runId = 'auto-project-1'
+    const unitId = 'unit-advanced'
+    const attemptId = `${unitId}:attempt:1`
+
+    const advancedState = makeRecoveredAutonomousRunState('project-1')
+    advancedState.history = [
+      {
+        unit: {
+          projectId: 'project-1',
+          runId,
+          unitId,
+          sequence: 1,
+          kind: 'executor',
+          status: 'failed',
+          summary: 'Browser recovery boundary failed while preserving durable evidence.',
+          boundaryId: 'boundary-advanced',
+          workflowLinkage: null,
+          startedAt: '2026-04-16T20:10:00Z',
+          finishedAt: '2026-04-16T20:10:20Z',
+          updatedAt: '2026-04-16T20:10:20Z',
+          lastErrorCode: 'advanced_browser_failure_timeout',
+          lastError: null,
+        },
+        latestAttempt: {
+          projectId: 'project-1',
+          runId,
+          unitId,
+          attemptId,
+          attemptNumber: 1,
+          childSessionId: 'child-advanced',
+          status: 'failed',
+          boundaryId: 'boundary-advanced',
+          workflowLinkage: null,
+          startedAt: '2026-04-16T20:10:00Z',
+          finishedAt: '2026-04-16T20:10:20Z',
+          updatedAt: '2026-04-16T20:10:20Z',
+          lastErrorCode: 'advanced_browser_failure_timeout',
+          lastError: null,
+        },
+        artifacts: [
+          {
+            projectId: 'project-1',
+            runId,
+            unitId,
+            attemptId,
+            artifactId: 'artifact-timeout-malformed',
+            artifactKind: 'tool_result',
+            status: 'recorded',
+            summary: 'Malformed advanced browser failure payload should not override prior truthful class.',
+            contentHash: 'hash-malformed',
+            payload: {
+              kind: 'tool_result',
+              projectId: 'project-1',
+              runId,
+              unitId,
+              attemptId,
+              artifactId: 'artifact-timeout-malformed',
+              toolCallId: 'browser-click-malformed',
+              toolName: 'browser.click',
+              toolState: 'failed',
+              commandResult: {
+                exitCode: 1,
+                timedOut: true,
+                summary: 'browser.click timed out',
+              },
+              toolSummary: {
+                kind: 'browser_computer_use',
+                surface: 'browser',
+                action: 'click',
+                status: 'failed',
+                target: '#submit',
+                outcome: 'advanced_browser_failure_unknown: malformed classification',
+              },
+              actionId,
+              boundaryId: 'boundary-advanced',
+            },
+            createdAt: '2026-04-16T20:10:22Z',
+            updatedAt: '2026-04-16T20:10:22Z',
+          },
+          {
+            projectId: 'project-1',
+            runId,
+            unitId,
+            attemptId,
+            artifactId: 'artifact-timeout-truthful',
+            artifactKind: 'tool_result',
+            status: 'recorded',
+            summary: 'Browser action timed out at the checkpoint boundary.',
+            contentHash: 'hash-truthful',
+            payload: {
+              kind: 'tool_result',
+              projectId: 'project-1',
+              runId,
+              unitId,
+              attemptId,
+              artifactId: 'artifact-timeout-truthful',
+              toolCallId: 'browser-click-truthful',
+              toolName: 'browser.click',
+              toolState: 'failed',
+              commandResult: {
+                exitCode: 1,
+                timedOut: true,
+                summary: 'browser.click timed out',
+              },
+              toolSummary: {
+                kind: 'browser_computer_use',
+                surface: 'browser',
+                action: 'click',
+                status: 'failed',
+                target: '#submit',
+                outcome:
+                  'advanced_browser_failure_timeout: Browser action timed out. Retry with a higher timeout_ms or resume from the same boundary.',
+              },
+              actionId,
+              boundaryId: 'boundary-advanced',
+            },
+            createdAt: '2026-04-16T20:10:21Z',
+            updatedAt: '2026-04-16T20:10:21Z',
+          },
+        ],
+      },
+    ]
+
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', { runId: 'run-project-1' }),
+      },
+      autonomousStates: {
+        'project-1': advancedState,
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('checkpoint-loop-first-action-id')).toHaveTextContent(actionId)
+    expect(screen.getByTestId('checkpoint-loop-first-failure-class')).toHaveTextContent('timeout')
+    expect(screen.getByTestId('checkpoint-loop-first-failure-class-label')).toHaveTextContent('Timeout')
+    expect(screen.getByTestId('checkpoint-loop-first-failure-code')).toHaveTextContent(
+      'advanced_browser_failure_timeout',
+    )
+    expect(screen.getByTestId('checkpoint-loop-first-resumability')).toHaveTextContent('unknown')
+    expect(screen.getByTestId('checkpoint-loop-first-recovery-recommendation')).toHaveTextContent('retry')
+    expect(screen.getByTestId('checkpoint-loop-first-recovery-recommendation-label')).toHaveTextContent('Retry')
   })
 
   it('stops blocked-checkpoint sync polling when the active project changes', async () => {

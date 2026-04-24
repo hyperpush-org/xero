@@ -544,6 +544,18 @@ function makeCheckpointControlLoopCard(
     resumeStateLabel: 'Resume started',
     resumeDetail: 'Operator resumed the selected project runtime session.',
     resumeUpdatedAt: '2026-04-16T20:04:00Z',
+    resumability: 'resumable',
+    resumabilityLabel: 'Resumable',
+    resumabilityDetail:
+      'Cadence has a durable resume path for this action using the existing approve/reject/resume controls.',
+    isResumable: true,
+    advancedFailureClass: null,
+    advancedFailureClassLabel: null,
+    advancedFailureDiagnosticCode: null,
+    recoveryRecommendation: 'approve_resume',
+    recoveryRecommendationLabel: 'Approve / resume',
+    recoveryRecommendationDetail:
+      'Use the existing approve/reject/resume controls for this action. Cadence will refresh durable truth after the decision is persisted.',
     brokerAction: {
       actionId: approval.actionId,
       dispatches: [],
@@ -977,6 +989,18 @@ describe('AgentRuntime current UI', () => {
       resumeStateLabel: 'Not resumable',
       resumeDetail: 'Hard-denied shell-policy outcomes do not create an operator approval or resume path.',
       resumeUpdatedAt: '2026-04-16T20:04:10Z',
+      resumability: 'not_resumable',
+      resumabilityLabel: 'Not resumable',
+      resumabilityDetail:
+        'Cadence recorded a hard denial for this action, so no operator resume path is available for this boundary.',
+      isResumable: false,
+      advancedFailureClass: null,
+      advancedFailureClassLabel: null,
+      advancedFailureDiagnosticCode: null,
+      recoveryRecommendation: 'fix_permissions_policy',
+      recoveryRecommendationLabel: 'Fix permissions / policy',
+      recoveryRecommendationDetail:
+        'Browser/computer-use action was blocked by policy or permissions. Fix access or policy before retrying.',
       evidenceCount: 2,
       evidenceStateLabel: '2 durable evidence rows',
       evidenceSummary: 'Showing the latest durable evidence rows linked to this action.',
@@ -1009,6 +1033,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
     expect(screen.getByText('Recovered durable denial')).toBeVisible()
     expect(screen.getAllByText('Policy denied').length).toBeGreaterThan(0)
+    expect(screen.getByText(/Recovery guidance Fix permissions \/ policy/i)).toBeVisible()
   })
 
   it('surfaces operator-answer controls and operator-action failures on the Agent tab', () => {

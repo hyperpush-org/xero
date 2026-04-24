@@ -177,6 +177,12 @@ function makeArtifact(overrides: Partial<AutonomousUnitArtifactView> = {}): Auto
     verificationOutcome: null,
     verificationOutcomeLabel: null,
     diagnosticCode: null,
+    advancedFailureClass: null,
+    advancedFailureClassLabel: null,
+    advancedFailureDiagnosticCode: null,
+    advancedFailureRecommendation: null,
+    advancedFailureRecommendationLabel: null,
+    advancedFailureRecommendationDetail: null,
     actionId: null,
     boundaryId: null,
     isToolResult: true,
@@ -1054,6 +1060,133 @@ describe('projectCheckpointControlLoops', () => {
 
     expect(projection.items).toHaveLength(0)
     expect(projection.recoveredCount).toBe(0)
+  })
+
+  it('projects typed advanced failure classes and fail-closed recovery guidance from durable evidence', () => {
+    const timeoutActionId = 'flow:flow-1:run:run-1:boundary:boundary-timeout:browser_click'
+    const policyActionId = 'flow:flow-1:run:run-1:boundary:boundary-policy:browser_click'
+    const validationActionId = 'flow:flow-1:run:run-1:boundary:boundary-validation:terminal_input_required'
+
+    const projection = projectCheckpointControlLoops({
+      actionRequiredItems: [],
+      approvalRequests: [
+        makeApproval({
+          actionId: validationActionId,
+          actionType: 'terminal_input_required',
+          title: 'Terminal input required',
+          detail: 'Provide terminal input before the run can continue.',
+          gateNodeId: null,
+          gateKey: null,
+          transitionFromNodeId: null,
+          transitionToNodeId: null,
+          transitionKind: null,
+          status: 'pending',
+          statusLabel: 'Pending',
+          isPending: true,
+          isResolved: false,
+          canResume: false,
+          answerRequirementReason: 'runtime_resumable',
+          answerRequirementLabel: 'Required for runtime-resumable approvals',
+          answerShapeKind: 'terminal_input',
+          answerShapeLabel: 'Terminal input text',
+          answerShapeHint: 'Provide terminal input to continue this boundary.',
+          answerPlaceholder: 'Provide terminal input.',
+        }),
+      ],
+      resumeHistory: [],
+      notificationBroker: makeBrokerView(),
+      autonomousHistory: [
+        makeHistoryEntry({
+          unit: makeUnit({
+            unitId: 'unit-advanced-failure',
+            boundaryId: 'boundary-timeout',
+            updatedAt: '2026-04-16T12:11:00Z',
+          }),
+          latestAttempt: makeAttempt({
+            unitId: 'unit-advanced-failure',
+            attemptId: 'unit-advanced-failure:attempt-1',
+            boundaryId: 'boundary-timeout',
+            updatedAt: '2026-04-16T12:11:00Z',
+          }),
+          artifacts: [
+            makeArtifact({
+              artifactId: 'artifact-timeout-malformed',
+              actionId: timeoutActionId,
+              boundaryId: 'boundary-timeout',
+              summary: 'Malformed advanced browser classification should fail closed.',
+              updatedAt: '2026-04-16T12:11:30Z',
+            }),
+            makeArtifact({
+              artifactId: 'artifact-timeout-truthful',
+              actionId: timeoutActionId,
+              boundaryId: 'boundary-timeout',
+              summary: 'Browser timed out at this boundary.',
+              advancedFailureClass: 'timeout',
+              advancedFailureClassLabel: 'Timeout',
+              advancedFailureDiagnosticCode: 'advanced_browser_failure_timeout',
+              advancedFailureRecommendation: 'retry',
+              advancedFailureRecommendationLabel: 'Retry',
+              advancedFailureRecommendationDetail:
+                'Browser/computer-use action timed out. Retry this boundary, increasing timeout if needed.',
+              updatedAt: '2026-04-16T12:11:20Z',
+            }),
+            makeArtifact({
+              artifactId: 'artifact-policy',
+              actionId: policyActionId,
+              boundaryId: 'boundary-policy',
+              summary: 'Browser action was blocked by policy.',
+              advancedFailureClass: 'policy_permission',
+              advancedFailureClassLabel: 'Policy / permission',
+              advancedFailureDiagnosticCode: 'advanced_browser_failure_policy_permission',
+              advancedFailureRecommendation: 'fix_permissions_policy',
+              advancedFailureRecommendationLabel: 'Fix permissions / policy',
+              advancedFailureRecommendationDetail:
+                'Browser/computer-use action was blocked by policy or permissions. Fix access or policy before retrying.',
+              updatedAt: '2026-04-16T12:11:10Z',
+            }),
+            makeArtifact({
+              artifactId: 'artifact-validation',
+              actionId: validationActionId,
+              boundaryId: 'boundary-validation',
+              summary: 'Browser action failed validation/runtime checks.',
+              advancedFailureClass: 'validation_runtime',
+              advancedFailureClassLabel: 'Validation / runtime',
+              advancedFailureDiagnosticCode: 'advanced_browser_failure_validation_runtime',
+              advancedFailureRecommendation: 'retry',
+              advancedFailureRecommendationLabel: 'Retry',
+              advancedFailureRecommendationDetail:
+                'Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry.',
+              updatedAt: '2026-04-16T12:11:00Z',
+            }),
+          ],
+        }),
+      ],
+      autonomousRecentArtifacts: [],
+    })
+
+    const timeoutCard = projection.items.find((item) => item.actionId === timeoutActionId)
+    const policyCard = projection.items.find((item) => item.actionId === policyActionId)
+    const validationCard = projection.items.find((item) => item.actionId === validationActionId)
+
+    expect(timeoutCard).toMatchObject({
+      advancedFailureClass: 'timeout',
+      advancedFailureDiagnosticCode: 'advanced_browser_failure_timeout',
+      recoveryRecommendation: 'retry',
+      resumability: 'unknown',
+    })
+    expect(policyCard).toMatchObject({
+      advancedFailureClass: 'policy_permission',
+      advancedFailureDiagnosticCode: 'advanced_browser_failure_policy_permission',
+      recoveryRecommendation: 'fix_permissions_policy',
+      resumability: 'unknown',
+    })
+    expect(validationCard).toMatchObject({
+      advancedFailureClass: 'validation_runtime',
+      advancedFailureDiagnosticCode: 'advanced_browser_failure_validation_runtime',
+      recoveryRecommendation: 'approve_resume',
+      resumability: 'awaiting_approval',
+      isResumable: true,
+    })
   })
 
   it('keeps recent-unit and checkpoint-loop projections deterministic under mixed success/failure bursts', () => {
