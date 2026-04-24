@@ -2645,7 +2645,7 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
     expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
 
@@ -3095,7 +3095,7 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
     expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
@@ -3133,7 +3133,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Approval mode selector' }), { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'Approval · yolo' }))
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled())
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
 
     act(() => {
@@ -3160,7 +3160,7 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
     expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
 
@@ -3227,7 +3227,7 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument())
     expect(screen.queryByText('Recovered durable denial')).not.toBeInTheDocument()
     expect(screen.queryByText('Policy denied')).not.toBeInTheDocument()
