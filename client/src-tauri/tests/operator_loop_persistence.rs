@@ -137,6 +137,17 @@ fn plan_mode_required_resume_unblocks_implementation_continuation_without_duplic
 }
 
 #[test]
+fn runtime_scoped_resume_rejects_run_identity_mismatch_without_resumed_evidence_drift() {
+    gate_linked::runtime_scoped_resume_rejects_run_identity_mismatch_without_resumed_evidence_drift(
+    );
+}
+
+#[test]
+fn runtime_scoped_resume_rejects_missing_boundary_identity_without_resumed_evidence_drift() {
+    gate_linked::runtime_scoped_resume_rejects_missing_boundary_identity_without_resumed_evidence_drift();
+}
+
+#[test]
 fn notification_dispatch_claim_flow_is_idempotent_for_pending_operator_approvals() {
     notification_claims::notification_dispatch_claim_flow_is_idempotent_for_pending_operator_approvals();
 }

@@ -792,9 +792,7 @@ pub(crate) fn seed_plan_mode_continuation_workflow(
             gate_state,
             action_type: Some("approve_implementation".into()),
             title: Some("Approve implementation continuation".into()),
-            detail: Some(
-                "Confirm planning outputs before implementation continuation.".into(),
-            ),
+            detail: Some("Confirm planning outputs before implementation continuation.".into()),
             decision_context: None,
         });
     }

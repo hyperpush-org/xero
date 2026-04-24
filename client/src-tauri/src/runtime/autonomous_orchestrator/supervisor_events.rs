@@ -146,6 +146,15 @@ pub fn persist_supervisor_event(
             title,
             detail,
         } => {
+            if action_id.trim().is_empty() || boundary_id.trim().is_empty() {
+                return Err(CommandError::retryable(
+                    "autonomous_live_event_boundary_identity_invalid",
+                    format!(
+                        "Cadence refused to persist live supervisor boundary state because action id `{action_id}` and boundary id `{boundary_id}` must both be non-empty."
+                    ),
+                ));
+            }
+
             let timestamp = now_timestamp();
             payload.run.status = AutonomousRunStatus::Paused;
             payload.run.paused_at = Some(timestamp.clone());

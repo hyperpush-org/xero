@@ -1031,8 +1031,8 @@ pub(crate) fn repeated_action_type_uses_gate_scoped_action_ids() {
     assert_eq!(second.gate_key.as_deref(), Some("verify_gate"));
 }
 
-pub(crate) fn plan_mode_required_resume_unblocks_implementation_continuation_without_duplicate_rows()
-{
+pub(crate) fn plan_mode_required_resume_unblocks_implementation_continuation_without_duplicate_rows(
+) {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -1220,11 +1220,334 @@ pub(crate) fn plan_mode_required_resume_unblocks_implementation_continuation_wit
     .expect("resume should unblock plan-mode implementation continuation");
     assert_eq!(resumed.resume_entry.status, ResumeHistoryStatus::Started);
 
-    let events = project_store::load_recent_workflow_transition_events(&repo_root, project_id, None)
-        .expect("load transitions after plan-mode resume");
+    let events =
+        project_store::load_recent_workflow_transition_events(&repo_root, project_id, None)
+            .expect("load transitions after plan-mode resume");
     assert_eq!(events.len(), 2);
     assert_eq!(
         count_operator_approval_rows_for_action(&repo_root, project_id, &pending.action_id),
         1
     );
+}
+
+fn seed_runtime_scoped_resume_fixture(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    repo_root: &Path,
+    runtime_run_id: &str,
+    autonomous_run_id: &str,
+    attempt_boundary_id: Option<&str>,
+) -> String {
+    project_store::upsert_runtime_run(
+        repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: project_id.into(),
+                run_id: runtime_run_id.into(),
+                runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
+                supervisor_kind: "detached_pty".into(),
+                status: project_store::RuntimeRunStatus::Running,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "tcp".into(),
+                    endpoint: "127.0.0.1:9".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Reachable,
+                },
+                started_at: "2026-04-25T00:00:00Z".into(),
+                last_heartbeat_at: Some("2026-04-25T00:00:05Z".into()),
+                stopped_at: None,
+                last_error: None,
+                updated_at: "2026-04-25T00:00:05Z".into(),
+            },
+            checkpoint: None,
+            control_state: Some(
+                project_store::build_runtime_run_control_state(
+                    "openai_codex",
+                    None,
+                    cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+                    "2026-04-25T00:00:05Z",
+                    None,
+                )
+                .expect("build runtime control state for runtime-scoped fixture"),
+            ),
+        },
+    )
+    .expect("persist runtime run for runtime-scoped resume fixture");
+
+    let persisted = project_store::upsert_runtime_action_required(
+        repo_root,
+        &project_store::RuntimeActionRequiredUpsertRecord {
+            project_id: project_id.into(),
+            run_id: runtime_run_id.into(),
+            runtime_kind: "openai_codex".into(),
+            session_id: "session-runtime-fixture-1".into(),
+            flow_id: Some("flow-runtime-fixture-1".into()),
+            transport_endpoint: "127.0.0.1:9".into(),
+            started_at: "2026-04-25T00:00:00Z".into(),
+            last_heartbeat_at: Some("2026-04-25T00:00:05Z".into()),
+            last_error: None,
+            boundary_id: "boundary-runtime-fixture-1".into(),
+            action_type: "terminal_input_required".into(),
+            title: "Terminal input required".into(),
+            detail: "Detached runtime is blocked on terminal input and requires operator approval."
+                .into(),
+            checkpoint_summary:
+                "Detached runtime blocked on terminal input and is awaiting operator approval."
+                    .into(),
+            created_at: "2026-04-25T00:00:06Z".into(),
+        },
+    )
+    .expect("persist runtime-scoped operator action");
+
+    resolve_operator_action(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResolveOperatorActionRequestDto {
+            project_id: project_id.into(),
+            action_id: persisted.approval_request.action_id.clone(),
+            decision: "approve".into(),
+            user_answer: Some("approved".into()),
+        },
+    )
+    .expect("approve runtime-scoped operator action");
+
+    let unit_id = format!("{autonomous_run_id}:unit:1");
+    let attempt_id = format!("{unit_id}:attempt:1");
+    let timestamp = "2026-04-25T00:00:07Z";
+
+    project_store::upsert_autonomous_run(
+        repo_root,
+        &project_store::AutonomousRunUpsertRecord {
+            run: project_store::AutonomousRunRecord {
+                project_id: project_id.into(),
+                run_id: autonomous_run_id.into(),
+                runtime_kind: "openai_codex".into(),
+                provider_id: "openai_codex".into(),
+                supervisor_kind: "detached_pty".into(),
+                status: project_store::AutonomousRunStatus::Running,
+                active_unit_sequence: Some(1),
+                duplicate_start_detected: false,
+                duplicate_start_run_id: None,
+                duplicate_start_reason: None,
+                started_at: timestamp.into(),
+                last_heartbeat_at: Some(timestamp.into()),
+                last_checkpoint_at: Some(timestamp.into()),
+                paused_at: None,
+                cancelled_at: None,
+                completed_at: None,
+                crashed_at: None,
+                stopped_at: None,
+                pause_reason: None,
+                cancel_reason: None,
+                crash_reason: None,
+                last_error: None,
+                updated_at: timestamp.into(),
+            },
+            unit: Some(project_store::AutonomousUnitRecord {
+                project_id: project_id.into(),
+                run_id: autonomous_run_id.into(),
+                unit_id: unit_id.clone(),
+                sequence: 1,
+                kind: project_store::AutonomousUnitKind::Researcher,
+                status: project_store::AutonomousUnitStatus::Blocked,
+                summary: "Autonomous attempt blocked on operator boundary.".into(),
+                boundary_id: attempt_boundary_id.map(str::to_string),
+                workflow_linkage: None,
+                started_at: timestamp.into(),
+                finished_at: None,
+                updated_at: timestamp.into(),
+                last_error: None,
+            }),
+            attempt: Some(project_store::AutonomousUnitAttemptRecord {
+                project_id: project_id.into(),
+                run_id: autonomous_run_id.into(),
+                unit_id,
+                attempt_id,
+                attempt_number: 1,
+                child_session_id: "child-session-runtime-fixture-1".into(),
+                status: project_store::AutonomousUnitStatus::Blocked,
+                boundary_id: attempt_boundary_id.map(str::to_string),
+                workflow_linkage: None,
+                started_at: timestamp.into(),
+                finished_at: None,
+                updated_at: timestamp.into(),
+                last_error: None,
+            }),
+            artifacts: Vec::new(),
+        },
+    )
+    .expect("seed autonomous run for runtime-scoped resume fixture");
+
+    persisted.approval_request.action_id
+}
+
+pub(crate) fn runtime_scoped_resume_rejects_run_identity_mismatch_without_resumed_evidence_drift() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let project_id = "project-runtime-gate-run-mismatch-1";
+    let repo_root = seed_project(
+        &root,
+        &app,
+        project_id,
+        "repo-runtime-gate-run-mismatch-1",
+        "repo-runtime-gate-run-mismatch",
+    );
+
+    let action_id = seed_runtime_scoped_resume_fixture(
+        &app,
+        project_id,
+        &repo_root,
+        "run-runtime-gate-1",
+        "run-runtime-gate-1",
+        Some("boundary-runtime-fixture-1"),
+    );
+
+    let connection = open_state_connection(&repo_root);
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("disable foreign keys for runtime/autonomous run-id mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_runs SET run_id = 'run-autonomous-gate-2' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt autonomous run id for mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_units SET run_id = 'run-autonomous-gate-2' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt autonomous unit run ids for mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_unit_attempts SET run_id = 'run-autonomous-gate-2' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt autonomous attempt run ids for mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_unit_artifacts SET run_id = 'run-autonomous-gate-2' WHERE project_id = ?1",
+            [project_id],
+        )
+        .expect("corrupt autonomous artifact run ids for mismatch fixture");
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("re-enable foreign keys after runtime/autonomous run-id mismatch fixture");
+
+    let before = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("load autonomous snapshot before runtime run mismatch resume")
+        .expect("autonomous snapshot should exist before runtime run mismatch resume");
+
+    let error = resume_operator_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResumeOperatorRunRequestDto {
+            project_id: project_id.into(),
+            action_id: action_id.clone(),
+            user_answer: None,
+        },
+    )
+    .expect_err("runtime-scoped resume should fail closed on run identity mismatch");
+    assert_eq!(error.code, "autonomous_resume_run_mismatch");
+
+    let after = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("load autonomous snapshot after runtime run mismatch resume")
+        .expect("autonomous snapshot should remain after runtime run mismatch resume");
+    assert_eq!(after.run.run_id, before.run.run_id);
+    assert_eq!(after.run.status, before.run.status);
+    assert_eq!(after.attempt, before.attempt);
+
+    let connection = open_state_connection(&repo_root);
+    let resumed_artifact_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM autonomous_unit_artifacts WHERE project_id = ?1 AND artifact_id LIKE '%:resumed'",
+            [project_id],
+            |row| row.get(0),
+        )
+        .expect("count resumed evidence artifacts after run mismatch");
+    assert_eq!(resumed_artifact_count, 0);
+
+    let failed_resume_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM operator_resume_history WHERE project_id = ?1 AND source_action_id = ?2 AND status = 'failed'",
+            params![project_id, action_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("count failed resume history rows after run mismatch");
+    assert_eq!(failed_resume_count, 1);
+}
+
+pub(crate) fn runtime_scoped_resume_rejects_missing_boundary_identity_without_resumed_evidence_drift(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let project_id = "project-runtime-gate-boundary-missing-1";
+    let repo_root = seed_project(
+        &root,
+        &app,
+        project_id,
+        "repo-runtime-gate-boundary-missing-1",
+        "repo-runtime-gate-boundary-missing",
+    );
+
+    let action_id = seed_runtime_scoped_resume_fixture(
+        &app,
+        project_id,
+        &repo_root,
+        "run-runtime-gate-boundary-1",
+        "run-runtime-gate-boundary-1",
+        None,
+    );
+
+    let before = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("load autonomous snapshot before missing-boundary resume")
+        .expect("autonomous snapshot should exist before missing-boundary resume");
+
+    let error = resume_operator_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ResumeOperatorRunRequestDto {
+            project_id: project_id.into(),
+            action_id: action_id.clone(),
+            user_answer: None,
+        },
+    )
+    .expect_err(
+        "runtime-scoped resume should fail closed when attempt boundary linkage is missing",
+    );
+    assert_eq!(error.code, "autonomous_resume_identity_invalid");
+
+    let after = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("load autonomous snapshot after missing-boundary resume")
+        .expect("autonomous snapshot should remain after missing-boundary resume");
+    assert_eq!(after.run.run_id, before.run.run_id);
+    assert_eq!(after.run.status, before.run.status);
+    assert_eq!(
+        after
+            .attempt
+            .as_ref()
+            .and_then(|attempt| attempt.boundary_id.as_deref()),
+        None
+    );
+
+    let connection = open_state_connection(&repo_root);
+    let resumed_artifact_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM autonomous_unit_artifacts WHERE project_id = ?1 AND artifact_id LIKE '%:resumed'",
+            [project_id],
+            |row| row.get(0),
+        )
+        .expect("count resumed evidence artifacts after missing-boundary resume");
+    assert_eq!(resumed_artifact_count, 0);
+
+    let failed_resume_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM operator_resume_history WHERE project_id = ?1 AND source_action_id = ?2 AND status = 'failed'",
+            params![project_id, action_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("count failed resume history rows after missing-boundary resume");
+    assert_eq!(failed_resume_count, 1);
 }

@@ -221,7 +221,7 @@ fn ensure_transition_handoff(
     }
 }
 
-fn resolve_linkage_for_active_node(
+pub(super) fn resolve_linkage_for_active_node(
     repo_root: &Path,
     project_id: &str,
     active_node: &WorkflowGraphNodeRecord,

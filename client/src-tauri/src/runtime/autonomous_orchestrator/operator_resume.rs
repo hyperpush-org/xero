@@ -192,11 +192,36 @@ fn load_operator_resume_guard(
             ),
         ));
     };
-    if existing_attempt.boundary_id.as_deref() != Some(boundary_id) {
+
+    if existing_attempt.run_id != existing.run.run_id {
+        return Err(CommandError::retryable(
+            "autonomous_resume_identity_invalid",
+            format!(
+                "Cadence cannot resume autonomous boundary `{boundary_id}` because active attempt `{}` belongs to run `{}` instead of durable autonomous run `{}`.",
+                existing_attempt.attempt_id, existing_attempt.run_id, existing.run.run_id
+            ),
+        ));
+    }
+
+    let Some(active_boundary_id) = existing_attempt
+        .boundary_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(CommandError::retryable(
+            "autonomous_resume_identity_invalid",
+            format!(
+                "Cadence cannot resume autonomous boundary `{boundary_id}` because the active attempt is missing a durable blocked boundary linkage."
+            ),
+        ));
+    };
+
+    if active_boundary_id != boundary_id {
         return Err(CommandError::user_fixable(
             "autonomous_resume_boundary_mismatch",
             format!(
-                "Cadence refused to resume boundary `{boundary_id}` because the active autonomous attempt is no longer blocked on that exact boundary."
+                "Cadence refused to resume boundary `{boundary_id}` because the active autonomous attempt is blocked on boundary `{active_boundary_id}`."
             ),
         ));
     }

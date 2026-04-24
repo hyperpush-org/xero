@@ -1002,12 +1002,18 @@ pub(crate) fn plan_mode_required_true_pauses_and_requires_explicit_resolve_resum
                 && approval.status == OperatorApprovalStatus::Pending
         })
         .expect("plan-mode pause should persist deterministic pending approval");
-    assert_eq!(pending_plan_mode.transition_from_node_id.as_deref(), Some("roadmap"));
+    assert_eq!(
+        pending_plan_mode.transition_from_node_id.as_deref(),
+        Some("roadmap")
+    );
     assert_eq!(
         pending_plan_mode.transition_to_node_id.as_deref(),
         Some("implementation")
     );
-    assert_eq!(pending_plan_mode.transition_kind.as_deref(), Some("advance"));
+    assert_eq!(
+        pending_plan_mode.transition_kind.as_deref(),
+        Some("advance")
+    );
 
     let pending_action_id = pending_plan_mode.action_id.clone();
     assert!(paused_message.contains(pending_action_id.as_str()));
@@ -1016,12 +1022,9 @@ pub(crate) fn plan_mode_required_true_pauses_and_requires_explicit_resolve_resum
         1
     );
 
-    let replayed_pause = apply_workflow_transition(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        request,
-    )
-    .expect("replaying trigger should keep plan-mode pause idempotent");
+    let replayed_pause =
+        apply_workflow_transition(app.handle().clone(), app.state::<DesktopState>(), request)
+            .expect("replaying trigger should keep plan-mode pause idempotent");
     assert_eq!(
         replayed_pause.automatic_dispatch.status,
         WorkflowAutomaticDispatchStatusDto::Skipped
@@ -1716,4 +1719,383 @@ pub(crate) fn get_autonomous_run_rejects_stale_workflow_linkage_after_active_sta
     .run
     .expect("cancelled autonomous run after linkage drift should exist");
     assert_eq!(cancelled.status, AutonomousRunStatusDto::Cancelled);
+}
+
+fn corrupt_autonomous_run_id_for_mismatch(
+    repo_root: &Path,
+    project_id: &str,
+    from_run_id: &str,
+    to_run_id: &str,
+) {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = rusqlite::Connection::open(&database_path).expect("open workflow db");
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("disable foreign keys for autonomous run-id mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_runs SET run_id = ?1 WHERE project_id = ?2 AND run_id = ?3",
+            rusqlite::params![to_run_id, project_id, from_run_id],
+        )
+        .expect("corrupt autonomous run id for mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_units SET run_id = ?1 WHERE project_id = ?2 AND run_id = ?3",
+            rusqlite::params![to_run_id, project_id, from_run_id],
+        )
+        .expect("corrupt autonomous unit run ids for mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_unit_attempts SET run_id = ?1 WHERE project_id = ?2 AND run_id = ?3",
+            rusqlite::params![to_run_id, project_id, from_run_id],
+        )
+        .expect("corrupt autonomous attempt run ids for mismatch fixture");
+    connection
+        .execute(
+            "UPDATE autonomous_unit_artifacts SET run_id = ?1 WHERE project_id = ?2 AND run_id = ?3",
+            rusqlite::params![to_run_id, project_id, from_run_id],
+        )
+        .expect("corrupt autonomous artifact run ids for mismatch fixture");
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("re-enable foreign keys for autonomous run-id mismatch fixture");
+}
+
+pub(crate) fn get_autonomous_run_rejects_runtime_run_id_mismatch_without_mutating_durable_autonomous_snapshot(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_unreachable_runtime_run(&repo_root, &project_id, "run-runtime-mismatch-1");
+    seed_active_autonomous_run(&repo_root, &project_id, "run-runtime-mismatch-1");
+    corrupt_autonomous_run_id_for_mismatch(
+        &repo_root,
+        &project_id,
+        "run-runtime-mismatch-1",
+        "run-autonomous-mismatch-1",
+    );
+
+    let before = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot before run mismatch")
+        .expect("autonomous snapshot should exist before run mismatch");
+
+    let error = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect_err("run-id mismatch should fail closed during autonomous progression");
+    assert_eq!(error.code, "autonomous_workflow_run_mismatch");
+
+    let after = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot after run mismatch")
+        .expect("autonomous snapshot should remain after run mismatch");
+    assert_eq!(after.run.run_id, before.run.run_id);
+    assert_eq!(after.run.status, before.run.status);
+    assert_eq!(after.attempt, before.attempt);
+    assert_eq!(count_autonomous_run_rows(&repo_root), 1);
+}
+
+pub(crate) fn get_autonomous_run_rejects_linkage_identity_drift_without_synthetic_repair() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+    seed_planning_lifecycle_workflow(&repo_root, &project_id, false);
+
+    let started = start_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+            initial_controls: None,
+            initial_prompt: None,
+        },
+    )
+    .expect("start autonomous run before linkage identity drift");
+    let started_run = started
+        .run
+        .expect("autonomous run should exist before linkage identity drift");
+
+    wait_for_autonomous_run(&app, &project_id, |autonomous_state| {
+        autonomous_state
+            .unit
+            .as_ref()
+            .and_then(|unit| unit.workflow_linkage.as_ref())
+            .is_some_and(|linkage| linkage.workflow_node_id == "roadmap")
+    });
+
+    let snapshot = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot before linkage identity drift")
+        .expect("autonomous snapshot should exist before linkage identity drift");
+    let active_linkage = snapshot
+        .unit
+        .as_ref()
+        .and_then(|unit| unit.workflow_linkage.as_ref())
+        .cloned()
+        .expect("active unit should expose workflow linkage before linkage identity drift");
+
+    let active_transition = project_store::load_workflow_transition_event(
+        &repo_root,
+        &project_id,
+        &active_linkage.transition_id,
+    )
+    .expect("load active workflow transition")
+    .expect("active workflow transition should exist");
+    let active_handoff = project_store::load_workflow_handoff_package(
+        &repo_root,
+        &project_id,
+        &active_linkage.handoff_transition_id,
+    )
+    .expect("load active workflow handoff package")
+    .expect("active workflow handoff package should exist");
+
+    let synthetic_transition_id = "manual-roadmap-transition-stale-linkage";
+    let synthetic_hash = {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(active_handoff.package_payload.as_bytes());
+        let digest = hasher.finalize();
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let database_path = database_path_for_repo(&repo_root);
+    let connection = rusqlite::Connection::open(&database_path).expect("open workflow db");
+    connection
+        .execute(
+            r#"
+            INSERT INTO workflow_transition_events (
+                project_id,
+                transition_id,
+                causal_transition_id,
+                from_node_id,
+                to_node_id,
+                transition_kind,
+                gate_decision,
+                gate_decision_context,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'not_applicable', 'seeded stale linkage identity', '2026-01-01T00:00:00Z')
+            "#,
+            rusqlite::params![
+                project_id,
+                synthetic_transition_id,
+                active_transition.causal_transition_id,
+                active_transition.from_node_id,
+                active_transition.to_node_id,
+                active_transition.transition_kind,
+            ],
+        )
+        .expect("insert stale-linkage transition row");
+    connection
+        .execute(
+            r#"
+            INSERT INTO workflow_handoff_packages (
+                project_id,
+                handoff_transition_id,
+                causal_transition_id,
+                from_node_id,
+                to_node_id,
+                transition_kind,
+                package_payload,
+                package_hash,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '2026-01-01T00:00:00Z')
+            "#,
+            rusqlite::params![
+                project_id,
+                synthetic_transition_id,
+                active_transition.causal_transition_id,
+                active_transition.from_node_id,
+                active_transition.to_node_id,
+                active_transition.transition_kind,
+                active_handoff.package_payload,
+                synthetic_hash,
+            ],
+        )
+        .expect("insert stale-linkage handoff row");
+    connection
+        .execute(
+            r#"
+            UPDATE autonomous_units
+            SET workflow_transition_id = ?1,
+                workflow_handoff_transition_id = ?2,
+                workflow_handoff_package_hash = ?3
+            WHERE project_id = ?4
+              AND run_id = ?5
+            "#,
+            rusqlite::params![
+                synthetic_transition_id,
+                synthetic_transition_id,
+                synthetic_hash,
+                project_id,
+                started_run.run_id,
+            ],
+        )
+        .expect("corrupt unit linkage identity with stale transition ids");
+    connection
+        .execute(
+            r#"
+            UPDATE autonomous_unit_attempts
+            SET workflow_transition_id = ?1,
+                workflow_handoff_transition_id = ?2,
+                workflow_handoff_package_hash = ?3
+            WHERE project_id = ?4
+              AND run_id = ?5
+            "#,
+            rusqlite::params![
+                synthetic_transition_id,
+                synthetic_transition_id,
+                synthetic_hash,
+                project_id,
+                started_run.run_id,
+            ],
+        )
+        .expect("corrupt attempt linkage identity with stale transition ids");
+
+    let transition_count_before = count_workflow_transition_rows(&repo_root, &project_id);
+    let handoff_count_before = count_workflow_handoff_rows(&repo_root, &project_id);
+
+    let error = get_autonomous_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAutonomousRunRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect_err("stale linkage identity should fail closed during progression");
+    assert!(matches!(
+        error.code.as_str(),
+        "autonomous_workflow_linkage_identity_conflict" | "runtime_run_decode_failed"
+    ));
+
+    if error.code == "autonomous_workflow_linkage_identity_conflict" {
+        let after = project_store::load_autonomous_run(&repo_root, &project_id)
+            .expect("load autonomous snapshot after linkage identity mismatch")
+            .expect("autonomous snapshot should remain after linkage identity mismatch");
+        let after_linkage = after
+            .unit
+            .as_ref()
+            .and_then(|unit| unit.workflow_linkage.as_ref())
+            .expect("unit linkage should remain present after mismatch");
+        assert_eq!(after_linkage.transition_id, synthetic_transition_id);
+        assert_eq!(after_linkage.handoff_transition_id, synthetic_transition_id);
+        assert_eq!(after_linkage.handoff_package_hash, synthetic_hash);
+    }
+
+    assert_eq!(
+        count_workflow_transition_rows(&repo_root, &project_id),
+        transition_count_before
+    );
+    assert_eq!(
+        count_workflow_handoff_rows(&repo_root, &project_id),
+        handoff_count_before
+    );
+
+    let stopped = stop_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id,
+            run_id: started_run.run_id,
+        },
+    )
+    .expect("stop runtime run after linkage identity mismatch")
+    .expect("stopped runtime run should exist after linkage identity mismatch");
+    assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+}
+
+pub(crate) fn persist_supervisor_event_rejects_runtime_run_mismatch_without_mutating_autonomous_snapshot(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_unreachable_runtime_run(&repo_root, &project_id, "run-runtime-live-event-1");
+    seed_active_autonomous_run(&repo_root, &project_id, "run-runtime-live-event-1");
+    corrupt_autonomous_run_id_for_mismatch(
+        &repo_root,
+        &project_id,
+        "run-runtime-live-event-1",
+        "run-autonomous-live-event-1",
+    );
+
+    let before = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot before live-event mismatch")
+        .expect("autonomous snapshot should exist before live-event mismatch");
+
+    let error = persist_supervisor_event(
+        &repo_root,
+        &project_id,
+        &SupervisorLiveEventPayload::Activity {
+            code: "policy_denied_runtime".into(),
+            title: "Policy denied".into(),
+            detail: Some("Policy denied during mismatch test".into()),
+        },
+    )
+    .expect_err("live supervisor event should fail closed on run mismatch");
+    assert_eq!(error.code, "autonomous_live_event_run_mismatch");
+
+    let after = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot after live-event mismatch")
+        .expect("autonomous snapshot should remain after live-event mismatch");
+    assert_eq!(after.run.run_id, before.run.run_id);
+    assert_eq!(after.run.status, before.run.status);
+    assert_eq!(after.attempt, before.attempt);
+}
+
+pub(crate) fn persist_supervisor_event_rejects_empty_boundary_identity_without_mutating_autonomous_snapshot(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_unreachable_runtime_run(&repo_root, &project_id, "run-live-event-boundary-1");
+    seed_active_autonomous_run(&repo_root, &project_id, "run-live-event-boundary-1");
+
+    let before = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot before malformed boundary event")
+        .expect("autonomous snapshot should exist before malformed boundary event");
+
+    let error = persist_supervisor_event(
+        &repo_root,
+        &project_id,
+        &SupervisorLiveEventPayload::ActionRequired {
+            action_id: "action-boundary-test".into(),
+            boundary_id: " ".into(),
+            action_type: "terminal_input_required".into(),
+            title: "Terminal input required".into(),
+            detail: "Malformed boundary payload".into(),
+        },
+    )
+    .expect_err("malformed boundary linkage should fail closed");
+    assert_eq!(
+        error.code,
+        "autonomous_live_event_boundary_identity_invalid"
+    );
+
+    let after = project_store::load_autonomous_run(&repo_root, &project_id)
+        .expect("load autonomous snapshot after malformed boundary event")
+        .expect("autonomous snapshot should remain after malformed boundary event");
+    assert_eq!(after.run.run_id, before.run.run_id);
+    assert_eq!(after.run.status, before.run.status);
+    assert_eq!(after.attempt, before.attempt);
+    assert!(after
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .all(|artifact| !artifact.artifact_id.ends_with(":blocked")));
 }

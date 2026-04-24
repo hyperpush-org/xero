@@ -19,6 +19,26 @@ pub fn persist_autonomous_workflow_progression(
     existing: Option<&AutonomousRunSnapshotRecord>,
     payload: AutonomousRunUpsertRecord,
 ) -> Result<AutonomousRunSnapshotRecord, CommandError> {
+    if let Some(existing) = existing {
+        let existing_status = &existing.run.status;
+        if existing.run.run_id != payload.run.run_id
+            && !matches!(
+                existing_status,
+                AutonomousRunStatus::Cancelled
+                    | AutonomousRunStatus::Completed
+                    | AutonomousRunStatus::Stopped
+            )
+        {
+            return Err(CommandError::retryable(
+                "autonomous_workflow_run_mismatch",
+                format!(
+                    "Cadence refused to advance autonomous workflow progression because active runtime run `{}` does not match durable autonomous run `{}`.",
+                    payload.run.run_id, existing.run.run_id
+                ),
+            ));
+        }
+    }
+
     if !matches!(
         payload.run.status,
         AutonomousRunStatus::Starting | AutonomousRunStatus::Running
@@ -43,6 +63,35 @@ pub fn persist_autonomous_workflow_progression(
                 format!(
                     "Cadence refused to advance autonomous workflow progression because the durable autonomous linkage points at workflow node `{}` while the active workflow node is `{}`.",
                     linkage.workflow_node_id, active_node.node_id
+                ),
+            ));
+        }
+
+        let active_linkage = progression::resolve_linkage_for_active_node(
+            repo_root,
+            project_id,
+            &active_node,
+        )?
+        .ok_or_else(|| {
+            CommandError::retryable(
+                "autonomous_workflow_linkage_identity_conflict",
+                format!(
+                    "Cadence refused to advance autonomous workflow progression because active workflow node `{}` does not expose a durable transition/handoff linkage.",
+                    active_node.node_id
+                ),
+            )
+        })?;
+
+        if *linkage != active_linkage {
+            return Err(CommandError::user_fixable(
+                "autonomous_workflow_linkage_identity_conflict",
+                format!(
+                    "Cadence refused to advance autonomous workflow progression because durable linkage identity for workflow node `{}` does not match the latest transition/handoff identity (durable transition `{}` / handoff hash `{}` vs active transition `{}` / handoff hash `{}`).",
+                    active_node.node_id,
+                    linkage.transition_id,
+                    linkage.handoff_package_hash,
+                    active_linkage.transition_id,
+                    active_linkage.handoff_package_hash,
                 ),
             ));
         }

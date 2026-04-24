@@ -133,7 +133,8 @@ fn plan_mode_required_true_pauses_and_requires_explicit_resolve_resume() {
 
 #[test]
 fn plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked() {
-    workflow_progression::plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked();
+    workflow_progression::plan_mode_required_missing_required_gate_metadata_keeps_dispatch_blocked(
+    );
 }
 
 #[test]
@@ -155,6 +156,27 @@ fn get_autonomous_run_fails_closed_for_invalid_workflow_node_to_unit_mapping() {
 #[test]
 fn get_autonomous_run_rejects_stale_workflow_linkage_after_active_stage_drift() {
     workflow_progression::get_autonomous_run_rejects_stale_workflow_linkage_after_active_stage_drift();
+}
+
+#[test]
+fn get_autonomous_run_rejects_runtime_run_id_mismatch_without_mutating_durable_autonomous_snapshot()
+{
+    workflow_progression::get_autonomous_run_rejects_runtime_run_id_mismatch_without_mutating_durable_autonomous_snapshot();
+}
+
+#[test]
+fn get_autonomous_run_rejects_linkage_identity_drift_without_synthetic_repair() {
+    workflow_progression::get_autonomous_run_rejects_linkage_identity_drift_without_synthetic_repair();
+}
+
+#[test]
+fn persist_supervisor_event_rejects_runtime_run_mismatch_without_mutating_autonomous_snapshot() {
+    workflow_progression::persist_supervisor_event_rejects_runtime_run_mismatch_without_mutating_autonomous_snapshot();
+}
+
+#[test]
+fn persist_supervisor_event_rejects_empty_boundary_identity_without_mutating_autonomous_snapshot() {
+    workflow_progression::persist_supervisor_event_rejects_empty_boundary_identity_without_mutating_autonomous_snapshot();
 }
 
 #[test]
