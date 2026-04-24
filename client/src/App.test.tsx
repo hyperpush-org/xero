@@ -52,11 +52,14 @@ import type {
   AutonomousUnitArtifactDto,
   AutonomousUnitAttemptDto,
   AutonomousUnitHistoryEntryDto,
+  ImportMcpServersResponseDto,
   ImportRepositoryResponseDto,
   ListNotificationDispatchesResponseDto,
   ListNotificationRoutesResponseDto,
   ListProjectFilesResponseDto,
   ListProjectsResponseDto,
+  McpImportDiagnosticDto,
+  McpRegistryDto,
   OperatorApprovalDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
@@ -77,6 +80,7 @@ import type {
   RuntimeUpdatedPayloadDto,
   SubscribeRuntimeStreamResponseDto,
   SyncNotificationAdaptersResponseDto,
+  UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
   UpsertProviderProfileRequestDto,
   UpsertRuntimeSettingsRequestDto,
@@ -216,6 +220,42 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
     anthropicApiKeyConfigured: false,
+    ...overrides,
+  }
+}
+
+function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDto {
+  return {
+    updatedAt: '2026-04-24T04:00:00Z',
+    servers: [
+      {
+        id: 'memory',
+        name: 'Memory Server',
+        transport: {
+          kind: 'stdio',
+          command: 'npx',
+          args: ['@modelcontextprotocol/server-memory'],
+        },
+        env: [
+          {
+            key: 'OPENAI_API_KEY',
+            fromEnv: 'OPENAI_API_KEY',
+          },
+        ],
+        cwd: null,
+        connection: {
+          status: 'stale',
+          diagnostic: {
+            code: 'runtime_mcp_projection_unchecked',
+            message: 'Cadence has not checked this MCP server yet.',
+            retryable: true,
+          },
+          lastCheckedAt: null,
+          lastHealthyAt: null,
+        },
+        updatedAt: '2026-04-24T04:00:00Z',
+      },
+    ],
     ...overrides,
   }
 }
@@ -798,6 +838,101 @@ function makeRuntimeStreamActionRequiredEvent(options: {
   }
 }
 
+function makeRuntimeStreamToolEvent(options: {
+  runId?: string
+  sequence?: number
+  detail: string
+}): RuntimeStreamEventDto {
+  const runId = options.runId ?? 'run-1'
+
+  return {
+    projectId: 'project-1',
+    runtimeKind: 'openai_codex',
+    runId,
+    sessionId: 'session-1',
+    flowId: 'flow-1',
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+    item: {
+      kind: 'tool',
+      runId,
+      sequence: options.sequence ?? 4,
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      text: null,
+      toolCallId: 'mcp-invoke-1',
+      toolName: 'mcp.invoke',
+      toolState: 'failed',
+      toolSummary: {
+        kind: 'mcp_capability',
+        serverId: 'linear',
+        capabilityKind: 'prompt',
+        capabilityId: 'summarize_context',
+        capabilityName: 'Summarize Context',
+      },
+      skillId: null,
+      skillStage: null,
+      skillResult: null,
+      skillSource: null,
+      skillCacheStatus: null,
+      skillDiagnostic: null,
+      actionId: null,
+      boundaryId: null,
+      actionType: null,
+      title: null,
+      detail: options.detail,
+      code: null,
+      message: null,
+      retryable: null,
+      createdAt: '2026-04-22T12:07:08Z',
+    },
+  }
+}
+
+function makeRuntimeStreamActivityEvent(options: {
+  runId?: string
+  sequence?: number
+  code: string
+  title: string
+  detail: string
+}): RuntimeStreamEventDto {
+  const runId = options.runId ?? 'run-1'
+
+  return {
+    projectId: 'project-1',
+    runtimeKind: 'openai_codex',
+    runId,
+    sessionId: 'session-1',
+    flowId: 'flow-1',
+    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
+    item: {
+      kind: 'activity',
+      runId,
+      sequence: options.sequence ?? 5,
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      text: null,
+      toolCallId: null,
+      toolName: null,
+      toolState: null,
+      actionId: null,
+      boundaryId: null,
+      actionType: null,
+      title: options.title,
+      detail: options.detail,
+      code: options.code,
+      message: null,
+      retryable: null,
+      skillId: null,
+      skillStage: null,
+      skillResult: null,
+      skillSource: null,
+      skillCacheStatus: null,
+      skillDiagnostic: null,
+      createdAt: '2026-04-22T12:07:09Z',
+    },
+  }
+}
+
 function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): AutonomousRunStateDto {
   return {
     run: {
@@ -902,6 +1037,7 @@ function createAdapter(options?: {
   runtimeSession?: RuntimeSessionDto
   runtimeSettings?: RuntimeSettingsDto
   providerProfiles?: ProviderProfilesDto
+  mcpRegistry?: McpRegistryDto
   runtimeRun?: RuntimeRunDto | null
   autonomousState?: AutonomousRunStateDto | null
   notificationRoutes?: ListNotificationRoutesResponseDto['routes']
@@ -920,6 +1056,8 @@ function createAdapter(options?: {
   let currentProviderModelCatalogs: Record<string, ProviderModelCatalogDto> = Object.fromEntries(
     currentProviderProfiles.profiles.map((profile) => [profile.profileId, buildProviderModelCatalog(profile)]),
   )
+  let currentMcpRegistry = options?.mcpRegistry ?? makeMcpRegistry()
+  let currentMcpImportDiagnostics: McpImportDiagnosticDto[] = []
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
@@ -1274,6 +1412,127 @@ function createAdapter(options?: {
     return currentProviderProfiles
   })
 
+  const listMcpServers = vi.fn(async () => currentMcpRegistry)
+
+  const upsertMcpServer = vi.fn(async (request: UpsertMcpServerRequestDto) => {
+    const now = '2026-04-24T05:00:00Z'
+    const existing = currentMcpRegistry.servers.filter((server) => server.id !== request.id)
+    const previous = currentMcpRegistry.servers.find((server) => server.id === request.id)
+
+    currentMcpRegistry = {
+      updatedAt: now,
+      servers: [
+        {
+          id: request.id,
+          name: request.name,
+          transport: request.transport,
+          env: request.env ?? [],
+          cwd: request.cwd ?? null,
+          connection: previous?.connection ?? {
+            status: 'stale',
+            diagnostic: {
+              code: 'runtime_mcp_projection_unchecked',
+              message: 'Cadence has not checked this MCP server yet.',
+              retryable: true,
+            },
+            lastCheckedAt: null,
+            lastHealthyAt: null,
+          },
+          updatedAt: now,
+        },
+        ...existing,
+      ],
+    }
+
+    return currentMcpRegistry
+  })
+
+  const removeMcpServer = vi.fn(async (serverId: string) => {
+    currentMcpRegistry = {
+      ...currentMcpRegistry,
+      updatedAt: '2026-04-24T05:01:00Z',
+      servers: currentMcpRegistry.servers.filter((server) => server.id !== serverId),
+    }
+
+    return currentMcpRegistry
+  })
+
+  const importMcpServers = vi.fn(async (_path: string): Promise<ImportMcpServersResponseDto> => {
+    const now = '2026-04-24T05:02:00Z'
+    const importedServer = {
+      id: 'linear',
+      name: 'Linear MCP',
+      transport: {
+        kind: 'http' as const,
+        url: 'https://mcp.linear.app/http',
+      },
+      env: [
+        {
+          key: 'LINEAR_API_KEY',
+          fromEnv: 'LINEAR_API_KEY',
+        },
+      ],
+      cwd: null,
+      connection: {
+        status: 'failed' as const,
+        diagnostic: {
+          code: 'runtime_mcp_projection_decode_failed',
+          message: 'Cadence kept the last truthful MCP projection because the imported status payload was malformed.',
+          retryable: true,
+        },
+        lastCheckedAt: now,
+        lastHealthyAt: null,
+      },
+      updatedAt: now,
+    }
+
+    currentMcpRegistry = {
+      updatedAt: now,
+      servers: [
+        importedServer,
+        ...currentMcpRegistry.servers.filter((server) => server.id !== importedServer.id),
+      ],
+    }
+    currentMcpImportDiagnostics = [
+      {
+        index: 0,
+        serverId: 'linear',
+        code: 'runtime_mcp_projection_decode_failed',
+        message: 'Cadence preserved the last truthful MCP projection while parsing imported rows.',
+      },
+    ]
+
+    return {
+      registry: currentMcpRegistry,
+      diagnostics: currentMcpImportDiagnostics,
+    }
+  })
+
+  const refreshMcpServerStatuses = vi.fn(async (options?: { serverIds?: string[] }) => {
+    const serverIds = options?.serverIds ?? []
+    const shouldRefresh = (id: string) => serverIds.length === 0 || serverIds.includes(id)
+
+    currentMcpRegistry = {
+      ...currentMcpRegistry,
+      updatedAt: '2026-04-24T05:03:00Z',
+      servers: currentMcpRegistry.servers.map((server) =>
+        shouldRefresh(server.id)
+          ? {
+              ...server,
+              connection: {
+                status: 'connected',
+                diagnostic: null,
+                lastCheckedAt: '2026-04-24T05:03:00Z',
+                lastHealthyAt: '2026-04-24T05:03:00Z',
+              },
+            }
+          : server,
+      ),
+    }
+
+    return currentMcpRegistry
+  })
+
   const upsertNotificationRoute = vi.fn(async (request: UpsertNotificationRouteRequestDto) => {
     const route = {
       projectId: request.projectId,
@@ -1402,6 +1661,11 @@ function createAdapter(options?: {
     getAutonomousRun: async () => currentAutonomousState ?? { run: null, unit: null },
     getRuntimeRun: async () => currentRuntimeRun,
     getRuntimeSettings: async () => currentRuntimeSettings,
+    listMcpServers,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     getProviderModelCatalog: async (profileId, options) => {
       const currentProfile = currentProviderProfiles.profiles.find((profile) => profile.profileId === profileId)
       if (!currentProfile) {
@@ -1682,6 +1946,11 @@ function createAdapter(options?: {
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
+    listMcpServers,
+    upsertMcpServer,
+    removeMcpServer,
+    importMcpServers,
+    refreshMcpServerStatuses,
     importRepository,
     pickRepositoryFolder,
     startRuntimeRun,
@@ -2700,6 +2969,369 @@ describe('CadenceApp current UI', () => {
     )
   })
 
+  it('proves one shipped-path continuity flow across MCP manage/import, gate pause visibility, worker linkage, and recovery retention', async () => {
+    const gateActionId = 'flow:flow-1:run:run-1:boundary:boundary-plan-1:review_command'
+    const snapshot = {
+      ...makeSnapshot(),
+      lifecycle: {
+        stages: [
+          {
+            stage: 'research',
+            nodeId: 'workflow-research',
+            status: 'active',
+            actionRequired: true,
+            unblockReason: 'workflow_transition_gate_unmet',
+            unblockGateKey: 'plan_mode_required',
+            unblockActionId: gateActionId,
+            lastTransitionAt: '2026-04-22T12:07:00Z',
+          },
+        ],
+      },
+      approvalRequests: [
+        makeRuntimeApproval(gateActionId, {
+          status: 'pending',
+          userAnswer: null,
+          decisionNote: null,
+          gateNodeId: 'workflow-research',
+          gateKey: 'plan_mode_required',
+          transitionFromNodeId: 'workflow-discussion',
+          transitionToNodeId: 'workflow-research',
+          transitionKind: 'advance',
+          title: 'Plan gate requires operator approval',
+          detail: 'workflow_transition_gate_unmet: Plan mode requires explicit operator approval before continuation.',
+          createdAt: '2026-04-22T12:07:00Z',
+          updatedAt: '2026-04-22T12:07:00Z',
+          resolvedAt: null,
+        }),
+      ],
+      resumeHistory: [
+        makeResumeHistoryEntry(gateActionId, {
+          id: 42,
+          status: 'failed',
+          summary: 'autonomous_linkage_mismatch is still visible while Cadence preserves the last truthful handoff row.',
+          createdAt: '2026-04-22T12:07:20Z',
+        }),
+      ],
+      handoffPackages: [
+        {
+          id: 1,
+          projectId: 'project-1',
+          handoffTransitionId: 'handoff-transition-1',
+          causalTransitionId: 'causal-transition-1',
+          fromNodeId: 'workflow-discussion',
+          toNodeId: 'workflow-research',
+          transitionKind: 'advance',
+          packagePayload: '{"schemaVersion":1}',
+          packageHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          createdAt: '2026-04-22T12:06:30Z',
+        },
+      ],
+    } satisfies ProjectSnapshotResponseDto
+
+    const unitId = 'auto-project-1:unit-2'
+    const attemptId = `${unitId}:attempt-1`
+    const autonomousState: AutonomousRunStateDto = {
+      run: {
+        ...makeAutonomousRunState('project-1', 'auto-project-1').run!,
+        activeUnitId: unitId,
+        updatedAt: '2026-04-22T12:07:30Z',
+      },
+      unit: {
+        projectId: 'project-1',
+        runId: 'auto-project-1',
+        unitId,
+        sequence: 2,
+        kind: 'planner',
+        status: 'blocked',
+        summary: 'Planner worker is blocked until handoff linkage catches up.',
+        boundaryId: 'boundary-plan-1',
+        workflowLinkage: {
+          workflowNodeId: 'workflow-research',
+          transitionId: 'transition-1',
+          causalTransitionId: 'causal-transition-1',
+          handoffTransitionId: 'handoff-transition-1',
+          handoffPackageHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+        startedAt: '2026-04-22T12:06:50Z',
+        finishedAt: null,
+        updatedAt: '2026-04-22T12:07:30Z',
+        lastErrorCode: 'autonomous_linkage_mismatch',
+        lastError: {
+          code: 'autonomous_linkage_mismatch',
+          message: 'Cadence detected handoff hash drift while preserving the last truthful linkage snapshot.',
+        },
+      },
+      attempt: {
+        projectId: 'project-1',
+        runId: 'auto-project-1',
+        unitId,
+        attemptId,
+        attemptNumber: 1,
+        childSessionId: 'run-1:worker-planner-1',
+        status: 'blocked',
+        boundaryId: 'boundary-plan-1',
+        workflowLinkage: {
+          workflowNodeId: 'workflow-research',
+          transitionId: 'transition-1',
+          causalTransitionId: 'causal-transition-1',
+          handoffTransitionId: 'handoff-transition-1',
+          handoffPackageHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+        startedAt: '2026-04-22T12:06:55Z',
+        finishedAt: null,
+        updatedAt: '2026-04-22T12:07:30Z',
+        lastErrorCode: 'autonomous_linkage_mismatch',
+        lastError: {
+          code: 'autonomous_linkage_mismatch',
+          message: 'Cadence detected handoff hash drift while preserving the last truthful linkage snapshot.',
+        },
+      },
+      history: [
+        {
+          unit: {
+            projectId: 'project-1',
+            runId: 'auto-project-1',
+            unitId,
+            sequence: 2,
+            kind: 'planner',
+            status: 'blocked',
+            summary: 'Planner worker is blocked until handoff linkage catches up.',
+            boundaryId: 'boundary-plan-1',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-1',
+              causalTransitionId: 'causal-transition-1',
+              handoffTransitionId: 'handoff-transition-1',
+              handoffPackageHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            },
+            startedAt: '2026-04-22T12:06:50Z',
+            finishedAt: null,
+            updatedAt: '2026-04-22T12:07:30Z',
+            lastErrorCode: 'autonomous_linkage_mismatch',
+            lastError: {
+              code: 'autonomous_linkage_mismatch',
+              message: 'Cadence detected handoff hash drift while preserving the last truthful linkage snapshot.',
+            },
+          },
+          latestAttempt: {
+            projectId: 'project-1',
+            runId: 'auto-project-1',
+            unitId,
+            attemptId,
+            attemptNumber: 1,
+            childSessionId: 'run-1:worker-planner-1',
+            status: 'blocked',
+            boundaryId: 'boundary-plan-1',
+            workflowLinkage: {
+              workflowNodeId: 'workflow-research',
+              transitionId: 'transition-1',
+              causalTransitionId: 'causal-transition-1',
+              handoffTransitionId: 'handoff-transition-1',
+              handoffPackageHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            },
+            startedAt: '2026-04-22T12:06:55Z',
+            finishedAt: null,
+            updatedAt: '2026-04-22T12:07:30Z',
+            lastErrorCode: 'autonomous_linkage_mismatch',
+            lastError: {
+              code: 'autonomous_linkage_mismatch',
+              message: 'Cadence detected handoff hash drift while preserving the last truthful linkage snapshot.',
+            },
+          },
+          artifacts: [
+            {
+              projectId: 'project-1',
+              runId: 'auto-project-1',
+              unitId,
+              attemptId,
+              artifactId: `${attemptId}:linkage`,
+              artifactKind: 'verification_evidence',
+              status: 'recorded',
+              summary: 'autonomous_linkage_mismatch remained visible while the worker card kept its last truthful linkage state.',
+              contentHash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+              payload: {
+                kind: 'verification_evidence',
+                projectId: 'project-1',
+                runId: 'auto-project-1',
+                unitId,
+                attemptId,
+                artifactId: `${attemptId}:linkage`,
+                evidenceKind: 'policy_denial',
+                label: 'Linkage mismatch guardrail evidence',
+                outcome: 'failed',
+                commandResult: {
+                  exitCode: 1,
+                  timedOut: false,
+                  summary: 'autonomous_linkage_mismatch preserved without mutating durable handoff rows.',
+                },
+                actionId: gateActionId,
+                boundaryId: 'boundary-plan-1',
+              },
+              createdAt: '2026-04-22T12:07:35Z',
+              updatedAt: '2026-04-22T12:07:35Z',
+            },
+          ],
+        },
+      ],
+    }
+
+    const setup = createAdapter({
+      snapshot,
+      autonomousState,
+      runtimeRun: makeRuntimeRun('project-1', {
+        runId: 'run-1',
+        startedAt: '2026-04-22T12:00:00Z',
+        lastHeartbeatAt: '2026-04-22T12:07:00Z',
+        lastCheckpointSequence: 2,
+        lastCheckpointAt: '2026-04-22T12:07:00Z',
+        updatedAt: '2026-04-22T12:07:00Z',
+      }),
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'authenticated',
+        sessionId: 'session-1',
+        accountId: 'acct-1',
+        flowId: 'flow-1',
+      }),
+      mcpRegistry: makeMcpRegistry(),
+    })
+
+    render(<CadenceApp adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByLabelText('Settings'))
+    expect(await screen.findByRole('heading', { name: 'Providers' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    expect(await screen.findByRole('heading', { name: 'MCP Servers' })).toBeVisible()
+    expect(screen.getByText('Memory Server')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
+    fireEvent.change(screen.getByLabelText('Server id'), { target: { value: 'linear' } })
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Linear MCP' } })
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'npx' } })
+    fireEvent.change(screen.getByLabelText('Args (one per line)'), {
+      target: { value: '@modelcontextprotocol/server-linear' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create server' }))
+
+    await waitFor(() => expect(setup.upsertMcpServer).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByText('Linear MCP')).toBeVisible())
+
+    fireEvent.change(screen.getByLabelText('Import JSON file'), { target: { value: '/tmp/mcp-import.json' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }))
+
+    await waitFor(() => expect(setup.importMcpServers).toHaveBeenCalledWith('/tmp/mcp-import.json'))
+    await waitFor(() => expect(screen.getByText('Import diagnostics')).toBeVisible())
+    expect(screen.getAllByText(/runtime_mcp_projection_decode_failed/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Cadence (preserved|kept) the last truthful MCP projection/).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    await waitFor(() => expect(setup.streamSubscriptions.length).toBeGreaterThan(0))
+    expect(await screen.findByRole('heading', { name: 'Recent autonomous workers' })).toBeVisible()
+    expect(screen.getByText('Snapshot lag')).toBeVisible()
+    expect(
+      screen.getAllByText(
+        'autonomous_linkage_mismatch remained visible while the worker card kept its last truthful linkage state.',
+      ).length,
+    ).toBeGreaterThan(0)
+
+    act(() => {
+      setup.emitRuntimeStream(
+        0,
+        makeRuntimeStreamToolEvent({
+          runId: 'run-1',
+          sequence: 6,
+          detail: 'MCP prompt invocation failed with upstream timeout.',
+        }),
+      )
+      setup.emitRuntimeStream(
+        0,
+        makeRuntimeStreamActivityEvent({
+          runId: 'run-1',
+          sequence: 7,
+          code: 'workflow_transition_gate_unmet',
+          title: 'Planner gate unmet',
+          detail: 'workflow_transition_gate_unmet: Plan mode requires explicit operator approval before continuation.',
+        }),
+      )
+      setup.emitRuntimeStream(
+        0,
+        makeRuntimeStreamActionRequiredEvent({
+          runId: 'run-1',
+          sequence: 8,
+          actionId: gateActionId,
+          boundaryId: 'boundary-plan-1',
+          detail: 'workflow_transition_gate_unmet: Plan mode requires explicit operator approval before continuation.',
+          title: 'Plan gate requires operator approval',
+        }),
+      )
+    })
+
+    expect(await screen.findByRole('heading', { name: 'Tool lane' })).toBeVisible()
+    expect(screen.getByText('MCP prompt invocation failed with upstream timeout.')).toBeVisible()
+    expect(screen.getByText('MCP Prompt · Summarize Context · server linear · outcome Failed')).toBeVisible()
+    expect(screen.getAllByText('workflow_transition_gate_unmet: Plan mode requires explicit operator approval before continuation.').length).toBeGreaterThan(0)
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
+    expect(screen.getByText('Live action required')).toBeVisible()
+    expect(screen.getByText(new RegExp(`Action ${gateActionId} · Boundary boundary-plan-1`))).toBeVisible()
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-1',
+          startedAt: '2026-04-22T12:00:00Z',
+          lastHeartbeatAt: '2026-04-22T12:08:30Z',
+          lastCheckpointSequence: 3,
+          lastCheckpointAt: '2026-04-22T12:08:30Z',
+          updatedAt: '2026-04-22T12:08:30Z',
+        }),
+      })
+    })
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Tool lane' })).toBeVisible())
+
+    expect(() =>
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      }),
+    ).toThrowError(/expected one of \[project-1\]/)
+    expect(() =>
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', { runId: 'run-2' }),
+      }),
+    ).toThrowError(/clear the active run before attaching `run-2`/)
+
+    act(() => {
+      setup.emitRuntimeRunUpdatedError(
+        new CadenceDesktopError({
+          code: 'adapter_contract_mismatch',
+          errorClass: 'adapter_contract_mismatch',
+          message:
+            'Event runtime_run:updated returned malformed recovery payload (runtime_mcp_projection_decode_failed).',
+        }),
+      )
+    })
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'Event runtime_run:updated returned malformed recovery payload (runtime_mcp_projection_decode_failed).',
+        ),
+      ).toBeVisible(),
+    )
+    expect(screen.getByText('MCP Prompt · Summarize Context · server linear · outcome Failed')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Recent autonomous workers' })).toBeVisible()
+    expect(screen.getByText('Snapshot lag')).toBeVisible()
+  })
+
   it('starts the shipped Agent path with openai_api provider identity and openai_compatible runtime truth', async () => {
     const setup = createAdapter({
       providerProfiles: {
@@ -3102,7 +3734,7 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).not.toBeDisabled()
   })
 
-  it('keeps live review-required checkpoint truth off the shipped Agent surface even after YOLO becomes active', async () => {
+  it('keeps live review-required checkpoint truth visible on the shipped Agent surface even after YOLO becomes active', async () => {
     const reviewActionId = 'flow:flow-1:run:run-1:boundary:boundary-review-1:review_command'
     const setup = createAdapter({
       runtimeRun: null,
@@ -3183,12 +3815,12 @@ describe('CadenceApp current UI', () => {
       )
     })
 
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument())
-    expect(screen.queryByText('Review destructive shell command')).not.toBeInTheDocument()
-    expect(screen.queryByText('Live action required')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible())
+    expect(screen.getByText('Review destructive shell command')).toBeVisible()
+    expect(screen.getByText('Live action required')).toBeVisible()
   })
 
-  it('keeps recovered durable policy denials understandable on the shipped Agent surface after the live row clears', async () => {
+  it('keeps recovered durable policy denials understandable and visible on the shipped Agent surface after the live row clears', async () => {
     const deniedActionId = 'flow:flow-1:run:run-1:boundary:boundary-denied-1:review_command'
     const setup = createAdapter({
       runtimeSession: makeRuntimeSession('project-1', {
@@ -3228,9 +3860,9 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument())
-    expect(screen.queryByText('Recovered durable denial')).not.toBeInTheDocument()
-    expect(screen.queryByText('Policy denied')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible())
+    expect(screen.getByText('Recovered durable denial')).toBeVisible()
+    expect(screen.getAllByText('Policy denied').length).toBeGreaterThan(0)
   })
 
   it('opens Settings and runs the current provider and notification flows', async () => {
