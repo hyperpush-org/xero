@@ -112,10 +112,7 @@ pub fn extract_anchor_events(
     let mut out = Vec::new();
     for entry in &decoded_logs.entries {
         let (program_id_opt, payload_base64) = match entry {
-            DecodedLogEntry::Data {
-                program_id,
-                base64,
-            } => (program_id.clone(), base64.clone()),
+            DecodedLogEntry::Data { program_id, base64 } => (program_id.clone(), base64.clone()),
             _ => continue,
         };
         let program_id = match program_id_opt {
@@ -188,10 +185,10 @@ fn discriminator_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::solana::cluster::ClusterKind;
     use crate::commands::solana::idl::{FetchedIdl, IdlFetcher};
     use crate::commands::solana::tx::decoder::decode_logs;
-    use crate::commands::{CommandResult};
-    use crate::commands::solana::cluster::ClusterKind;
+    use crate::commands::CommandResult;
     use serde_json::json;
 
     #[derive(Debug, Default)]
@@ -246,8 +243,8 @@ mod tests {
     #[test]
     fn extract_anchor_events_finds_matching_discriminator() {
         let registry = seeded_registry("Prog11");
-        let payload = base64::engine::general_purpose::STANDARD
-            .encode([1, 2, 3, 4, 5, 6, 7, 8, 42, 0, 0, 0]);
+        let payload =
+            base64::engine::general_purpose::STANDARD.encode([1, 2, 3, 4, 5, 6, 7, 8, 42, 0, 0, 0]);
         let logs = vec![
             "Program Prog11 invoke [1]".to_string(),
             format!("Program data: {payload}"),
@@ -264,8 +261,8 @@ mod tests {
     #[test]
     fn extract_anchor_events_falls_back_to_unknown_when_no_match() {
         let registry = seeded_registry("Prog11");
-        let payload = base64::engine::general_purpose::STANDARD
-            .encode([99, 99, 99, 99, 99, 99, 99, 99]);
+        let payload =
+            base64::engine::general_purpose::STANDARD.encode([99, 99, 99, 99, 99, 99, 99, 99]);
         let logs = vec![
             "Program Prog11 invoke [1]".to_string(),
             format!("Program data: {payload}"),

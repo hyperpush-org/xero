@@ -123,6 +123,275 @@ pub(crate) fn detached_supervisor_live_event_drops_unsupported_structured_payloa
     assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }
 
+pub(crate) fn detached_supervisor_live_event_replays_valid_mcp_tool_summary_payload() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-mcp-summary-valid";
+    let repo_root = seed_project(&root, project_id, "repo-mcp-summary-valid", "repo");
+    let state = DesktopState::default();
+
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-mcp-1",
+            "tool_name": "mcp.invoke",
+            "tool_state": "succeeded",
+            "detail": "MCP capability invocation completed.",
+            "tool_summary": {
+                "kind": "mcp_capability",
+                "serverId": "workspace-mcp",
+                "capabilityKind": "resource",
+                "capabilityId": "file://README.md",
+                "capabilityName": "README"
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-mcp-summary-valid",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch mcp summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-mcp-summary-valid", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-mcp-1"
+            && tool_name == "mcp.invoke"
+            && matches!(tool_state, SupervisorToolCallState::Succeeded)
+            && summary.server_id == "workspace-mcp"
+            && matches!(
+                summary.capability_kind,
+                cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Resource
+            )
+            && summary.capability_id == "file://README.md"
+            && summary.capability_name.as_deref() == Some("README")
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop mcp summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_malformed_mcp_tool_summary_payload() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-mcp-summary-invalid";
+    let repo_root = seed_project(&root, project_id, "repo-mcp-summary-invalid", "repo");
+    let state = DesktopState::default();
+
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-mcp-2",
+            "tool_name": "mcp.invoke",
+            "tool_state": "failed",
+            "detail": "MCP invocation failed",
+            "tool_summary": {
+                "kind": "mcp_capability",
+                "capabilityKind": "tool",
+                "capabilityId": "workspace/list",
+                "capabilityName": "list"
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-mcp-summary-invalid",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch invalid mcp summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-mcp-summary-invalid", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_invalid"
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop invalid mcp summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_unsupported_mcp_capability_kind() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-mcp-summary-unsupported";
+    let repo_root = seed_project(&root, project_id, "repo-mcp-summary-unsupported", "repo");
+    let state = DesktopState::default();
+
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-mcp-3",
+            "tool_name": "mcp.invoke",
+            "tool_state": "failed",
+            "detail": "MCP invocation failed",
+            "tool_summary": {
+                "kind": "mcp_capability",
+                "serverId": "workspace-mcp",
+                "capabilityKind": "workflow",
+                "capabilityId": "workspace/list",
+                "capabilityName": "list"
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-mcp-summary-unsupported",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch unsupported mcp summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-mcp-summary-unsupported", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_unsupported"
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop unsupported mcp summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_oversized_mcp_summary_fields() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-mcp-summary-oversized";
+    let repo_root = seed_project(&root, project_id, "repo-mcp-summary-oversized", "repo");
+    let state = DesktopState::default();
+
+    let oversized_name = "x".repeat(2048);
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-mcp-4",
+            "tool_name": "mcp.invoke",
+            "tool_state": "running",
+            "detail": "MCP invocation running",
+            "tool_summary": {
+                "kind": "mcp_capability",
+                "serverId": "workspace-mcp",
+                "capabilityKind": "prompt",
+                "capabilityId": "prompt://summarize",
+                "capabilityName": oversized_name
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-mcp-summary-oversized",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch oversized mcp summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-mcp-summary-oversized", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_oversized"
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop oversized mcp summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
 pub(crate) fn detached_supervisor_persists_redacted_interactive_boundary_and_replays_same_action_identity(
 ) {
     let _guard = supervisor_test_guard();

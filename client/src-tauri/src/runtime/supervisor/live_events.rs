@@ -23,10 +23,11 @@ use super::{
     SHELL_OUTPUT_PREFIX, STRUCTURED_EVENT_PREFIX,
 };
 use crate::runtime::protocol::{
-    CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary,
-    SupervisorLiveEventPayload, SupervisorSkillCacheStatus, SupervisorSkillDiagnostic,
-    SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage, SupervisorSkillSourceMetadata,
-    SupervisorToolCallState, ToolResultSummary, WebToolResultSummary,
+    CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary, McpCapabilityKind,
+    McpCapabilityToolResultSummary, SupervisorLiveEventPayload, SupervisorSkillCacheStatus,
+    SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
+    SupervisorSkillSourceMetadata, SupervisorToolCallState, ToolResultSummary,
+    WebToolResultSummary,
 };
 
 const CONTROL_APPLY_BOUNDARY_ACTIVITY_CODE: &str = "runtime_run_controls_apply_boundary";
@@ -853,6 +854,14 @@ fn sanitize_tool_result_summary(
             content_type: sanitize_optional_tool_summary_text(summary.content_type)?,
             truncated: summary.truncated,
         })),
+        ToolResultSummary::McpCapability(summary) => Ok(ToolResultSummary::McpCapability(
+            McpCapabilityToolResultSummary {
+                server_id: sanitize_required_tool_summary_text(summary.server_id)?,
+                capability_kind: sanitize_mcp_capability_kind(summary.capability_kind)?,
+                capability_id: sanitize_required_tool_summary_text(summary.capability_id)?,
+                capability_name: sanitize_optional_tool_summary_text(summary.capability_name)?,
+            },
+        )),
     }
 }
 
@@ -876,6 +885,17 @@ fn sanitize_required_tool_summary_text(value: String) -> Result<String, ToolSumm
     }
 }
 
+fn sanitize_mcp_capability_kind(
+    kind: McpCapabilityKind,
+) -> Result<McpCapabilityKind, ToolSummaryDecodeError> {
+    match kind {
+        McpCapabilityKind::Tool
+        | McpCapabilityKind::Resource
+        | McpCapabilityKind::Prompt
+        | McpCapabilityKind::Command => Ok(kind),
+    }
+}
+
 fn tool_result_summary_text_fragments(summary: &ToolResultSummary) -> Vec<&str> {
     match summary {
         ToolResultSummary::Command(CommandToolResultSummary { .. }) => Vec::new(),
@@ -890,6 +910,14 @@ fn tool_result_summary_text_fragments(summary: &ToolResultSummary) -> Vec<&str> 
             Some(summary.target.as_str()),
             summary.final_url.as_deref(),
             summary.content_type.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        ToolResultSummary::McpCapability(summary) => [
+            Some(summary.server_id.as_str()),
+            Some(summary.capability_id.as_str()),
+            summary.capability_name.as_deref(),
         ]
         .into_iter()
         .flatten()

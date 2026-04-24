@@ -464,12 +464,17 @@ pub mod test_support {
     impl BuildRunner for MockBuildRunner {
         fn run(&self, invocation: &BuildInvocation) -> CommandResult<BuildOutcome> {
             self.calls.lock().unwrap().push(invocation.clone());
-            Ok(self.outcome.lock().unwrap().clone().unwrap_or(BuildOutcome {
-                exit_code: Some(0),
-                success: true,
-                stdout: "Compiling ...\nFinished release [optimized] target(s)\n".into(),
-                stderr: String::new(),
-            }))
+            Ok(self
+                .outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(BuildOutcome {
+                    exit_code: Some(0),
+                    success: true,
+                    stdout: "Compiling ...\nFinished release [optimized] target(s)\n".into(),
+                    stderr: String::new(),
+                }))
         }
     }
 }

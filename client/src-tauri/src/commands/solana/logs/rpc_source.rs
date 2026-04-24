@@ -376,11 +376,7 @@ mod tests {
             "getSignaturesForAddress",
             json!({"result": [{"signature": "missing", "slot": 1}]}),
         );
-        transport.set(
-            "http://rpc.test",
-            "getTransaction",
-            json!({"result": null}),
-        );
+        transport.set("http://rpc.test", "getTransaction", json!({"result": null}));
         let source = SystemRpcLogSource::new(transport as Arc<dyn RpcTransport>);
         let batches = source
             .fetch_recent(ClusterKind::Localnet, "http://rpc.test", "Target", 10)
@@ -402,16 +398,24 @@ mod tests {
             _limit: u32,
         ) -> CommandResult<Vec<RawLogBatch>> {
             let batches = vec![
-                RawLogBatch::new(cluster, "sig-a", vec![
-                    format!("Program {program_id} invoke [1]"),
-                    format!("Program {program_id} success"),
-                ])
+                RawLogBatch::new(
+                    cluster,
+                    "sig-a",
+                    vec![
+                        format!("Program {program_id} invoke [1]"),
+                        format!("Program {program_id} success"),
+                    ],
+                )
                 .with_slot(1)
                 .with_program_hint(vec![program_id.to_string()]),
-                RawLogBatch::new(cluster, "sig-b", vec![
-                    format!("Program {program_id} invoke [1]"),
-                    format!("Program {program_id} success"),
-                ])
+                RawLogBatch::new(
+                    cluster,
+                    "sig-b",
+                    vec![
+                        format!("Program {program_id} invoke [1]"),
+                        format!("Program {program_id} success"),
+                    ],
+                )
                 .with_slot(2)
                 .with_program_hint(vec![program_id.to_string()]),
             ];

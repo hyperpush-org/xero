@@ -35,8 +35,12 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 use crate::commands::{CommandError, CommandResult};
 
 pub use audit::{
-    coverage::{CoverageReport, CoverageRequest, FunctionCoverage, InstructionCoverage, LcovRecord},
-    replay::{ExploitDescriptor, ExploitKey, ReplayOutcome, ReplayReport, ReplayRequest, ReplayStep},
+    coverage::{
+        CoverageReport, CoverageRequest, FunctionCoverage, InstructionCoverage, LcovRecord,
+    },
+    replay::{
+        ExploitDescriptor, ExploitKey, ReplayOutcome, ReplayReport, ReplayRequest, ReplayStep,
+    },
     sec3::{AnalyzerKind, ExternalAnalyzerReport, ExternalAnalyzerRequest},
     static_lints::{AnchorFinding, StaticLintReport, StaticLintRequest, StaticLintRule},
     trident::{FuzzCrash, FuzzReport, FuzzRequest, TridentHarnessRequest, TridentHarnessResult},
@@ -52,14 +56,6 @@ pub use events::{
     SOLANA_SCENARIO_EVENT, SOLANA_TOOLCHAIN_STATUS_CHANGED_EVENT, SOLANA_TX_EVENT,
     SOLANA_VALIDATOR_LOG_EVENT, SOLANA_VALIDATOR_STATUS_EVENT,
 };
-pub use indexer::{
-    scaffold as indexer_scaffold, IndexerKind, IndexerRunReport, IndexerRunRequest, ProgramEventCount,
-    ScaffoldFile, ScaffoldRequest, ScaffoldResult,
-};
-pub use logs::{
-    AnchorEvent, LogBus, LogDecoder, LogEntry, LogEventSink, LogFilter, LogSubscriptionToken,
-    NullLogEventSink, RawLogBatch, RpcLogSource, SystemRpcLogSource,
-};
 pub use idl::{
     codama::{CodamaGenerationReport, CodamaGenerationRequest, CodamaTarget, CodamaTargetResult},
     publish::{
@@ -69,22 +65,17 @@ pub use idl::{
     DriftChange, DriftReport, DriftSeverity, FetchedIdl, Idl, IdlChangePhase, IdlChangedEvent,
     IdlEventSink, IdlFetcher, IdlRegistry, IdlSource, IdlSubscriptionToken, RpcIdlFetcher,
 };
+pub use indexer::{
+    scaffold as indexer_scaffold, IndexerKind, IndexerRunReport, IndexerRunRequest,
+    ProgramEventCount, ScaffoldFile, ScaffoldRequest, ScaffoldResult,
+};
+pub use logs::{
+    AnchorEvent, LogBus, LogDecoder, LogEntry, LogEventSink, LogFilter, LogSubscriptionToken,
+    NullLogEventSink, RawLogBatch, RpcLogSource, SystemRpcLogSource,
+};
 pub use pda::{
     analyse_bump, predict_cross_cluster, scan_project as pda_scan_project, BumpAnalysis,
     ClusterPda, DerivedAddress, PdaSite, PdaSiteSeedKind, SeedPart,
-};
-pub use program::{
-    build as program_build, deploy as program_deploy, rollback as program_rollback,
-    squads_synthesize, upgrade_safety_check, verified_build_submit, ArchiveRecord,
-    AuthorityCheck, AuthorityCheckOutcome, BufferWriteOutcome, BuildKind, BuildProfile,
-    BuildReport, BuildRequest, BuildRunner, BuiltArtifact, DeployAuthority, DeployResult,
-    DeployRunner, DeployServices, DeploySpec, DirectDeployOutcome, LayoutCheck,
-    PostDeployOptions, RollbackRequest, RollbackResult, SizeCheck, SizeCheckOutcome,
-    SquadsProposalDescriptor, SquadsProposalRequest, SystemBuildRunner, SystemDeployRunner,
-    SystemVerifiedBuildRunner, UpgradeInstruction, UpgradeInstructionAccount,
-    UpgradeSafetyReport, UpgradeSafetyRequest, UpgradeSafetyVerdict, VerifiedBuildRequest,
-    VerifiedBuildResult, VerifiedBuildRunner, BPF_UPGRADEABLE_LOADER, DEFAULT_VAULT_INDEX,
-    PROGRAM_DATA_MAX_BYTES, SQUADS_V4_PROGRAM_ID,
 };
 pub use persona::fund::{
     DefaultFundingBackend, FundingBackend, FundingDelta, FundingReceipt, FundingStep,
@@ -95,6 +86,18 @@ pub use persona::roles::{
     RoleDescriptor, RolePreset, TokenAllocation,
 };
 pub use persona::{Persona, PersonaSpec, PersonaStore};
+pub use program::{
+    build as program_build, deploy as program_deploy, rollback as program_rollback,
+    squads_synthesize, upgrade_safety_check, verified_build_submit, ArchiveRecord, AuthorityCheck,
+    AuthorityCheckOutcome, BufferWriteOutcome, BuildKind, BuildProfile, BuildReport, BuildRequest,
+    BuildRunner, BuiltArtifact, DeployAuthority, DeployResult, DeployRunner, DeployServices,
+    DeploySpec, DirectDeployOutcome, LayoutCheck, PostDeployOptions, RollbackRequest,
+    RollbackResult, SizeCheck, SizeCheckOutcome, SquadsProposalDescriptor, SquadsProposalRequest,
+    SystemBuildRunner, SystemDeployRunner, SystemVerifiedBuildRunner, UpgradeInstruction,
+    UpgradeInstructionAccount, UpgradeSafetyReport, UpgradeSafetyRequest, UpgradeSafetyVerdict,
+    VerifiedBuildRequest, VerifiedBuildResult, VerifiedBuildRunner, BPF_UPGRADEABLE_LOADER,
+    DEFAULT_VAULT_INDEX, PROGRAM_DATA_MAX_BYTES, SQUADS_V4_PROGRAM_ID,
+};
 pub use rpc_router::{EndpointHealth, EndpointSpec, RpcRouter};
 pub use scenario::{
     scenarios as scenario_descriptors, ScenarioDescriptor, ScenarioEngine, ScenarioKind,
@@ -530,9 +533,12 @@ impl SolanaState {
                 .or_else(|| router.pick_healthy(cluster).map(|endpoint| endpoint.url));
 
                 if let Some(rpc_url) = rpc_url {
-                    if let Ok(mut batches) =
-                        source.fetch_recent_many(cluster, &rpc_url, &program_ids, LOG_POLL_BATCH_LIMIT)
-                    {
+                    if let Ok(mut batches) = source.fetch_recent_many(
+                        cluster,
+                        &rpc_url,
+                        &program_ids,
+                        LOG_POLL_BATCH_LIMIT,
+                    ) {
                         batches.sort_by(|a, b| {
                             a.slot
                                 .unwrap_or(0)
@@ -603,7 +609,12 @@ impl SolanaState {
             .log_pollers
             .lock()
             .ok()
-            .map(|mut pollers| pollers.drain().map(|(_, worker)| worker).collect::<Vec<_>>())
+            .map(|mut pollers| {
+                pollers
+                    .drain()
+                    .map(|(_, worker)| worker)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
         for mut worker in workers {
@@ -1797,7 +1808,8 @@ struct TauriAuditEventSink<R: Runtime> {
 
 impl<R: Runtime> std::fmt::Debug for TauriAuditEventSink<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TauriAuditEventSink").finish_non_exhaustive()
+        f.debug_struct("TauriAuditEventSink")
+            .finish_non_exhaustive()
     }
 }
 
@@ -1868,9 +1880,7 @@ pub fn solana_audit_fuzz_scaffold(
     state: State<'_, SolanaState>,
     request: AuditFuzzHarnessArgs,
 ) -> CommandResult<TridentHarnessResult> {
-    state
-        .audit_engine
-        .generate_fuzz_harness(&request.request)
+    state.audit_engine.generate_fuzz_harness(&request.request)
 }
 
 #[derive(Debug, Clone, Deserialize)]

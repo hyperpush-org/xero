@@ -128,12 +128,31 @@ pub struct WebToolResultSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpCapabilityKind {
+    Tool,
+    Resource,
+    Prompt,
+    Command,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpCapabilityToolResultSummary {
+    pub server_id: String,
+    pub capability_kind: McpCapabilityKind,
+    pub capability_id: String,
+    pub capability_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ToolResultSummary {
     Command(CommandToolResultSummary),
     File(FileToolResultSummary),
     Git(GitToolResultSummary),
     Web(WebToolResultSummary),
+    McpCapability(McpCapabilityToolResultSummary),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

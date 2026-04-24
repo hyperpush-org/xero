@@ -1209,157 +1209,161 @@ pub(crate) fn start_runtime_run_launches_github_models_with_truthful_provider_id
     assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
 }
 
-pub(crate) fn start_runtime_run_projects_connected_mcp_servers_into_run_scoped_projection_contract(
-) {
-    with_scoped_env(&[("MCP_CONNECTED_TOKEN", Some("runtime-mcp-secret-value"))], || {
-        let root = tempfile::tempdir().expect("temp dir");
-        let models_base_url = spawn_static_http_server_for_requests(
-            200,
-            r#"{"data":[{"id":"gpt-4.1-mini","display_name":"GPT-4.1 Mini","capabilities":{"reasoning":{"supported":true,"effortOptions":["low","medium","high"],"defaultEffort":"medium"}}}]}"#,
-            3,
-        );
-        let (state, _registry_path, _auth_store_path) = create_state(&root);
-        let app = build_mock_app(state);
-        let (project_id, repo_root) = seed_project(&root, &app);
+pub(crate) fn start_runtime_run_projects_connected_mcp_servers_into_run_scoped_projection_contract()
+{
+    with_scoped_env(
+        &[("MCP_CONNECTED_TOKEN", Some("runtime-mcp-secret-value"))],
+        || {
+            let root = tempfile::tempdir().expect("temp dir");
+            let models_base_url = spawn_static_http_server_for_requests(
+                200,
+                r#"{"data":[{"id":"gpt-4.1-mini","display_name":"GPT-4.1 Mini","capabilities":{"reasoning":{"supported":true,"effortOptions":["low","medium","high"],"defaultEffort":"medium"}}}]}"#,
+                3,
+            );
+            let (state, _registry_path, _auth_store_path) = create_state(&root);
+            let app = build_mock_app(state);
+            let (project_id, repo_root) = seed_project(&root, &app);
 
-        let mut mcp_registry = cadence_desktop_lib::mcp::default_mcp_registry();
-        mcp_registry.servers = vec![
-            cadence_desktop_lib::mcp::McpServerRecord {
-                id: "mcp-connected".into(),
-                name: "Connected MCP".into(),
-                transport: cadence_desktop_lib::mcp::McpTransport::Stdio {
-                    command: "npx".into(),
-                    args: vec!["-y".into(), "@acme/connected-mcp".into()],
+            let mut mcp_registry = cadence_desktop_lib::mcp::default_mcp_registry();
+            mcp_registry.servers = vec![
+                cadence_desktop_lib::mcp::McpServerRecord {
+                    id: "mcp-connected".into(),
+                    name: "Connected MCP".into(),
+                    transport: cadence_desktop_lib::mcp::McpTransport::Stdio {
+                        command: "npx".into(),
+                        args: vec!["-y".into(), "@acme/connected-mcp".into()],
+                    },
+                    env: vec![cadence_desktop_lib::mcp::McpEnvironmentReference {
+                        key: "TOKEN".into(),
+                        from_env: "MCP_CONNECTED_TOKEN".into(),
+                    }],
+                    cwd: None,
+                    connection: cadence_desktop_lib::mcp::McpConnectionState {
+                        status: cadence_desktop_lib::mcp::McpConnectionStatus::Connected,
+                        diagnostic: None,
+                        last_checked_at: Some("2026-04-20T10:00:00Z".into()),
+                        last_healthy_at: Some("2026-04-20T10:00:00Z".into()),
+                    },
+                    updated_at: "2026-04-20T10:00:00Z".into(),
                 },
-                env: vec![cadence_desktop_lib::mcp::McpEnvironmentReference {
-                    key: "TOKEN".into(),
-                    from_env: "MCP_CONNECTED_TOKEN".into(),
-                }],
-                cwd: None,
-                connection: cadence_desktop_lib::mcp::McpConnectionState {
-                    status: cadence_desktop_lib::mcp::McpConnectionStatus::Connected,
-                    diagnostic: None,
-                    last_checked_at: Some("2026-04-20T10:00:00Z".into()),
-                    last_healthy_at: Some("2026-04-20T10:00:00Z".into()),
+                cadence_desktop_lib::mcp::McpServerRecord {
+                    id: "mcp-stale".into(),
+                    name: "Stale MCP".into(),
+                    transport: cadence_desktop_lib::mcp::McpTransport::Http {
+                        url: "https://stale.example.com/mcp".into(),
+                    },
+                    env: Vec::new(),
+                    cwd: None,
+                    connection: cadence_desktop_lib::mcp::McpConnectionState {
+                        status: cadence_desktop_lib::mcp::McpConnectionStatus::Stale,
+                        diagnostic: Some(cadence_desktop_lib::mcp::McpConnectionDiagnostic {
+                            code: "mcp_status_unchecked".into(),
+                            message: "Server has not been checked yet.".into(),
+                            retryable: true,
+                        }),
+                        last_checked_at: None,
+                        last_healthy_at: None,
+                    },
+                    updated_at: "2026-04-20T10:00:01Z".into(),
                 },
-                updated_at: "2026-04-20T10:00:00Z".into(),
-            },
-            cadence_desktop_lib::mcp::McpServerRecord {
-                id: "mcp-stale".into(),
-                name: "Stale MCP".into(),
-                transport: cadence_desktop_lib::mcp::McpTransport::Http {
-                    url: "https://stale.example.com/mcp".into(),
+                cadence_desktop_lib::mcp::McpServerRecord {
+                    id: "mcp-failed".into(),
+                    name: "Failed MCP".into(),
+                    transport: cadence_desktop_lib::mcp::McpTransport::Sse {
+                        url: "https://failed.example.com/sse".into(),
+                    },
+                    env: Vec::new(),
+                    cwd: None,
+                    connection: cadence_desktop_lib::mcp::McpConnectionState {
+                        status: cadence_desktop_lib::mcp::McpConnectionStatus::Failed,
+                        diagnostic: Some(cadence_desktop_lib::mcp::McpConnectionDiagnostic {
+                            code: "mcp_connect_failed".into(),
+                            message: "Probe failed".into(),
+                            retryable: true,
+                        }),
+                        last_checked_at: Some("2026-04-20T10:00:02Z".into()),
+                        last_healthy_at: None,
+                    },
+                    updated_at: "2026-04-20T10:00:02Z".into(),
                 },
-                env: Vec::new(),
-                cwd: None,
-                connection: cadence_desktop_lib::mcp::McpConnectionState {
-                    status: cadence_desktop_lib::mcp::McpConnectionStatus::Stale,
-                    diagnostic: Some(cadence_desktop_lib::mcp::McpConnectionDiagnostic {
-                        code: "mcp_status_unchecked".into(),
-                        message: "Server has not been checked yet.".into(),
-                        retryable: true,
-                    }),
-                    last_checked_at: None,
-                    last_healthy_at: None,
+            ];
+            persist_mcp_registry_snapshot(&app, &mcp_registry);
+
+            seed_openai_compatible_profile(
+                &app,
+                "openai-compatible-work",
+                "openai_api",
+                "openai_compatible",
+                "gpt-4.1-mini",
+                Some("openai_api"),
+                Some(&models_base_url),
+                Some("2025-03-01-preview"),
+                "sk-openai-runtime-secret",
+            );
+
+            let runtime = start_runtime_session(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                ProjectIdRequestDto {
+                    project_id: project_id.clone(),
                 },
-                updated_at: "2026-04-20T10:00:01Z".into(),
-            },
-            cadence_desktop_lib::mcp::McpServerRecord {
-                id: "mcp-failed".into(),
-                name: "Failed MCP".into(),
-                transport: cadence_desktop_lib::mcp::McpTransport::Sse {
-                    url: "https://failed.example.com/sse".into(),
+            )
+            .expect("bind openai-compatible runtime session before run start");
+            assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+            assert_eq!(runtime.provider_id, "openai_api");
+
+            let launched = start_runtime_run(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                StartRuntimeRunRequestDto {
+                    project_id: project_id.clone(),
+                    initial_controls: None,
+                    initial_prompt: None,
                 },
-                env: Vec::new(),
-                cwd: None,
-                connection: cadence_desktop_lib::mcp::McpConnectionState {
-                    status: cadence_desktop_lib::mcp::McpConnectionStatus::Failed,
-                    diagnostic: Some(cadence_desktop_lib::mcp::McpConnectionDiagnostic {
-                        code: "mcp_connect_failed".into(),
-                        message: "Probe failed".into(),
-                        retryable: true,
-                    }),
-                    last_checked_at: Some("2026-04-20T10:00:02Z".into()),
-                    last_healthy_at: None,
+            )
+            .expect("start runtime run with mcp projection");
+
+            let running = wait_for_runtime_run(&app, &project_id, |runtime_run| {
+                runtime_run.status == RuntimeRunStatusDto::Running
+                    && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
+            });
+            assert_eq!(running.run_id, launched.run_id);
+
+            let projection_path = runtime_mcp_projection_path(&app, &launched.run_id);
+            assert!(projection_path.is_file());
+
+            let projection = load_runtime_mcp_projection_snapshot(&app, &launched.run_id);
+            assert_eq!(projection.servers.len(), 1);
+            assert_eq!(projection.servers[0].id, "mcp-connected");
+            assert!(projection
+                .servers
+                .iter()
+                .all(|server| server.connection.status
+                    == cadence_desktop_lib::mcp::McpConnectionStatus::Connected));
+
+            let projection_text = std::fs::read_to_string(&projection_path)
+                .expect("read runtime mcp projection file");
+            assert!(!projection_text.contains("runtime-mcp-secret-value"));
+            assert!(projection_text.contains("MCP_CONNECTED_TOKEN"));
+
+            let database_bytes =
+                std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db bytes");
+            let database_text = String::from_utf8_lossy(&database_bytes);
+            assert!(!database_text.contains("runtime-mcp-secret-value"));
+
+            let stopped = stop_runtime_run(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                StopRuntimeRunRequestDto {
+                    project_id,
+                    run_id: launched.run_id,
                 },
-                updated_at: "2026-04-20T10:00:02Z".into(),
-            },
-        ];
-        persist_mcp_registry_snapshot(&app, &mcp_registry);
-
-        seed_openai_compatible_profile(
-            &app,
-            "openai-compatible-work",
-            "openai_api",
-            "openai_compatible",
-            "gpt-4.1-mini",
-            Some("openai_api"),
-            Some(&models_base_url),
-            Some("2025-03-01-preview"),
-            "sk-openai-runtime-secret",
-        );
-
-        let runtime = start_runtime_session(
-            app.handle().clone(),
-            app.state::<DesktopState>(),
-            ProjectIdRequestDto {
-                project_id: project_id.clone(),
-            },
-        )
-        .expect("bind openai-compatible runtime session before run start");
-        assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
-        assert_eq!(runtime.provider_id, "openai_api");
-
-        let launched = start_runtime_run(
-            app.handle().clone(),
-            app.state::<DesktopState>(),
-            StartRuntimeRunRequestDto {
-                project_id: project_id.clone(),
-                initial_controls: None,
-                initial_prompt: None,
-            },
-        )
-        .expect("start runtime run with mcp projection");
-
-        let running = wait_for_runtime_run(&app, &project_id, |runtime_run| {
-            runtime_run.status == RuntimeRunStatusDto::Running
-                && runtime_run.transport.liveness == RuntimeRunTransportLivenessDto::Reachable
-        });
-        assert_eq!(running.run_id, launched.run_id);
-
-        let projection_path = runtime_mcp_projection_path(&app, &launched.run_id);
-        assert!(projection_path.is_file());
-
-        let projection = load_runtime_mcp_projection_snapshot(&app, &launched.run_id);
-        assert_eq!(projection.servers.len(), 1);
-        assert_eq!(projection.servers[0].id, "mcp-connected");
-        assert!(projection
-            .servers
-            .iter()
-            .all(|server| server.connection.status == cadence_desktop_lib::mcp::McpConnectionStatus::Connected));
-
-        let projection_text =
-            std::fs::read_to_string(&projection_path).expect("read runtime mcp projection file");
-        assert!(!projection_text.contains("runtime-mcp-secret-value"));
-        assert!(projection_text.contains("MCP_CONNECTED_TOKEN"));
-
-        let database_bytes =
-            std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db bytes");
-        let database_text = String::from_utf8_lossy(&database_bytes);
-        assert!(!database_text.contains("runtime-mcp-secret-value"));
-
-        let stopped = stop_runtime_run(
-            app.handle().clone(),
-            app.state::<DesktopState>(),
-            StopRuntimeRunRequestDto {
-                project_id,
-                run_id: launched.run_id,
-            },
-        )
-        .expect("stop runtime run with mcp projection")
-        .expect("runtime run with mcp projection should still exist");
-        assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
-    });
+            )
+            .expect("stop runtime run with mcp projection")
+            .expect("runtime run with mcp projection should still exist");
+            assert_eq!(stopped.status, RuntimeRunStatusDto::Stopped);
+        },
+    );
 }
 
 pub(crate) fn start_runtime_run_fails_closed_when_mcp_registry_snapshot_is_unreadable() {
@@ -1421,7 +1425,10 @@ pub(crate) fn start_runtime_run_fails_closed_when_mcp_registry_snapshot_is_malfo
         2,
     );
     let (state, _registry_path, _auth_store_path) = create_state(&root);
-    let malformed_registry_path = root.path().join("app-data").join("mcp-registry-malformed.json");
+    let malformed_registry_path = root
+        .path()
+        .join("app-data")
+        .join("mcp-registry-malformed.json");
     std::fs::create_dir_all(
         malformed_registry_path
             .parent()

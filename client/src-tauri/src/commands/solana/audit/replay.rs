@@ -628,7 +628,10 @@ pub mod test_support {
                     format!("asserted {description}")
                 }
             };
-            self.step_messages.lock().unwrap().push((step_index, msg.clone()));
+            self.step_messages
+                .lock()
+                .unwrap()
+                .push((step_index, msg.clone()));
             let fail_at = *self.fail_step.lock().unwrap();
             let success = Some(step_index) != fail_at;
             Ok(ReplayStepTrace {
@@ -640,10 +643,7 @@ pub mod test_support {
             })
         }
 
-        fn verify_outcome(
-            &self,
-            _ctx: &ReplayContext,
-        ) -> CommandResult<(ReplayOutcome, String)> {
+        fn verify_outcome(&self, _ctx: &ReplayContext) -> CommandResult<(ReplayOutcome, String)> {
             Ok(self
                 .outcome
                 .lock()

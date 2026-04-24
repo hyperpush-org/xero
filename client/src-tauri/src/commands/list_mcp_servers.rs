@@ -5,8 +5,8 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     commands::{
         CommandError, CommandResult, McpConnectionDiagnosticDto, McpConnectionStateDto,
-        McpConnectionStatusDto, McpEnvironmentReferenceDto, McpImportDiagnosticDto,
-        McpRegistryDto, McpServerDto, McpTransportDto, RefreshMcpServerStatusesRequestDto,
+        McpConnectionStatusDto, McpEnvironmentReferenceDto, McpImportDiagnosticDto, McpRegistryDto,
+        McpServerDto, McpTransportDto, RefreshMcpServerStatusesRequestDto,
     },
     mcp::{
         load_mcp_registry_from_path, persist_mcp_registry, refresh_mcp_connection_truth,
@@ -106,7 +106,9 @@ pub(crate) fn mcp_transport_record_from_dto(transport: &McpTransportDto) -> McpT
     }
 }
 
-pub(crate) fn mcp_connection_state_dto_from_record(state: &McpConnectionState) -> McpConnectionStateDto {
+pub(crate) fn mcp_connection_state_dto_from_record(
+    state: &McpConnectionState,
+) -> McpConnectionStateDto {
     McpConnectionStateDto {
         status: mcp_connection_status_dto_from_record(state.status.clone()),
         diagnostic: state

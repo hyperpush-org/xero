@@ -204,7 +204,10 @@ fn mcp_commands_validate_requests_and_persist_crud_import_without_secret_values(
             name: "Memory".into(),
             transport: McpTransportDto::Stdio {
                 command: "npx".into(),
-                args: vec!["@modelcontextprotocol/server-memory".into(), "--stdio".into()],
+                args: vec![
+                    "@modelcontextprotocol/server-memory".into(),
+                    "--stdio".into(),
+                ],
             },
             env: vec![McpEnvironmentReferenceDto {
                 key: "API_TOKEN".into(),
@@ -217,9 +220,16 @@ fn mcp_commands_validate_requests_and_persist_crud_import_without_secret_values(
 
     assert_eq!(upserted.servers.len(), 1);
     assert_eq!(upserted.servers[0].id, "memory");
-    assert_eq!(upserted.servers[0].connection.status, McpConnectionStatusDto::Stale);
     assert_eq!(
-        upserted.servers[0].connection.diagnostic.as_ref().map(|item| item.code.as_str()),
+        upserted.servers[0].connection.status,
+        McpConnectionStatusDto::Stale
+    );
+    assert_eq!(
+        upserted.servers[0]
+            .connection
+            .diagnostic
+            .as_ref()
+            .map(|item| item.code.as_str()),
         Some("mcp_status_unchecked")
     );
 
@@ -270,12 +280,10 @@ fn mcp_commands_validate_requests_and_persist_crud_import_without_secret_values(
     assert_eq!(imported.registry.servers[0].id, "filesystem");
     assert_eq!(imported.registry.servers[1].id, "memory");
     assert_eq!(imported.diagnostics.len(), 2);
-    assert!(
-        imported
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.code == "mcp_registry_import_invalid")
-    );
+    assert!(imported
+        .diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic.code == "mcp_registry_import_invalid"));
 
     let blank_remove = remove_mcp_server(
         app.handle().clone(),
@@ -319,8 +327,12 @@ fn refresh_mcp_server_statuses_projects_fail_closed_truth_and_preserves_last_hea
         spawn_single_response_server(200, "application/json", "{\"ok\":true}", Duration::ZERO);
     let misconfigured_sse_url =
         spawn_single_response_server(200, "text/plain", "not-sse", Duration::ZERO);
-    let stale_url =
-        spawn_single_response_server(200, "application/json", "{\"slow\":true}", Duration::from_millis(1_600));
+    let stale_url = spawn_single_response_server(
+        200,
+        "application/json",
+        "{\"slow\":true}",
+        Duration::from_millis(1_600),
+    );
 
     let previous_healthy_at = "2026-04-24T00:00:00Z";
     let seeded_registry = McpRegistry {
@@ -398,7 +410,10 @@ fn refresh_mcp_server_statuses_projects_fail_closed_truth_and_preserves_last_hea
     .expect("refresh MCP statuses should project per-server truth");
 
     let connected = server_by_id(&refreshed, "connected-http");
-    assert_eq!(connected.connection.status, McpConnectionStatusDto::Connected);
+    assert_eq!(
+        connected.connection.status,
+        McpConnectionStatusDto::Connected
+    );
     assert!(connected.connection.diagnostic.is_none());
     assert!(connected.connection.last_checked_at.is_some());
     assert!(connected.connection.last_healthy_at.is_some());
@@ -415,7 +430,10 @@ fn refresh_mcp_server_statuses_projects_fail_closed_truth_and_preserves_last_hea
     );
 
     let misconfigured = server_by_id(&refreshed, "misconfigured-sse");
-    assert_eq!(misconfigured.connection.status, McpConnectionStatusDto::Misconfigured);
+    assert_eq!(
+        misconfigured.connection.status,
+        McpConnectionStatusDto::Misconfigured
+    );
     assert_eq!(
         misconfigured
             .connection

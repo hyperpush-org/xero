@@ -91,6 +91,120 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_structured_artifact_paylo
     ));
 }
 
+pub(crate) fn autonomous_run_persistence_canonicalizes_mcp_tool_result_payloads_and_reloads_them() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Supervisor launched and connected to the project PTY.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run for MCP structured artifact persistence");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "mcp.invoke".into();
+        tool.command_result = None;
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
+                cadence_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
+                    server_id: "workspace-mcp".into(),
+                    capability_kind:
+                        cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt,
+                    capability_id: "prompt://summarize".into(),
+                    capability_name: Some("Summarize".into()),
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let persisted = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect("persist autonomous run with MCP structured artifact");
+    let artifact = &persisted.history[0].artifacts[0];
+    let payload_hash = artifact
+        .content_hash
+        .as_ref()
+        .expect("MCP structured artifact should compute content hash")
+        .clone();
+
+    let stored_payload_json: String = open_state_connection(&repo_root)
+        .query_row(
+            "SELECT payload_json FROM autonomous_unit_artifacts WHERE artifact_id = ?1",
+            params![artifact.artifact_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("read stored MCP structured payload json");
+    let expected_payload_json = concat!(
+        "{",
+        "\"actionId\":\"action-1\"",
+        ",\"artifactId\":\"artifact-tool-result\"",
+        ",\"attemptId\":\"run-1:unit:1:attempt:1\"",
+        ",\"boundaryId\":\"boundary-1\"",
+        ",\"commandResult\":null",
+        ",\"kind\":\"tool_result\"",
+        ",\"projectId\":\"project-1\"",
+        ",\"runId\":\"run-1\"",
+        ",\"toolCallId\":\"tool-call-1\"",
+        ",\"toolName\":\"mcp.invoke\"",
+        ",\"toolState\":\"succeeded\"",
+        ",\"toolSummary\":{\"capabilityId\":\"prompt://summarize\",\"capabilityKind\":\"prompt\",\"capabilityName\":\"Summarize\",\"kind\":\"mcp_capability\",\"serverId\":\"workspace-mcp\"}",
+        ",\"unitId\":\"run-1:unit:1\"",
+        "}"
+    );
+    assert_eq!(stored_payload_json, expected_payload_json);
+
+    let mut hasher = Sha256::new();
+    hasher.update(stored_payload_json.as_bytes());
+    let expected_hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(payload_hash, expected_hash);
+
+    let recovered = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("reload autonomous run with MCP structured artifact")
+        .expect("MCP structured autonomous run should exist");
+    let recovered_summary = recovered
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .find_map(|artifact| match artifact.payload.as_ref() {
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload)) => {
+                payload.tool_summary.as_ref()
+            }
+            _ => None,
+        })
+        .expect("MCP tool summary should be present after reload");
+    assert!(matches!(
+        recovered_summary,
+        cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(summary)
+            if summary.server_id == "workspace-mcp"
+                && summary.capability_kind
+                    == cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt
+                && summary.capability_id == "prompt://summarize"
+                && summary.capability_name.as_deref() == Some("Summarize")
+    ));
+}
+
 pub(crate) fn autonomous_run_persistence_canonicalizes_verification_evidence_payloads_and_reloads_them(
 ) {
     let root = tempfile::tempdir().expect("temp dir");
@@ -337,6 +451,133 @@ pub(crate) fn autonomous_run_persistence_rejects_structured_artifact_payload_lin
     let error = project_store::upsert_autonomous_run(&repo_root, &payload)
         .expect_err("payload linkage mismatch should be rejected");
     assert_eq!(error.code, "autonomous_run_request_invalid");
+}
+
+pub(crate) fn autonomous_run_persistence_rejects_mcp_tool_summary_with_command_result() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run for MCP command-result mismatch");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "mcp.invoke".into();
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
+                cadence_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
+                    server_id: "workspace-mcp".into(),
+                    capability_kind:
+                        cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Tool,
+                    capability_id: "workspace/list".into(),
+                    capability_name: Some("list".into()),
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let error = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect_err("MCP tool summary with command_result should be rejected");
+    assert_eq!(error.code, "autonomous_run_request_invalid");
+}
+
+pub(crate) fn autonomous_run_decode_fails_closed_when_mcp_capability_kind_is_tampered() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run before MCP payload tampering");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "mcp.invoke".into();
+        tool.command_result = None;
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
+                cadence_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
+                    server_id: "workspace-mcp".into(),
+                    capability_kind:
+                        cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt,
+                    capability_id: "prompt://summarize".into(),
+                    capability_name: Some("Summarize".into()),
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+    project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect("persist MCP structured artifact before tampering");
+
+    open_state_connection(&repo_root)
+        .execute(
+            "UPDATE autonomous_unit_artifacts SET payload_json = ?1 WHERE artifact_id = ?2",
+            params![
+                concat!(
+                    "{",
+                    "\"kind\":\"tool_result\"",
+                    ",\"projectId\":\"project-1\"",
+                    ",\"runId\":\"run-1\"",
+                    ",\"unitId\":\"run-1:unit:1\"",
+                    ",\"attemptId\":\"run-1:unit:1:attempt:1\"",
+                    ",\"artifactId\":\"artifact-tool-result\"",
+                    ",\"toolCallId\":\"tool-call-1\"",
+                    ",\"toolName\":\"mcp.invoke\"",
+                    ",\"toolState\":\"succeeded\"",
+                    ",\"commandResult\":null",
+                    ",\"toolSummary\":{\"kind\":\"mcp_capability\",\"serverId\":\"workspace-mcp\",\"capabilityKind\":\"workflow\",\"capabilityId\":\"prompt://summarize\",\"capabilityName\":\"Summarize\"}",
+                    ",\"actionId\":\"action-1\"",
+                    ",\"boundaryId\":\"boundary-1\"",
+                    "}"
+                ),
+                "artifact-tool-result"
+            ],
+        )
+        .expect("tamper MCP tool summary capability kind");
+
+    let error = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect_err("tampered MCP capability kind should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
 }
 
 pub(crate) fn autonomous_run_persistence_rejects_secret_bearing_structured_payload_content() {

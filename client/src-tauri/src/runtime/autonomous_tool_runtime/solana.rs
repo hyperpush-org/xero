@@ -109,13 +109,9 @@ pub enum AutonomousSolanaLogsAction {
     /// Return currently-active subscriptions from the `LogBus`.
     Active,
     /// Start a live subscription.
-    Subscribe {
-        filter: LogFilter,
-    },
+    Subscribe { filter: LogFilter },
     /// Stop a live subscription.
-    Unsubscribe {
-        token: LogSubscriptionToken,
-    },
+    Unsubscribe { token: LogSubscriptionToken },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -575,10 +571,8 @@ pub trait SolanaExecutor: Send + Sync + std::fmt::Debug {
         request: AutonomousSolanaVerifiedBuildRequest,
     ) -> CommandResult<AutonomousSolanaOutput>;
 
-    fn audit(
-        &self,
-        request: AutonomousSolanaAuditRequest,
-    ) -> CommandResult<AutonomousSolanaOutput>;
+    fn audit(&self, request: AutonomousSolanaAuditRequest)
+        -> CommandResult<AutonomousSolanaOutput>;
 
     fn indexer(
         &self,
@@ -762,8 +756,7 @@ impl SolanaExecutor for StateSolanaExecutor {
                 let token = self.inner.log_bus.subscribe(filter);
                 (
                     "subscribe".to_string(),
-                    serde_json::to_value::<LogSubscriptionToken>(token)
-                        .unwrap_or(JsonValue::Null),
+                    serde_json::to_value::<LogSubscriptionToken>(token).unwrap_or(JsonValue::Null),
                 )
             }
             AutonomousSolanaLogsAction::Unsubscribe { token } => {
@@ -1334,8 +1327,7 @@ impl SolanaExecutor for StateSolanaExecutor {
                 skip_remote_submit: request.skip_remote_submit,
             },
         )?;
-        let value =
-            serde_json::to_value::<VerifiedBuildResult>(report).unwrap_or(JsonValue::Null);
+        let value = serde_json::to_value::<VerifiedBuildResult>(report).unwrap_or(JsonValue::Null);
         let value_json = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
         Ok(AutonomousSolanaOutput {
             action: "verified_build_submit".to_string(),
@@ -1425,8 +1417,7 @@ impl SolanaExecutor for StateSolanaExecutor {
                         })?;
                 (
                     "audit_fuzz_scaffold".to_string(),
-                    serde_json::to_value::<TridentHarnessResult>(result)
-                        .unwrap_or(JsonValue::Null),
+                    serde_json::to_value::<TridentHarnessResult>(result).unwrap_or(JsonValue::Null),
                 )
             }
             AutonomousSolanaAuditAction::Coverage {
@@ -1795,8 +1786,7 @@ impl SolanaExecutor for UnavailableSolanaExecutor {
                 })?;
                 (
                     "audit_fuzz_scaffold".to_string(),
-                    serde_json::to_value::<TridentHarnessResult>(result)
-                        .unwrap_or(JsonValue::Null),
+                    serde_json::to_value::<TridentHarnessResult>(result).unwrap_or(JsonValue::Null),
                 )
             }
             AutonomousSolanaAuditAction::Coverage {

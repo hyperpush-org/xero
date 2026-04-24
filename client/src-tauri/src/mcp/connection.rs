@@ -73,11 +73,7 @@ impl ProbeOutcome {
         }
     }
 
-    fn misconfigured(
-        code: impl Into<String>,
-        message: impl Into<String>,
-        retryable: bool,
-    ) -> Self {
+    fn misconfigured(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
         Self::Status {
             status: McpConnectionStatus::Misconfigured,
             diagnostic: McpConnectionDiagnostic {
@@ -104,7 +100,11 @@ pub fn refresh_mcp_connection_truth(
     registry: &McpRegistry,
     selected_server_ids: Option<&BTreeSet<String>>,
 ) -> McpRegistry {
-    refresh_mcp_connection_truth_with_config(registry, selected_server_ids, McpProbeConfig::default())
+    refresh_mcp_connection_truth_with_config(
+        registry,
+        selected_server_ids,
+        McpProbeConfig::default(),
+    )
 }
 
 pub fn refresh_mcp_connection_truth_with_config(
@@ -138,7 +138,10 @@ pub fn refresh_mcp_connection_truth_with_config(
         let mut handles = Vec::with_capacity(chunk.len());
         for index in chunk {
             let server = registry.servers[*index].clone();
-            handles.push((*index, thread::spawn(move || probe_server(&server, timeout))));
+            handles.push((
+                *index,
+                thread::spawn(move || probe_server(&server, timeout)),
+            ));
         }
 
         for (index, handle) in handles {
@@ -214,9 +217,15 @@ fn probe_server(server: &McpServerRecord, timeout: Duration) -> ProbeOutcome {
     }
 
     match &server.transport {
-        McpTransport::Stdio { command, args } => probe_stdio_transport(&server.id, command, args, timeout),
-        McpTransport::Http { url } => probe_http_transport(&server.id, url, TransportProbeMode::Http, timeout),
-        McpTransport::Sse { url } => probe_http_transport(&server.id, url, TransportProbeMode::Sse, timeout),
+        McpTransport::Stdio { command, args } => {
+            probe_stdio_transport(&server.id, command, args, timeout)
+        }
+        McpTransport::Http { url } => {
+            probe_http_transport(&server.id, url, TransportProbeMode::Http, timeout)
+        }
+        McpTransport::Sse { url } => {
+            probe_http_transport(&server.id, url, TransportProbeMode::Sse, timeout)
+        }
     }
 }
 
@@ -240,7 +249,10 @@ fn probe_stdio_transport(
                 format!(
                     "Cadence could not start MCP stdio server `{server_id}` for probing: {error}"
                 ),
-                !matches!(error.kind(), ErrorKind::NotFound | ErrorKind::PermissionDenied),
+                !matches!(
+                    error.kind(),
+                    ErrorKind::NotFound | ErrorKind::PermissionDenied
+                ),
             );
         }
     };
@@ -340,9 +352,7 @@ fn probe_http_transport(
 
             return ProbeOutcome::failed(
                 "mcp_probe_transport_failed",
-                format!(
-                    "Cadence could not reach MCP server `{server_id}` during probing: {error}"
-                ),
+                format!("Cadence could not reach MCP server `{server_id}` during probing: {error}"),
                 true,
             );
         }

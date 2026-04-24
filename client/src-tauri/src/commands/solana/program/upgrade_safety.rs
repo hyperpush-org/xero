@@ -419,11 +419,7 @@ fn decode_program_data_header(bytes: &[u8]) -> (bool, Option<String>) {
     (false, Some(bs58::encode(auth_bytes).into_string()))
 }
 
-fn compute_size_check(
-    local_so_size: u64,
-    pd: &ProgramDataDecode,
-    absolute_cap: u64,
-) -> SizeCheck {
+fn compute_size_check(local_so_size: u64, pd: &ProgramDataDecode, absolute_cap: u64) -> SizeCheck {
     let on_chain_payload_bytes = pd
         .program_data_total_bytes
         .map(|t| t.saturating_sub(PROGRAMDATA_DATA_OFFSET as u64));
@@ -438,9 +434,7 @@ fn compute_size_check(
             local_so_size_bytes: local_so_size,
             on_chain_program_data_bytes: on_chain_payload_bytes,
             absolute_cap_bytes: absolute_cap,
-            detail: format!(
-                "Local .so is {local_so_size} bytes, exceeds {cap_label}."
-            ),
+            detail: format!("Local .so is {local_so_size} bytes, exceeds {cap_label}."),
         };
     }
     if pd.program_missing || pd.program_data_total_bytes.is_none() {
@@ -500,7 +494,8 @@ fn compute_authority_check(expected: &str, pd: &ProgramDataDecode) -> AuthorityC
             expected_authority: expected.to_string(),
             on_chain_authority: None,
             program_data_address: pd.program_data_address.clone(),
-            detail: "Program authority is None — program is immutable, upgrades are impossible.".into(),
+            detail: "Program authority is None — program is immutable, upgrades are impossible."
+                .into(),
         };
     }
     let on_chain = pd.upgrade_authority.clone().unwrap_or_default();
@@ -697,11 +692,7 @@ mod tests {
         out
     }
 
-    fn make_request(
-        tmp: &TempDir,
-        local_so_size: usize,
-        max: Option<u64>,
-    ) -> UpgradeSafetyRequest {
+    fn make_request(tmp: &TempDir, local_so_size: usize, max: Option<u64>) -> UpgradeSafetyRequest {
         UpgradeSafetyRequest {
             program_id: TEST_PROGRAM_ID.into(),
             cluster: ClusterKind::Devnet,
@@ -784,7 +775,10 @@ mod tests {
         assert_eq!(report.verdict, UpgradeSafetyVerdict::Ok);
         assert_eq!(report.authority.outcome, AuthorityCheckOutcome::Match);
         assert_eq!(report.size.outcome, SizeCheckOutcome::Fits);
-        assert_eq!(report.authority.program_data_address, Some(pd_address_b58()));
+        assert_eq!(
+            report.authority.program_data_address,
+            Some(pd_address_b58())
+        );
     }
 
     #[test]

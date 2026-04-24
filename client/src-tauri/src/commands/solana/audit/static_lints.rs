@@ -111,7 +111,9 @@ impl StaticLintRule {
             StaticLintRule::MissingSigner => "Accounts struct missing a Signer",
             StaticLintRule::MissingOwnerCheck => "Raw AccountInfo without owner check",
             StaticLintRule::MissingHasOne => "Cross-account reference without has_one",
-            StaticLintRule::UncheckedAccountInfo => "UncheckedAccount / AccountInfo missing CHECK comment",
+            StaticLintRule::UncheckedAccountInfo => {
+                "UncheckedAccount / AccountInfo missing CHECK comment"
+            }
             StaticLintRule::ArithmeticOverflow => "Unchecked integer arithmetic",
             StaticLintRule::ReallocWithoutRent => "realloc() without rent-exempt bump",
             StaticLintRule::SeedSpoof => "PDA seed may be user-spoofable",
@@ -244,10 +246,7 @@ pub fn run(project_root: &Path, request: &StaticLintRequest) -> CommandResult<St
         scan_file(path, text, &rules, &mut anchor_findings);
     })?;
 
-    let mut findings: Vec<Finding> = anchor_findings
-        .iter()
-        .map(|a| lift_finding(a))
-        .collect();
+    let mut findings: Vec<Finding> = anchor_findings.iter().map(|a| lift_finding(a)).collect();
 
     findings.sort_by(|a, b| a.severity.rank().cmp(&b.severity.rank()));
     let severity_counts = SeverityCounts::from_findings(&findings);
@@ -358,12 +357,7 @@ fn should_skip(path: &PathBuf, extra: &[String]) -> bool {
     false
 }
 
-fn scan_file(
-    path: &Path,
-    text: &str,
-    rules: &[StaticLintRule],
-    findings: &mut Vec<AnchorFinding>,
-) {
+fn scan_file(path: &Path, text: &str, rules: &[StaticLintRule], findings: &mut Vec<AnchorFinding>) {
     let lines: Vec<&str> = text.lines().collect();
 
     if rules.contains(&StaticLintRule::MissingSigner)
@@ -393,8 +387,7 @@ fn scan_accounts_structs(
     rules: &[StaticLintRule],
     findings: &mut Vec<AnchorFinding>,
 ) {
-    let derive_re =
-        Regex::new(r"#\s*\[\s*derive\s*\([^\)]*\bAccounts\b[^\)]*\)\s*\]").unwrap();
+    let derive_re = Regex::new(r"#\s*\[\s*derive\s*\([^\)]*\bAccounts\b[^\)]*\)\s*\]").unwrap();
     let struct_open_re = Regex::new(r"^\s*(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
 
     let mut i = 0;
@@ -432,7 +425,15 @@ fn scan_accounts_structs(
                 end += 1;
             }
             let body_lines = &lines[body_start..end];
-            analyse_accounts_body(path, &struct_name, j, body_start, body_lines, rules, findings);
+            analyse_accounts_body(
+                path,
+                &struct_name,
+                j,
+                body_start,
+                body_lines,
+                rules,
+                findings,
+            );
             i = end + 1;
             continue;
         }
@@ -449,15 +450,12 @@ fn analyse_accounts_body(
     rules: &[StaticLintRule],
     findings: &mut Vec<AnchorFinding>,
 ) {
-    let account_info_re =
-        Regex::new(r"\b(?:AccountInfo|UncheckedAccount)\b").unwrap();
+    let account_info_re = Regex::new(r"\b(?:AccountInfo|UncheckedAccount)\b").unwrap();
     let signer_any_re = Regex::new(r"\bSigner\b|#\[account\([^\]]*\bsigner\b").unwrap();
     let account_attr_re = Regex::new(r"#\s*\[\s*account\s*\((?P<args>[^\]]*)\)\s*\]").unwrap();
     let check_comment_re = Regex::new(r"///\s*CHECK\b").unwrap();
-    let field_re = Regex::new(
-        r"^\s*(?:pub\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<ty>[^,]+)",
-    )
-    .unwrap();
+    let field_re =
+        Regex::new(r"^\s*(?:pub\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<ty>[^,]+)").unwrap();
     let has_one_re = Regex::new(r"\bhas_one\s*=").unwrap();
     let typed_account_re =
         Regex::new(r"\bAccount\s*<\s*'?\w*\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*>").unwrap();
@@ -628,14 +626,17 @@ fn scan_arithmetic(path: &Path, lines: &[&str], findings: &mut Vec<AnchorFinding
             let op = &cap["op"];
             // Reject cases where the operator is adjacent to `*mut` /
             // `*const` / `&*`.
-            if op == "*"
-                && (raw.contains("*mut ") || raw.contains("*const ") || raw.contains("&*"))
+            if op == "*" && (raw.contains("*mut ") || raw.contains("*const ") || raw.contains("&*"))
             {
                 continue;
             }
             // Reject clearly-non-numeric identifiers (PascalCase types).
             let lhs = &cap["lhs"];
-            if lhs.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+            if lhs
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false)
                 && !lhs.contains('.')
             {
                 continue;
@@ -671,8 +672,7 @@ fn scan_arithmetic(path: &Path, lines: &[&str], findings: &mut Vec<AnchorFinding
 
 fn scan_realloc(path: &Path, lines: &[&str], findings: &mut Vec<AnchorFinding>) {
     let realloc_re = Regex::new(r"\brealloc\s*\(").unwrap();
-    let rent_re =
-        Regex::new(r"Rent\s*::\s*get|minimum_balance\s*\(|rent_exempt|rent\.").unwrap();
+    let rent_re = Regex::new(r"Rent\s*::\s*get|minimum_balance\s*\(|rent_exempt|rent\.").unwrap();
 
     for (idx, raw) in lines.iter().enumerate() {
         if !realloc_re.is_match(raw) {
@@ -706,17 +706,14 @@ fn scan_seed_spoof(path: &Path, lines: &[&str], findings: &mut Vec<AnchorFinding
     //   `<ident> = *.key()`.
     // Suppressed when a declarative `seeds = [...]` pin appears within
     // ±40 lines (typical Anchor struct + handler distance).
-    let find_re = Regex::new(
-        r"find_program_address\s*\(\s*&\[(?P<seeds>(?:[^\[\]]|\[[^\[\]]*\])*)\]",
-    )
-    .unwrap();
+    let find_re =
+        Regex::new(r"find_program_address\s*\(\s*&\[(?P<seeds>(?:[^\[\]]|\[[^\[\]]*\])*)\]")
+            .unwrap();
     let direct_key_re = Regex::new(r"\.key\s*\(\s*\)\s*\.\s*as_ref\s*\(\s*\)").unwrap();
-    let as_ref_ident_re =
-        Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*as_ref\s*\(\s*\)").unwrap();
-    let binding_key_re = Regex::new(
-        r"let\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[^=]+)?\s*=\s*[^;]*\.key\s*\(",
-    )
-    .unwrap();
+    let as_ref_ident_re = Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*as_ref\s*\(\s*\)").unwrap();
+    let binding_key_re =
+        Regex::new(r"let\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[^=]+)?\s*=\s*[^;]*\.key\s*\(")
+            .unwrap();
     let decl_seeds_re = Regex::new(r"\bseeds\s*=").unwrap();
 
     // Collect bindings proactively — `let user = ...key()` captures any
@@ -879,12 +876,10 @@ pub struct Foo<'info> {
             },
         )
         .unwrap();
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.rule_id == "unchecked_account_info")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "unchecked_account_info"));
     }
 
     #[test]
@@ -911,12 +906,10 @@ pub struct Foo<'info> {
             },
         )
         .unwrap();
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|f| f.rule_id == "unchecked_account_info")
-        );
+        assert!(!report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "unchecked_account_info"));
     }
 
     #[test]
@@ -973,12 +966,10 @@ pub fn tally(a: u64, b: u64) -> u64 {
             },
         )
         .unwrap();
-        assert!(
-            report
-                .findings
-                .iter()
-                .all(|f| f.rule_id != "arithmetic_overflow")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .all(|f| f.rule_id != "arithmetic_overflow"));
     }
 
     #[test]
@@ -1039,12 +1030,10 @@ pub fn grow(info: &AccountInfo) -> Result<()> {
             },
         )
         .unwrap();
-        assert!(
-            report
-                .findings
-                .iter()
-                .all(|f| f.rule_id != "realloc_without_rent")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .all(|f| f.rule_id != "realloc_without_rent"));
     }
 
     #[test]
@@ -1072,10 +1061,7 @@ pub fn compute(ctx: Context<Foo>) -> Result<()> {
         )
         .unwrap();
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.rule_id == "seed_spoof"),
+            report.findings.iter().any(|f| f.rule_id == "seed_spoof"),
             "expected seed_spoof; got {:?}",
             report.findings
         );
@@ -1112,10 +1098,7 @@ pub fn compute(ctx: Context<Foo>) -> Result<()> {
         )
         .unwrap();
         assert!(
-            report
-                .findings
-                .iter()
-                .all(|f| f.rule_id != "seed_spoof"),
+            report.findings.iter().all(|f| f.rule_id != "seed_spoof"),
             "seed_spoof should be silent when declarative pin is present"
         );
     }
@@ -1150,12 +1133,11 @@ pub fn ok() {}
         )
         .unwrap();
         // target/ is skipped by default — no findings from generated.rs.
-        assert!(
-            report
-                .findings
-                .iter()
-                .all(|f| !f.file.as_deref().unwrap_or("").contains("generated.rs"))
-        );
+        assert!(report.findings.iter().all(|f| !f
+            .file
+            .as_deref()
+            .unwrap_or("")
+            .contains("generated.rs")));
     }
 
     #[test]
@@ -1182,7 +1164,10 @@ pub fn add(a: u64, b: u64) -> u64 { a + b }
             },
         )
         .unwrap();
-        assert!(report.findings.iter().all(|f| f.rule_id == "unchecked_account_info"));
+        assert!(report
+            .findings
+            .iter()
+            .all(|f| f.rule_id == "unchecked_account_info"));
     }
 
     #[test]

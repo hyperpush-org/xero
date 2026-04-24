@@ -173,9 +173,7 @@ pub(crate) fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::Moc
         .expect("failed to build mock Tauri app")
 }
 
-pub(crate) fn mcp_registry_path(
-    app: &tauri::App<tauri::test::MockRuntime>,
-) -> PathBuf {
+pub(crate) fn mcp_registry_path(app: &tauri::App<tauri::test::MockRuntime>) -> PathBuf {
     app.state::<DesktopState>()
         .mcp_registry_file(&app.handle().clone())
         .expect("resolve mcp registry path")

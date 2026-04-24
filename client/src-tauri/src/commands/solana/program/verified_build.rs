@@ -139,7 +139,8 @@ pub fn submit(
         timeout: DEFAULT_TIMEOUT,
     })?;
     let elapsed_ms = start.elapsed().as_millis();
-    let program_hash = extract_program_hash(&outcome.stdout).or_else(|| extract_program_hash(&outcome.stderr));
+    let program_hash =
+        extract_program_hash(&outcome.stdout).or_else(|| extract_program_hash(&outcome.stderr));
     let registry_url = if request.skip_remote_submit {
         None
     } else {

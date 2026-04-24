@@ -5,8 +5,8 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::now_timestamp,
     commands::{
-        CommandError, CommandResult, McpEnvironmentReferenceDto, McpRegistryDto,
-        McpTransportDto, UpsertMcpServerRequestDto,
+        CommandError, CommandResult, McpEnvironmentReferenceDto, McpRegistryDto, McpTransportDto,
+        UpsertMcpServerRequestDto,
     },
     mcp::{
         load_mcp_registry_from_path, persist_mcp_registry, stale_after_configuration_change,
@@ -16,9 +16,7 @@ use crate::{
     state::DesktopState,
 };
 
-use super::list_mcp_servers::{
-    mcp_registry_dto_from_snapshot, mcp_transport_record_from_dto,
-};
+use super::list_mcp_servers::{mcp_registry_dto_from_snapshot, mcp_transport_record_from_dto};
 
 #[tauri::command]
 pub fn upsert_mcp_server<R: Runtime>(
@@ -87,15 +85,12 @@ fn server_record_from_request(
             connection = stale_after_configuration_change(&existing.connection);
         }
 
-        let updated_at = if existing.name == name
-            && !transport_changed
-            && !env_changed
-            && !cwd_changed
-        {
-            existing.updated_at.clone()
-        } else {
-            now
-        };
+        let updated_at =
+            if existing.name == name && !transport_changed && !env_changed && !cwd_changed {
+                existing.updated_at.clone()
+            } else {
+                now
+            };
 
         return Ok(McpServerRecord {
             id: id.to_owned(),

@@ -188,7 +188,10 @@ pub struct EventDescriptor {
 
 /// Dispatch to the right scaffold generator, then materialise the
 /// files.
-pub fn scaffold(registry: &IdlRegistry, request: &ScaffoldRequest) -> CommandResult<ScaffoldResult> {
+pub fn scaffold(
+    registry: &IdlRegistry,
+    request: &ScaffoldRequest,
+) -> CommandResult<ScaffoldResult> {
     let idl = registry.load_file(Path::new(&request.idl_path))?;
     let program_id = idl.program_id().ok_or_else(|| {
         CommandError::user_fixable(
@@ -254,14 +257,8 @@ fn entrypoint_for(kind: IndexerKind) -> Option<String> {
 
 fn run_hint_for(kind: IndexerKind, root: &Path) -> String {
     match kind {
-        IndexerKind::Carbon => format!(
-            "cd {} && cargo run --release",
-            root.display()
-        ),
-        IndexerKind::LogParser => format!(
-            "cd {} && pnpm install && pnpm start",
-            root.display()
-        ),
+        IndexerKind::Carbon => format!("cd {} && cargo run --release", root.display()),
+        IndexerKind::LogParser => format!("cd {} && pnpm install && pnpm start", root.display()),
         IndexerKind::HeliusWebhook => format!(
             "cd {} && pnpm install && pnpm dev — then point Helius at the printed URL",
             root.display()
@@ -271,7 +268,10 @@ fn run_hint_for(kind: IndexerKind, root: &Path) -> String {
 
 fn start_command_for(kind: IndexerKind, root: &Path) -> Option<String> {
     match kind {
-        IndexerKind::Carbon => Some(format!("cargo run --release --manifest-path {}/Cargo.toml", root.display())),
+        IndexerKind::Carbon => Some(format!(
+            "cargo run --release --manifest-path {}/Cargo.toml",
+            root.display()
+        )),
         IndexerKind::LogParser => Some(format!("pnpm --dir {} start", root.display())),
         IndexerKind::HeliusWebhook => None,
     }
@@ -771,8 +771,10 @@ mod tests {
         assert!(paths.contains("src/server.ts"));
         assert!(paths.contains("src/handlers.ts"));
         assert_eq!(result.project_slug, "custom-webhook");
-        assert!(result.start_command.is_none(),
-            "webhook scaffolds expose no start_command (needs external trigger)");
+        assert!(
+            result.start_command.is_none(),
+            "webhook scaffolds expose no start_command (needs external trigger)"
+        );
     }
 
     #[test]
@@ -813,17 +815,25 @@ mod tests {
             let payload = base64::engine::general_purpose::STANDARD
                 .encode([1u8, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0]);
             let batches = vec![
-                RawLogBatch::new(cluster, "sig-1", vec![
-                    format!("Program {program_id} invoke [1]"),
-                    format!("Program data: {payload}"),
-                    format!("Program {program_id} success"),
-                ])
+                RawLogBatch::new(
+                    cluster,
+                    "sig-1",
+                    vec![
+                        format!("Program {program_id} invoke [1]"),
+                        format!("Program data: {payload}"),
+                        format!("Program {program_id} success"),
+                    ],
+                )
                 .with_slot(1)
                 .with_program_hint(vec![program_id.to_string()]),
-                RawLogBatch::new(cluster, "sig-2", vec![
-                    format!("Program {program_id} invoke [1]"),
-                    format!("Program {program_id} success"),
-                ])
+                RawLogBatch::new(
+                    cluster,
+                    "sig-2",
+                    vec![
+                        format!("Program {program_id} invoke [1]"),
+                        format!("Program {program_id} success"),
+                    ],
+                )
                 .with_slot(2)
                 .with_program_hint(vec![program_id.to_string()]),
             ];

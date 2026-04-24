@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     commands::CommandError,
     db::database_path_for_repo,
-    runtime::protocol::{GitToolResultScope, ToolResultSummary},
+    runtime::protocol::{GitToolResultScope, McpCapabilityKind, ToolResultSummary},
 };
 
 use super::runtime::{
@@ -3509,6 +3509,46 @@ fn validate_autonomous_tool_result_summary(
                     "autonomous_run_request_invalid",
                 )?;
                 validate_autonomous_artifact_text(content_type, "tool_summary_web_content_type")?;
+            }
+        }
+        ToolResultSummary::McpCapability(summary) => {
+            if command_result.is_some() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_run_request_invalid",
+                    "Cadence requires MCP capability tool_summary metadata to omit command_result payloads.",
+                ));
+            }
+            validate_non_empty_text(
+                &summary.server_id,
+                "tool_summary_mcp_server_id",
+                "autonomous_run_request_invalid",
+            )?;
+            validate_non_empty_text(
+                &summary.capability_id,
+                "tool_summary_mcp_capability_id",
+                "autonomous_run_request_invalid",
+            )?;
+            validate_autonomous_artifact_text(&summary.server_id, "tool_summary_mcp_server_id")?;
+            validate_autonomous_artifact_text(
+                &summary.capability_id,
+                "tool_summary_mcp_capability_id",
+            )?;
+            if let Some(capability_name) = summary.capability_name.as_deref() {
+                validate_non_empty_text(
+                    capability_name,
+                    "tool_summary_mcp_capability_name",
+                    "autonomous_run_request_invalid",
+                )?;
+                validate_autonomous_artifact_text(
+                    capability_name,
+                    "tool_summary_mcp_capability_name",
+                )?;
+            }
+            match summary.capability_kind {
+                McpCapabilityKind::Tool
+                | McpCapabilityKind::Resource
+                | McpCapabilityKind::Prompt
+                | McpCapabilityKind::Command => {}
             }
         }
     }

@@ -131,11 +131,7 @@ pub fn synthesize(request: &SquadsProposalRequest) -> CommandResult<SquadsPropos
     let squads_app_url = squads_app_url_for(request.cluster, &request.multisig_pda);
     let summary = format!(
         "Upgrade {} via Squads multisig {} (vault {}). Buffer {} → ProgramData {}.",
-        request.program_id,
-        request.multisig_pda,
-        vault_index,
-        request.buffer,
-        program_data_address,
+        request.program_id, request.multisig_pda, vault_index, request.buffer, program_data_address,
     );
 
     Ok(SquadsProposalDescriptor {
@@ -174,7 +170,10 @@ fn validate_request(request: &SquadsProposalRequest) -> CommandResult<()> {
             ));
         }
     }
-    if matches!(request.cluster, ClusterKind::Localnet | ClusterKind::MainnetFork) {
+    if matches!(
+        request.cluster,
+        ClusterKind::Localnet | ClusterKind::MainnetFork
+    ) {
         // Local and forked-mainnet clusters don't host a Squads UI, so
         // emitting a proposal there would just be confusing — the user
         // either wants a real devnet/mainnet proposal or a direct
@@ -399,8 +398,12 @@ mod tests {
         let mut req = make_request(ClusterKind::Devnet);
         req.vault_index = Some(2);
         let desc = synthesize(&req).unwrap();
-        assert!(desc.vault_transaction_create_argv.contains(&req.multisig_pda));
-        assert!(desc.vault_transaction_create_argv.contains(&"2".to_string()));
+        assert!(desc
+            .vault_transaction_create_argv
+            .contains(&req.multisig_pda));
+        assert!(desc
+            .vault_transaction_create_argv
+            .contains(&"2".to_string()));
     }
 
     #[test]

@@ -189,10 +189,7 @@ pub fn run(
     if !root.is_dir() {
         return Err(CommandError::user_fixable(
             "solana_audit_coverage_bad_root",
-            format!(
-                "Coverage root {} is not a directory.",
-                root.display()
-            ),
+            format!("Coverage root {} is not a directory.", root.display()),
         ));
     }
 
@@ -244,12 +241,7 @@ pub fn run(
             lcov_out: lcov_out.display().to_string(),
         };
         let outcome = runner.run(&invocation)?;
-        (
-            argv,
-            invocation,
-            outcome.clone(),
-            outcome.lcov_path,
-        )
+        (argv, invocation, outcome.clone(), outcome.lcov_path)
     };
 
     let elapsed_ms = start.elapsed().as_millis();
@@ -504,13 +496,18 @@ pub mod test_support {
                 }
                 std::fs::write(&invocation.lcov_out, body).unwrap();
             }
-            Ok(self.outcome.lock().unwrap().clone().unwrap_or(CoverageOutcome {
-                exit_code: Some(0),
-                success: true,
-                stdout: String::new(),
-                stderr: String::new(),
-                lcov_path: invocation.lcov_out.clone(),
-            }))
+            Ok(self
+                .outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(CoverageOutcome {
+                    exit_code: Some(0),
+                    success: true,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    lcov_path: invocation.lcov_out.clone(),
+                }))
         }
     }
 }

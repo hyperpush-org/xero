@@ -175,12 +175,17 @@ impl ExternalAnalyzerRunner for ScriptedAnalyzerRunner {
         })
     }
     fn run(&self, _invocation: &AnalyzerInvocation) -> CommandResult<AnalyzerOutcome> {
-        Ok(self.outcome.lock().unwrap().clone().unwrap_or(AnalyzerOutcome {
-            exit_code: Some(0),
-            success: true,
-            stdout: String::new(),
-            stderr: String::new(),
-        }))
+        Ok(self
+            .outcome
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(AnalyzerOutcome {
+                exit_code: Some(0),
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+            }))
     }
 }
 
@@ -210,12 +215,17 @@ impl TridentRunner for ScriptedTridentRunner {
         })
     }
     fn run(&self, _invocation: &TridentInvocation) -> CommandResult<TridentOutcome> {
-        Ok(self.outcome.lock().unwrap().clone().unwrap_or(TridentOutcome {
-            exit_code: Some(0),
-            success: true,
-            stdout: String::new(),
-            stderr: String::new(),
-        }))
+        Ok(self
+            .outcome
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(TridentOutcome {
+                exit_code: Some(0),
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+            }))
     }
 }
 
@@ -256,7 +266,10 @@ pub fn tally(a: u64, b: u64) -> u64 {
         )
         .expect("static audit runs");
 
-    assert!(!report.findings.is_empty(), "fixture should produce at least one finding");
+    assert!(
+        !report.findings.is_empty(),
+        "fixture should produce at least one finding"
+    );
     assert!(
         report
             .findings
@@ -381,7 +394,10 @@ pub fn fuzz_engine_reports_crashes_with_reproducer() {
         .expect("fuzz run");
     assert_eq!(report.crashes.len(), 1);
     assert_eq!(report.coverage_delta, 64);
-    assert!(report.findings.iter().any(|f: &Finding| f.rule_id.starts_with("crash:")));
+    assert!(report
+        .findings
+        .iter()
+        .any(|f: &Finding| f.rule_id.starts_with("crash:")));
 }
 
 pub fn coverage_parses_instruction_rollups() {
@@ -522,5 +538,8 @@ pub fn twenty_instruction_anchor_program_audit_is_fast() {
         .iter()
         .filter(|f| f.rule_id == "missing_signer")
         .count();
-    assert!(missing_signers >= 20, "expected ≥20 missing_signer findings");
+    assert!(
+        missing_signers >= 20,
+        "expected ≥20 missing_signer findings"
+    );
 }

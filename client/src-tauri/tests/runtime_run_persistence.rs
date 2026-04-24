@@ -63,6 +63,11 @@ fn autonomous_run_persistence_canonicalizes_structured_artifact_payloads_and_rel
 }
 
 #[test]
+fn autonomous_run_persistence_canonicalizes_mcp_tool_result_payloads_and_reloads_them() {
+    structured_payloads::autonomous_run_persistence_canonicalizes_mcp_tool_result_payloads_and_reloads_them();
+}
+
+#[test]
 fn autonomous_run_persistence_canonicalizes_verification_evidence_payloads_and_reloads_them() {
     structured_payloads::autonomous_run_persistence_canonicalizes_verification_evidence_payloads_and_reloads_them();
 }
@@ -80,6 +85,11 @@ fn autonomous_run_persistence_rejects_verification_evidence_action_boundary_mism
 #[test]
 fn autonomous_run_persistence_rejects_structured_artifact_payload_linkage_mismatch() {
     structured_payloads::autonomous_run_persistence_rejects_structured_artifact_payload_linkage_mismatch();
+}
+
+#[test]
+fn autonomous_run_persistence_rejects_mcp_tool_summary_with_command_result() {
+    structured_payloads::autonomous_run_persistence_rejects_mcp_tool_summary_with_command_result();
 }
 
 #[test]
@@ -110,6 +120,11 @@ fn autonomous_run_persistence_rejects_policy_denied_artifacts_without_stable_cod
 #[test]
 fn autonomous_run_decode_fails_closed_when_structured_payload_json_is_tampered() {
     structured_payloads::autonomous_run_decode_fails_closed_when_structured_payload_json_is_tampered();
+}
+
+#[test]
+fn autonomous_run_decode_fails_closed_when_mcp_capability_kind_is_tampered() {
+    structured_payloads::autonomous_run_decode_fails_closed_when_mcp_capability_kind_is_tampered();
 }
 
 #[test]

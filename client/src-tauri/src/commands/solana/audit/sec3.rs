@@ -210,10 +210,7 @@ pub fn run(
     if !root.is_dir() {
         return Err(CommandError::user_fixable(
             "solana_audit_external_bad_root",
-            format!(
-                "External audit root {} is not a directory.",
-                root.display()
-            ),
+            format!("External audit root {} is not a directory.", root.display()),
         ));
     }
 
@@ -225,7 +222,12 @@ pub fn run(
     for kind in request.analyzer.candidates() {
         let probe = runner.probe(*kind);
         if probe.installed {
-            resolved = Some((*kind, probe.binary_path.unwrap_or_else(|| kind.binary().to_string())));
+            resolved = Some((
+                *kind,
+                probe
+                    .binary_path
+                    .unwrap_or_else(|| kind.binary().to_string()),
+            ));
             break;
         }
     }
@@ -277,11 +279,7 @@ pub fn run(
     let findings = parse_findings(kind, &outcome.stdout, &outcome.stderr);
 
     let summary = if outcome.success {
-        format!(
-            "{} completed: {} findings.",
-            kind.binary(),
-            findings.len()
-        )
+        format!("{} completed: {} findings.", kind.binary(), findings.len())
     } else {
         format!(
             "{} exited with code {:?}, {} findings parsed.",
@@ -309,7 +307,11 @@ pub fn run(
 fn argv_for(kind: AnalyzerKind, project_root: &str) -> Vec<String> {
     match kind {
         AnalyzerKind::Auto => Vec::new(),
-        AnalyzerKind::Sec3 => vec!["audit".to_string(), "--json".to_string(), project_root.to_string()],
+        AnalyzerKind::Sec3 => vec![
+            "audit".to_string(),
+            "--json".to_string(),
+            project_root.to_string(),
+        ],
         AnalyzerKind::Soteria => vec![
             "--format".to_string(),
             "json".to_string(),
@@ -554,12 +556,17 @@ pub mod test_support {
 
         fn run(&self, invocation: &AnalyzerInvocation) -> CommandResult<AnalyzerOutcome> {
             self.invocations.lock().unwrap().push(invocation.clone());
-            Ok(self.outcome.lock().unwrap().clone().unwrap_or(AnalyzerOutcome {
-                exit_code: Some(0),
-                success: true,
-                stdout: String::new(),
-                stderr: String::new(),
-            }))
+            Ok(self
+                .outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(AnalyzerOutcome {
+                    exit_code: Some(0),
+                    success: true,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }))
         }
     }
 }
@@ -693,7 +700,10 @@ mod tests {
     #[test]
     fn argv_for_sec3_uses_audit_subcommand() {
         let argv = argv_for(AnalyzerKind::Sec3, "/tmp/proj");
-        assert_eq!(argv, vec!["audit".to_string(), "--json".into(), "/tmp/proj".into()]);
+        assert_eq!(
+            argv,
+            vec!["audit".to_string(), "--json".into(), "/tmp/proj".into()]
+        );
     }
 
     #[test]

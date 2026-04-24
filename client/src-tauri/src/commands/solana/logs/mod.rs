@@ -480,7 +480,10 @@ pub struct CollectingLogSink {
 #[cfg(test)]
 impl LogEventSink for CollectingLogSink {
     fn emit_raw(&self, token: &LogSubscriptionToken, entry: &LogEntry) {
-        self.raw.lock().unwrap().push((token.clone(), entry.clone()));
+        self.raw
+            .lock()
+            .unwrap()
+            .push((token.clone(), entry.clone()));
     }
     fn emit_decoded(&self, token: &LogSubscriptionToken, entry: &LogEntry) {
         self.decoded
@@ -730,10 +733,7 @@ mod tests {
         bus.publish_raw(RawLogBatch::new(
             ClusterKind::Localnet,
             "sig",
-            vec![
-                "Program X invoke [1]".into(),
-                "Program X success".into(),
-            ],
+            vec!["Program X invoke [1]".into(), "Program X success".into()],
         ));
         assert!(sink.raw.lock().unwrap().is_empty());
     }

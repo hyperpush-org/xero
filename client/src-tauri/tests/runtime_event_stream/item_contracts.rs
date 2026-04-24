@@ -317,6 +317,134 @@ pub(crate) fn runtime_stream_redacts_secret_bearing_replay_without_leaking_token
     stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);
 }
 
+pub(crate) fn runtime_stream_replays_mcp_tool_summary_variant_with_monotonic_sequence() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime = seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+
+    let live_lines = vec![
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-mcp-1",
+                "tool_name": "mcp.invoke",
+                "tool_state": "running",
+                "detail": "Invoking MCP resource",
+                "tool_summary": {
+                    "kind": "mcp_capability",
+                    "serverId": "workspace-mcp",
+                    "capabilityKind": "resource",
+                    "capabilityId": "file://README.md",
+                    "capabilityName": "README"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-file-1",
+                "tool_name": "read",
+                "tool_state": "succeeded",
+                "detail": "Read repository overview",
+                "tool_summary": {
+                    "kind": "file",
+                    "path": "README.md",
+                    "scope": null,
+                    "lineCount": 64,
+                    "matchCount": null,
+                    "truncated": false
+                }
+            })
+        ),
+    ];
+
+    let launched = launch_supervised_run(
+        app.state::<DesktopState>().inner(),
+        &project_id,
+        &repo_root,
+        "run-mcp-stream",
+        &runtime_shell::script_print_lines_and_sleep(&live_lines, 3),
+    );
+
+    wait_for_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        |snapshot| {
+            snapshot.run.status == RuntimeRunStatus::Running
+                && snapshot.last_checkpoint_sequence >= 2
+        },
+    );
+
+    let (channel, receiver) = capture_stream_channel();
+    start_direct_runtime_stream(
+        &app,
+        &project_id,
+        &repo_root,
+        &runtime,
+        &launched.run.run_id,
+        vec![RuntimeStreamItemKind::Tool, RuntimeStreamItemKind::Complete],
+        channel,
+    );
+
+    let items = collect_until_terminal(receiver);
+    assert_monotonic_sequences(&items, &launched.run.run_id);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Complete,
+        ]
+    );
+
+    assert!(matches!(
+        &items[0],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Tool,
+            tool_call_id: Some(tool_call_id),
+            tool_name: Some(tool_name),
+            tool_state: Some(RuntimeToolCallState::Running),
+            detail: Some(detail),
+            tool_summary: Some(ToolResultSummaryDto::McpCapability(summary)),
+            ..
+        } if tool_call_id == "tool-mcp-1"
+            && tool_name == "mcp.invoke"
+            && detail == "Invoking MCP resource"
+            && summary.server_id == "workspace-mcp"
+            && summary.capability_kind == cadence_desktop_lib::commands::McpCapabilityKindDto::Resource
+            && summary.capability_id == "file://README.md"
+            && summary.capability_name.as_deref() == Some("README")
+    ));
+
+    assert!(matches!(
+        &items[1],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Tool,
+            tool_call_id: Some(tool_call_id),
+            tool_name: Some(tool_name),
+            tool_state: Some(RuntimeToolCallState::Succeeded),
+            detail: Some(detail),
+            tool_summary: Some(ToolResultSummaryDto::File(summary)),
+            ..
+        } if tool_call_id == "tool-file-1"
+            && tool_name == "read"
+            && detail == "Read repository overview"
+            && summary.path.as_deref() == Some("README.md")
+            && summary.line_count == Some(64)
+    ));
+
+    stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);
+}
+
 pub(crate) fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_activity() {
     let stream_item = serde_json::to_value(RuntimeStreamItemDto {
         kind: RuntimeStreamItemKind::Activity,
@@ -346,7 +474,6 @@ pub(crate) fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_
         created_at: "2026-04-15T23:10:02Z".into(),
     })
     .expect("serialize runtime stream activity item");
-
     assert_eq!(
         stream_item,
         json!({

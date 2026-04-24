@@ -28,9 +28,7 @@ use crate::{
         RuntimeRunControlStateRecord, RuntimeRunDiagnosticRecord, RuntimeRunSnapshotRecord,
         RuntimeRunStatus, RuntimeRunTransportLiveness,
     },
-    mcp::{
-        materialize_runtime_mcp_projection_for_run, RUNTIME_MCP_PROJECTION_DIRECTORY_NAME,
-    },
+    mcp::{materialize_runtime_mcp_projection_for_run, RUNTIME_MCP_PROJECTION_DIRECTORY_NAME},
     provider_models::{
         load_provider_model_catalog, ProviderModelCatalog, ProviderModelCatalogSource,
         ProviderModelRecord, ProviderModelThinkingEffort,

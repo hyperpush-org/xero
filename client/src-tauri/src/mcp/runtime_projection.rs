@@ -5,9 +5,7 @@ use crate::{
     commands::{CommandError, CommandResult},
 };
 
-use super::{
-    load_mcp_registry_from_path, persist_mcp_registry, McpConnectionStatus, McpRegistry,
-};
+use super::{load_mcp_registry_from_path, persist_mcp_registry, McpConnectionStatus, McpRegistry};
 
 pub const RUNTIME_MCP_PROJECTION_DIRECTORY_NAME: &str = "runtime-mcp-projections";
 

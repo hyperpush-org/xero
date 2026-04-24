@@ -191,10 +191,7 @@ impl TridentRunner for SystemTridentRunner {
     }
 }
 
-pub fn run_fuzz(
-    runner: &dyn TridentRunner,
-    request: &FuzzRequest,
-) -> CommandResult<FuzzReport> {
+pub fn run_fuzz(runner: &dyn TridentRunner, request: &FuzzRequest) -> CommandResult<FuzzReport> {
     let root = Path::new(&request.project_root);
     if !root.is_dir() {
         return Err(CommandError::user_fixable(
@@ -532,7 +529,10 @@ pub(crate) fn parse_fuzz_output(stdout: &str, stderr: &str) -> (Vec<FuzzCrash>, 
     if let Some((crashes, coverage)) = parse_json_output(stderr) {
         return (crashes, coverage);
     }
-    (scrape_crashes(stdout, stderr), scrape_coverage(stdout, stderr))
+    (
+        scrape_crashes(stdout, stderr),
+        scrape_coverage(stdout, stderr),
+    )
 }
 
 fn parse_json_output(raw: &str) -> Option<(Vec<FuzzCrash>, u64)> {
@@ -650,10 +650,8 @@ fn lift_crashes(target: &str, crashes: &[FuzzCrash]) -> Vec<Finding> {
                 message,
             );
             if !c.reproducer_argv.is_empty() {
-                finding = finding.with_fix_hint(format!(
-                    "Reproduce with: {}",
-                    c.reproducer_argv.join(" ")
-                ));
+                finding = finding
+                    .with_fix_hint(format!("Reproduce with: {}", c.reproducer_argv.join(" ")));
             }
             finding
         })
@@ -749,12 +747,17 @@ pub mod test_support {
 
         fn run(&self, invocation: &TridentInvocation) -> CommandResult<TridentOutcome> {
             self.invocations.lock().unwrap().push(invocation.clone());
-            Ok(self.outcome.lock().unwrap().clone().unwrap_or(TridentOutcome {
-                exit_code: Some(0),
-                success: true,
-                stdout: String::new(),
-                stderr: String::new(),
-            }))
+            Ok(self
+                .outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(TridentOutcome {
+                    exit_code: Some(0),
+                    success: true,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }))
         }
     }
 }
@@ -894,12 +897,18 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(result.generated_files.iter().any(|f| f.ends_with("Cargo.toml")));
+        assert!(result
+            .generated_files
+            .iter()
+            .any(|f| f.ends_with("Cargo.toml")));
         assert!(result
             .generated_files
             .iter()
             .any(|f| f.ends_with("fuzz_target.rs")));
-        assert!(tmp.path().join("trident-tests/swap/src/fuzz_target.rs").is_file());
+        assert!(tmp
+            .path()
+            .join("trident-tests/swap/src/fuzz_target.rs")
+            .is_file());
     }
 
     #[test]
@@ -958,8 +967,8 @@ mod tests {
             },
         )
         .unwrap();
-        let fuzz = fs::read_to_string(tmp.path().join("trident-tests/prog/src/fuzz_target.rs"))
-            .unwrap();
+        let fuzz =
+            fs::read_to_string(tmp.path().join("trident-tests/prog/src/fuzz_target.rs")).unwrap();
         assert!(fuzz.contains("DepositIx"));
         assert!(fuzz.contains("WithdrawIx"));
     }

@@ -370,10 +370,7 @@ impl AuditEngine {
             );
             return Err(CommandError::user_fixable(
                 "solana_audit_static_bad_root",
-                format!(
-                    "Static audit root {} is not a directory.",
-                    root.display()
-                ),
+                format!("Static audit root {} is not a directory.", root.display()),
             ));
         }
 
@@ -463,12 +460,16 @@ impl AuditEngine {
             );
         }
         sink.emit(
-            AuditEventPayload::new(run_id.clone(), AuditRunKind::Fuzz, AuditEventPhase::Completed)
-                .with_message(format!(
-                    "{} crashes, coverage delta {:+}",
-                    report.crashes.len(),
-                    report.coverage_delta
-                )),
+            AuditEventPayload::new(
+                run_id.clone(),
+                AuditRunKind::Fuzz,
+                AuditEventPhase::Completed,
+            )
+            .with_message(format!(
+                "{} crashes, coverage delta {:+}",
+                report.crashes.len(),
+                report.coverage_delta
+            )),
         );
         Ok(report)
     }
@@ -539,12 +540,13 @@ impl AuditEngine {
             ReplayOutcome::Inconclusive => AuditEventPhase::Completed,
         };
         sink.emit(
-            AuditEventPayload::new(run_id.clone(), AuditRunKind::Replay, phase)
-                .with_message(format!(
+            AuditEventPayload::new(run_id.clone(), AuditRunKind::Replay, phase).with_message(
+                format!(
                     "{} — {} step(s)",
                     report.outcome.as_str(),
                     report.steps.len()
-                )),
+                ),
+            ),
         );
         Ok(report)
     }

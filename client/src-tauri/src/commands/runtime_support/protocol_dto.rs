@@ -4,8 +4,8 @@ use crate::{
         AutonomousSkillLifecycleDiagnosticDto, AutonomousSkillLifecycleResultDto,
         AutonomousSkillLifecycleSourceDto, AutonomousSkillLifecycleStageDto,
         CommandToolResultSummaryDto, FileToolResultSummaryDto, GitToolResultScopeDto,
-        GitToolResultSummaryDto, ToolResultSummaryDto, WebToolResultContentKindDto,
-        WebToolResultSummaryDto,
+        GitToolResultSummaryDto, McpCapabilityKindDto, McpCapabilityToolResultSummaryDto,
+        ToolResultSummaryDto, WebToolResultContentKindDto, WebToolResultSummaryDto,
     },
     db::project_store::{
         AutonomousSkillCacheStatusRecord, AutonomousSkillLifecycleCacheRecord,
@@ -13,8 +13,8 @@ use crate::{
         AutonomousSkillLifecycleSourceRecord, AutonomousSkillLifecycleStageRecord,
     },
     runtime::protocol::{
-        GitToolResultScope, SupervisorSkillCacheStatus, SupervisorSkillDiagnostic,
-        SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
+        GitToolResultScope, McpCapabilityKind, SupervisorSkillCacheStatus,
+        SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
         SupervisorSkillSourceMetadata, ToolResultSummary, WebToolResultContentKind,
     },
 };
@@ -57,6 +57,14 @@ pub(crate) fn tool_result_summary_dto_from_protocol(
             content_type: summary.content_type.clone(),
             truncated: summary.truncated,
         }),
+        ToolResultSummary::McpCapability(summary) => {
+            ToolResultSummaryDto::McpCapability(McpCapabilityToolResultSummaryDto {
+                server_id: summary.server_id.clone(),
+                capability_kind: mcp_capability_kind_dto(summary.capability_kind.clone()),
+                capability_id: summary.capability_id.clone(),
+                capability_name: summary.capability_name.clone(),
+            })
+        }
     }
 }
 
@@ -185,5 +193,14 @@ fn web_tool_result_content_kind_dto(kind: WebToolResultContentKind) -> WebToolRe
     match kind {
         WebToolResultContentKind::Html => WebToolResultContentKindDto::Html,
         WebToolResultContentKind::PlainText => WebToolResultContentKindDto::PlainText,
+    }
+}
+
+fn mcp_capability_kind_dto(kind: McpCapabilityKind) -> McpCapabilityKindDto {
+    match kind {
+        McpCapabilityKind::Tool => McpCapabilityKindDto::Tool,
+        McpCapabilityKind::Resource => McpCapabilityKindDto::Resource,
+        McpCapabilityKind::Prompt => McpCapabilityKindDto::Prompt,
+        McpCapabilityKind::Command => McpCapabilityKindDto::Command,
     }
 }

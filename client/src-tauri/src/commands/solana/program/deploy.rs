@@ -280,7 +280,10 @@ impl DeployRunner for SystemDeployRunner {
         let output = wait_with_timeout(child, invocation.timeout).ok_or_else(|| {
             CommandError::retryable(
                 "solana_program_deploy_timeout",
-                format!("`solana program ...` timed out after {}s.", invocation.timeout.as_secs()),
+                format!(
+                    "`solana program ...` timed out after {}s.",
+                    invocation.timeout.as_secs()
+                ),
             )
         })?;
         Ok(DeployOutcome {
@@ -394,12 +397,13 @@ fn validate_spec(spec: &DeploySpec) -> CommandResult<()> {
             if !Path::new(creator_keypair_path).is_file() {
                 return Err(CommandError::user_fixable(
                     "solana_program_deploy_missing_squads_creator_keypair",
-                    format!(
-                        "Squads creator keypair {creator_keypair_path} does not exist."
-                    ),
+                    format!("Squads creator keypair {creator_keypair_path} does not exist."),
                 ));
             }
-            if matches!(spec.cluster, ClusterKind::Localnet | ClusterKind::MainnetFork) {
+            if matches!(
+                spec.cluster,
+                ClusterKind::Localnet | ClusterKind::MainnetFork
+            ) {
                 return Err(CommandError::policy_denied(
                     "Squads proposals only target devnet / mainnet — use a direct keypair authority for local clusters.",
                 ));
@@ -431,7 +435,8 @@ fn deploy_direct(
     let start = Instant::now();
     let outcome = services.runner.run(&invocation)?;
     let elapsed_ms = start.elapsed().as_millis();
-    let signature = extract_signature(&outcome.stdout).or_else(|| extract_signature(&outcome.stderr));
+    let signature =
+        extract_signature(&outcome.stdout).or_else(|| extract_signature(&outcome.stderr));
 
     let direct = DirectDeployOutcome {
         argv,
@@ -555,8 +560,8 @@ fn deploy_squads(
     let start = Instant::now();
     let outcome = services.runner.run(&invocation)?;
     let elapsed_ms = start.elapsed().as_millis();
-    let buffer_address = extract_buffer_address(&outcome.stdout)
-        .or_else(|| extract_buffer_address(&outcome.stderr));
+    let buffer_address =
+        extract_buffer_address(&outcome.stdout).or_else(|| extract_buffer_address(&outcome.stderr));
 
     let buffer = BufferWriteOutcome {
         argv,
@@ -690,11 +695,14 @@ fn run_idl_publish(
     if !Path::new(&idl_path).is_file() {
         return Ok(None);
     }
-    let mode = spec.post.idl_publish_mode.unwrap_or(if spec.is_first_deploy {
-        IdlPublishMode::Init
-    } else {
-        IdlPublishMode::Upgrade
-    });
+    let mode = spec
+        .post
+        .idl_publish_mode
+        .unwrap_or(if spec.is_first_deploy {
+            IdlPublishMode::Init
+        } else {
+            IdlPublishMode::Upgrade
+        });
     if matches!(spec.cluster, ClusterKind::Mainnet) {
         // The publish module rejects mainnet anyway; surface this here
         // so the deploy doesn't appear "succeeded with publish skipped"
@@ -825,7 +833,12 @@ pub fn rollback(
     sink: &dyn DeployProgressSink,
     request: &RollbackRequest,
 ) -> CommandResult<RollbackResult> {
-    if request.previous_sha256.len() != 64 || !request.previous_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+    if request.previous_sha256.len() != 64
+        || !request
+            .previous_sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+    {
         return Err(CommandError::user_fixable(
             "solana_program_rollback_bad_sha",
             "previous_sha256 must be a lowercase 64-hex-digit SHA-256.",
@@ -875,7 +888,12 @@ pub fn rollback(
 
 // ---------- Helpers ---------------------------------------------------
 
-fn emit(sink: &dyn DeployProgressSink, spec: &DeploySpec, phase: DeployProgressPhase, detail: String) {
+fn emit(
+    sink: &dyn DeployProgressSink,
+    spec: &DeploySpec,
+    phase: DeployProgressPhase,
+    detail: String,
+) {
     sink.emit(DeployProgressPayload {
         program_id: spec.program_id.clone(),
         cluster: spec.cluster.as_str().to_string(),
@@ -903,7 +921,11 @@ fn extract_signature(text: &str) -> Option<String> {
 fn extract_buffer_address(text: &str) -> Option<String> {
     for line in text.lines() {
         let trimmed = line.trim();
-        for prefix in ["Buffer:", "Wrote program data buffer to ", "Buffer address:"] {
+        for prefix in [
+            "Buffer:",
+            "Wrote program data buffer to ",
+            "Buffer address:",
+        ] {
             if let Some(rest) = trimmed.strip_prefix(prefix) {
                 let addr = rest.trim();
                 if !addr.is_empty() {
@@ -1031,11 +1053,7 @@ mod tests {
         bs58::encode([byte; 32]).into_string()
     }
 
-    fn make_spec(
-        tmp: &TempDir,
-        cluster: ClusterKind,
-        authority: DeployAuthority,
-    ) -> DeploySpec {
+    fn make_spec(tmp: &TempDir, cluster: ClusterKind, authority: DeployAuthority) -> DeploySpec {
         let so = tmp.path().join("p.so");
         write(&so, &[0u8; 1024]);
         DeploySpec {
@@ -1091,7 +1109,9 @@ mod tests {
         let sink = CollectingProgressSink::default();
         let result = deploy(&services, &sink, &spec).unwrap();
         match result {
-            DeployResult::Direct { outcome, archive, .. } => {
+            DeployResult::Direct {
+                outcome, archive, ..
+            } => {
                 assert!(outcome.success);
                 assert!(outcome.signature.is_some());
                 let archive = archive.unwrap();
@@ -1230,7 +1250,11 @@ mod tests {
         let sink = CollectingProgressSink::default();
         let result = deploy(&services, &sink, &spec).unwrap();
         match result {
-            DeployResult::Squads { proposal, buffer_write, .. } => {
+            DeployResult::Squads {
+                proposal,
+                buffer_write,
+                ..
+            } => {
                 assert_eq!(buffer_write.buffer_address, Some(valid_pk(7)));
                 assert!(proposal.squads_app_url.contains("app.squads.so"));
             }
@@ -1386,5 +1410,4 @@ mod tests {
         let text = format!("Some prelude\nBuffer: {}\nDone.", valid_pk(9));
         assert_eq!(extract_buffer_address(&text), Some(valid_pk(9)));
     }
-
 }
