@@ -306,6 +306,50 @@ fn persist_import_rows(
             )
         })?;
 
+    transaction
+        .execute(
+            "UPDATE agent_sessions SET selected = 0 WHERE project_id = ?1",
+            params![repository.project_id],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!("Cadence could not clear selected agent sessions before import: {error}"),
+            )
+        })?;
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_sessions (
+                project_id,
+                agent_session_id,
+                title,
+                summary,
+                status,
+                selected,
+                updated_at
+            )
+            VALUES (?1, 'agent-session-main', 'Main', '', 'active', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
+                selected = CASE
+                    WHEN agent_sessions.status = 'active' THEN 1
+                    ELSE agent_sessions.selected
+                END,
+                updated_at = CASE
+                    WHEN agent_sessions.status = 'active' THEN excluded.updated_at
+                    ELSE agent_sessions.updated_at
+                END
+            "#,
+            params![repository.project_id],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!("Cadence could not persist the default agent session row: {error}"),
+            )
+        })?;
+
     transaction.commit().map_err(|error| {
         CommandError::system_fault(
             "state_database_commit_failed",

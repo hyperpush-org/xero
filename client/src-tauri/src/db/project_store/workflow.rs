@@ -23,8 +23,9 @@ use super::{
     map_snapshot_decode_error, open_project_database, parse_phase_status, parse_phase_step,
     planning_lifecycle_stage_label, read_operator_approval_by_action_id, read_operator_approvals,
     read_phase_summaries, read_planning_lifecycle_projection, read_resume_history,
-    read_runtime_run_snapshot, read_runtime_session_row, require_non_empty_owned,
-    sqlite_path_suffix, NotificationDispatchEnqueueRecord, ProjectSummaryRow,
+    read_runtime_run_snapshot, read_runtime_session_row, read_selected_agent_session_row,
+    require_non_empty_owned, sqlite_path_suffix, NotificationDispatchEnqueueRecord,
+    ProjectSummaryRow,
 };
 
 const MAX_WORKFLOW_TRANSITION_EVENT_ROWS: i64 = 200;
@@ -4178,7 +4179,18 @@ fn resolve_plan_mode_required_for_automatic_dispatch(
     database_path: &Path,
     project_id: &str,
 ) -> Result<WorkflowAutomaticDispatchPlanModeRequirement, CommandError> {
-    match read_runtime_run_snapshot(transaction, database_path, project_id) {
+    let Some(agent_session) =
+        read_selected_agent_session_row(transaction, database_path, project_id)?
+    else {
+        return Ok(WorkflowAutomaticDispatchPlanModeRequirement::Unknown);
+    };
+
+    match read_runtime_run_snapshot(
+        transaction,
+        database_path,
+        project_id,
+        &agent_session.agent_session_id,
+    ) {
         Ok(Some(snapshot)) => {
             if snapshot.controls.active.plan_mode_required {
                 Ok(WorkflowAutomaticDispatchPlanModeRequirement::Required)

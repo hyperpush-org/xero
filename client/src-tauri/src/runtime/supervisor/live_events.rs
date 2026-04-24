@@ -914,7 +914,7 @@ fn sanitize_tool_result_summary(
             Ok(ToolResultSummary::BrowserComputerUse(
                 BrowserComputerUseToolResultSummary {
                     surface: sanitize_browser_computer_use_surface(summary.surface)?,
-                    action: sanitize_required_tool_summary_text(summary.action)?,
+                    action: sanitize_browser_computer_use_action(summary.action)?,
                     status,
                     target: sanitize_optional_tool_summary_text(summary.target)?,
                     outcome,
@@ -1052,6 +1052,50 @@ fn sanitize_browser_computer_use_surface(
     match surface {
         BrowserComputerUseSurface::Browser | BrowserComputerUseSurface::ComputerUse => Ok(surface),
     }
+}
+
+fn sanitize_browser_computer_use_action(
+    action: String,
+) -> Result<String, ToolSummaryDecodeError> {
+    let action = sanitize_required_tool_summary_text(action)?;
+    if is_supported_browser_computer_use_action(action.as_str()) {
+        Ok(action)
+    } else {
+        Err(ToolSummaryDecodeError::Unsupported)
+    }
+}
+
+fn is_supported_browser_computer_use_action(action: &str) -> bool {
+    matches!(
+        action,
+        "open"
+            | "tab_open"
+            | "navigate"
+            | "back"
+            | "forward"
+            | "reload"
+            | "stop"
+            | "click"
+            | "drag"
+            | "type"
+            | "scroll"
+            | "press_key"
+            | "read_text"
+            | "query"
+            | "wait_for_selector"
+            | "wait_for_load"
+            | "current_url"
+            | "history_state"
+            | "screenshot"
+            | "cookies_get"
+            | "cookies_set"
+            | "storage_read"
+            | "storage_write"
+            | "storage_clear"
+            | "tab_list"
+            | "tab_close"
+            | "tab_focus"
+    )
 }
 
 fn sanitize_browser_computer_use_action_status(

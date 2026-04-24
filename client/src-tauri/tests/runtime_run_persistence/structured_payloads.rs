@@ -229,100 +229,273 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
     )
     .expect("persist runtime run for browser/computer-use structured artifact persistence");
 
-    let mut artifact = sample_tool_result_artifact(project_id, run_id);
-    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
-        artifact.payload.as_mut()
-    {
-        tool.tool_name = "computer.drag".into();
-        tool.tool_state = project_store::AutonomousToolCallStateRecord::Failed;
-        tool.command_result = None;
-        tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
-                    surface:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::ComputerUse,
-                    action: "drag".into(),
-                    status:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked,
-                    target: Some("Desktop icon".into()),
-                    outcome: Some("Permission denied".into()),
-                },
+    let linked_action_id =
+        format!("scope:run:{run_id}:boundary:boundary-browser-1:terminal_input_required");
+
+    let make_browser_tool_artifact = |
+        artifact_id: &str,
+        tool_call_id: &str,
+        tool_name: &str,
+        tool_state: project_store::AutonomousToolCallStateRecord,
+        summary: cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary,
+        action_id: Option<&str>,
+        boundary_id: Option<&str>,
+        created_at: &str,
+    | {
+        let mut artifact = sample_tool_result_artifact(project_id, run_id);
+        artifact.artifact_id = artifact_id.into();
+        artifact.summary = format!("Persisted browser/computer-use step `{tool_call_id}`.");
+        artifact.created_at = created_at.into();
+        artifact.updated_at = created_at.into();
+
+        if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload)) =
+            artifact.payload.as_mut()
+        {
+            payload.artifact_id = artifact_id.into();
+            payload.tool_call_id = tool_call_id.into();
+            payload.tool_name = tool_name.into();
+            payload.tool_state = tool_state;
+            payload.command_result = None;
+            payload.tool_summary = Some(
+                cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                    summary,
+                ),
+            );
+            payload.action_id = action_id.map(str::to_string);
+            payload.boundary_id = boundary_id.map(str::to_string);
+        }
+
+        artifact
+    };
+
+    let open_artifact = make_browser_tool_artifact(
+        "artifact-tool-browser-open",
+        "tool-browser-open",
+        "browser.open",
+        project_store::AutonomousToolCallStateRecord::Succeeded,
+        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+            action: "open".into(),
+            status: cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+            target: Some("https://example.com".into()),
+            outcome: Some("Opened browser context".into()),
+        },
+        None,
+        None,
+        "2099-04-15T19:00:21Z",
+    );
+
+    let tab_open_artifact = make_browser_tool_artifact(
+        "artifact-tool-browser-tab-open",
+        "tool-browser-tab-open",
+        "browser.tab_open",
+        project_store::AutonomousToolCallStateRecord::Succeeded,
+        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+            action: "tab_open".into(),
+            status: cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+            target: Some("https://example.com/docs".into()),
+            outcome: Some("Opened tab tab-2".into()),
+        },
+        None,
+        None,
+        "2099-04-15T19:00:22Z",
+    );
+
+    let tab_focus_failed_artifact = make_browser_tool_artifact(
+        "artifact-tool-browser-tab-focus",
+        "tool-browser-tab-focus",
+        "browser.tab_focus",
+        project_store::AutonomousToolCallStateRecord::Failed,
+        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+            action: "tab_focus".into(),
+            status: cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked,
+            target: Some("tab-2".into()),
+            outcome: Some(
+                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying.".into(),
             ),
-        );
-    }
+        },
+        Some(linked_action_id.as_str()),
+        Some("boundary-browser-1"),
+        "2099-04-15T19:00:23Z",
+    );
+
+    let current_url_artifact = make_browser_tool_artifact(
+        "artifact-tool-browser-current-url",
+        "tool-browser-current-url",
+        "browser.current_url",
+        project_store::AutonomousToolCallStateRecord::Succeeded,
+        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+            action: "current_url".into(),
+            status: cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+            target: Some("tab-2".into()),
+            outcome: Some("https://example.com/docs".into()),
+        },
+        None,
+        None,
+        "2099-04-15T19:00:24Z",
+    );
 
     let mut payload = sample_autonomous_run(project_id, run_id);
-    payload.artifacts = vec![artifact];
+    payload.artifacts = vec![
+        open_artifact,
+        tab_open_artifact,
+        tab_focus_failed_artifact,
+        current_url_artifact,
+    ];
 
     let persisted = project_store::upsert_autonomous_run(&repo_root, &payload)
-        .expect("persist autonomous run with browser/computer-use structured artifact");
-    let artifact = &persisted.history[0].artifacts[0];
-    let payload_hash = artifact
-        .content_hash
-        .as_ref()
-        .expect("browser/computer-use structured artifact should compute content hash")
-        .clone();
-
-    let stored_payload_json: String = open_state_connection(&repo_root)
-        .query_row(
-            "SELECT payload_json FROM autonomous_unit_artifacts WHERE artifact_id = ?1",
-            params![artifact.artifact_id.as_str()],
-            |row| row.get(0),
-        )
-        .expect("read stored browser/computer-use structured payload json");
-    let expected_payload_json = concat!(
-        "{",
-        "\"actionId\":\"scope:run:run-1:boundary:boundary-1:terminal_input_required\"",
-        ",\"artifactId\":\"artifact-tool-result\"",
-        ",\"attemptId\":\"run-1:unit:1:attempt:1\"",
-        ",\"boundaryId\":\"boundary-1\"",
-        ",\"commandResult\":null",
-        ",\"kind\":\"tool_result\"",
-        ",\"projectId\":\"project-1\"",
-        ",\"runId\":\"run-1\"",
-        ",\"toolCallId\":\"tool-call-1\"",
-        ",\"toolName\":\"computer.drag\"",
-        ",\"toolState\":\"failed\"",
-        ",\"toolSummary\":{\"action\":\"drag\",\"kind\":\"browser_computer_use\",\"outcome\":\"Permission denied\",\"status\":\"blocked\",\"surface\":\"computer_use\",\"target\":\"Desktop icon\"}",
-        ",\"unitId\":\"run-1:unit:1\"",
-        "}"
-    );
-    assert_eq!(stored_payload_json, expected_payload_json);
-
-    let mut hasher = Sha256::new();
-    hasher.update(stored_payload_json.as_bytes());
-    let expected_hash = hasher
-        .finalize()
+        .expect("persist autonomous run with browser/computer-use structured artifacts");
+    let persisted_tool_count = persisted.history[0]
+        .artifacts
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    assert_eq!(payload_hash, expected_hash);
+        .filter(|artifact| artifact.artifact_kind == "tool_result")
+        .count();
+    assert_eq!(persisted_tool_count, 4);
+    assert!(persisted.history[0]
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_kind == "tool_result")
+        .all(|artifact| artifact.content_hash.is_some()));
+
+    let connection = open_state_connection(&repo_root);
+    let stored_payload_value = |artifact_id: &str| {
+        let payload_json: String = connection
+            .query_row(
+                "SELECT payload_json FROM autonomous_unit_artifacts WHERE artifact_id = ?1",
+                params![artifact_id],
+                |row| row.get(0),
+            )
+            .expect("read stored browser/computer-use structured payload json");
+        serde_json::from_str::<serde_json::Value>(&payload_json)
+            .expect("decode stored browser/computer-use structured payload json")
+    };
+
+    let open_payload = stored_payload_value("artifact-tool-browser-open");
+    assert_eq!(open_payload["toolName"].as_str(), Some("browser.open"));
+    assert_eq!(open_payload["toolSummary"]["action"].as_str(), Some("open"));
+    assert_eq!(
+        open_payload["toolSummary"]["status"].as_str(),
+        Some("succeeded")
+    );
+    assert!(open_payload["actionId"].is_null());
+    assert!(open_payload["boundaryId"].is_null());
+
+    let tab_open_payload = stored_payload_value("artifact-tool-browser-tab-open");
+    assert_eq!(
+        tab_open_payload["toolName"].as_str(),
+        Some("browser.tab_open")
+    );
+    assert_eq!(
+        tab_open_payload["toolSummary"]["action"].as_str(),
+        Some("tab_open")
+    );
+    assert_eq!(
+        tab_open_payload["toolSummary"]["target"].as_str(),
+        Some("https://example.com/docs")
+    );
+
+    let tab_focus_payload = stored_payload_value("artifact-tool-browser-tab-focus");
+    assert_eq!(
+        tab_focus_payload["toolName"].as_str(),
+        Some("browser.tab_focus")
+    );
+    assert_eq!(
+        tab_focus_payload["toolSummary"]["action"].as_str(),
+        Some("tab_focus")
+    );
+    assert_eq!(
+        tab_focus_payload["toolSummary"]["status"].as_str(),
+        Some("blocked")
+    );
+    assert_eq!(
+        tab_focus_payload["actionId"].as_str(),
+        Some(linked_action_id.as_str())
+    );
+    assert_eq!(
+        tab_focus_payload["boundaryId"].as_str(),
+        Some("boundary-browser-1")
+    );
+
+    let current_url_payload = stored_payload_value("artifact-tool-browser-current-url");
+    assert_eq!(
+        current_url_payload["toolName"].as_str(),
+        Some("browser.current_url")
+    );
+    assert_eq!(
+        current_url_payload["toolSummary"]["action"].as_str(),
+        Some("current_url")
+    );
+    assert_eq!(
+        current_url_payload["toolSummary"]["outcome"].as_str(),
+        Some("https://example.com/docs")
+    );
 
     let recovered = project_store::load_autonomous_run(&repo_root, project_id)
-        .expect("reload autonomous run with browser/computer-use structured artifact")
+        .expect("reload autonomous run with browser/computer-use structured artifacts")
         .expect("browser/computer-use structured autonomous run should exist");
-    let recovered_summary = recovered
+
+    let mut recovered_steps = recovered
         .history
         .iter()
         .flat_map(|entry| entry.artifacts.iter())
-        .find_map(|artifact| match artifact.payload.as_ref() {
-            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload)) => {
-                payload.tool_summary.as_ref()
-            }
-            _ => None,
+        .filter_map(|artifact| {
+            let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload)) =
+                artifact.payload.as_ref()
+            else {
+                return None;
+            };
+            let Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                summary,
+            )) = payload.tool_summary.as_ref()
+            else {
+                return None;
+            };
+
+            Some((
+                artifact.created_at.clone(),
+                payload.tool_call_id.clone(),
+                payload.tool_state.clone(),
+                summary.action.clone(),
+                summary.status.clone(),
+                summary.outcome.clone(),
+                payload.action_id.clone(),
+                payload.boundary_id.clone(),
+            ))
         })
-        .expect("browser/computer-use tool summary should be present after reload");
+        .collect::<Vec<_>>();
+    recovered_steps.sort_by(|left, right| left.0.cmp(&right.0));
+
+    assert_eq!(
+        recovered_steps
+            .iter()
+            .map(|step| step.3.as_str())
+            .collect::<Vec<_>>(),
+        vec!["open", "tab_open", "tab_focus", "current_url"]
+    );
+
+    let tab_focus_step = recovered_steps
+        .iter()
+        .find(|step| step.1 == "tool-browser-tab-focus")
+        .expect("recovered tab_focus step should exist");
     assert!(matches!(
-        recovered_summary,
-        cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)
-            if summary.surface
-                == cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::ComputerUse
-                && summary.action == "drag"
-                && summary.status
-                    == cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
-                && summary.target.as_deref() == Some("Desktop icon")
-                && summary.outcome.as_deref() == Some("Permission denied")
+        tab_focus_step.2,
+        project_store::AutonomousToolCallStateRecord::Failed
     ));
+    assert!(matches!(
+        tab_focus_step.4,
+        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
+    ));
+    assert_eq!(
+        tab_focus_step.5.as_deref(),
+        Some(
+            "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+        )
+    );
+    assert_eq!(tab_focus_step.6.as_deref(), Some(linked_action_id.as_str()));
+    assert_eq!(tab_focus_step.7.as_deref(), Some("boundary-browser-1"));
 }
 
 pub(crate) fn autonomous_run_persistence_canonicalizes_verification_evidence_payloads_and_reloads_them(

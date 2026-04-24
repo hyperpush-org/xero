@@ -404,17 +404,17 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
             "{STRUCTURED_EVENT_PREFIX}{}",
             json!({
                 "kind": "tool",
-                "tool_call_id": "tool-browser-1",
-                "tool_name": "browser.click",
-                "tool_state": "running",
-                "detail": "Clicking primary action",
+                "tool_call_id": "tool-browser-open",
+                "tool_name": "browser.open",
+                "tool_state": "succeeded",
+                "detail": "Opened in-app browser context",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "click",
-                    "status": "running",
-                    "target": "button#primary",
-                    "outcome": null
+                    "action": "open",
+                    "status": "succeeded",
+                    "target": "https://example.com",
+                    "outcome": "Opened browser context"
                 }
             })
         ),
@@ -422,17 +422,17 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
             "{STRUCTURED_EVENT_PREFIX}{}",
             json!({
                 "kind": "tool",
-                "tool_call_id": "tool-browser-2",
-                "tool_name": "browser.navigate",
+                "tool_call_id": "tool-browser-tab-open",
+                "tool_name": "browser.tab_open",
                 "tool_state": "succeeded",
-                "detail": "Navigation completed",
+                "detail": "Opened docs tab",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "navigate",
+                    "action": "tab_open",
                     "status": "succeeded",
                     "target": "https://example.com/docs",
-                    "outcome": "Loaded docs page"
+                    "outcome": "Opened tab tab-2"
                 }
             })
         ),
@@ -440,17 +440,35 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
             "{STRUCTURED_EVENT_PREFIX}{}",
             json!({
                 "kind": "tool",
-                "tool_call_id": "tool-computer-1",
-                "tool_name": "computer.drag",
+                "tool_call_id": "tool-browser-tab-focus",
+                "tool_name": "browser.tab_focus",
                 "tool_state": "failed",
-                "detail": "Desktop drag blocked",
+                "detail": "policy_denied_browser_permissions",
                 "tool_summary": {
                     "kind": "browser_computer_use",
-                    "surface": "computer_use",
-                    "action": "drag",
+                    "surface": "browser",
+                    "action": "tab_focus",
                     "status": "blocked",
-                    "target": "Desktop icon",
+                    "target": "tab-2",
                     "outcome": "Permission denied"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-current-url",
+                "tool_name": "browser.current_url",
+                "tool_state": "succeeded",
+                "detail": "Read active tab URL",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "current_url",
+                    "status": "succeeded",
+                    "target": "tab-2",
+                    "outcome": "https://example.com/docs"
                 }
             })
         ),
@@ -505,7 +523,7 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
 
     wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
         snapshot.run.status == project_store::RuntimeRunStatus::Running
-            && snapshot.last_checkpoint_sequence >= 5
+            && snapshot.last_checkpoint_sequence >= 6
     });
 
     let mut reader = attach_reader(
@@ -513,7 +531,7 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
         SupervisorControlRequest::attach(project_id, "run-browser-summary-valid", None),
     );
     let attached = expect_attach_ack(read_supervisor_response(&mut reader));
-    assert_eq!(attached.replayed_count, 5);
+    assert_eq!(attached.replayed_count, 6);
 
     let frames = read_event_frames(&mut reader, attached.replayed_count);
     assert_monotonic_sequences(&frames, "run-browser-summary-valid");
@@ -530,20 +548,45 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
                     ..
                 },
             ..
-        } if tool_call_id == "tool-browser-1"
-            && tool_name == "browser.click"
-            && matches!(tool_state, SupervisorToolCallState::Running)
+        } if tool_call_id == "tool-browser-open"
+            && tool_name == "browser.open"
+            && matches!(tool_state, SupervisorToolCallState::Succeeded)
             && matches!(
                 summary.surface,
                 cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser
             )
-            && summary.action == "click"
+            && summary.action == "open"
             && matches!(
                 summary.status,
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded
             )
-            && summary.target.as_deref() == Some("button#primary")
-            && summary.outcome.is_none()
+            && summary.target.as_deref() == Some("https://example.com")
+            && summary.outcome.as_deref() == Some("Opened browser context")
+    ));
+
+    assert!(matches!(
+        &frames[1],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-browser-tab-open"
+            && tool_name == "browser.tab_open"
+            && matches!(tool_state, SupervisorToolCallState::Succeeded)
+            && summary.action == "tab_open"
+            && matches!(
+                summary.status,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded
+            )
+            && summary.target.as_deref() == Some("https://example.com/docs")
+            && summary.outcome.as_deref() == Some("Opened tab tab-2")
     ));
 
     assert!(matches!(
@@ -559,19 +602,15 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
                     ..
                 },
             ..
-        } if tool_call_id == "tool-computer-1"
-            && tool_name == "computer.drag"
+        } if tool_call_id == "tool-browser-tab-focus"
+            && tool_name == "browser.tab_focus"
             && matches!(tool_state, SupervisorToolCallState::Failed)
-            && matches!(
-                summary.surface,
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::ComputerUse
-            )
-            && summary.action == "drag"
+            && summary.action == "tab_focus"
             && matches!(
                 summary.status,
                 cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
             )
-            && summary.target.as_deref() == Some("Desktop icon")
+            && summary.target.as_deref() == Some("tab-2")
             && summary.outcome.as_deref() == Some(
                 "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
             )
@@ -579,6 +618,31 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
 
     assert!(matches!(
         &frames[3],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-browser-current-url"
+            && tool_name == "browser.current_url"
+            && matches!(tool_state, SupervisorToolCallState::Succeeded)
+            && summary.action == "current_url"
+            && matches!(
+                summary.status,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded
+            )
+            && summary.target.as_deref() == Some("tab-2")
+            && summary.outcome.as_deref() == Some("https://example.com/docs")
+    ));
+
+    assert!(matches!(
+        &frames[4],
         SupervisorControlResponse::Event {
             item:
                 SupervisorLiveEventPayload::Tool {
@@ -603,7 +667,7 @@ pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_
     ));
 
     assert!(matches!(
-        &frames[4],
+        &frames[5],
         SupervisorControlResponse::Event {
             item:
                 SupervisorLiveEventPayload::Tool {
@@ -803,8 +867,8 @@ pub(crate) fn detached_supervisor_live_event_drops_unsupported_browser_computer_
             "tool_summary": {
                 "kind": "browser_computer_use",
                 "surface": "browser",
-                "action": "click",
-                "status": "queued",
+                "action": "teleport",
+                "status": "running",
                 "target": "button#primary"
             }
         })

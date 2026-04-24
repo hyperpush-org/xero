@@ -303,7 +303,6 @@ export function AgentRuntime({
           onComposerModelChange={controller.handleComposerModelChange}
           onComposerThinkingLevelChange={controller.handleComposerThinkingLevelChange}
           onDraftPromptChange={controller.handleDraftPromptChange}
-          onStartRuntimeRun={() => void controller.handleStartRuntimeRun()}
           onSubmitDraftPrompt={() => void controller.handleSubmitDraftPrompt()}
           pendingRuntimeRunAction={agent.pendingRuntimeRunAction ?? null}
           placeholder={composerPlaceholder}
@@ -313,7 +312,6 @@ export function AgentRuntime({
           runtimeRunActionErrorTitle={controller.runtimeRunActionErrorTitle}
           runtimeRunActionStatus={agent.runtimeRunActionStatus}
           sendButtonLabel={sendButtonLabel}
-          showStartRunButton={(canStartRuntimeRun || canStartRuntimeSession) && !renderableRuntimeRun}
         />
       </div>
     </div>

@@ -64,8 +64,13 @@ pub fn upsert_runtime_action_required(
         )
     })?;
 
-    let runtime_row = read_runtime_run_row(&transaction, &database_path, &payload.project_id)?
-        .ok_or_else(|| {
+    let runtime_row = read_runtime_run_row(
+        &transaction,
+        &database_path,
+        &payload.project_id,
+        &payload.agent_session_id,
+    )?
+    .ok_or_else(|| {
             CommandError::retryable(
                 "runtime_action_request_invalid",
                 format!(
@@ -286,8 +291,13 @@ pub fn upsert_runtime_action_required(
                     ),
                 )
             })?;
-    let runtime_run = read_runtime_run_snapshot(&connection, &database_path, &payload.project_id)?
-        .ok_or_else(|| {
+    let runtime_run = read_runtime_run_snapshot(
+        &connection,
+        &database_path,
+        &payload.project_id,
+        &payload.agent_session_id,
+    )?
+    .ok_or_else(|| {
             CommandError::system_fault(
                 "runtime_action_missing_after_persist",
                 format!(

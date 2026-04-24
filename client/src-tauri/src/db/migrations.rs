@@ -739,6 +739,582 @@ pub fn migrations() -> &'static Migrations<'static> {
                     ON autonomous_runs(provider_id, status, updated_at DESC);
                 "#,
             ),
+            M::up(
+                r#"
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    agent_session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    selected INTEGER NOT NULL DEFAULT 0 CHECK (selected IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    archived_at TEXT,
+                    last_run_id TEXT,
+                    last_runtime_kind TEXT,
+                    last_provider_id TEXT,
+                    PRIMARY KEY (project_id, agent_session_id),
+                    CHECK (agent_session_id <> ''),
+                    CHECK (title <> ''),
+                    CHECK (status IN ('active', 'archived')),
+                    CHECK (last_run_id IS NULL OR last_run_id <> ''),
+                    CHECK (last_runtime_kind IS NULL OR last_runtime_kind <> ''),
+                    CHECK (last_provider_id IS NULL OR last_provider_id <> ''),
+                    CHECK (
+                        (status = 'active' AND archived_at IS NULL)
+                        OR (status = 'archived' AND archived_at IS NOT NULL)
+                    )
+                );
+
+                INSERT OR IGNORE INTO agent_sessions (
+                    project_id,
+                    agent_session_id,
+                    title,
+                    summary,
+                    status,
+                    selected,
+                    created_at,
+                    updated_at,
+                    last_run_id,
+                    last_runtime_kind,
+                    last_provider_id
+                )
+                SELECT
+                    projects.id,
+                    'agent-session-main',
+                    'Main',
+                    '',
+                    'active',
+                    1,
+                    COALESCE(projects.created_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    runtime_runs.run_id,
+                    runtime_runs.runtime_kind,
+                    runtime_runs.provider_id
+                FROM projects
+                LEFT JOIN runtime_runs
+                    ON runtime_runs.project_id = projects.id;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_selected
+                    ON agent_sessions(project_id)
+                    WHERE selected = 1;
+                CREATE INDEX IF NOT EXISTS idx_agent_sessions_project_status_updated
+                    ON agent_sessions(project_id, status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_agent_sessions_project_last_run
+                    ON agent_sessions(project_id, last_run_id)
+                    WHERE last_run_id IS NOT NULL;
+
+                CREATE TABLE runtime_runs_session_scoped (
+                    project_id TEXT NOT NULL,
+                    agent_session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    runtime_kind TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    supervisor_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    transport_kind TEXT NOT NULL,
+                    transport_endpoint TEXT NOT NULL,
+                    transport_liveness TEXT NOT NULL DEFAULT 'unknown',
+                    control_state_json TEXT NOT NULL,
+                    last_checkpoint_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_checkpoint_sequence >= 0),
+                    started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT,
+                    last_checkpoint_at TEXT,
+                    stopped_at TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (project_id, agent_session_id),
+                    UNIQUE (project_id, run_id),
+                    CHECK (agent_session_id <> ''),
+                    CHECK (run_id <> ''),
+                    CHECK (runtime_kind <> ''),
+                    CHECK (provider_id <> ''),
+                    CHECK (supervisor_kind <> ''),
+                    CHECK (status IN ('starting', 'running', 'stale', 'stopped', 'failed')),
+                    CHECK (transport_kind <> ''),
+                    CHECK (transport_endpoint <> ''),
+                    CHECK (transport_liveness IN ('unknown', 'reachable', 'unreachable')),
+                    CHECK (control_state_json <> ''),
+                    CHECK (
+                        (last_error_code IS NULL AND last_error_message IS NULL)
+                        OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+                    ),
+                    FOREIGN KEY (project_id, agent_session_id)
+                        REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO runtime_runs_session_scoped (
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    runtime_kind,
+                    provider_id,
+                    supervisor_kind,
+                    status,
+                    transport_kind,
+                    transport_endpoint,
+                    transport_liveness,
+                    control_state_json,
+                    last_checkpoint_sequence,
+                    started_at,
+                    last_heartbeat_at,
+                    last_checkpoint_at,
+                    stopped_at,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                )
+                SELECT
+                    project_id,
+                    'agent-session-main',
+                    run_id,
+                    runtime_kind,
+                    provider_id,
+                    supervisor_kind,
+                    status,
+                    transport_kind,
+                    transport_endpoint,
+                    transport_liveness,
+                    control_state_json,
+                    last_checkpoint_sequence,
+                    started_at,
+                    last_heartbeat_at,
+                    last_checkpoint_at,
+                    stopped_at,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                FROM runtime_runs
+                WHERE provider_id IS NOT NULL
+                  AND control_state_json IS NOT NULL;
+
+                CREATE TABLE runtime_run_checkpoints_session_scoped (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL CHECK (sequence > 0),
+                    kind TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    CHECK (kind IN ('bootstrap', 'state', 'tool', 'action_required', 'diagnostic')),
+                    CHECK (summary <> ''),
+                    UNIQUE (project_id, run_id, sequence),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES runtime_runs_session_scoped(project_id, run_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO runtime_run_checkpoints_session_scoped (
+                    id,
+                    project_id,
+                    run_id,
+                    sequence,
+                    kind,
+                    summary,
+                    created_at
+                )
+                SELECT
+                    id,
+                    project_id,
+                    run_id,
+                    sequence,
+                    kind,
+                    summary,
+                    created_at
+                FROM runtime_run_checkpoints;
+
+                CREATE TABLE autonomous_runs_session_scoped (
+                    project_id TEXT NOT NULL,
+                    agent_session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    runtime_kind TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    supervisor_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    active_unit_sequence INTEGER,
+                    duplicate_start_detected INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_start_detected IN (0, 1)),
+                    duplicate_start_run_id TEXT,
+                    duplicate_start_reason TEXT,
+                    started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT,
+                    last_checkpoint_at TEXT,
+                    paused_at TEXT,
+                    cancelled_at TEXT,
+                    completed_at TEXT,
+                    crashed_at TEXT,
+                    stopped_at TEXT,
+                    pause_reason_code TEXT,
+                    pause_reason_message TEXT,
+                    cancel_reason_code TEXT,
+                    cancel_reason_message TEXT,
+                    crash_reason_code TEXT,
+                    crash_reason_message TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (project_id, agent_session_id),
+                    UNIQUE (project_id, run_id),
+                    CHECK (agent_session_id <> ''),
+                    CHECK (run_id <> ''),
+                    CHECK (runtime_kind <> ''),
+                    CHECK (provider_id <> ''),
+                    CHECK (supervisor_kind <> ''),
+                    CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'stale', 'failed', 'stopped', 'crashed', 'completed')),
+                    CHECK (active_unit_sequence IS NULL OR active_unit_sequence > 0),
+                    CHECK (duplicate_start_run_id IS NULL OR duplicate_start_run_id <> ''),
+                    CHECK (duplicate_start_reason IS NULL OR duplicate_start_reason <> ''),
+                    CHECK (
+                        (pause_reason_code IS NULL AND pause_reason_message IS NULL)
+                        OR (pause_reason_code IS NOT NULL AND pause_reason_message IS NOT NULL)
+                    ),
+                    CHECK (
+                        (cancel_reason_code IS NULL AND cancel_reason_message IS NULL)
+                        OR (cancel_reason_code IS NOT NULL AND cancel_reason_message IS NOT NULL)
+                    ),
+                    CHECK (
+                        (crash_reason_code IS NULL AND crash_reason_message IS NULL)
+                        OR (crash_reason_code IS NOT NULL AND crash_reason_message IS NOT NULL)
+                    ),
+                    CHECK (
+                        (last_error_code IS NULL AND last_error_message IS NULL)
+                        OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+                    ),
+                    FOREIGN KEY (project_id, agent_session_id)
+                        REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES runtime_runs_session_scoped(project_id, run_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO autonomous_runs_session_scoped (
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    runtime_kind,
+                    provider_id,
+                    supervisor_kind,
+                    status,
+                    active_unit_sequence,
+                    duplicate_start_detected,
+                    duplicate_start_run_id,
+                    duplicate_start_reason,
+                    started_at,
+                    last_heartbeat_at,
+                    last_checkpoint_at,
+                    paused_at,
+                    cancelled_at,
+                    completed_at,
+                    crashed_at,
+                    stopped_at,
+                    pause_reason_code,
+                    pause_reason_message,
+                    cancel_reason_code,
+                    cancel_reason_message,
+                    crash_reason_code,
+                    crash_reason_message,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                )
+                SELECT
+                    project_id,
+                    'agent-session-main',
+                    run_id,
+                    runtime_kind,
+                    provider_id,
+                    supervisor_kind,
+                    status,
+                    active_unit_sequence,
+                    duplicate_start_detected,
+                    duplicate_start_run_id,
+                    duplicate_start_reason,
+                    started_at,
+                    last_heartbeat_at,
+                    last_checkpoint_at,
+                    paused_at,
+                    cancelled_at,
+                    completed_at,
+                    crashed_at,
+                    stopped_at,
+                    pause_reason_code,
+                    pause_reason_message,
+                    cancel_reason_code,
+                    cancel_reason_message,
+                    crash_reason_code,
+                    crash_reason_message,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                FROM autonomous_runs
+                WHERE provider_id IS NOT NULL;
+
+                CREATE TABLE autonomous_units_session_scoped (
+                    unit_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL CHECK (sequence > 0),
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    boundary_id TEXT,
+                    workflow_node_id TEXT,
+                    workflow_transition_id TEXT,
+                    workflow_causal_transition_id TEXT,
+                    workflow_handoff_transition_id TEXT,
+                    workflow_handoff_package_hash TEXT,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    CHECK (unit_id <> ''),
+                    CHECK (kind IN ('researcher', 'planner', 'executor', 'verifier')),
+                    CHECK (status IN ('pending', 'active', 'blocked', 'paused', 'completed', 'cancelled', 'failed')),
+                    CHECK (summary <> ''),
+                    CHECK (boundary_id IS NULL OR boundary_id <> ''),
+                    CHECK (
+                        (last_error_code IS NULL AND last_error_message IS NULL)
+                        OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+                    ),
+                    UNIQUE (project_id, run_id, sequence),
+                    UNIQUE (project_id, run_id, unit_id),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES autonomous_runs_session_scoped(project_id, run_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO autonomous_units_session_scoped (
+                    unit_id,
+                    project_id,
+                    run_id,
+                    sequence,
+                    kind,
+                    status,
+                    summary,
+                    boundary_id,
+                    workflow_node_id,
+                    workflow_transition_id,
+                    workflow_causal_transition_id,
+                    workflow_handoff_transition_id,
+                    workflow_handoff_package_hash,
+                    started_at,
+                    finished_at,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                )
+                SELECT
+                    unit_id,
+                    project_id,
+                    run_id,
+                    sequence,
+                    kind,
+                    status,
+                    summary,
+                    boundary_id,
+                    workflow_node_id,
+                    workflow_transition_id,
+                    workflow_causal_transition_id,
+                    workflow_handoff_transition_id,
+                    workflow_handoff_package_hash,
+                    started_at,
+                    finished_at,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                FROM autonomous_units;
+
+                CREATE TABLE autonomous_unit_attempts_session_scoped (
+                    attempt_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    unit_id TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+                    child_session_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    boundary_id TEXT,
+                    workflow_node_id TEXT,
+                    workflow_transition_id TEXT,
+                    workflow_causal_transition_id TEXT,
+                    workflow_handoff_transition_id TEXT,
+                    workflow_handoff_package_hash TEXT,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    CHECK (attempt_id <> ''),
+                    CHECK (child_session_id <> ''),
+                    CHECK (status IN ('pending', 'active', 'blocked', 'paused', 'completed', 'cancelled', 'failed')),
+                    CHECK (boundary_id IS NULL OR boundary_id <> ''),
+                    CHECK (
+                        (last_error_code IS NULL AND last_error_message IS NULL)
+                        OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+                    ),
+                    UNIQUE (project_id, run_id, unit_id, attempt_number),
+                    UNIQUE (project_id, run_id, child_session_id),
+                    UNIQUE (project_id, run_id, attempt_id),
+                    FOREIGN KEY (project_id, run_id, unit_id)
+                        REFERENCES autonomous_units_session_scoped(project_id, run_id, unit_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO autonomous_unit_attempts_session_scoped (
+                    attempt_id,
+                    project_id,
+                    run_id,
+                    unit_id,
+                    attempt_number,
+                    child_session_id,
+                    status,
+                    boundary_id,
+                    workflow_node_id,
+                    workflow_transition_id,
+                    workflow_causal_transition_id,
+                    workflow_handoff_transition_id,
+                    workflow_handoff_package_hash,
+                    started_at,
+                    finished_at,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                )
+                SELECT
+                    attempt_id,
+                    project_id,
+                    run_id,
+                    unit_id,
+                    attempt_number,
+                    child_session_id,
+                    status,
+                    boundary_id,
+                    workflow_node_id,
+                    workflow_transition_id,
+                    workflow_causal_transition_id,
+                    workflow_handoff_transition_id,
+                    workflow_handoff_package_hash,
+                    started_at,
+                    finished_at,
+                    last_error_code,
+                    last_error_message,
+                    updated_at,
+                    created_at
+                FROM autonomous_unit_attempts;
+
+                CREATE TABLE autonomous_unit_artifacts_session_scoped (
+                    artifact_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    unit_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    artifact_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    content_hash TEXT,
+                    payload_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK (artifact_id <> ''),
+                    CHECK (artifact_kind <> ''),
+                    CHECK (status IN ('pending', 'recorded', 'rejected', 'redacted')),
+                    CHECK (summary <> ''),
+                    CHECK (content_hash IS NULL OR (length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*')),
+                    UNIQUE (project_id, run_id, artifact_id),
+                    FOREIGN KEY (project_id, run_id, unit_id)
+                        REFERENCES autonomous_units_session_scoped(project_id, run_id, unit_id) ON DELETE CASCADE,
+                    FOREIGN KEY (project_id, run_id, attempt_id)
+                        REFERENCES autonomous_unit_attempts_session_scoped(project_id, run_id, attempt_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO autonomous_unit_artifacts_session_scoped (
+                    artifact_id,
+                    project_id,
+                    run_id,
+                    unit_id,
+                    attempt_id,
+                    artifact_kind,
+                    status,
+                    summary,
+                    content_hash,
+                    payload_json,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                    artifact_id,
+                    project_id,
+                    run_id,
+                    unit_id,
+                    attempt_id,
+                    artifact_kind,
+                    status,
+                    summary,
+                    content_hash,
+                    payload_json,
+                    created_at,
+                    updated_at
+                FROM autonomous_unit_artifacts;
+
+                DROP TABLE autonomous_unit_artifacts;
+                DROP TABLE autonomous_unit_attempts;
+                DROP TABLE autonomous_units;
+                DROP TABLE autonomous_runs;
+                DROP TABLE runtime_run_checkpoints;
+                DROP TABLE runtime_runs;
+
+                ALTER TABLE runtime_runs_session_scoped RENAME TO runtime_runs;
+                ALTER TABLE runtime_run_checkpoints_session_scoped RENAME TO runtime_run_checkpoints;
+                ALTER TABLE autonomous_runs_session_scoped RENAME TO autonomous_runs;
+                ALTER TABLE autonomous_units_session_scoped RENAME TO autonomous_units;
+                ALTER TABLE autonomous_unit_attempts_session_scoped RENAME TO autonomous_unit_attempts;
+                ALTER TABLE autonomous_unit_artifacts_session_scoped RENAME TO autonomous_unit_artifacts;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_runs_project_run
+                    ON runtime_runs(project_id, run_id);
+                CREATE INDEX IF NOT EXISTS idx_runtime_runs_status_updated
+                    ON runtime_runs(project_id, agent_session_id, status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_runtime_runs_supervisor_kind
+                    ON runtime_runs(supervisor_kind, transport_liveness);
+                CREATE INDEX IF NOT EXISTS idx_runtime_runs_provider_status_updated
+                    ON runtime_runs(provider_id, status, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_runtime_run_checkpoints_project_run_sequence
+                    ON runtime_run_checkpoints(project_id, run_id, sequence DESC);
+                CREATE INDEX IF NOT EXISTS idx_runtime_run_checkpoints_project_created
+                    ON runtime_run_checkpoints(project_id, created_at DESC, id DESC);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_autonomous_runs_project_run
+                    ON autonomous_runs(project_id, run_id);
+                CREATE INDEX IF NOT EXISTS idx_autonomous_runs_status_updated
+                    ON autonomous_runs(project_id, agent_session_id, status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_autonomous_runs_provider_status_updated
+                    ON autonomous_runs(provider_id, status, updated_at DESC);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_autonomous_units_one_active_per_run
+                    ON autonomous_units(project_id, run_id)
+                    WHERE status = 'active';
+                CREATE INDEX IF NOT EXISTS idx_autonomous_units_project_run_sequence
+                    ON autonomous_units(project_id, run_id, sequence DESC, updated_at DESC);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_autonomous_unit_attempts_one_active_per_run
+                    ON autonomous_unit_attempts(project_id, run_id)
+                    WHERE status = 'active';
+                CREATE INDEX IF NOT EXISTS idx_autonomous_unit_attempts_project_run_unit_attempt
+                    ON autonomous_unit_attempts(project_id, run_id, unit_id, attempt_number DESC, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_autonomous_unit_artifacts_project_run_attempt
+                    ON autonomous_unit_artifacts(project_id, run_id, attempt_id, created_at DESC, artifact_id ASC);
+                "#,
+            ),
         ])
     });
 

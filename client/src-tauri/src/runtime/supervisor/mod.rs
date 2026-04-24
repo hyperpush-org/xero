@@ -39,6 +39,7 @@ const REDACTED_SHELL_OUTPUT_SUMMARY: &str = "Shell output was redacted before du
 const REDACTED_LIVE_EVENT_DETAIL: &str =
     "Cadence redacted secret-bearing live output before replay and persistence.";
 pub(crate) const CADENCE_RUNTIME_PROVIDER_ID_ENV: &str = "CADENCE_RUNTIME_PROVIDER_ID";
+pub(crate) const CADENCE_AGENT_SESSION_ID_ENV: &str = "CADENCE_AGENT_SESSION_ID";
 pub(crate) const CADENCE_RUNTIME_SESSION_ID_ENV: &str = "CADENCE_RUNTIME_SESSION_ID";
 pub(crate) const CADENCE_RUNTIME_FLOW_ID_ENV: &str = "CADENCE_RUNTIME_FLOW_ID";
 pub(crate) const CADENCE_RUNTIME_MODEL_ID_ENV: &str = "CADENCE_RUNTIME_MODEL_ID";
@@ -105,6 +106,7 @@ impl std::fmt::Debug for RuntimeSupervisorLaunchEnv {
 #[derive(Debug, Clone)]
 struct RuntimeSupervisorSidecarArgs {
     project_id: String,
+    agent_session_id: String,
     repo_root: PathBuf,
     runtime_kind: String,
     run_id: String,
@@ -119,6 +121,7 @@ struct RuntimeSupervisorSidecarArgs {
 #[derive(Debug, Clone)]
 struct SidecarSharedState {
     project_id: String,
+    agent_session_id: String,
     run_id: String,
     runtime_kind: String,
     provider_id: String,

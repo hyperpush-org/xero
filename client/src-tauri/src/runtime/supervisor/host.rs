@@ -35,9 +35,9 @@ use super::persistence::protocol_diagnostic_into_record;
 use super::{
     read_json_line_from_reader, runtime_supervisor_thinking_effort_env_value,
     validate_runtime_supervisor_launch_context, write_json_line, RuntimeSupervisorLaunchEnv,
-    ANTHROPIC_API_KEY_ENV, CADENCE_RUNTIME_FLOW_ID_ENV, CADENCE_RUNTIME_MCP_CONFIG_PATH_ENV,
-    CADENCE_RUNTIME_MCP_CONTRACT_REQUIRED_ENV, CADENCE_RUNTIME_MODEL_ID_ENV,
-    CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
+    ANTHROPIC_API_KEY_ENV, CADENCE_AGENT_SESSION_ID_ENV, CADENCE_RUNTIME_FLOW_ID_ENV,
+    CADENCE_RUNTIME_MCP_CONFIG_PATH_ENV, CADENCE_RUNTIME_MCP_CONTRACT_REQUIRED_ENV,
+    CADENCE_RUNTIME_MODEL_ID_ENV, CADENCE_RUNTIME_PROVIDER_ID_ENV, CADENCE_RUNTIME_SESSION_ID_ENV,
     CADENCE_RUNTIME_THINKING_EFFORT_ENV, DEFAULT_CONTROL_TIMEOUT, DEFAULT_STARTUP_TIMEOUT,
     DEFAULT_STOP_TIMEOUT, OPENAI_API_KEY_ENV, OPENAI_API_VERSION_ENV, OPENAI_BASE_URL_ENV,
 };
@@ -55,6 +55,7 @@ struct RuntimeSupervisorRegistry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActiveRuntimeSupervisor {
     project_id: String,
+    agent_session_id: String,
     run_id: String,
     endpoint: String,
 }
@@ -62,6 +63,7 @@ struct ActiveRuntimeSupervisor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveRuntimeSupervisorSnapshot {
     pub project_id: String,
+    pub agent_session_id: String,
     pub run_id: String,
     pub endpoint: String,
 }
@@ -69,6 +71,7 @@ pub struct ActiveRuntimeSupervisorSnapshot {
 #[derive(Debug, Clone)]
 pub struct RuntimeSupervisorLaunchRequest {
     pub project_id: String,
+    pub agent_session_id: String,
     pub repo_root: PathBuf,
     pub runtime_kind: String,
     pub run_id: String,
@@ -87,6 +90,7 @@ pub struct RuntimeSupervisorLaunchRequest {
 #[derive(Debug, Clone)]
 pub struct RuntimeSupervisorProbeRequest {
     pub project_id: String,
+    pub agent_session_id: String,
     pub repo_root: PathBuf,
     pub control_timeout: Duration,
 }
@@ -94,6 +98,7 @@ pub struct RuntimeSupervisorProbeRequest {
 #[derive(Debug, Clone)]
 pub struct RuntimeSupervisorStopRequest {
     pub project_id: String,
+    pub agent_session_id: String,
     pub repo_root: PathBuf,
     pub control_timeout: Duration,
     pub shutdown_timeout: Duration,
@@ -102,6 +107,7 @@ pub struct RuntimeSupervisorStopRequest {
 #[derive(Debug, Clone)]
 pub struct RuntimeSupervisorSubmitInputRequest {
     pub project_id: String,
+    pub agent_session_id: String,
     pub repo_root: PathBuf,
     pub run_id: String,
     pub session_id: String,
@@ -115,6 +121,7 @@ pub struct RuntimeSupervisorSubmitInputRequest {
 #[derive(Debug, Clone)]
 pub struct RuntimeSupervisorUpdateControlsRequest {
     pub project_id: String,
+    pub agent_session_id: String,
     pub repo_root: PathBuf,
     pub run_id: String,
     pub controls: Option<RuntimeRunControlInputDto>,
@@ -126,6 +133,7 @@ impl Default for RuntimeSupervisorUpdateControlsRequest {
     fn default() -> Self {
         Self {
             project_id: String::new(),
+            agent_session_id: String::new(),
             repo_root: PathBuf::new(),
             run_id: String::new(),
             controls: None,
@@ -139,6 +147,7 @@ impl Default for RuntimeSupervisorLaunchRequest {
     fn default() -> Self {
         Self {
             project_id: String::new(),
+            agent_session_id: String::new(),
             repo_root: PathBuf::new(),
             runtime_kind: "openai_codex".into(),
             run_id: String::new(),
@@ -176,6 +185,7 @@ impl Default for RuntimeSupervisorProbeRequest {
     fn default() -> Self {
         Self {
             project_id: String::new(),
+            agent_session_id: String::new(),
             repo_root: PathBuf::new(),
             control_timeout: DEFAULT_CONTROL_TIMEOUT,
         }
@@ -186,6 +196,7 @@ impl Default for RuntimeSupervisorStopRequest {
     fn default() -> Self {
         Self {
             project_id: String::new(),
+            agent_session_id: String::new(),
             repo_root: PathBuf::new(),
             control_timeout: DEFAULT_CONTROL_TIMEOUT,
             shutdown_timeout: DEFAULT_STOP_TIMEOUT,
@@ -194,42 +205,52 @@ impl Default for RuntimeSupervisorStopRequest {
 }
 
 impl RuntimeSupervisorController {
-    pub fn remember(&self, project_id: &str, run_id: &str, endpoint: &str) {
+    pub fn remember(&self, project_id: &str, agent_session_id: &str, run_id: &str, endpoint: &str) {
         self.inner
             .lock()
             .expect("runtime supervisor registry poisoned")
             .active
             .insert(
-                project_id.into(),
+                supervisor_registry_key(project_id, agent_session_id),
                 ActiveRuntimeSupervisor {
                     project_id: project_id.into(),
+                    agent_session_id: agent_session_id.into(),
                     run_id: run_id.into(),
                     endpoint: endpoint.into(),
                 },
             );
     }
 
-    pub fn forget(&self, project_id: &str) {
+    pub fn forget(&self, project_id: &str, agent_session_id: &str) {
         self.inner
             .lock()
             .expect("runtime supervisor registry poisoned")
             .active
-            .remove(project_id);
+            .remove(&supervisor_registry_key(project_id, agent_session_id));
     }
 
-    pub fn snapshot(&self, project_id: &str) -> Option<ActiveRuntimeSupervisorSnapshot> {
+    pub fn snapshot(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> Option<ActiveRuntimeSupervisorSnapshot> {
         self.inner
             .lock()
             .expect("runtime supervisor registry poisoned")
             .active
-            .get(project_id)
+            .get(&supervisor_registry_key(project_id, agent_session_id))
             .cloned()
             .map(|entry| ActiveRuntimeSupervisorSnapshot {
                 project_id: entry.project_id,
+                agent_session_id: entry.agent_session_id,
                 run_id: entry.run_id,
                 endpoint: entry.endpoint,
             })
     }
+}
+
+fn supervisor_registry_key(project_id: &str, agent_session_id: &str) -> String {
+    format!("{project_id}\u{1f}{agent_session_id}")
 }
 
 pub fn launch_detached_runtime_supervisor(
@@ -242,6 +263,7 @@ pub fn launch_detached_runtime_supervisor(
         state,
         &request.repo_root,
         &request.project_id,
+        &request.agent_session_id,
         request.control_timeout,
     )? {
         if matches!(
@@ -267,6 +289,8 @@ pub fn launch_detached_runtime_supervisor(
     sidecar
         .arg("--project-id")
         .arg(&request.project_id)
+        .arg("--agent-session-id")
+        .arg(&request.agent_session_id)
         .arg("--repo-root")
         .arg(&request.repo_root)
         .arg("--runtime-kind")
@@ -317,6 +341,7 @@ pub fn launch_detached_runtime_supervisor(
         let _ = persist_failed_launch(
             &request.repo_root,
             &request.project_id,
+            &request.agent_session_id,
             &request.run_id,
             &request.runtime_kind,
             request.launch_context.provider_id.as_str(),
@@ -338,6 +363,7 @@ pub fn launch_detached_runtime_supervisor(
         let _ = persist_failed_launch(
             &request.repo_root,
             &request.project_id,
+            &request.agent_session_id,
             &request.run_id,
             &request.runtime_kind,
             request.launch_context.provider_id.as_str(),
@@ -358,6 +384,7 @@ pub fn launch_detached_runtime_supervisor(
             let _ = persist_failed_launch(
                 &request.repo_root,
                 &request.project_id,
+                &request.agent_session_id,
                 &request.run_id,
                 &request.runtime_kind,
                 request.launch_context.provider_id.as_str(),
@@ -385,6 +412,7 @@ pub fn launch_detached_runtime_supervisor(
                 let _ = persist_failed_launch(
                     &request.repo_root,
                     &request.project_id,
+                    &request.agent_session_id,
                     &request.run_id,
                     &request.runtime_kind,
                     request.launch_context.provider_id.as_str(),
@@ -403,6 +431,7 @@ pub fn launch_detached_runtime_supervisor(
                 let _ = persist_failed_launch(
                     &request.repo_root,
                     &request.project_id,
+                    &request.agent_session_id,
                     &request.run_id,
                     &request.runtime_kind,
                     request.launch_context.provider_id.as_str(),
@@ -421,6 +450,7 @@ pub fn launch_detached_runtime_supervisor(
                 let _ = persist_failed_launch(
                     &request.repo_root,
                     &request.project_id,
+                    &request.agent_session_id,
                     &request.run_id,
                     &request.runtime_kind,
                     request.launch_context.provider_id.as_str(),
@@ -439,6 +469,7 @@ pub fn launch_detached_runtime_supervisor(
                 let _ = persist_failed_launch(
                     &request.repo_root,
                     &request.project_id,
+                    &request.agent_session_id,
                     &request.run_id,
                     &request.runtime_kind,
                     request.launch_context.provider_id.as_str(),
@@ -460,7 +491,11 @@ pub fn launch_detached_runtime_supervisor(
             };
 
             let snapshot =
-                project_store::load_runtime_run(&request.repo_root, &request.project_id)?
+                project_store::load_runtime_run(
+                    &request.repo_root,
+                    &request.project_id,
+                    &request.agent_session_id,
+                )?
                     .filter(|snapshot| snapshot.run.run_id == request.run_id)
                     .map(Ok)
                     .unwrap_or_else(|| {
@@ -469,6 +504,7 @@ pub fn launch_detached_runtime_supervisor(
                             &RuntimeRunUpsertRecord {
                                 run: RuntimeRunRecord {
                                     project_id: request.project_id.clone(),
+                                    agent_session_id: request.agent_session_id.clone(),
                                     run_id: request.run_id.clone(),
                                     runtime_kind: request.runtime_kind.clone(),
                                     provider_id: request.launch_context.provider_id.clone(),
@@ -493,6 +529,7 @@ pub fn launch_detached_runtime_supervisor(
 
             state.runtime_supervisor_controller().remember(
                 &request.project_id,
+                &request.agent_session_id,
                 &request.run_id,
                 &endpoint,
             );
@@ -507,6 +544,7 @@ pub fn launch_detached_runtime_supervisor(
             let _ = persist_failed_launch(
                 &request.repo_root,
                 &request.project_id,
+                &request.agent_session_id,
                 &request.run_id,
                 &request.runtime_kind,
                 request.launch_context.provider_id.as_str(),
@@ -1075,6 +1113,7 @@ fn apply_sidecar_launch_environment(
 
 fn validate_launch_request(request: &RuntimeSupervisorLaunchRequest) -> Result<(), CommandError> {
     validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     validate_non_empty(&request.runtime_kind, "runtimeKind")?;
     validate_non_empty(&request.run_id, "runId")?;
     validate_non_empty(&request.session_id, "sessionId")?;

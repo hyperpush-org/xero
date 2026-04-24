@@ -459,17 +459,17 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             "{STRUCTURED_EVENT_PREFIX}{}",
             json!({
                 "kind": "tool",
-                "tool_call_id": "tool-browser-1",
-                "tool_name": "browser.click",
-                "tool_state": "running",
-                "detail": "Clicking primary action",
+                "tool_call_id": "tool-browser-open",
+                "tool_name": "browser.open",
+                "tool_state": "succeeded",
+                "detail": "Opened in-app browser context",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "click",
-                    "status": "running",
-                    "target": "button#primary",
-                    "outcome": null
+                    "action": "open",
+                    "status": "succeeded",
+                    "target": "https://example.com",
+                    "outcome": "Opened browser context"
                 }
             })
         ),
@@ -477,17 +477,17 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             "{STRUCTURED_EVENT_PREFIX}{}",
             json!({
                 "kind": "tool",
-                "tool_call_id": "tool-browser-2",
-                "tool_name": "browser.navigate",
+                "tool_call_id": "tool-browser-tab-open",
+                "tool_name": "browser.tab_open",
                 "tool_state": "succeeded",
-                "detail": "Navigation completed",
+                "detail": "Opened docs tab",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "navigate",
+                    "action": "tab_open",
                     "status": "succeeded",
                     "target": "https://example.com/docs",
-                    "outcome": "Loaded docs page"
+                    "outcome": "Opened tab tab-2"
                 }
             })
         ),
@@ -495,17 +495,52 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             "{STRUCTURED_EVENT_PREFIX}{}",
             json!({
                 "kind": "tool",
-                "tool_call_id": "tool-computer-1",
-                "tool_name": "computer.drag",
+                "tool_call_id": "tool-browser-tab-focus",
+                "tool_name": "browser.tab_focus",
                 "tool_state": "failed",
-                "detail": "Desktop drag blocked",
+                "detail": "policy_denied_browser_permissions",
                 "tool_summary": {
                     "kind": "browser_computer_use",
-                    "surface": "computer_use",
-                    "action": "drag",
+                    "surface": "browser",
+                    "action": "tab_focus",
                     "status": "blocked",
-                    "target": "Desktop icon",
+                    "target": "tab-2",
                     "outcome": "Permission denied"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-current-url",
+                "tool_name": "browser.current_url",
+                "tool_state": "succeeded",
+                "detail": "Read active tab URL",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "current_url",
+                    "status": "succeeded",
+                    "target": "tab-2",
+                    "outcome": "https://example.com/docs"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-malformed",
+                "tool_name": "browser.click",
+                "tool_state": "running",
+                "detail": "Malformed follow-up payload",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "teleport",
+                    "status": "running",
+                    "target": "button#primary"
                 }
             })
         ),
@@ -525,7 +560,7 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
         &project_id,
         |snapshot| {
             snapshot.run.status == RuntimeRunStatus::Running
-                && snapshot.last_checkpoint_sequence >= 3
+                && snapshot.last_checkpoint_sequence >= 5
         },
     );
 
@@ -536,7 +571,11 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
         &repo_root,
         &runtime,
         &launched.run.run_id,
-        vec![RuntimeStreamItemKind::Tool, RuntimeStreamItemKind::Complete],
+        vec![
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Activity,
+            RuntimeStreamItemKind::Complete,
+        ],
         channel,
     );
 
@@ -551,6 +590,8 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             RuntimeStreamItemKind::Tool,
             RuntimeStreamItemKind::Tool,
             RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Activity,
             RuntimeStreamItemKind::Complete,
         ]
     );
@@ -561,18 +602,18 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             kind: RuntimeStreamItemKind::Tool,
             tool_call_id: Some(tool_call_id),
             tool_name: Some(tool_name),
-            tool_state: Some(RuntimeToolCallState::Running),
+            tool_state: Some(RuntimeToolCallState::Succeeded),
             detail: Some(detail),
             tool_summary: Some(ToolResultSummaryDto::BrowserComputerUse(summary)),
             ..
-        } if tool_call_id == "tool-browser-1"
-            && tool_name == "browser.click"
-            && detail == "Clicking primary action"
+        } if tool_call_id == "tool-browser-open"
+            && tool_name == "browser.open"
+            && detail == "Opened in-app browser context"
             && summary.surface == cadence_desktop_lib::commands::BrowserComputerUseSurfaceDto::Browser
-            && summary.action == "click"
-            && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Running
-            && summary.target.as_deref() == Some("button#primary")
-            && summary.outcome.is_none()
+            && summary.action == "open"
+            && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Succeeded
+            && summary.target.as_deref() == Some("https://example.com")
+            && summary.outcome.as_deref() == Some("Opened browser context")
     ));
 
     assert!(matches!(
@@ -585,17 +626,49 @@ pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_w
             detail: Some(detail),
             tool_summary: Some(ToolResultSummaryDto::BrowserComputerUse(summary)),
             ..
-        } if tool_call_id == "tool-computer-1"
-            && tool_name == "computer.drag"
-            && detail == "Desktop drag blocked"
-            && summary.surface == cadence_desktop_lib::commands::BrowserComputerUseSurfaceDto::ComputerUse
-            && summary.action == "drag"
+        } if tool_call_id == "tool-browser-tab-focus"
+            && tool_name == "browser.tab_focus"
+            && detail == "policy_denied_browser_permissions"
+            && summary.surface == cadence_desktop_lib::commands::BrowserComputerUseSurfaceDto::Browser
+            && summary.action == "tab_focus"
             && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Blocked
-            && summary.target.as_deref() == Some("Desktop icon")
+            && summary.target.as_deref() == Some("tab-2")
             && summary.outcome.as_deref() == Some(
                 "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
             )
     ));
+
+    assert!(matches!(
+        &items[3],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Tool,
+            tool_call_id: Some(tool_call_id),
+            tool_name: Some(tool_name),
+            tool_state: Some(RuntimeToolCallState::Succeeded),
+            detail: Some(detail),
+            tool_summary: Some(ToolResultSummaryDto::BrowserComputerUse(summary)),
+            ..
+        } if tool_call_id == "tool-browser-current-url"
+            && tool_name == "browser.current_url"
+            && detail == "Read active tab URL"
+            && summary.action == "current_url"
+            && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Succeeded
+            && summary.target.as_deref() == Some("tab-2")
+            && summary.outcome.as_deref() == Some("https://example.com/docs")
+    ));
+
+    assert!(matches!(
+        &items[4],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Activity,
+            code: Some(code),
+            ..
+        } if code == "runtime_supervisor_live_event_unsupported"
+    ));
+
+    assert!(items.iter().all(|item| {
+        item.tool_call_id.as_deref() != Some("tool-browser-malformed")
+    }));
 
     stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);
 }
@@ -614,15 +687,15 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
             json!({
                 "kind": "tool",
                 "tool_call_id": "tool-browser-1",
-                "tool_name": "browser.click",
+                "tool_name": "browser.open",
                 "tool_state": "running",
-                "detail": "Clicking primary action",
+                "detail": "Opening in-app browser context",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "click",
+                    "action": "open",
                     "status": "running",
-                    "target": "button#primary",
+                    "target": "https://example.com",
                     "outcome": null
                 }
             })
@@ -632,15 +705,15 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
             json!({
                 "kind": "tool",
                 "tool_call_id": "tool-browser-1",
-                "tool_name": "browser.click",
+                "tool_name": "browser.open",
                 "tool_state": "failed",
                 "detail": "browser_bridge_timeout",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "click",
+                    "action": "open",
                     "status": "failed",
-                    "target": "button#primary",
+                    "target": "https://example.com",
                     "outcome": "Browser script did not reply within 12000 ms."
                 }
             })
@@ -650,13 +723,13 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
             json!({
                 "kind": "tool",
                 "tool_call_id": "tool-browser-2",
-                "tool_name": "browser.navigate",
+                "tool_name": "browser.tab_open",
                 "tool_state": "failed",
                 "detail": "policy_denied_browser_permissions",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "navigate",
+                    "action": "tab_open",
                     "status": "blocked",
                     "target": "https://example.com/private",
                     "outcome": "Permission denied"
@@ -668,16 +741,16 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
             json!({
                 "kind": "tool",
                 "tool_call_id": "tool-browser-3",
-                "tool_name": "browser.type",
+                "tool_name": "browser.tab_focus",
                 "tool_state": "failed",
-                "detail": "browser_script_error: element not found",
+                "detail": "browser_script_error: tab not found",
                 "tool_summary": {
                     "kind": "browser_computer_use",
                     "surface": "browser",
-                    "action": "type",
+                    "action": "tab_focus",
                     "status": "failed",
-                    "target": "input#missing",
-                    "outcome": "element not found"
+                    "target": "tab-missing",
+                    "outcome": "tab not found"
                 }
             })
         ),
@@ -741,9 +814,10 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
     assert!(matches!(
         timeout_summary,
         ToolResultSummaryDto::BrowserComputerUse(summary)
-            if summary.outcome.as_deref() == Some(
-                "advanced_browser_failure_timeout: Browser action timed out. Retry with a higher timeout_ms or resume from the same boundary."
-            )
+            if summary.action == "open"
+                && summary.outcome.as_deref() == Some(
+                    "advanced_browser_failure_timeout: Browser action timed out. Retry with a higher timeout_ms or resume from the same boundary."
+                )
     ));
 
     let policy_summary = items[2]
@@ -754,9 +828,10 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
     assert!(matches!(
         policy_summary,
         ToolResultSummaryDto::BrowserComputerUse(summary)
-            if summary.outcome.as_deref() == Some(
-                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
-            )
+            if summary.action == "tab_open"
+                && summary.outcome.as_deref() == Some(
+                    "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+                )
     ));
 
     let validation_summary = items[3]
@@ -767,9 +842,10 @@ pub(crate) fn runtime_stream_replays_mixed_browser_failure_classes_with_monotoni
     assert!(matches!(
         validation_summary,
         ToolResultSummaryDto::BrowserComputerUse(summary)
-            if summary.outcome.as_deref() == Some(
-                "advanced_browser_failure_validation_runtime: Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry."
-            )
+            if summary.action == "tab_focus"
+                && summary.outcome.as_deref() == Some(
+                    "advanced_browser_failure_validation_runtime: Browser/computer-use action failed validation/runtime checks. Fix selector or runtime assumptions, then retry."
+                )
     ));
 
     stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);

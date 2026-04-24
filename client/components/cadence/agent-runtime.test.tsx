@@ -1963,7 +1963,7 @@ describe('AgentRuntime current UI', () => {
     fireEvent.change(screen.getByLabelText('Agent input'), {
       target: { value: 'Kick off the first run.' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
       expect(onStartRuntimeRun).toHaveBeenCalledWith({

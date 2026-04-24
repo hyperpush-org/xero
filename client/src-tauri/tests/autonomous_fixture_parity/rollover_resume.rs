@@ -23,6 +23,117 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         "discord:ops-room",
     );
 
+    let browser_story_script = runtime_shell::script_join_steps(&[
+        runtime_shell::script_sleep(2),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-inspect-1",
+                "tool_name": "inspect_repository",
+                "tool_state": "running",
+                "detail": "Collecting deterministic fixture proof context"
+            })
+        )),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-inspect-1",
+                "tool_name": "inspect_repository",
+                "tool_state": "succeeded",
+                "detail": "Collected deterministic fixture proof context"
+            })
+        )),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-open",
+                "tool_name": "browser.open",
+                "tool_state": "succeeded",
+                "detail": "Opened in-app browser context",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "open",
+                    "status": "succeeded",
+                    "target": "https://example.com",
+                    "outcome": "Opened browser context"
+                }
+            })
+        )),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-tab-open",
+                "tool_name": "browser.tab_open",
+                "tool_state": "succeeded",
+                "detail": "Opened docs tab",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "tab_open",
+                    "status": "succeeded",
+                    "target": "https://example.com/docs",
+                    "outcome": "Opened tab tab-2"
+                }
+            })
+        )),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-tab-focus",
+                "tool_name": "browser.tab_focus",
+                "tool_state": "failed",
+                "detail": "policy_denied_browser_permissions",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "tab_focus",
+                    "status": "blocked",
+                    "target": "tab-2",
+                    "outcome": "Permission denied"
+                }
+            })
+        )),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-current-url",
+                "tool_name": "browser.current_url",
+                "tool_state": "succeeded",
+                "detail": "Read active tab URL",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "current_url",
+                    "status": "succeeded",
+                    "target": "tab-2",
+                    "outcome": "https://example.com/docs"
+                }
+            })
+        )),
+        runtime_shell::script_print_line(&format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "activity",
+                "code": "policy_denied_write_access",
+                "title": "Policy denied write access",
+                "detail": "Cadence blocked repository writes until operator approval resumes the active boundary"
+            })
+        )),
+        runtime_shell::script_prompt_read_echo_and_sleep(
+            "Enter approval code: ",
+            "value",
+            "value=",
+            5,
+        ),
+    ]);
+
     let launched = launch_scripted_runtime_run(
         app.state::<DesktopState>().inner(),
         &repo_root,
@@ -30,7 +141,7 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         "run-autonomous-fixture-parity",
         "session-1",
         Some("flow-1"),
-        &fixture_story_script(),
+        &browser_story_script,
     );
 
     wait_for_runtime_run(&app, &project_id, |runtime_run| {
@@ -297,13 +408,13 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         .flat_map(|entry| entry.artifacts.iter())
         .filter(|artifact| artifact.attempt_id == paused_attempt.attempt_id)
         .collect::<Vec<_>>();
-    assert_eq!(paused_artifacts.len(), 5);
+    assert_eq!(paused_artifacts.len(), 9);
     assert_eq!(
         paused_artifacts
             .iter()
             .filter(|artifact| artifact.artifact_kind == "tool_result")
             .count(),
-        2
+        6
     );
     assert_eq!(
         paused_artifacts
@@ -335,6 +446,81 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
                 if payload.tool_call_id == "tool-inspect-1"
                     && payload.tool_name == "inspect_repository"
                     && payload.tool_state == project_store::AutonomousToolCallStateRecord::Succeeded
+        )
+    }));
+    assert!(paused_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload))
+                if payload.tool_call_id == "tool-browser-open"
+                    && payload.tool_name == "browser.open"
+                    && payload.tool_state
+                        == project_store::AutonomousToolCallStateRecord::Succeeded
+                    && matches!(
+                        payload.tool_summary.as_ref(),
+                        Some(
+                            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                                summary,
+                            ),
+                        ) if summary.action == "open"
+                    )
+        )
+    }));
+    assert!(paused_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload))
+                if payload.tool_call_id == "tool-browser-tab-open"
+                    && payload.tool_name == "browser.tab_open"
+                    && payload.tool_state
+                        == project_store::AutonomousToolCallStateRecord::Succeeded
+                    && matches!(
+                        payload.tool_summary.as_ref(),
+                        Some(
+                            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                                summary,
+                            ),
+                        ) if summary.action == "tab_open"
+                    )
+        )
+    }));
+    assert!(paused_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload))
+                if payload.tool_call_id == "tool-browser-tab-focus"
+                    && payload.tool_name == "browser.tab_focus"
+                    && payload.tool_state == project_store::AutonomousToolCallStateRecord::Failed
+                    && matches!(
+                        payload.tool_summary.as_ref(),
+                        Some(
+                            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                                summary,
+                            ),
+                        ) if summary.action == "tab_focus"
+                            && summary.outcome.as_deref() == Some(
+                                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+                            )
+                    )
+        )
+    }));
+    assert!(paused_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload))
+                if payload.tool_call_id == "tool-browser-current-url"
+                    && payload.tool_name == "browser.current_url"
+                    && payload.tool_state
+                        == project_store::AutonomousToolCallStateRecord::Succeeded
+                    && matches!(
+                        payload.tool_summary.as_ref(),
+                        Some(
+                            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                                summary,
+                            ),
+                        ) if summary.action == "current_url"
+                            && summary.outcome.as_deref() == Some("https://example.com/docs")
+                    )
         )
     }));
     assert!(paused_artifacts.iter().any(|artifact| {
@@ -572,14 +758,53 @@ pub(crate) fn autonomous_fixture_repo_parity_proves_stage_rollover_boundary_resu
         .flat_map(|entry| entry.artifacts.iter())
         .filter(|artifact| artifact.attempt_id == paused_attempt.attempt_id)
         .collect::<Vec<_>>();
-    assert_eq!(resumed_artifacts.len(), 6);
+    assert_eq!(resumed_artifacts.len(), 10);
     assert_eq!(
         resumed_artifacts
             .iter()
             .filter(|artifact| artifact.artifact_kind == "tool_result")
             .count(),
-        2
+        6
     );
+    assert!(resumed_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload))
+                if payload.tool_call_id == "tool-browser-tab-focus"
+                    && payload.tool_name == "browser.tab_focus"
+                    && payload.tool_state == project_store::AutonomousToolCallStateRecord::Failed
+                    && matches!(
+                        payload.tool_summary.as_ref(),
+                        Some(
+                            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                                summary,
+                            ),
+                        ) if summary.action == "tab_focus"
+                            && summary.outcome.as_deref() == Some(
+                                "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying."
+                            )
+                    )
+        )
+    }));
+    assert!(resumed_artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.payload.as_ref(),
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload))
+                if payload.tool_call_id == "tool-browser-current-url"
+                    && payload.tool_name == "browser.current_url"
+                    && payload.tool_state
+                        == project_store::AutonomousToolCallStateRecord::Succeeded
+                    && matches!(
+                        payload.tool_summary.as_ref(),
+                        Some(
+                            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                                summary,
+                            ),
+                        ) if summary.action == "current_url"
+                            && summary.outcome.as_deref() == Some("https://example.com/docs")
+                    )
+        )
+    }));
     assert_eq!(
         resumed_artifacts
             .iter()

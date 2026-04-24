@@ -227,6 +227,7 @@ pub enum AutonomousArtifactPayloadRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutonomousRunRecord {
     pub project_id: String,
+    pub agent_session_id: String,
     pub run_id: String,
     pub runtime_kind: String,
     pub provider_id: String,
@@ -336,6 +337,7 @@ pub struct AutonomousRunSnapshotRecord {
 #[derive(Debug)]
 struct RawAutonomousRunRow {
     project_id: String,
+    agent_session_id: String,
     run_id: String,
     runtime_kind: String,
     provider_id: String,
@@ -427,6 +429,7 @@ struct RawAutonomousUnitArtifactRow {
 pub fn load_autonomous_run(
     repo_root: &Path,
     expected_project_id: &str,
+    expected_agent_session_id: &str,
 ) -> Result<Option<AutonomousRunSnapshotRecord>, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
@@ -441,7 +444,12 @@ pub fn load_autonomous_run(
         )
     })?;
 
-    let snapshot = read_autonomous_run_snapshot(&transaction, &database_path, expected_project_id)?;
+    let snapshot = read_autonomous_run_snapshot(
+        &transaction,
+        &database_path,
+        expected_project_id,
+        expected_agent_session_id,
+    )?;
     transaction.rollback().map_err(|error| {
         map_runtime_run_commit_error(
             "autonomous_run_commit_failed",
@@ -478,8 +486,13 @@ pub fn upsert_autonomous_run(
         )
     })?;
 
-    let runtime_row = read_runtime_run_row(&transaction, &database_path, &payload.run.project_id)?
-        .ok_or_else(|| {
+    let runtime_row = read_runtime_run_row(
+        &transaction,
+        &database_path,
+        &payload.run.project_id,
+        &payload.run.agent_session_id,
+    )?
+    .ok_or_else(|| {
             CommandError::retryable(
                 "autonomous_run_missing_runtime_row",
                 format!(
@@ -567,6 +580,7 @@ pub fn upsert_autonomous_run(
             r#"
             INSERT INTO autonomous_runs (
                 project_id,
+                agent_session_id,
                 run_id,
                 runtime_kind,
                 provider_id,
@@ -594,8 +608,8 @@ pub fn upsert_autonomous_run(
                 last_error_message,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
-            ON CONFLICT(project_id) DO UPDATE SET
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
+            ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
                 run_id = excluded.run_id,
                 runtime_kind = excluded.runtime_kind,
                 provider_id = excluded.provider_id,
@@ -625,6 +639,7 @@ pub fn upsert_autonomous_run(
             "#,
             params![
                 payload.run.project_id.as_str(),
+                payload.run.agent_session_id.as_str(),
                 payload.run.run_id.as_str(),
                 payload.run.runtime_kind.as_str(),
                 payload.run.provider_id.as_str(),
@@ -741,7 +756,13 @@ pub fn upsert_autonomous_run(
         )
     })?;
 
-    read_autonomous_run_snapshot(&connection, &database_path, &payload.run.project_id)?.ok_or_else(|| {
+    read_autonomous_run_snapshot(
+        &connection,
+        &database_path,
+        &payload.run.project_id,
+        &payload.run.agent_session_id,
+    )?
+    .ok_or_else(|| {
         CommandError::system_fault(
             "autonomous_run_missing_after_persist",
             format!(
@@ -1354,11 +1375,13 @@ fn read_autonomous_run_snapshot(
     connection: &Connection,
     database_path: &Path,
     expected_project_id: &str,
+    expected_agent_session_id: &str,
 ) -> Result<Option<AutonomousRunSnapshotRecord>, CommandError> {
     let row = connection.query_row(
         r#"
             SELECT
                 project_id,
+                agent_session_id,
                 run_id,
                 runtime_kind,
                 provider_id,
@@ -1387,37 +1410,39 @@ fn read_autonomous_run_snapshot(
                 updated_at
             FROM autonomous_runs
             WHERE project_id = ?1
+              AND agent_session_id = ?2
             "#,
-        [expected_project_id],
+        params![expected_project_id, expected_agent_session_id],
         |row| {
             Ok(RawAutonomousRunRow {
                 project_id: row.get(0)?,
-                run_id: row.get(1)?,
-                runtime_kind: row.get(2)?,
-                provider_id: row.get(3)?,
-                supervisor_kind: row.get(4)?,
-                status: row.get(5)?,
-                active_unit_sequence: row.get(6)?,
-                duplicate_start_detected: row.get(7)?,
-                duplicate_start_run_id: row.get(8)?,
-                duplicate_start_reason: row.get(9)?,
-                started_at: row.get(10)?,
-                last_heartbeat_at: row.get(11)?,
-                last_checkpoint_at: row.get(12)?,
-                paused_at: row.get(13)?,
-                cancelled_at: row.get(14)?,
-                completed_at: row.get(15)?,
-                crashed_at: row.get(16)?,
-                stopped_at: row.get(17)?,
-                pause_reason_code: row.get(18)?,
-                pause_reason_message: row.get(19)?,
-                cancel_reason_code: row.get(20)?,
-                cancel_reason_message: row.get(21)?,
-                crash_reason_code: row.get(22)?,
-                crash_reason_message: row.get(23)?,
-                last_error_code: row.get(24)?,
-                last_error_message: row.get(25)?,
-                updated_at: row.get(26)?,
+                agent_session_id: row.get(1)?,
+                run_id: row.get(2)?,
+                runtime_kind: row.get(3)?,
+                provider_id: row.get(4)?,
+                supervisor_kind: row.get(5)?,
+                status: row.get(6)?,
+                active_unit_sequence: row.get(7)?,
+                duplicate_start_detected: row.get(8)?,
+                duplicate_start_run_id: row.get(9)?,
+                duplicate_start_reason: row.get(10)?,
+                started_at: row.get(11)?,
+                last_heartbeat_at: row.get(12)?,
+                last_checkpoint_at: row.get(13)?,
+                paused_at: row.get(14)?,
+                cancelled_at: row.get(15)?,
+                completed_at: row.get(16)?,
+                crashed_at: row.get(17)?,
+                stopped_at: row.get(18)?,
+                pause_reason_code: row.get(19)?,
+                pause_reason_message: row.get(20)?,
+                cancel_reason_code: row.get(21)?,
+                cancel_reason_message: row.get(22)?,
+                crash_reason_code: row.get(23)?,
+                crash_reason_message: row.get(24)?,
+                last_error_code: row.get(25)?,
+                last_error_message: row.get(26)?,
+                updated_at: row.get(27)?,
             })
         },
     );
@@ -2013,6 +2038,11 @@ fn decode_autonomous_run_row(
 ) -> Result<AutonomousRunRecord, CommandError> {
     let project_id =
         require_runtime_run_non_empty_owned(raw_row.project_id, "project_id", database_path)?;
+    let agent_session_id = require_runtime_run_non_empty_owned(
+        raw_row.agent_session_id,
+        "agent_session_id",
+        database_path,
+    )?;
     let run_id = require_runtime_run_non_empty_owned(raw_row.run_id, "run_id", database_path)?;
     let runtime_kind =
         require_runtime_run_non_empty_owned(raw_row.runtime_kind, "runtime_kind", database_path)?;
@@ -2141,6 +2171,7 @@ fn decode_autonomous_run_row(
 
     Ok(AutonomousRunRecord {
         project_id,
+        agent_session_id,
         run_id,
         runtime_kind,
         provider_id,
@@ -2491,6 +2522,11 @@ fn validate_autonomous_run_payload(payload: &AutonomousRunRecord) -> Result<(), 
     validate_non_empty_text(
         &payload.project_id,
         "project_id",
+        "autonomous_run_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &payload.agent_session_id,
+        "agent_session_id",
         "autonomous_run_request_invalid",
     )?;
     validate_non_empty_text(&payload.run_id, "run_id", "autonomous_run_request_invalid")?;

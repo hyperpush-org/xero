@@ -2609,7 +2609,8 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Start run' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Start run' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     expect(screen.queryByRole('heading', { name: 'Autonomous run truth' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Remote escalation trust' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start autonomous run' })).not.toBeInTheDocument()
@@ -3390,7 +3391,10 @@ describe('CadenceApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('gpt-4.1-mini')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Start the OpenAI-compatible run.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
       expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
@@ -3398,8 +3402,9 @@ describe('CadenceApp current UI', () => {
           modelId: 'gpt-4.1-mini',
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
+          planModeRequired: false,
         },
-        initialPrompt: null,
+        initialPrompt: 'Start the OpenAI-compatible run.',
       }),
     )
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
@@ -3456,7 +3461,10 @@ describe('CadenceApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai/gpt-4.1')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Start the GitHub Models run.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
       expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
@@ -3464,8 +3472,9 @@ describe('CadenceApp current UI', () => {
           modelId: 'openai/gpt-4.1',
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
+          planModeRequired: false,
         },
-        initialPrompt: null,
+        initialPrompt: 'Start the GitHub Models run.',
       }),
     )
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
@@ -3524,7 +3533,10 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('llama3.2')
     expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Thinking unavailable')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Start the local model run.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
       expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
@@ -3532,8 +3544,9 @@ describe('CadenceApp current UI', () => {
           modelId: 'llama3.2',
           thinkingEffort: null,
           approvalMode: 'suggest',
+          planModeRequired: false,
         },
-        initialPrompt: null,
+        initialPrompt: 'Start the local model run.',
       }),
     )
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
@@ -3607,17 +3620,7 @@ describe('CadenceApp current UI', () => {
     const setup = createAdapter({
       runtimeRun: null,
       autonomousState: null,
-      runtimeSession: makeRuntimeSession('project-1', {
-        phase: 'idle',
-        sessionId: null,
-        accountId: null,
-        lastErrorCode: 'auth_session_not_found',
-        lastError: {
-          code: 'auth_session_not_found',
-          message: 'Sign in with OpenAI to create a runtime session for this project.',
-          retryable: false,
-        },
-      }),
+      runtimeSession: makeRuntimeSession('project-1'),
     })
 
     render(<CadenceApp adapter={setup.adapter} />)
@@ -3630,36 +3633,20 @@ describe('CadenceApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'Providers' })).toBeVisible()
     expect(screen.getAllByText('OpenAI Codex').length).toBeGreaterThan(0)
     expect(screen.getByText('Active')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeVisible()
-    await waitFor(() => expect(setup.onRuntimeUpdated).toHaveBeenCalledTimes(1))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
-
-    act(() => {
-      setup.emitRuntimeUpdated({
-        projectId: 'project-1',
-        runtimeKind: 'openai_codex',
-        providerId: 'openai_codex',
-        flowId: 'flow-1',
-        sessionId: 'session-1',
-        accountId: 'acct-1',
-        authPhase: 'authenticated',
-        lastErrorCode: null,
-        lastError: null,
-        updatedAt: '2026-04-22T12:00:00Z',
-      })
-    })
-
-    await waitFor(() => expect(screen.getByText('Connected')).toBeVisible())
+    expect(screen.getByText('Connected')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai_codex')
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai_codex'),
+    )
     expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Thinking · medium')
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('Approval · suggest')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.change(await screen.findByLabelText('Agent input'), {
+      target: { value: 'Start the authenticated run.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
       expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
@@ -3667,11 +3654,27 @@ describe('CadenceApp current UI', () => {
           modelId: 'openai_codex',
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
+          planModeRequired: false,
         },
-        initialPrompt: null,
+        initialPrompt: 'Start the authenticated run.',
       }),
     )
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-1',
+          startedAt: '2026-04-22T12:00:00Z',
+          lastHeartbeatAt: '2026-04-22T12:01:00Z',
+          lastCheckpointSequence: 1,
+          lastCheckpointAt: '2026-04-22T12:01:00Z',
+          updatedAt: '2026-04-22T12:01:00Z',
+        }),
+      })
+    })
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toBeEnabled())
 
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Approval mode selector' }), { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'Approval · yolo' }))
@@ -3684,6 +3687,7 @@ describe('CadenceApp current UI', () => {
           modelId: 'openai_codex',
           thinkingEffort: 'medium',
           approvalMode: 'yolo',
+          planModeRequired: false,
         },
         prompt: null,
       }),
@@ -3763,9 +3767,27 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Start before changing approval.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toBeEnabled())
     await waitFor(() => expect(setup.streamSubscriptions.length).toBeGreaterThan(0))
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-1',
+          startedAt: '2026-04-22T12:00:00Z',
+          lastHeartbeatAt: '2026-04-22T12:01:00Z',
+          lastCheckpointSequence: 1,
+          lastCheckpointAt: '2026-04-22T12:01:00Z',
+          updatedAt: '2026-04-22T12:01:00Z',
+        }),
+      })
+    })
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toBeEnabled())
 
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Approval mode selector' }), { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'Approval · yolo' }))

@@ -1,4 +1,4 @@
-import { ArrowUp, LoaderCircle, Play } from 'lucide-react'
+import { ArrowUp, LoaderCircle } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 
 import type {
@@ -54,8 +54,6 @@ interface ComposerDockProps {
   onComposerModelChange: (value: string) => void
   onComposerThinkingLevelChange: (value: ProviderModelThinkingEffortDto) => void
   onComposerApprovalModeChange: (value: RuntimeRunApprovalModeDto) => void
-  showStartRunButton: boolean
-  onStartRuntimeRun?: () => void
 }
 
 const composerInlineSelectTriggerClassName =
@@ -89,8 +87,6 @@ export function ComposerDock({
   onComposerModelChange,
   onComposerThinkingLevelChange,
   onComposerApprovalModeChange,
-  showStartRunButton,
-  onStartRuntimeRun,
 }: ComposerDockProps) {
   const hasComposerModelOptions = composerModelGroups.length > 0
   const hasThinkingOptions = composerThinkingOptions.length > 0
@@ -223,23 +219,6 @@ export function ComposerDock({
             </div>
           </div>
         </div>
-        {showStartRunButton ? (
-          <Button
-            className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-[12px]"
-            disabled={runtimeRunActionStatus === 'running'}
-            onClick={onStartRuntimeRun}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {isStartingRun ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-            ) : (
-              <Play className="h-3.5 w-3.5" />
-            )}
-            Start run
-          </Button>
-        ) : null}
       </div>
     </div>
   )

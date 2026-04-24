@@ -117,6 +117,7 @@ pub struct RuntimeRunControlStateRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRunRecord {
     pub project_id: String,
+    pub agent_session_id: String,
     pub run_id: String,
     pub runtime_kind: String,
     pub provider_id: String,
@@ -269,6 +270,7 @@ pub struct NotificationDispatchEnqueueOutcomeRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeActionRequiredUpsertRecord {
     pub project_id: String,
+    pub agent_session_id: String,
     pub run_id: String,
     pub runtime_kind: String,
     pub session_id: String,
@@ -314,6 +316,7 @@ pub(crate) struct StoredRuntimeRunRow {
 #[derive(Debug)]
 struct RawRuntimeRunRow {
     project_id: String,
+    agent_session_id: String,
     run_id: String,
     runtime_kind: String,
     provider_id: String,
@@ -481,6 +484,7 @@ pub fn upsert_runtime_session(
 pub fn load_runtime_run(
     repo_root: &Path,
     expected_project_id: &str,
+    expected_agent_session_id: &str,
 ) -> Result<Option<RuntimeRunSnapshotRecord>, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
@@ -495,7 +499,12 @@ pub fn load_runtime_run(
         )
     })?;
 
-    let snapshot = read_runtime_run_snapshot(&transaction, &database_path, expected_project_id)?;
+    let snapshot = read_runtime_run_snapshot(
+        &transaction,
+        &database_path,
+        expected_project_id,
+        expected_agent_session_id,
+    )?;
     transaction.rollback().map_err(|error| {
         map_runtime_run_commit_error(
             "runtime_run_commit_failed",
@@ -532,7 +541,23 @@ pub fn upsert_runtime_run(
         )
     })?;
 
-    let existing = read_runtime_run_row(&transaction, &database_path, &payload.run.project_id)?;
+    super::touch_agent_session_runtime_run(
+        &transaction,
+        &database_path,
+        &payload.run.project_id,
+        &payload.run.agent_session_id,
+        &payload.run.run_id,
+        &payload.run.runtime_kind,
+        &payload.run.provider_id,
+        &payload.run.updated_at,
+    )?;
+
+    let existing = read_runtime_run_row(
+        &transaction,
+        &database_path,
+        &payload.run.project_id,
+        &payload.run.agent_session_id,
+    )?;
     let existing_run_id = existing.as_ref().map(|row| row.run_id.as_str());
     let existing_last_checkpoint_sequence = existing
         .as_ref()
@@ -544,11 +569,13 @@ pub fn upsert_runtime_run(
         .as_ref()
         .and_then(|row| row.control_state_json.clone());
 
-    if existing_run_id.is_some_and(|run_id| run_id != payload.run.run_id.as_str()) {
+    if let Some(run_id) =
+        existing_run_id.filter(|run_id| *run_id != payload.run.run_id.as_str())
+    {
         transaction
             .execute(
-                "DELETE FROM runtime_run_checkpoints WHERE project_id = ?1",
-                params![payload.run.project_id.as_str()],
+                "DELETE FROM runtime_run_checkpoints WHERE project_id = ?1 AND run_id = ?2",
+                params![payload.run.project_id.as_str(), run_id],
             )
             .map_err(|error| {
                 map_runtime_run_write_error(
@@ -624,6 +651,7 @@ pub fn upsert_runtime_run(
             r#"
             INSERT INTO runtime_runs (
                 project_id,
+                agent_session_id,
                 run_id,
                 runtime_kind,
                 provider_id,
@@ -642,8 +670,8 @@ pub fn upsert_runtime_run(
                 last_error_message,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
-            ON CONFLICT(project_id) DO UPDATE SET
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
                 run_id = excluded.run_id,
                 runtime_kind = excluded.runtime_kind,
                 provider_id = excluded.provider_id,
@@ -664,6 +692,7 @@ pub fn upsert_runtime_run(
             "#,
             params![
                 payload.run.project_id.as_str(),
+                payload.run.agent_session_id.as_str(),
                 payload.run.run_id.as_str(),
                 payload.run.runtime_kind.as_str(),
                 payload.run.provider_id.as_str(),
@@ -734,8 +763,13 @@ pub fn upsert_runtime_run(
         )
     })?;
 
-    read_runtime_run_snapshot(&connection, &database_path, &payload.run.project_id)?.ok_or_else(
-        || {
+    read_runtime_run_snapshot(
+        &connection,
+        &database_path,
+        &payload.run.project_id,
+        &payload.run.agent_session_id,
+    )?
+    .ok_or_else(|| {
             CommandError::system_fault(
                 "runtime_run_missing_after_persist",
                 format!(
@@ -743,8 +777,7 @@ pub fn upsert_runtime_run(
                 database_path.display()
             ),
             )
-        },
-    )
+        })
 }
 
 pub(crate) fn read_runtime_session_row(
@@ -877,11 +910,13 @@ pub(crate) fn read_runtime_run_snapshot(
     connection: &Connection,
     database_path: &Path,
     expected_project_id: &str,
+    expected_agent_session_id: &str,
 ) -> Result<Option<RuntimeRunSnapshotRecord>, CommandError> {
     let row = connection.query_row(
         r#"
             SELECT
                 project_id,
+                agent_session_id,
                 run_id,
                 runtime_kind,
                 provider_id,
@@ -901,28 +936,30 @@ pub(crate) fn read_runtime_run_snapshot(
                 updated_at
             FROM runtime_runs
             WHERE project_id = ?1
+              AND agent_session_id = ?2
             "#,
-        [expected_project_id],
+        params![expected_project_id, expected_agent_session_id],
         |row| {
             Ok(RawRuntimeRunRow {
                 project_id: row.get(0)?,
-                run_id: row.get(1)?,
-                runtime_kind: row.get(2)?,
-                provider_id: row.get(3)?,
-                supervisor_kind: row.get(4)?,
-                status: row.get(5)?,
-                transport_kind: row.get(6)?,
-                transport_endpoint: row.get(7)?,
-                transport_liveness: row.get(8)?,
-                control_state_json: row.get(9)?,
-                last_checkpoint_sequence: row.get(10)?,
-                started_at: row.get(11)?,
-                last_heartbeat_at: row.get(12)?,
-                last_checkpoint_at: row.get(13)?,
-                stopped_at: row.get(14)?,
-                last_error_code: row.get(15)?,
-                last_error_message: row.get(16)?,
-                updated_at: row.get(17)?,
+                agent_session_id: row.get(1)?,
+                run_id: row.get(2)?,
+                runtime_kind: row.get(3)?,
+                provider_id: row.get(4)?,
+                supervisor_kind: row.get(5)?,
+                status: row.get(6)?,
+                transport_kind: row.get(7)?,
+                transport_endpoint: row.get(8)?,
+                transport_liveness: row.get(9)?,
+                control_state_json: row.get(10)?,
+                last_checkpoint_sequence: row.get(11)?,
+                started_at: row.get(12)?,
+                last_heartbeat_at: row.get(13)?,
+                last_checkpoint_at: row.get(14)?,
+                stopped_at: row.get(15)?,
+                last_error_code: row.get(16)?,
+                last_error_message: row.get(17)?,
+                updated_at: row.get(18)?,
             })
         },
     );
@@ -1000,6 +1037,7 @@ pub(crate) fn read_runtime_run_row(
     connection: &Connection,
     database_path: &Path,
     expected_project_id: &str,
+    expected_agent_session_id: &str,
 ) -> Result<Option<StoredRuntimeRunRow>, CommandError> {
     let row = connection.query_row(
         r#"
@@ -1012,8 +1050,9 @@ pub(crate) fn read_runtime_run_row(
                 control_state_json
             FROM runtime_runs
             WHERE project_id = ?1
+              AND agent_session_id = ?2
             "#,
-        [expected_project_id],
+        params![expected_project_id, expected_agent_session_id],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1177,6 +1216,11 @@ fn decode_runtime_run_row(
 ) -> Result<RuntimeRunRecord, CommandError> {
     let project_id =
         require_runtime_run_non_empty_owned(raw_row.project_id, "project_id", database_path)?;
+    let agent_session_id = require_runtime_run_non_empty_owned(
+        raw_row.agent_session_id,
+        "agent_session_id",
+        database_path,
+    )?;
     let run_id = require_runtime_run_non_empty_owned(raw_row.run_id, "run_id", database_path)?;
     let runtime_kind =
         require_runtime_run_non_empty_owned(raw_row.runtime_kind, "runtime_kind", database_path)?;
@@ -1263,6 +1307,7 @@ fn decode_runtime_run_row(
 
     Ok(RuntimeRunRecord {
         project_id,
+        agent_session_id,
         run_id,
         runtime_kind,
         provider_id,
@@ -1322,6 +1367,11 @@ pub(crate) fn validate_runtime_action_required_payload(
     validate_non_empty_text(
         &payload.project_id,
         "project_id",
+        "runtime_action_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &payload.agent_session_id,
+        "agent_session_id",
         "runtime_action_request_invalid",
     )?;
     validate_non_empty_text(&payload.run_id, "run_id", "runtime_action_request_invalid")?;
@@ -1425,6 +1475,11 @@ fn validate_runtime_run_upsert_payload(
     validate_non_empty_text(
         &payload.run.project_id,
         "project_id",
+        "runtime_run_request_invalid",
+    )?;
+    validate_non_empty_text(
+        &payload.run.agent_session_id,
+        "agent_session_id",
         "runtime_run_request_invalid",
     )?;
     validate_non_empty_text(&payload.run.run_id, "run_id", "runtime_run_request_invalid")?;
