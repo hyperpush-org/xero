@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, thread, time::Duration};
 
 use rusqlite::{params, Connection, Transaction};
 use sha2::{Digest, Sha256};
@@ -28,6 +28,8 @@ const MAX_NOTIFICATION_ROUTE_ROWS: i64 = 128;
 const MAX_NOTIFICATION_DISPATCH_ROWS: i64 = 256;
 const MAX_NOTIFICATION_PENDING_DISPATCH_BATCH_ROWS: i64 = 64;
 const MAX_NOTIFICATION_REPLY_CLAIM_ROWS: i64 = 512;
+const NOTIFICATION_DISPATCH_ENQUEUE_MAX_ATTEMPTS: usize = 3;
+const NOTIFICATION_DISPATCH_ENQUEUE_RETRY_DELAY_MS: u64 = 50;
 const NOTIFICATION_CORRELATION_KEY_PREFIX: &str = "nfy";
 const NOTIFICATION_CORRELATION_KEY_HEX_LEN: usize = 32;
 
@@ -322,31 +324,57 @@ pub(crate) fn enqueue_notification_dispatches_best_effort_with_connection(
     database_path: &Path,
     enqueue: &NotificationDispatchEnqueueRecord,
 ) -> NotificationDispatchEnqueueOutcomeRecord {
-    match enqueue_notification_dispatches_with_connection(connection, database_path, enqueue) {
-        Ok(dispatches) if dispatches.is_empty() => NotificationDispatchEnqueueOutcomeRecord {
-            status: NotificationDispatchEnqueueStatus::Skipped,
-            dispatch_count: 0,
-            code: Some("notification_dispatch_enqueue_skipped".into()),
-            message: Some(format!(
-                "Cadence skipped notification dispatch fan-out for operator action `{}` because no enabled routes are configured for project `{}`.",
-                enqueue.action_id, enqueue.project_id
-            )),
-        },
-        Ok(dispatches) => NotificationDispatchEnqueueOutcomeRecord {
-            status: NotificationDispatchEnqueueStatus::Enqueued,
-            dispatch_count: dispatches.len() as u32,
-            code: Some("notification_dispatch_enqueued".into()),
-            message: Some(format!(
-                "Cadence enqueued {} notification dispatch route(s) for operator action `{}`.",
-                dispatches.len(), enqueue.action_id
-            )),
-        },
-        Err(error) => NotificationDispatchEnqueueOutcomeRecord {
-            status: NotificationDispatchEnqueueStatus::Skipped,
-            dispatch_count: 0,
-            code: Some(error.code),
-            message: Some(error.message),
-        },
+    let mut last_retryable_error: Option<CommandError> = None;
+
+    for attempt in 1..=NOTIFICATION_DISPATCH_ENQUEUE_MAX_ATTEMPTS {
+        match enqueue_notification_dispatches_with_connection(connection, database_path, enqueue) {
+            Ok(dispatches) if dispatches.is_empty() => {
+                return NotificationDispatchEnqueueOutcomeRecord {
+                    status: NotificationDispatchEnqueueStatus::Skipped,
+                    dispatch_count: 0,
+                    code: Some("notification_dispatch_enqueue_skipped".into()),
+                    message: Some(format!(
+                        "Cadence skipped notification dispatch fan-out for operator action `{}` because no enabled routes are configured for project `{}`.",
+                        enqueue.action_id, enqueue.project_id
+                    )),
+                };
+            }
+            Ok(dispatches) => {
+                return NotificationDispatchEnqueueOutcomeRecord {
+                    status: NotificationDispatchEnqueueStatus::Enqueued,
+                    dispatch_count: dispatches.len() as u32,
+                    code: Some("notification_dispatch_enqueued".into()),
+                    message: Some(format!(
+                        "Cadence enqueued {} notification dispatch route(s) for operator action `{}`.",
+                        dispatches.len(), enqueue.action_id
+                    )),
+                };
+            }
+            Err(error)
+                if error.retryable && attempt < NOTIFICATION_DISPATCH_ENQUEUE_MAX_ATTEMPTS =>
+            {
+                last_retryable_error = Some(error);
+                thread::sleep(Duration::from_millis(
+                    NOTIFICATION_DISPATCH_ENQUEUE_RETRY_DELAY_MS,
+                ));
+            }
+            Err(error) => {
+                return NotificationDispatchEnqueueOutcomeRecord {
+                    status: NotificationDispatchEnqueueStatus::Skipped,
+                    dispatch_count: 0,
+                    code: Some(error.code),
+                    message: Some(error.message),
+                };
+            }
+        }
+    }
+
+    let error = last_retryable_error.expect("retry loop should retain last retryable error");
+    NotificationDispatchEnqueueOutcomeRecord {
+        status: NotificationDispatchEnqueueStatus::Skipped,
+        dispatch_count: 0,
+        code: Some(error.code),
+        message: Some(error.message),
     }
 }
 

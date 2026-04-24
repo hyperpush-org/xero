@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { openUrlMock } = vi.hoisted(() => ({
@@ -754,7 +754,8 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Autonomous run truth' })).not.toBeInTheDocument()
     expect(screen.queryByText('Recovered the current autonomous unit boundary.')).not.toBeInTheDocument()
     expect(screen.queryByText('Duplicate start prevented')).not.toBeInTheDocument()
@@ -799,96 +800,65 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText(/profile credentials/i)).not.toBeInTheDocument()
   })
 
-  it('renders checkpoint control-loop cards with resume actions bound to the same action and boundary', async () => {
-    const onResumeOperatorRun = vi.fn(async () => undefined)
-    const checkpointCard = makeCheckpointControlLoopCard({
-      title: 'Review worktree changes',
-      detail: 'Inspect the repository diff before trusting the next operator step.',
-      approval: {
-        actionId: 'action-1',
-        sessionId: 'session-1',
-        flowId: 'flow-1',
-        actionType: 'review_worktree',
-        title: 'Review worktree changes',
-        detail: 'Inspect the repository diff before trusting the next operator step.',
-        gateNodeId: 'workflow-research',
-        gateKey: 'requires_user_input',
-        transitionFromNodeId: 'workflow-discussion',
-        transitionToNodeId: 'workflow-research',
-        transitionKind: 'advance',
-        userAnswer: 'Looks good to resume.',
-        status: 'approved',
-        statusLabel: 'Approved',
-        decisionNote: 'Ready to resume.',
-        createdAt: '2026-04-13T20:01:00Z',
-        updatedAt: '2026-04-13T20:03:30Z',
-        resolvedAt: '2026-04-13T20:03:30Z',
-        isPending: false,
-        isResolved: true,
-        canResume: true,
-        isGateLinked: true,
-        isRuntimeResumable: false,
-        requiresUserAnswer: true,
-        answerRequirementReason: 'gate_linked',
-        answerRequirementLabel: 'Required',
-        answerShapeKind: 'plain_text',
-        answerShapeLabel: 'Required user answer',
-        answerShapeHint: 'Describe the operator decision that justifies approval.',
-        answerPlaceholder: 'Provide operator input for this action.',
-      },
-      gateLinkageLabel: 'workflow-research · requires_user_input · workflow-discussion → workflow-research (advance)',
-      latestResume: {
-        id: 1,
-        sourceActionId: 'action-1',
-        sessionId: 'session-1',
-        status: 'started',
-        statusLabel: 'Resume started',
-        summary: 'Operator resumed the selected project runtime session.',
-        createdAt: '2026-04-13T20:04:00Z',
-      },
-      resumeStateLabel: 'Resume started',
-      resumeDetail: 'Operator resumed the selected project runtime session.',
-      resumeUpdatedAt: '2026-04-13T20:04:00Z',
-      actionId: 'action-1',
-      key: 'action-1::boundary-1',
-    })
-
+  it('does not render checkpoint control-loop debug cards or resume controls on the Agent tab', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
           runtimeSession: makeRuntimeSession(),
           runtimeRun: makeRuntimeRun(),
-          approvalRequests: [checkpointCard.approval!],
-          pendingApprovalCount: 0,
-          resumeHistory: [checkpointCard.latestResume!],
           checkpointControlLoop: makeCheckpointControlLoop({
-            items: [checkpointCard],
+            items: [
+              makeCheckpointControlLoopCard({
+                actionId: 'action-1',
+                key: 'action-1::boundary-1',
+                boundaryId: 'boundary-1',
+                title: 'Review worktree changes',
+                detail: 'Inspect the repository diff before trusting the next operator step.',
+                approval: {
+                  actionId: 'action-1',
+                  sessionId: 'session-1',
+                  flowId: 'flow-1',
+                  actionType: 'review_worktree',
+                  title: 'Review worktree changes',
+                  detail: 'Inspect the repository diff before trusting the next operator step.',
+                  gateNodeId: 'workflow-research',
+                  gateKey: 'requires_user_input',
+                  transitionFromNodeId: 'workflow-discussion',
+                  transitionToNodeId: 'workflow-research',
+                  transitionKind: 'advance',
+                  userAnswer: 'Looks good to resume.',
+                  status: 'approved',
+                  statusLabel: 'Approved',
+                  decisionNote: 'Ready to resume.',
+                  createdAt: '2026-04-13T20:01:00Z',
+                  updatedAt: '2026-04-13T20:03:30Z',
+                  resolvedAt: '2026-04-13T20:03:30Z',
+                  isPending: false,
+                  isResolved: true,
+                  canResume: true,
+                  isGateLinked: true,
+                  isRuntimeResumable: false,
+                  requiresUserAnswer: true,
+                  answerRequirementReason: 'gate_linked',
+                  answerRequirementLabel: 'Required',
+                  answerShapeKind: 'plain_text',
+                  answerShapeLabel: 'Required user answer',
+                  answerShapeHint: 'Describe the operator decision that justifies approval.',
+                  answerPlaceholder: 'Provide operator input for this action.',
+                },
+              }),
+            ],
           }),
         })}
-        onResumeOperatorRun={onResumeOperatorRun}
       />,
     )
 
-    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
-    const checkpointSection = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
-    expect(checkpointSection).not.toBeNull()
-    const checkpointQueries = within(checkpointSection as HTMLElement)
-    expect(checkpointQueries.getByText('Review worktree changes')).toBeVisible()
-    expect(checkpointQueries.getByText('Durable only')).toBeVisible()
-    expect(
-      checkpointQueries.getAllByText('Latest resume started: Operator resumed the selected project runtime session.').length,
-    ).toBeGreaterThan(0)
-    expect(checkpointQueries.getByText('Captured resume verification evidence for this action.')).toBeVisible()
-
-    fireEvent.click(checkpointQueries.getByRole('button', { name: 'Resume run' }))
-    await waitFor(() =>
-      expect(onResumeOperatorRun).toHaveBeenCalledWith('action-1', {
-        userAnswer: 'Looks good to resume.',
-      }),
-    )
+    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Review worktree changes')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument()
   })
 
-  it('renders recovered durable denial cards without inventing approval or resume affordances', () => {
+  it('does not render recovered durable denial cards on the Agent tab', () => {
     const deniedActionId = 'flow:flow-1:run:run-1:boundary:boundary-denied-1:review_command'
     const deniedCard = makeCheckpointControlLoopCard({
       actionId: deniedActionId,
@@ -925,13 +895,6 @@ describe('AgentRuntime current UI', () => {
           summary: 'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
           updatedAt: '2026-04-16T20:04:10Z',
         },
-        {
-          artifactId: 'artifact-policy-denied-verification',
-          artifactKindLabel: 'Verification evidence',
-          statusLabel: 'Recorded',
-          summary: 'Autonomous attempt recorded stable policy denial `policy_denied_command_cwd_outside_repo`.',
-          updatedAt: '2026-04-16T20:04:11Z',
-        },
       ],
     })
 
@@ -940,9 +903,6 @@ describe('AgentRuntime current UI', () => {
         agent={makeAgent({
           runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
           runtimeRun: makeRuntimeRun(),
-          pendingApprovalCount: 0,
-          approvalRequests: [],
-          resumeHistory: [],
           checkpointControlLoop: makeCheckpointControlLoop({
             items: [deniedCard],
             durableOnlyCount: 0,
@@ -952,25 +912,12 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    const checkpointSection = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
-    expect(checkpointSection).not.toBeNull()
-    const checkpointQueries = within(checkpointSection as HTMLElement)
-
-    expect(checkpointQueries.getByText('Recovered durable denial')).toBeVisible()
-    expect(checkpointQueries.getAllByText('Policy denied').length).toBeGreaterThan(0)
-    expect(checkpointQueries.getAllByText('Not resumable').length).toBeGreaterThan(0)
-    expect(checkpointQueries.getByText('No live review row')).toBeVisible()
-    expect(
-      checkpointQueries.getAllByText(
-        'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
-      ).length,
-    ).toBeGreaterThan(0)
-    expect(checkpointQueries.getByText(new RegExp(`Action ${deniedActionId} · Boundary boundary-denied-1`))).toBeVisible()
-    expect(checkpointQueries.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
-    expect(checkpointQueries.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Recovered durable denial')).not.toBeInTheDocument()
+    expect(screen.queryByText('Policy denied')).not.toBeInTheDocument()
   })
 
-  it('fails closed on whitespace-only answers and keeps action/boundary ids visible during operator-action failures', () => {
+  it('does not surface operator-answer controls or operator-action failures on the Agent tab', () => {
     const pendingCard = makeCheckpointControlLoopCard({
       actionId: 'action-pending',
       key: 'action-pending::boundary-1',
@@ -1009,19 +956,6 @@ describe('AgentRuntime current UI', () => {
         answerShapeHint: 'Describe the operator decision that justifies approval.',
         answerPlaceholder: 'Provide operator input for this action.',
       },
-      durableStateLabel: 'Pending approval',
-      durableStateDetail: 'Inspect the repository diff before trusting the next operator step.',
-      durableUpdatedAt: '2026-04-13T20:02:00Z',
-      latestResume: null,
-      resumeStateLabel: 'Waiting on approval',
-      resumeDetail: 'Cadence is waiting for operator input before this action can resume the run.',
-      resumeUpdatedAt: '2026-04-13T20:02:00Z',
-      evidenceCount: 0,
-      evidenceStateLabel: 'No durable evidence in bounded window',
-      evidenceSummary:
-        'Cadence did not retain a matching tool result, verification row, or policy denial for this action in the bounded evidence window.',
-      latestEvidenceAt: null,
-      evidencePreviews: [],
     })
 
     render(
@@ -1042,25 +976,15 @@ describe('AgentRuntime current UI', () => {
             items: [pendingCard],
           }),
         })}
-      />
+      />,
     )
 
-    const checkpointSection = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
-    expect(checkpointSection).not.toBeNull()
-    const checkpointQueries = within(checkpointSection as HTMLElement)
-
-    fireEvent.change(checkpointQueries.getByLabelText('Operator answer for action-pending'), {
-      target: { value: '   ' },
-    })
-
-    expect(checkpointQueries.getByText('A non-empty user answer is required before approving this action.')).toBeVisible()
-    expect(checkpointQueries.getByRole('button', { name: 'Approve' })).toBeDisabled()
-    expect(checkpointQueries.getByRole('button', { name: 'Reject' })).toBeDisabled()
-    expect(screen.getByText('Cadence could not approve action action-pending for boundary boundary-1.')).toBeVisible()
-    expect(checkpointQueries.getByText(/Action action-pending · Boundary boundary-1/)).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Operator answer for action-pending')).not.toBeInTheDocument()
+    expect(screen.queryByText('Cadence could not approve action action-pending for boundary boundary-1.')).not.toBeInTheDocument()
   })
 
-  it('renders degraded checkpoint recovery banners and bounded coverage copy explicitly', () => {
+  it('does not render checkpoint recovery banners or bounded coverage copy on the Agent tab', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
@@ -1121,17 +1045,9 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByText('Showing last truthful checkpoint loop')).toBeVisible()
-    expect(
-      screen.getByText(
-        /Cadence is still polling remote routes for blocked boundary boundary-live-only and action action-live-only while preserving the last truthful sync summary\./,
-      ),
-    ).toBeVisible()
-    expect(screen.getByText('Bounded checkpoint coverage')).toBeVisible()
-    expect(screen.getByText(/2 older checkpoint actions are outside this bounded window/)).toBeVisible()
-    expect(screen.getByText(/1 card is being shown from recovered durable history/)).toBeVisible()
-    expect(screen.getByText('Live hint only')).toBeVisible()
-    expect(screen.getByText('Durable approval pending refresh')).toBeVisible()
+    expect(screen.queryByText('Showing last truthful checkpoint loop')).not.toBeInTheDocument()
+    expect(screen.queryByText('Bounded checkpoint coverage')).not.toBeInTheDocument()
+    expect(screen.queryByText('Live hint only')).not.toBeInTheDocument()
   })
 
   it('keeps OpenRouter provider mismatch truthful without rendering runtime setup affordances', () => {
@@ -1707,8 +1623,6 @@ describe('AgentRuntime current UI', () => {
     expect(composer).toHaveAttribute('rows', '3')
     expect(modelSelector).toHaveTextContent('openai_codex')
     expect(thinkingLevelSelector).toHaveTextContent('Thinking unavailable')
-    expect(screen.getByText('Catalog unavailable')).toBeVisible()
-    expect(screen.getByText(/only configured model truth remains visible/i)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Configure' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled()
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
@@ -1718,7 +1632,7 @@ describe('AgentRuntime current UI', () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('renders pending-versus-active model, thinking, approval, and queued prompt truth from the runtime run', () => {
+  it('renders the current model selectors and disables compose actions while a run update is pending', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
@@ -1786,15 +1700,11 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByText('Queued prompt pending the next model-call boundary.')).toBeVisible()
-    expect(screen.getByText('Model pending · anthropic/claude-3.5-haiku')).toBeVisible()
-    expect(screen.getByText('Thinking pending · Low')).toBeVisible()
-    expect(screen.getByText('Approval pending · YOLO')).toBeVisible()
-    expect(screen.getByText(/Pending YOLO does not apply until the next model-call boundary\./)).toBeVisible()
-    expect(screen.getByText(/Active approval remains Suggest \(revision 1 at 2026-04-20T12:00:00Z\)\./)).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toBeDisabled()
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled()
+    expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
   })
 
   it('starts a run with the draft prompt and current projected controls, then clears the draft after acknowledgement', async () => {

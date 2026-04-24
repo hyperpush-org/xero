@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, thread, time::Duration};
 
 use super::autonomous_workflow_progression::persist_autonomous_workflow_progression;
 
@@ -24,6 +24,9 @@ pub use operator_resume::{persist_operator_resume, validate_operator_resume_targ
 pub use reconcile::reconcile_runtime_snapshot;
 pub use skill_lifecycle::persist_skill_lifecycle_event;
 pub use supervisor_events::persist_supervisor_event;
+
+const AUTONOMOUS_RUN_PERSIST_MAX_ATTEMPTS: usize = 3;
+const AUTONOMOUS_RUN_PERSIST_RETRY_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutonomousRuntimeReconcileIntent {
@@ -105,7 +108,27 @@ fn persist_progressed_autonomous_run(
     existing: Option<&AutonomousRunSnapshotRecord>,
     payload: AutonomousRunUpsertRecord,
 ) -> Result<AutonomousRunSnapshotRecord, CommandError> {
-    persist_autonomous_workflow_progression(repo_root, project_id, existing, payload)
+    let mut last_retryable_error: Option<CommandError> = None;
+
+    for attempt in 1..=AUTONOMOUS_RUN_PERSIST_MAX_ATTEMPTS {
+        match persist_autonomous_workflow_progression(
+            repo_root,
+            project_id,
+            existing,
+            payload.clone(),
+        ) {
+            Ok(snapshot) => return Ok(snapshot),
+            Err(error) if error.retryable && attempt < AUTONOMOUS_RUN_PERSIST_MAX_ATTEMPTS => {
+                last_retryable_error = Some(error);
+                thread::sleep(Duration::from_millis(
+                    AUTONOMOUS_RUN_PERSIST_RETRY_DELAY_MS,
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_retryable_error.expect("retry loop should retain last retryable autonomous error"))
 }
 
 fn upsert_artifact(

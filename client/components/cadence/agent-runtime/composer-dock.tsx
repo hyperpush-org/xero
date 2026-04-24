@@ -10,7 +10,6 @@ import type {
   ProviderModelThinkingEffortDto,
   RuntimeRunApprovalModeDto,
 } from '@/src/lib/cadence-model'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -27,7 +26,6 @@ import { Textarea } from '@/components/ui/textarea'
 import type {
   ComposerApprovalOption,
   ComposerModelGroup,
-  ComposerStatusCopy,
   ComposerThinkingOption,
 } from './composer-helpers'
 
@@ -40,19 +38,12 @@ interface ComposerDockProps {
   isSendDisabled: boolean
   composerModelId: string | null
   composerModelGroups: ComposerModelGroup[]
-  composerModelStatus: ComposerStatusCopy
   composerThinkingLevel: ProviderModelThinkingEffortDto | null
   composerThinkingOptions: ComposerThinkingOption[]
-  composerThinkingStatus: ComposerStatusCopy
   composerThinkingPlaceholder: string
   composerApprovalMode: RuntimeRunApprovalModeDto
   composerApprovalOptions: ComposerApprovalOption[]
-  composerApprovalStatus: ComposerStatusCopy
-  promptStatus: ComposerStatusCopy | null
   controlsDisabled: boolean
-  catalogStatusLabel: string
-  catalogStatusDetail: string
-  thinkingStatusDetail: string
   runtimeRunActionStatus: RuntimeRunActionStatus
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
@@ -72,24 +63,6 @@ const composerInlineSelectTriggerClassName =
 const composerInlineSelectContentClassName =
   'max-h-72 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90'
 
-function getBadgeVariant(tone: ComposerStatusCopy['tone']): 'outline' | 'secondary' {
-  return tone === 'pending' ? 'secondary' : 'outline'
-}
-
-function ComposerStatusRow({ status }: { status: ComposerStatusCopy }) {
-  return (
-    <div className="flex items-start gap-2 text-[10px] leading-relaxed text-muted-foreground">
-      <Badge className="mt-0.5 px-1.5 py-0 text-[9px] uppercase tracking-[0.18em]" variant={getBadgeVariant(status.tone)}>
-        {status.badgeLabel}
-      </Badge>
-      <div className="min-w-0 space-y-0.5">
-        <p className="text-foreground/85">{status.summary}</p>
-        <p>{status.detail}</p>
-      </div>
-    </div>
-  )
-}
-
 export function ComposerDock({
   placeholder,
   draftPrompt,
@@ -99,19 +72,12 @@ export function ComposerDock({
   isSendDisabled,
   composerModelId,
   composerModelGroups,
-  composerModelStatus,
   composerThinkingLevel,
   composerThinkingOptions,
-  composerThinkingStatus,
   composerThinkingPlaceholder,
   composerApprovalMode,
   composerApprovalOptions,
-  composerApprovalStatus,
-  promptStatus,
   controlsDisabled,
-  catalogStatusLabel,
-  catalogStatusDetail,
-  thinkingStatusDetail,
   runtimeRunActionStatus,
   pendingRuntimeRunAction,
   runtimeRunActionError,
@@ -241,27 +207,16 @@ export function ComposerDock({
                   </Button>
                 </div>
               </div>
-              <div className="space-y-2 px-2 pb-1 pt-2">
-                {promptStatus ? <ComposerStatusRow status={promptStatus} /> : null}
-                <ComposerStatusRow status={composerModelStatus} />
-                <ComposerStatusRow status={composerThinkingStatus} />
-                <ComposerStatusRow status={composerApprovalStatus} />
-                <div className="space-y-0.5 text-[10px] leading-relaxed text-muted-foreground">
-                  <p>
-                    <span className="font-medium text-foreground/80">{catalogStatusLabel}</span>
-                    {' · '}
-                    {catalogStatusDetail}
-                  </p>
-                  <p>{thinkingStatusDetail}</p>
+              {runtimeRunActionError ? (
+                <div
+                  className="border-t border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] leading-relaxed text-destructive/90"
+                  role="alert"
+                >
+                  <p className="font-medium">{runtimeRunActionErrorTitle}</p>
+                  <p>{runtimeRunActionError.message}</p>
+                  {runtimeRunActionError.code ? <p className="font-mono text-[10px]">code: {runtimeRunActionError.code}</p> : null}
                 </div>
-                {runtimeRunActionError ? (
-                  <div className="rounded-md border border-destructive/35 bg-destructive/5 px-2.5 py-2 text-[10px] leading-relaxed text-destructive/90" role="alert">
-                    <p className="font-medium">{runtimeRunActionErrorTitle}</p>
-                    <p>{runtimeRunActionError.message}</p>
-                    {runtimeRunActionError.code ? <p className="font-mono text-[10px]">code: {runtimeRunActionError.code}</p> : null}
-                  </div>
-                ) : null}
-              </div>
+              ) : null}
             </div>
           </div>
         </div>

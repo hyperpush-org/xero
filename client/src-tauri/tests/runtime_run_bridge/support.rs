@@ -1252,6 +1252,37 @@ pub(crate) fn read_event_frames(
     frames
 }
 
+pub(crate) fn read_action_required_frames_after_attach(
+    reader: &mut BufReader<TcpStream>,
+    replayed_count: u32,
+) -> Vec<SupervisorControlResponse> {
+    let mut frames = read_event_frames(reader, replayed_count);
+    let deadline = Instant::now() + Duration::from_secs(2);
+
+    while !frames.iter().any(|frame| {
+        matches!(
+            frame,
+            SupervisorControlResponse::Event {
+                item: SupervisorLiveEventPayload::ActionRequired { .. },
+                ..
+            }
+        )
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "expected action-required frame after attach, got {frames:?}"
+        );
+
+        if let Some(response) = read_supervisor_response(reader) {
+            frames.push(response);
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    frames
+}
+
 pub(crate) fn current_unix_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

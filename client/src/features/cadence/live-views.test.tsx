@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { openUrlMock } = vi.hoisted(() => ({
@@ -967,7 +967,8 @@ describe('live views', () => {
       />,
     )
 
-    expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Autonomous run truth' })).not.toBeInTheDocument()
     expect(screen.queryByText('Current autonomous boundary')).not.toBeInTheDocument()
     expect(
@@ -978,10 +979,7 @@ describe('live views', () => {
     expect(screen.queryByRole('heading', { name: 'Remote escalation trust' })).not.toBeInTheDocument()
   })
 
-  it('renders recovered runtime and checkpoint control-loop actions with the current headings', async () => {
-    const resolveOperatorAction = vi.fn(async () => undefined)
-    const resumeOperatorRun = vi.fn(async () => undefined)
-
+  it('keeps the live feed visible while omitting recovered runtime and checkpoint debug panels', () => {
     const pendingApproval = {
       actionId: 'action-pending',
       sessionId: 'session-1',
@@ -1052,24 +1050,11 @@ describe('live views', () => {
         answerShapeHint: 'Describe the operator decision that justifies approval.',
         answerPlaceholder: 'Provide operator input for this action.',
       },
-      latestResume: {
-        id: 2,
-        sourceActionId: 'action-approved',
-        sessionId: 'session-1',
-        status: 'started',
-        statusLabel: 'Resume started',
-        summary: 'Operator resumed the selected project runtime session.',
-        createdAt: '2026-04-13T20:04:00Z',
-      },
-      resumeStateLabel: 'Resume started',
-      resumeDetail: 'Operator resumed the selected project runtime session.',
-      resumeUpdatedAt: '2026-04-13T20:04:00Z',
     })
 
     const project = makeProject({
       approvalRequests: [pendingApproval, approvedCard.approval!],
       pendingApprovalCount: 1,
-      resumeHistory: [approvedCard.latestResume!],
     })
 
     render(
@@ -1102,19 +1087,6 @@ describe('live views', () => {
                 title: pendingApproval.title,
                 detail: pendingApproval.detail,
                 approval: pendingApproval,
-                durableStateLabel: pendingApproval.statusLabel,
-                durableStateDetail: pendingApproval.detail,
-                durableUpdatedAt: pendingApproval.updatedAt,
-                latestResume: null,
-                resumeStateLabel: 'Waiting on approval',
-                resumeDetail: 'Cadence is waiting for operator input before this action can resume the run.',
-                resumeUpdatedAt: pendingApproval.updatedAt,
-                evidenceCount: 0,
-                evidenceStateLabel: 'No durable evidence in bounded window',
-                evidenceSummary:
-                  'Cadence did not retain a matching tool result, verification row, or policy denial for this action in the bounded evidence window.',
-                latestEvidenceAt: null,
-                evidencePreviews: [],
               }),
               approvedCard,
             ],
@@ -1127,41 +1099,14 @@ describe('live views', () => {
           runtimeRunUnavailableReason: 'Cadence recovered a supervised harness run and its durable checkpoints before the live runtime feed resumed.',
           messagesUnavailableReason: 'Cadence recovered a supervised harness run, but the live runtime stream has not resumed yet. Durable checkpoints remain visible below.',
         })}
-        onResolveOperatorAction={resolveOperatorAction}
-        onResumeOperatorRun={resumeOperatorRun}
       />,
     )
 
-    expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
-    const checkpointSection = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
-    expect(checkpointSection).not.toBeNull()
-    const checkpointQueries = within(checkpointSection as HTMLElement)
-    expect(screen.getByText('Supervisor boot recorded.')).toBeVisible()
-    expect(checkpointQueries.getByText('Review worktree changes')).toBeVisible()
-    expect(checkpointQueries.getByText('Resume after plan review')).toBeVisible()
-    expect(
-      checkpointQueries.getAllByText('Latest resume started: Operator resumed the selected project runtime session.').length,
-    ).toBeGreaterThan(0)
-
-    fireEvent.change(checkpointQueries.getByLabelText('Operator answer for action-pending'), {
-      target: { value: 'Proceed after validating repo changes.' },
-    })
-    fireEvent.click(checkpointQueries.getByRole('button', { name: 'Approve' }))
-
-    await waitFor(() =>
-      expect(resolveOperatorAction).toHaveBeenCalledWith('action-pending', 'approve', {
-        userAnswer: 'Proceed after validating repo changes.',
-      }),
-    )
-
-    fireEvent.click(checkpointQueries.getByRole('button', { name: 'Resume run' }))
-    await waitFor(() =>
-      expect(resumeOperatorRun).toHaveBeenCalledWith('action-approved', {
-        userAnswer: 'Looks good to resume.',
-      }),
-    )
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Review worktree changes')).not.toBeInTheDocument()
+    expect(screen.queryByText('Resume after plan review')).not.toBeInTheDocument()
   })
 
   it('renders the editor against the selected project tree', async () => {

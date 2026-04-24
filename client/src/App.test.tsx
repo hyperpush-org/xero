@@ -798,12 +798,6 @@ function makeRuntimeStreamActionRequiredEvent(options: {
   }
 }
 
-function ensureCheckpointSection(): HTMLElement {
-  const section = screen.getByRole('heading', { name: 'Checkpoint control loop' }).closest('section')
-  expect(section).not.toBeNull()
-  return section as HTMLElement
-}
-
 function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): AutonomousRunStateDto {
   return {
     run: {
@@ -2423,7 +2417,8 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
-    expect(await screen.findByRole('heading', { name: 'Recovered run snapshot' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
     expect(
       screen.queryByText('Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.'),
     ).not.toBeInTheDocument()
@@ -2564,8 +2559,8 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    expect((await screen.findAllByRole('heading', { name: 'Recovered run snapshot' })).length).toBeGreaterThan(0)
-    expect(screen.getByText('Approval active · Suggest')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
 
     const pendingRun = makeRuntimeRun('project-1', {
       runId: 'run-live-1',
@@ -2601,10 +2596,11 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByText('Model pending · anthropic/claude-3.5-haiku')).toBeVisible())
-    expect(screen.getByText('Thinking pending · Low')).toBeVisible()
-    expect(screen.getByText('Approval pending · YOLO')).toBeVisible()
-    expect(screen.getByText('Queued prompt pending the next model-call boundary.')).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled())
+    expect(screen.queryByText('Model pending · anthropic/claude-3.5-haiku')).not.toBeInTheDocument()
+    expect(screen.queryByText('Thinking pending · Low')).not.toBeInTheDocument()
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
+    expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
 
     act(() => {
       setup.emitRuntimeRunUpdated({
@@ -2613,7 +2609,7 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    expect(screen.getAllByText('Approval pending · YOLO')).toHaveLength(1)
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
     expect(() =>
       setup.emitRuntimeRunUpdated({
         projectId: 'project-2',
@@ -2651,8 +2647,8 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
-    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
 
     act(() => {
@@ -2688,10 +2684,9 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() =>
-      expect(screen.getAllByRole('heading', { name: 'Recovered run snapshot' }).length).toBeGreaterThan(0),
-    )
-    expect(screen.getByText('Approval active · YOLO')).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible())
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
 
     act(() => {
       setup.emitRuntimeRunUpdatedError(
@@ -2760,7 +2755,6 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('gpt-4.1-mini')
-    expect(screen.getByText(/Showing 1 discovered model/)).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
@@ -2774,7 +2768,7 @@ describe('CadenceApp current UI', () => {
         initialPrompt: null,
       }),
     )
-    await waitFor(() => expect(screen.getByText('Approval active · Suggest')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
   })
 
   it('starts the shipped Agent path with GitHub Models provider identity and shared catalog truth', async () => {
@@ -2827,7 +2821,6 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai/gpt-4.1')
-    expect(screen.getByText(/Showing 2 discovered models/)).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
@@ -2841,7 +2834,7 @@ describe('CadenceApp current UI', () => {
         initialPrompt: null,
       }),
     )
-    await waitFor(() => expect(screen.getByText('Approval active · Suggest')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
   })
 
   it('starts the shipped Agent path with Ollama provider identity and local model truth', async () => {
@@ -2896,7 +2889,6 @@ describe('CadenceApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('llama3.2')
     expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Thinking unavailable')
-    expect(screen.getByText(/Showing 1 discovered model/)).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
@@ -2910,7 +2902,7 @@ describe('CadenceApp current UI', () => {
         initialPrompt: null,
       }),
     )
-    await waitFor(() => expect(screen.getByText('Approval active · Suggest')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
   })
 
   it('keeps recovered OpenAI Codex run truth visible when Settings drift to Ollama and blocks relaunch under the selected profile', async () => {
@@ -2967,10 +2959,9 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
-    expect(await screen.findByRole('heading', { name: 'Recovered run snapshot' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai_codex')
-    expect(screen.getByText('Catalog unavailable')).toBeVisible()
-    expect(screen.getByText(/OpenAI Codex run-scoped control truth/)).toBeVisible()
     expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute(
       'placeholder',
       'Rebind Ollama before trusting new live activity.',
@@ -3034,9 +3025,6 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai_codex')
     expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Thinking · medium')
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('Approval · suggest')
-    expect(screen.getAllByText('Live catalog').length).toBeGreaterThan(0)
-    expect(screen.getByText(/Showing 1 discovered model/)).toBeVisible()
-    expect(screen.getByText(/Thinking supports Low, Medium, High\. Default: Medium\./)).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
@@ -3050,7 +3038,7 @@ describe('CadenceApp current UI', () => {
         initialPrompt: null,
       }),
     )
-    await waitFor(() => expect(screen.getByText('Approval active · Suggest')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
 
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Approval mode selector' }), { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'Approval · yolo' }))
@@ -3067,8 +3055,9 @@ describe('CadenceApp current UI', () => {
         prompt: null,
       }),
     )
-    await waitFor(() => expect(screen.getByText('Approval pending · YOLO')).toBeVisible())
-    expect(screen.getByText(/Pending YOLO does not apply until the next model-call boundary\./)).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled())
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Pending YOLO does not apply until the next model-call boundary\./)).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toBeDisabled()
 
     fireEvent.change(screen.getByLabelText('Agent input'), {
@@ -3084,7 +3073,6 @@ describe('CadenceApp current UI', () => {
         prompt: 'Review the diff before continuing.',
       }),
     )
-    await waitFor(() => expect(screen.getByText('Queued prompt pending the next model-call boundary.')).toBeVisible())
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toHaveValue(''))
 
     act(() => {
@@ -3111,13 +3099,14 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).not.toBeDisabled()
   })
 
-  it('shows live review-required checkpoint truth only after YOLO becomes active on the shipped Agent surface', async () => {
+  it('keeps live review-required checkpoint truth off the shipped Agent surface even after YOLO becomes active', async () => {
     const reviewActionId = 'flow:flow-1:run:run-1:boundary:boundary-review-1:review_command'
     const setup = createAdapter({
       runtimeRun: null,
@@ -3142,14 +3131,14 @@ describe('CadenceApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
-    await waitFor(() => expect(screen.getByText('Approval active · Suggest')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
     await waitFor(() => expect(setup.streamSubscriptions.length).toBeGreaterThan(0))
 
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Approval mode selector' }), { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'Approval · yolo' }))
 
-    await waitFor(() => expect(screen.getByText('Approval pending · YOLO')).toBeVisible())
-    expect(screen.getByText(/Pending YOLO does not apply until the next model-call boundary\./)).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message unavailable' })).toBeDisabled())
+    expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
 
     act(() => {
       setup.emitRuntimeRunUpdated({
@@ -3175,7 +3164,8 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    expect(screen.queryByText('Approval active · YOLO')).not.toBeInTheDocument()
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
 
     setup.setSnapshot({
@@ -3197,22 +3187,9 @@ describe('CadenceApp current UI', () => {
       )
     })
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible())
-    const checkpointQueries = () => within(ensureCheckpointSection())
-
-    await waitFor(() => expect(checkpointQueries().getByText('Live + durable')).toBeVisible())
-    await waitFor(() => expect(checkpointQueries().getByText('Pending approval')).toBeVisible())
-    expect(checkpointQueries().getByText('Review destructive shell command')).toBeVisible()
-    expect(checkpointQueries().getByText('Live action required')).toBeVisible()
-    expect(
-      checkpointQueries().getAllByText('Waiting for operator input before this action can resume the run.').length,
-    ).toBeGreaterThan(0)
-    expect(
-      checkpointQueries().getByText(
-        `Action ${reviewActionId} · Boundary boundary-review-1`,
-      ),
-    ).toBeVisible()
-    expect(checkpointQueries().getAllByText(/Cadence blocked a destructive shell wrapper/).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument())
+    expect(screen.queryByText('Review destructive shell command')).not.toBeInTheDocument()
+    expect(screen.queryByText('Live action required')).not.toBeInTheDocument()
   })
 
   it('keeps recovered durable policy denials understandable on the shipped Agent surface after the live row clears', async () => {
@@ -3254,26 +3231,10 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
-    await waitFor(() => expect(screen.getByText('Approval active · YOLO')).toBeVisible())
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible())
-
-    const checkpointQueries = within(ensureCheckpointSection())
-    expect(checkpointQueries.getByText('Recovered durable denial')).toBeVisible()
-    expect(checkpointQueries.getAllByText('Policy denied').length).toBeGreaterThan(0)
-    expect(checkpointQueries.getAllByText('Not resumable').length).toBeGreaterThan(0)
-    expect(checkpointQueries.getByText('No live review row')).toBeVisible()
-    expect(
-      checkpointQueries.getAllByText(
-        'Cadence denied the autonomous shell command because its cwd escapes the imported repository root.',
-      ).length,
-    ).toBeGreaterThan(0)
-    expect(
-      checkpointQueries.getByText(
-        `Action ${deniedActionId} · Boundary boundary-denied-1`,
-      ),
-    ).toBeVisible()
-    expect(checkpointQueries.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
-    expect(checkpointQueries.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument())
+    expect(screen.queryByText('Recovered durable denial')).not.toBeInTheDocument()
+    expect(screen.queryByText('Policy denied')).not.toBeInTheDocument()
   })
 
   it('opens Settings and runs the current provider and notification flows', async () => {

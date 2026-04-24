@@ -9,40 +9,27 @@ import type {
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/cadence-model'
 import {
-  getRuntimeRunApprovalModeLabel,
   getRuntimeRunThinkingEffortLabel,
   getRuntimeStreamStatusLabel,
   type RuntimeRunControlInputDto,
 } from '@/src/lib/cadence-model'
 
 import { AgentFeedSection } from './agent-runtime/agent-feed-section'
-import { CheckpointControlLoopSection } from './agent-runtime/checkpoint-control-loop-section'
-import {
-  createEmptyCheckpointControlLoop,
-  getCheckpointControlLoopCoverageAlertMeta,
-  getCheckpointControlLoopRecoveryAlertMeta,
-} from './agent-runtime/checkpoint-control-loop-helpers'
 import {
   getComposerApprovalOptions,
-  getComposerCatalogStatusCopy,
-  getComposerControlStatusCopy,
   getComposerModelGroups,
   getComposerModelOption,
   getComposerPlaceholder,
-  getComposerPromptStatusCopy,
   getComposerThinkingOptions,
   getSelectedProviderId,
 } from './agent-runtime/composer-helpers'
 import { ComposerDock } from './agent-runtime/composer-dock'
-import { RecoveredRuntimeSection } from './agent-runtime/recovered-runtime-section'
 import {
-  getPrimaryRuntimeRunActionLabel,
-  getRuntimeRunStatusText,
   getStreamRunId,
   getStreamStatusMeta,
   hasUsableRuntimeRunId,
 } from './agent-runtime/runtime-stream-helpers'
-import { displayValue, formatSequence, sortByNewest } from './agent-runtime/shared-helpers'
+import { displayValue, formatSequence } from './agent-runtime/shared-helpers'
 import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
 
@@ -99,14 +86,9 @@ export function AgentRuntime({
   const transcriptItems = runtimeStream?.transcriptItems ?? []
   const toolCalls = runtimeStream?.toolCalls ?? []
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
-  const checkpointControlLoop = agent.checkpointControlLoop ?? createEmptyCheckpointControlLoop()
   const streamStatusLabel = displayValue(
     agent.runtimeStreamStatusLabel,
     getRuntimeStreamStatusLabel(streamStatus),
-  )
-  const runtimeRunCheckpoints = useMemo(
-    () => sortByNewest(renderableRuntimeRun?.checkpoints ?? [], (checkpoint) => checkpoint.createdAt).slice(0, 4),
-    [renderableRuntimeRun],
   )
 
   const selectedProviderId = getSelectedProviderId(agent, runtimeSession)
@@ -165,10 +147,6 @@ export function AgentRuntime({
     [selectedComposerModel],
   )
   const composerApprovalOptions = useMemo(() => getComposerApprovalOptions(), [])
-  const composerCatalogStatusCopy = useMemo(
-    () => getComposerCatalogStatusCopy(agent.providerModelCatalog, selectedComposerModel),
-    [agent.providerModelCatalog, selectedComposerModel],
-  )
   const composerThinkingPlaceholder = agent.selectedThinkingEffort
     ? getRuntimeRunThinkingEffortLabel(agent.selectedThinkingEffort)
     : selectedModelId
@@ -181,28 +159,7 @@ export function AgentRuntime({
     runtimeStream?.sessionId,
     runtimeSession?.sessionLabel ?? 'No session',
   )
-  const checkpointTrustSnapshot =
-    agent.trustSnapshot ?? {
-      syncState: agent.notificationSyncError ? 'degraded' : 'unavailable',
-      syncReason: agent.notificationSyncError
-        ? agent.notificationSyncError.message
-        : agent.notificationSyncSummary
-          ? 'Cadence is keeping the last observed sync counts visible, but hook-owned trust projection is unavailable.'
-          : 'No notification adapter sync summary is available yet.',
-    }
-  const checkpointControlLoopRecoveryAlert = getCheckpointControlLoopRecoveryAlertMeta({
-    controlLoop: checkpointControlLoop,
-    trustSnapshot: checkpointTrustSnapshot,
-    autonomousRunErrorMessage: agent.autonomousRunErrorMessage ?? null,
-    notificationSyncPollingActive: agent.notificationSyncPollingActive ?? false,
-    notificationSyncPollingActionId: agent.notificationSyncPollingActionId ?? null,
-    notificationSyncPollingBoundaryId: agent.notificationSyncPollingBoundaryId ?? null,
-  })
-  const checkpointControlLoopCoverageAlert = getCheckpointControlLoopCoverageAlertMeta(checkpointControlLoop)
-  const runtimeRunStatusText = getRuntimeRunStatusText(renderableRuntimeRun)
-  const primaryRuntimeRunActionLabel = getPrimaryRuntimeRunActionLabel(renderableRuntimeRun)
   const showNoRunStreamBanner = Boolean(runtimeSession?.isAuthenticated && !renderableRuntimeRun)
-  const hasCheckpointControlLoopSurface = Boolean(checkpointControlLoop.totalCount > 0 || agent.operatorActionError)
   const hasAgentFeedSurface = Boolean(
     hasIncompleteRuntimeRunPayload ||
       renderableRuntimeRun ||
@@ -232,76 +189,6 @@ export function AgentRuntime({
   const showAgentSetupEmptyState = Boolean(
     !providerMismatch && (!runtimeSession || runtimeSession.isSignedOut || runtimeSession.phase === 'idle'),
   )
-  const composerPromptStatus = useMemo(
-    () =>
-      getComposerPromptStatusCopy({
-        selectedPrompt: agent.selectedPrompt,
-        runtimeRun: renderableRuntimeRun,
-        canStartRuntimeRun,
-        runtimeRunActionStatus: agent.runtimeRunActionStatus,
-        pendingRuntimeRunAction: agent.pendingRuntimeRunAction,
-        runtimeRunActionError: controller.runtimeRunActionError,
-      }),
-    [
-      agent.pendingRuntimeRunAction,
-      agent.runtimeRunActionStatus,
-      agent.selectedPrompt,
-      canStartRuntimeRun,
-      controller.runtimeRunActionError,
-      renderableRuntimeRun,
-    ],
-  )
-  const composerModelStatus = useMemo(
-    () =>
-      getComposerControlStatusCopy({
-        label: 'Model',
-        selectedLabel: displayValue(selectedComposerModel?.label, 'Model unavailable'),
-        truthSource: agent.controlTruthSource,
-        activeLabel: agent.runtimeRunActiveControls ? getComposerModelOption(availableModels, agent.runtimeRunActiveControls.modelId)?.label ?? agent.runtimeRunActiveControls.modelId : null,
-        activeRevision: agent.runtimeRunActiveControls?.revision ?? null,
-        activeAt: agent.runtimeRunActiveControls?.appliedAt ?? null,
-        pendingLabel: agent.runtimeRunPendingControls ? getComposerModelOption(availableModels, agent.runtimeRunPendingControls.modelId)?.label ?? agent.runtimeRunPendingControls.modelId : null,
-        pendingRevision: agent.runtimeRunPendingControls?.revision ?? null,
-        pendingAt: agent.runtimeRunPendingControls?.queuedAt ?? null,
-      }),
-    [
-      agent.controlTruthSource,
-      agent.runtimeRunActiveControls,
-      agent.runtimeRunPendingControls,
-      availableModels,
-      selectedComposerModel,
-    ],
-  )
-  const composerThinkingStatus = useMemo(
-    () =>
-      getComposerControlStatusCopy({
-        label: 'Thinking',
-        selectedLabel: getRuntimeRunThinkingEffortLabel(agent.selectedThinkingEffort),
-        truthSource: agent.controlTruthSource,
-        activeLabel: agent.runtimeRunActiveControls?.thinkingEffortLabel ?? null,
-        activeRevision: agent.runtimeRunActiveControls?.revision ?? null,
-        activeAt: agent.runtimeRunActiveControls?.appliedAt ?? null,
-        pendingLabel: agent.runtimeRunPendingControls?.thinkingEffortLabel ?? null,
-        pendingRevision: agent.runtimeRunPendingControls?.revision ?? null,
-        pendingAt: agent.runtimeRunPendingControls?.queuedAt ?? null,
-      }),
-    [agent.controlTruthSource, agent.runtimeRunActiveControls, agent.runtimeRunPendingControls, agent.selectedThinkingEffort],
-  )
-  const composerApprovalStatus = useMemo(
-    () =>
-      getComposerControlStatusCopy({
-        label: 'Approval',
-        selectedLabel: getRuntimeRunApprovalModeLabel(agent.selectedApprovalMode),
-        truthSource: agent.controlTruthSource,
-        activeLabel: agent.runtimeRunActiveControls?.approvalModeLabel ?? null,
-        activeRevision: agent.runtimeRunActiveControls?.revision ?? null,
-        activeAt: agent.runtimeRunActiveControls?.appliedAt ?? null,
-        pendingLabel: agent.runtimeRunPendingControls?.approvalModeLabel ?? null,
-        pendingRevision: agent.runtimeRunPendingControls?.revision ?? null,
-        pendingAt: agent.runtimeRunPendingControls?.queuedAt ?? null,
-      }),
-    [agent.controlTruthSource, agent.runtimeRunActiveControls, agent.runtimeRunPendingControls, agent.selectedApprovalMode],
-  )
   const promptInputLabel = controller.promptInputAvailable ? 'Agent input' : 'Agent input unavailable'
   const sendButtonLabel = controller.promptInputAvailable ? 'Send message' : 'Send message unavailable'
 
@@ -319,25 +206,6 @@ export function AgentRuntime({
             <SetupEmptyState onOpenSettings={onOpenSettings} />
           ) : (
             <div className="mx-auto flex max-w-4xl flex-col gap-4">
-              {hasIncompleteRuntimeRunPayload || renderableRuntimeRun ? (
-                <RecoveredRuntimeSection
-                  canStartRuntimeRun={canStartRuntimeRun}
-                  canStopRuntimeRun={canStopRuntimeRun}
-                  hasIncompleteRuntimeRunPayload={hasIncompleteRuntimeRunPayload}
-                  onStartRuntimeRun={() => void controller.handleStartRuntimeRun()}
-                  onStopRuntimeRun={() => void controller.handleStopRuntimeRun()}
-                  pendingRuntimeRunAction={agent.pendingRuntimeRunAction ?? null}
-                  primaryRuntimeRunActionLabel={primaryRuntimeRunActionLabel}
-                  renderableRuntimeRun={renderableRuntimeRun}
-                  runtimeRunActionError={controller.runtimeRunActionError}
-                  runtimeRunActionErrorTitle={controller.runtimeRunActionErrorTitle}
-                  runtimeRunActionStatus={agent.runtimeRunActionStatus ?? 'idle'}
-                  runtimeRunCheckpoints={runtimeRunCheckpoints}
-                  runtimeRunStatusText={runtimeRunStatusText}
-                  runtimeRunUnavailableReason={agent.runtimeRunUnavailableReason}
-                />
-              ) : null}
-
               {hasAgentFeedSurface ? (
                 <AgentFeedSection
                   activityItems={activityItems}
@@ -356,40 +224,18 @@ export function AgentRuntime({
                   transcriptItems={transcriptItems}
                 />
               ) : null}
-
-              {hasCheckpointControlLoopSurface ? (
-                <CheckpointControlLoopSection
-                  checkpointControlLoop={checkpointControlLoop}
-                  checkpointControlLoopCoverageAlert={checkpointControlLoopCoverageAlert}
-                  checkpointControlLoopRecoveryAlert={checkpointControlLoopRecoveryAlert}
-                  onOperatorAnswerChange={controller.handleOperatorAnswerChange}
-                  onResolveOperatorAction={controller.handleResolveOperatorAction}
-                  onResumeOperatorRun={controller.handleResumeOperatorRun}
-                  operatorActionError={agent.operatorActionError}
-                  operatorActionStatus={agent.operatorActionStatus}
-                  operatorAnswers={controller.operatorAnswers}
-                  pendingApprovalCount={agent.pendingApprovalCount}
-                  pendingOperatorActionId={agent.pendingOperatorActionId}
-                  pendingOperatorIntent={controller.pendingOperatorIntent}
-                />
-              ) : null}
             </div>
           )}
         </div>
 
         <ComposerDock
-          catalogStatusDetail={composerCatalogStatusCopy.catalogDetail}
-          catalogStatusLabel={composerCatalogStatusCopy.catalogLabel}
           composerApprovalMode={agent.selectedApprovalMode}
           composerApprovalOptions={composerApprovalOptions}
-          composerApprovalStatus={composerApprovalStatus}
           composerModelGroups={composerModelGroups}
           composerModelId={selectedModelId}
-          composerModelStatus={composerModelStatus}
           composerThinkingLevel={agent.selectedThinkingEffort}
           composerThinkingOptions={composerThinkingOptions}
           composerThinkingPlaceholder={composerThinkingPlaceholder}
-          composerThinkingStatus={composerThinkingStatus}
           controlsDisabled={controller.areControlsDisabled}
           draftPrompt={controller.draftPrompt}
           isPromptDisabled={controller.isPromptDisabled}
@@ -403,13 +249,11 @@ export function AgentRuntime({
           pendingRuntimeRunAction={agent.pendingRuntimeRunAction ?? null}
           placeholder={composerPlaceholder}
           promptInputLabel={promptInputLabel}
-          promptStatus={composerPromptStatus}
           runtimeRunActionError={controller.runtimeRunActionError}
           runtimeRunActionErrorTitle={controller.runtimeRunActionErrorTitle}
           runtimeRunActionStatus={agent.runtimeRunActionStatus}
           sendButtonLabel={sendButtonLabel}
           showStartRunButton={canStartRuntimeRun && !renderableRuntimeRun}
-          thinkingStatusDetail={composerCatalogStatusCopy.thinkingDetail}
         />
       </div>
     </div>

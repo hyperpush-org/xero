@@ -379,7 +379,7 @@ pub(crate) fn resume_operator_run_delivers_approved_terminal_input_without_auth_
         SupervisorControlResponse::Attached { replayed_count, .. } => replayed_count,
         other => panic!("expected attach ack, got {other:?}"),
     };
-    let frames = read_event_frames(&mut reader, replayed_count);
+    let frames = read_action_required_frames_after_attach(&mut reader, replayed_count);
     let action_id = frames
         .iter()
         .find_map(|frame| match frame {
@@ -573,7 +573,7 @@ pub(crate) fn submit_notification_reply_persists_autonomous_boundary_and_resume_
         SupervisorControlResponse::Attached { replayed_count, .. } => replayed_count,
         other => panic!("expected attach ack, got {other:?}"),
     };
-    let frames = read_event_frames(&mut reader, replayed_count);
+    let frames = read_action_required_frames_after_attach(&mut reader, replayed_count);
     let (action_id, blocked_boundary_id) = frames
         .iter()
         .find_map(|frame| match frame {
@@ -915,7 +915,7 @@ pub(crate) fn resume_operator_run_records_failed_history_when_runtime_identity_s
         SupervisorControlResponse::Attached { replayed_count, .. } => replayed_count,
         other => panic!("expected attach ack, got {other:?}"),
     };
-    let frames = read_event_frames(&mut reader, replayed_count);
+    let frames = read_action_required_frames_after_attach(&mut reader, replayed_count);
     let action_id = frames
         .iter()
         .find_map(|frame| match frame {
