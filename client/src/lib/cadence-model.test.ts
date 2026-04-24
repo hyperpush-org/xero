@@ -19,6 +19,7 @@ import {
   mapAutonomousArtifact,
   mapAutonomousUnit,
   mapProjectSnapshot,
+  mapPlanningLifecycle,
   mapProjectSummary,
   mapRepositoryStatus,
   mapRuntimeRun,
@@ -480,6 +481,73 @@ describe('cadence-model', () => {
     expect(project.phases[1].summary).toBeUndefined()
     expect(project.phases[1].stepStatuses.execute).toBe('active')
     expect(project.phases[1].stepStatuses.verify).toBe('pending')
+  })
+
+  it('maps lifecycle unblock metadata when gate linkage fields are complete', () => {
+    const lifecycle = mapPlanningLifecycle({
+      stages: [
+        {
+          stage: 'research',
+          nodeId: 'workflow-research',
+          status: 'blocked',
+          actionRequired: true,
+          unblockReason: 'research is waiting on a linked operator gate approval.',
+          unblockGateKey: 'requires_user_input',
+          unblockActionId: 'action-123',
+          lastTransitionAt: '2026-04-15T18:00:00Z',
+        },
+      ],
+    })
+
+    expect(lifecycle.byStage.research?.actionRequired).toBe(true)
+    expect(lifecycle.byStage.research?.unblock).toEqual({
+      reason: 'research is waiting on a linked operator gate approval.',
+      gateKey: 'requires_user_input',
+      actionId: 'action-123',
+    })
+  })
+
+  it('drops malformed lifecycle unblock metadata while preserving fail-closed action-required state', () => {
+    const lifecycle = mapPlanningLifecycle({
+      stages: [
+        {
+          stage: 'research',
+          nodeId: 'workflow-research',
+          status: 'blocked',
+          actionRequired: true,
+          unblockReason: 'research is waiting on a linked operator gate approval.',
+          unblockGateKey: null,
+          unblockActionId: 'action-123',
+          lastTransitionAt: '2026-04-15T18:00:00Z',
+        },
+      ],
+    })
+
+    expect(lifecycle.byStage.research?.actionRequired).toBe(true)
+    expect(lifecycle.byStage.research?.unblock).toBeNull()
+  })
+
+  it('rejects malformed lifecycle unblock reason field types at the parse boundary', () => {
+    expect(() =>
+      projectSnapshotResponseSchema.parse(
+        makeSnapshot({
+          lifecycle: {
+            stages: [
+              {
+                stage: 'research',
+                nodeId: 'workflow-research',
+                status: 'blocked',
+                actionRequired: true,
+                unblockReason: 7,
+                unblockGateKey: 'requires_user_input',
+                unblockActionId: 'action-123',
+                lastTransitionAt: '2026-04-15T18:00:00Z',
+              } as unknown as ProjectSnapshotResponseDto['lifecycle']['stages'][number],
+            ],
+          },
+        }),
+      ),
+    ).toThrow()
   })
 
   it('derives linked workflow context from autonomous linkage, lifecycle projection, and handoff truth', () => {

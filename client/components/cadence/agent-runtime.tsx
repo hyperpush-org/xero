@@ -16,6 +16,12 @@ import {
 
 import { AgentFeedSection } from './agent-runtime/agent-feed-section'
 import {
+  createEmptyCheckpointControlLoop,
+  getCheckpointControlLoopCoverageAlertMeta,
+  getCheckpointControlLoopRecoveryAlertMeta,
+} from './agent-runtime/checkpoint-control-loop-helpers'
+import { CheckpointControlLoopSection } from './agent-runtime/checkpoint-control-loop-section'
+import {
   getComposerApprovalOptions,
   getComposerModelGroups,
   getComposerModelOption,
@@ -174,6 +180,25 @@ export function AgentRuntime({
       runtimeStream?.completion ||
       runtimeStream?.failure,
   )
+  const checkpointControlLoop = agent.checkpointControlLoop ?? createEmptyCheckpointControlLoop()
+  const checkpointControlLoopRecoveryAlert = getCheckpointControlLoopRecoveryAlertMeta({
+    controlLoop: checkpointControlLoop,
+    trustSnapshot: {
+      syncState: agent.trustSnapshot?.syncState ?? 'unavailable',
+      syncReason:
+        agent.trustSnapshot?.syncReason ??
+        'Cadence has not projected notification sync trust for this project yet.',
+    },
+    autonomousRunErrorMessage: agent.autonomousRunErrorMessage,
+    notificationSyncPollingActive: agent.notificationSyncPollingActive ?? false,
+    notificationSyncPollingActionId: agent.notificationSyncPollingActionId ?? null,
+    notificationSyncPollingBoundaryId: agent.notificationSyncPollingBoundaryId ?? null,
+  })
+  const checkpointControlLoopCoverageAlert = getCheckpointControlLoopCoverageAlertMeta(checkpointControlLoop)
+  const showCheckpointControlLoopSection =
+    checkpointControlLoop.items.length > 0 ||
+    Boolean(checkpointControlLoopRecoveryAlert) ||
+    Boolean(checkpointControlLoopCoverageAlert)
   const composerPlaceholder = getComposerPlaceholder(
     runtimeSession,
     streamStatus,
@@ -222,6 +247,22 @@ export function AgentRuntime({
                   streamStatusMeta={streamStatusMeta}
                   toolCalls={toolCalls}
                   transcriptItems={transcriptItems}
+                />
+              ) : null}
+              {showCheckpointControlLoopSection ? (
+                <CheckpointControlLoopSection
+                  checkpointControlLoop={checkpointControlLoop}
+                  pendingApprovalCount={agent.pendingApprovalCount ?? 0}
+                  operatorActionError={agent.operatorActionError ?? null}
+                  operatorActionStatus={agent.operatorActionStatus}
+                  pendingOperatorActionId={agent.pendingOperatorActionId ?? null}
+                  pendingOperatorIntent={controller.pendingOperatorIntent}
+                  operatorAnswers={controller.operatorAnswers}
+                  checkpointControlLoopRecoveryAlert={checkpointControlLoopRecoveryAlert}
+                  checkpointControlLoopCoverageAlert={checkpointControlLoopCoverageAlert}
+                  onOperatorAnswerChange={controller.handleOperatorAnswerChange}
+                  onResolveOperatorAction={controller.handleResolveOperatorAction}
+                  onResumeOperatorRun={controller.handleResumeOperatorRun}
                 />
               ) : null}
             </div>

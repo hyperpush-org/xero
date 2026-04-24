@@ -707,6 +707,7 @@ describe('live views', () => {
       status: 'complete' as const,
       statusLabel: 'Complete',
       actionRequired: false,
+      unblock: null,
       lastTransitionAt: '2026-04-15T17:59:00Z',
     }
     const researchStage = {
@@ -717,6 +718,7 @@ describe('live views', () => {
       status: 'active' as const,
       statusLabel: 'Active',
       actionRequired: false,
+      unblock: null,
       lastTransitionAt: '2026-04-15T18:00:00Z',
     }
     const requirementsStage = {
@@ -727,6 +729,11 @@ describe('live views', () => {
       status: 'blocked' as const,
       statusLabel: 'Blocked',
       actionRequired: true,
+      unblock: {
+        reason: 'requirements is waiting on a linked operator gate approval.',
+        gateKey: 'requires_user_input',
+        actionId: 'action-requires-input',
+      },
       lastTransitionAt: '2026-04-15T18:01:00Z',
     }
     const roadmapStage = {
@@ -737,6 +744,7 @@ describe('live views', () => {
       status: 'pending' as const,
       statusLabel: 'Pending',
       actionRequired: false,
+      unblock: null,
       lastTransitionAt: null,
     }
 
@@ -773,6 +781,8 @@ describe('live views', () => {
     expect(screen.getByText('Requirements')).toBeVisible()
     expect(screen.getByText('Roadmap')).toBeVisible()
     expect(screen.getByText('Action required')).toBeVisible()
+    expect(screen.getByText('requirements is waiting on a linked operator gate approval.')).toBeVisible()
+    expect(screen.getByText('gate: requires_user_input · action: action-requires-input')).toBeVisible()
   })
 
   it('renders the current signed-out agent shell truthfully', () => {
@@ -979,7 +989,7 @@ describe('live views', () => {
     expect(screen.queryByRole('heading', { name: 'Remote escalation trust' })).not.toBeInTheDocument()
   })
 
-  it('keeps the live feed visible while omitting recovered runtime and checkpoint debug panels', () => {
+  it('keeps the live feed visible while rendering checkpoint control-loop cards', () => {
     const pendingApproval = {
       actionId: 'action-pending',
       sessionId: 'session-1',
@@ -1104,9 +1114,9 @@ describe('live views', () => {
 
     expect(screen.getByRole('heading', { name: 'Waiting for the first run-scoped event' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Review worktree changes')).not.toBeInTheDocument()
-    expect(screen.queryByText('Resume after plan review')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
+    expect(screen.getByText('Review worktree changes')).toBeVisible()
+    expect(screen.getByText('Resume after plan review')).toBeVisible()
   })
 
   it('renders the editor against the selected project tree', async () => {

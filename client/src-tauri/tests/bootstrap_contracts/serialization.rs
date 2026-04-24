@@ -331,6 +331,9 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                         "nodeId": "discussion",
                         "status": "active",
                         "actionRequired": true,
+                        "unblockReason": "discussion requires explicit plan-mode approval before implementation can continue.",
+                        "unblockGateKey": "plan_mode_required",
+                        "unblockActionId": "flow:flow-1:run:run-1:boundary:plan-mode:approve",
                         "lastTransitionAt": "2026-04-13T20:00:49Z"
                     }
                 ]

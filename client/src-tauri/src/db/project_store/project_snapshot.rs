@@ -4,9 +4,10 @@ use rusqlite::{Connection, Error as SqlError};
 
 use crate::{
     commands::{
-        map_workflow_handoff_package_record, CommandError, PhaseStatus, PhaseSummaryDto,
-        PlanningLifecycleProjectionDto, PlanningLifecycleStageDto, PlanningLifecycleStageKindDto,
-        ProjectSnapshotResponseDto, ProjectSummaryDto, RepositorySummaryDto,
+        map_workflow_handoff_package_record, CommandError, OperatorApprovalDto,
+        OperatorApprovalStatus, PhaseStatus, PhaseSummaryDto, PlanningLifecycleProjectionDto,
+        PlanningLifecycleStageDto, PlanningLifecycleStageKindDto, ProjectSnapshotResponseDto,
+        ProjectSummaryDto, RepositorySummaryDto,
     },
     db::database_path_for_repo,
 };
@@ -16,8 +17,8 @@ use super::{
     read_operator_approvals, read_project_row, read_resume_history, read_verification_records,
     workflow::{
         read_transition_events, read_workflow_gate_metadata, read_workflow_graph_nodes,
-        read_workflow_handoff_packages, WorkflowGateState, WorkflowGraphNodeRecord,
-        MAX_LIFECYCLE_TRANSITION_EVENT_ROWS,
+        read_workflow_handoff_packages, WorkflowGateMetadataRecord, WorkflowGateState,
+        WorkflowGraphNodeRecord, MAX_LIFECYCLE_TRANSITION_EVENT_ROWS,
     },
     ProjectSummaryRow,
 };
@@ -256,6 +257,8 @@ pub(crate) fn read_planning_lifecycle_projection(
         *slot = Some(node);
     }
 
+    let approvals = read_operator_approvals(connection, database_path, expected_project_id)?;
+
     let mut stages = Vec::new();
     for (stage, node) in [
         (PlanningLifecycleStageKindDto::Discussion, discussion_node),
@@ -270,17 +273,28 @@ pub(crate) fn read_planning_lifecycle_projection(
             continue;
         };
 
-        stages.push(PlanningLifecycleStageDto {
-            stage,
-            node_id: node.node_id.clone(),
-            status: node.status.clone(),
-            action_required: gates.iter().any(|gate| {
+        let stage_blocking_gates: Vec<&WorkflowGateMetadataRecord> = gates
+            .iter()
+            .filter(|gate| {
                 gate.node_id == node.node_id
                     && matches!(
                         gate.gate_state,
                         WorkflowGateState::Pending | WorkflowGateState::Blocked
                     )
-            }),
+            })
+            .collect();
+        let action_required = !stage_blocking_gates.is_empty();
+        let (unblock_reason, unblock_gate_key, unblock_action_id) =
+            derive_lifecycle_unblock_reason(stage, &node.node_id, &stage_blocking_gates, &approvals);
+
+        stages.push(PlanningLifecycleStageDto {
+            stage,
+            node_id: node.node_id.clone(),
+            status: node.status.clone(),
+            action_required,
+            unblock_reason,
+            unblock_gate_key,
+            unblock_action_id,
             last_transition_at: transitions
                 .iter()
                 .find(|event| {
@@ -291,6 +305,77 @@ pub(crate) fn read_planning_lifecycle_projection(
     }
 
     Ok(PlanningLifecycleProjectionDto { stages })
+}
+
+fn derive_lifecycle_unblock_reason(
+    stage: PlanningLifecycleStageKindDto,
+    node_id: &str,
+    stage_blocking_gates: &[&WorkflowGateMetadataRecord],
+    approvals: &[OperatorApprovalDto],
+) -> (Option<String>, Option<String>, Option<String>) {
+    let Some(gate) = stage_blocking_gates.iter().copied().min_by(|left, right| {
+        gate_priority(left)
+            .cmp(&gate_priority(right))
+            .then_with(|| left.gate_key.cmp(&right.gate_key))
+    }) else {
+        return (None, None, None);
+    };
+
+    let linked_approval = approvals.iter().find(|approval| {
+        approval.gate_node_id.as_deref() == Some(node_id)
+            && approval.gate_key.as_deref() == Some(gate.gate_key.as_str())
+            && matches!(
+                approval.status,
+                OperatorApprovalStatus::Pending | OperatorApprovalStatus::Approved
+            )
+    });
+
+    let stage_label = planning_lifecycle_stage_label(&stage);
+    let reason = if gate.gate_key == super::workflow::PLAN_MODE_REQUIRED_GATE_KEY {
+        if linked_approval.is_some_and(|approval| approval.status == OperatorApprovalStatus::Approved) {
+            format!(
+                "{stage_label} is waiting for an explicit resume after plan-mode approval."
+            )
+        } else if linked_approval.is_some() {
+            format!(
+                "{stage_label} requires explicit plan-mode approval before implementation can continue."
+            )
+        } else {
+            format!(
+                "{stage_label} remains blocked until the plan-mode continuation gate is resolved."
+            )
+        }
+    } else if linked_approval.is_some_and(|approval| approval.status == OperatorApprovalStatus::Approved) {
+        format!(
+            "{stage_label} is waiting for resume after a gate approval was recorded."
+        )
+    } else if linked_approval.is_some() {
+        format!(
+            "{stage_label} is waiting on a linked operator gate approval."
+        )
+    } else if gate.gate_state == WorkflowGateState::Blocked {
+        format!("{stage_label} is blocked by an unresolved workflow gate.")
+    } else {
+        format!("{stage_label} is waiting on a pending workflow gate.")
+    };
+
+    (
+        Some(reason),
+        Some(gate.gate_key.clone()),
+        linked_approval.map(|approval| approval.action_id.clone()),
+    )
+}
+
+fn gate_priority(gate: &WorkflowGateMetadataRecord) -> u8 {
+    if gate.gate_key == super::workflow::PLAN_MODE_REQUIRED_GATE_KEY {
+        return 0;
+    }
+
+    match gate.gate_state {
+        WorkflowGateState::Blocked => 1,
+        WorkflowGateState::Pending => 2,
+        WorkflowGateState::Satisfied | WorkflowGateState::Skipped => 3,
+    }
 }
 
 fn classify_planning_lifecycle_stage(node_id: &str) -> Option<PlanningLifecycleStageKindDto> {

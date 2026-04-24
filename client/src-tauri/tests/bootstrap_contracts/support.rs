@@ -464,6 +464,12 @@ pub(crate) fn sample_snapshot() -> ProjectSnapshotResponseDto {
                 node_id: "discussion".into(),
                 status: cadence_desktop_lib::commands::PhaseStatus::Active,
                 action_required: true,
+                unblock_reason: Some(
+                    "discussion requires explicit plan-mode approval before implementation can continue."
+                        .into(),
+                ),
+                unblock_gate_key: Some("plan_mode_required".into()),
+                unblock_action_id: Some("flow:flow-1:run:run-1:boundary:plan-mode:approve".into()),
                 last_transition_at: Some("2026-04-13T20:00:49Z".into()),
             }],
         },

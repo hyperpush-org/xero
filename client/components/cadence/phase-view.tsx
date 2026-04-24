@@ -85,10 +85,19 @@ function LifecycleStageCard({ card }: { card: LifecycleStageCardModel }) {
         )}
       </div>
       {card.stage?.actionRequired ? (
-        <div className="mt-2">
+        <div className="mt-2 space-y-2">
           <span className="rounded-full border border-destructive/35 bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
             Action required
           </span>
+          {card.stage.unblock ? (
+            <div className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-[11px] leading-5 text-muted-foreground">
+              <p className="text-foreground/85">{card.stage.unblock.reason}</p>
+              <p className="mt-1 font-mono text-[10px] text-muted-foreground/90">
+                gate: {card.stage.unblock.gateKey}
+                {card.stage.unblock.actionId ? ` · action: ${card.stage.unblock.actionId}` : ''}
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

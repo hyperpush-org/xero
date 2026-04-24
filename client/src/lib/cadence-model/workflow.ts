@@ -26,6 +26,9 @@ export const planningLifecycleStageSchema = z
     nodeId: z.string().trim().min(1),
     status: phaseStatusSchema,
     actionRequired: z.boolean(),
+    unblockReason: nonEmptyOptionalTextSchema,
+    unblockGateKey: nonEmptyOptionalTextSchema,
+    unblockActionId: nonEmptyOptionalTextSchema,
     lastTransitionAt: isoTimestampSchema.nullable().optional(),
   })
   .strict()
@@ -319,6 +322,12 @@ export interface WorkflowHandoffPackageView {
   createdAt: string
 }
 
+export interface PlanningLifecycleUnblockReasonView {
+  reason: string
+  gateKey: string
+  actionId: string | null
+}
+
 export interface PlanningLifecycleStageView {
   stage: PlanningLifecycleStageKindDto
   stageLabel: string
@@ -327,6 +336,7 @@ export interface PlanningLifecycleStageView {
   status: PhaseStatus
   statusLabel: string
   actionRequired: boolean
+  unblock: PlanningLifecycleUnblockReasonView | null
   lastTransitionAt: string | null
 }
 
@@ -360,6 +370,26 @@ export function humanizeNodeId(nodeId: string): string {
     .filter((part) => part.length > 0)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+function createPlanningLifecycleUnblockReason(stage: PlanningLifecycleStageDto): PlanningLifecycleUnblockReasonView | null {
+  if (!stage.actionRequired) {
+    return null
+  }
+
+  const reason = normalizeOptionalText(stage.unblockReason)
+  const gateKey = normalizeOptionalText(stage.unblockGateKey)
+  const actionId = normalizeOptionalText(stage.unblockActionId)
+
+  if (!reason || !gateKey) {
+    return null
+  }
+
+  return {
+    reason,
+    gateKey,
+    actionId,
+  }
 }
 
 function createEmptyPlanningLifecycleByStage(): Record<PlanningLifecycleStageKindDto, PlanningLifecycleStageView | null> {
@@ -403,6 +433,7 @@ export function mapPlanningLifecycle(projection: PlanningLifecycleProjectionDto)
       status: stage.status,
       statusLabel: getPhaseStatusLabel(stage.status),
       actionRequired: stage.actionRequired,
+      unblock: createPlanningLifecycleUnblockReason(stage),
       lastTransitionAt: normalizeOptionalText(stage.lastTransitionAt),
     }
 

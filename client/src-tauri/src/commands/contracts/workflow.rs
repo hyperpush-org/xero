@@ -247,6 +247,9 @@ pub struct PlanningLifecycleStageDto {
     pub node_id: String,
     pub status: PhaseStatus,
     pub action_required: bool,
+    pub unblock_reason: Option<String>,
+    pub unblock_gate_key: Option<String>,
+    pub unblock_action_id: Option<String>,
     pub last_transition_at: Option<String>,
 }
 

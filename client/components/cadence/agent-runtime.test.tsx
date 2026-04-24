@@ -800,7 +800,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText(/profile credentials/i)).not.toBeInTheDocument()
   })
 
-  it('does not render checkpoint control-loop debug cards or resume controls on the Agent tab', () => {
+  it('renders checkpoint control-loop cards and resume controls on the Agent tab', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
@@ -853,12 +853,12 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Review worktree changes')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Resume run' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
+    expect(screen.getByText('Review worktree changes')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Resume run' })).toBeVisible()
   })
 
-  it('does not render recovered durable denial cards on the Agent tab', () => {
+  it('renders recovered durable denial cards on the Agent tab', () => {
     const deniedActionId = 'flow:flow-1:run:run-1:boundary:boundary-denied-1:review_command'
     const deniedCard = makeCheckpointControlLoopCard({
       actionId: deniedActionId,
@@ -912,12 +912,12 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Recovered durable denial')).not.toBeInTheDocument()
-    expect(screen.queryByText('Policy denied')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
+    expect(screen.getByText('Recovered durable denial')).toBeVisible()
+    expect(screen.getAllByText('Policy denied').length).toBeGreaterThan(0)
   })
 
-  it('does not surface operator-answer controls or operator-action failures on the Agent tab', () => {
+  it('surfaces operator-answer controls and operator-action failures on the Agent tab', () => {
     const pendingCard = makeCheckpointControlLoopCard({
       actionId: 'action-pending',
       key: 'action-pending::boundary-1',
@@ -979,12 +979,12 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.queryByRole('heading', { name: 'Checkpoint control loop' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Operator answer for action-pending')).not.toBeInTheDocument()
-    expect(screen.queryByText('Cadence could not approve action action-pending for boundary boundary-1.')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
+    expect(screen.getByLabelText('Operator answer for action-pending')).toBeVisible()
+    expect(screen.getByText('Cadence could not approve action action-pending for boundary boundary-1.')).toBeVisible()
   })
 
-  it('does not render checkpoint recovery banners or bounded coverage copy on the Agent tab', () => {
+  it('renders checkpoint recovery banners and bounded coverage copy on the Agent tab', () => {
     render(
       <AgentRuntime
         agent={makeAgent({
@@ -1045,9 +1045,9 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.queryByText('Showing last truthful checkpoint loop')).not.toBeInTheDocument()
-    expect(screen.queryByText('Bounded checkpoint coverage')).not.toBeInTheDocument()
-    expect(screen.queryByText('Live hint only')).not.toBeInTheDocument()
+    expect(screen.getByText('Remote escalation is actively polling this checkpoint')).toBeVisible()
+    expect(screen.getByText('Bounded checkpoint coverage')).toBeVisible()
+    expect(screen.getByText('Live hint only')).toBeVisible()
   })
 
   it('keeps OpenRouter provider mismatch truthful without rendering runtime setup affordances', () => {
