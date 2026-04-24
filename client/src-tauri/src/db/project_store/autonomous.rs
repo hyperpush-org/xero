@@ -33,6 +33,7 @@ const AUTONOMOUS_ARTIFACT_KIND_TOOL_RESULT: &str = "tool_result";
 const AUTONOMOUS_ARTIFACT_KIND_VERIFICATION_EVIDENCE: &str = "verification_evidence";
 const AUTONOMOUS_ARTIFACT_KIND_POLICY_DENIED: &str = "policy_denied";
 const AUTONOMOUS_ARTIFACT_KIND_SKILL_LIFECYCLE: &str = "skill_lifecycle";
+const MAX_BROWSER_COMPUTER_USE_SUMMARY_TEXT_CHARS: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutonomousRunStatus {
@@ -3527,9 +3528,10 @@ fn validate_autonomous_tool_result_summary(
                 "tool_summary_browser_computer_use_action",
                 "autonomous_run_request_invalid",
             )?;
-            validate_autonomous_artifact_text(
+            validate_bounded_autonomous_artifact_text(
                 &summary.action,
                 "tool_summary_browser_computer_use_action",
+                MAX_BROWSER_COMPUTER_USE_SUMMARY_TEXT_CHARS,
             )?;
 
             if let Some(target) = summary.target.as_deref() {
@@ -3538,9 +3540,10 @@ fn validate_autonomous_tool_result_summary(
                     "tool_summary_browser_computer_use_target",
                     "autonomous_run_request_invalid",
                 )?;
-                validate_autonomous_artifact_text(
+                validate_bounded_autonomous_artifact_text(
                     target,
                     "tool_summary_browser_computer_use_target",
+                    MAX_BROWSER_COMPUTER_USE_SUMMARY_TEXT_CHARS,
                 )?;
             }
 
@@ -3550,9 +3553,10 @@ fn validate_autonomous_tool_result_summary(
                     "tool_summary_browser_computer_use_outcome",
                     "autonomous_run_request_invalid",
                 )?;
-                validate_autonomous_artifact_text(
+                validate_bounded_autonomous_artifact_text(
                     outcome,
                     "tool_summary_browser_computer_use_outcome",
+                    MAX_BROWSER_COMPUTER_USE_SUMMARY_TEXT_CHARS,
                 )?;
             }
 
@@ -3567,6 +3571,8 @@ fn validate_autonomous_tool_result_summary(
                 | BrowserComputerUseActionStatus::Failed
                 | BrowserComputerUseActionStatus::Blocked => {}
             }
+
+            validate_browser_computer_use_status_for_tool_state(tool_state, &summary.status)?;
         }
         ToolResultSummary::McpCapability(summary) => {
             if command_result.is_some() {
@@ -3743,6 +3749,54 @@ fn validate_autonomous_artifact_text(value: &str, field: &str) -> Result<(), Com
     }
 
     Ok(())
+}
+
+fn validate_bounded_autonomous_artifact_text(
+    value: &str,
+    field: &str,
+    max_chars: usize,
+) -> Result<(), CommandError> {
+    validate_autonomous_artifact_text(value, field)?;
+    if value.chars().count() > max_chars {
+        return Err(CommandError::user_fixable(
+            "autonomous_run_request_invalid",
+            format!(
+                "Autonomous artifact field `{field}` must be <= {max_chars} characters after sanitization."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_browser_computer_use_status_for_tool_state(
+    tool_state: &AutonomousToolCallStateRecord,
+    status: &BrowserComputerUseActionStatus,
+) -> Result<(), CommandError> {
+    let allowed = match tool_state {
+        AutonomousToolCallStateRecord::Pending => {
+            matches!(status, BrowserComputerUseActionStatus::Pending)
+        }
+        AutonomousToolCallStateRecord::Running => matches!(
+            status,
+            BrowserComputerUseActionStatus::Pending | BrowserComputerUseActionStatus::Running
+        ),
+        AutonomousToolCallStateRecord::Succeeded => {
+            matches!(status, BrowserComputerUseActionStatus::Succeeded)
+        }
+        AutonomousToolCallStateRecord::Failed => matches!(
+            status,
+            BrowserComputerUseActionStatus::Failed | BrowserComputerUseActionStatus::Blocked
+        ),
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(CommandError::user_fixable(
+            "autonomous_run_request_invalid",
+            "Cadence rejected browser/computer-use tool_summary metadata whose status does not match the tool_state lifecycle.",
+        ))
+    }
 }
 
 fn autonomous_artifact_payload_kind(payload: &AutonomousArtifactPayloadRecord) -> &'static str {

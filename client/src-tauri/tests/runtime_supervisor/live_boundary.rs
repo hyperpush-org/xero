@@ -392,6 +392,362 @@ pub(crate) fn detached_supervisor_live_event_drops_oversized_mcp_summary_fields(
     assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
 }
 
+pub(crate) fn detached_supervisor_live_event_replays_valid_browser_computer_use_tool_summaries() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-browser-summary-valid";
+    let repo_root = seed_project(&root, project_id, "repo-browser-summary-valid", "repo");
+    let state = DesktopState::default();
+
+    let live_lines = vec![
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-1",
+                "tool_name": "browser.click",
+                "tool_state": "running",
+                "detail": "Clicking primary action",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "click",
+                    "status": "running",
+                    "target": "button#primary",
+                    "outcome": null
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-2",
+                "tool_name": "browser.navigate",
+                "tool_state": "succeeded",
+                "detail": "Navigation completed",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "navigate",
+                    "status": "succeeded",
+                    "target": "https://example.com/docs",
+                    "outcome": "Loaded docs page"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-computer-1",
+                "tool_name": "computer.drag",
+                "tool_state": "failed",
+                "detail": "Desktop drag blocked",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "computer_use",
+                    "action": "drag",
+                    "status": "blocked",
+                    "target": "Desktop icon",
+                    "outcome": "Permission denied"
+                }
+            })
+        ),
+    ];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-browser-summary-valid",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch browser summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 3
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-browser-summary-valid", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 3);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert_monotonic_sequences(&frames, "run-browser-summary-valid");
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-browser-1"
+            && tool_name == "browser.click"
+            && matches!(tool_state, SupervisorToolCallState::Running)
+            && matches!(
+                summary.surface,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser
+            )
+            && summary.action == "click"
+            && matches!(
+                summary.status,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running
+            )
+            && summary.target.as_deref() == Some("button#primary")
+            && summary.outcome.is_none()
+    ));
+
+    assert!(matches!(
+        &frames[2],
+        SupervisorControlResponse::Event {
+            item:
+                SupervisorLiveEventPayload::Tool {
+                    tool_call_id,
+                    tool_name,
+                    tool_state,
+                    tool_summary:
+                        Some(cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)),
+                    ..
+                },
+            ..
+        } if tool_call_id == "tool-computer-1"
+            && tool_name == "computer.drag"
+            && matches!(tool_state, SupervisorToolCallState::Failed)
+            && matches!(
+                summary.surface,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::ComputerUse
+            )
+            && summary.action == "drag"
+            && matches!(
+                summary.status,
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
+            )
+            && summary.target.as_deref() == Some("Desktop icon")
+            && summary.outcome.as_deref() == Some("Permission denied")
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop browser summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_invalid_browser_computer_use_status_semantics() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-browser-summary-invalid-status";
+    let repo_root = seed_project(
+        &root,
+        project_id,
+        "repo-browser-summary-invalid-status",
+        "repo",
+    );
+    let state = DesktopState::default();
+
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-browser-invalid-status",
+            "tool_name": "browser.click",
+            "tool_state": "failed",
+            "detail": "Click attempt failed",
+            "tool_summary": {
+                "kind": "browser_computer_use",
+                "surface": "browser",
+                "action": "click",
+                "status": "succeeded",
+                "target": "button#primary",
+                "outcome": "Clicked"
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-browser-summary-invalid-status",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch invalid browser summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-browser-summary-invalid-status", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_invalid"
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop invalid browser summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_unsupported_browser_computer_use_summary_payload(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-browser-summary-unsupported";
+    let repo_root = seed_project(
+        &root,
+        project_id,
+        "repo-browser-summary-unsupported",
+        "repo",
+    );
+    let state = DesktopState::default();
+
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-browser-unsupported",
+            "tool_name": "browser.click",
+            "tool_state": "running",
+            "detail": "Clicking primary action",
+            "tool_summary": {
+                "kind": "browser_computer_use",
+                "surface": "browser",
+                "action": "click",
+                "status": "queued",
+                "target": "button#primary"
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-browser-summary-unsupported",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch unsupported browser summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-browser-summary-unsupported", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_unsupported"
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop unsupported browser summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
+pub(crate) fn detached_supervisor_live_event_drops_oversized_browser_computer_use_summary_fields() {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-browser-summary-oversized";
+    let repo_root = seed_project(&root, project_id, "repo-browser-summary-oversized", "repo");
+    let state = DesktopState::default();
+
+    let oversized_outcome = "x".repeat(2048);
+    let live_lines = vec![format!(
+        "{STRUCTURED_EVENT_PREFIX}{}",
+        json!({
+            "kind": "tool",
+            "tool_call_id": "tool-browser-oversized",
+            "tool_name": "browser.click",
+            "tool_state": "running",
+            "detail": "Clicking primary action",
+            "tool_summary": {
+                "kind": "browser_computer_use",
+                "surface": "browser",
+                "action": "click",
+                "status": "running",
+                "target": "button#primary",
+                "outcome": oversized_outcome
+            }
+        })
+    )];
+
+    let launched = launch_detached_runtime_supervisor(
+        &state,
+        launch_request(
+            project_id,
+            &repo_root,
+            "run-browser-summary-oversized",
+            &runtime_shell::script_print_lines_and_sleep(&live_lines, 5),
+        ),
+    )
+    .expect("launch oversized browser summary runtime supervisor");
+
+    wait_for_runtime_run(&state, &repo_root, project_id, |snapshot| {
+        snapshot.run.status == project_store::RuntimeRunStatus::Running
+            && snapshot.last_checkpoint_sequence >= 1
+    });
+
+    let mut reader = attach_reader(
+        &launched.run.transport.endpoint,
+        SupervisorControlRequest::attach(project_id, "run-browser-summary-oversized", None),
+    );
+    let attached = expect_attach_ack(read_supervisor_response(&mut reader));
+    assert_eq!(attached.replayed_count, 1);
+
+    let frames = read_event_frames(&mut reader, attached.replayed_count);
+    assert!(matches!(
+        &frames[0],
+        SupervisorControlResponse::Event {
+            item: SupervisorLiveEventPayload::Activity { code, .. },
+            ..
+        } if code == "runtime_supervisor_live_event_oversized"
+    ));
+
+    let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
+        .expect("stop oversized browser summary runtime supervisor")
+        .expect("runtime run should exist after stop");
+    assert_eq!(stopped.run.status, project_store::RuntimeRunStatus::Stopped);
+}
+
 pub(crate) fn detached_supervisor_persists_redacted_interactive_boundary_and_replays_same_action_identity(
 ) {
     let _guard = supervisor_test_guard();

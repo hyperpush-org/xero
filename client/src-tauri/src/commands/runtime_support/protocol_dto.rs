@@ -208,7 +208,9 @@ fn web_tool_result_content_kind_dto(kind: WebToolResultContentKind) -> WebToolRe
     }
 }
 
-fn browser_computer_use_surface_dto(surface: BrowserComputerUseSurface) -> BrowserComputerUseSurfaceDto {
+fn browser_computer_use_surface_dto(
+    surface: BrowserComputerUseSurface,
+) -> BrowserComputerUseSurfaceDto {
     match surface {
         BrowserComputerUseSurface::Browser => BrowserComputerUseSurfaceDto::Browser,
         BrowserComputerUseSurface::ComputerUse => BrowserComputerUseSurfaceDto::ComputerUse,

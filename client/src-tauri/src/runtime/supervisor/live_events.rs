@@ -23,11 +23,10 @@ use super::{
     SHELL_OUTPUT_PREFIX, STRUCTURED_EVENT_PREFIX,
 };
 use crate::runtime::protocol::{
-    BrowserComputerUseActionStatus, BrowserComputerUseSurface,
-    BrowserComputerUseToolResultSummary, CommandToolResultSummary, FileToolResultSummary,
-    GitToolResultSummary, McpCapabilityKind, McpCapabilityToolResultSummary,
-    SupervisorLiveEventPayload, SupervisorSkillCacheStatus, SupervisorSkillDiagnostic,
-    SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
+    BrowserComputerUseActionStatus, BrowserComputerUseSurface, BrowserComputerUseToolResultSummary,
+    CommandToolResultSummary, FileToolResultSummary, GitToolResultSummary, McpCapabilityKind,
+    McpCapabilityToolResultSummary, SupervisorLiveEventPayload, SupervisorSkillCacheStatus,
+    SupervisorSkillDiagnostic, SupervisorSkillLifecycleResult, SupervisorSkillLifecycleStage,
     SupervisorSkillSourceMetadata, SupervisorToolCallState, ToolResultSummary,
     WebToolResultSummary,
 };
@@ -271,7 +270,7 @@ fn normalize_structured_event(payload: &str) -> NormalizedPtyEvent {
             };
             let tool_summary = value
                 .get("tool_summary")
-                .map(sanitize_tool_result_summary_value)
+                .map(|summary| sanitize_tool_result_summary_value(summary, &tool_state))
                 .transpose();
             let tool_summary = match tool_summary {
                 Ok(tool_summary) => tool_summary,
@@ -818,6 +817,7 @@ enum ToolSummaryDecodeError {
 
 fn sanitize_tool_result_summary_value(
     value: &serde_json::Value,
+    tool_state: &SupervisorToolCallState,
 ) -> Result<ToolResultSummary, ToolSummaryDecodeError> {
     let parsed = serde_json::from_value::<ToolResultSummary>(value.clone()).map_err(|error| {
         let details = error.to_string();
@@ -827,11 +827,12 @@ fn sanitize_tool_result_summary_value(
             ToolSummaryDecodeError::Invalid
         }
     })?;
-    sanitize_tool_result_summary(parsed)
+    sanitize_tool_result_summary(parsed, tool_state)
 }
 
 fn sanitize_tool_result_summary(
     summary: ToolResultSummary,
+    tool_state: &SupervisorToolCallState,
 ) -> Result<ToolResultSummary, ToolSummaryDecodeError> {
     match summary {
         ToolResultSummary::Command(summary) => Ok(ToolResultSummary::Command(summary)),
@@ -857,11 +858,13 @@ fn sanitize_tool_result_summary(
             truncated: summary.truncated,
         })),
         ToolResultSummary::BrowserComputerUse(summary) => {
+            let status = sanitize_browser_computer_use_action_status(summary.status)?;
+            sanitize_browser_computer_use_status_for_tool_state(tool_state, &status)?;
             Ok(ToolResultSummary::BrowserComputerUse(
                 BrowserComputerUseToolResultSummary {
                     surface: sanitize_browser_computer_use_surface(summary.surface)?,
                     action: sanitize_required_tool_summary_text(summary.action)?,
-                    status: sanitize_browser_computer_use_action_status(summary.status)?,
+                    status,
                     target: sanitize_optional_tool_summary_text(summary.target)?,
                     outcome: sanitize_optional_tool_summary_text(summary.outcome)?,
                 },
@@ -926,6 +929,34 @@ fn sanitize_browser_computer_use_action_status(
         | BrowserComputerUseActionStatus::Succeeded
         | BrowserComputerUseActionStatus::Failed
         | BrowserComputerUseActionStatus::Blocked => Ok(status),
+    }
+}
+
+fn sanitize_browser_computer_use_status_for_tool_state(
+    tool_state: &SupervisorToolCallState,
+    status: &BrowserComputerUseActionStatus,
+) -> Result<(), ToolSummaryDecodeError> {
+    let allowed = match tool_state {
+        SupervisorToolCallState::Pending => {
+            matches!(status, BrowserComputerUseActionStatus::Pending)
+        }
+        SupervisorToolCallState::Running => matches!(
+            status,
+            BrowserComputerUseActionStatus::Pending | BrowserComputerUseActionStatus::Running
+        ),
+        SupervisorToolCallState::Succeeded => {
+            matches!(status, BrowserComputerUseActionStatus::Succeeded)
+        }
+        SupervisorToolCallState::Failed => matches!(
+            status,
+            BrowserComputerUseActionStatus::Failed | BrowserComputerUseActionStatus::Blocked
+        ),
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(ToolSummaryDecodeError::Invalid)
     }
 }
 

@@ -445,6 +445,159 @@ pub(crate) fn runtime_stream_replays_mcp_tool_summary_variant_with_monotonic_seq
     stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);
 }
 
+pub(crate) fn runtime_stream_replays_browser_computer_use_tool_summary_variant_with_monotonic_sequence(
+) {
+    let _guard = supervisor_test_guard();
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime = seed_authenticated_runtime(&app, &auth_store_path, &project_id);
+
+    let live_lines = vec![
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-1",
+                "tool_name": "browser.click",
+                "tool_state": "running",
+                "detail": "Clicking primary action",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "click",
+                    "status": "running",
+                    "target": "button#primary",
+                    "outcome": null
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-browser-2",
+                "tool_name": "browser.navigate",
+                "tool_state": "succeeded",
+                "detail": "Navigation completed",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "browser",
+                    "action": "navigate",
+                    "status": "succeeded",
+                    "target": "https://example.com/docs",
+                    "outcome": "Loaded docs page"
+                }
+            })
+        ),
+        format!(
+            "{STRUCTURED_EVENT_PREFIX}{}",
+            json!({
+                "kind": "tool",
+                "tool_call_id": "tool-computer-1",
+                "tool_name": "computer.drag",
+                "tool_state": "failed",
+                "detail": "Desktop drag blocked",
+                "tool_summary": {
+                    "kind": "browser_computer_use",
+                    "surface": "computer_use",
+                    "action": "drag",
+                    "status": "blocked",
+                    "target": "Desktop icon",
+                    "outcome": "Permission denied"
+                }
+            })
+        ),
+    ];
+
+    let launched = launch_supervised_run(
+        app.state::<DesktopState>().inner(),
+        &project_id,
+        &repo_root,
+        "run-browser-stream",
+        &runtime_shell::script_print_lines_and_sleep(&live_lines, 3),
+    );
+
+    wait_for_runtime_run(
+        app.state::<DesktopState>().inner(),
+        &repo_root,
+        &project_id,
+        |snapshot| {
+            snapshot.run.status == RuntimeRunStatus::Running
+                && snapshot.last_checkpoint_sequence >= 3
+        },
+    );
+
+    let (channel, receiver) = capture_stream_channel();
+    start_direct_runtime_stream(
+        &app,
+        &project_id,
+        &repo_root,
+        &runtime,
+        &launched.run.run_id,
+        vec![RuntimeStreamItemKind::Tool, RuntimeStreamItemKind::Complete],
+        channel,
+    );
+
+    let items = collect_until_terminal(receiver);
+    assert_monotonic_sequences(&items, &launched.run.run_id);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Tool,
+            RuntimeStreamItemKind::Complete,
+        ]
+    );
+
+    assert!(matches!(
+        &items[0],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Tool,
+            tool_call_id: Some(tool_call_id),
+            tool_name: Some(tool_name),
+            tool_state: Some(RuntimeToolCallState::Running),
+            detail: Some(detail),
+            tool_summary: Some(ToolResultSummaryDto::BrowserComputerUse(summary)),
+            ..
+        } if tool_call_id == "tool-browser-1"
+            && tool_name == "browser.click"
+            && detail == "Clicking primary action"
+            && summary.surface == cadence_desktop_lib::commands::BrowserComputerUseSurfaceDto::Browser
+            && summary.action == "click"
+            && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Running
+            && summary.target.as_deref() == Some("button#primary")
+            && summary.outcome.is_none()
+    ));
+
+    assert!(matches!(
+        &items[2],
+        RuntimeStreamItemDto {
+            kind: RuntimeStreamItemKind::Tool,
+            tool_call_id: Some(tool_call_id),
+            tool_name: Some(tool_name),
+            tool_state: Some(RuntimeToolCallState::Failed),
+            detail: Some(detail),
+            tool_summary: Some(ToolResultSummaryDto::BrowserComputerUse(summary)),
+            ..
+        } if tool_call_id == "tool-computer-1"
+            && tool_name == "computer.drag"
+            && detail == "Desktop drag blocked"
+            && summary.surface == cadence_desktop_lib::commands::BrowserComputerUseSurfaceDto::ComputerUse
+            && summary.action == "drag"
+            && summary.status == cadence_desktop_lib::commands::BrowserComputerUseActionStatusDto::Blocked
+            && summary.target.as_deref() == Some("Desktop icon")
+            && summary.outcome.as_deref() == Some("Permission denied")
+    ));
+
+    stop_supervisor_run(app.state::<DesktopState>().inner(), &project_id, &repo_root);
+}
+
 pub(crate) fn runtime_stream_contract_serialization_exposes_run_id_sequence_and_activity() {
     let stream_item = serde_json::to_value(RuntimeStreamItemDto {
         kind: RuntimeStreamItemKind::Activity,

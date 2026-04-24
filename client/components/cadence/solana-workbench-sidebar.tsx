@@ -20,6 +20,13 @@ import {
   Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
 import { SolanaLogoIcon } from "./brand-icons"
 import { SolanaAuditPanel } from "./solana-audit-panel"
 import { SolanaDeployPanel } from "./solana-deploy-panel"
@@ -438,6 +445,7 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
           : undefined,
     },
   ]
+  const activeTabLabel = tabs.find((tab) => tab.id === activeTab)?.label ?? "Personas"
 
   return (
     <aside
@@ -466,16 +474,28 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
         tabIndex={open ? 0 : -1}
       />
 
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border/70 pl-3 pr-2">
-        <div className="flex items-center gap-2">
-          <SolanaLogoIcon className="h-3.5 w-3.5 text-muted-foreground/90" mono />
-          <span className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-            Solana Workbench
-          </span>
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <SolanaLogoIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/90" mono />
+          <Breadcrumb aria-label="Solana Workbench breadcrumb" className="min-w-0 overflow-hidden">
+            <BreadcrumbList className="flex-nowrap gap-1.5 text-[11px] font-semibold sm:gap-1.5">
+              <BreadcrumbItem className="min-w-0">
+                <span className="truncate text-muted-foreground">
+                  Solana Workbench
+                </span>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator className="text-muted-foreground/50 [&>svg]:size-3" />
+              <BreadcrumbItem className="min-w-0">
+                <BreadcrumbPage className="truncate text-[11px] font-semibold text-foreground">
+                  {activeTabLabel}
+                </BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
         </div>
         <button
           aria-label="Refresh toolchain"
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground disabled:opacity-60"
+          className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground disabled:opacity-60"
           disabled={workbench.toolchainLoading}
           onClick={() => void workbench.refreshToolchain()}
           type="button"
@@ -503,7 +523,7 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
           role="tablist"
           aria-label="Workbench tools"
           aria-orientation="vertical"
-          className="flex w-10 shrink-0 flex-col items-stretch gap-0.5 overflow-x-hidden overflow-y-auto border-r border-border/70 bg-sidebar scrollbar-thin"
+          className="flex w-10 shrink-0 flex-col items-stretch overflow-x-hidden overflow-y-auto border-r border-border/70 bg-sidebar scrollbar-thin"
         >
           {tabs.map((tab) => (
             <TabButton

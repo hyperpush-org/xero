@@ -180,6 +180,27 @@ fn detached_supervisor_live_event_drops_oversized_mcp_summary_fields() {
 }
 
 #[test]
+fn detached_supervisor_live_event_replays_valid_browser_computer_use_tool_summaries() {
+    live_boundary::detached_supervisor_live_event_replays_valid_browser_computer_use_tool_summaries(
+    );
+}
+
+#[test]
+fn detached_supervisor_live_event_drops_invalid_browser_computer_use_status_semantics() {
+    live_boundary::detached_supervisor_live_event_drops_invalid_browser_computer_use_status_semantics();
+}
+
+#[test]
+fn detached_supervisor_live_event_drops_unsupported_browser_computer_use_summary_payload() {
+    live_boundary::detached_supervisor_live_event_drops_unsupported_browser_computer_use_summary_payload();
+}
+
+#[test]
+fn detached_supervisor_live_event_drops_oversized_browser_computer_use_summary_fields() {
+    live_boundary::detached_supervisor_live_event_drops_oversized_browser_computer_use_summary_fields();
+}
+
+#[test]
 fn detached_supervisor_attach_rejects_finished_run() {
     attach_replay::detached_supervisor_attach_rejects_finished_run();
 }

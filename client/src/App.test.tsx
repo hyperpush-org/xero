@@ -2547,7 +2547,12 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open Solana workbench' }))
 
     expect(screen.getByRole('button', { name: 'Close Solana workbench' })).toBeVisible()
-    expect(screen.getByText('Solana Workbench')).toBeVisible()
+    const breadcrumb = screen.getByRole('navigation', {
+      name: 'Solana Workbench breadcrumb',
+    })
+
+    expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
+    expect(within(breadcrumb).getByText('Personas')).toBeVisible()
   })
 
   it('auto-collapses the project rail in Editor and restores it when leaving if it started expanded', async () => {

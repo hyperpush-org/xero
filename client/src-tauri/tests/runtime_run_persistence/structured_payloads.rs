@@ -205,6 +205,126 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_mcp_tool_result_payloads_
     ));
 }
 
+pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool_result_payloads_and_reloads_them(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Supervisor launched and connected to the project PTY.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run for browser/computer-use structured artifact persistence");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "computer.drag".into();
+        tool.tool_state = project_store::AutonomousToolCallStateRecord::Failed;
+        tool.command_result = None;
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+                    surface:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::ComputerUse,
+                    action: "drag".into(),
+                    status:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked,
+                    target: Some("Desktop icon".into()),
+                    outcome: Some("Permission denied".into()),
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let persisted = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect("persist autonomous run with browser/computer-use structured artifact");
+    let artifact = &persisted.history[0].artifacts[0];
+    let payload_hash = artifact
+        .content_hash
+        .as_ref()
+        .expect("browser/computer-use structured artifact should compute content hash")
+        .clone();
+
+    let stored_payload_json: String = open_state_connection(&repo_root)
+        .query_row(
+            "SELECT payload_json FROM autonomous_unit_artifacts WHERE artifact_id = ?1",
+            params![artifact.artifact_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("read stored browser/computer-use structured payload json");
+    let expected_payload_json = concat!(
+        "{",
+        "\"actionId\":\"action-1\"",
+        ",\"artifactId\":\"artifact-tool-result\"",
+        ",\"attemptId\":\"run-1:unit:1:attempt:1\"",
+        ",\"boundaryId\":\"boundary-1\"",
+        ",\"commandResult\":null",
+        ",\"kind\":\"tool_result\"",
+        ",\"projectId\":\"project-1\"",
+        ",\"runId\":\"run-1\"",
+        ",\"toolCallId\":\"tool-call-1\"",
+        ",\"toolName\":\"computer.drag\"",
+        ",\"toolState\":\"failed\"",
+        ",\"toolSummary\":{\"action\":\"drag\",\"kind\":\"browser_computer_use\",\"outcome\":\"Permission denied\",\"status\":\"blocked\",\"surface\":\"computer_use\",\"target\":\"Desktop icon\"}",
+        ",\"unitId\":\"run-1:unit:1\"",
+        "}"
+    );
+    assert_eq!(stored_payload_json, expected_payload_json);
+
+    let mut hasher = Sha256::new();
+    hasher.update(stored_payload_json.as_bytes());
+    let expected_hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(payload_hash, expected_hash);
+
+    let recovered = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect("reload autonomous run with browser/computer-use structured artifact")
+        .expect("browser/computer-use structured autonomous run should exist");
+    let recovered_summary = recovered
+        .history
+        .iter()
+        .flat_map(|entry| entry.artifacts.iter())
+        .find_map(|artifact| match artifact.payload.as_ref() {
+            Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(payload)) => {
+                payload.tool_summary.as_ref()
+            }
+            _ => None,
+        })
+        .expect("browser/computer-use tool summary should be present after reload");
+    assert!(matches!(
+        recovered_summary,
+        cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(summary)
+            if summary.surface
+                == cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::ComputerUse
+                && summary.action == "drag"
+                && summary.status
+                    == cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
+                && summary.target.as_deref() == Some("Desktop icon")
+                && summary.outcome.as_deref() == Some("Permission denied")
+    ));
+}
+
 pub(crate) fn autonomous_run_persistence_canonicalizes_verification_evidence_payloads_and_reloads_them(
 ) {
     let root = tempfile::tempdir().expect("temp dir");
@@ -502,6 +622,164 @@ pub(crate) fn autonomous_run_persistence_rejects_mcp_tool_summary_with_command_r
     assert_eq!(error.code, "autonomous_run_request_invalid");
 }
 
+pub(crate) fn autonomous_run_persistence_rejects_browser_computer_use_tool_summary_with_command_result(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run for browser/computer-use command-result mismatch");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "browser.click".into();
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+                    surface:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                    action: "click".into(),
+                    status:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
+                    target: Some("button#primary".into()),
+                    outcome: None,
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let error = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect_err("browser/computer-use tool summary with command_result should be rejected");
+    assert_eq!(error.code, "autonomous_run_request_invalid");
+}
+
+pub(crate) fn autonomous_run_persistence_rejects_browser_computer_use_status_tool_state_mismatch() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run for browser/computer-use status mismatch");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "browser.click".into();
+        tool.tool_state = project_store::AutonomousToolCallStateRecord::Failed;
+        tool.command_result = None;
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+                    surface:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                    action: "click".into(),
+                    status:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+                    target: Some("button#primary".into()),
+                    outcome: Some("Clicked".into()),
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let error = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect_err("browser/computer-use status/tool_state mismatch should be rejected");
+    assert_eq!(error.code, "autonomous_run_request_invalid");
+}
+
+pub(crate) fn autonomous_run_persistence_rejects_oversized_browser_computer_use_summary_fields() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run for oversized browser/computer-use summary rejection");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "browser.click".into();
+        tool.tool_state = project_store::AutonomousToolCallStateRecord::Running;
+        tool.command_result = None;
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+                    surface:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                    action: "x".repeat(513),
+                    status:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
+                    target: Some("button#primary".into()),
+                    outcome: None,
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+
+    let error = project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect_err("oversized browser/computer-use summary text should be rejected");
+    assert_eq!(error.code, "autonomous_run_request_invalid");
+}
+
 pub(crate) fn autonomous_run_decode_fails_closed_when_mcp_capability_kind_is_tampered() {
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-1";
@@ -577,6 +855,87 @@ pub(crate) fn autonomous_run_decode_fails_closed_when_mcp_capability_kind_is_tam
 
     let error = project_store::load_autonomous_run(&repo_root, project_id)
         .expect_err("tampered MCP capability kind should fail closed");
+    assert_eq!(error.code, "runtime_run_decode_failed");
+}
+
+pub(crate) fn autonomous_run_decode_fails_closed_when_browser_computer_use_summary_is_tampered() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Bootstrap checkpoint.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist runtime run before browser/computer-use payload tampering");
+
+    let mut artifact = sample_tool_result_artifact(project_id, run_id);
+    if let Some(project_store::AutonomousArtifactPayloadRecord::ToolResult(tool)) =
+        artifact.payload.as_mut()
+    {
+        tool.tool_name = "browser.click".into();
+        tool.tool_state = project_store::AutonomousToolCallStateRecord::Running;
+        tool.command_result = None;
+        tool.tool_summary = Some(
+            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+                    surface:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                    action: "click".into(),
+                    status:
+                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
+                    target: Some("button#primary".into()),
+                    outcome: None,
+                },
+            ),
+        );
+    }
+
+    let mut payload = sample_autonomous_run(project_id, run_id);
+    payload.artifacts = vec![artifact];
+    project_store::upsert_autonomous_run(&repo_root, &payload)
+        .expect("persist browser/computer-use structured artifact before tampering");
+
+    open_state_connection(&repo_root)
+        .execute(
+            "UPDATE autonomous_unit_artifacts SET payload_json = ?1 WHERE artifact_id = ?2",
+            params![
+                concat!(
+                    "{",
+                    "\"kind\":\"tool_result\"",
+                    ",\"projectId\":\"project-1\"",
+                    ",\"runId\":\"run-1\"",
+                    ",\"unitId\":\"run-1:unit:1\"",
+                    ",\"attemptId\":\"run-1:unit:1:attempt:1\"",
+                    ",\"artifactId\":\"artifact-tool-result\"",
+                    ",\"toolCallId\":\"tool-call-1\"",
+                    ",\"toolName\":\"browser.click\"",
+                    ",\"toolState\":\"running\"",
+                    ",\"commandResult\":null",
+                    ",\"toolSummary\":{\"kind\":\"browser_computer_use\",\"surface\":\"browser\",\"action\":\"click\",\"status\":\"queued\",\"target\":\"button#primary\",\"outcome\":null}",
+                    ",\"actionId\":\"action-1\"",
+                    ",\"boundaryId\":\"boundary-1\"",
+                    "}"
+                ),
+                "artifact-tool-result"
+            ],
+        )
+        .expect("tamper browser/computer-use tool summary status");
+
+    let error = project_store::load_autonomous_run(&repo_root, project_id)
+        .expect_err("tampered browser/computer-use summary should fail closed");
     assert_eq!(error.code, "runtime_run_decode_failed");
 }
 
