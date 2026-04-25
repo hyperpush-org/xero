@@ -286,10 +286,11 @@ Outcome: Cadence has one shared vocabulary for skills, skill sources, plugin sou
   - Verification: focused Rust or TypeScript contract tests validate source ids, duplicate handling, and unsupported state transitions.
   - Completed: 2026-04-25. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_source_contract` passed 5 tests and `cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_runtime` passed 7 tests.
 
-- Slice 2.0.2: Define SkillTool semantics.
+- [x] Slice 2.0.2: Define SkillTool semantics.
   - Scope: specify model-visible operations for listing, resolving, installing, invoking, and reloading skills; define what skill markdown and supporting assets are allowed to enter model context; define lifecycle events for success and failure.
   - Acceptance: the contract makes it clear when a model may discover a skill, when user approval is required, and how failures are returned without leaking secrets or raw local paths unnecessarily.
   - Verification: schema tests cover valid and invalid tool inputs, redacted error payloads, and lifecycle event projection.
+  - Completed: 2026-04-25. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_tool_contract` passed 6 tests.
 
 ##### Phase 1: Make Installed Skills Durable
 

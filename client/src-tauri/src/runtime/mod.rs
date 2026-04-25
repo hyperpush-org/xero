@@ -27,7 +27,10 @@ pub use agent_core::{
     OWNED_AGENT_SUPERVISOR_KIND,
 };
 pub use autonomous_skill_runtime::{
-    merge_skill_source_records, validate_skill_source_state_transition, AutonomousSkillCacheError,
+    decide_skill_tool_access, merge_skill_source_records, model_may_discover_skill_source,
+    skill_tool_diagnostic_from_command_error, validate_skill_source_state_transition,
+    validate_skill_tool_context_payload, validate_skill_tool_input,
+    validate_skill_tool_lifecycle_event, AutonomousSkillCacheError,
     AutonomousSkillCacheInstallFile, AutonomousSkillCacheManifest,
     AutonomousSkillCacheManifestFile, AutonomousSkillCacheStatus, AutonomousSkillCacheStore,
     AutonomousSkillDiscoverOutput, AutonomousSkillDiscoverRequest,
@@ -40,9 +43,16 @@ pub use autonomous_skill_runtime::{
     AutonomousSkillSourceTreeEntry, AutonomousSkillSourceTreeRequest,
     AutonomousSkillSourceTreeResponse, CadenceSkillSourceKind, CadenceSkillSourceLocator,
     CadenceSkillSourceRecord, CadenceSkillSourceScope, CadenceSkillSourceState,
-    CadenceSkillTrustState, FilesystemAutonomousSkillCacheStore, GithubAutonomousSkillSource,
-    AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO, AUTONOMOUS_SKILL_SOURCE_ROOT,
-    CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
+    CadenceSkillToolAccessDecision, CadenceSkillToolAccessStatus, CadenceSkillToolContextAsset,
+    CadenceSkillToolContextDocument, CadenceSkillToolContextPayload, CadenceSkillToolDiagnostic,
+    CadenceSkillToolInput, CadenceSkillToolLifecycleEvent, CadenceSkillToolLifecycleResult,
+    CadenceSkillToolOperation, CadenceSkillTrustState, FilesystemAutonomousSkillCacheStore,
+    GithubAutonomousSkillSource, AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO,
+    AUTONOMOUS_SKILL_SOURCE_ROOT, CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
+    CADENCE_SKILL_TOOL_CONTRACT_VERSION, CADENCE_SKILL_TOOL_DEFAULT_LIMIT,
+    CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS, CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES,
+    CADENCE_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES, CADENCE_SKILL_TOOL_MAX_LIMIT,
+    CADENCE_SKILL_TOOL_MAX_QUERY_CHARS,
 };
 pub use autonomous_tool_runtime::{
     resolve_imported_repo_root, resolve_imported_repo_root_from_registry, AutonomousCodeDiagnostic,
