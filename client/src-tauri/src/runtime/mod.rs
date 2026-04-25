@@ -1,3 +1,4 @@
+pub mod agent_core;
 pub mod autonomous_orchestrator;
 pub(crate) mod autonomous_run_state;
 pub mod autonomous_skill_runtime;
@@ -5,11 +6,26 @@ pub mod autonomous_tool_runtime;
 pub mod autonomous_web_runtime;
 pub mod autonomous_workflow_progression;
 pub mod platform_adapter;
+pub(crate) mod process_tree;
 pub mod protocol;
 pub mod provider;
+pub(crate) mod redaction;
 pub mod stream;
 pub mod supervisor;
 
+pub use agent_core::{
+    append_user_message, cancel_owned_agent_run, cancelled_error, continue_owned_agent_run,
+    create_owned_agent_run, create_provider_adapter, drive_owned_agent_continuation,
+    drive_owned_agent_run, prepare_owned_agent_continuation, run_owned_agent_task,
+    subscribe_agent_events, AgentEventSubscription, AgentProviderConfig, AgentRunCancellationToken,
+    AgentRunSupervisor, AgentSafetyDecision, AgentToolCall, AgentToolDescriptor, AgentToolResult,
+    AnthropicProviderConfig, BedrockProviderConfig, ContinueOwnedAgentRunRequest,
+    FakeProviderAdapter, OpenAiCompatibleProviderConfig, OpenAiResponsesProviderConfig,
+    OwnedAgentRunRequest, ProviderAdapter, ProviderMessage, ProviderStreamEvent,
+    ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage, ToolRegistry, VertexProviderConfig,
+    AGENT_RUN_CANCELLED_CODE, FAKE_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
+    OWNED_AGENT_SUPERVISOR_KIND,
+};
 pub use autonomous_skill_runtime::{
     AutonomousSkillCacheError, AutonomousSkillCacheInstallFile, AutonomousSkillCacheManifest,
     AutonomousSkillCacheManifestFile, AutonomousSkillCacheStatus, AutonomousSkillCacheStore,
@@ -28,15 +44,26 @@ pub use autonomous_skill_runtime::{
 pub use autonomous_tool_runtime::{
     resolve_imported_repo_root, resolve_imported_repo_root_from_registry, AutonomousCommandOutput,
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyTrace, AutonomousCommandRequest,
+    AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
+    AutonomousCommandSessionOutput, AutonomousCommandSessionReadRequest,
+    AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
+    AutonomousCommandSessionStream, AutonomousDeleteOutput, AutonomousDeleteRequest,
     AutonomousEditOutput, AutonomousEditRequest, AutonomousFindOutput, AutonomousFindRequest,
     AutonomousGitDiffOutput, AutonomousGitDiffRequest, AutonomousGitStatusOutput,
-    AutonomousGitStatusRequest, AutonomousReadOutput, AutonomousReadRequest, AutonomousSearchMatch,
-    AutonomousSearchOutput, AutonomousSearchRequest, AutonomousToolCommandResult,
+    AutonomousGitStatusRequest, AutonomousHashOutput, AutonomousHashRequest, AutonomousListEntry,
+    AutonomousListOutput, AutonomousListRequest, AutonomousMkdirOutput, AutonomousMkdirRequest,
+    AutonomousPatchOutput, AutonomousPatchRequest, AutonomousReadOutput, AutonomousReadRequest,
+    AutonomousRenameOutput, AutonomousRenameRequest, AutonomousSearchMatch, AutonomousSearchOutput,
+    AutonomousSearchRequest, AutonomousToolAccessAction, AutonomousToolAccessGroup,
+    AutonomousToolAccessOutput, AutonomousToolAccessRequest, AutonomousToolCommandResult,
     AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
     AutonomousToolRuntimeLimits, AutonomousWriteOutput, AutonomousWriteRequest,
-    AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
-    AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_WRITE,
+    AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+    AUTONOMOUS_TOOL_COMMAND_SESSION_START, AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+    AUTONOMOUS_TOOL_DELETE, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
+    AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_MKDIR,
+    AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_RENAME, AUTONOMOUS_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_WRITE,
 };
 pub use autonomous_web_runtime::{
     AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchOutput,

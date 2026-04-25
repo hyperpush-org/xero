@@ -1,4 +1,5 @@
 pub mod agent_session;
+pub mod agent_task;
 pub mod apply_workflow_transition;
 pub mod browser;
 pub mod cancel_autonomous_run;
@@ -49,6 +50,10 @@ pub(crate) mod runtime_support;
 pub use agent_session::{
     archive_agent_session, create_agent_session, get_agent_session, list_agent_sessions,
     update_agent_session,
+};
+pub use agent_task::{
+    cancel_agent_run, get_agent_run, list_agent_runs, resume_agent_run, send_agent_message,
+    start_agent_task, subscribe_agent_stream,
 };
 pub use apply_workflow_transition::apply_workflow_transition;
 pub use browser::{
@@ -134,7 +139,8 @@ pub use upsert_runtime_settings::upsert_runtime_settings;
 pub use upsert_workflow_graph::upsert_workflow_graph;
 
 pub use contracts::{
-    autonomous::*, error::*, mcp::*, notifications::*, runtime::*, surface::*, workflow::*,
+    agent::*, autonomous::*, error::*, mcp::*, notifications::*, runtime::*, surface::*,
+    workflow::*,
 };
 
 pub(crate) use contracts::{

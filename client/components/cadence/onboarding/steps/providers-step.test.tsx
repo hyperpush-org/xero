@@ -18,13 +18,14 @@ function makeOpenAiProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
   return {
     profileId: 'openai_codex-default',
     providerId: 'openai_codex',
+    runtimeKind: 'openai_codex',
     label: 'OpenAI Codex',
     modelId: 'openai_codex',
     active: false,
     readiness: {
       ready: false,
       status: 'missing',
-      credentialUpdatedAt: null,
+      proofUpdatedAt: null,
     },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -38,19 +39,22 @@ function makeOpenRouterProfile(overrides: Partial<ProviderProfileDto> = {}): Pro
   return {
     profileId: 'openrouter-default',
     providerId: 'openrouter',
+    runtimeKind: 'openrouter',
     label: 'OpenRouter',
     modelId: 'openai/gpt-4.1-mini',
+    presetId: 'openrouter',
     active: true,
     readiness: ready
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: true,
     migratedAt: '2026-04-20T00:00:00Z',
@@ -64,19 +68,22 @@ function makeAnthropicProfile(overrides: Partial<ProviderProfileDto> = {}): Prov
   return {
     profileId: 'anthropic-default',
     providerId: 'anthropic',
+    runtimeKind: 'anthropic',
     label: 'Anthropic',
     modelId: 'claude-3-7-sonnet-latest',
+    presetId: 'anthropic',
     active: false,
     readiness: ready
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -90,19 +97,22 @@ function makeGithubProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
   return {
     profileId: 'github_models-default',
     providerId: 'github_models',
+    runtimeKind: 'openai_compatible',
     label: 'GitHub Models',
     modelId: 'openai/gpt-4.1',
+    presetId: 'github_models',
     active: false,
     readiness: ready
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -116,8 +126,10 @@ function makeOllamaProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
   return {
     profileId: 'ollama-default',
     providerId: 'ollama',
+    runtimeKind: 'openai_compatible',
     label: 'Ollama',
     modelId: 'llama3.2',
+    presetId: 'ollama',
     active: false,
     baseUrl: 'http://127.0.0.1:11434/v1',
     readiness: ready
@@ -126,12 +138,11 @@ function makeOllamaProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
           status: 'ready',
           proof: 'local',
           proofUpdatedAt: '2026-04-20T00:00:00Z',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -145,8 +156,10 @@ function makeBedrockProfile(overrides: Partial<ProviderProfileDto> = {}): Provid
   return {
     profileId: 'bedrock-default',
     providerId: 'bedrock',
+    runtimeKind: 'anthropic',
     label: 'Amazon Bedrock',
     modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+    presetId: 'bedrock',
     active: false,
     region: 'us-east-1',
     readiness: ready
@@ -155,12 +168,11 @@ function makeBedrockProfile(overrides: Partial<ProviderProfileDto> = {}): Provid
           status: 'ready',
           proof: 'ambient',
           proofUpdatedAt: '2026-04-20T00:00:00Z',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -174,8 +186,10 @@ function makeVertexProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
   return {
     profileId: 'vertex-default',
     providerId: 'vertex',
+    runtimeKind: 'anthropic',
     label: 'Google Vertex AI',
     modelId: 'claude-3-7-sonnet@20250219',
+    presetId: 'vertex',
     active: false,
     region: 'us-central1',
     projectId: 'vertex-project',
@@ -185,12 +199,11 @@ function makeVertexProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
           status: 'ready',
           proof: 'ambient',
           proofUpdatedAt: '2026-04-20T00:00:00Z',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -500,12 +513,12 @@ describe('ProvidersStep', () => {
               ? {
                   ready: true,
                   status: 'ready',
-                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                  proofUpdatedAt: '2026-04-20T12:00:00Z',
                 }
               : {
                   ready: false,
                   status: 'missing',
-                  credentialUpdatedAt: null,
+                  proofUpdatedAt: null,
                 },
           }),
         ],
@@ -636,12 +649,12 @@ describe('ProvidersStep', () => {
               ? {
                   ready: true,
                   status: 'ready',
-                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                  proofUpdatedAt: '2026-04-20T12:00:00Z',
                 }
               : {
                   ready: false,
                   status: 'missing',
-                  credentialUpdatedAt: null,
+                  proofUpdatedAt: null,
                 },
           }),
         ],

@@ -225,6 +225,7 @@ fn seed_ambient_anthropic_family_profile(
     .expect("seed ambient anthropic-family profile");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn seed_openai_compatible_profile(
     app: &tauri::App<tauri::test::MockRuntime>,
     profile_id: &str,

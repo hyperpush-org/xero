@@ -307,10 +307,12 @@ pub(crate) mod test_support {
     use super::*;
     use std::sync::Mutex;
 
+    type AltExtendCall = (String, String, Vec<String>, String);
+
     #[derive(Debug, Default)]
     pub struct MockAltRunner {
         pub create_calls: Mutex<Vec<(String, String)>>,
-        pub extend_calls: Mutex<Vec<(String, String, Vec<String>, String)>>,
+        pub extend_calls: Mutex<Vec<AltExtendCall>>,
         pub fail: Mutex<bool>,
         pub canned_alt: Mutex<Option<String>>,
     }
@@ -323,10 +325,6 @@ pub(crate) mod test_support {
                 )),
                 ..Self::default()
             }
-        }
-
-        pub fn set_fail(&self, fail: bool) {
-            *self.fail.lock().unwrap() = fail;
         }
     }
 

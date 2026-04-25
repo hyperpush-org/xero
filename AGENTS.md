@@ -2,3 +2,4 @@
 - NEVER add temporary debug or test UI during development. Use unit/e2e test only. The only UI you should ever add is user facing only.
 - When executing python commands, ALWAYS use python3
 - You CANNOT open this app in a browers, this is a Tauri app
+- Only run one Cargo caommand at a time to avoid the lock

@@ -20,9 +20,10 @@ use cadence_desktop_lib::{
     runtime::{
         AutonomousCommandPolicyOutcome, AutonomousCommandRequest, AutonomousEditRequest,
         AutonomousFindRequest, AutonomousGitDiffRequest, AutonomousGitStatusRequest,
-        AutonomousReadRequest, AutonomousSearchRequest, AutonomousToolOutput,
-        AutonomousToolRequest, AutonomousToolRuntime, AutonomousToolRuntimeLimits,
-        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousReadRequest, AutonomousSearchRequest, AutonomousToolAccessAction,
+        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
+        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousWebConfig,
+        AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
         AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
@@ -236,6 +237,53 @@ fn spawn_static_http_server(status: u16, content_type: &str, body: &str) -> Stri
     });
 
     format!("http://{address}")
+}
+
+#[test]
+fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(root.path()).expect("runtime");
+
+    let list = runtime
+        .execute(AutonomousToolRequest::ToolAccess(
+            AutonomousToolAccessRequest {
+                action: AutonomousToolAccessAction::List,
+                groups: Vec::new(),
+                tools: Vec::new(),
+                reason: None,
+            },
+        ))
+        .expect("list tool access groups");
+    match list.output {
+        AutonomousToolOutput::ToolAccess(output) => {
+            assert_eq!(output.action, "list");
+            assert!(output
+                .available_groups
+                .iter()
+                .any(|group| group.name == "emulator"));
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+
+    let request = runtime
+        .execute(AutonomousToolRequest::ToolAccess(
+            AutonomousToolAccessRequest {
+                action: AutonomousToolAccessAction::Request,
+                groups: vec!["emulator".into()],
+                tools: vec!["command".into(), "missing_tool".into()],
+                reason: Some("Need to drive app use and run setup.".into()),
+            },
+        ))
+        .expect("request tool access");
+    match request.output {
+        AutonomousToolOutput::ToolAccess(output) => {
+            assert_eq!(output.action, "request");
+            assert!(output.granted_tools.contains(&"emulator".into()));
+            assert!(output.granted_tools.contains(&"command".into()));
+            assert!(output.denied_tools.contains(&"missing_tool".into()));
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
 }
 
 #[test]
@@ -936,11 +984,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
 
     let timeout = yolo_runtime
         .command(AutonomousCommandRequest {
-            argv: if cfg!(windows) {
-                vec!["ping".into(), "-n".into(), "3".into(), "127.0.0.1".into()]
-            } else {
-                vec!["ping".into(), "-c".into(), "3".into(), "127.0.0.1".into()]
-            },
+            argv: shell_argv(runtime_shell::script_sleep(1)),
             cwd: None,
             timeout_ms: Some(50),
         })
@@ -1091,6 +1135,91 @@ fn tool_runtime_command_policy_fails_closed_for_ambiguous_commands() {
             assert_eq!(output.policy.code, "policy_escalated_ambiguous_command");
         }
         other => panic!("unexpected ambiguous command output: {other:?}"),
+    }
+
+    let network = runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["curl".into(), "https://example.com".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("network-capable commands should fail closed before spawn");
+
+    match network.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(output.exit_code, None);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(output.policy.code, "policy_escalated_network_command");
+        }
+        other => panic!("unexpected network command output: {other:?}"),
+    }
+
+    let package_mutation = runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["pnpm".into(), "install".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("package-manager mutation commands should fail closed before spawn");
+
+    match package_mutation.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(output.exit_code, None);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(
+                output.policy.code,
+                "policy_escalated_package_manager_mutation"
+            );
+        }
+        other => panic!("unexpected package mutation command output: {other:?}"),
+    }
+
+    let package_run = runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["pnpm".into(), "run".into(), "deploy".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("package-manager run commands should fail closed before spawn");
+
+    match package_run.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(output.policy.code, "policy_escalated_package_manager_run");
+        }
+        other => panic!("unexpected package run command output: {other:?}"),
+    }
+
+    let package_exec = runtime
+        .command(AutonomousCommandRequest {
+            argv: vec!["pnpm".into(), "exec".into(), "some-tool".into()],
+            cwd: None,
+            timeout_ms: Some(2_000),
+        })
+        .expect("package-manager exec commands should fail closed before spawn");
+
+    match package_exec.output {
+        AutonomousToolOutput::Command(output) => {
+            assert!(!output.spawned);
+            assert_eq!(
+                output.policy.outcome,
+                AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(output.policy.code, "policy_escalated_package_manager_exec");
+        }
+        other => panic!("unexpected package exec command output: {other:?}"),
     }
 }
 

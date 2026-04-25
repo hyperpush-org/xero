@@ -72,6 +72,8 @@ interface AgentRuntimeProps {
   ) => Promise<unknown>
 }
 
+const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
+
 export function AgentRuntime({
   agent,
   onOpenSettings,
@@ -91,6 +93,7 @@ export function AgentRuntime({
   const runtimeStreamItems = agent.runtimeStreamItems ?? runtimeStream?.items ?? []
   const activityItems = agent.activityItems ?? runtimeStream?.activityItems ?? []
   const skillItems = agent.skillItems ?? runtimeStream?.skillItems ?? []
+  const actionRequiredItems = agent.actionRequiredItems ?? runtimeStream?.actionRequired ?? EMPTY_ACTION_REQUIRED_ITEMS
   const transcriptItems = runtimeStream?.transcriptItems ?? []
   const toolCalls = runtimeStream?.toolCalls ?? []
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
@@ -148,6 +151,7 @@ export function AgentRuntime({
     canStartRuntimeRun,
     canStartRuntimeSession,
     canStopRuntimeRun,
+    actionRequiredItems,
     onStartRuntimeRun,
     onStartRuntimeSession,
     onUpdateRuntimeRunControls: canMutateRuntimeRun ? onUpdateRuntimeRunControls : undefined,
@@ -192,7 +196,7 @@ export function AgentRuntime({
       activityItems.length > 0 ||
       toolCalls.length > 0 ||
       skillItems.length > 0 ||
-      (agent.actionRequiredItems ?? runtimeStream?.actionRequired ?? []).length > 0 ||
+      actionRequiredItems.length > 0 ||
       runtimeStream?.completion ||
       runtimeStream?.failure,
   )
@@ -281,6 +285,7 @@ export function AgentRuntime({
                   onOperatorAnswerChange={controller.handleOperatorAnswerChange}
                   onResolveOperatorAction={controller.handleResolveOperatorAction}
                   onResumeOperatorRun={controller.handleResumeOperatorRun}
+                  onResumeLiveActionRequired={controller.handleResumeLiveActionRequired}
                 />
               ) : null}
             </div>

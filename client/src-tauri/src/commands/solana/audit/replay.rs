@@ -45,7 +45,7 @@ impl ExploitKey {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_slug(s: &str) -> Option<Self> {
         match s {
             "wormhole_sig_skip" => Some(ExploitKey::WormholeSigSkip),
             "cashio_fake_collateral" => Some(ExploitKey::CashioFakeCollateral),
@@ -53,6 +53,14 @@ impl ExploitKey {
             "nirvana_flash_loan" => Some(ExploitKey::NirvanaFlashLoan),
             _ => None,
         }
+    }
+}
+
+impl std::str::FromStr for ExploitKey {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_slug(s).ok_or(())
     }
 }
 

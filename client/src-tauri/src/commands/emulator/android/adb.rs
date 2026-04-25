@@ -7,7 +7,7 @@
 //! if the user has multiple devices connected we never fire commands at the
 //! wrong one.
 
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -210,7 +210,7 @@ impl Adb {
 }
 
 fn io_other(msg: String) -> Error {
-    Error::new(ErrorKind::Other, msg)
+    Error::other(msg)
 }
 
 /// Run `adb start-server` without targeting a specific device; used once at

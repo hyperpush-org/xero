@@ -85,6 +85,10 @@ export type CadenceDesktopMutationActions = Pick<
   | 'refreshMcpServerStatuses'
   | 'refreshNotificationRoutes'
   | 'upsertNotificationRoute'
+  | 'createAgentSession'
+  | 'selectAgentSession'
+  | 'archiveAgentSession'
+  | 'renameAgentSession'
 >
 
 export interface UseCadenceDesktopMutationsRefs {

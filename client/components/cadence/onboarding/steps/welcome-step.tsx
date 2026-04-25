@@ -15,7 +15,7 @@ const HIGHLIGHTS: Array<{ Icon: React.ElementType; label: string; hint: string }
 export function WelcomeStep({ onContinue, onSkipAll }: WelcomeStepProps) {
   return (
     <div className="flex flex-col items-center text-center">
-      <div className="relative flex h-14 w-14 items-center justify-center rounded-xl border border-border bg-card/50 animate-in fade-in-0 zoom-in-95 duration-300 ease-out">
+      <div className="relative flex h-14 w-14 items-center justify-center rounded-xl border border-border bg-card/50 animate-in fade-in-0 zoom-in-95 motion-enter">
         <svg className="relative text-primary" fill="none" height="26" viewBox="0 0 24 24" width="26">
           <path d="M4 4h6v6H4V4Z" fill="currentColor" />
           <path d="M14 4h6v6h-6V4Z" fill="currentColor" fillOpacity="0.35" />
@@ -31,7 +31,7 @@ export function WelcomeStep({ onContinue, onSkipAll }: WelcomeStepProps) {
         Configure a provider, import a project, and optionally add notification routes before you enter the app.
       </p>
 
-      <ul className="mt-8 grid w-full grid-cols-3 gap-2 animate-in fade-in-0 slide-in-from-bottom-2 duration-300 ease-out [animation-delay:80ms] [animation-fill-mode:both]">
+      <ul className="mt-8 grid w-full grid-cols-3 gap-2 animate-in fade-in-0 slide-in-from-bottom-2 motion-enter [animation-delay:80ms] [animation-fill-mode:both]">
         {HIGHLIGHTS.map(({ Icon, label, hint }) => (
           <li
             key={label}

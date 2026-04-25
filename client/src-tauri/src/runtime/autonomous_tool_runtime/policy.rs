@@ -8,6 +8,7 @@ use super::{
 use crate::commands::{
     validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
 };
+use crate::runtime::redaction::render_command_for_persistence;
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedCommandRequest {
@@ -240,23 +241,51 @@ fn classify_command(argv: &[String]) -> CommandClassification {
     let program = executable_name(&argv[0]);
 
     if is_shell_wrapper(program) {
-        let code = if shell_wrapper_contains_destructive_pattern(argv) {
-            "policy_escalated_destructive_shell"
-        } else {
-            "policy_escalated_shell_wrapper"
-        };
-        return CommandClassification::Ambiguous {
-            code,
-            reason: format!(
-                "Cadence requires operator review for shell wrapper command `{}` because quoted shell text can hide destructive behavior.",
-                render_command_for_summary(argv)
-            ),
-        };
+        if shell_wrapper_contains_sensitive_pattern(argv) {
+            return CommandClassification::Ambiguous {
+                code: "policy_escalated_sensitive_shell",
+                reason: format!(
+                    "Cadence requires operator review for shell wrapper command `{}` because the script may expand environment variables, access absolute paths, or contact external network surfaces.",
+                    render_command_for_summary(argv)
+                ),
+            };
+        }
+        if shell_wrapper_contains_destructive_pattern(argv) {
+            return CommandClassification::Destructive {
+                code: "policy_escalated_destructive_shell",
+                reason: format!(
+                    "Cadence requires operator review for shell wrapper command `{}` because the script text matches the destructive command classifier.",
+                    render_command_for_summary(argv)
+                ),
+            };
+        }
+        return CommandClassification::Safe(format!(
+            "Active approval mode `yolo` allowed repo-scoped shell wrapper command `{}` because no destructive shell pattern was detected.",
+            render_command_for_summary(argv)
+        ));
     }
 
     match program {
+        "curl" | "wget" | "nc" | "netcat" | "ssh" | "scp" | "sftp" | "ftp" | "ping" => {
+            CommandClassification::Ambiguous {
+                code: "policy_escalated_network_command",
+                reason: format!(
+                    "Cadence requires operator review for `{}` because it can contact external network surfaces.",
+                    render_command_for_summary(argv)
+                ),
+            }
+        }
+        "openssl" if argv.iter().any(|argument| argument == "s_client") => {
+            CommandClassification::Ambiguous {
+                code: "policy_escalated_network_command",
+                reason: format!(
+                    "Cadence requires operator review for `{}` because it can contact external network surfaces.",
+                    render_command_for_summary(argv)
+                ),
+            }
+        }
         "pwd" | "ls" | "dir" | "echo" | "cat" | "type" | "head" | "tail" | "grep"
-        | "rg" | "ping" => CommandClassification::Safe(format!(
+        | "rg" | "sleep" => CommandClassification::Safe(format!(
             "Active approval mode `yolo` allowed repo-scoped command `{}` because it matched the non-destructive command classifier.",
             render_command_for_summary(argv)
         )),
@@ -320,16 +349,18 @@ fn classify_git_command(argv: &[String]) -> CommandClassification {
             }
         }
         Some(
+            "add"
+            | "commit"
+            | "mv"
+            | "rm",
+        ) => safe_command(argv),
+        Some(
             "clean"
             | "reset"
             | "checkout"
             | "switch"
             | "restore"
             | "stash"
-            | "commit"
-            | "add"
-            | "rm"
-            | "mv"
             | "merge"
             | "rebase"
             | "cherry-pick"
@@ -353,19 +384,8 @@ fn classify_cargo_command(argv: &[String]) -> CommandClassification {
         .skip(1)
         .find(|argument| !argument.starts_with('-'));
     match subcommand.map(String::as_str) {
-        Some("check" | "clippy" | "doc" | "metadata" | "test" | "tree") => safe_command(argv),
-        Some("fmt") => {
-            if argv.iter().any(|argument| argument == "--check") {
-                safe_command(argv)
-            } else {
-                CommandClassification::Ambiguous {
-                    code: "policy_escalated_ambiguous_command",
-                    reason: format!(
-                        "Cadence requires operator review for `{}` because `cargo fmt` without `--check` can rewrite files.",
-                        render_command_for_summary(argv)
-                    ),
-                }
-            }
+        Some("check" | "clippy" | "doc" | "metadata" | "test" | "tree" | "build" | "fmt") => {
+            safe_command(argv)
         }
         Some(_) | None => CommandClassification::Ambiguous {
             code: "policy_escalated_ambiguous_command",
@@ -383,25 +403,31 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
         .skip(1)
         .find(|argument| !argument.starts_with('-'));
     match subcommand.map(String::as_str) {
-        Some("install" | "add" | "remove" | "unlink" | "upgrade" | "update" | "publish") => {
-            destructive_command(argv, "package manager commands can mutate repository or environment state")
+        Some("install" | "add" | "remove" | "unlink" | "upgrade" | "update") => {
+            CommandClassification::Ambiguous {
+                code: "policy_escalated_package_manager_mutation",
+                reason: format!(
+                    "Cadence requires operator review for `{}` because package-manager mutation commands can execute install scripts, change dependency state, or contact external registries.",
+                    render_command_for_summary(argv)
+                ),
+            }
         }
-        Some("test" | "lint" | "typecheck") => safe_command(argv),
+        Some("test" | "lint" | "typecheck" | "build") => safe_command(argv),
+        Some("exec") => CommandClassification::Ambiguous {
+            code: "policy_escalated_package_manager_exec",
+            reason: format!(
+                "Cadence requires operator review for `{}` because package-manager exec commands can run arbitrary local or registry-provided binaries.",
+                render_command_for_summary(argv)
+            ),
+        },
+        Some("publish") => destructive_command(argv, "package manager publish commands can affect external registries"),
         Some("run") => {
-            let script = argv
-                .iter()
-                .skip_while(|argument| argument.as_str() != "run")
-                .nth(1)
-                .map(String::as_str);
-            match script {
-                Some("test" | "lint" | "typecheck" | "check") => safe_command(argv),
-                Some(_) | None => CommandClassification::Ambiguous {
-                    code: "policy_escalated_ambiguous_command",
-                    reason: format!(
-                        "Cadence could not classify package-manager command `{}` as non-destructive, so operator review is required.",
-                        render_command_for_summary(argv)
-                    ),
-                },
+            CommandClassification::Ambiguous {
+                code: "policy_escalated_package_manager_run",
+                reason: format!(
+                    "Cadence requires operator review for `{}` because package-manager scripts are project-defined commands and can perform arbitrary side effects.",
+                    render_command_for_summary(argv)
+                ),
             }
         }
         Some(_) | None => CommandClassification::Ambiguous {
@@ -456,16 +482,74 @@ fn is_shell_wrapper(program: &str) -> bool {
     )
 }
 
+fn shell_wrapper_contains_sensitive_pattern(argv: &[String]) -> bool {
+    let program = executable_name(&argv[0]).to_ascii_lowercase();
+    let windows_shell = matches!(program.as_str(), "cmd" | "cmd.exe");
+    let normalized = argv
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    if normalized.contains('$')
+        || normalized.contains('`')
+        || normalized.contains("://")
+        || normalized.contains(">/")
+        || normalized.contains("</")
+        || normalized.contains("../")
+        || normalized.contains("~/")
+    {
+        return true;
+    }
+
+    if windows_shell {
+        if normalized.contains('%')
+            || normalized.contains(":\\")
+            || normalized.contains("..\\")
+            || normalized.contains("~\\")
+        {
+            return true;
+        }
+    } else if normalized.contains(" /") || normalized.starts_with('/') || normalized.contains("\t/")
+    {
+        return true;
+    }
+
+    [
+        "curl ",
+        " wget ",
+        "wget ",
+        "nc ",
+        " netcat ",
+        "ssh ",
+        " scp ",
+        "sftp ",
+        "ftp ",
+        "openssl s_client",
+        "/dev/tcp/",
+        "/dev/udp/",
+    ]
+    .iter()
+    .any(|pattern| normalized.contains(pattern))
+}
+
 fn shell_wrapper_contains_destructive_pattern(argv: &[String]) -> bool {
     let normalized = argv.join(" ").to_ascii_lowercase();
     [
+        "rm ",
         " rm ",
         " rm-",
+        "del ",
         " del ",
         " erase ",
+        "rmdir ",
         " rmdir ",
         " rd ",
+        "chmod ",
         " chmod ",
+        "chown ",
         " chown ",
         " git clean",
         " git reset",
@@ -473,13 +557,16 @@ fn shell_wrapper_contains_destructive_pattern(argv: &[String]) -> bool {
         " git switch",
         " git restore",
         " git stash",
+        " mkfs",
+        " diskutil",
+        " sudo ",
     ]
     .iter()
     .any(|pattern| normalized.contains(pattern))
 }
 
 fn render_command_for_summary(argv: &[String]) -> String {
-    argv.join(" ")
+    render_command_for_persistence(argv)
 }
 
 fn approval_mode_label(mode: &RuntimeRunApprovalModeDto) -> &'static str {

@@ -42,6 +42,7 @@ interface CheckpointControlLoopSectionProps {
     options?: { userAnswer?: string | null },
   ) => Promise<void>
   onResumeOperatorRun: (actionId: string, options?: { userAnswer?: string | null }) => Promise<void>
+  onResumeLiveActionRequired?: (actionId: string, options?: { userAnswer?: string | null }) => Promise<void>
 }
 
 function normalizeAnswerInput(value: string): string {
@@ -74,6 +75,7 @@ export function CheckpointControlLoopSection({
   onOperatorAnswerChange,
   onResolveOperatorAction,
   onResumeOperatorRun,
+  onResumeLiveActionRequired,
 }: CheckpointControlLoopSectionProps) {
   return (
     <section className="rounded-2xl border border-border/70 bg-card/80 p-5 shadow-sm">
@@ -145,6 +147,7 @@ export function CheckpointControlLoopSection({
                 onOperatorAnswerChange={onOperatorAnswerChange}
                 onResolveOperatorAction={onResolveOperatorAction}
                 onResumeOperatorRun={onResumeOperatorRun}
+                onResumeLiveActionRequired={onResumeLiveActionRequired}
               />
             ))}
           </div>
@@ -165,6 +168,7 @@ function CheckpointControlLoopCardView({
   onOperatorAnswerChange,
   onResolveOperatorAction,
   onResumeOperatorRun,
+  onResumeLiveActionRequired,
 }: {
   card: CheckpointControlLoopCard
   operatorActionStatus: AgentPaneView['operatorActionStatus']
@@ -178,11 +182,17 @@ function CheckpointControlLoopCardView({
     options?: { userAnswer?: string | null },
   ) => Promise<void>
   onResumeOperatorRun: (actionId: string, options?: { userAnswer?: string | null }) => Promise<void>
+  onResumeLiveActionRequired?: (actionId: string, options?: { userAnswer?: string | null }) => Promise<void>
 }) {
   const approval = card.approval
   const normalizedAnswer = normalizeAnswerInput(answerValue)
   const requiresAnswer = approval?.requiresUserAnswer ?? false
   const showAnswerError = Boolean(approval) && requiresAnswer && answerValue.length > 0 && normalizedAnswer.length === 0
+  const canAnswerOwnedLiveAction = Boolean(
+    !approval && card.liveActionRequired?.boundaryId === 'owned_agent' && onResumeLiveActionRequired,
+  )
+  const showOwnedLiveActionAnswerError =
+    canAnswerOwnedLiveAction && answerValue.length > 0 && normalizedAnswer.length === 0
   const actionPending = isOperatorActionPending({
     actionId: card.actionId,
     operatorActionStatus,
@@ -404,13 +414,66 @@ function CheckpointControlLoopCardView({
           </div>
         </div>
       ) : (
-        <div className="mt-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
-          <p className="text-sm font-medium text-foreground">Durable approval row not available</p>
-          <p className="mt-2 text-[12px] leading-5 text-muted-foreground">
-            Cadence is keeping the live, broker, resume, and evidence truth visible for this action even though there is
-            no actionable durable approval row in the current snapshot.
-          </p>
-        </div>
+        <>
+          {canAnswerOwnedLiveAction ? (
+            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(240px,320px)]">
+              <div className="space-y-3">
+                <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+                  <p className="text-sm font-medium text-foreground">Live owned-agent checkpoint</p>
+                  <p className="mt-2 text-[12px] leading-5 text-muted-foreground">
+                    Send a response to resume this paused owned-agent run.
+                  </p>
+                </div>
+
+                <label className="grid gap-2 text-[12px] text-muted-foreground">
+                  <span>Operator response</span>
+                  <Textarea
+                    aria-label={`Owned agent response for ${card.actionId}`}
+                    className="min-h-24"
+                    onChange={(event) => onOperatorAnswerChange(card.actionId, event.target.value)}
+                    placeholder="Tell the owned agent how to proceed."
+                    value={answerValue}
+                  />
+                  {showOwnedLiveActionAnswerError ? (
+                    <span className="text-destructive">A non-empty response is required before resuming this action.</span>
+                  ) : null}
+                </label>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+                <InfoRow label="Action ID" mono value={card.actionId} />
+                <InfoRow label="Boundary" mono value={displayValue(card.boundaryId, 'owned_agent')} />
+                <InfoRow label="Action type" mono value={card.liveActionRequired?.actionType ?? 'operator_review'} />
+                <InfoRow label="Updated" value={formatTimestamp(resumeMeta.timestamp)} />
+                <p className="text-[12px] leading-5 text-muted-foreground">{resumeMeta.detail}</p>
+
+                <Button
+                  disabled={actionPending || normalizedAnswer.length === 0}
+                  onClick={() =>
+                    void onResumeLiveActionRequired?.(card.actionId, {
+                      userAnswer: normalizedAnswer,
+                    })
+                  }
+                  type="button"
+                  variant="secondary"
+                >
+                  {actionPending && pendingOperatorIntent?.kind === 'resume' ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  Send response
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+              <p className="text-sm font-medium text-foreground">Durable approval row not available</p>
+              <p className="mt-2 text-[12px] leading-5 text-muted-foreground">
+                Cadence is keeping the live, broker, resume, and evidence truth visible for this action even though there is
+                no actionable durable approval row in the current snapshot.
+              </p>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

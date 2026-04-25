@@ -544,6 +544,7 @@ pub(crate) fn history_shape(state: &AutonomousRunStateDto) -> Vec<HistoryShapeEn
         .collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn fixture_story_script() -> String {
     runtime_shell::script_join_steps(&[
         runtime_shell::script_sleep(2),

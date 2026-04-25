@@ -27,13 +27,14 @@ function makeOpenAiProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
   return {
     profileId: 'openai_codex-default',
     providerId: 'openai_codex',
+    runtimeKind: 'openai_codex',
     label: 'OpenAI Codex',
     modelId: 'openai_codex',
     active: true,
     readiness: {
       ready: false,
       status: 'missing',
-      credentialUpdatedAt: null,
+      proofUpdatedAt: null,
     },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -47,19 +48,22 @@ function makeOpenRouterProfile(overrides: Partial<ProviderProfileDto> = {}): Pro
   return {
     profileId: 'openrouter-default',
     providerId: 'openrouter',
+    runtimeKind: 'openrouter',
     label: 'OpenRouter',
     modelId: 'openai/gpt-4.1-mini',
+    presetId: 'openrouter',
     active: false,
     readiness: ready
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -73,19 +77,22 @@ function makeAnthropicProfile(overrides: Partial<ProviderProfileDto> = {}): Prov
   return {
     profileId: 'anthropic-default',
     providerId: 'anthropic',
+    runtimeKind: 'anthropic',
     label: 'Anthropic',
     modelId: 'claude-3-7-sonnet-latest',
+    presetId: 'anthropic',
     active: false,
     readiness: ready
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -99,19 +106,22 @@ function makeGithubProfile(overrides: Partial<ProviderProfileDto> = {}): Provide
   return {
     profileId: 'github_models-default',
     providerId: 'github_models',
+    runtimeKind: 'openai_compatible',
     label: 'GitHub Models',
     modelId: 'openai/gpt-4.1',
+    presetId: 'github_models',
     active: false,
     readiness: ready
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -125,8 +135,10 @@ function makeOpenAiApiProfile(overrides: Partial<ProviderProfileDto> = {}): Prov
   return {
     profileId: 'openai_api-default',
     providerId: 'openai_api',
+    runtimeKind: 'openai_compatible',
     label: 'OpenAI-compatible',
     modelId: 'gpt-4.1-mini',
+    presetId: 'openai_api',
     active: false,
     baseUrl: null,
     apiVersion: null,
@@ -134,12 +146,13 @@ function makeOpenAiApiProfile(overrides: Partial<ProviderProfileDto> = {}): Prov
       ? {
           ready: true,
           status: 'ready',
-          credentialUpdatedAt: '2026-04-20T00:00:00Z',
+          proof: 'stored_secret',
+          proofUpdatedAt: '2026-04-20T00:00:00Z',
         }
       : {
           ready: false,
           status: 'missing',
-          credentialUpdatedAt: null,
+          proofUpdatedAt: null,
         },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -712,7 +725,7 @@ describe('SettingsDialog', () => {
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+              proofUpdatedAt: '2026-04-20T12:00:00Z',
             },
           }),
         ],
@@ -724,7 +737,7 @@ describe('SettingsDialog', () => {
     const onSetActiveProviderProfile = vi.fn(async (_profileId: string) => {
       nextProviderProfiles = makeProviderProfiles({
         activeProfileId: 'openrouter-default',
-        profiles: [makeOpenAiProfile({ active: false }), makeOpenRouterProfile({ active: true, readiness: { ready: true, status: 'ready', credentialUpdatedAt: '2026-04-20T12:00:00Z' } })],
+        profiles: [makeOpenAiProfile({ active: false }), makeOpenRouterProfile({ active: true, readiness: { ready: true, status: 'ready', proofUpdatedAt: '2026-04-20T12:00:00Z' } })],
       })
 
       return nextProviderProfiles
@@ -831,12 +844,12 @@ describe('SettingsDialog', () => {
               ? {
                   ready: false,
                   status: 'missing',
-                  credentialUpdatedAt: null,
+                  proofUpdatedAt: null,
                 }
               : {
                   ready: true,
                   status: 'ready',
-                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                  proofUpdatedAt: '2026-04-20T12:00:00Z',
                 },
           }),
         ],
@@ -857,7 +870,7 @@ describe('SettingsDialog', () => {
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-20T12:00:00Z',
+              proofUpdatedAt: '2026-04-20T12:00:00Z',
             },
           }),
         ],
@@ -962,12 +975,12 @@ describe('SettingsDialog', () => {
               ? {
                   ready: false,
                   status: 'missing',
-                  credentialUpdatedAt: null,
+                  proofUpdatedAt: null,
                 }
               : {
                   ready: true,
                   status: 'ready',
-                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                  proofUpdatedAt: '2026-04-20T12:00:00Z',
                 },
           }),
         ],
@@ -1061,12 +1074,12 @@ describe('SettingsDialog', () => {
               ? {
                   ready: false,
                   status: 'missing',
-                  credentialUpdatedAt: null,
+                  proofUpdatedAt: null,
                 }
               : {
                   ready: true,
                   status: 'ready',
-                  credentialUpdatedAt: '2026-04-20T12:00:00Z',
+                  proofUpdatedAt: '2026-04-20T12:00:00Z',
                 },
           }),
         ],
@@ -1326,7 +1339,7 @@ describe('SettingsDialog', () => {
                 readiness: {
                   ready: true,
                   status: 'ready',
-                  credentialUpdatedAt: '2026-04-20T00:00:00Z',
+                  proofUpdatedAt: '2026-04-20T00:00:00Z',
                 },
               }),
             ],

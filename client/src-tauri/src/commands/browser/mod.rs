@@ -110,6 +110,7 @@ pub struct BrowserInternalEventPayload {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn browser_show<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, BrowserState>,

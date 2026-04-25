@@ -1293,6 +1293,5 @@ mod tests {
         // on the parse path via a synthetic helper. Kept here as a
         // placeholder so future contributors know the semver parse lives
         // in `java_major_version` and not in a helper module.
-        assert!(true);
     }
 }

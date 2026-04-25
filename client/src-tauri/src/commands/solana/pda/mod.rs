@@ -185,9 +185,9 @@ pub fn create_with_seed(base: &str, seed_str: &str, owner: &str) -> CommandResul
     let base_bytes = decode_pubkey(base)?;
     let owner_bytes = decode_pubkey(owner)?;
     let mut hasher = Sha256::new();
-    hasher.update(&base_bytes);
+    hasher.update(base_bytes);
     hasher.update(seed_str.as_bytes());
-    hasher.update(&owner_bytes);
+    hasher.update(owner_bytes);
     let digest = hasher.finalize();
     Ok(bs58::encode(digest.as_slice()).into_string())
 }
@@ -240,7 +240,7 @@ fn bad_seed(msg: impl Into<String>) -> CommandError {
 
 fn decode_hex(s: &str) -> CommandResult<Vec<u8>> {
     let trimmed = s.strip_prefix("0x").unwrap_or(s);
-    if trimmed.len() % 2 != 0 {
+    if !trimmed.len().is_multiple_of(2) {
         return Err(bad_seed(format!("hex seed has odd length: {s:?}")));
     }
     let mut out = Vec::with_capacity(trimmed.len() / 2);
@@ -378,8 +378,6 @@ mod tests {
         assert_eq!(d1.pubkey, d2.pubkey);
         assert_eq!(d1.bump, d2.bump);
         assert!(d1.canonical);
-        // Bump is in the expected range (canonical walk starts at 255).
-        assert!(d1.bump <= 255);
         // Using create_program_address with the canonical bump must
         // return the same pubkey.
         let direct = create_program_address(program_id, &seeds, d1.bump).unwrap();
@@ -449,7 +447,7 @@ mod tests {
         // different off-curve bump without crossing the 0 boundary.
         if canonical.bump > 0 {
             for b in (0..canonical.bump).rev() {
-                if let Ok(_) = create_program_address(ATA_PROGRAM, &seeds, b) {
+                if create_program_address(ATA_PROGRAM, &seeds, b).is_ok() {
                     let analysis = analyse_bump(ATA_PROGRAM, &seeds, Some(b)).unwrap();
                     assert!(!analysis.is_canonical);
                     return;

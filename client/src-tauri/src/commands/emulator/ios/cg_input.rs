@@ -23,8 +23,6 @@
 //! target process's queue, which then routes it against its own
 //! windows — regardless of whether those windows are visible.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -471,7 +469,7 @@ fn title_head_matches(title: &str, device_name: &str) -> bool {
     // before the separator so we don't accidentally match
     // "iPhone 17 Pro" against "iPhone 17 Pro Max".
     let head = title
-        .split(|c: char| c == '\u{2014}' || c == '\u{2013}' || c == '-')
+        .split(['\u{2014}', '\u{2013}', '-'])
         .next()
         .unwrap_or("")
         .trim();

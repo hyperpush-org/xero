@@ -92,10 +92,9 @@ pub fn spawn(
         match guard.try_wait() {
             Ok(Some(status)) => {
                 let tail = guard.stderr_tail();
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("emulator exited before boot (status={status}). stderr tail: {tail}"),
-                ));
+                return Err(std::io::Error::other(format!(
+                    "emulator exited before boot (status={status}). stderr tail: {tail}"
+                )));
             }
             Ok(None) if Instant::now() >= deadline => {
                 return Err(std::io::Error::new(

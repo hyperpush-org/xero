@@ -8,7 +8,7 @@ use crate::{
 use super::runtime_support::{launch_or_reconnect_runtime_run, runtime_run_dto_from_snapshot};
 
 #[tauri::command]
-pub fn start_runtime_run<R: Runtime>(
+pub fn start_runtime_run<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: StartRuntimeRunRequestDto,

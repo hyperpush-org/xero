@@ -86,10 +86,7 @@ impl ChildGuard {
     /// `grace` before falling back to `kill`. Returns the final exit status
     /// or `None` if the child was never started / already reaped.
     pub fn shutdown(&mut self, grace: Duration) -> Option<ExitStatus> {
-        let mut child = match self.child.take() {
-            Some(child) => child,
-            None => return None,
-        };
+        let mut child = self.child.take()?;
 
         #[cfg(unix)]
         {

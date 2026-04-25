@@ -58,7 +58,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 use tauri::Manager;
-                commands::emulator::shutdown::shutdown_on_close(&window.app_handle());
+                commands::emulator::shutdown::shutdown_on_close(window.app_handle());
             }
         })
         .plugin(tauri_plugin_dialog::init())
@@ -72,6 +72,13 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::agent_session::get_agent_session,
             commands::agent_session::update_agent_session,
             commands::agent_session::archive_agent_session,
+            commands::agent_task::start_agent_task,
+            commands::agent_task::send_agent_message,
+            commands::agent_task::cancel_agent_run,
+            commands::agent_task::resume_agent_run,
+            commands::agent_task::get_agent_run,
+            commands::agent_task::list_agent_runs,
+            commands::agent_task::subscribe_agent_stream,
             commands::get_project_snapshot::get_project_snapshot,
             commands::get_repository_status::get_repository_status,
             commands::get_repository_diff::get_repository_diff,

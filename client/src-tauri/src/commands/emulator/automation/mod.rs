@@ -207,14 +207,9 @@ pub struct PushNotificationRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+#[derive(Default)]
 pub struct LogSubscribeRequest {
     pub filter: Option<String>,
-}
-
-impl Default for LogSubscribeRequest {
-    fn default() -> Self {
-        Self { filter: None }
-    }
 }
 
 /// Streamed log entry payload — emitted via `emulator:log` events.

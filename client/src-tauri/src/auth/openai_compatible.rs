@@ -18,7 +18,7 @@ use crate::{
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
-const DEFAULT_GITHUB_MODELS_BASE_URL: &str = "https://models.inference.ai.azure.com";
+const DEFAULT_GITHUB_MODELS_BASE_URL: &str = "https://models.github.ai/inference";
 const DEFAULT_GITHUB_MODELS_CATALOG_URL: &str = "https://models.github.ai/catalog/models";
 const DEFAULT_GEMINI_AI_STUDIO_BASE_URL: &str =
     "https://generativelanguage.googleapis.com/v1beta/openai";

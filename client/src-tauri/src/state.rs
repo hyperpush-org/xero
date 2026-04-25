@@ -14,8 +14,8 @@ use crate::{
     },
     provider_profiles::{PROVIDER_PROFILES_FILE_NAME, PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME},
     runtime::{
-        openai_codex_provider, AutonomousWebConfig, ResolvedRuntimeProvider,
-        RuntimeStreamController, RuntimeSupervisorController,
+        openai_codex_provider, AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig,
+        ResolvedRuntimeProvider, RuntimeStreamController, RuntimeSupervisorController,
     },
 };
 
@@ -57,10 +57,12 @@ pub struct DesktopState {
     openrouter_auth_config_override: Option<OpenRouterAuthConfig>,
     anthropic_auth_config_override: Option<AnthropicAuthConfig>,
     autonomous_web_config_override: Option<AutonomousWebConfig>,
+    owned_agent_provider_config_override: Option<AgentProviderConfig>,
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
     runtime_stream_controller: RuntimeStreamController,
     runtime_supervisor_controller: RuntimeSupervisorController,
+    agent_run_supervisor: AgentRunSupervisor,
     provider_model_catalog_refresh_registry: ProviderModelCatalogRefreshRegistry,
     active_auth_flows: ActiveAuthFlowRegistry,
 }
@@ -149,6 +151,14 @@ impl DesktopState {
         self
     }
 
+    pub fn with_owned_agent_provider_config_override(
+        mut self,
+        config: AgentProviderConfig,
+    ) -> Self {
+        self.owned_agent_provider_config_override = Some(config);
+        self
+    }
+
     pub fn with_failpoints(mut self, failpoints: ImportFailpoints) -> Self {
         self.import_failpoints = failpoints;
         self
@@ -173,6 +183,10 @@ impl DesktopState {
 
     pub fn runtime_supervisor_controller(&self) -> &RuntimeSupervisorController {
         &self.runtime_supervisor_controller
+    }
+
+    pub fn agent_run_supervisor(&self) -> &AgentRunSupervisor {
+        &self.agent_run_supervisor
     }
 
     pub fn provider_model_catalog_refresh_registry(&self) -> &ProviderModelCatalogRefreshRegistry {
@@ -211,6 +225,10 @@ impl DesktopState {
         self.autonomous_web_config_override
             .clone()
             .unwrap_or_else(AutonomousWebConfig::for_platform)
+    }
+
+    pub fn owned_agent_provider_config_override(&self) -> Option<AgentProviderConfig> {
+        self.owned_agent_provider_config_override.clone()
     }
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {

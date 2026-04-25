@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AgentRuntime } from '@/components/cadence/agent-runtime'
+import { AgentSessionsSidebar } from '@/components/cadence/agent-sessions-sidebar'
 import { type View } from '@/components/cadence/data'
 import { EmptyPanel } from '@/components/cadence/empty-panel'
 import { ExecutionView } from '@/components/cadence/execution-view'
@@ -18,6 +19,7 @@ import { SolanaWorkbenchSidebar } from '@/components/cadence/solana-workbench-si
 import { SettingsDialog } from '@/components/cadence/settings-dialog'
 import { type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
+import { cn } from '@/lib/utils'
 
 export interface CadenceAppProps {
   adapter?: CadenceDesktopAdapter
@@ -40,7 +42,6 @@ function resolveFooterRuntimeState(status: {
 
 export function CadenceApp({ adapter }: CadenceAppProps) {
   const [activeView, setActiveView] = useState<View>('phases')
-  const [mountedExecutionProjectIds, setMountedExecutionProjectIds] = useState<Set<string>>(() => new Set())
   const {
     projects,
     activeProject,
@@ -106,9 +107,14 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
+    createAgentSession,
+    selectAgentSession,
+    archiveAgentSession,
   } = useCadenceDesktopState({ adapter })
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [pendingAgentSessionId, setPendingAgentSessionId] = useState<string | null>(null)
+  const [isCreatingAgentSession, setIsCreatingAgentSession] = useState(false)
   const [gamesOpen, setGamesOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [iosOpen, setIosOpen] = useState(false)
@@ -183,7 +189,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
-  const shouldRestoreSidebarFromEditorRef = useRef(false)
+  const shouldRestoreSidebarFromAutoCollapseRef = useRef(false)
   const previousViewRef = useRef<View>(activeView)
 
   const statusFooter: StatusFooterProps = {
@@ -210,40 +216,27 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   }
 
   useEffect(() => {
-    if (activeView !== 'execution' || !activeProjectId) {
-      return
-    }
-
-    setMountedExecutionProjectIds((current) => {
-      if (current.has(activeProjectId)) {
-        return current
-      }
-
-      const next = new Set(current)
-      next.add(activeProjectId)
-      return next
-    })
-  }, [activeProjectId, activeView])
-
-  useEffect(() => {
     const previousView = previousViewRef.current
+    const autoCollapseViews: View[] = ['execution', 'agent']
+    const isAutoCollapseView = autoCollapseViews.includes(activeView)
+    const wasAutoCollapseView = autoCollapseViews.includes(previousView)
 
-    if (activeView === 'execution' && previousView !== 'execution') {
-      shouldRestoreSidebarFromEditorRef.current = !sidebarCollapsed
+    if (isAutoCollapseView && !wasAutoCollapseView) {
+      shouldRestoreSidebarFromAutoCollapseRef.current = !sidebarCollapsed
       if (!sidebarCollapsed) {
         setSidebarCollapsed(true)
       }
     }
 
-    if (activeView !== 'execution' && previousView === 'execution' && shouldRestoreSidebarFromEditorRef.current) {
-      shouldRestoreSidebarFromEditorRef.current = false
+    if (!isAutoCollapseView && wasAutoCollapseView && shouldRestoreSidebarFromAutoCollapseRef.current) {
+      shouldRestoreSidebarFromAutoCollapseRef.current = false
       if (sidebarCollapsed) {
         setSidebarCollapsed(false)
       }
     }
 
-    if (activeView !== 'execution' && previousView !== 'execution') {
-      shouldRestoreSidebarFromEditorRef.current = false
+    if (!isAutoCollapseView && !wasAutoCollapseView) {
+      shouldRestoreSidebarFromAutoCollapseRef.current = false
     }
 
     previousViewRef.current = activeView
@@ -280,75 +273,127 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       )
     }
 
-    const shouldRenderExecutionPanel = Boolean(
-      executionView &&
-        activeProjectId &&
-        (activeView === 'execution' || mountedExecutionProjectIds.has(activeProjectId)),
-    )
+    const shouldRenderExecutionPanel = Boolean(executionView && activeProjectId)
 
-    const primaryBody =
-      activeView === 'agent' && agentView ? (
-        <AgentRuntime
-          agent={agentView}
-          onLogout={() => logoutRuntimeSession()}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onResolveOperatorAction={(actionId, decision, options) =>
-            resolveOperatorAction(actionId, decision, { userAnswer: options?.userAnswer ?? null })
-          }
-          onResumeOperatorRun={(actionId, options) =>
-            resumeOperatorRun(actionId, { userAnswer: options?.userAnswer ?? null })
-          }
-          onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
-          onRetryStream={() => retry()}
-          onStartLogin={() => startOpenAiLogin()}
-          onStartAutonomousRun={() => startAutonomousRun()}
-          onInspectAutonomousRun={() => inspectAutonomousRun()}
-          onCancelAutonomousRun={(runId) => cancelAutonomousRun(runId)}
-          onStartRuntimeRun={(options) => startRuntimeRun(options)}
-          onUpdateRuntimeRunControls={(request) => updateRuntimeRunControls(request)}
-          onStartRuntimeSession={() => startRuntimeSession()}
-          onStopRuntimeRun={(runId) => stopRuntimeRun(runId)}
-          onSubmitManualCallback={(flowId, manualInput) =>
-            submitOpenAiCallback(flowId, { manualInput })
-          }
-          onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
-        />
-      ) : activeView === 'execution' && executionView ? null : workflowView ? (
-        <PhaseView
-          workflow={workflowView}
-          canStartRun={Boolean(
-            agentView?.runtimeRunActionStatus !== undefined &&
-              !agentView.runtimeRun &&
-              agentView.runtimeSession?.isAuthenticated,
-          )}
-          isStartingRun={agentView?.runtimeRunActionStatus === 'running'}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onStartRun={() => startRuntimeRun()}
-        />
-      ) : null
+    const handleSelectAgentSession = (agentSessionId: string) => {
+      if (agentSessionId === activeProject.selectedAgentSessionId) return
+      setPendingAgentSessionId(agentSessionId)
+      void selectAgentSession(agentSessionId).finally(() => {
+        setPendingAgentSessionId(null)
+      })
+    }
+
+    const handleCreateAgentSession = () => {
+      setIsCreatingAgentSession(true)
+      void createAgentSession().finally(() => {
+        setIsCreatingAgentSession(false)
+      })
+    }
+
+    const handleArchiveAgentSession = (agentSessionId: string) => {
+      setPendingAgentSessionId(agentSessionId)
+      void archiveAgentSession(agentSessionId).finally(() => {
+        setPendingAgentSessionId(null)
+      })
+    }
+
+    const isExecutionVisible = activeView === 'execution'
+    const getViewPaneClassName = (visible: boolean) =>
+      cn(
+        'absolute inset-0 flex min-h-0 min-w-0 transform-gpu overflow-hidden transition-[opacity,transform] motion-standard',
+        visible
+          ? 'z-10 translate-x-0 opacity-100'
+          : 'pointer-events-none z-0 translate-x-2 opacity-0',
+      )
 
     return (
       <>
-        {shouldRenderExecutionPanel ? (
-          <div
-            hidden={activeView !== 'execution'}
-            aria-hidden={activeView !== 'execution'}
-            className="flex min-h-0 min-w-0 flex-1"
-          >
-            <ExecutionView
-              execution={executionView}
-              listProjectFiles={listProjectFiles}
-              readProjectFile={readProjectFile}
-              writeProjectFile={writeProjectFile}
-              createProjectEntry={createProjectEntry}
-              renameProjectEntry={renameProjectEntry}
-              deleteProjectEntry={deleteProjectEntry}
-              searchProject={searchProject}
-              replaceInProject={replaceInProject}
-            />
-          </div>
-        ) : null}
-        {primaryBody}
+        <AgentSessionsSidebar
+          projectLabel={activeProject.name}
+          sessions={activeProject.agentSessions}
+          selectedSessionId={activeProject.selectedAgentSessionId}
+          onSelectSession={handleSelectAgentSession}
+          onCreateSession={handleCreateAgentSession}
+          onArchiveSession={handleArchiveAgentSession}
+          pendingSessionId={pendingAgentSessionId}
+          isCreating={isCreatingAgentSession}
+          collapsed={activeView !== 'agent'}
+        />
+        <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          {workflowView ? (
+            <div
+              aria-hidden={activeView !== 'phases'}
+              className={getViewPaneClassName(activeView === 'phases')}
+              inert={activeView !== 'phases' ? true : undefined}
+            >
+              <PhaseView
+                workflow={workflowView}
+                canStartRun={Boolean(
+                  agentView?.runtimeRunActionStatus !== undefined &&
+                    !agentView.runtimeRun &&
+                    agentView.runtimeSession?.isAuthenticated,
+                )}
+                isStartingRun={agentView?.runtimeRunActionStatus === 'running'}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onStartRun={() => startRuntimeRun()}
+              />
+            </div>
+          ) : null}
+
+          {agentView ? (
+            <div
+              aria-hidden={activeView !== 'agent'}
+              className={getViewPaneClassName(activeView === 'agent')}
+              inert={activeView !== 'agent' ? true : undefined}
+            >
+              <AgentRuntime
+                agent={agentView}
+                onLogout={() => logoutRuntimeSession()}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onResolveOperatorAction={(actionId, decision, options) =>
+                  resolveOperatorAction(actionId, decision, { userAnswer: options?.userAnswer ?? null })
+                }
+                onResumeOperatorRun={(actionId, options) =>
+                  resumeOperatorRun(actionId, { userAnswer: options?.userAnswer ?? null })
+                }
+                onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
+                onRetryStream={() => retry()}
+                onStartLogin={() => startOpenAiLogin()}
+                onStartAutonomousRun={() => startAutonomousRun()}
+                onInspectAutonomousRun={() => inspectAutonomousRun()}
+                onCancelAutonomousRun={(runId) => cancelAutonomousRun(runId)}
+                onStartRuntimeRun={(options) => startRuntimeRun(options)}
+                onUpdateRuntimeRunControls={(request) => updateRuntimeRunControls(request)}
+                onStartRuntimeSession={() => startRuntimeSession()}
+                onStopRuntimeRun={(runId) => stopRuntimeRun(runId)}
+                onSubmitManualCallback={(flowId, manualInput) =>
+                  submitOpenAiCallback(flowId, { manualInput })
+                }
+                onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
+              />
+            </div>
+          ) : null}
+
+          {shouldRenderExecutionPanel && executionView ? (
+            <div
+              aria-hidden={!isExecutionVisible}
+              className={getViewPaneClassName(isExecutionVisible)}
+              inert={!isExecutionVisible ? true : undefined}
+            >
+              <ExecutionView
+                execution={executionView}
+                listProjectFiles={listProjectFiles}
+                readProjectFile={readProjectFile}
+                writeProjectFile={writeProjectFile}
+                createProjectEntry={createProjectEntry}
+                renameProjectEntry={renameProjectEntry}
+                deleteProjectEntry={deleteProjectEntry}
+                searchProject={searchProject}
+                replaceInProject={replaceInProject}
+              />
+            </div>
+          ) : null}
+        </div>
       </>
     )
   }

@@ -1,28 +1,82 @@
-import { Check, Moon, Sun } from "lucide-react"
+import { Check, Moon, Palette, Sun } from "lucide-react"
+import { useMemo } from "react"
 import { useTheme } from "@/src/features/theme/theme-provider"
 import type { ThemeDefinition } from "@/src/features/theme/theme-definitions"
 import { cn } from "@/lib/utils"
+import { SectionHeader } from "./section-header"
 
 export function ThemesSection() {
   const { themes, themeId, setThemeId } = useTheme()
 
-  return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h3 className="text-[14px] font-semibold text-foreground">Themes</h3>
-        <p className="mt-1.5 text-[13px] text-muted-foreground">
-          Pick a palette for the entire app. Editor syntax highlighting and diff
-          rendering follow the selected theme.
-        </p>
-      </div>
+  const { dark, light } = useMemo(() => {
+    const dark: ThemeDefinition[] = []
+    const light: ThemeDefinition[] = []
+    for (const theme of themes) {
+      if (theme.appearance === "light") light.push(theme)
+      else dark.push(theme)
+    }
+    return { dark, light }
+  }, [themes])
 
-      <div className="grid gap-3">
+  return (
+    <div className="flex flex-col gap-6">
+      <SectionHeader
+        icon={Palette}
+        title="Themes"
+        description="Pick a palette for the entire app. Editor syntax highlighting and diff rendering follow the selected theme."
+        scope="app-wide"
+      />
+
+      {dark.length > 0 ? (
+        <ThemeGroup
+          icon={Moon}
+          label="Dark"
+          themes={dark}
+          activeId={themeId}
+          onSelect={setThemeId}
+        />
+      ) : null}
+
+      {light.length > 0 ? (
+        <ThemeGroup
+          icon={Sun}
+          label="Light"
+          themes={light}
+          activeId={themeId}
+          onSelect={setThemeId}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+interface ThemeGroupProps {
+  icon: React.ElementType
+  label: string
+  themes: ThemeDefinition[]
+  activeId: string
+  onSelect: (id: string) => void
+}
+
+function ThemeGroup({ icon: Icon, label, themes, activeId, onSelect }: ThemeGroupProps) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-2">
+        <Icon className="h-3 w-3 text-muted-foreground/70" />
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+          {label}
+        </span>
+        <span className="ml-auto text-[10.5px] text-muted-foreground/60">
+          {themes.length}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
         {themes.map((theme) => (
           <ThemeCard
             key={theme.id}
             theme={theme}
-            active={theme.id === themeId}
-            onSelect={() => setThemeId(theme.id)}
+            active={theme.id === activeId}
+            onSelect={() => onSelect(theme.id)}
           />
         ))}
       </div>
@@ -37,85 +91,101 @@ interface ThemeCardProps {
 }
 
 function ThemeCard({ theme, active, onSelect }: ThemeCardProps) {
-  const Icon = theme.appearance === "light" ? Sun : Moon
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={active}
       className={cn(
-        "group flex items-center gap-3.5 rounded-lg border px-3.5 py-3 text-left transition-colors",
+        "group relative flex flex-col gap-3 overflow-hidden rounded-lg border p-3 text-left transition-all motion-fast",
         active
-          ? "border-primary/60 bg-primary/[0.06]"
-          : "border-border bg-card hover:border-border/80 hover:bg-secondary/30",
+          ? "border-primary/60 bg-primary/[0.05] shadow-sm"
+          : "border-border bg-card hover:-translate-y-px hover:border-border/80 hover:bg-secondary/20 hover:shadow-sm",
       )}
     >
-      <ThemeSwatch theme={theme} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <Icon
-            className={cn(
-              "h-3.5 w-3.5 shrink-0",
-              active ? "text-primary" : "text-muted-foreground",
-            )}
-          />
-          <p className="text-[13.5px] font-medium text-foreground">{theme.name}</p>
-          <span
-            className={cn(
-              "rounded-sm px-1.5 py-px text-[10.5px] font-medium uppercase tracking-[0.08em]",
-              theme.appearance === "light"
-                ? "bg-amber-500/10 text-amber-600 dark:text-amber-300"
-                : "bg-slate-500/10 text-muted-foreground",
-            )}
-          >
-            {theme.appearance}
-          </span>
+      <ThemePreview theme={theme} active={active} />
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-[13px] font-medium text-foreground">{theme.name}</p>
+        <div
+          className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
+            active
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-border bg-transparent text-transparent group-hover:border-border/80",
+          )}
+          aria-hidden
+        >
+          <Check className="h-3 w-3" />
         </div>
-        <p className="mt-1 text-[12px] text-muted-foreground">{theme.description}</p>
       </div>
-      <div
-        className={cn(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
-          active
-            ? "border-primary bg-primary text-primary-foreground"
-            : "border-border bg-transparent text-transparent group-hover:border-border/80",
-        )}
-        aria-hidden
-      >
-        <Check className="h-3.5 w-3.5" />
-      </div>
+      <p className="-mt-1.5 line-clamp-2 text-[11.5px] leading-[1.4] text-muted-foreground">
+        {theme.description}
+      </p>
     </button>
   )
 }
 
-function ThemeSwatch({ theme }: { theme: ThemeDefinition }) {
+function ThemePreview({ theme, active }: { theme: ThemeDefinition; active: boolean }) {
   const c = theme.colors
   return (
     <div
-      className="relative h-11 w-14 shrink-0 overflow-hidden rounded-md border border-border/70 shadow-sm"
+      className={cn(
+        "relative h-20 w-full overflow-hidden rounded-md border transition-colors",
+        active ? "border-primary/40" : "border-border/70",
+      )}
       style={{ backgroundColor: c.background }}
       aria-hidden
     >
+      {/* Sidebar */}
       <div
-        className="absolute inset-y-0 left-0 w-3"
+        className="absolute inset-y-0 left-0 w-5"
         style={{ backgroundColor: c.sidebar }}
-      />
-      <div
-        className="absolute left-4 top-1.5 h-1 w-6 rounded-sm"
-        style={{ backgroundColor: c.primary }}
-      />
-      <div
-        className="absolute left-4 top-4 h-1 w-5 rounded-sm"
-        style={{ backgroundColor: c.foreground, opacity: 0.7 }}
-      />
-      <div
-        className="absolute left-4 top-6.5 h-1 w-4 rounded-sm"
-        style={{ backgroundColor: c.mutedForeground }}
-      />
-      <div
-        className="absolute left-4 bottom-1.5 h-1 w-3 rounded-sm"
-        style={{ backgroundColor: c.accent }}
-      />
+      >
+        <div
+          className="mx-1 mt-1.5 h-1 w-3 rounded-sm"
+          style={{ backgroundColor: c.primary }}
+        />
+        <div
+          className="mx-1 mt-1 h-0.5 w-2.5 rounded-sm opacity-50"
+          style={{ backgroundColor: c.foreground }}
+        />
+        <div
+          className="mx-1 mt-1 h-0.5 w-2 rounded-sm opacity-40"
+          style={{ backgroundColor: c.foreground }}
+        />
+      </div>
+      {/* Content lines */}
+      <div className="absolute left-7 top-2 right-2 space-y-1">
+        <div className="flex items-center gap-1">
+          <div
+            className="h-1 w-1 rounded-full"
+            style={{ backgroundColor: c.primary }}
+          />
+          <div
+            className="h-1 flex-1 rounded-sm"
+            style={{ backgroundColor: c.foreground, opacity: 0.7 }}
+          />
+        </div>
+        <div
+          className="h-1 w-3/4 rounded-sm"
+          style={{ backgroundColor: c.mutedForeground }}
+        />
+        <div
+          className="h-1 w-1/2 rounded-sm"
+          style={{ backgroundColor: c.mutedForeground }}
+        />
+      </div>
+      {/* Accent block bottom-right */}
+      <div className="absolute bottom-1.5 right-1.5 flex gap-1">
+        <div
+          className="h-2 w-3 rounded-sm"
+          style={{ backgroundColor: c.accent }}
+        />
+        <div
+          className="h-2 w-2 rounded-sm"
+          style={{ backgroundColor: c.primary }}
+        />
+      </div>
     </div>
   )
 }

@@ -1,3 +1,4 @@
+mod agent_core;
 mod agent_session;
 mod autonomous;
 mod connection;
@@ -8,6 +9,7 @@ mod runtime;
 mod runtime_boundary;
 pub(crate) mod workflow;
 
+pub use agent_core::*;
 pub use agent_session::*;
 pub(crate) use agent_session::{
     ensure_agent_session_active, read_selected_agent_session_row, touch_agent_session_runtime_run,

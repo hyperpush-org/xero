@@ -1,12 +1,16 @@
 use std::{
     path::Path,
     sync::{Arc, Mutex},
+    thread,
+    time::Duration,
 };
 
 use crate::{
     auth::now_timestamp,
+    commands::CommandError,
     db::project_store::{
-        self, NotificationDispatchEnqueueStatus, RuntimeActionRequiredUpsertRecord,
+        self, NotificationDispatchEnqueueStatus, RuntimeActionRequiredPersistedRecord,
+        RuntimeActionRequiredUpsertRecord,
     },
 };
 
@@ -283,7 +287,7 @@ fn emit_runtime_boundary_candidate(
         let _guard = persistence_lock
             .lock()
             .expect("runtime supervisor persistence lock poisoned");
-        project_store::upsert_runtime_action_required(
+        upsert_runtime_action_required_with_retry(
             repo_root,
             &RuntimeActionRequiredUpsertRecord {
                 project_id,
@@ -394,6 +398,42 @@ fn emit_runtime_boundary_candidate(
             "Cadence could not persist the runtime boundary, so the last truthful runtime snapshot remains active.",
         ),
     }
+}
+
+fn upsert_runtime_action_required_with_retry(
+    repo_root: &Path,
+    payload: &RuntimeActionRequiredUpsertRecord,
+) -> Result<RuntimeActionRequiredPersistedRecord, CommandError> {
+    const BACKOFFS: [Duration; 3] = [
+        Duration::from_millis(100),
+        Duration::from_millis(250),
+        Duration::from_millis(500),
+    ];
+
+    let mut attempt = 0;
+    loop {
+        match project_store::upsert_runtime_action_required(repo_root, payload) {
+            Ok(record) => return Ok(record),
+            Err(error)
+                if attempt < BACKOFFS.len()
+                    && should_retry_runtime_action_required_upsert(&error) =>
+            {
+                thread::sleep(BACKOFFS[attempt]);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn should_retry_runtime_action_required_upsert(error: &CommandError) -> bool {
+    error.retryable
+        && matches!(
+            error.code.as_str(),
+            "runtime_action_transaction_failed"
+                | "runtime_action_persist_failed"
+                | "runtime_action_commit_failed"
+        )
 }
 
 fn reject_runtime_boundary_candidate(

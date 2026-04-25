@@ -1237,6 +1237,10 @@ export function useCadenceDesktopState(
     refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
+    createAgentSession,
+    selectAgentSession,
+    archiveAgentSession,
+    renameAgentSession,
   } = useCadenceDesktopMutations({
     adapter,
     refs: {
@@ -1749,5 +1753,9 @@ export function useCadenceDesktopState(
     refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
+    createAgentSession,
+    selectAgentSession,
+    archiveAgentSession,
+    renameAgentSession,
   }
 }

@@ -205,7 +205,7 @@ fn path_is_skipped(rel: &Path, skip_paths: &[PathBuf]) -> bool {
     for comp in rel.components() {
         if let Component::Normal(os) = comp {
             if let Some(s) = os.to_str() {
-                if DEFAULT_SKIP_DIRS.iter().any(|d| *d == s) {
+                if DEFAULT_SKIP_DIRS.contains(&s) {
                     return true;
                 }
             }
@@ -255,7 +255,7 @@ fn scan_file(
         }
     }
 
-    if !ext.is_empty() && !TEXT_EXTENSIONS.iter().any(|e| *e == ext.as_str()) {
+    if !ext.is_empty() && !TEXT_EXTENSIONS.contains(&ext.as_str()) {
         return;
     }
 

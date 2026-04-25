@@ -219,7 +219,7 @@ export function OnboardingFlow({
       <main className="relative z-10 flex flex-1 items-center justify-center overflow-y-auto px-8 py-10">
         <div
           key={currentStep.id}
-          className={`w-full max-w-md animate-in fade-in-0 duration-200 ease-out ${
+          className={`w-full max-w-md animate-in fade-in-0 motion-enter ${
             directionRef.current === 1 ? "slide-in-from-right-4" : "slide-in-from-left-4"
           }`}
         >

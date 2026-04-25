@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Check, LoaderCircle, Plus } from "lucide-react"
+import { Bell, Check, LoaderCircle, Plus } from "lucide-react"
 import type { AgentPaneView } from "@/src/features/cadence/use-cadence-desktop-state"
 import type {
   NotificationRouteKindDto,
@@ -23,6 +23,7 @@ import {
   type RouteFormErrors,
   type RouteFormValues,
 } from "./route-form"
+import { SectionHeader } from "./section-header"
 
 type RoutePending = "save" | "toggle" | null
 
@@ -151,11 +152,13 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h3 className="text-[14px] font-semibold text-foreground">Notifications</h3>
-        <p className="mt-1.5 text-[13px] text-muted-foreground">Route operator prompts to Telegram or Discord.</p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SectionHeader
+        icon={Bell}
+        title="Notifications"
+        description="Route operator prompts to Telegram or Discord. Each route belongs to this project."
+        scope="project-bound"
+      />
 
       <div className="grid gap-3">
         {CHANNELS.map(({ kind, label, description, Icon }) => {
@@ -164,19 +167,39 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
           const hasRoutes = channelRoutes.length > 0
 
           return (
-            <div key={kind} className="rounded-lg border border-border bg-card px-5 py-4">
+            <div
+              key={kind}
+              className={cn(
+                "rounded-lg border bg-card px-5 py-4 transition-colors",
+                hasRoutes ? "border-border" : "border-border/70",
+              )}
+            >
               <div className="flex items-center gap-3.5">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
-                  <Icon className="h-4 w-4 text-foreground/70" />
+                <div
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors",
+                    hasRoutes
+                      ? "border-primary/30 bg-primary/[0.08]"
+                      : "border-border bg-secondary/60",
+                  )}
+                >
+                  <Icon className={cn("h-4 w-4", hasRoutes ? "text-primary" : "text-foreground/70")} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[14px] font-medium text-foreground">{label}</p>
-                  <p className="text-[12px] text-muted-foreground">{description}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-[14px] font-medium text-foreground">{label}</p>
+                    {hasRoutes ? (
+                      <Badge variant="secondary" className="h-[18px] px-1.5 text-[10.5px] font-medium">
+                        {channelRoutes.length} {channelRoutes.length === 1 ? "route" : "routes"}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 text-[12px] text-muted-foreground">{description}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {!hasRoutes && !formOpen ? (
                     <>
-                      <Badge variant="outline" className="text-[11px]">
+                      <Badge variant="outline" className="text-[11px] text-muted-foreground">
                         Not configured
                       </Badge>
                       <Button size="sm" className="h-8 text-[12px]" disabled={!canMutate} onClick={() => startNew(kind)}>
@@ -247,7 +270,7 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
               {formOpen ? (
                 <div
                   className={cn(
-                    "animate-in fade-in-0 slide-in-from-top-1 duration-200 ease-out",
+                    "animate-in fade-in-0 slide-in-from-top-1 motion-enter",
                     hasRoutes ? "mt-2.5" : "mt-3.5",
                   )}
                 >

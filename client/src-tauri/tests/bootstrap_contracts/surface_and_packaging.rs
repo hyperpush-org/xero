@@ -9,8 +9,8 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        47,
-        "expected forty-seven desktop commands"
+        52,
+        "expected fifty-two desktop commands"
     );
 
     tauri::test::assert_ipc_response(
@@ -133,7 +133,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             GET_AUTONOMOUS_RUN_COMMAND,
-            json!({ "request": { "projectId": "project-1" } }),
+            json!({ "request": { "projectId": "project-1", "agentSessionId": "agent-session-main" } }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -142,7 +142,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             GET_RUNTIME_RUN_COMMAND,
-            json!({ "request": { "projectId": "project-1" } }),
+            json!({ "request": { "projectId": "project-1", "agentSessionId": "agent-session-main" } }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -443,7 +443,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             START_AUTONOMOUS_RUN_COMMAND,
-            json!({ "request": { "projectId": "project-1" } }),
+            json!({ "request": { "projectId": "project-1", "agentSessionId": "agent-session-main" } }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -452,7 +452,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             START_RUNTIME_RUN_COMMAND,
-            json!({ "request": { "projectId": "project-1" } }),
+            json!({ "request": { "projectId": "project-1", "agentSessionId": "agent-session-main" } }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -461,7 +461,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             CANCEL_AUTONOMOUS_RUN_COMMAND,
-            json!({ "request": { "projectId": "project-1", "runId": "run-1" } }),
+            json!({ "request": { "projectId": "project-1", "agentSessionId": "agent-session-main", "runId": "run-1" } }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -470,7 +470,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(
             STOP_RUNTIME_RUN_COMMAND,
-            json!({ "request": { "projectId": "project-1", "runId": "run-1" } }),
+            json!({ "request": { "projectId": "project-1", "agentSessionId": "agent-session-main", "runId": "run-1" } }),
         ),
         Err(CommandError::project_not_found()),
     );
@@ -482,6 +482,7 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
             json!({
                 "request": {
                     "projectId": "project-1",
+                    "agentSessionId": "agent-session-main",
                     "channel": channel_string(),
                     "itemKinds": ["transcript", "tool", "action_required"]
                 }

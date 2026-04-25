@@ -148,7 +148,7 @@ fn diff_instructions(local: &Value, chain: &Value, out: &mut Vec<DriftChange>) {
         }
     }
     // Added instructions
-    for (name, _) in &local_ix {
+    for name in local_ix.keys() {
         if !chain_ix.contains_key(name) {
             out.push(DriftChange {
                 severity: DriftSeverity::NonBreaking,

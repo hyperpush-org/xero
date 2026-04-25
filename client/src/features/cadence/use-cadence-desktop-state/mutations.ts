@@ -2,6 +2,7 @@ import type {
   CadenceDesktopMutationActions,
   UseCadenceDesktopMutationsArgs,
 } from './mutation-support'
+import { useAgentSessionMutations } from './agent-session-mutations'
 import { useOperatorAuthMutations } from './operator-auth-mutations'
 import { useProjectEntryMutations } from './project-entry-mutations'
 import { useRunControlMutations } from './run-control-mutations'
@@ -54,6 +55,12 @@ export function useCadenceDesktopMutations(
     refreshNotificationRoutes,
     upsertNotificationRoute,
   } = useRuntimeSettingsNotificationMutations(args)
+  const {
+    createAgentSession,
+    selectAgentSession,
+    archiveAgentSession,
+    renameAgentSession,
+  } = useAgentSessionMutations(args)
 
   return {
     importProject,
@@ -90,5 +97,9 @@ export function useCadenceDesktopMutations(
     refreshMcpServerStatuses,
     refreshNotificationRoutes,
     upsertNotificationRoute,
+    createAgentSession,
+    selectAgentSession,
+    archiveAgentSession,
+    renameAgentSession,
   }
 }

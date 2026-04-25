@@ -179,7 +179,7 @@ impl AndroidSession {
             .lock()
             .map_err(|_| control_error("control socket mutex poisoned"))?;
         input::send_touch(
-            &mut *guard,
+            &mut guard,
             action,
             px,
             py,
@@ -196,7 +196,7 @@ impl AndroidSession {
             .lock()
             .map_err(|_| control_error("control socket mutex poisoned"))?;
         input::send_scroll(
-            &mut *guard,
+            &mut guard,
             px,
             py,
             self.width as u16,
@@ -212,9 +212,9 @@ impl AndroidSession {
             .control
             .lock()
             .map_err(|_| control_error("control socket mutex poisoned"))?;
-        input::send_key(&mut *guard, input::KeyAction::Down, keycode, 0, 0)
+        input::send_key(&mut guard, input::KeyAction::Down, keycode, 0, 0)
             .map_err(|e| control_error(format!("write key down failed: {e}")))?;
-        input::send_key(&mut *guard, input::KeyAction::Up, keycode, 0, 0)
+        input::send_key(&mut guard, input::KeyAction::Up, keycode, 0, 0)
             .map_err(|e| control_error(format!("write key up failed: {e}")))
     }
 
@@ -225,7 +225,7 @@ impl AndroidSession {
             .lock()
             .map_err(|_| control_error("control socket mutex poisoned"))?;
         for chunk in chunk_text(text, 300) {
-            input::send_text(&mut *guard, chunk)
+            input::send_text(&mut guard, chunk)
                 .map_err(|e| control_error(format!("write text failed: {e}")))?;
         }
         Ok(())
@@ -236,7 +236,7 @@ impl AndroidSession {
             .control
             .lock()
             .map_err(|_| control_error("control socket mutex poisoned"))?;
-        input::send_rotate(&mut *guard, rotation)
+        input::send_rotate(&mut guard, rotation)
             .map_err(|e| control_error(format!("rotate failed: {e}")))
     }
 

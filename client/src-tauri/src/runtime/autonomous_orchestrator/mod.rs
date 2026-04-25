@@ -25,7 +25,7 @@ pub use reconcile::reconcile_runtime_snapshot;
 pub use skill_lifecycle::persist_skill_lifecycle_event;
 pub use supervisor_events::persist_supervisor_event;
 
-const AUTONOMOUS_RUN_PERSIST_MAX_ATTEMPTS: usize = 3;
+const AUTONOMOUS_RUN_PERSIST_MAX_ATTEMPTS: usize = 20;
 const AUTONOMOUS_RUN_PERSIST_RETRY_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

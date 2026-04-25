@@ -286,6 +286,7 @@ pub(crate) fn bedrock_launch_request(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn vertex_launch_request(
     project_id: &str,
     repo_root: &Path,
@@ -318,6 +319,7 @@ pub(crate) fn vertex_launch_request(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn openai_compatible_launch_request(
     project_id: &str,
     repo_root: &Path,

@@ -16,6 +16,7 @@ pub(crate) fn subscribe_runtime_stream_rejects_missing_channel_and_unsupported_k
             json!({
                 "request": {
                     "projectId": "project-1",
+                    "agentSessionId": "agent-session-main",
                     "itemKinds": ["transcript"]
                 }
             }),

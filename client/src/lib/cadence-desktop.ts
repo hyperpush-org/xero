@@ -13,6 +13,28 @@ import {
   type StartAutonomousRunRequestDto,
 } from '@/src/lib/cadence-model/autonomous'
 import {
+  agentRunEventSchema,
+  agentRunSchema,
+  cancelAgentRunRequestSchema,
+  getAgentRunRequestSchema,
+  listAgentRunsRequestSchema,
+  listAgentRunsResponseSchema,
+  resumeAgentRunRequestSchema,
+  sendAgentMessageRequestSchema,
+  startAgentTaskRequestSchema,
+  subscribeAgentStreamRequestSchema,
+  subscribeAgentStreamResponseSchema,
+  type AgentRunDto,
+  type AgentRunEventDto,
+  type CancelAgentRunRequestDto,
+  type GetAgentRunRequestDto,
+  type ListAgentRunsResponseDto,
+  type ResumeAgentRunRequestDto,
+  type SendAgentMessageRequestDto,
+  type StartAgentTaskRequestDto,
+  type SubscribeAgentStreamResponseDto,
+} from '@/src/lib/cadence-model/agent'
+import {
   listNotificationDispatchesRequestSchema,
   listNotificationDispatchesResponseSchema,
   listNotificationRoutesRequestSchema,
@@ -191,6 +213,13 @@ const COMMANDS = {
   updateAgentSession: 'update_agent_session',
   archiveAgentSession: 'archive_agent_session',
   getAutonomousRun: 'get_autonomous_run',
+  startAgentTask: 'start_agent_task',
+  sendAgentMessage: 'send_agent_message',
+  cancelAgentRun: 'cancel_agent_run',
+  resumeAgentRun: 'resume_agent_run',
+  getAgentRun: 'get_agent_run',
+  listAgentRuns: 'list_agent_runs',
+  subscribeAgentStream: 'subscribe_agent_stream',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
   getRuntimeSettings: 'get_runtime_settings',
@@ -392,6 +421,11 @@ export interface CadenceRuntimeStreamSubscription {
   unsubscribe: () => void
 }
 
+export interface CadenceAgentStreamSubscription {
+  response: SubscribeAgentStreamResponseDto
+  unsubscribe: () => void
+}
+
 export interface CadenceDesktopAdapter {
   isDesktopRuntime(): boolean
   pickRepositoryFolder(): Promise<string | null>
@@ -415,6 +449,17 @@ export interface CadenceDesktopAdapter {
   updateAgentSession(request: UpdateAgentSessionRequestDto): Promise<AgentSessionDto>
   archiveAgentSession(request: ArchiveAgentSessionRequestDto): Promise<AgentSessionDto>
   getAutonomousRun(projectId: string, agentSessionId: string): Promise<AutonomousRunStateDto>
+  startAgentTask?(
+    projectId: string,
+    agentSessionId: string,
+    prompt: string,
+    options?: { controls?: RuntimeRunControlInputDto | null },
+  ): Promise<AgentRunDto>
+  sendAgentMessage?(runId: string, prompt: string): Promise<AgentRunDto>
+  cancelAgentRun?(runId: string): Promise<AgentRunDto>
+  resumeAgentRun?(runId: string, response: string): Promise<AgentRunDto>
+  getAgentRun?(runId: string): Promise<AgentRunDto>
+  listAgentRuns?(projectId: string, agentSessionId: string): Promise<ListAgentRunsResponseDto>
   getRuntimeRun(projectId: string, agentSessionId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   getRuntimeSettings(): Promise<RuntimeSettingsDto>
@@ -547,6 +592,11 @@ export interface CadenceDesktopAdapter {
     handler: (payload: RuntimeStreamEventDto) => void,
     onError?: (error: CadenceDesktopError) => void,
   ): Promise<CadenceRuntimeStreamSubscription>
+  subscribeAgentStream?(
+    runId: string,
+    handler: (payload: AgentRunEventDto) => void,
+    onError?: (error: CadenceDesktopError) => void,
+  ): Promise<CadenceAgentStreamSubscription>
   onProjectUpdated(
     handler: (payload: ProjectUpdatedPayloadDto) => void,
     onError?: (error: CadenceDesktopError) => void,
@@ -753,6 +803,98 @@ async function createRuntimeStreamSubscription(
   }
 }
 
+async function createAgentStreamSubscription(
+  runId: string,
+  handler: (payload: AgentRunEventDto) => void,
+  onError?: (error: CadenceDesktopError) => void,
+): Promise<CadenceAgentStreamSubscription> {
+  ensureDesktopRuntime(`Command ${COMMANDS.subscribeAgentStream}`)
+
+  let disposed = false
+  let response: SubscribeAgentStreamResponseDto | null = null
+  let lastDeliveredId: number | null = null
+  const pendingPayloads: unknown[] = []
+  const channel = new Channel<unknown>()
+
+  const unsubscribe = () => {
+    disposed = true
+    lastDeliveredId = null
+    pendingPayloads.length = 0
+    channel.onmessage = () => undefined
+  }
+
+  const deliver = (payload: unknown, activeResponse: SubscribeAgentStreamResponseDto) => {
+    if (disposed) {
+      return
+    }
+
+    try {
+      const event = agentRunEventSchema.parse(payload)
+      if (event.runId !== activeResponse.runId) {
+        throw new CadenceDesktopError({
+          code: 'adapter_contract_mismatch',
+          errorClass: 'adapter_contract_mismatch',
+          message: `Command ${COMMANDS.subscribeAgentStream} channel returned an event for run ${event.runId} while ${activeResponse.runId} is subscribed.`,
+        })
+      }
+
+      if (lastDeliveredId !== null) {
+        if (event.id < lastDeliveredId) {
+          throw new CadenceDesktopError({
+            code: 'adapter_contract_mismatch',
+            errorClass: 'adapter_contract_mismatch',
+            message: `Command ${COMMANDS.subscribeAgentStream} channel returned non-monotonic event id ${event.id} after ${lastDeliveredId} for run ${event.runId}.`,
+          })
+        }
+
+        if (event.id === lastDeliveredId) {
+          return
+        }
+      }
+
+      lastDeliveredId = event.id
+      handler(event)
+    } catch (error) {
+      onError?.(normalizeError(error, `Command ${COMMANDS.subscribeAgentStream} channel`))
+    }
+  }
+
+  channel.onmessage = (payload) => {
+    if (disposed) {
+      return
+    }
+
+    if (!response) {
+      pendingPayloads.push(payload)
+      return
+    }
+
+    deliver(payload, response)
+  }
+
+  try {
+    const request = subscribeAgentStreamRequestSchema.parse({ runId })
+    response = await invokeTyped(COMMANDS.subscribeAgentStream, subscribeAgentStreamResponseSchema, {
+      request: {
+        runId: request.runId,
+        channel,
+      },
+    })
+
+    for (const pendingPayload of pendingPayloads.splice(0, pendingPayloads.length)) {
+      deliver(pendingPayload, response)
+    }
+
+    return {
+      response,
+      unsubscribe,
+    }
+  } catch (error) {
+    unsubscribe()
+    throw normalizeError(error, `Command ${COMMANDS.subscribeAgentStream}`)
+  }
+}
+
 export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   isDesktopRuntime() {
     return isTauri()
@@ -916,6 +1058,66 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
       agentSessionId,
     })
     return invokeTyped(COMMANDS.getAutonomousRun, autonomousRunStateSchema, {
+      request,
+    })
+  },
+
+  startAgentTask(projectId, agentSessionId, prompt, options) {
+    const request: StartAgentTaskRequestDto = startAgentTaskRequestSchema.parse({
+      projectId,
+      agentSessionId,
+      prompt,
+      controls: options?.controls ?? null,
+    })
+    return invokeTyped(COMMANDS.startAgentTask, agentRunSchema, {
+      request,
+    })
+  },
+
+  sendAgentMessage(runId, prompt) {
+    const request: SendAgentMessageRequestDto = sendAgentMessageRequestSchema.parse({
+      runId,
+      prompt,
+    })
+    return invokeTyped(COMMANDS.sendAgentMessage, agentRunSchema, {
+      request,
+    })
+  },
+
+  cancelAgentRun(runId) {
+    const request: CancelAgentRunRequestDto = cancelAgentRunRequestSchema.parse({
+      runId,
+    })
+    return invokeTyped(COMMANDS.cancelAgentRun, agentRunSchema, {
+      request,
+    })
+  },
+
+  resumeAgentRun(runId, response) {
+    const request: ResumeAgentRunRequestDto = resumeAgentRunRequestSchema.parse({
+      runId,
+      response,
+    })
+    return invokeTyped(COMMANDS.resumeAgentRun, agentRunSchema, {
+      request,
+    })
+  },
+
+  getAgentRun(runId) {
+    const request: GetAgentRunRequestDto = getAgentRunRequestSchema.parse({
+      runId,
+    })
+    return invokeTyped(COMMANDS.getAgentRun, agentRunSchema, {
+      request,
+    })
+  },
+
+  listAgentRuns(projectId, agentSessionId) {
+    const request = listAgentRunsRequestSchema.parse({
+      projectId,
+      agentSessionId,
+    })
+    return invokeTyped(COMMANDS.listAgentRuns, listAgentRunsResponseSchema, {
       request,
     })
   },
@@ -1379,6 +1581,10 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   subscribeRuntimeStream(projectId, agentSessionId, itemKinds, handler, onError) {
     return createRuntimeStreamSubscription(projectId, agentSessionId, itemKinds, handler, onError)
+  },
+
+  subscribeAgentStream(runId, handler, onError) {
+    return createAgentStreamSubscription(runId, handler, onError)
   },
 
   onProjectUpdated(handler, onError) {

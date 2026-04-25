@@ -86,6 +86,9 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     verificationRecords: [],
     resumeHistory: [],
     handoffPackages: [],
+    agentSessions: [],
+    selectedAgentSession: null,
+    selectedAgentSessionId: 'agent-session-main',
     notificationBroker: {
       dispatches: [],
       actions: [],
@@ -191,6 +194,7 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
 function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView {
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runId: 'run-1',
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -212,6 +216,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         thinkingEffortLabel: 'Medium',
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
+        planModeRequired: false,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -223,6 +228,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         thinkingEffortLabel: 'Medium',
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
+        planModeRequired: false,
         revision: 1,
         effectiveAt: '2026-04-15T20:00:00Z',
         queuedPrompt: null,
@@ -277,6 +283,7 @@ function makeAutonomousRun(
 ): NonNullable<ProjectDetailView['autonomousRun']> {
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runId: 'auto-run-1',
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -328,8 +335,8 @@ function makeAutonomousUnit(
     runId: 'auto-run-1',
     unitId: 'auto-run-1:checkpoint:2',
     sequence: 2,
-    kind: 'state' as const,
-    kindLabel: 'State',
+    kind: 'executor' as const,
+    kindLabel: 'Executor',
     status: 'active' as const,
     statusLabel: 'Active',
     summary: 'Recovered the current autonomous unit boundary after reload without launching a duplicate continuation.',
@@ -369,6 +376,7 @@ function getStreamStatusLabel(status: RuntimeStreamView['status']): string {
 function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeStreamView {
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId: 'run-1',
     sessionId: 'session-1',
@@ -490,6 +498,16 @@ function makeCheckpointControlLoopCard(
     resumeStateLabel: 'Resume started',
     resumeDetail: 'Operator resumed the selected project runtime session.',
     resumeUpdatedAt: '2026-04-16T20:04:00Z',
+    resumability: 'resumable',
+    resumabilityLabel: 'Resumable',
+    resumabilityDetail: 'Cadence can resume this checkpoint from durable action truth.',
+    isResumable: true,
+    advancedFailureClass: null,
+    advancedFailureClassLabel: null,
+    advancedFailureDiagnosticCode: null,
+    recoveryRecommendation: 'approve_resume',
+    recoveryRecommendationLabel: 'Approve and resume',
+    recoveryRecommendationDetail: 'Resume the run after operator approval.',
     brokerAction: {
       actionId: approval.actionId,
       dispatches: [],
@@ -657,132 +675,18 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
 }
 
 describe('live views', () => {
-  it('renders workflow runtime setup state when runtime is not configured', () => {
-    const onOpenSettings = vi.fn()
+  it('renders the workflow tab as a blank slate', () => {
+    const { container } = render(<PhaseView workflow={makeWorkflow()} />)
 
-    render(<PhaseView onOpenSettings={onOpenSettings} workflow={makeWorkflow()} />)
-
-    expect(screen.getByText('Milestone')).toBeVisible()
-    expect(screen.getByText('M001')).toBeVisible()
-    expect(screen.getByText('Configure agent runtime')).toBeVisible()
-    expect(
-      screen.getByText('Open Settings to choose a provider and model before using the workflow tab for this imported project.'),
-    ).toBeVisible()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Configure' }))
-    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+    expect(container).toBeEmptyDOMElement()
   })
 
-  it('renders the milestone empty state once runtime is configured', () => {
-    render(
-      <PhaseView
-        workflow={makeWorkflow(makeProject(), {
-          runtimeSession: makeRuntimeSession({
-            phase: 'authenticated',
-            phaseLabel: 'Authenticated',
-            runtimeLabel: 'Openai Codex · Authenticated',
-            accountLabel: 'acct@example.com',
-            sessionLabel: 'session-1',
-            lastErrorCode: null,
-            lastError: null,
-            isAuthenticated: true,
-            isSignedOut: false,
-          }),
-        })}
-      />,
-    )
+  it('does not render the mock pipeline controls on the workflow tab', () => {
+    render(<PhaseView workflow={makeWorkflow()} />)
 
-    expect(screen.getByText('No milestone assigned')).toBeVisible()
-    expect(
-      screen.getByText('Assign a milestone to this project to start tracking planning lifecycle stages.'),
-    ).toBeVisible()
-  })
-
-  it('renders lifecycle cards for the current workflow UI', () => {
-    const discussionStage = {
-      stage: 'discussion' as const,
-      stageLabel: 'Discussion',
-      nodeId: 'workflow-discussion',
-      nodeLabel: 'Workflow Discussion',
-      status: 'complete' as const,
-      statusLabel: 'Complete',
-      actionRequired: false,
-      unblock: null,
-      lastTransitionAt: '2026-04-15T17:59:00Z',
-    }
-    const researchStage = {
-      stage: 'research' as const,
-      stageLabel: 'Research',
-      nodeId: 'workflow-research',
-      nodeLabel: 'Workflow Research',
-      status: 'active' as const,
-      statusLabel: 'Active',
-      actionRequired: false,
-      unblock: null,
-      lastTransitionAt: '2026-04-15T18:00:00Z',
-    }
-    const requirementsStage = {
-      stage: 'requirements' as const,
-      stageLabel: 'Requirements',
-      nodeId: 'workflow-requirements',
-      nodeLabel: 'Workflow Requirements',
-      status: 'blocked' as const,
-      statusLabel: 'Blocked',
-      actionRequired: true,
-      unblock: {
-        reason: 'requirements is waiting on a linked operator gate approval.',
-        gateKey: 'requires_user_input',
-        actionId: 'action-requires-input',
-      },
-      lastTransitionAt: '2026-04-15T18:01:00Z',
-    }
-    const roadmapStage = {
-      stage: 'roadmap' as const,
-      stageLabel: 'Roadmap',
-      nodeId: 'workflow-roadmap',
-      nodeLabel: 'Workflow Roadmap',
-      status: 'pending' as const,
-      statusLabel: 'Pending',
-      actionRequired: false,
-      unblock: null,
-      lastTransitionAt: null,
-    }
-
-    render(
-      <PhaseView
-        workflow={makeWorkflow(
-          makeProject({
-            lifecycle: makeLifecycle({
-              stages: [discussionStage, researchStage, requirementsStage, roadmapStage],
-              byStage: {
-                discussion: discussionStage,
-                research: researchStage,
-                requirements: requirementsStage,
-                roadmap: roadmapStage,
-              },
-              hasStages: true,
-              activeStage: researchStage,
-              actionRequiredCount: 1,
-              blockedCount: 1,
-              completedCount: 1,
-              percentComplete: 25,
-            }),
-          }),
-        )}
-      />,
-    )
-
-    expect(screen.getByText('Planning lifecycle')).toBeVisible()
-    expect(screen.getByText('Research active')).toBeVisible()
-    expect(screen.getByText('25%')).toBeVisible()
-    expect(screen.getByText('1/4 stages')).toBeVisible()
-    expect(screen.getByText('Discussion')).toBeVisible()
-    expect(screen.getByText('Research')).toBeVisible()
-    expect(screen.getByText('Requirements')).toBeVisible()
-    expect(screen.getByText('Roadmap')).toBeVisible()
-    expect(screen.getByText('Action required')).toBeVisible()
-    expect(screen.getByText('requirements is waiting on a linked operator gate approval.')).toBeVisible()
-    expect(screen.getByText('gate: requires_user_input · action: action-requires-input')).toBeVisible()
+    expect(screen.queryByText('Cadence Desktop')).not.toBeInTheDocument()
+    expect(screen.queryByTitle(/^P11 —/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open agent runtime/ })).not.toBeInTheDocument()
   })
 
   it('renders the current signed-out agent shell truthfully', () => {
@@ -829,10 +733,13 @@ describe('live views', () => {
     expect(screen.getByText('No transcript yet')).toBeVisible()
     expect(screen.getByText('No runtime activity yet')).toBeVisible()
     expect(screen.getByText('No tool calls yet')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Start run' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     expect(screen.queryByLabelText('Agent input unavailable')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Start the supervised run.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
     await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
   })
 

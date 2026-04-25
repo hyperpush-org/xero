@@ -8,8 +8,6 @@
 //! Android and iOS: callers provide `(x, y) in [0, 1]`, we translate to
 //! device-pixels using the latest known simulator dimensions.
 
-#![cfg(target_os = "macos")]
-
 use serde::Serialize;
 
 /// Hardware buttons we expose to the sidebar and agents. Values don't map

@@ -475,4 +475,11 @@ export interface UseCadenceDesktopStateResult {
   upsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, 'projectId'>,
   ) => Promise<NotificationRouteDto | null>
+  createAgentSession: (options?: {
+    title?: string | null
+    summary?: string | null
+  }) => Promise<ProjectDetailView | null>
+  selectAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
+  archiveAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
+  renameAgentSession: (agentSessionId: string, title: string) => Promise<ProjectDetailView | null>
 }

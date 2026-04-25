@@ -20,7 +20,7 @@ export function StepIndicator({ total, currentIndex }: StepIndicatorProps) {
             key={index}
             aria-current={isCurrent ? "step" : undefined}
             className={cn(
-              "h-1 rounded-full transition-all duration-300 ease-out",
+              "h-1 rounded-full transition-[width,background-color] motion-standard",
               isCurrent
                 ? "w-6 bg-primary"
                 : isDone

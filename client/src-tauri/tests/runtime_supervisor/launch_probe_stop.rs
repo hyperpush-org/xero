@@ -518,31 +518,27 @@ pub(crate) fn detached_supervisor_launches_anthropic_child_with_context_env_and_
         .collect::<Vec<_>>();
 
     assert!(
-        transcripts.iter().any(|text| *text == "key-present"),
+        transcripts.contains(&"key-present"),
         "missing key-present transcript in replay: {}",
         response_dump(&frames)
     );
     assert!(
-        transcripts.iter().any(|text| *text == "provider:anthropic"),
+        transcripts.contains(&"provider:anthropic"),
         "missing provider transcript in replay: {}",
         response_dump(&frames)
     );
     assert!(
-        transcripts
-            .iter()
-            .any(|text| *text == "session:anthropic-session-1"),
+        transcripts.contains(&"session:anthropic-session-1"),
         "missing session transcript in replay: {}",
         response_dump(&frames)
     );
     assert!(
-        transcripts
-            .iter()
-            .any(|text| *text == "model:claude-3-7-sonnet-latest"),
+        transcripts.contains(&"model:claude-3-7-sonnet-latest"),
         "missing model transcript in replay: {}",
         response_dump(&frames)
     );
     assert!(
-        transcripts.iter().any(|text| *text == "thinking:high"),
+        transcripts.contains(&"thinking:high"),
         "missing thinking transcript in replay: {}",
         response_dump(&frames)
     );
@@ -656,17 +652,13 @@ pub(crate) fn detached_supervisor_launches_bedrock_child_with_context_env_and_am
                 })
                 .collect::<Vec<_>>();
 
-            assert!(transcripts.iter().any(|text| *text == "aws-auth-present"));
-            assert!(transcripts.iter().any(|text| *text == "mode:1"));
-            assert!(transcripts.iter().any(|text| *text == "region:us-east-1"));
-            assert!(transcripts
-                .iter()
-                .any(|text| *text == "default-region:us-east-1"));
-            assert!(transcripts.iter().any(|text| *text == "provider:bedrock"));
-            assert!(transcripts
-                .iter()
-                .any(|text| *text == "model:anthropic.claude-3-7-sonnet-20250219-v1:0"));
-            assert!(transcripts.iter().any(|text| *text == "thinking:high"));
+            assert!(transcripts.contains(&"aws-auth-present"));
+            assert!(transcripts.contains(&"mode:1"));
+            assert!(transcripts.contains(&"region:us-east-1"));
+            assert!(transcripts.contains(&"default-region:us-east-1"));
+            assert!(transcripts.contains(&"provider:bedrock"));
+            assert!(transcripts.contains(&"model:anthropic.claude-3-7-sonnet-20250219-v1:0"));
+            assert!(transcripts.contains(&"thinking:high"));
 
             let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
                 .expect("stop bedrock detached runtime supervisor")
@@ -768,17 +760,13 @@ pub(crate) fn detached_supervisor_launches_vertex_child_with_context_env_and_amb
                 })
                 .collect::<Vec<_>>();
 
-            assert!(transcripts.iter().any(|text| *text == "adc-present"));
-            assert!(transcripts.iter().any(|text| *text == "mode:1"));
-            assert!(transcripts.iter().any(|text| *text == "region:us-central1"));
-            assert!(transcripts
-                .iter()
-                .any(|text| *text == "project:vertex-project"));
-            assert!(transcripts.iter().any(|text| *text == "provider:vertex"));
-            assert!(transcripts
-                .iter()
-                .any(|text| *text == "model:claude-3-7-sonnet@20250219"));
-            assert!(transcripts.iter().any(|text| *text == "thinking:medium"));
+            assert!(transcripts.contains(&"adc-present"));
+            assert!(transcripts.contains(&"mode:1"));
+            assert!(transcripts.contains(&"region:us-central1"));
+            assert!(transcripts.contains(&"project:vertex-project"));
+            assert!(transcripts.contains(&"provider:vertex"));
+            assert!(transcripts.contains(&"model:claude-3-7-sonnet@20250219"));
+            assert!(transcripts.contains(&"thinking:medium"));
 
             let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
                 .expect("stop vertex detached runtime supervisor")
@@ -875,17 +863,13 @@ pub(crate) fn detached_supervisor_launches_openai_compatible_child_with_context_
         })
         .collect::<Vec<_>>();
 
-    assert!(transcripts.iter().any(|text| *text == "key-present"));
+    assert!(transcripts.contains(&"key-present"));
     assert!(transcripts
         .iter()
         .any(|text| { *text == "base:https://generativelanguage.googleapis.com/v1beta/openai" }));
-    assert!(transcripts
-        .iter()
-        .any(|text| *text == "provider:gemini_ai_studio"));
-    assert!(transcripts
-        .iter()
-        .any(|text| *text == "model:gemini-2.5-flash"));
-    assert!(transcripts.iter().any(|text| *text == "thinking:medium"));
+    assert!(transcripts.contains(&"provider:gemini_ai_studio"));
+    assert!(transcripts.contains(&"model:gemini-2.5-flash"));
+    assert!(transcripts.contains(&"thinking:medium"));
 
     let database_bytes =
         std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
@@ -918,7 +902,7 @@ pub(crate) fn detached_supervisor_launches_github_models_child_with_context_env_
             "openai/gpt-4.1",
             None,
             Some(secret),
-            Some("https://models.inference.ai.azure.com"),
+            Some("https://models.github.ai/inference"),
             None,
             &openai_compatible_environment_report_script(),
         ),
@@ -953,16 +937,10 @@ pub(crate) fn detached_supervisor_launches_github_models_child_with_context_env_
         })
         .collect::<Vec<_>>();
 
-    assert!(transcripts.iter().any(|text| *text == "key-present"));
-    assert!(transcripts
-        .iter()
-        .any(|text| *text == "base:https://models.inference.ai.azure.com"));
-    assert!(transcripts
-        .iter()
-        .any(|text| *text == "provider:github_models"));
-    assert!(transcripts
-        .iter()
-        .any(|text| *text == "model:openai/gpt-4.1"));
+    assert!(transcripts.contains(&"key-present"));
+    assert!(transcripts.contains(&"base:https://models.github.ai/inference"));
+    assert!(transcripts.contains(&"provider:github_models"));
+    assert!(transcripts.contains(&"model:openai/gpt-4.1"));
 
     let database_bytes =
         std::fs::read(database_path_for_repo(&repo_root)).expect("read runtime db");
@@ -1028,9 +1006,9 @@ pub(crate) fn detached_supervisor_launches_ollama_child_without_api_key_env() {
         })
         .collect::<Vec<_>>();
 
-    assert!(transcripts.iter().any(|text| *text == "key-missing"));
-    assert!(transcripts.iter().any(|text| *text == "provider:ollama"));
-    assert!(transcripts.iter().any(|text| *text == "model:llama3.2"));
+    assert!(transcripts.contains(&"key-missing"));
+    assert!(transcripts.contains(&"provider:ollama"));
+    assert!(transcripts.contains(&"model:llama3.2"));
 
     let stopped = stop_runtime_run(&state, stop_request(project_id, &repo_root))
         .expect("stop ollama detached runtime supervisor")
@@ -1102,7 +1080,7 @@ pub(crate) fn detached_supervisor_rejects_github_models_launch_without_token_env
             "openai/gpt-4.1",
             None,
             None,
-            Some("https://models.inference.ai.azure.com"),
+            Some("https://models.github.ai/inference"),
             None,
             &runtime_shell::script_sleep(5),
         ),

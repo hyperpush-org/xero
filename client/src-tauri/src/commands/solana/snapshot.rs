@@ -446,8 +446,8 @@ mod tests {
     fn create_and_read_round_trip_is_bit_identical() {
         let tmp = TempDir::new().unwrap();
         let fetcher = std::sync::Arc::new(MockFetcher::default());
-        fetcher.insert(sample_record("A".into()));
-        fetcher.insert(sample_record("B".into()));
+        fetcher.insert(sample_record("A"));
+        fetcher.insert(sample_record("B"));
         let store = SnapshotStore::new(
             tmp.path().to_path_buf(),
             Box::new(FetcherHandle(std::sync::Arc::clone(&fetcher))),
@@ -487,7 +487,7 @@ mod tests {
     fn list_sorts_newest_first_and_skips_missing_manifests() {
         let tmp = TempDir::new().unwrap();
         let fetcher = std::sync::Arc::new(MockFetcher::default());
-        fetcher.insert(sample_record("A".into()));
+        fetcher.insert(sample_record("A"));
         let store = SnapshotStore::new(
             tmp.path().to_path_buf(),
             Box::new(FetcherHandle(std::sync::Arc::clone(&fetcher))),
@@ -554,7 +554,7 @@ mod tests {
             cluster: "localnet".into(),
             rpc_url: "http://127.0.0.1:8899".into(),
             created_at_ms: 0,
-            accounts: vec![sample_record("A".into())],
+            accounts: vec![sample_record("A")],
         };
         let mut mutated = manifest.accounts.clone();
         mutated[0].lamports += 1;
@@ -565,8 +565,8 @@ mod tests {
     fn restore_cycle_is_stable_across_three_runs() {
         let tmp = TempDir::new().unwrap();
         let fetcher = std::sync::Arc::new(MockFetcher::default());
-        fetcher.insert(sample_record("A".into()));
-        fetcher.insert(sample_record("B".into()));
+        fetcher.insert(sample_record("A"));
+        fetcher.insert(sample_record("B"));
         let store = SnapshotStore::new(
             tmp.path().to_path_buf(),
             Box::new(FetcherHandle(std::sync::Arc::clone(&fetcher))),

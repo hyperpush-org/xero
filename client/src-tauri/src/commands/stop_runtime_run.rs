@@ -4,13 +4,14 @@ use crate::{
     commands::{
         validate_non_empty, CommandError, CommandResult, RuntimeRunDto, StopRuntimeRunRequestDto,
     },
+    db::project_store,
     runtime::{stop_runtime_run as stop_supervised_runtime_run, RuntimeSupervisorStopRequest},
     state::DesktopState,
 };
 
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run, resolve_project_root,
-    runtime_run_dto_from_snapshot, DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
+    runtime_run_dto_from_snapshot, stop_owned_runtime_run, DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
     DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
 };
 
@@ -40,6 +41,33 @@ pub fn stop_runtime_run<R: Runtime>(
         }
     } else {
         return Ok(None);
+    }
+
+    if let Some(snapshot) = before.as_ref().filter(|snapshot| {
+        snapshot.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
+    }) {
+        let _ = state
+            .inner()
+            .agent_run_supervisor()
+            .cancel(&snapshot.run.run_id)?;
+        if project_store::load_agent_run(&repo_root, &request.project_id, &snapshot.run.run_id)
+            .is_ok()
+        {
+            let _ = crate::runtime::cancel_owned_agent_run(
+                &repo_root,
+                &request.project_id,
+                &snapshot.run.run_id,
+            )?;
+        }
+        let after = stop_owned_runtime_run(&repo_root, snapshot)?;
+        emit_runtime_run_updated_if_changed(
+            &app,
+            &request.project_id,
+            &request.agent_session_id,
+            &before,
+            &Some(after.clone()),
+        )?;
+        return Ok(Some(runtime_run_dto_from_snapshot(&after)));
     }
 
     let after = stop_supervised_runtime_run(

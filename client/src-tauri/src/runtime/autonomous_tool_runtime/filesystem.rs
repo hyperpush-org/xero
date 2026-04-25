@@ -7,11 +7,16 @@ use super::{
         build_glob_matcher, normalize_glob_pattern, normalize_relative_path, path_to_forward_slash,
         scope_relative_match_path, WalkErrorCodes, WalkState,
     },
-    AutonomousEditOutput, AutonomousEditRequest, AutonomousFindOutput, AutonomousFindRequest,
-    AutonomousReadOutput, AutonomousReadRequest, AutonomousSearchMatch, AutonomousSearchOutput,
-    AutonomousSearchRequest, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
-    AutonomousWriteOutput, AutonomousWriteRequest, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND,
-    AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_WRITE,
+    AutonomousDeleteOutput, AutonomousDeleteRequest, AutonomousEditOutput, AutonomousEditRequest,
+    AutonomousFindOutput, AutonomousFindRequest, AutonomousHashOutput, AutonomousHashRequest,
+    AutonomousListEntry, AutonomousListOutput, AutonomousListRequest, AutonomousMkdirOutput,
+    AutonomousMkdirRequest, AutonomousPatchOutput, AutonomousPatchRequest, AutonomousReadOutput,
+    AutonomousReadRequest, AutonomousRenameOutput, AutonomousRenameRequest, AutonomousSearchMatch,
+    AutonomousSearchOutput, AutonomousSearchRequest, AutonomousToolOutput, AutonomousToolResult,
+    AutonomousToolRuntime, AutonomousWriteOutput, AutonomousWriteRequest, AUTONOMOUS_TOOL_DELETE,
+    AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST,
+    AUTONOMOUS_TOOL_MKDIR, AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_RENAME,
+    AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_WRITE,
 };
 
 use crate::commands::{validate_non_empty, CommandError, CommandResult};
@@ -351,6 +356,271 @@ impl AutonomousToolRuntime {
         })
     }
 
+    pub fn patch(&self, request: AutonomousPatchRequest) -> CommandResult<AutonomousToolResult> {
+        validate_non_empty(&request.path, "path")?;
+        validate_non_empty(&request.search, "search")?;
+        let relative_path = normalize_relative_path(&request.path, "path")?;
+        let resolved_path = self.resolve_existing_path(&relative_path)?;
+        let existing = self.read_text_file(&resolved_path)?;
+        validate_expected_hash(
+            request.expected_hash.as_deref(),
+            &existing,
+            "autonomous_tool_patch_expected_hash_mismatch",
+        )?;
+
+        let matches = existing.matches(&request.search).count();
+        if matches == 0 {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_patch_search_not_found",
+                "Cadence refused to patch the file because the search text was not found.",
+            ));
+        }
+        if matches > 1 && !request.replace_all {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_patch_search_ambiguous",
+                "Cadence refused to patch the file because the search text matched more than once. Set replaceAll to true or use a more specific search string.",
+            ));
+        }
+
+        let updated = if request.replace_all {
+            existing.replace(&request.search, &request.replace)
+        } else {
+            existing.replacen(&request.search, &request.replace, 1)
+        };
+        fs::write(&resolved_path, updated.as_bytes()).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_patch_write_failed",
+                format!(
+                    "Cadence could not persist the patch to {}: {error}",
+                    resolved_path.display()
+                ),
+            )
+        })?;
+
+        let display_path = path_to_forward_slash(&relative_path);
+        let replacements = if request.replace_all { matches } else { 1 };
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_PATCH.into(),
+            summary: format!("Patched `{display_path}` with {replacements} replacement(s)."),
+            command_result: None,
+            output: AutonomousToolOutput::Patch(AutonomousPatchOutput {
+                path: display_path,
+                replacements,
+                bytes_written: updated.len(),
+            }),
+        })
+    }
+
+    pub fn delete(&self, request: AutonomousDeleteRequest) -> CommandResult<AutonomousToolResult> {
+        validate_non_empty(&request.path, "path")?;
+        let relative_path = normalize_relative_path(&request.path, "path")?;
+        let resolved_path = self.resolve_existing_path(&relative_path)?;
+        if resolved_path.is_dir() && !request.recursive {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_delete_recursive_required",
+                "Cadence requires recursive=true before deleting a directory.",
+            ));
+        }
+        if resolved_path.is_file() {
+            let existing = self.read_text_file(&resolved_path)?;
+            validate_expected_hash(
+                request.expected_hash.as_deref(),
+                &existing,
+                "autonomous_tool_delete_expected_hash_mismatch",
+            )?;
+        } else if request.expected_hash.is_some() {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_delete_expected_hash_invalid",
+                "Cadence only accepts expectedHash for file deletes.",
+            ));
+        }
+
+        if resolved_path.is_dir() {
+            fs::remove_dir_all(&resolved_path).map_err(|error| {
+                CommandError::retryable(
+                    "autonomous_tool_delete_failed",
+                    format!(
+                        "Cadence could not delete {}: {error}",
+                        resolved_path.display()
+                    ),
+                )
+            })?;
+        } else {
+            fs::remove_file(&resolved_path).map_err(|error| {
+                CommandError::retryable(
+                    "autonomous_tool_delete_failed",
+                    format!(
+                        "Cadence could not delete {}: {error}",
+                        resolved_path.display()
+                    ),
+                )
+            })?;
+        }
+
+        let display_path = path_to_forward_slash(&relative_path);
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_DELETE.into(),
+            summary: format!("Deleted `{display_path}`."),
+            command_result: None,
+            output: AutonomousToolOutput::Delete(AutonomousDeleteOutput {
+                path: display_path,
+                recursive: request.recursive,
+                existed: true,
+            }),
+        })
+    }
+
+    pub fn rename(&self, request: AutonomousRenameRequest) -> CommandResult<AutonomousToolResult> {
+        validate_non_empty(&request.from_path, "fromPath")?;
+        validate_non_empty(&request.to_path, "toPath")?;
+        let from_relative = normalize_relative_path(&request.from_path, "fromPath")?;
+        let to_relative = normalize_relative_path(&request.to_path, "toPath")?;
+        let from_resolved = self.resolve_existing_path(&from_relative)?;
+        let to_resolved = self.resolve_writable_path(&to_relative)?;
+        if to_resolved.exists() {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_rename_target_exists",
+                format!(
+                    "Cadence refused to rename because `{}` already exists.",
+                    path_to_forward_slash(&to_relative)
+                ),
+            ));
+        }
+        if from_resolved.is_file() {
+            let existing = self.read_text_file(&from_resolved)?;
+            validate_expected_hash(
+                request.expected_hash.as_deref(),
+                &existing,
+                "autonomous_tool_rename_expected_hash_mismatch",
+            )?;
+        }
+        if let Some(parent) = to_resolved.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                CommandError::retryable(
+                    "autonomous_tool_rename_prepare_failed",
+                    format!(
+                        "Cadence could not prepare the target directory for {}: {error}",
+                        to_resolved.display()
+                    ),
+                )
+            })?;
+        }
+        fs::rename(&from_resolved, &to_resolved).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_rename_failed",
+                format!(
+                    "Cadence could not rename {} to {}: {error}",
+                    from_resolved.display(),
+                    to_resolved.display()
+                ),
+            )
+        })?;
+
+        let from_path = path_to_forward_slash(&from_relative);
+        let to_path = path_to_forward_slash(&to_relative);
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_RENAME.into(),
+            summary: format!("Renamed `{from_path}` to `{to_path}`."),
+            command_result: None,
+            output: AutonomousToolOutput::Rename(AutonomousRenameOutput { from_path, to_path }),
+        })
+    }
+
+    pub fn mkdir(&self, request: AutonomousMkdirRequest) -> CommandResult<AutonomousToolResult> {
+        validate_non_empty(&request.path, "path")?;
+        let relative_path = normalize_relative_path(&request.path, "path")?;
+        let resolved_path = self.resolve_writable_path(&relative_path)?;
+        let created = !resolved_path.exists();
+        fs::create_dir_all(&resolved_path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_mkdir_failed",
+                format!(
+                    "Cadence could not create directory {}: {error}",
+                    resolved_path.display()
+                ),
+            )
+        })?;
+        let display_path = path_to_forward_slash(&relative_path);
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_MKDIR.into(),
+            summary: if created {
+                format!("Created directory `{display_path}`.")
+            } else {
+                format!("Directory `{display_path}` already existed.")
+            },
+            command_result: None,
+            output: AutonomousToolOutput::Mkdir(AutonomousMkdirOutput {
+                path: display_path,
+                created,
+            }),
+        })
+    }
+
+    pub fn list(&self, request: AutonomousListRequest) -> CommandResult<AutonomousToolResult> {
+        let relative_path = request
+            .path
+            .as_deref()
+            .map(|path| normalize_relative_path(path, "path"))
+            .transpose()?;
+        let scope = match relative_path.as_ref() {
+            Some(path) => self.resolve_existing_path(path)?,
+            None => self.repo_root.clone(),
+        };
+        let max_depth = request.max_depth.unwrap_or(2).min(8);
+        let mut entries = Vec::new();
+        let mut walk = WalkState::default();
+        let omit_scope_entry = scope.is_dir();
+        self.list_scope(
+            &scope,
+            0,
+            max_depth,
+            omit_scope_entry,
+            &mut walk,
+            &mut entries,
+        )?;
+        let display_path = relative_path
+            .as_ref()
+            .map(|path| path_to_forward_slash(path))
+            .unwrap_or_else(|| ".".into());
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_LIST.into(),
+            summary: format!("Listed {} item(s) under `{display_path}`.", entries.len()),
+            command_result: None,
+            output: AutonomousToolOutput::List(AutonomousListOutput {
+                path: display_path,
+                entries,
+                truncated: walk.truncated,
+            }),
+        })
+    }
+
+    pub fn hash(&self, request: AutonomousHashRequest) -> CommandResult<AutonomousToolResult> {
+        validate_non_empty(&request.path, "path")?;
+        let relative_path = normalize_relative_path(&request.path, "path")?;
+        let resolved_path = self.resolve_existing_path(&relative_path)?;
+        let bytes = fs::read(&resolved_path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_hash_read_failed",
+                format!(
+                    "Cadence could not hash {}: {error}",
+                    resolved_path.display()
+                ),
+            )
+        })?;
+        let display_path = path_to_forward_slash(&relative_path);
+        let sha256 = sha256_hex(&bytes);
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_HASH.into(),
+            summary: format!("Hashed `{display_path}` as SHA-256 `{sha256}`."),
+            command_result: None,
+            output: AutonomousToolOutput::Hash(AutonomousHashOutput {
+                path: display_path,
+                sha256,
+                bytes: bytes.len() as u64,
+            }),
+        })
+    }
+
     fn search_scope(
         &self,
         scope: &Path,
@@ -436,6 +706,81 @@ impl AutonomousToolRuntime {
                 Ok(())
             },
         )
+    }
+
+    fn list_scope(
+        &self,
+        path: &Path,
+        depth: usize,
+        max_depth: usize,
+        is_root: bool,
+        walk: &mut WalkState,
+        entries: &mut Vec<AutonomousListEntry>,
+    ) -> CommandResult<()> {
+        if walk.truncated {
+            return Ok(());
+        }
+
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_list_metadata_failed",
+                format!("Cadence could not inspect {}: {error}", path.display()),
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        if metadata.is_dir() && self.should_skip_directory(path) {
+            return Ok(());
+        }
+
+        if !is_root
+            && !push_bounded(
+                entries,
+                AutonomousListEntry {
+                    path: path_to_forward_slash(&self.repo_relative_path(path)?),
+                    kind: if metadata.is_dir() {
+                        "directory"
+                    } else {
+                        "file"
+                    }
+                    .into(),
+                    bytes: metadata.is_file().then_some(metadata.len()),
+                },
+                self.limits.max_search_results,
+                &mut walk.truncated,
+            )
+        {
+            return Ok(());
+        }
+
+        if metadata.is_file() {
+            walk.scanned_files = walk.scanned_files.saturating_add(1);
+            return Ok(());
+        }
+        if depth >= max_depth {
+            if metadata.is_dir() {
+                walk.truncated = true;
+            }
+            return Ok(());
+        }
+
+        for entry in
+            self.read_sorted_directory_entries(path, "autonomous_tool_list_read_dir_failed")?
+        {
+            self.list_scope(
+                &entry.path(),
+                depth.saturating_add(1),
+                max_depth,
+                false,
+                walk,
+                entries,
+            )?;
+            if walk.truncated {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn read_text_file(&self, path: &Path) -> CommandResult<String> {
@@ -564,6 +909,47 @@ fn should_skip_search_file_error(error: &CommandError) -> bool {
             | "autonomous_tool_file_too_large"
             | "autonomous_tool_read_failed"
     )
+}
+
+fn validate_expected_hash(
+    expected_hash: Option<&str>,
+    current_text: &str,
+    error_code: &'static str,
+) -> CommandResult<()> {
+    let Some(expected_hash) = expected_hash else {
+        return Ok(());
+    };
+    let expected_hash = expected_hash.trim();
+    if expected_hash.len() != 64
+        || !expected_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_expected_hash_invalid",
+            "Cadence requires expectedHash to be a lowercase SHA-256 hex digest.",
+        ));
+    }
+    let actual = sha256_hex(current_text.as_bytes());
+    if actual != expected_hash {
+        return Err(CommandError::user_fixable(
+            error_code,
+            "Cadence refused the file operation because expectedHash no longer matches the current file contents.",
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        write!(&mut output, "{byte:02x}").expect("writing to String should not fail");
+    }
+    output
 }
 
 fn push_bounded<T>(results: &mut Vec<T>, value: T, limit: usize, truncated: &mut bool) -> bool {

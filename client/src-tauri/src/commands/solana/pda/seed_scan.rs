@@ -20,7 +20,7 @@
 //! `&[..., &[bump]]` with a literal (non-canonical, potentially unsafe).
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -108,7 +108,7 @@ fn walk(dir: &Path, sites: &mut Vec<PdaSite>) -> CommandResult<()> {
     Ok(())
 }
 
-fn should_skip_entry(path: &PathBuf) -> bool {
+fn should_skip_entry(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,
         None => return true,

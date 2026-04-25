@@ -560,7 +560,7 @@ function ProvisionProgressCard({ state }: { state: ProvisionState }) {
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-border/70">
         <div
           className={cn(
-            "h-full transition-[width] duration-200",
+            "h-full motion-progress",
             failed
               ? "bg-red-400"
               : completed
@@ -569,7 +569,7 @@ function ProvisionProgressCard({ state }: { state: ProvisionState }) {
                   ? "bg-amber-300"
                   : "animate-pulse bg-amber-400/60",
           )}
-          style={{ width: percent != null ? `${percent}%` : "100%" }}
+          style={{ transform: `scaleX(${percent != null ? Math.max(0, Math.min(100, percent)) / 100 : 1})` }}
         />
       </div>
     </div>

@@ -236,6 +236,7 @@ pub struct RuntimeSupervisorLaunchContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[allow(clippy::large_enum_variant)]
 pub enum SupervisorStartupMessage {
     Ready {
         protocol_version: u8,

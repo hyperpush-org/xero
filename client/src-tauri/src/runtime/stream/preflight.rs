@@ -324,6 +324,15 @@ pub(super) fn ensure_attachable_runtime_run(
         return Ok(());
     }
 
+    if reachable
+        && matches!(
+            snapshot.run.status,
+            RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed
+        )
+    {
+        return Ok(());
+    }
+
     let last_error_message = snapshot
         .run
         .last_error

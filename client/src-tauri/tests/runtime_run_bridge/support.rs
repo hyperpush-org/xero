@@ -256,6 +256,7 @@ pub(crate) fn anthropic_auth_config(models_url: String) -> AnthropicAuthConfig {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn spawn_static_http_server(status: u16, body: &str) -> String {
     spawn_static_http_server_for_requests(status, body, 1)
 }
@@ -353,6 +354,7 @@ pub(crate) fn seed_ambient_anthropic_family_profile(
     .expect("seed ambient anthropic-family profile");
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn seed_openai_compatible_profile(
     app: &tauri::App<tauri::test::MockRuntime>,
     profile_id: &str,

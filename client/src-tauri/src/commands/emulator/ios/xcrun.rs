@@ -6,9 +6,7 @@
 //! apps, launching apps, setting the simulated location. The streaming path
 //! (live H.264 video) is handled by `idb_companion` in sibling modules.
 
-#![cfg(target_os = "macos")]
-
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -464,7 +462,7 @@ fn device_state(udid: &str) -> Result<String> {
 }
 
 fn io_other(msg: String) -> Error {
-    Error::new(ErrorKind::Other, msg)
+    Error::other(msg)
 }
 
 #[derive(Debug, Deserialize)]

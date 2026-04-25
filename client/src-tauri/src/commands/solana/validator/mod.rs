@@ -159,7 +159,7 @@ impl ValidatorSupervisor {
     /// Wrap the default (`solana-test-validator` / `surfpool`) launcher. Used
     /// by the production build. Tests pass a stub instead.
     pub fn with_default_launcher() -> Self {
-        Self::new(Box::new(test_validator::CliLauncher::default()))
+        Self::new(Box::new(test_validator::CliLauncher))
     }
 
     /// Start a new cluster, replacing any currently-active one.

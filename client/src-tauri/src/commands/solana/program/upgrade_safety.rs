@@ -663,7 +663,7 @@ mod tests {
                 bytes.extend_from_slice(&[0u8; 32]);
             }
         }
-        bytes.extend(std::iter::repeat(0u8).take(payload_size));
+        bytes.extend(std::iter::repeat_n(0u8, payload_size));
         base64::engine::general_purpose::STANDARD.encode(&bytes)
     }
 

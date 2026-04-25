@@ -124,6 +124,22 @@ function makeSnapshot(overrides: Partial<ProjectSnapshotResponseDto> = {}): Proj
     approvalRequests: [],
     verificationRecords: [],
     resumeHistory: [],
+    agentSessions: [
+      {
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        title: 'Main session',
+        summary: 'Primary project session',
+        status: 'active',
+        selected: true,
+        createdAt: '2026-04-15T17:55:00Z',
+        updatedAt: '2026-04-15T17:55:00Z',
+        archivedAt: null,
+        lastRunId: null,
+        lastRuntimeKind: null,
+        lastProviderId: null,
+      },
+    ],
     ...overrides,
   }
 }
@@ -2003,6 +2019,7 @@ describe('cadence-model', () => {
     const runtimeRun = mapRuntimeRun(
       runtimeRunSchema.parse({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         runId: 'run-1',
         runtimeKind: 'openai_codex',
         providerId: 'azure_openai',

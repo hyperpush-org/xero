@@ -79,7 +79,7 @@ impl CodecId {
 /// - 1 bit: config packet flag (SPS/PPS, no display yet)
 /// - 1 bit: keyframe flag
 /// - 62 bits: PTS in microseconds
-/// Followed by: 4 bytes big-endian packet size, then the payload bytes.
+///   Followed by: 4 bytes big-endian packet size, then the payload bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameHeader {
     pub is_config: bool,
@@ -285,9 +285,8 @@ fn pick_free_port() -> Result<u16> {
 /// disconnects.
 pub fn read_video_packet(stream: &mut TcpStream) -> Result<Option<VideoPacket>> {
     let mut header_buf = [0u8; 12];
-    match read_exact_maybe_eof(stream, &mut header_buf)? {
-        false => return Ok(None),
-        true => {}
+    if !(read_exact_maybe_eof(stream, &mut header_buf)?) {
+        return Ok(None);
     }
     let header = FrameHeader::parse(&header_buf)?;
     if header.size == 0 {

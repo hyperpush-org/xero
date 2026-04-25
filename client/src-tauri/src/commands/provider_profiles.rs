@@ -248,25 +248,25 @@ fn apply_provider_profile_upsert(
         return Err(CommandError::invalid_request("apiKey"));
     }
 
-    let next_api_key_secret =
-        if !supports_api_key || provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
-            None
-        } else if explicit_api_key_clear {
-            None
-        } else if let Some(api_key) = requested_api_key {
-            Some(ProviderApiKeyCredentialEntry {
-                profile_id: profile_id.to_owned(),
-                api_key: api_key.to_owned(),
-                updated_at: api_key_updated_at(current_api_key_secret.as_ref(), Some(api_key)),
-            })
-        } else if current_profile
-            .as_ref()
-            .is_some_and(|profile| profile.provider_id != OPENAI_CODEX_PROVIDER_ID)
-        {
-            current_api_key_secret.clone()
-        } else {
-            None
-        };
+    let next_api_key_secret = if !supports_api_key
+        || provider.provider_id == OPENAI_CODEX_PROVIDER_ID
+        || explicit_api_key_clear
+    {
+        None
+    } else if let Some(api_key) = requested_api_key {
+        Some(ProviderApiKeyCredentialEntry {
+            profile_id: profile_id.to_owned(),
+            api_key: api_key.to_owned(),
+            updated_at: api_key_updated_at(current_api_key_secret.as_ref(), Some(api_key)),
+        })
+    } else if current_profile
+        .as_ref()
+        .is_some_and(|profile| profile.provider_id != OPENAI_CODEX_PROVIDER_ID)
+    {
+        current_api_key_secret.clone()
+    } else {
+        None
+    };
 
     let next_credential_link = next_provider_profile_credential_link(
         provider.provider_id,

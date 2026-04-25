@@ -256,8 +256,8 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
       aria-hidden={!open}
       aria-label={meta.label}
       className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
-        !isResizing && "transition-[width] duration-200 ease-out",
+        "motion-layout-island relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
+        !isResizing && "transition-[width] motion-panel",
         !open && "border-l-0",
       )}
       inert={!open ? true : undefined}
@@ -280,6 +280,10 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         tabIndex={open ? 0 : -1}
       />
 
+      <div
+        className="flex h-full min-w-0 shrink-0 flex-col"
+        style={{ width }}
+      >
       <div
         className="flex h-10 shrink-0 items-center gap-2 border-b border-border/70 px-3"
         style={{ paddingLeft: RESIZE_HANDLE_INSET + 6 }}
@@ -372,6 +376,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         onPressKey={handlePressKey}
         platform={platform}
       />
+      </div>
     </aside>
   )
 }
@@ -630,7 +635,7 @@ function DeviceChassis({
         "bg-gradient-to-b from-neutral-700/90 via-neutral-900 to-neutral-800/90",
         "shadow-[0_18px_45px_-18px_rgba(0,0,0,0.75)]",
         "ring-1 ring-white/10",
-        "transition-transform duration-200 ease-out",
+        "transition-transform motion-standard will-change-transform",
         bezelClasses,
         // In landscape we rotate the entire chassis so the bezel +
         // Dynamic Island land on the correct side of the screen,

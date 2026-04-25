@@ -43,6 +43,23 @@ function makeProjectSummary(id: string, name: string) {
   }
 }
 
+function makeAgentSession(projectId: string) {
+  return {
+    projectId,
+    agentSessionId: 'agent-session-main',
+    title: 'Main session',
+    summary: 'Primary project session',
+    status: 'active' as const,
+    selected: true,
+    createdAt: '2026-04-15T17:55:00Z',
+    updatedAt: '2026-04-15T17:55:00Z',
+    archivedAt: null,
+    lastRunId: null,
+    lastRuntimeKind: null,
+    lastProviderId: null,
+  }
+}
+
 function makeSnapshot(id: string, name: string): ProjectSnapshotResponseDto {
   return {
     project: makeProjectSummary(id, name),
@@ -88,6 +105,7 @@ function makeSnapshot(id: string, name: string): ProjectSnapshotResponseDto {
     approvalRequests: [],
     verificationRecords: [],
     resumeHistory: [],
+    agentSessions: [makeAgentSession(id)],
   }
 }
 
@@ -177,13 +195,14 @@ function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): Pro
     {
       profileId: 'openai_codex-default',
       providerId: 'openai_codex',
+      runtimeKind: 'openai_codex',
       label: 'OpenAI Codex',
       modelId: 'openai_codex',
       active: activeProfileId === 'openai_codex-default',
       readiness: {
         ready: false,
         status: 'missing',
-        credentialUpdatedAt: null,
+        proofUpdatedAt: null,
       },
       migratedFromLegacy: false,
       migratedAt: null,
@@ -204,24 +223,29 @@ function makeProviderProfilesFromRuntimeSettings(
   const profileId =
     options.profileId ?? (runtimeSettings.providerId === 'openrouter' ? 'openrouter-default' : 'openai_codex-default')
   const providerLabel = options.label ?? (runtimeSettings.providerId === 'openrouter' ? 'OpenRouter' : 'OpenAI Codex')
+  const runtimeKind = runtimeSettings.providerId === 'openrouter' ? 'openrouter' : 'openai_codex'
+  const presetId = runtimeSettings.providerId === 'openrouter' ? 'openrouter' : null
 
   const activeProfile: ProviderProfilesDto['profiles'][number] = {
     profileId,
     providerId: runtimeSettings.providerId,
+    runtimeKind,
     label: providerLabel,
     modelId: runtimeSettings.modelId,
+    presetId,
     active: true,
     readiness:
       runtimeSettings.providerId === 'openrouter'
         ? {
             ready: runtimeSettings.openrouterApiKeyConfigured,
             status: runtimeSettings.openrouterApiKeyConfigured ? 'ready' : 'missing',
-            credentialUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+            proof: runtimeSettings.openrouterApiKeyConfigured ? 'stored_secret' : null,
+            proofUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
           }
         : {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
     migratedFromLegacy: false,
     migratedAt: null,
@@ -234,13 +258,16 @@ function makeProviderProfilesFromRuntimeSettings(
           {
             profileId: 'openrouter-default',
             providerId: 'openrouter',
+            runtimeKind: 'openrouter',
             label: 'OpenRouter',
             modelId: 'openai/gpt-4.1-mini',
+            presetId: 'openrouter',
             active: false,
             readiness: {
               ready: runtimeSettings.openrouterApiKeyConfigured,
               status: runtimeSettings.openrouterApiKeyConfigured ? 'ready' : 'missing',
-              credentialUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+              proof: runtimeSettings.openrouterApiKeyConfigured ? 'stored_secret' : null,
+              proofUpdatedAt: runtimeSettings.openrouterApiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -346,6 +373,7 @@ function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDt
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
+    agentSessionId: 'agent-session-main',
     runId: `run-${projectId}`,
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -361,6 +389,7 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
         modelId: 'openai_codex',
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
+        planModeRequired: false,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -390,6 +419,7 @@ function makeAutonomousRunState(projectId: string, runId = `auto-${projectId}`):
   return {
     run: {
       projectId,
+      agentSessionId: 'agent-session-main',
       runId,
       runtimeKind: 'openai_codex',
       providerId: 'openai_codex',
@@ -420,7 +450,7 @@ function makeAutonomousRunState(projectId: string, runId = `auto-${projectId}`):
       runId,
       unitId: `${runId}:checkpoint:1`,
       sequence: 1,
-      kind: 'state',
+      kind: 'executor',
       status: 'active',
       summary: 'Recovered the current autonomous unit boundary.',
       boundaryId: 'checkpoint:1',
@@ -439,6 +469,7 @@ function makeStreamResponse(
 ): SubscribeRuntimeStreamResponseDto {
   return {
     projectId,
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId: `run-${projectId}`,
     sessionId: 'session-1',
@@ -460,6 +491,7 @@ function makeStreamEvent(
 
   return {
     projectId,
+    agentSessionId: overrides.agentSessionId ?? 'agent-session-main',
     runtimeKind: overrides.runtimeKind ?? 'openai_codex',
     runId,
     sessionId: overrides.sessionId ?? 'session-1',
@@ -584,6 +616,7 @@ function createMockAdapter(options?: {
 
   const streamSubscriptions: Array<{
     projectId: string
+    agentSessionId: string
     handler: (payload: RuntimeStreamEventDto) => void
     onError: ((error: CadenceDesktopError) => void) | null
     unsubscribe: ReturnType<typeof vi.fn>
@@ -618,6 +651,45 @@ function createMockAdapter(options?: {
     return { projects: listedProjects }
   })
   const getProjectSnapshot = vi.fn(async (projectId: string) => snapshots[projectId])
+  const listAgentSessions = vi.fn(async (request: { projectId: string }) => ({
+    sessions: snapshots[request.projectId]?.agentSessions ?? [makeAgentSession(request.projectId)],
+  }))
+  const getAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => {
+    return (
+      (snapshots[request.projectId]?.agentSessions ?? [makeAgentSession(request.projectId)]).find(
+        (session) => session.agentSessionId === request.agentSessionId,
+      ) ?? null
+    )
+  })
+  const createAgentSession = vi.fn(async (request: { projectId: string; title?: string | null; summary?: string; selected?: boolean }) => ({
+    ...makeAgentSession(request.projectId),
+    agentSessionId: `agent-session-${request.projectId}`,
+    title: request.title?.trim() || 'New session',
+    summary: request.summary ?? '',
+    selected: request.selected ?? true,
+  }))
+  const updateAgentSession = vi.fn(async (request: {
+    projectId: string
+    agentSessionId: string
+    title?: string | null
+    summary?: string | null
+    selected?: boolean | null
+  }) => ({
+    ...makeAgentSession(request.projectId),
+    agentSessionId: request.agentSessionId,
+    title: request.title?.trim() || 'Main session',
+    summary: request.summary ?? 'Primary project session',
+    selected: request.selected ?? true,
+    updatedAt: '2026-04-15T18:00:00Z',
+  }))
+  const archiveAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => ({
+    ...makeAgentSession(request.projectId),
+    agentSessionId: request.agentSessionId,
+    status: 'archived' as const,
+    selected: false,
+    archivedAt: '2026-04-15T18:00:00Z',
+    updatedAt: '2026-04-15T18:00:00Z',
+  }))
   const getRepositoryStatus = vi.fn(async (projectId: string) => statuses[projectId])
   const getRepositoryDiff = vi.fn(async (_projectId: string, scope: 'staged' | 'unstaged' | 'worktree') => {
     const configuredDiff = options?.diffs?.[scope]
@@ -677,7 +749,7 @@ function createMockAdapter(options?: {
 
     return currentMcpRegistry.value
   })
-  const importMcpServers = vi.fn(async (_path: string) => ({
+  const importMcpServers = vi.fn(async (_path: string): Promise<ImportMcpServersResponseDto> => ({
     registry: currentMcpRegistry.value,
     diagnostics: [],
   }))
@@ -760,16 +832,22 @@ function createMockAdapter(options?: {
     providerId: RuntimeSettingsDto['providerId']
     modelId: string
     openrouterApiKey?: string | null
+    anthropicApiKey?: string | null
   }) => {
     const nextKeyConfigured =
       request.openrouterApiKey === undefined || request.openrouterApiKey === null
         ? currentRuntimeSettings.value.openrouterApiKeyConfigured
         : request.openrouterApiKey.trim().length > 0
+    const nextAnthropicKeyConfigured =
+      request.anthropicApiKey === undefined || request.anthropicApiKey === null
+        ? currentRuntimeSettings.value.anthropicApiKeyConfigured
+        : request.anthropicApiKey.trim().length > 0
 
     currentRuntimeSettings.value = {
       providerId: request.providerId,
       modelId: request.modelId,
       openrouterApiKeyConfigured: nextKeyConfigured,
+      anthropicApiKeyConfigured: nextAnthropicKeyConfigured,
     }
     currentProviderProfiles.value = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value)
 
@@ -806,7 +884,7 @@ function createMockAdapter(options?: {
       runtimeKind: request.runtimeKind as ProviderProfilesDto['profiles'][number]['runtimeKind'],
       label: request.label,
       modelId: request.modelId,
-      presetId: request.presetId ?? null,
+      presetId: (request.presetId ?? null) as ProviderProfilesDto['profiles'][number]['presetId'],
       baseUrl: request.baseUrl ?? null,
       apiVersion: request.apiVersion ?? null,
       active: nextActiveProfileId === request.profileId,
@@ -815,12 +893,13 @@ function createMockAdapter(options?: {
           ? {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proofUpdatedAt: null,
             }
           : {
               ready: apiKeyConfigured,
               status: apiKeyConfigured ? 'ready' : 'missing',
-              credentialUpdatedAt: apiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
+              proof: apiKeyConfigured ? 'stored_secret' : null,
+              proofUpdatedAt: apiKeyConfigured ? '2026-04-16T14:05:00Z' : null,
             },
       migratedFromLegacy: false,
       migratedAt: null,
@@ -956,12 +1035,13 @@ function createMockAdapter(options?: {
       const queuedAt = '2026-04-15T20:00:07Z'
       const activeControls = currentRun.controls.active
       const pendingControls = request.controls
-        ? {
-            modelId: request.controls.modelId,
-            thinkingEffort: request.controls.thinkingEffort ?? null,
-            approvalMode: request.controls.approvalMode,
-            revision: activeControls.revision + 1,
-            queuedAt,
+          ? {
+              modelId: request.controls.modelId,
+              thinkingEffort: request.controls.thinkingEffort ?? null,
+              approvalMode: request.controls.approvalMode,
+              planModeRequired: request.controls.planModeRequired,
+              revision: activeControls.revision + 1,
+              queuedAt,
             queuedPrompt: request.prompt ?? null,
             queuedPromptAt: request.prompt ? queuedAt : null,
           }
@@ -1086,6 +1166,7 @@ function createMockAdapter(options?: {
   const subscribeRuntimeStream = vi.fn(
     async (
       projectId: string,
+      agentSessionId: string,
       _itemKinds,
       handler: (payload: RuntimeStreamEventDto) => void,
       onError?: (error: CadenceDesktopError) => void,
@@ -1097,6 +1178,7 @@ function createMockAdapter(options?: {
 
       const subscription = {
         projectId,
+        agentSessionId,
         handler,
         onError: onError ?? null,
         unsubscribe: vi.fn(),
@@ -1107,6 +1189,7 @@ function createMockAdapter(options?: {
         response:
           options?.subscribeResponses?.[projectId] ??
           makeStreamResponse(projectId, {
+            agentSessionId,
             sessionId: runtimeSessions[projectId]?.sessionId ?? 'session-1',
             flowId: runtimeSessions[projectId]?.flowId ?? null,
             runtimeKind: runtimeSessions[projectId]?.runtimeKind ?? 'openai_codex',
@@ -1208,6 +1291,11 @@ function createMockAdapter(options?: {
     deleteProjectEntry,
     searchProject,
     replaceInProject,
+    createAgentSession,
+    listAgentSessions,
+    getAgentSession,
+    updateAgentSession,
+    archiveAgentSession,
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
@@ -2043,6 +2131,7 @@ describe('useCadenceDesktopState', () => {
           approvalRequests: [],
           verificationRecords: [],
           resumeHistory: [],
+          agentSessions: [makeAgentSession('project-1')],
         },
       },
       statuses: {
@@ -2147,6 +2236,7 @@ describe('useCadenceDesktopState', () => {
           approvalRequests: [],
           verificationRecords: [],
           resumeHistory: [],
+          agentSessions: [makeAgentSession('project-1')],
         },
       },
       statuses: {
@@ -2467,13 +2557,14 @@ describe('useCadenceDesktopState', () => {
         {
           profileId: 'openai_codex-default',
           providerId: 'openai_codex',
+          runtimeKind: 'openai_codex',
           label: 'OpenAI Codex',
           modelId: 'openai_codex',
           active: false,
           readiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           migratedFromLegacy: false,
           migratedAt: null,
@@ -2481,13 +2572,14 @@ describe('useCadenceDesktopState', () => {
         {
           profileId: 'zz-openai-alt',
           providerId: 'openai_codex',
+          runtimeKind: 'openai_codex',
           label: 'OpenAI Alt',
           modelId: 'openai_codex',
           active: true,
           readiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           migratedFromLegacy: false,
           migratedAt: null,
@@ -2825,6 +2917,7 @@ describe('useCadenceDesktopState', () => {
     await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1))
     expect(setup.subscribeRuntimeStream).toHaveBeenCalledWith(
       'project-1',
+      'agent-session-main',
       ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
       expect.any(Function),
       expect.any(Function),
@@ -3028,9 +3121,10 @@ describe('useCadenceDesktopState', () => {
     )
 
     setup.subscribeRuntimeStream.mockImplementationOnce(
-      async (projectId: string, _itemKinds, handler, onError) => {
+      async (projectId: string, agentSessionId: string, _itemKinds, handler, onError) => {
         setup.streamSubscriptions.push({
           projectId,
+          agentSessionId,
           handler,
           onError: onError ?? null,
           unsubscribe: vi.fn(),
@@ -3616,13 +3710,16 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openrouter-default',
             providerId: 'openrouter',
+            runtimeKind: 'openrouter',
             label: 'OpenRouter',
             modelId: 'openai/gpt-4.1-mini',
+            presetId: 'openrouter',
             active: true,
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3630,13 +3727,14 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openai_codex-default',
             providerId: 'openai_codex',
+            runtimeKind: 'openai_codex',
             label: 'OpenAI Codex',
             modelId: 'openai_codex',
             active: false,
             readiness: {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proofUpdatedAt: null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3674,13 +3772,16 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openrouter-default',
             providerId: 'openrouter',
+            runtimeKind: 'openrouter',
             label: 'OpenRouter',
             modelId: 'openai/gpt-4.1-mini',
+            presetId: 'openrouter',
             active: true,
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3736,13 +3837,14 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openai_codex-default',
             providerId: 'openai_codex',
+            runtimeKind: 'openai_codex',
             label: 'OpenAI Codex',
             modelId: 'openai_codex',
             active: true,
             readiness: {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proofUpdatedAt: null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3750,13 +3852,16 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openrouter-default',
             providerId: 'openrouter',
+            runtimeKind: 'openrouter',
             label: 'OpenRouter',
             modelId: 'old/openrouter-model',
+            presetId: 'openrouter',
             active: false,
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3798,6 +3903,7 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openai-custom',
             providerId: 'openai_api',
+            runtimeKind: 'openai_compatible',
             label: 'OpenAI-compatible Custom',
             modelId: 'gpt-4.1-mini',
             presetId: null,
@@ -3807,7 +3913,8 @@ describe('useCadenceDesktopState', () => {
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3846,6 +3953,7 @@ describe('useCadenceDesktopState', () => {
             {
               profileId: 'openai-custom',
               providerId: 'openai_api',
+              runtimeKind: 'openai_compatible',
               label: 'OpenAI-compatible Custom',
               modelId: 'gpt-4.1-mini',
               presetId: null,
@@ -3855,7 +3963,8 @@ describe('useCadenceDesktopState', () => {
               readiness: {
                 ready: true,
                 status: 'ready',
-                credentialUpdatedAt: '2026-04-16T14:05:00Z',
+                proof: 'stored_secret',
+                proofUpdatedAt: '2026-04-16T14:05:00Z',
               },
               migratedFromLegacy: false,
               migratedAt: null,
@@ -3885,13 +3994,16 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openrouter-default',
             providerId: 'openrouter',
+            runtimeKind: 'openrouter',
             label: 'OpenRouter',
             modelId: 'openai/gpt-4.1-mini',
+            presetId: 'openrouter',
             active: true,
             readiness: {
               ready: true,
               status: 'ready',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
+              proof: 'stored_secret',
+              proofUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3899,13 +4011,14 @@ describe('useCadenceDesktopState', () => {
           {
             profileId: 'openai_codex-default',
             providerId: 'openai_codex',
+            runtimeKind: 'openai_codex',
             label: 'OpenAI Codex',
             modelId: 'openai_codex',
             active: false,
             readiness: {
               ready: false,
               status: 'missing',
-              credentialUpdatedAt: null,
+              proofUpdatedAt: null,
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -3995,7 +4108,6 @@ describe('useCadenceDesktopState', () => {
               status: 'ready',
               proof: 'local',
               proofUpdatedAt: '2026-04-16T14:05:00Z',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -4016,7 +4128,6 @@ describe('useCadenceDesktopState', () => {
               status: 'ready',
               proof: 'ambient',
               proofUpdatedAt: '2026-04-16T14:05:00Z',
-              credentialUpdatedAt: '2026-04-16T14:05:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -4075,7 +4186,6 @@ describe('useCadenceDesktopState', () => {
                 status: 'ready',
                 proof: 'local',
                 proofUpdatedAt: '2026-04-16T14:05:00Z',
-                credentialUpdatedAt: '2026-04-16T14:05:00Z',
               },
               migratedFromLegacy: false,
               migratedAt: null,
@@ -4096,7 +4206,6 @@ describe('useCadenceDesktopState', () => {
                 status: 'ready',
                 proof: 'ambient',
                 proofUpdatedAt: '2026-04-16T14:05:00Z',
-                credentialUpdatedAt: '2026-04-16T14:05:00Z',
               },
               migratedFromLegacy: false,
               migratedAt: null,
@@ -4219,13 +4328,16 @@ describe('useCadenceDesktopState', () => {
         {
           profileId: 'anthropic-work',
           providerId: 'anthropic',
+          runtimeKind: 'anthropic',
           label: 'Anthropic Work',
           modelId: 'claude-3-7-sonnet-latest',
+          presetId: 'anthropic',
           active: true,
           readiness: {
             ready: true,
             status: 'ready',
-            credentialUpdatedAt: '2026-04-16T14:05:00Z',
+            proof: 'stored_secret',
+            proofUpdatedAt: '2026-04-16T14:05:00Z',
           },
           migratedFromLegacy: false,
           migratedAt: null,
@@ -4281,13 +4393,15 @@ describe('useCadenceDesktopState', () => {
         {
           profileId: 'anthropic-work',
           providerId: 'anthropic',
+          runtimeKind: 'anthropic',
           label: 'Anthropic Work',
           modelId: 'claude-3-5-haiku-latest',
+          presetId: 'anthropic',
           active: true,
           readiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           migratedFromLegacy: false,
           migratedAt: null,

@@ -90,6 +90,9 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     verificationRecords: [],
     resumeHistory: [],
     handoffPackages: [],
+    agentSessions: [],
+    selectedAgentSession: null,
+    selectedAgentSessionId: 'agent-session-main',
     notificationBroker: {
       dispatches: [],
       actions: [],
@@ -148,6 +151,7 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
 function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView {
   const runtimeRun: RuntimeRunView = {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runId: 'run-1',
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -169,6 +173,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         thinkingEffortLabel: 'Medium',
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
+        planModeRequired: false,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -180,6 +185,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         thinkingEffortLabel: 'Medium',
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
+        planModeRequired: false,
         revision: 1,
         effectiveAt: '2026-04-15T20:00:00Z',
         queuedPrompt: null,
@@ -229,6 +235,7 @@ function makeAutonomousRun(
 ): NonNullable<ProjectDetailView['autonomousRun']> {
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runId: 'auto-run-1',
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -363,6 +370,7 @@ function makeAutonomousArtifact(
 function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeStreamView {
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId: 'run-1',
     sessionId: 'session-1',
@@ -444,10 +452,19 @@ function makeRecentAutonomousUnits(
         latestAttemptStatusLabel: 'Blocked',
         latestAttemptUpdatedAt: '2026-04-16T20:05:00Z',
         latestAttemptSummary: 'Latest durable attempt is blocked for child session child-2.',
+        latestAttemptId: 'unit-history-2:attempt-2',
+        latestAttemptNumber: 2,
+        latestAttemptChildSessionId: 'child-2',
         workflowState: 'awaiting_snapshot',
         workflowStateLabel: 'Snapshot lag',
         workflowNodeLabel: 'Research',
         workflowLinkageLabel: 'Attempt linkage',
+        workflowLinkageSource: 'attempt',
+        workflowNodeId: 'workflow-research',
+        workflowTransitionId: 'transition-2',
+        workflowCausalTransitionId: 'transition-1',
+        workflowHandoffTransitionId: 'handoff-2',
+        workflowHandoffPackageHash: 'd41d8cd98f00b204e9800998ecf8427e',
         workflowDetail:
           'Cadence is keeping lifecycle progression anchored to snapshot truth while the linked node `Research` waits for the active lifecycle stage to catch up.',
         evidenceCount: 1,
@@ -733,6 +750,21 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
 }
 
 describe('AgentRuntime current UI', () => {
+  it('does not expose the removed pipeline mock inside the Agent tab', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+      />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Runtime' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Pipeline' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Cadence Desktop' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Pipeline contract overview')).not.toBeInTheDocument()
+    expect(screen.queryByText('Distributed evidence-pack assembly')).not.toBeInTheDocument()
+  })
+
   it('hides the autonomous ledger and remote-escalation debug panels', () => {
     render(
       <AgentRuntime
@@ -788,7 +820,6 @@ describe('AgentRuntime current UI', () => {
             status: 'malformed',
             proof: 'local',
             proofUpdatedAt: '2026-04-20T12:00:00Z',
-            credentialUpdatedAt: '2026-04-20T12:00:00Z',
           },
           runtimeSession: null,
           runtimeRun: makeRuntimeRun({
@@ -1168,6 +1199,86 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Live hint only')).toBeVisible()
   })
 
+  it('sends owned-agent live checkpoint responses through runtime run controls', async () => {
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+    const actionId = 'plan-mode-before-tools'
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'owned-agent:run-1', runtimeKind: 'owned_agent' }),
+          runtimeRun: makeRuntimeRun({
+            runtimeKind: 'owned_agent',
+            runtimeLabel: 'Owned agent · Running',
+            supervisorKind: 'owned_agent',
+            supervisorLabel: 'Owned agent',
+          }),
+          actionRequiredItems: [
+            {
+              id: 'owned-action-required-1',
+              kind: 'action_required',
+              runId: 'run-1',
+              sequence: 9,
+              createdAt: '2026-04-16T20:05:00Z',
+              actionId,
+              boundaryId: 'owned_agent',
+              actionType: 'plan_mode',
+              title: 'Plan required',
+              detail: 'Plan mode paused before tool execution.',
+            },
+          ],
+          checkpointControlLoop: makeCheckpointControlLoop({
+            items: [
+              makeCheckpointControlLoopCard({
+                actionId,
+                key: `${actionId}::owned_agent`,
+                boundaryId: 'owned_agent',
+                title: 'Plan required',
+                detail: 'Plan mode paused before tool execution.',
+                approval: null,
+                liveActionRequired: {
+                  id: 'owned-action-required-1',
+                  kind: 'action_required',
+                  runId: 'run-1',
+                  sequence: 9,
+                  createdAt: '2026-04-16T20:05:00Z',
+                  actionId,
+                  boundaryId: 'owned_agent',
+                  actionType: 'plan_mode',
+                  title: 'Plan required',
+                  detail: 'Plan mode paused before tool execution.',
+                },
+                liveStateLabel: 'Live action required',
+                durableStateLabel: 'Durable approval pending refresh',
+                truthSource: 'live_hint_only',
+                truthSourceLabel: 'Live hint only',
+                truthSourceDetail:
+                  'Cadence is showing the live action-required row while waiting for durable approval or evidence rows to persist.',
+              }),
+            ],
+            liveHintOnlyCount: 1,
+            durableOnlyCount: 0,
+          }),
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    const responseInput = screen.getByLabelText(`Owned agent response for ${actionId}`)
+    const sendResponse = screen.getByRole('button', { name: 'Send response' })
+    expect(sendResponse).toBeDisabled()
+
+    fireEvent.change(responseInput, { target: { value: 'Proceed with the approved plan.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send response' }))
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Proceed with the approved plan.',
+      }),
+    )
+    expect(screen.queryByText('Durable approval row not available')).not.toBeInTheDocument()
+  })
+
   it('keeps OpenRouter provider mismatch truthful without rendering runtime setup affordances', () => {
     render(
       <AgentRuntime
@@ -1251,7 +1362,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: true,
             status: 'ready',
-            credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            proofUpdatedAt: '2026-04-20T12:00:00Z',
           },
           providerMismatch: true,
           providerMismatchReason:
@@ -1291,7 +1402,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           runtimeSession: null,
           sessionUnavailableReason:
@@ -1321,7 +1432,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: true,
             status: 'ready',
-            credentialUpdatedAt: '2026-04-20T12:00:00Z',
+            proofUpdatedAt: '2026-04-20T12:00:00Z',
           },
           providerMismatch: true,
           providerMismatchReason:
@@ -1361,7 +1472,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           runtimeSession: null,
           sessionUnavailableReason:
@@ -1393,7 +1504,6 @@ describe('AgentRuntime current UI', () => {
             status: 'ready',
             proof: 'local',
             proofUpdatedAt: '2026-04-20T12:00:00Z',
-            credentialUpdatedAt: '2026-04-20T12:00:00Z',
           },
           providerMismatch: true,
           providerMismatchReason:
@@ -1433,7 +1543,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           runtimeSession: null,
           sessionUnavailableReason:
@@ -1465,7 +1575,6 @@ describe('AgentRuntime current UI', () => {
             status: 'ready',
             proof: 'ambient',
             proofUpdatedAt: '2026-04-20T12:00:00Z',
-            credentialUpdatedAt: '2026-04-20T12:00:00Z',
           },
           providerMismatch: true,
           providerMismatchReason:
@@ -1505,7 +1614,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           runtimeSession: null,
           sessionUnavailableReason:
@@ -1533,7 +1642,7 @@ describe('AgentRuntime current UI', () => {
           selectedProfileReadiness: {
             ready: false,
             status: 'missing',
-            credentialUpdatedAt: null,
+            proofUpdatedAt: null,
           },
           runtimeSession: null,
           sessionUnavailableReason:
@@ -1890,6 +1999,7 @@ describe('AgentRuntime current UI', () => {
             thinkingEffortLabel: 'Medium',
             approvalMode: 'suggest',
             approvalModeLabel: 'Suggest',
+            planModeRequired: false,
             revision: 1,
             appliedAt: '2026-04-20T12:00:00Z',
           },
@@ -1899,6 +2009,7 @@ describe('AgentRuntime current UI', () => {
             thinkingEffortLabel: 'Low',
             approvalMode: 'yolo',
             approvalModeLabel: 'YOLO',
+            planModeRequired: false,
             revision: 2,
             queuedAt: '2026-04-20T12:05:00Z',
             queuedPrompt: 'Review the diff before continuing.',
@@ -1997,6 +2108,7 @@ describe('AgentRuntime current UI', () => {
             thinkingEffortLabel: 'Medium',
             approvalMode: 'suggest',
             approvalModeLabel: 'Suggest',
+            planModeRequired: false,
             revision: 1,
             appliedAt: '2026-04-20T12:00:00Z',
           },
@@ -2006,6 +2118,7 @@ describe('AgentRuntime current UI', () => {
             thinkingEffortLabel: 'Medium',
             approvalMode: 'suggest',
             approvalModeLabel: 'Suggest',
+            planModeRequired: false,
             revision: 2,
             queuedAt: '2026-04-20T12:05:00Z',
             queuedPrompt: 'Kick off the first run.',
@@ -2197,6 +2310,7 @@ describe('AgentRuntime current UI', () => {
             thinkingEffortLabel: 'Medium',
             approvalMode: 'yolo',
             approvalModeLabel: 'YOLO',
+            planModeRequired: false,
             revision: 3,
             appliedAt: '2026-04-20T12:00:00Z',
           },

@@ -105,6 +105,23 @@ function makeProjectSummary(id: string, name: string): ListProjectsResponseDto['
   }
 }
 
+function makeAgentSession(projectId = 'project-1') {
+  return {
+    projectId,
+    agentSessionId: 'agent-session-main',
+    title: 'Main session',
+    summary: 'Primary project session',
+    status: 'active' as const,
+    selected: true,
+    createdAt: '2026-04-15T20:00:00Z',
+    updatedAt: '2026-04-15T20:00:00Z',
+    archivedAt: null,
+    lastRunId: null,
+    lastRuntimeKind: null,
+    lastProviderId: null,
+  }
+}
+
 function makeSnapshot(projectId = 'project-1', name = 'Cadence'): ProjectSnapshotResponseDto {
   return {
     project: makeProjectSummary(projectId, name),
@@ -123,6 +140,7 @@ function makeSnapshot(projectId = 'project-1', name = 'Cadence'): ProjectSnapsho
     verificationRecords: [],
     resumeHistory: [],
     handoffPackages: [],
+    agentSessions: [makeAgentSession(projectId)],
     notificationDispatches: [],
     notificationReplyClaims: [],
   }
@@ -593,6 +611,7 @@ function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCa
 function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   const runtimeRun: RuntimeRunDto = {
     projectId,
+    agentSessionId: 'agent-session-main',
     runId: 'run-1',
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -608,6 +627,7 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
         modelId: 'openai_codex',
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
+        planModeRequired: false,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -769,7 +789,7 @@ function makeRecoveredPolicyDeniedAutonomousState(
       runId: autonomousRunId,
       unitId,
       sequence: 2,
-      kind: 'diagnostic',
+      kind: 'executor',
       status: 'failed',
       summary: 'Cadence recorded a terminal shell-policy denial for this checkpoint boundary.',
       boundaryId: options.boundaryId,
@@ -810,6 +830,7 @@ function makeRuntimeStreamActionRequiredEvent(options: {
 
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId,
     sessionId: 'session-1',
@@ -847,6 +868,7 @@ function makeRuntimeStreamToolEvent(options: {
 
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId,
     sessionId: 'session-1',
@@ -899,6 +921,7 @@ function makeRuntimeStreamActivityEvent(options: {
 
   return {
     projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId,
     sessionId: 'session-1',
@@ -937,6 +960,7 @@ function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): 
   return {
     run: {
       projectId,
+      agentSessionId: 'agent-session-main',
       runId,
       runtimeKind: 'openai_codex',
       providerId: 'openai_codex',
@@ -967,7 +991,7 @@ function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): 
       runId,
       unitId: `${runId}:checkpoint:1`,
       sequence: 1,
-      kind: 'state',
+      kind: 'executor',
       status: 'active',
       summary: 'Recovered the current autonomous unit boundary.',
       boundaryId: 'checkpoint:1',
@@ -1063,6 +1087,12 @@ function createAdapter(options?: {
   let currentNotificationRoutes = options?.notificationRoutes ?? []
   let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'Cadence')]
   let currentProjectFiles = options?.projectFiles ?? makeProjectFiles()
+  const updateAgentSessions = (agentSessions: ProjectSnapshotResponseDto['agentSessions']) => {
+    currentSnapshot = {
+      ...currentSnapshot,
+      agentSessions,
+    }
+  }
   const pickedRepositoryPath = options?.pickedRepositoryPath ?? null
   const currentFileContents: Record<string, string> = {
     '/README.md': '# Cadence\n',
@@ -1124,16 +1154,18 @@ function createAdapter(options?: {
     queuedAt?: string
     queuedPrompt?: string | null
     queuedPromptAt?: string | null
-  }) => {
+  }): RuntimeRunDto['controls'] => {
     const modelId = options.nextControls?.modelId ?? options.base.modelId
     const thinkingEffort = options.nextControls?.thinkingEffort ?? options.base.thinkingEffort
     const approvalMode = options.nextControls?.approvalMode ?? options.base.approvalMode
+    const planModeRequired = options.nextControls?.planModeRequired ?? options.base.planModeRequired
 
     return {
       active: {
         modelId,
         thinkingEffort,
         approvalMode,
+        planModeRequired,
         revision: options.revision,
         appliedAt: options.appliedAt ?? options.base.appliedAt,
       },
@@ -1143,6 +1175,7 @@ function createAdapter(options?: {
               modelId,
               thinkingEffort,
               approvalMode,
+              planModeRequired,
               revision: options.revision,
               queuedAt: options.queuedAt ?? options.appliedAt ?? options.base.appliedAt,
               queuedPrompt: options.queuedPrompt ?? null,
@@ -1191,6 +1224,7 @@ function createAdapter(options?: {
               modelId: request?.controls?.modelId ?? activeProfile.modelId,
               thinkingEffort: request?.controls?.thinkingEffort ?? 'medium',
               approvalMode: request?.controls?.approvalMode ?? 'suggest',
+              planModeRequired: request?.controls?.planModeRequired ?? false,
             },
             revision: 1,
             appliedAt: '2026-04-22T12:05:30Z',
@@ -1213,6 +1247,7 @@ function createAdapter(options?: {
         modelId: options?.initialControls?.modelId ?? activeProfile.modelId,
         thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
         approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
+        planModeRequired: options?.initialControls?.planModeRequired ?? false,
       },
       revision: 1,
       appliedAt: '2026-04-22T12:00:00Z',
@@ -1554,18 +1589,19 @@ function createAdapter(options?: {
     return { route }
   })
 
-  const startRuntimeRun = vi.fn(async (_projectId: string, options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) =>
+  const startRuntimeRun = vi.fn(async (_projectId: string, _agentSessionId: string, options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) =>
     startRuntimeRunSnapshot(options),
   )
 
   const updateRuntimeRunControls = vi.fn(async (request?: {
     projectId: string
+    agentSessionId: string
     runId: string
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
   }) => queuePendingRuntimeRunSnapshot(request))
 
-  const startAutonomousRun = vi.fn(async () => {
+  const startAutonomousRun = vi.fn(async (_projectId: string, _agentSessionId: string, _options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) => {
     currentAutonomousState = makeAutonomousRunState('project-1')
     return currentAutonomousState
   })
@@ -1658,6 +1694,88 @@ function createAdapter(options?: {
       filesChanged: 0,
       totalReplacements: 0,
     }),
+    createAgentSession: async (request) => {
+      const now = '2026-04-23T12:00:00Z'
+      const selected = request.selected ?? true
+      const agentSession = {
+        ...makeAgentSession(request.projectId),
+        agentSessionId: `agent-session-${currentSnapshot.agentSessions.length + 1}`,
+        title: request.title ?? `Session ${currentSnapshot.agentSessions.length + 1}`,
+        summary: request.summary ?? '',
+        selected,
+        createdAt: now,
+        updatedAt: now,
+      }
+      updateAgentSessions([
+        ...currentSnapshot.agentSessions.map((session) =>
+          selected && session.projectId === request.projectId ? { ...session, selected: false } : session,
+        ),
+        agentSession,
+      ])
+      return agentSession
+    },
+    listAgentSessions: async (request) => ({
+      sessions: currentSnapshot.agentSessions.filter(
+        (session) => session.projectId === request.projectId && (request.includeArchived || session.status !== 'archived'),
+      ),
+    }),
+    getAgentSession: async (request) =>
+      currentSnapshot.agentSessions.find(
+        (session) => session.projectId === request.projectId && session.agentSessionId === request.agentSessionId,
+      ) ?? null,
+    updateAgentSession: async (request) => {
+      const existing = currentSnapshot.agentSessions.find(
+        (session) => session.projectId === request.projectId && session.agentSessionId === request.agentSessionId,
+      )
+      if (!existing) {
+        throw new Error(`Missing agent session ${request.agentSessionId}`)
+      }
+
+      const selected = request.selected ?? existing.selected
+      const nextSession = {
+        ...existing,
+        title: request.title ?? existing.title,
+        summary: request.summary ?? existing.summary,
+        selected,
+        updatedAt: '2026-04-23T12:05:00Z',
+      }
+      updateAgentSessions(
+        currentSnapshot.agentSessions.map((session) => {
+          if (session.projectId !== request.projectId) {
+            return session
+          }
+          if (session.agentSessionId === request.agentSessionId) {
+            return nextSession
+          }
+          return selected ? { ...session, selected: false } : session
+        }),
+      )
+      return nextSession
+    },
+    archiveAgentSession: async (request) => {
+      const existing = currentSnapshot.agentSessions.find(
+        (session) => session.projectId === request.projectId && session.agentSessionId === request.agentSessionId,
+      )
+      if (!existing) {
+        throw new Error(`Missing agent session ${request.agentSessionId}`)
+      }
+
+      const archivedSession = {
+        ...existing,
+        status: 'archived' as const,
+        selected: false,
+        archivedAt: '2026-04-23T12:10:00Z',
+        updatedAt: '2026-04-23T12:10:00Z',
+      }
+      updateAgentSessions(
+        currentSnapshot.agentSessions.map((session) =>
+          session.projectId === request.projectId && session.agentSessionId === request.agentSessionId
+            ? archivedSession
+            : session,
+        ),
+      )
+      return archivedSession
+    },
     getAutonomousRun: async () => currentAutonomousState ?? { run: null, unit: null },
     getRuntimeRun: async () => currentRuntimeRun,
     getRuntimeSettings: async () => currentRuntimeSettings,
@@ -1704,7 +1822,7 @@ function createAdapter(options?: {
       currentRuntimeSession = makeRuntimeSession('project-1')
       return currentRuntimeSession
     },
-    stopRuntimeRun: async (_projectId, runId) => {
+    stopRuntimeRun: async (_projectId, _agentSessionId, runId) => {
       currentRuntimeRun = makeRuntimeRun('project-1', {
         runId,
         status: 'stopped',
@@ -1712,7 +1830,7 @@ function createAdapter(options?: {
       })
       return currentRuntimeRun
     },
-    cancelAutonomousRun: async (_projectId, runId) => {
+    cancelAutonomousRun: async (_projectId, _agentSessionId, runId) => {
       currentAutonomousState = {
         run: {
           ...makeAutonomousRunState('project-1', runId).run!,
@@ -1904,6 +2022,7 @@ function createAdapter(options?: {
     onBrowserTabUpdated: async () => () => undefined,
     subscribeRuntimeStream: async (
       projectId: string,
+      agentSessionId: string,
       itemKinds: RuntimeStreamEventDto['subscribedItemKinds'],
       handler: (payload: RuntimeStreamEventDto) => void,
       onError?: (error: CadenceDesktopError) => void,
@@ -1924,6 +2043,7 @@ function createAdapter(options?: {
       return {
         response: {
           projectId,
+          agentSessionId,
           runtimeKind: 'openai_codex',
           runId: currentRuntimeRun?.runId ?? 'run-1',
           sessionId: currentRuntimeSession.sessionId ?? 'session-1',
@@ -2431,7 +2551,7 @@ describe('CadenceApp current UI', () => {
     )
   })
 
-  it('renders the current workflow empty state for an imported project', async () => {
+  it('renders the workflow tab as a blank slate for an imported project', async () => {
     const { adapter } = createAdapter()
 
     render(<CadenceApp adapter={adapter} />)
@@ -2440,7 +2560,8 @@ describe('CadenceApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    expect(screen.getByText('No milestone assigned')).toBeVisible()
+    expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
+    expect(screen.queryByText('Cadence Desktop')).not.toBeInTheDocument()
   })
 
   it('renders live git and runtime footer data from desktop state while leaving mock-only fields untouched', async () => {
@@ -2813,6 +2934,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-live-1',
           startedAt: '2026-04-20T12:00:00Z',
@@ -2824,6 +2946,7 @@ describe('CadenceApp current UI', () => {
               modelId: 'openai_codex',
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
+              planModeRequired: false,
               revision: 1,
               appliedAt: '2026-04-20T12:00:00Z',
             },
@@ -2847,6 +2970,7 @@ describe('CadenceApp current UI', () => {
           modelId: 'openai_codex',
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
+          planModeRequired: false,
           revision: 1,
           appliedAt: '2026-04-20T12:00:00Z',
         },
@@ -2854,6 +2978,7 @@ describe('CadenceApp current UI', () => {
           modelId: 'anthropic/claude-3.5-haiku',
           thinkingEffort: 'low',
           approvalMode: 'yolo',
+          planModeRequired: false,
           revision: 2,
           queuedAt: '2026-04-20T12:05:00Z',
           queuedPrompt: 'Review the diff before continuing.',
@@ -2865,6 +2990,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: pendingRun,
       })
     })
@@ -2878,6 +3004,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: pendingRun,
       })
     })
@@ -2886,12 +3013,14 @@ describe('CadenceApp current UI', () => {
     expect(() =>
       setup.emitRuntimeRunUpdated({
         projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
       }),
     ).toThrowError(/expected one of \[project-1\]/)
     expect(() =>
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', { runId: 'run-live-2' }),
       }),
     ).toThrowError(/clear the active run before attaching `run-live-2`/)
@@ -2899,6 +3028,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-live-1',
           startedAt: '2026-04-20T12:00:00Z',
@@ -2911,6 +3041,7 @@ describe('CadenceApp current UI', () => {
               modelId: 'anthropic/claude-3.5-haiku',
               thinkingEffort: 'low',
               approvalMode: 'yolo',
+              planModeRequired: false,
               revision: 2,
               appliedAt: '2026-04-20T12:06:00Z',
             },
@@ -2927,6 +3058,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: null,
       })
     })
@@ -2936,6 +3068,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-live-2',
           startedAt: '2026-04-20T12:07:00Z',
@@ -2948,6 +3081,7 @@ describe('CadenceApp current UI', () => {
               modelId: 'anthropic/claude-3.5-haiku',
               thinkingEffort: 'low',
               approvalMode: 'yolo',
+              planModeRequired: false,
               revision: 2,
               appliedAt: '2026-04-20T12:07:00Z',
             },
@@ -3238,13 +3372,7 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     await waitFor(() => expect(setup.streamSubscriptions.length).toBeGreaterThan(0))
-    expect(await screen.findByRole('heading', { name: 'Recent autonomous workers' })).toBeVisible()
-    expect(screen.getByText('Snapshot lag')).toBeVisible()
-    expect(
-      screen.getAllByText(
-        'autonomous_linkage_mismatch remained visible while the worker card kept its last truthful linkage state.',
-      ).length,
-    ).toBeGreaterThan(0)
+    expect(await screen.findByRole('heading', { name: 'Runtime activity' })).toBeVisible()
 
     act(() => {
       setup.emitRuntimeStream(
@@ -3289,6 +3417,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-1',
           startedAt: '2026-04-22T12:00:00Z',
@@ -3305,12 +3434,14 @@ describe('CadenceApp current UI', () => {
     expect(() =>
       setup.emitRuntimeRunUpdated({
         projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
       }),
     ).toThrowError(/expected one of \[project-1\]/)
     expect(() =>
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', { runId: 'run-2' }),
       }),
     ).toThrowError(/clear the active run before attaching `run-2`/)
@@ -3334,8 +3465,7 @@ describe('CadenceApp current UI', () => {
       ).toBeVisible(),
     )
     expect(screen.getByText('MCP Prompt · Summarize Context · server linear · outcome Failed')).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Recent autonomous workers' })).toBeVisible()
-    expect(screen.getByText('Snapshot lag')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Runtime activity' })).toBeVisible()
   })
 
   it('starts the shipped Agent path with openai_api provider identity and openai_compatible runtime truth', async () => {
@@ -3397,7 +3527,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
-      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
+      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', 'agent-session-main', {
         initialControls: {
           modelId: 'gpt-4.1-mini',
           thinkingEffort: 'medium',
@@ -3467,7 +3597,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
-      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
+      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', 'agent-session-main', {
         initialControls: {
           modelId: 'openai/gpt-4.1',
           thinkingEffort: 'medium',
@@ -3539,7 +3669,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
-      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
+      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', 'agent-session-main', {
         initialControls: {
           modelId: 'llama3.2',
           thinkingEffort: null,
@@ -3649,7 +3779,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
     await waitFor(() =>
-      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', {
+      expect(setup.startRuntimeRun).toHaveBeenCalledWith('project-1', 'agent-session-main', {
         initialControls: {
           modelId: 'openai_codex',
           thinkingEffort: 'medium',
@@ -3664,6 +3794,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-1',
           startedAt: '2026-04-22T12:00:00Z',
@@ -3682,6 +3813,7 @@ describe('CadenceApp current UI', () => {
     await waitFor(() =>
       expect(setup.updateRuntimeRunControls).toHaveBeenNthCalledWith(1, {
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         runId: 'run-1',
         controls: {
           modelId: 'openai_codex',
@@ -3705,6 +3837,7 @@ describe('CadenceApp current UI', () => {
     await waitFor(() =>
       expect(setup.updateRuntimeRunControls).toHaveBeenNthCalledWith(2, {
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         runId: 'run-1',
         controls: null,
         prompt: 'Review the diff before continuing.',
@@ -3715,6 +3848,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-1',
           startedAt: '2026-04-22T12:00:00Z',
@@ -3727,6 +3861,7 @@ describe('CadenceApp current UI', () => {
               modelId: 'openai_codex',
               thinkingEffort: 'medium',
               approvalMode: 'yolo',
+              planModeRequired: false,
               revision: 2,
               appliedAt: '2026-04-22T12:06:00Z',
             },
@@ -3777,6 +3912,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-1',
           startedAt: '2026-04-22T12:00:00Z',
@@ -3798,6 +3934,7 @@ describe('CadenceApp current UI', () => {
     act(() => {
       setup.emitRuntimeRunUpdated({
         projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
         run: makeRuntimeRun('project-1', {
           runId: 'run-1',
           startedAt: '2026-04-22T12:00:00Z',
@@ -3810,6 +3947,7 @@ describe('CadenceApp current UI', () => {
               modelId: 'openai_codex',
               thinkingEffort: 'medium',
               approvalMode: 'yolo',
+              planModeRequired: false,
               revision: 2,
               appliedAt: '2026-04-22T12:07:00Z',
             },
@@ -3865,6 +4003,7 @@ describe('CadenceApp current UI', () => {
             modelId: 'openai_codex',
             thinkingEffort: 'medium',
             approvalMode: 'yolo',
+            planModeRequired: false,
             revision: 2,
             appliedAt: '2026-04-22T12:07:00Z',
           },
@@ -3967,10 +4106,14 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'README.md' }))
 
     const editor = await screen.findByLabelText('Editor for /README.md')
+    const executionPane = editor.closest('[aria-hidden]')
+    expect(executionPane).toHaveAttribute('aria-hidden', 'false')
     fireEvent.change(editor, { target: { value: '# Draft changes\n' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
-    expect(await screen.findByText('No milestone assigned')).toBeVisible()
+    await waitFor(() => expect(executionPane).toHaveAttribute('aria-hidden', 'true'))
+    expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
+    expect(screen.queryByText('Cadence Desktop')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
 

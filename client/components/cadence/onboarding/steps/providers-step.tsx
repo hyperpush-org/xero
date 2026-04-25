@@ -59,7 +59,7 @@ export function ProvidersStep({
         description="Provider setup is app-wide. Choose the active profile for new runtime binds without rewriting project runtime history."
       />
 
-      <div className="mt-7 animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out [animation-delay:60ms] [animation-fill-mode:both]">
+      <div className="mt-7 animate-in fade-in-0 slide-in-from-bottom-1 motion-enter [animation-delay:60ms] [animation-fill-mode:both]">
         <ProviderProfileForm
           providerProfiles={providerProfiles}
           providerProfilesLoadStatus={providerProfilesLoadStatus}

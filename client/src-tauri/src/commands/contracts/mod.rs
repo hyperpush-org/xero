@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod autonomous;
 pub mod error;
 pub mod mcp;

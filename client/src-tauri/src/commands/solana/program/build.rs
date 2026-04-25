@@ -38,12 +38,14 @@ const CAPTURE_BYTES: usize = 16_384;
 /// `solana_program_build` profile selector.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BuildProfile {
     /// `--debug` — fast iteration, larger `.so`, never deployed to
     /// non-local clusters by the deploy gate.
     Dev,
     /// `--release` (Anchor's default) — what every cluster except a
     /// local debug session expects.
+    #[default]
     Release,
 }
 
@@ -53,12 +55,6 @@ impl BuildProfile {
             BuildProfile::Dev => "dev",
             BuildProfile::Release => "release",
         }
-    }
-}
-
-impl Default for BuildProfile {
-    fn default() -> Self {
-        BuildProfile::Release
     }
 }
 

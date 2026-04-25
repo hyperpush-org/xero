@@ -69,8 +69,10 @@ impl std::fmt::Debug for TokenServices {
 /// SPL-Token program flavour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TokenProgram {
     Spl,
+    #[default]
     SplToken2022,
 }
 
@@ -88,12 +90,6 @@ impl TokenProgram {
             TokenProgram::Spl => "",
             TokenProgram::SplToken2022 => "--program-2022",
         }
-    }
-}
-
-impl Default for TokenProgram {
-    fn default() -> Self {
-        TokenProgram::SplToken2022
     }
 }
 
@@ -419,17 +415,18 @@ fn assemble_argv(
     mint_keypair_path: Option<&str>,
     spec: &TokenCreateSpec,
 ) -> Vec<String> {
-    let mut v: Vec<String> = Vec::new();
-    v.push(cli.to_string());
-    v.push("create-token".to_string());
-    v.push("--url".to_string());
-    v.push(rpc_url.to_string());
-    v.push("--fee-payer".to_string());
-    v.push(authority_keypair_path.display().to_string());
-    v.push("--mint-authority".to_string());
-    v.push(authority_keypair_path.display().to_string());
-    v.push("--decimals".to_string());
-    v.push(spec.decimals.to_string());
+    let mut v: Vec<String> = vec![
+        cli.to_string(),
+        "create-token".to_string(),
+        "--url".to_string(),
+        rpc_url.to_string(),
+        "--fee-payer".to_string(),
+        authority_keypair_path.display().to_string(),
+        "--mint-authority".to_string(),
+        authority_keypair_path.display().to_string(),
+        "--decimals".to_string(),
+        spec.decimals.to_string(),
+    ];
     if let Some(path) = mint_keypair_path {
         v.push(path.to_string());
     }
@@ -444,7 +441,7 @@ fn assemble_argv(
 }
 
 fn sorted_extensions(input: &[TokenExtension]) -> Vec<TokenExtension> {
-    let mut out: Vec<TokenExtension> = input.iter().copied().collect();
+    let mut out: Vec<TokenExtension> = input.to_vec();
     out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     out.dedup();
     out

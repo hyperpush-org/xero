@@ -151,12 +151,8 @@ pub fn execute_action_with_app<R: Runtime>(
         }
         AutonomousBrowserAction::Navigate { url } => {
             let target = browser_actions::parse_url(&url)?;
-            let label = tabs
-                .active_label_soft()
-                .ok_or_else(|| require_open_error())?;
-            let webview = app
-                .get_webview(&label)
-                .ok_or_else(|| require_open_error())?;
+            let label = tabs.active_label_soft().ok_or_else(require_open_error)?;
+            let webview = app.get_webview(&label).ok_or_else(require_open_error)?;
             webview.navigate(target.clone()).map_err(|error| {
                 CommandError::system_fault(
                     "browser_navigate_failed",
@@ -172,12 +168,8 @@ pub fn execute_action_with_app<R: Runtime>(
             browser_actions::history_navigate(app, &tabs, &waiters, 1)?
         }
         AutonomousBrowserAction::Reload => {
-            let label = tabs
-                .active_label_soft()
-                .ok_or_else(|| require_open_error())?;
-            let webview = app
-                .get_webview(&label)
-                .ok_or_else(|| require_open_error())?;
+            let label = tabs.active_label_soft().ok_or_else(require_open_error)?;
+            let webview = app.get_webview(&label).ok_or_else(require_open_error)?;
             let current = webview.url().map_err(|error| {
                 CommandError::system_fault(
                     "browser_url_failed",

@@ -102,7 +102,7 @@ impl AutonomousToolRuntime {
             })
     }
 
-    fn should_skip_directory(&self, path: &Path) -> bool {
+    pub(super) fn should_skip_directory(&self, path: &Path) -> bool {
         path != self.repo_root
             && path
                 .file_name()
@@ -210,7 +210,7 @@ impl AutonomousToolRuntime {
         ))
     }
 
-    fn read_sorted_directory_entries(
+    pub(super) fn read_sorted_directory_entries(
         &self,
         scope: &Path,
         error_code: &'static str,

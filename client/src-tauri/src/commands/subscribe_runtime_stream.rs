@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{path::Path, str::FromStr, thread, time::Duration};
 
 use tauri::{
     ipc::{Channel, JavaScriptChannelId},
@@ -8,10 +8,17 @@ use tauri::{
 use crate::{
     commands::{
         validate_non_empty, CommandError, CommandResult, RuntimeAuthPhase, RuntimeStreamItemDto,
-        RuntimeStreamItemKind, SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
+        RuntimeStreamItemKind, RuntimeToolCallState, SubscribeRuntimeStreamRequestDto,
+        SubscribeRuntimeStreamResponseDto,
     },
-    db::project_store::{RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness},
-    runtime::{start_runtime_stream, RuntimeStreamRequest},
+    db::project_store::{
+        self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
+        RuntimeRunStatus, RuntimeRunTransportLiveness,
+    },
+    runtime::{
+        start_runtime_stream, subscribe_agent_events, AgentEventSubscription, RuntimeStreamRequest,
+        OWNED_AGENT_SUPERVISOR_KIND,
+    },
     state::DesktopState,
 };
 
@@ -36,6 +43,19 @@ pub fn subscribe_runtime_stream<R: Runtime>(
     let channel = resolve_channel(&webview, request.channel.as_deref())?;
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let owned_runtime_run =
+        load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?
+            .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND);
+    if let Some(runtime_run) = owned_runtime_run {
+        return subscribe_owned_runtime_stream(
+            &repo_root,
+            &request,
+            runtime_run,
+            item_kinds,
+            channel,
+        );
+    }
+
     let runtime = load_runtime_session_status(state.inner(), &repo_root, &request.project_id)?;
     let runtime = reconcile_runtime_session(&app, state.inner(), &repo_root, runtime)?;
 
@@ -128,6 +148,346 @@ fn parse_runtime_stream_item_kind(value: &str) -> CommandResult<RuntimeStreamIte
                 RuntimeStreamItemDto::allowed_kind_names().join(", ")
             ),
         )),
+    }
+}
+
+fn subscribe_owned_runtime_stream(
+    repo_root: &Path,
+    request: &SubscribeRuntimeStreamRequestDto,
+    runtime_run: RuntimeRunSnapshotRecord,
+    item_kinds: Vec<RuntimeStreamItemKind>,
+    channel: Channel<RuntimeStreamItemDto>,
+) -> CommandResult<SubscribeRuntimeStreamResponseDto> {
+    let run_id = runtime_run.run.run_id.clone();
+    let runtime_terminal = matches!(
+        runtime_run.run.status,
+        RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed
+    );
+    let session_id = format!("owned-agent:{run_id}");
+    let subscription = subscribe_agent_events(&request.project_id, &run_id);
+    let (last_event_id, terminal) = replay_owned_agent_events(
+        repo_root,
+        &request.project_id,
+        &run_id,
+        &session_id,
+        &item_kinds,
+        &channel,
+    )?;
+
+    if !terminal && !runtime_terminal {
+        let requested_item_kinds = item_kinds.clone();
+        let project_id = request.project_id.clone();
+        let run_id_for_thread = run_id.clone();
+        let session_id_for_thread = session_id.clone();
+        thread::spawn(move || {
+            stream_live_owned_agent_events(
+                subscription,
+                channel,
+                project_id,
+                run_id_for_thread,
+                session_id_for_thread,
+                requested_item_kinds,
+                last_event_id,
+            );
+        });
+    }
+
+    Ok(SubscribeRuntimeStreamResponseDto {
+        project_id: request.project_id.clone(),
+        agent_session_id: request.agent_session_id.clone(),
+        runtime_kind: runtime_run.run.runtime_kind,
+        run_id,
+        session_id,
+        flow_id: None,
+        subscribed_item_kinds: item_kinds,
+    })
+}
+
+fn replay_owned_agent_events(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    session_id: &str,
+    item_kinds: &[RuntimeStreamItemKind],
+    channel: &Channel<RuntimeStreamItemDto>,
+) -> CommandResult<(i64, bool)> {
+    let snapshot = match project_store::load_agent_run(repo_root, project_id, run_id) {
+        Ok(snapshot) => snapshot,
+        Err(error) if error.code == "agent_run_not_found" => return Ok((0, false)),
+        Err(error) => return Err(error),
+    };
+    let terminal = matches!(
+        snapshot.run.status,
+        AgentRunStatus::Cancelled | AgentRunStatus::Completed | AgentRunStatus::Failed
+    );
+    let mut last_event_id = 0;
+    for event in snapshot.events {
+        last_event_id = last_event_id.max(event.id);
+        if let Some(item) = owned_agent_event_runtime_item(event, session_id, None) {
+            if should_emit_owned_runtime_item(item_kinds, &item.kind) {
+                channel.send(item).map_err(|error| {
+                    CommandError::retryable(
+                        "runtime_stream_channel_closed",
+                        format!(
+                            "Cadence could not deliver an owned-agent runtime stream replay item because the desktop channel closed: {error}"
+                        ),
+                    )
+                })?;
+            }
+        }
+    }
+    Ok((last_event_id, terminal))
+}
+
+fn stream_live_owned_agent_events(
+    subscription: AgentEventSubscription,
+    channel: Channel<RuntimeStreamItemDto>,
+    project_id: String,
+    run_id: String,
+    session_id: String,
+    item_kinds: Vec<RuntimeStreamItemKind>,
+    mut last_event_id: i64,
+) {
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+    loop {
+        let event = match subscription.recv_timeout(IDLE_TIMEOUT) {
+            Ok(event) => event,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if event.project_id != project_id || event.run_id != run_id || event.id <= last_event_id {
+            continue;
+        }
+        let terminal = matches!(
+            event.event_kind,
+            AgentRunEventKind::RunCompleted | AgentRunEventKind::RunFailed
+        );
+        last_event_id = event.id;
+        if let Some(item) = owned_agent_event_runtime_item(event, &session_id, None) {
+            if should_emit_owned_runtime_item(&item_kinds, &item.kind)
+                && channel.send(item).is_err()
+            {
+                return;
+            }
+        }
+        if terminal {
+            break;
+        }
+    }
+}
+
+fn owned_agent_event_runtime_item(
+    event: AgentEventRecord,
+    session_id: &str,
+    flow_id: Option<String>,
+) -> Option<RuntimeStreamItemDto> {
+    let event_id = event.id;
+    let event_kind = event.event_kind.clone();
+    let payload = serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap_or_else(
+        |error| {
+            serde_json::json!({
+                "code": "owned_agent_event_decode_failed",
+                "message": format!("Cadence could not decode owned-agent event payload {event_id}: {error}"),
+                "retryable": false,
+            })
+        },
+    );
+    let mut item = RuntimeStreamItemDto {
+        kind: RuntimeStreamItemKind::Activity,
+        run_id: event.run_id.clone(),
+        sequence: event_id.max(0) as u64,
+        session_id: Some(session_id.to_string()),
+        flow_id,
+        text: None,
+        tool_call_id: None,
+        tool_name: None,
+        tool_state: None,
+        tool_summary: None,
+        skill_id: None,
+        skill_stage: None,
+        skill_result: None,
+        skill_source: None,
+        skill_cache_status: None,
+        skill_diagnostic: None,
+        action_id: None,
+        boundary_id: None,
+        action_type: None,
+        title: None,
+        detail: None,
+        code: None,
+        message: None,
+        retryable: None,
+        created_at: event.created_at,
+    };
+
+    match event_kind {
+        AgentRunEventKind::MessageDelta => {
+            item.kind = RuntimeStreamItemKind::Transcript;
+            item.text = payload_string(&payload, "text");
+        }
+        AgentRunEventKind::ReasoningSummary => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_reasoning".into());
+            item.title = Some("Reasoning".into());
+            item.detail = payload_string(&payload, "summary")
+                .or_else(|| Some("Owned agent reasoning summary updated.".into()));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ToolStarted => {
+            item.kind = RuntimeStreamItemKind::Tool;
+            item.tool_call_id = payload_string(&payload, "toolCallId");
+            item.tool_name = payload_string(&payload, "toolName");
+            item.tool_state = Some(RuntimeToolCallState::Running);
+            item.text = item
+                .tool_name
+                .as_ref()
+                .map(|tool_name| format!("Started `{tool_name}`."));
+        }
+        AgentRunEventKind::ToolDelta => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_tool_delta".into());
+            item.title = Some("Tool arguments".into());
+            item.tool_call_id = payload_string(&payload, "toolCallId");
+            item.tool_name = payload_string(&payload, "toolName");
+            item.detail = payload_string(&payload, "argumentsDelta")
+                .or_else(|| Some("Provider streamed tool-call arguments.".into()));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ToolCompleted => {
+            item.kind = RuntimeStreamItemKind::Tool;
+            item.tool_call_id = payload_string(&payload, "toolCallId");
+            item.tool_name = payload_string(&payload, "toolName");
+            item.tool_state = Some(if payload_bool(&payload, "ok").unwrap_or(false) {
+                RuntimeToolCallState::Succeeded
+            } else {
+                RuntimeToolCallState::Failed
+            });
+            item.text = payload_string(&payload, "summary")
+                .or_else(|| payload_string(&payload, "message"))
+                .or_else(|| {
+                    item.tool_name
+                        .as_ref()
+                        .map(|name| format!("Completed `{name}`."))
+                });
+            item.code = payload_string(&payload, "code");
+            item.message = payload_string(&payload, "message");
+        }
+        AgentRunEventKind::FileChanged => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_file_changed".into());
+            let operation =
+                payload_string(&payload, "operation").unwrap_or_else(|| "change".into());
+            let path = payload_string(&payload, "path").unwrap_or_else(|| "unknown path".into());
+            item.title = Some("File changed".into());
+            item.detail = payload_string(&payload, "toPath")
+                .map(|to_path| format!("{operation}: {path} -> {to_path}"))
+                .or_else(|| Some(format!("{operation}: {path}")));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::CommandOutput => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_command_output".into());
+            item.title = Some("Command output".into());
+            item.detail = Some(command_output_summary(&payload));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ValidationStarted => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_validation_started".into());
+            item.title = Some("Validation started".into());
+            item.detail = payload_string(&payload, "label")
+                .map(|label| format!("Validation started: {label}."))
+                .or_else(|| Some("Owned agent validation started.".into()));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ValidationCompleted => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_validation_completed".into());
+            let label = payload_string(&payload, "label").unwrap_or_else(|| "validation".into());
+            let outcome = payload_string(&payload, "outcome").unwrap_or_else(|| "completed".into());
+            item.title = Some("Validation completed".into());
+            item.detail = Some(format!("Validation {outcome}: {label}."));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ActionRequired => {
+            item.kind = RuntimeStreamItemKind::ActionRequired;
+            item.action_id = payload_string(&payload, "actionId")
+                .or_else(|| Some(format!("owned-agent-action-{event_id}")));
+            item.boundary_id = Some("owned_agent".into());
+            item.action_type =
+                payload_string(&payload, "actionType").or_else(|| Some("operator_review".into()));
+            item.title =
+                payload_string(&payload, "title").or_else(|| Some("Action required".into()));
+            item.detail = payload_string(&payload, "detail")
+                .or_else(|| payload_string(&payload, "message"))
+                .or_else(|| payload_string(&payload, "reason"))
+                .or_else(|| Some("Owned agent requires operator input before continuing.".into()));
+            item.code = payload_string(&payload, "code");
+            item.message = payload_string(&payload, "message");
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::RunCompleted => {
+            item.kind = RuntimeStreamItemKind::Complete;
+            item.detail = payload_string(&payload, "summary")
+                .or_else(|| Some("Owned agent run completed.".into()));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::RunFailed => {
+            item.kind = RuntimeStreamItemKind::Failure;
+            item.code =
+                payload_string(&payload, "code").or_else(|| Some("owned_agent_failed".into()));
+            item.message = payload_string(&payload, "message")
+                .or_else(|| Some("Owned agent run failed.".into()));
+            item.retryable = payload_bool(&payload, "retryable").or(Some(false));
+            item.text = item.message.clone();
+        }
+    }
+
+    Some(item)
+}
+
+fn should_emit_owned_runtime_item(
+    requested: &[RuntimeStreamItemKind],
+    kind: &RuntimeStreamItemKind,
+) -> bool {
+    kind == &RuntimeStreamItemKind::Failure || requested.contains(kind)
+}
+
+fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn payload_bool(payload: &serde_json::Value, key: &str) -> Option<bool> {
+    payload.get(key).and_then(|value| value.as_bool())
+}
+
+fn command_output_summary(payload: &serde_json::Value) -> String {
+    let argv = payload
+        .get("argv")
+        .and_then(|value| value.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|command| !command.trim().is_empty())
+        .unwrap_or_else(|| "command".into());
+    if let Some(operation) = payload_string(payload, "operation") {
+        return format!("Command session {operation}: {argv}.");
+    }
+    if payload_bool(payload, "timedOut").unwrap_or(false) {
+        return format!("Command timed out: {argv}.");
+    }
+    match payload.get("exitCode").and_then(|value| value.as_i64()) {
+        Some(code) => format!("Command exited with status {code}: {argv}."),
+        None => format!("Command output: {argv}."),
     }
 }
 
@@ -244,5 +604,99 @@ fn runtime_stream_precondition_error(
         CommandError::retryable(code, message)
     } else {
         CommandError::user_fixable(code, message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(event_kind: AgentRunEventKind, payload_json: &str) -> AgentEventRecord {
+        AgentEventRecord {
+            id: 42,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind,
+            payload_json: payload_json.into(),
+            created_at: "2026-04-24T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn owned_agent_event_projection_maps_tool_and_action_items() {
+        let tool = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-1","toolName":"read","ok":false,"code":"tool_failed","message":"nope"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("tool item");
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Failed));
+        assert_eq!(tool.code.as_deref(), Some("tool_failed"));
+
+        let action = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ActionRequired,
+                r#"{"actionId":"plan-mode-before-tools","actionType":"plan_mode","title":"Plan required","message":"pause"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("action item");
+        assert_eq!(action.kind, RuntimeStreamItemKind::ActionRequired);
+        assert_eq!(action.action_id.as_deref(), Some("plan-mode-before-tools"));
+        assert_eq!(action.boundary_id.as_deref(), Some("owned_agent"));
+        assert_eq!(action.action_type.as_deref(), Some("plan_mode"));
+        assert_eq!(action.detail.as_deref(), Some("pause"));
+
+        let fallback_action = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ActionRequired, r#"{}"#),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("fallback action item");
+        assert_eq!(
+            fallback_action.detail.as_deref(),
+            Some("Owned agent requires operator input before continuing.")
+        );
+    }
+
+    #[test]
+    fn owned_agent_event_projection_populates_strict_activity_and_complete_fields() {
+        let activity = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"Checked repository instructions."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("activity item");
+        assert_eq!(activity.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(activity.code.as_deref(), Some("owned_agent_reasoning"));
+        assert_eq!(activity.title.as_deref(), Some("Reasoning"));
+        assert_eq!(
+            activity.detail.as_deref(),
+            Some("Checked repository instructions.")
+        );
+
+        let complete = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::RunCompleted,
+                r#"{"summary":"Owned agent run completed."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("complete item");
+        assert_eq!(complete.kind, RuntimeStreamItemKind::Complete);
+        assert_eq!(
+            complete.detail.as_deref(),
+            Some("Owned agent run completed.")
+        );
     }
 }

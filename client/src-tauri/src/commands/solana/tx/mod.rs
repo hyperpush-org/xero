@@ -34,6 +34,8 @@ use crate::commands::{CommandError, CommandResult};
 use super::cluster::ClusterKind;
 use super::rpc_router::RpcRouter;
 
+type ConfirmationPollResult = (Option<u64>, Option<String>, Option<Value>, Vec<String>);
+
 pub use alt::{
     AltCandidate, AltCreateResult, AltExtendResult, AltResolveReport, AltRunner, AltSuggestion,
 };
@@ -454,7 +456,7 @@ impl TxPipeline {
                 let bundle = jito::submit_bundle(
                     self.transport.as_ref(),
                     &self.jito_endpoint,
-                    &[request.signed_transaction_base64.clone()],
+                    std::slice::from_ref(&request.signed_transaction_base64),
                 );
                 match bundle {
                     Ok(b) => {
@@ -668,7 +670,7 @@ impl TxPipeline {
         signature: &str,
         target: Commitment,
         timeout: Duration,
-    ) -> CommandResult<(Option<u64>, Option<String>, Option<Value>, Vec<String>)> {
+    ) -> CommandResult<ConfirmationPollResult> {
         let deadline = Instant::now() + timeout;
         let mut last_status: Option<Value> = None;
         loop {
@@ -692,12 +694,12 @@ impl TxPipeline {
                     ));
                 }
                 if let Some(status) = value.get("confirmationStatus").and_then(|v| v.as_str()) {
-                    let meets = match (target, status) {
-                        (Commitment::Processed, _) => true,
-                        (Commitment::Confirmed, "confirmed" | "finalized") => true,
-                        (Commitment::Finalized, "finalized") => true,
-                        _ => false,
-                    };
+                    let meets = matches!(
+                        (target, status),
+                        (Commitment::Processed, _)
+                            | (Commitment::Confirmed, "confirmed" | "finalized")
+                            | (Commitment::Finalized, "finalized")
+                    );
                     if meets {
                         let logs = self
                             .fetch_logs_for(rpc_url, signature, target)

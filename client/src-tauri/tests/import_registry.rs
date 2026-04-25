@@ -688,7 +688,7 @@ fn import_repository_quarantines_repo_local_database_from_newer_builds() {
         .execute("INSERT INTO sentinel (value) VALUES ('future-state')", [])
         .expect("insert sentinel row");
     connection
-        .execute("PRAGMA user_version = 19", [])
+        .execute("PRAGMA user_version = 999", [])
         .expect("set future schema version");
     drop(connection);
 
@@ -729,7 +729,7 @@ fn import_repository_quarantines_repo_local_database_from_newer_builds() {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("state.db.incompatible-v19"))
+                .is_some_and(|name| name.starts_with("state.db.incompatible-v999"))
         })
         .collect::<Vec<_>>();
     assert_eq!(

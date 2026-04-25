@@ -40,7 +40,7 @@ export function ProjectStep({
       ) : null}
 
       {project ? (
-        <div className="mt-7 animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out [animation-delay:60ms] [animation-fill-mode:both]">
+        <div className="mt-7 animate-in fade-in-0 slide-in-from-bottom-1 motion-enter [animation-delay:60ms] [animation-fill-mode:both]">
           <div className="overflow-hidden rounded-lg border border-primary/40 bg-primary/[0.03]">
             <div className="flex items-center gap-3 px-4 py-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-primary/40 bg-primary/10 text-primary">
@@ -77,7 +77,7 @@ export function ProjectStep({
           onClick={onImportProject}
           disabled={isBusy}
           className={cn(
-            "group/drop mt-7 flex w-full animate-in fade-in-0 slide-in-from-bottom-1 items-center gap-3 rounded-lg border border-dashed bg-card/30 px-4 py-5 text-left transition-colors duration-300 ease-out [animation-delay:60ms] [animation-fill-mode:both]",
+            "group/drop mt-7 flex w-full animate-in fade-in-0 slide-in-from-bottom-1 motion-enter items-center gap-3 rounded-lg border border-dashed bg-card/30 px-4 py-5 text-left transition-colors [animation-delay:60ms] [animation-fill-mode:both]",
             isBusy
               ? "border-primary/40 bg-card/50"
               : "border-border hover:border-primary/40 hover:bg-card/50",

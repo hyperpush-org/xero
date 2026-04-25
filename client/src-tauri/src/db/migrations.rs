@@ -1315,6 +1315,206 @@ pub fn migrations() -> &'static Migrations<'static> {
                     ON autonomous_unit_artifacts(project_id, run_id, attempt_id, created_at DESC, artifact_id ASC);
                 "#,
             ),
+            M::up(
+                r#"
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    agent_session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    system_prompt TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT,
+                    completed_at TEXT,
+                    cancelled_at TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (project_id, run_id),
+                    CHECK (agent_session_id <> ''),
+                    CHECK (run_id <> ''),
+                    CHECK (provider_id <> ''),
+                    CHECK (model_id <> ''),
+                    CHECK (status IN ('starting', 'running', 'cancelling', 'cancelled', 'completed', 'failed')),
+                    CHECK (prompt <> ''),
+                    CHECK (system_prompt <> ''),
+                    CHECK (
+                        (last_error_code IS NULL AND last_error_message IS NULL)
+                        OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+                    ),
+                    FOREIGN KEY (project_id, agent_session_id)
+                        REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_session_updated
+                    ON agent_runs(project_id, agent_session_id, updated_at DESC, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_status_updated
+                    ON agent_runs(project_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS agent_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
+                    CHECK (content <> ''),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_messages_project_run_id
+                    ON agent_messages(project_id, run_id, id ASC);
+
+                CREATE TABLE IF NOT EXISTS agent_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    event_kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    CHECK (event_kind IN (
+                        'message_delta',
+                        'reasoning_summary',
+                        'tool_started',
+                        'tool_delta',
+                        'tool_completed',
+                        'file_changed',
+                        'command_output',
+                        'validation_started',
+                        'validation_completed',
+                        'action_required',
+                        'run_completed',
+                        'run_failed'
+                    )),
+                    CHECK (payload_json <> ''),
+                    CHECK (json_valid(payload_json)),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_events_project_run_id
+                    ON agent_events(project_id, run_id, id ASC);
+
+                CREATE TABLE IF NOT EXISTS agent_tool_calls (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    input_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    result_json TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    PRIMARY KEY (project_id, run_id, tool_call_id),
+                    CHECK (tool_call_id <> ''),
+                    CHECK (tool_name <> ''),
+                    CHECK (input_json <> ''),
+                    CHECK (json_valid(input_json)),
+                    CHECK (state IN ('pending', 'running', 'succeeded', 'failed')),
+                    CHECK (result_json IS NULL OR (result_json <> '' AND json_valid(result_json))),
+                    CHECK (
+                        (error_code IS NULL AND error_message IS NULL)
+                        OR (error_code IS NOT NULL AND error_message IS NOT NULL)
+                    ),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_project_run_started
+                    ON agent_tool_calls(project_id, run_id, started_at ASC, tool_call_id ASC);
+
+                CREATE TABLE IF NOT EXISTS agent_file_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    old_hash TEXT,
+                    new_hash TEXT,
+                    created_at TEXT NOT NULL,
+                    CHECK (path <> ''),
+                    CHECK (operation IN ('create', 'write', 'edit', 'patch', 'delete', 'rename', 'mkdir', 'unknown')),
+                    CHECK (old_hash IS NULL OR (length(old_hash) = 64 AND old_hash NOT GLOB '*[^0-9a-f]*')),
+                    CHECK (new_hash IS NULL OR (length(new_hash) = 64 AND new_hash NOT GLOB '*[^0-9a-f]*')),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_file_changes_project_run_path
+                    ON agent_file_changes(project_id, run_id, path, id ASC);
+
+                CREATE TABLE IF NOT EXISTS agent_checkpoints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    checkpoint_kind TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT NOT NULL,
+                    CHECK (checkpoint_kind IN ('preflight', 'message', 'tool', 'validation', 'completion', 'failure', 'recovery')),
+                    CHECK (summary <> ''),
+                    CHECK (payload_json IS NULL OR (payload_json <> '' AND json_valid(payload_json))),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_checkpoints_project_run_id
+                    ON agent_checkpoints(project_id, run_id, id ASC);
+
+                CREATE TABLE IF NOT EXISTS agent_usage (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+                    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+                    total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+                    estimated_cost_micros INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_micros >= 0),
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (project_id, run_id),
+                    CHECK (provider_id <> ''),
+                    CHECK (model_id <> ''),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_action_requests (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    action_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    response TEXT,
+                    PRIMARY KEY (project_id, run_id, action_id),
+                    CHECK (action_id <> ''),
+                    CHECK (action_type <> ''),
+                    CHECK (title <> ''),
+                    CHECK (detail <> ''),
+                    CHECK (status IN ('pending', 'approved', 'rejected', 'answered', 'cancelled')),
+                    CHECK (
+                        (status = 'pending' AND resolved_at IS NULL)
+                        OR (status <> 'pending' AND resolved_at IS NOT NULL)
+                    ),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_action_requests_project_status
+                    ON agent_action_requests(project_id, status, created_at DESC);
+                "#,
+            ),
         ])
     });
 

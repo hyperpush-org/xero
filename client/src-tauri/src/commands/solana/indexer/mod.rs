@@ -400,7 +400,7 @@ fn write_files(
         })?;
         written.push(ScaffoldFile {
             path: rel.clone(),
-            bytes_written: contents.as_bytes().len() as u64,
+            bytes_written: contents.len() as u64,
             sha256: sha256_hex(contents.as_bytes()),
         });
     }

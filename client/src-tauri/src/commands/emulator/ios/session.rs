@@ -9,8 +9,6 @@
 //!     renders frames).
 //!   - HID input dispatch via `idb_client::send_hid`.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -31,6 +29,8 @@ use super::idb_client::{IdbClient, VideoStreamHandle};
 use super::idb_companion::{self, Companion};
 use super::input::{self, HidEvent, TouchPhase};
 use super::xcrun;
+
+type FramePumpStart = (u32, u32, Option<VideoStreamHandle>, Option<JoinHandle<()>>);
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 const COMPANION_TIMEOUT: Duration = Duration::from_secs(20);
@@ -422,7 +422,7 @@ fn start_frame_pump<R: Runtime + 'static>(
     bus: &Arc<FrameBus>,
     device_id: &str,
     shutdown: Arc<AtomicBool>,
-) -> Result<(u32, u32, Option<VideoStreamHandle>, Option<JoinHandle<()>>), CommandError> {
+) -> Result<FramePumpStart, CommandError> {
     let app_clone = app.clone();
     let bus_clone = Arc::clone(bus);
     let device_for_stream = device_id.to_string();

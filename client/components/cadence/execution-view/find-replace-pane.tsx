@@ -468,7 +468,7 @@ export function FindReplacePane({
   const resultsToRender = scope === 'project' ? projectResponse?.files ?? [] : fileResults
 
   return (
-    <aside className="flex w-[300px] shrink-0 flex-col border-r border-border bg-sidebar">
+    <aside className="motion-layout-island flex w-[300px] shrink-0 flex-col border-r border-border bg-sidebar">
       <div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-2.5 pb-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           Search

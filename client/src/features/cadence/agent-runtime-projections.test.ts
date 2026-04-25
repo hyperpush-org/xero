@@ -29,6 +29,7 @@ function makeStage(overrides: Partial<PlanningLifecycleStageView> = {}): Plannin
     status: 'active',
     statusLabel: 'Active',
     actionRequired: false,
+    unblock: null,
     lastTransitionAt: '2026-04-16T12:01:00Z',
     ...overrides,
   }
@@ -98,8 +99,8 @@ function makeUnit(overrides: Partial<AutonomousUnitView> = {}): AutonomousUnitVi
     runId: 'auto-run-1',
     unitId: 'unit-1',
     sequence: 1,
-    kind: 'state',
-    kindLabel: 'State',
+    kind: 'executor',
+    kindLabel: 'Executor',
     status: 'completed',
     statusLabel: 'Completed',
     summary: 'Recovered the current autonomous boundary.',

@@ -22,7 +22,7 @@ import type {
   UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
 import type { PlatformVariant } from "@/components/cadence/shell"
-import { Bell, Code2, Globe, KeyRound, Palette, PlugZap } from "lucide-react"
+import { Bell, Code2, Globe, KeyRound, Palette, PlugZap, Settings as SettingsIcon } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -40,17 +40,45 @@ import { ThemesSection } from "@/components/cadence/settings-dialog/themes-secti
 
 type SettingsSection = "providers" | "notifications" | "mcp" | "browser" | "themes" | "development"
 
-const NAV_BASE: Array<{ id: SettingsSection; label: string; icon: React.ElementType }> = [
-  { id: "providers", label: "Providers", icon: KeyRound },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "mcp", label: "MCP", icon: PlugZap },
-  { id: "browser", label: "Browser", icon: Globe },
-  { id: "themes", label: "Themes", icon: Palette },
-]
+interface NavItem {
+  id: SettingsSection
+  label: string
+  icon: React.ElementType
+  hint: string
+}
 
-const NAV: Array<{ id: SettingsSection; label: string; icon: React.ElementType }> = import.meta.env.DEV
-  ? [...NAV_BASE, { id: "development" as SettingsSection, label: "Development", icon: Code2 }]
-  : NAV_BASE
+interface NavGroup {
+  id: string
+  label: string
+  items: NavItem[]
+}
+
+const WORKSPACE_GROUP: NavGroup = {
+  id: "workspace",
+  label: "Workspace",
+  items: [
+    { id: "providers", label: "Providers", icon: KeyRound, hint: "API keys & models" },
+    { id: "notifications", label: "Notifications", icon: Bell, hint: "Telegram & Discord" },
+    { id: "mcp", label: "MCP", icon: PlugZap, hint: "Model Context servers" },
+    { id: "browser", label: "Browser", icon: Globe, hint: "Cookie import" },
+  ],
+}
+
+const APPEARANCE_GROUP: NavGroup = {
+  id: "appearance",
+  label: "Appearance",
+  items: [{ id: "themes", label: "Themes", icon: Palette, hint: "Color palettes" }],
+}
+
+const DEVELOPER_GROUP: NavGroup = {
+  id: "developer",
+  label: "Developer",
+  items: [{ id: "development", label: "Development", icon: Code2, hint: "Preview tools" }],
+}
+
+const NAV_GROUPS: NavGroup[] = import.meta.env.DEV
+  ? [WORKSPACE_GROUP, APPEARANCE_GROUP, DEVELOPER_GROUP]
+  : [WORKSPACE_GROUP, APPEARANCE_GROUP]
 
 export interface SettingsDialogProps {
   open: boolean
@@ -151,59 +179,84 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex h-[min(640px,88vh)] w-[min(880px,94vw)] max-w-none flex-col gap-0 overflow-hidden border-border/70 p-0 sm:max-w-none"
+        className="flex h-[min(680px,90vh)] w-[min(960px,94vw)] max-w-none flex-col gap-0 overflow-hidden border-border/70 p-0 shadow-2xl sm:max-w-none"
         showCloseButton
       >
-        <DialogHeader className="shrink-0 border-b border-border/70 px-5 py-3">
-          <DialogTitle className="text-[13px] font-semibold tracking-tight">Settings</DialogTitle>
+        <DialogHeader className="shrink-0 border-b border-border/70 bg-sidebar/40 px-5 py-3.5">
+          <div className="flex items-center gap-2.5">
+            <SettingsIcon className="h-3.5 w-3.5 text-muted-foreground" />
+            <DialogTitle className="text-[13px] font-semibold tracking-tight">Settings</DialogTitle>
+          </div>
           <DialogDescription className="sr-only">
             Configure providers, notification routes, and development options.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1">
-          <nav className="flex w-48 shrink-0 flex-col border-r border-border/70 bg-sidebar">
-            <div className="px-3.5 pt-3.5 pb-2">
-              <span className="text-[11.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-                Settings
-              </span>
-            </div>
-            <div className="flex flex-col">
-              {NAV.map(({ id, label, icon: Icon }) => {
-                const active = section === id
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    aria-label={label}
-                    onClick={() => setSection(id)}
-                    className={cn(
-                      "group flex items-center gap-3 px-3.5 py-2.5 text-left transition-colors duration-150",
-                      active
-                        ? "bg-primary/[0.08] text-foreground"
-                        : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-                    )}
-                  >
-                    <Icon
-                      className={cn(
-                        "h-4 w-4 shrink-0",
-                        active ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
-                      )}
-                    />
-                    <span className="text-[13.5px] font-medium leading-tight">{label}</span>
-                  </button>
-                )
-              })}
-            </div>
+          <nav className="flex w-52 shrink-0 flex-col border-r border-border/70 bg-sidebar/60 py-2">
+            {NAV_GROUPS.map((group, groupIndex) => (
+              <div
+                key={group.id}
+                className={cn("flex flex-col", groupIndex > 0 ? "mt-3 border-t border-border/50 pt-3" : "")}
+              >
+                <span className="px-4 pb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+                  {group.label}
+                </span>
+                <div className="flex flex-col px-1.5">
+                  {group.items.map(({ id, label, icon: Icon, hint }) => {
+                    const active = section === id
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-label={label}
+                        aria-current={active ? "page" : undefined}
+                        onClick={() => setSection(id)}
+                        className={cn(
+                          "group relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors duration-150",
+                          active
+                            ? "bg-primary/[0.08] text-foreground"
+                            : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground",
+                        )}
+                      >
+                        {active ? (
+                          <span
+                            aria-hidden
+                            className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-sm bg-primary"
+                          />
+                        ) : null}
+                        <span
+                          className={cn(
+                            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+                            active
+                              ? "border-primary/40 bg-primary/[0.12] text-primary"
+                              : "border-border/60 bg-secondary/40 text-muted-foreground group-hover:border-border group-hover:text-foreground",
+                          )}
+                        >
+                          <Icon className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[13px] font-medium leading-tight">{label}</p>
+                          <p className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground/80">
+                            {hint}
+                          </p>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
 
           <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
             <div
               key={section}
-              className="flex flex-1 flex-col px-7 py-6 animate-in fade-in-0 slide-in-from-right-2 duration-200 ease-out"
+              className="flex flex-1 flex-col px-7 py-6 animate-in fade-in-0 slide-in-from-right-2 motion-enter"
             >
               {section === "providers" ? (
                 <ProvidersSection
+                  active={open && section === "providers"}
                   agent={agent}
                   providerProfiles={providerProfiles}
                   providerProfilesLoadStatus={providerProfilesLoadStatus}
@@ -269,9 +322,12 @@ export function SettingsDialog({
 function ProjectBoundEmptyState({ title, body }: { title: string; body: string }) {
   return (
     <div className="flex flex-1 items-center justify-center py-14 text-center">
-      <div className="max-w-md px-6">
-        <p className="text-[14px] font-medium text-foreground">{title}</p>
-        <p className="mt-2.5 text-[13px] leading-5 text-muted-foreground">{body}</p>
+      <div className="max-w-md rounded-xl border border-dashed border-border/70 bg-card/50 px-7 py-8">
+        <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-md border border-border/70 bg-secondary/60">
+          <Bell className="h-[18px] w-[18px] text-muted-foreground" />
+        </div>
+        <p className="mt-4 text-[14px] font-medium text-foreground">{title}</p>
+        <p className="mt-2 text-[13px] leading-5 text-muted-foreground">{body}</p>
       </div>
     </div>
   )

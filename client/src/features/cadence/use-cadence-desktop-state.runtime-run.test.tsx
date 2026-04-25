@@ -43,6 +43,23 @@ function makeProjectSummary(id: string, name: string) {
   }
 }
 
+function makeAgentSession(projectId: string) {
+  return {
+    projectId,
+    agentSessionId: 'agent-session-main',
+    title: 'Main session',
+    summary: 'Primary project session',
+    status: 'active' as const,
+    selected: true,
+    createdAt: '2026-04-15T20:00:00Z',
+    updatedAt: '2026-04-15T20:00:00Z',
+    archivedAt: null,
+    lastRunId: null,
+    lastRuntimeKind: null,
+    lastProviderId: null,
+  }
+}
+
 function makeSnapshot(id: string, name: string): ProjectSnapshotResponseDto {
   return {
     project: makeProjectSummary(id, name),
@@ -81,6 +98,7 @@ function makeSnapshot(id: string, name: string): ProjectSnapshotResponseDto {
     approvalRequests: [],
     verificationRecords: [],
     resumeHistory: [],
+    agentSessions: [makeAgentSession(id)],
   }
 }
 
@@ -314,6 +332,7 @@ function makeRuntimeSession(projectId: string, overrides: Partial<RuntimeSession
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
+    agentSessionId: 'agent-session-main',
     runId: `run-${projectId}`,
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
@@ -329,6 +348,7 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
         modelId: 'openai_codex',
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
+        planModeRequired: false,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -373,7 +393,7 @@ function makeProviderProfiles(overrides: Partial<ProviderProfilesDto> = {}): Pro
       readiness: {
         ready: false,
         status: 'missing',
-        credentialUpdatedAt: null,
+        proofUpdatedAt: null,
       },
       migratedFromLegacy: false,
       migratedAt: null,
@@ -396,6 +416,7 @@ function makeAutonomousRunState(
   return {
     run: {
       projectId,
+      agentSessionId: 'agent-session-main',
       runId,
       runtimeKind: 'openai_codex',
       providerId: 'openai_codex',
@@ -591,6 +612,7 @@ function makeStreamResponse(
 ): SubscribeRuntimeStreamResponseDto {
   return {
     projectId,
+    agentSessionId: 'agent-session-main',
     runtimeKind: 'openai_codex',
     runId: `run-${projectId}`,
     sessionId: 'session-1',
@@ -702,6 +724,8 @@ function createMockAdapter(options?: {
   const updateRuntimeRunControlErrors = options?.updateRuntimeRunControlErrors ?? {}
   const streamSubscriptions: Array<{
     projectId: string
+    agentSessionId: string
+    active: boolean
     handler: (payload: RuntimeStreamEventDto) => void
     onError: ((error: CadenceDesktopError) => void) | null
     unsubscribe: ReturnType<typeof vi.fn>
@@ -834,6 +858,7 @@ function createMockAdapter(options?: {
     providerId: 'openai_codex' as const,
     modelId: 'openai_codex',
     openrouterApiKeyConfigured: false,
+    anthropicApiKeyConfigured: false,
   }
   const providerProfiles = options?.providerProfiles ?? makeProviderProfiles()
   const upsertNotificationRouteCredentials = vi.fn(
@@ -851,7 +876,7 @@ function createMockAdapter(options?: {
     }),
   )
 
-  const adapter: CadenceDesktopAdapter = {
+  const adapter = {
     isDesktopRuntime: () => true,
     pickRepositoryFolder: vi.fn(async () => null),
     importRepository: vi.fn(async () => {
@@ -960,7 +985,7 @@ function createMockAdapter(options?: {
         _options: { selectedProfileId: string; manualInput?: string | null },
       ) => makeRuntimeSession(projectId),
     ),
-    startAutonomousRun: vi.fn(async (projectId: string) => {
+    startAutonomousRun: vi.fn(async (projectId: string, _agentSessionId: string) => {
       const nextState = makeAutonomousRunState(projectId, {
         duplicateStartDetected: Boolean(autonomousStates[projectId]?.run),
         duplicateStartRunId: autonomousStates[projectId]?.run?.runId ?? null,
@@ -971,7 +996,11 @@ function createMockAdapter(options?: {
       autonomousStates[projectId] = nextState
       return nextState
     }),
-    startRuntimeRun: vi.fn(async (projectId: string, options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) => {
+    startRuntimeRun: vi.fn(async (
+      projectId: string,
+      _agentSessionId: string,
+      options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null },
+    ) => {
       const error = startRuntimeRunErrors[projectId]
       if (error) {
         throw error
@@ -985,6 +1014,7 @@ function createMockAdapter(options?: {
               modelId: options?.initialControls?.modelId ?? 'openai_codex',
               thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
               approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
+              planModeRequired: options?.initialControls?.planModeRequired ?? false,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -993,6 +1023,7 @@ function createMockAdapter(options?: {
                   modelId: options?.initialControls?.modelId ?? 'openai_codex',
                   thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
                   approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
+                  planModeRequired: options?.initialControls?.planModeRequired ?? false,
                   revision: 2,
                   queuedAt: '2026-04-15T20:00:01Z',
                   queuedPrompt: options.initialPrompt,
@@ -1006,6 +1037,7 @@ function createMockAdapter(options?: {
     }),
     updateRuntimeRunControls: vi.fn(async (request: {
       projectId: string
+      agentSessionId: string
       runId: string
       controls?: RuntimeRunControlInputDto | null
       prompt?: string | null
@@ -1031,6 +1063,10 @@ function createMockAdapter(options?: {
               null,
             approvalMode:
               request.controls?.approvalMode ?? basePending?.approvalMode ?? currentRun.controls.active.approvalMode,
+            planModeRequired:
+              request.controls?.planModeRequired ??
+              basePending?.planModeRequired ??
+              currentRun.controls.active.planModeRequired,
             revision: basePending?.revision ?? currentRun.controls.active.revision + 1,
             queuedAt,
             queuedPrompt: request.prompt ?? basePending?.queuedPrompt ?? null,
@@ -1088,15 +1124,20 @@ function createMockAdapter(options?: {
     subscribeRuntimeStream: vi.fn(
       async (
         projectId: string,
+        agentSessionId: string,
         _itemKinds,
         handler: (payload: RuntimeStreamEventDto) => void,
         onError?: (error: CadenceDesktopError) => void,
       ) => {
         const subscription = {
           projectId,
+          agentSessionId,
+          active: true,
           handler,
           onError: onError ?? null,
-          unsubscribe: vi.fn(),
+          unsubscribe: vi.fn(() => {
+            subscription.active = false
+          }),
         }
         streamSubscriptions.push(subscription)
 
@@ -1133,10 +1174,10 @@ function createMockAdapter(options?: {
         return () => undefined
       },
     ),
-  }
+  } satisfies Partial<CadenceDesktopAdapter>
 
   return {
-    adapter,
+    adapter: adapter as unknown as CadenceDesktopAdapter,
     getProjectSnapshot,
     getRuntimeRun,
     getAutonomousRun,
@@ -1155,14 +1196,33 @@ function createMockAdapter(options?: {
     emitProjectUpdatedError(error: CadenceDesktopError) {
       projectUpdatedErrorHandler?.(error)
     },
-    emitRuntimeRunUpdated(payload: RuntimeRunUpdatedPayloadDto) {
-      runtimeRunUpdatedHandler?.(payload)
+    emitRuntimeRunUpdated(
+      payload: RuntimeRunUpdatedPayloadDto | (Omit<RuntimeRunUpdatedPayloadDto, 'agentSessionId'> & { agentSessionId?: string }),
+    ) {
+      runtimeRunUpdatedHandler?.({
+        agentSessionId: payload.run?.agentSessionId ?? 'agent-session-main',
+        ...payload,
+      })
     },
     emitRuntimeRunUpdatedError(error: CadenceDesktopError) {
       runtimeRunUpdatedErrorHandler?.(error)
     },
-    emitRuntimeStream(index: number, payload: RuntimeStreamEventDto) {
-      streamSubscriptions[index]?.handler(payload)
+    emitRuntimeStream(
+      index: number,
+      payload: RuntimeStreamEventDto | (Omit<RuntimeStreamEventDto, 'agentSessionId'> & { agentSessionId?: string }),
+    ) {
+      const requested = streamSubscriptions[index]
+      const subscription =
+        requested?.active
+          ? requested
+          : streamSubscriptions
+              .slice()
+              .reverse()
+              .find((candidate) => candidate.active)
+      subscription?.handler({
+        ...payload,
+        agentSessionId: payload.agentSessionId ?? subscription.agentSessionId,
+      })
     },
     emitRuntimeStreamError(index: number, error: CadenceDesktopError) {
       streamSubscriptions[index]?.onError?.(error)
@@ -1399,6 +1459,7 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
                 modelId: 'openai/gpt-5-mini',
                 thinkingEffort: 'high',
                 approvalMode: 'auto_edit',
+                planModeRequired: false,
               },
               prompt: 'Review the latest diff before continuing.',
             })
@@ -1416,6 +1477,7 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
                 modelId: 'openai/gpt-5-mini',
                 thinkingEffort: 'high',
                 approvalMode: 'auto_edit',
+                planModeRequired: false,
               },
               prompt: 'Review the latest diff before continuing.',
             })
@@ -1540,6 +1602,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               modelId: 'openai/gpt-4.1',
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
+              planModeRequired: false,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1583,7 +1646,6 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               status: 'malformed',
               proof: 'local',
               proofUpdatedAt: '2026-04-20T12:00:00Z',
-              credentialUpdatedAt: '2026-04-20T12:00:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -1599,6 +1661,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               modelId: 'llama3.2',
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
+              planModeRequired: false,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1643,7 +1706,6 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               status: 'malformed',
               proof: 'ambient',
               proofUpdatedAt: '2026-04-20T12:00:00Z',
-              credentialUpdatedAt: '2026-04-20T12:00:00Z',
             },
             migratedFromLegacy: false,
             migratedAt: null,
@@ -1659,6 +1721,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               modelId: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
+              planModeRequired: false,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1739,6 +1802,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               modelId: 'openai_codex',
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
+              planModeRequired: false,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1746,6 +1810,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               modelId: 'openai_codex',
               thinkingEffort: 'medium',
               approvalMode: 'yolo',
+              planModeRequired: false,
               revision: 2,
               queuedAt: '2026-04-15T20:00:07Z',
               queuedPrompt: null,

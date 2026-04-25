@@ -1077,19 +1077,16 @@ pub(crate) fn read_runtime_run_row(
                 require_runtime_run_non_empty_owned(runtime_kind, "runtime_kind", database_path)?;
             let provider_id =
                 require_runtime_run_non_empty_owned(provider_id, "provider_id", database_path)?;
-            crate::runtime::resolve_runtime_provider_identity(
-                Some(provider_id.as_str()),
-                Some(runtime_kind.as_str()),
-            )
-            .map_err(|diagnostic| {
-                map_runtime_run_decode_error(
-                    database_path,
-                    format!(
-                        "Runtime run identity is invalid because {}",
-                        diagnostic.message
-                    ),
-                )
-            })?;
+            resolve_runtime_run_provider_identity(provider_id.as_str(), runtime_kind.as_str())
+                .map_err(|diagnostic| {
+                    map_runtime_run_decode_error(
+                        database_path,
+                        format!(
+                            "Runtime run identity is invalid because {}",
+                            diagnostic.message
+                        ),
+                    )
+                })?;
             Ok(Some(StoredRuntimeRunRow {
                 run_id,
                 runtime_kind,
@@ -1224,19 +1221,17 @@ fn decode_runtime_run_row(
         require_runtime_run_non_empty_owned(raw_row.runtime_kind, "runtime_kind", database_path)?;
     let provider_id =
         require_runtime_run_non_empty_owned(raw_row.provider_id, "provider_id", database_path)?;
-    crate::runtime::resolve_runtime_provider_identity(
-        Some(provider_id.as_str()),
-        Some(runtime_kind.as_str()),
-    )
-    .map_err(|diagnostic| {
-        map_runtime_run_decode_error(
-            database_path,
-            format!(
-                "Runtime run provider identity is invalid because {}",
-                diagnostic.message
-            ),
-        )
-    })?;
+    resolve_runtime_run_provider_identity(provider_id.as_str(), runtime_kind.as_str()).map_err(
+        |diagnostic| {
+            map_runtime_run_decode_error(
+                database_path,
+                format!(
+                    "Runtime run provider identity is invalid because {}",
+                    diagnostic.message
+                ),
+            )
+        },
+    )?;
     let supervisor_kind = require_runtime_run_non_empty_owned(
         raw_row.supervisor_kind,
         "supervisor_kind",
@@ -1491,9 +1486,9 @@ fn validate_runtime_run_upsert_payload(
         "provider_id",
         "runtime_run_request_invalid",
     )?;
-    crate::runtime::resolve_runtime_provider_identity(
-        Some(payload.run.provider_id.as_str()),
-        Some(payload.run.runtime_kind.as_str()),
+    resolve_runtime_run_provider_identity(
+        payload.run.provider_id.as_str(),
+        payload.run.runtime_kind.as_str(),
     )
     .map_err(|diagnostic| {
         CommandError::user_fixable(
@@ -1614,6 +1609,17 @@ fn validate_runtime_run_upsert_payload(
     }
 
     Ok(())
+}
+
+fn resolve_runtime_run_provider_identity(
+    provider_id: &str,
+    runtime_kind: &str,
+) -> Result<crate::runtime::ResolvedRuntimeProvider, crate::auth::AuthDiagnostic> {
+    if runtime_kind == crate::runtime::OWNED_AGENT_RUNTIME_KIND {
+        return crate::runtime::resolve_runtime_provider_identity(Some(provider_id), None);
+    }
+
+    crate::runtime::resolve_runtime_provider_identity(Some(provider_id), Some(runtime_kind))
 }
 
 fn validate_runtime_run_control_state(

@@ -45,6 +45,7 @@ interface UseAgentRuntimeControllerOptions {
   canStartRuntimeRun: boolean
   canStartRuntimeSession: boolean
   canStopRuntimeRun: boolean
+  actionRequiredItems: NonNullable<AgentPaneView['actionRequiredItems']>
   onStartRuntimeRun?: (options?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
@@ -95,6 +96,7 @@ export function useAgentRuntimeController({
   canStartRuntimeRun,
   canStartRuntimeSession,
   canStopRuntimeRun,
+  actionRequiredItems,
   onStartRuntimeRun,
   onStartRuntimeSession,
   onUpdateRuntimeRunControls,
@@ -219,6 +221,13 @@ export function useAgentRuntimeController({
         }
       }
 
+      for (const actionRequired of actionRequiredItems) {
+        const existingAnswer = currentAnswers[actionRequired.actionId]
+        if (typeof existingAnswer === 'string') {
+          nextAnswers[actionRequired.actionId] = existingAnswer
+        }
+      }
+
       const currentKeys = Object.keys(currentAnswers)
       const nextKeys = Object.keys(nextAnswers)
       if (
@@ -230,7 +239,7 @@ export function useAgentRuntimeController({
 
       return nextAnswers
     })
-  }, [approvalRequests])
+  }, [actionRequiredItems, approvalRequests])
 
   useEffect(() => {
     if (lastSeenProjectIdRef.current !== projectId) {
@@ -484,6 +493,34 @@ export function useAgentRuntimeController({
     }
   }
 
+  async function handleResumeLiveActionRequired(actionId: string, options: { userAnswer?: string | null } = {}) {
+    if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal || !onUpdateRuntimeRunControls) {
+      return
+    }
+
+    if (runtimeRunActionStatus === 'running') {
+      return
+    }
+
+    const userAnswer = options.userAnswer?.trim() ?? ''
+    if (userAnswer.length === 0) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+    setPendingOperatorIntent({ actionId, kind: 'resume' })
+
+    try {
+      await onUpdateRuntimeRunControls({ prompt: userAnswer })
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Cadence could not send the owned-agent response.'))
+    } finally {
+      setPendingOperatorIntent((currentIntent) =>
+        currentIntent?.actionId === actionId && currentIntent.kind === 'resume' ? null : currentIntent,
+      )
+    }
+  }
+
   function handleOperatorAnswerChange(actionId: string, value: string) {
     setOperatorAnswers((currentAnswers) => ({
       ...currentAnswers,
@@ -516,5 +553,6 @@ export function useAgentRuntimeController({
     handleStopRuntimeRun,
     handleResolveOperatorAction,
     handleResumeOperatorRun,
+    handleResumeLiveActionRequired,
   }
 }

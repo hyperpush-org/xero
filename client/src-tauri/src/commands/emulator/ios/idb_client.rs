@@ -13,13 +13,13 @@
 //!    `simctl io screenshot` poll in that case, so the sidebar stays
 //!    functional — it just doesn't stream H.264 frames.
 
-#![cfg(target_os = "macos")]
-
 use std::time::Duration;
 
 use crate::commands::CommandError;
 
 use super::input::HidEvent;
+
+type NalCallback = Box<dyn FnMut(&[u8]) + Send>;
 
 /// Stable, frontend-exposed handle to a running idb_companion.
 pub struct IdbClient {
@@ -64,7 +64,7 @@ impl IdbClient {
     pub fn start_video_stream(
         &self,
         fps: u32,
-        on_nal: Box<dyn FnMut(&[u8]) + Send>,
+        on_nal: NalCallback,
     ) -> Result<VideoStreamHandle, CommandError> {
         #[cfg(feature = "ios-grpc")]
         {
@@ -225,6 +225,8 @@ fn send_hid_applescript(udid: &str, event: HidEvent) -> Result<(), CommandError>
 mod grpc_impl {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    use super::NalCallback;
 
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
@@ -392,7 +394,7 @@ mod grpc_impl {
         pub fn start_video_stream(
             &self,
             fps: u32,
-            mut on_nal: Box<dyn FnMut(&[u8]) + Send>,
+            mut on_nal: NalCallback,
         ) -> Result<VideoStreamHandle, CommandError> {
             let mut client = self.client();
             let rt = Arc::clone(&self.rt);
@@ -428,11 +430,9 @@ mod grpc_impl {
                         msg = stream.next() => {
                             match msg {
                                 Some(Ok(resp)) => {
-                                    if let Some(output) = resp.output {
-                                        if let pb::video_stream_response::Output::Payload(payload) = output {
-                                            if let Some(pb::payload::Source::Data(bytes)) = payload.source {
-                                                on_nal(&bytes);
-                                            }
+                                    if let Some(pb::video_stream_response::Output::Payload(payload)) = resp.output {
+                                        if let Some(pb::payload::Source::Data(bytes)) = payload.source {
+                                            on_nal(&bytes);
                                         }
                                     }
                                 }

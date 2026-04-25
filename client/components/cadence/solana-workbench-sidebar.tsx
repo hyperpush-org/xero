@@ -561,8 +561,8 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
     <aside
       aria-hidden={!open}
       className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar will-change-[width]",
-        !isResizing && "transition-[width] duration-200 ease-out",
+        "motion-layout-island relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
+        !isResizing && "transition-[width] motion-panel",
         !open && "border-l-0",
       )}
       inert={!open ? true : undefined}
@@ -584,6 +584,10 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
         tabIndex={open ? 0 : -1}
       />
 
+      <div
+        className="flex h-full min-w-0 shrink-0 flex-col"
+        style={{ width }}
+      >
       <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <SolanaLogoIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/90" mono />
@@ -946,6 +950,7 @@ export function SolanaWorkbenchSidebar({ open }: SolanaWorkbenchSidebarProps) {
           ) : null}
         </div>
         </div>
+      </div>
       </div>
     </aside>
   )

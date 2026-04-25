@@ -32,8 +32,10 @@ use crate::commands::{CommandError, CommandResult};
 /// dispatches via `createV1` variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MetaplexStandard {
     /// Non-fungible. Single supply, decimals 0.
+    #[default]
     NonFungible,
     /// Fungible with metadata (semi-fungible tokens).
     Fungible,
@@ -48,12 +50,6 @@ impl MetaplexStandard {
             MetaplexStandard::Fungible => "fungible",
             MetaplexStandard::ProgrammableNonFungible => "programmable_non_fungible",
         }
-    }
-}
-
-impl Default for MetaplexStandard {
-    fn default() -> Self {
-        MetaplexStandard::NonFungible
     }
 }
 

@@ -1,3 +1,4 @@
+import { KeyRound } from "lucide-react"
 import type {
   AgentPaneView,
   OperatorActionErrorView,
@@ -12,8 +13,10 @@ import type {
   UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
 import { ProviderProfileForm } from "@/components/cadence/provider-profiles/provider-profile-form"
+import { SectionHeader } from "./section-header"
 
 export interface ProvidersSectionProps {
+  active?: boolean
   agent: AgentPaneView | null
   providerProfiles: ProviderProfilesDto | null
   providerProfilesLoadStatus: ProviderProfilesLoadStatus
@@ -35,6 +38,7 @@ export interface ProvidersSectionProps {
 }
 
 export function ProvidersSection({
+  active = true,
   agent,
   providerProfiles,
   providerProfilesLoadStatus,
@@ -52,13 +56,13 @@ export function ProvidersSection({
   onLogout,
 }: ProvidersSectionProps) {
   return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h3 className="text-[14px] font-semibold text-foreground">Providers</h3>
-        <p className="mt-1.5 text-[13px] text-muted-foreground">
-          Pick a provider, manage its API key, and choose a model.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SectionHeader
+        icon={KeyRound}
+        title="Providers"
+        description="Pick a provider, manage its API key, and choose a model."
+        scope="app-wide"
+      />
 
       <ProviderProfileForm
         providerProfiles={providerProfiles}
@@ -70,7 +74,7 @@ export function ProvidersSection({
         providerModelCatalogLoadStatuses={providerModelCatalogLoadStatuses}
         providerModelCatalogLoadErrors={providerModelCatalogLoadErrors}
         onRefreshProviderProfiles={onRefreshProviderProfiles}
-        onRefreshProviderModelCatalog={onRefreshProviderModelCatalog}
+        onRefreshProviderModelCatalog={active ? onRefreshProviderModelCatalog : undefined}
         onUpsertProviderProfile={onUpsertProviderProfile}
         onSetActiveProviderProfile={onSetActiveProviderProfile}
         runtimeSession={agent?.runtimeSession ?? null}
@@ -78,7 +82,6 @@ export function ProvidersSection({
         onStartLogin={onStartLogin}
         onLogout={onLogout}
         openAiMissingProjectLabel="Open a project"
-        openAiMissingProjectDescription="Select an imported project to sign in the selected OpenAI profile."
       />
     </div>
   )

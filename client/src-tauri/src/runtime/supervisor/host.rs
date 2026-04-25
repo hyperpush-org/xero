@@ -1488,6 +1488,7 @@ fn runtime_run_status_label(status: &RuntimeRunStatus) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_failed_launch(
     repo_root: &Path,
     project_id: &str,

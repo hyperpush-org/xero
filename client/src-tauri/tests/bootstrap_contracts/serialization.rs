@@ -433,8 +433,25 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
                     "createdAt": "2026-04-15T18:01:01Z"
                 }
             ],
+            "agentSessions": [
+                {
+                    "projectId": "project-1",
+                    "agentSessionId": "agent-session-main",
+                    "title": "Main",
+                    "summary": "",
+                    "status": "active",
+                    "selected": true,
+                    "lastRunId": "run-1",
+                    "lastRuntimeKind": "openai_codex",
+                    "lastProviderId": "openai_codex",
+                    "createdAt": "2026-04-13T20:00:49Z",
+                    "updatedAt": "2026-04-13T20:00:49Z",
+                    "archivedAt": null
+                }
+            ],
             "autonomousRun": {
                 "projectId": "project-1",
+                "agentSessionId": "agent-session-main",
                 "runId": "run-1",
                 "runtimeKind": "openai_codex",
                 "providerId": "openai_codex",
@@ -1005,6 +1022,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         runtime_run,
         json!({
             "projectId": "project-1",
+            "agentSessionId": "agent-session-main",
             "runId": "run-1",
             "runtimeKind": "openai_codex",
             "providerId": "openai_codex",
@@ -1100,8 +1118,10 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         runtime_run_updated,
         json!({
             "projectId": "project-1",
+            "agentSessionId": "agent-session-main",
             "run": {
                 "projectId": "project-1",
+                "agentSessionId": "agent-session-main",
                 "runId": "run-1",
                 "runtimeKind": "openai_codex",
                 "providerId": "openai_codex",
@@ -1147,6 +1167,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         json!({
             "run": {
                 "projectId": "project-1",
+                "agentSessionId": "agent-session-main",
                 "runId": "run-1",
                 "runtimeKind": "openai_codex",
                 "providerId": "openai_codex",
@@ -1364,7 +1385,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
     .expect("get autonomous run request should serialize");
     assert_eq!(
         get_autonomous_run_request,
-        json!({ "projectId": "project-1" })
+        json!({ "projectId": "project-1", "agentSessionId": "agent-session-main" })
     );
 
     let get_runtime_run_request = serde_json::to_value(GetRuntimeRunRequestDto {
@@ -1372,7 +1393,10 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         agent_session_id: "agent-session-main".into(),
     })
     .expect("get runtime run request should serialize");
-    assert_eq!(get_runtime_run_request, json!({ "projectId": "project-1" }));
+    assert_eq!(
+        get_runtime_run_request,
+        json!({ "projectId": "project-1", "agentSessionId": "agent-session-main" })
+    );
 
     let start_autonomous_run_request = serde_json::to_value(StartAutonomousRunRequestDto {
         project_id: "project-1".into(),
@@ -1390,6 +1414,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         start_autonomous_run_request,
         json!({
             "projectId": "project-1",
+            "agentSessionId": "agent-session-main",
             "initialControls": {
                 "modelId": "openai_codex",
                 "thinkingEffort": "high",
@@ -1416,6 +1441,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         start_runtime_run_request,
         json!({
             "projectId": "project-1",
+            "agentSessionId": "agent-session-main",
             "initialControls": {
                 "modelId": "openai_codex",
                 "thinkingEffort": "low",
@@ -1433,7 +1459,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
     .expect("cancel autonomous run request should serialize");
     assert_eq!(
         cancel_autonomous_run_request,
-        json!({ "projectId": "project-1", "runId": "run-1" })
+        json!({ "projectId": "project-1", "agentSessionId": "agent-session-main", "runId": "run-1" })
     );
 
     let stop_runtime_run_request = serde_json::to_value(StopRuntimeRunRequestDto {
@@ -1444,7 +1470,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
     .expect("stop runtime run request should serialize");
     assert_eq!(
         stop_runtime_run_request,
-        json!({ "projectId": "project-1", "runId": "run-1" })
+        json!({ "projectId": "project-1", "agentSessionId": "agent-session-main", "runId": "run-1" })
     );
 
     let resolve_request = serde_json::to_value(ResolveOperatorActionRequestDto {
@@ -2135,6 +2161,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         subscribe_request,
         json!({
             "projectId": "project-1",
+            "agentSessionId": "agent-session-main",
             "channel": "__CHANNEL__:77",
             "itemKinds": ["transcript", "tool", "skill", "activity", "failure"]
         })
@@ -2160,6 +2187,7 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         subscribe_response,
         json!({
             "projectId": "project-1",
+            "agentSessionId": "agent-session-main",
             "runtimeKind": "openai_codex",
             "runId": "run-1",
             "sessionId": "session-1",

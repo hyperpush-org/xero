@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Check, LoaderCircle, Plus, RefreshCcw, Trash2 } from 'lucide-react'
+import { Check, LoaderCircle, Plus, PlugZap, RefreshCcw, Trash2 } from 'lucide-react'
 import { z } from 'zod'
 import type { McpRegistryLoadStatus, McpRegistryMutationStatus, OperatorActionErrorView } from '@/src/features/cadence/use-cadence-desktop-state'
 import {
@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+import { SectionHeader } from './section-header'
 
 interface McpSectionProps {
   mcpRegistry: McpRegistryDto | null
@@ -369,53 +370,53 @@ export function McpSection({
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-[14px] font-semibold text-foreground">MCP Servers</h3>
-          <p className="mt-1.5 text-[13px] text-muted-foreground">
-            Manage app-local MCP server definitions and inspect typed connection diagnostics.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 text-[12px]"
-            disabled={!onRefreshMcpRegistry || mcpRegistryLoadStatus === 'loading'}
-            onClick={() => void onRefreshMcpRegistry?.({ force: true })}
-          >
-            {mcpRegistryLoadStatus === 'loading' ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            ) : (
+    <div className="flex flex-col gap-6">
+      <SectionHeader
+        icon={PlugZap}
+        title="MCP Servers"
+        description="Manage app-local MCP server definitions and inspect typed connection diagnostics."
+        scope="app-wide"
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              disabled={!onRefreshMcpRegistry || mcpRegistryLoadStatus === 'loading'}
+              onClick={() => void onRefreshMcpRegistry?.({ force: true })}
+            >
+              {mcpRegistryLoadStatus === 'loading' ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-3.5 w-3.5" />
+              )}
+              Reload
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              disabled={!onRefreshMcpServerStatuses || isMutating}
+              onClick={() => void handleRefreshStatuses()}
+            >
               <RefreshCcw className="h-3.5 w-3.5" />
-            )}
-            Reload registry
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 text-[12px]"
-            disabled={!onRefreshMcpServerStatuses || isMutating}
-            onClick={() => void handleRefreshStatuses()}
-          >
-            <RefreshCcw className="h-3.5 w-3.5" />
-            Refresh statuses
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 gap-1.5 text-[12px]"
-            disabled={!canMutate || isMutating}
-            onClick={openCreateForm}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add server
-          </Button>
-        </div>
-      </div>
+              Refresh statuses
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              disabled={!canMutate || isMutating}
+              onClick={openCreateForm}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add server
+            </Button>
+          </>
+        }
+      />
 
       {mcpRegistryLoadError ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-[12.5px] text-destructive">

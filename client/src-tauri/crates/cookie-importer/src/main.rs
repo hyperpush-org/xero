@@ -47,7 +47,8 @@ fn run() -> Output {
         Some(s) => s,
         None => {
             return Output::Err {
-                message: "usage: cadence-cookie-importer <probe|import> <source> [domain ...]".into(),
+                message: "usage: cadence-cookie-importer <probe|import> <source> [domain ...]"
+                    .into(),
             }
         }
     };
@@ -60,7 +61,11 @@ fn run() -> Output {
         }
     };
     let domains: Vec<String> = args.collect();
-    let domains = if domains.is_empty() { None } else { Some(domains) };
+    let domains = if domains.is_empty() {
+        None
+    } else {
+        Some(domains)
+    };
 
     match subcommand.as_str() {
         "probe" => Output::Probe {
@@ -98,7 +103,8 @@ fn run() -> Output {
 fn main() -> ExitCode {
     let output = run();
     let exit = matches!(output, Output::Err { .. });
-    let json = serde_json::to_string(&output).unwrap_or_else(|_| "{\"kind\":\"err\",\"message\":\"serialization failed\"}".into());
+    let json = serde_json::to_string(&output)
+        .unwrap_or_else(|_| "{\"kind\":\"err\",\"message\":\"serialization failed\"}".into());
     println!("{json}");
     if exit {
         ExitCode::from(1)

@@ -77,7 +77,7 @@ fn missing_executor_returns_policy_denied() {
 
 #[test]
 fn unavailable_executor_denies_any_action() {
-    let executor: Arc<dyn BrowserExecutor> = Arc::new(UnavailableBrowserExecutor::default());
+    let executor: Arc<dyn BrowserExecutor> = Arc::new(UnavailableBrowserExecutor);
     let (runtime, _temp) = runtime_with_executor(executor);
     let request = AutonomousToolRequest::Browser(AutonomousBrowserRequest {
         action: AutonomousBrowserAction::CurrentUrl,

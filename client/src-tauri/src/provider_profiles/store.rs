@@ -33,6 +33,14 @@ const OPENAI_CODEX_DEFAULT_PROFILE_LABEL: &str = "OpenAI Codex";
 const OPENROUTER_DEFAULT_PROFILE_LABEL: &str = "OpenRouter";
 const ANTHROPIC_DEFAULT_PROFILE_LABEL: &str = "Anthropic";
 
+type CloudProfileMetadata = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderProfilesMetadataFile {
@@ -989,6 +997,7 @@ fn validate_provider_profile_record(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_cloud_profile_metadata(
     provider_id: &str,
     runtime_kind: &str,
@@ -1000,18 +1009,8 @@ fn validate_cloud_profile_metadata(
     api_version: Option<String>,
     region: Option<String>,
     project_id: Option<String>,
-) -> CommandResult<(
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-)> {
+) -> CommandResult<CloudProfileMetadata> {
     let mut preset_id = preset_id;
-    let base_url = base_url;
-    let api_version = api_version;
-    let region = region;
-    let project_id = project_id;
 
     if schema_version <= 2 && provider_id != OPENAI_CODEX_PROVIDER_ID && preset_id.is_none() {
         preset_id = Some(provider_id.to_owned());

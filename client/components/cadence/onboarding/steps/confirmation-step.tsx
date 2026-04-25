@@ -43,7 +43,7 @@ export function ConfirmationStep({ providerValue, providerReady, projectName, no
     <div>
       <StepHeader title="Review and finish" description="You can change any of this later from the main app and Settings." />
 
-      <div className="mt-7 flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out [animation-delay:60ms] [animation-fill-mode:both]">
+      <div className="mt-7 flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 motion-enter [animation-delay:60ms] [animation-fill-mode:both]">
         {rows.map((row) => (
           <div
             key={row.label}

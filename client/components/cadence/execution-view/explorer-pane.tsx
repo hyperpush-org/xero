@@ -49,7 +49,7 @@ export function ExplorerPane({
   onReload,
 }: ExplorerPaneProps) {
   return (
-    <aside className="flex w-[260px] shrink-0 flex-col border-r border-border bg-sidebar">
+    <aside className="motion-layout-island flex w-[260px] shrink-0 flex-col border-r border-border bg-sidebar">
       <div className="flex shrink-0 items-start justify-between gap-2 px-3 pt-2.5 pb-2">
         <div className="min-w-0">
           <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">

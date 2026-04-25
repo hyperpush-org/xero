@@ -79,7 +79,7 @@ export function NotificationsStep({
         </div>
       ) : null}
 
-      <div className="mt-7 flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out [animation-delay:60ms] [animation-fill-mode:both]">
+      <div className="mt-7 flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 motion-enter [animation-delay:60ms] [animation-fill-mode:both]">
         {CHANNELS.map((channel) => {
           const channelRoutes = routes.filter((route) => route.routeKind === channel.kind)
           const route = channelRoutes.find((item) => item.enabled) ?? channelRoutes[0] ?? null
@@ -220,7 +220,7 @@ function ChannelRow({
   return (
     <div
       className={cn(
-        "group/card relative rounded-lg border bg-card/40 px-3.5 py-3 transition-all",
+        "group/card relative rounded-lg border bg-card/40 px-3.5 py-3 transition-[background-color,border-color,box-shadow,opacity] motion-fast",
         !projectReady
           ? "border-border/60 bg-card/20"
           : enabled
@@ -328,13 +328,13 @@ function ChannelRow({
       <div
         aria-hidden={!open}
         className={cn(
-          "grid transition-[grid-template-rows] duration-200 ease-out",
+          "grid transition-[grid-template-rows] motion-standard",
           open ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
         )}
       >
         <div
           className={cn(
-            "overflow-hidden transition-opacity duration-150",
+            "overflow-hidden transition-opacity motion-fast",
             open ? "opacity-100 delay-75" : "pointer-events-none opacity-0",
           )}
         >

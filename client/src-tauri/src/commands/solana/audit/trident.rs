@@ -350,7 +350,7 @@ pub fn generate_harness(
     let trident_body = trident_toml_body();
     write_if_allowed(
         &trident_toml,
-        &trident_body,
+        trident_body,
         request.overwrite,
         &mut generated,
         &mut skipped,

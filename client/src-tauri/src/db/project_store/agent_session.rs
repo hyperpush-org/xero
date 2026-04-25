@@ -497,6 +497,7 @@ pub(crate) fn ensure_agent_session_active(
     Ok(session)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn touch_agent_session_runtime_run(
     transaction: &Transaction<'_>,
     database_path: &Path,

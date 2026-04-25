@@ -7,31 +7,23 @@
 //! to `sec3.rs` (Sec3 / Soteria / Aderyn).
 //!
 //! Lints implemented:
-//!   * `missing_signer`           — `#[derive(Accounts)]` struct has no
-//!                                  `Signer` / `#[account(signer)]` field.
-//!   * `missing_owner_check`      — raw `AccountInfo` field with no
-//!                                  `#[account(owner = …)]` attribute.
-//!   * `missing_has_one`          — mutable `Account` / `Account<'_, T>`
-//!                                  referencing another field without a
-//!                                  `has_one` constraint.
-//!   * `unchecked_account_info`   — `AccountInfo` / `UncheckedAccount`
-//!                                  field with no `/// CHECK` safety
-//!                                  comment.
-//!   * `arithmetic_overflow`      — plain `+` / `-` / `*` between
-//!                                  integer-looking expressions (no
-//!                                  `checked_add` / `saturating_add`
-//!                                  equivalent nearby).
-//!   * `realloc_without_rent`     — `realloc(` call without a
-//!                                  `Rent::get`/rent-exemption bump
-//!                                  on the same span.
-//!   * `seed_spoof`               — PDA derivation using seeds that
-//!                                  include `AccountInfo::key` without a
-//!                                  matching `seeds` / `bump` constraint
-//!                                  (signals a user-controlled seed
-//!                                  that can't be re-derived safely).
+//! - `missing_signer`: `#[derive(Accounts)]` struct has no `Signer` /
+//!   `#[account(signer)]` field.
+//! - `missing_owner_check`: raw `AccountInfo` field with no
+//!   `#[account(owner = ...)]` attribute.
+//! - `missing_has_one`: mutable `Account` / `Account<'_, T>` referencing
+//!   another field without a `has_one` constraint.
+//! - `unchecked_account_info`: `AccountInfo` / `UncheckedAccount` field with
+//!   no `/// CHECK` safety comment.
+//! - `arithmetic_overflow`: plain `+` / `-` / `*` between integer-looking
+//!   expressions with no checked or saturating equivalent nearby.
+//! - `realloc_without_rent`: `realloc(` call without a `Rent::get` or
+//!   rent-exemption bump on the same span.
+//! - `seed_spoof`: PDA derivation using seeds that include
+//!   `AccountInfo::key` without a matching `seeds` / `bump` constraint.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -246,7 +238,7 @@ pub fn run(project_root: &Path, request: &StaticLintRequest) -> CommandResult<St
         scan_file(path, text, &rules, &mut anchor_findings);
     })?;
 
-    let mut findings: Vec<Finding> = anchor_findings.iter().map(|a| lift_finding(a)).collect();
+    let mut findings: Vec<Finding> = anchor_findings.iter().map(lift_finding).collect();
 
     findings.sort_by(|a, b| a.severity.rank().cmp(&b.severity.rank()));
     let severity_counts = SeverityCounts::from_findings(&findings);
@@ -329,7 +321,7 @@ where
     Ok(())
 }
 
-fn should_skip(path: &PathBuf, extra: &[String]) -> bool {
+fn should_skip(path: &Path, extra: &[String]) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,
         None => return true,
@@ -774,6 +766,7 @@ fn scan_seed_spoof(path: &Path, lines: &[&str], findings: &mut Vec<AnchorFinding
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn touch(dir: &Path, rel: &str, body: &str) -> PathBuf {

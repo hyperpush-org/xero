@@ -1,0 +1,425 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+
+use crate::db::project_store::{
+    agent_event_kind_sql_value, agent_message_role_sql_value, agent_run_status_sql_value,
+    agent_tool_call_state_sql_value, AgentActionRequestRecord, AgentCheckpointRecord,
+    AgentEventRecord, AgentFileChangeRecord, AgentMessageRecord, AgentRunRecord,
+    AgentRunSnapshotRecord, AgentToolCallRecord,
+};
+
+use super::runtime::{RuntimeRunControlInputDto, RuntimeRunDiagnosticDto};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatusDto {
+    Starting,
+    Running,
+    Cancelling,
+    Cancelled,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageRoleDto {
+    System,
+    Developer,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunEventKindDto {
+    MessageDelta,
+    ReasoningSummary,
+    ToolStarted,
+    ToolDelta,
+    ToolCompleted,
+    FileChanged,
+    CommandOutput,
+    ValidationStarted,
+    ValidationCompleted,
+    ActionRequired,
+    RunCompleted,
+    RunFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolCallStateDto {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentMessageDto {
+    pub id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub role: AgentMessageRoleDto,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRunEventDto {
+    pub id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub event_kind: AgentRunEventKindDto,
+    pub payload: JsonValue,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentToolCallDto {
+    pub project_id: String,
+    pub run_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub input: JsonValue,
+    pub state: AgentToolCallStateDto,
+    pub result: Option<JsonValue>,
+    pub error: Option<RuntimeRunDiagnosticDto>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentFileChangeDto {
+    pub id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub path: String,
+    pub operation: String,
+    pub old_hash: Option<String>,
+    pub new_hash: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCheckpointDto {
+    pub id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub checkpoint_kind: String,
+    pub summary: String,
+    pub payload: Option<JsonValue>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentActionRequestDto {
+    pub project_id: String,
+    pub run_id: String,
+    pub action_id: String,
+    pub action_type: String,
+    pub title: String,
+    pub detail: String,
+    pub status: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub response: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRunDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub run_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub status: AgentRunStatusDto,
+    pub prompt: String,
+    pub system_prompt: String,
+    pub started_at: String,
+    pub last_heartbeat_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub last_error_code: Option<String>,
+    pub last_error: Option<RuntimeRunDiagnosticDto>,
+    pub updated_at: String,
+    pub messages: Vec<AgentMessageDto>,
+    pub events: Vec<AgentRunEventDto>,
+    pub tool_calls: Vec<AgentToolCallDto>,
+    pub file_changes: Vec<AgentFileChangeDto>,
+    pub checkpoints: Vec<AgentCheckpointDto>,
+    pub action_requests: Vec<AgentActionRequestDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRunSummaryDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub run_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub status: AgentRunStatusDto,
+    pub prompt: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub last_error_code: Option<String>,
+    pub last_error: Option<RuntimeRunDiagnosticDto>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartAgentTaskRequestDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<RuntimeRunControlInputDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendAgentMessageRequestDto {
+    pub run_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CancelAgentRunRequestDto {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResumeAgentRunRequestDto {
+    pub run_id: String,
+    pub response: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetAgentRunRequestDto {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListAgentRunsRequestDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListAgentRunsResponseDto {
+    pub runs: Vec<AgentRunSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubscribeAgentStreamRequestDto {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubscribeAgentStreamResponseDto {
+    pub run_id: String,
+    pub replayed_event_count: usize,
+}
+
+pub fn agent_run_dto(snapshot: AgentRunSnapshotRecord) -> AgentRunDto {
+    AgentRunDto {
+        project_id: snapshot.run.project_id.clone(),
+        agent_session_id: snapshot.run.agent_session_id.clone(),
+        run_id: snapshot.run.run_id.clone(),
+        provider_id: snapshot.run.provider_id.clone(),
+        model_id: snapshot.run.model_id.clone(),
+        status: agent_run_status_dto(&snapshot.run),
+        prompt: snapshot.run.prompt.clone(),
+        system_prompt: snapshot.run.system_prompt.clone(),
+        started_at: snapshot.run.started_at.clone(),
+        last_heartbeat_at: snapshot.run.last_heartbeat_at.clone(),
+        completed_at: snapshot.run.completed_at.clone(),
+        cancelled_at: snapshot.run.cancelled_at.clone(),
+        last_error_code: snapshot
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.clone()),
+        last_error: snapshot
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| RuntimeRunDiagnosticDto {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            }),
+        updated_at: snapshot.run.updated_at.clone(),
+        messages: snapshot
+            .messages
+            .into_iter()
+            .map(agent_message_dto)
+            .collect(),
+        events: snapshot.events.into_iter().map(agent_event_dto).collect(),
+        tool_calls: snapshot
+            .tool_calls
+            .into_iter()
+            .map(agent_tool_call_dto)
+            .collect(),
+        file_changes: snapshot
+            .file_changes
+            .into_iter()
+            .map(agent_file_change_dto)
+            .collect(),
+        checkpoints: snapshot
+            .checkpoints
+            .into_iter()
+            .map(agent_checkpoint_dto)
+            .collect(),
+        action_requests: snapshot
+            .action_requests
+            .into_iter()
+            .map(agent_action_request_dto)
+            .collect(),
+    }
+}
+
+pub fn agent_run_summary_dto(run: AgentRunRecord) -> AgentRunSummaryDto {
+    let status = agent_run_status_dto(&run);
+    AgentRunSummaryDto {
+        project_id: run.project_id,
+        agent_session_id: run.agent_session_id,
+        run_id: run.run_id,
+        provider_id: run.provider_id,
+        model_id: run.model_id,
+        status,
+        prompt: run.prompt,
+        started_at: run.started_at,
+        completed_at: run.completed_at,
+        cancelled_at: run.cancelled_at,
+        last_error_code: run.last_error.as_ref().map(|error| error.code.clone()),
+        last_error: run.last_error.map(|error| RuntimeRunDiagnosticDto {
+            code: error.code,
+            message: error.message,
+        }),
+        updated_at: run.updated_at,
+    }
+}
+
+fn agent_message_dto(message: AgentMessageRecord) -> AgentMessageDto {
+    AgentMessageDto {
+        id: message.id,
+        project_id: message.project_id,
+        run_id: message.run_id,
+        role: serde_json::from_str(&format!(
+            "\"{}\"",
+            agent_message_role_sql_value(&message.role)
+        ))
+        .expect("agent message role should serialize to dto enum"),
+        content: message.content,
+        created_at: message.created_at,
+    }
+}
+
+pub fn agent_event_dto(event: AgentEventRecord) -> AgentRunEventDto {
+    AgentRunEventDto {
+        id: event.id,
+        project_id: event.project_id,
+        run_id: event.run_id,
+        event_kind: serde_json::from_str(&format!(
+            "\"{}\"",
+            agent_event_kind_sql_value(&event.event_kind)
+        ))
+        .expect("agent event kind should serialize to dto enum"),
+        payload: serde_json::from_str(&event.payload_json).unwrap_or(JsonValue::Null),
+        created_at: event.created_at,
+    }
+}
+
+fn agent_tool_call_dto(tool_call: AgentToolCallRecord) -> AgentToolCallDto {
+    AgentToolCallDto {
+        project_id: tool_call.project_id,
+        run_id: tool_call.run_id,
+        tool_call_id: tool_call.tool_call_id,
+        tool_name: tool_call.tool_name,
+        input: serde_json::from_str(&tool_call.input_json).unwrap_or(JsonValue::Null),
+        state: serde_json::from_str(&format!(
+            "\"{}\"",
+            agent_tool_call_state_sql_value(&tool_call.state)
+        ))
+        .expect("agent tool-call state should serialize to dto enum"),
+        result: tool_call
+            .result_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok()),
+        error: tool_call.error.map(|error| RuntimeRunDiagnosticDto {
+            code: error.code,
+            message: error.message,
+        }),
+        started_at: tool_call.started_at,
+        completed_at: tool_call.completed_at,
+    }
+}
+
+fn agent_file_change_dto(file_change: AgentFileChangeRecord) -> AgentFileChangeDto {
+    AgentFileChangeDto {
+        id: file_change.id,
+        project_id: file_change.project_id,
+        run_id: file_change.run_id,
+        path: file_change.path,
+        operation: file_change.operation,
+        old_hash: file_change.old_hash,
+        new_hash: file_change.new_hash,
+        created_at: file_change.created_at,
+    }
+}
+
+fn agent_checkpoint_dto(checkpoint: AgentCheckpointRecord) -> AgentCheckpointDto {
+    AgentCheckpointDto {
+        id: checkpoint.id,
+        project_id: checkpoint.project_id,
+        run_id: checkpoint.run_id,
+        checkpoint_kind: checkpoint.checkpoint_kind,
+        summary: checkpoint.summary,
+        payload: checkpoint
+            .payload_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok()),
+        created_at: checkpoint.created_at,
+    }
+}
+
+fn agent_action_request_dto(action_request: AgentActionRequestRecord) -> AgentActionRequestDto {
+    AgentActionRequestDto {
+        project_id: action_request.project_id,
+        run_id: action_request.run_id,
+        action_id: action_request.action_id,
+        action_type: action_request.action_type,
+        title: action_request.title,
+        detail: action_request.detail,
+        status: action_request.status,
+        created_at: action_request.created_at,
+        resolved_at: action_request.resolved_at,
+        response: action_request.response,
+    }
+}
+
+fn agent_run_status_dto(run: &AgentRunRecord) -> AgentRunStatusDto {
+    serde_json::from_str(&format!("\"{}\"", agent_run_status_sql_value(&run.status)))
+        .expect("agent run status should serialize to dto enum")
+}

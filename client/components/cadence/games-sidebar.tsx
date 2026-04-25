@@ -385,8 +385,8 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
     <aside
       aria-hidden={!open}
       className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
-        !isResizing && "transition-[width] duration-200 ease-out",
+        "motion-layout-island relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
+        !isResizing && "transition-[width] motion-panel",
         !open && "border-l-0",
       )}
       inert={!open ? true : undefined}
@@ -410,8 +410,12 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
       />
 
       <div
+        className="flex h-full min-w-0 shrink-0 flex-col"
+        style={{ width }}
+      >
+      <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col animate-in fade-in-0 duration-200 ease-out",
+          "flex min-h-0 flex-1 flex-col animate-in fade-in-0 motion-standard",
           viewDirectionRef.current === 1 ? "slide-in-from-right-3" : "slide-in-from-left-3",
         )}
         key={selectedGame?.id ?? "__list__"}
@@ -427,6 +431,7 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
             total={GAMES.length}
           />
         )}
+      </div>
       </div>
     </aside>
   )
@@ -694,4 +699,3 @@ function StatCell({
     </div>
   )
 }
-

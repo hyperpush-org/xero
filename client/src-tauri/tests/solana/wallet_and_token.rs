@@ -166,7 +166,10 @@ pub fn token_create_argv_preserves_transfer_fee_config() {
     // Runner was called exactly once with our argv.
     let captured = runner.captured();
     assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].argv[0], "spl-token");
+    let program_name = Path::new(&captured[0].argv[0])
+        .file_name()
+        .and_then(|name| name.to_str());
+    assert_eq!(program_name, Some("spl-token"));
 }
 
 pub fn token_create_reports_transfer_hook_incompatibilities() {

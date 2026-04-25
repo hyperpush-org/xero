@@ -345,6 +345,7 @@ pub struct AutonomousSolanaPdaRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "action")]
+#[allow(clippy::large_enum_variant)]
 pub enum AutonomousSolanaProgramAction {
     Build {
         manifest_path: String,

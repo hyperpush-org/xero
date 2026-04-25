@@ -54,20 +54,20 @@ export function ProjectRail({
   return (
     <aside
       className={cn(
-        'flex shrink-0 flex-col overflow-hidden border-r border-border/80 bg-sidebar transition-[width] duration-300 ease-in-out',
+        'motion-layout-island flex shrink-0 flex-col overflow-hidden border-r border-border/80 bg-sidebar transition-[width] motion-panel',
         collapsed ? 'w-11' : 'w-56',
       )}
       data-collapsed={collapsed ? 'true' : 'false'}
     >
       <div
         className={cn(
-          'flex h-10 items-center border-b border-border/70 transition-[padding] duration-300 ease-in-out',
+          'flex h-10 items-center border-b border-border/70 transition-[padding] motion-panel',
           collapsed ? 'justify-center px-1' : 'justify-between px-3',
         )}
       >
         <div
           className={cn(
-            'flex items-center gap-1.5 overflow-hidden transition-[max-width,opacity] duration-200 ease-in-out',
+            'flex items-center gap-1.5 overflow-hidden transition-[max-width,opacity] motion-standard',
             collapsed ? 'max-w-0 opacity-0' : 'max-w-[10rem] opacity-100',
           )}
         >
@@ -97,7 +97,7 @@ export function ProjectRail({
       {errorMessage ? (
         <div
           className={cn(
-            'border-b border-border/70 bg-destructive/5 text-[11px] leading-snug text-destructive transition-[padding,opacity,max-height] duration-200 ease-in-out',
+            'border-b border-border/70 bg-destructive/5 text-[11px] leading-snug text-destructive transition-[padding,opacity,max-height] motion-standard',
             collapsed ? 'max-h-0 px-0 py-0 opacity-0' : 'max-h-20 px-3 py-2 opacity-100',
           )}
         >
@@ -112,11 +112,15 @@ export function ProjectRail({
         )}
       >
         {projects.length === 0 ? (
-          collapsed ? null : (
-            <div className="px-3 py-5 text-center text-[11px] leading-relaxed text-muted-foreground/80">
-              No projects imported yet.
-            </div>
-          )
+          <div
+            aria-hidden={collapsed ? true : undefined}
+            className={cn(
+              'px-3 py-5 text-center text-[11px] leading-relaxed text-muted-foreground/80 transition-[max-height,opacity] motion-standard',
+              collapsed ? 'max-h-0 opacity-0' : 'max-h-24 opacity-100',
+            )}
+          >
+            No projects imported yet.
+          </div>
         ) : (
           <ul className={cn('flex flex-col', collapsed ? 'gap-1.5 px-1.5' : '')}>
             {projects.map((project) => (
@@ -139,14 +143,14 @@ export function ProjectRail({
       {isBusy && (
         <div
           className={cn(
-            'flex items-center border-t border-border/70 bg-sidebar text-[11px] text-muted-foreground transition-[padding,gap] duration-300 ease-in-out',
+            'flex items-center border-t border-border/70 bg-sidebar text-[11px] text-muted-foreground transition-[padding,gap] motion-panel',
             collapsed ? 'justify-center gap-0 px-1.5 py-2.5' : 'gap-2 px-3 py-2.5',
           )}
         >
           <RefreshCw className="h-3 w-3 animate-spin text-primary/80" />
           <span
             className={cn(
-              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out',
+              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] motion-standard',
               collapsed ? 'max-w-0 opacity-0' : 'max-w-24 opacity-100',
             )}
           >
@@ -212,77 +216,85 @@ function ProjectRailItem({
             {collapsed ? <span className="sr-only">{project.name}</span> : null}
           </div>
 
-          {collapsed ? null : (
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center pr-6">
-                <span
-                  className={cn(
-                    'truncate text-[12.5px] font-medium leading-tight',
-                    isActive ? 'text-foreground' : 'text-foreground/85 group-hover:text-foreground',
-                  )}
-                >
-                  {project.name}
-                </span>
-              </div>
-              <div className="mt-1.5 flex items-center gap-1.5">
-                <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-border/70">
-                  <div
-                    className={cn(
-                      'h-full rounded-full transition-[width] duration-500 ease-out',
-                      isActive ? 'bg-primary' : 'bg-primary/55',
-                    )}
-                    style={{ width: `${project.phaseProgressPercent}%` }}
-                  />
-                </div>
-                <span
-                  className={cn(
-                    'font-mono text-[10px] leading-none tabular-nums',
-                    isActive ? 'text-foreground/80' : 'text-muted-foreground',
-                  )}
-                >
-                  {project.phaseProgressPercent}%
-                </span>
-              </div>
+          <div
+            aria-hidden={collapsed ? true : undefined}
+            className={cn(
+              'min-w-0 flex-1 overflow-hidden transition-[max-width,opacity] motion-standard',
+              collapsed ? 'max-w-0 opacity-0' : 'max-w-[10.5rem] opacity-100',
+            )}
+          >
+            <div className="flex items-center pr-6">
+              <span
+                className={cn(
+                  'truncate text-[12.5px] font-medium leading-tight',
+                  isActive ? 'text-foreground' : 'text-foreground/85 group-hover:text-foreground',
+                )}
+              >
+                {project.name}
+              </span>
             </div>
-          )}
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-border/70">
+                <div
+                  className={cn(
+                    'h-full rounded-full motion-progress',
+                    isActive ? 'bg-primary' : 'bg-primary/55',
+                  )}
+                  style={{
+                    transform: `scaleX(${Math.max(0, Math.min(100, project.phaseProgressPercent)) / 100})`,
+                  }}
+                />
+              </div>
+              <span
+                className={cn(
+                  'font-mono text-[10px] leading-none tabular-nums',
+                  isActive ? 'text-foreground/80' : 'text-muted-foreground',
+                )}
+              >
+                {project.phaseProgressPercent}%
+              </span>
+            </div>
+          </div>
         </button>
 
-        {collapsed ? null : (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label={`Project actions for ${project.name}`}
-                className={cn(
-                  'absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors',
-                  'hover:bg-secondary hover:text-foreground disabled:opacity-50',
-                  isActive || isRemovalPending
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-hidden={collapsed ? true : undefined}
+              aria-label={`Project actions for ${project.name}`}
+              className={cn(
+                'absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-[opacity,color,background-color] motion-fast',
+                'hover:bg-secondary hover:text-foreground disabled:opacity-50',
+                collapsed
+                  ? 'pointer-events-none opacity-0'
+                  : isActive || isRemovalPending
                     ? 'opacity-100'
                     : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                )}
-                disabled={isRemovalLocked}
-                type="button"
-              >
-                {isRemovalPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <MoreHorizontal className="h-3.5 w-3.5" />
-                )}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onSelect={(event) => {
-                  event.preventDefault()
-                  setConfirmOpen(true)
-                }}
-                variant="destructive"
-              >
-                <Trash2 className="h-4 w-4" />
-                Remove
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+              )}
+              disabled={collapsed || isRemovalLocked}
+              tabIndex={collapsed ? -1 : undefined}
+              type="button"
+            >
+              {isRemovalPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault()
+                setConfirmOpen(true)
+              }}
+              variant="destructive"
+            >
+              <Trash2 className="h-4 w-4" />
+              Remove
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <AlertDialogContent>

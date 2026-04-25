@@ -6,8 +6,6 @@
 //! Once it's accepting connections the gRPC client in `idb_client.rs`
 //! speaks to it over the port.
 
-#![cfg(target_os = "macos")]
-
 use std::io::Result;
 use std::net::{SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
@@ -61,8 +59,7 @@ pub fn spawn(launch: Launch, startup_timeout: Duration) -> Result<Companion> {
         match guard.try_wait() {
             Ok(Some(status)) => {
                 let tail = guard.stderr_tail();
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(std::io::Error::other(
                     format!(
                         "idb_companion exited before accepting connections (status={status}). stderr: {tail}"
                     ),

@@ -147,6 +147,7 @@ pub(crate) fn subscribe_request(
         json!({
             "request": {
                 "projectId": project_id,
+                "agentSessionId": "agent-session-main",
                 "channel": raw_channel,
                 "itemKinds": item_kinds,
             }

@@ -509,8 +509,8 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
     <aside
       aria-hidden={!open}
       className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
-        !isResizing && "transition-[width] duration-200 ease-out",
+        "motion-layout-island relative flex shrink-0 flex-col overflow-hidden border-l border-border/80 bg-sidebar",
+        !isResizing && "transition-[width] motion-panel",
         !open && "border-l-0",
       )}
       inert={!open ? true : undefined}
@@ -533,6 +533,10 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
         tabIndex={open ? 0 : -1}
       />
 
+      <div
+        className="flex h-full min-w-0 shrink-0 flex-col"
+        style={{ width }}
+      >
       {showTabs ? (
         <div className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60">
           {tabs.map((tab) => (
@@ -660,6 +664,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
             </div>
           </div>
         ) : null}
+      </div>
       </div>
     </aside>
   )
