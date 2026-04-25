@@ -73,6 +73,24 @@ import {
   type UpsertMcpServerRequestDto,
 } from '@/src/lib/cadence-model/mcp'
 import {
+  listSkillRegistryRequestSchema,
+  removeSkillLocalRootRequestSchema,
+  removeSkillRequestSchema,
+  setSkillEnabledRequestSchema,
+  skillRegistrySchema,
+  updateGithubSkillSourceRequestSchema,
+  updateProjectSkillSourceRequestSchema,
+  upsertSkillLocalRootRequestSchema,
+  type ListSkillRegistryRequestDto,
+  type RemoveSkillLocalRootRequestDto,
+  type RemoveSkillRequestDto,
+  type SetSkillEnabledRequestDto,
+  type SkillRegistryDto,
+  type UpdateGithubSkillSourceRequestDto,
+  type UpdateProjectSkillSourceRequestDto,
+  type UpsertSkillLocalRootRequestDto,
+} from '@/src/lib/cadence-model/skills'
+import {
   resolveOperatorActionRequestSchema,
   resolveOperatorActionResponseSchema,
   resumeOperatorRunRequestSchema,
@@ -218,6 +236,14 @@ const COMMANDS = {
   removeMcpServer: 'remove_mcp_server',
   importMcpServers: 'import_mcp_servers',
   refreshMcpServerStatuses: 'refresh_mcp_server_statuses',
+  listSkillRegistry: 'list_skill_registry',
+  reloadSkillRegistry: 'reload_skill_registry',
+  setSkillEnabled: 'set_skill_enabled',
+  removeSkill: 'remove_skill',
+  upsertSkillLocalRoot: 'upsert_skill_local_root',
+  removeSkillLocalRoot: 'remove_skill_local_root',
+  updateProjectSkillSource: 'update_project_skill_source',
+  updateGithubSkillSource: 'update_github_skill_source',
   getProviderModelCatalog: 'get_provider_model_catalog',
   listProviderProfiles: 'list_provider_profiles',
   upsertProviderProfile: 'upsert_provider_profile',
@@ -456,6 +482,14 @@ export interface CadenceDesktopAdapter {
   removeMcpServer(serverId: string): Promise<McpRegistryDto>
   importMcpServers(path: string): Promise<ImportMcpServersResponseDto>
   refreshMcpServerStatuses(options?: { serverIds?: string[] }): Promise<McpRegistryDto>
+  listSkillRegistry(request?: Partial<ListSkillRegistryRequestDto>): Promise<SkillRegistryDto>
+  reloadSkillRegistry(request?: Partial<ListSkillRegistryRequestDto>): Promise<SkillRegistryDto>
+  setSkillEnabled(request: SetSkillEnabledRequestDto): Promise<SkillRegistryDto>
+  removeSkill(request: RemoveSkillRequestDto): Promise<SkillRegistryDto>
+  upsertSkillLocalRoot(request: UpsertSkillLocalRootRequestDto): Promise<SkillRegistryDto>
+  removeSkillLocalRoot(request: RemoveSkillLocalRootRequestDto): Promise<SkillRegistryDto>
+  updateProjectSkillSource(request: UpdateProjectSkillSourceRequestDto): Promise<SkillRegistryDto>
+  updateGithubSkillSource(request: UpdateGithubSkillSourceRequestDto): Promise<SkillRegistryDto>
   getProviderModelCatalog(
     profileId: string,
     options?: { forceRefresh?: boolean },
@@ -1160,6 +1194,70 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
     return invokeTyped(COMMANDS.refreshMcpServerStatuses, mcpRegistrySchema, {
       request,
+    })
+  },
+
+  listSkillRegistry(request = {}) {
+    const parsedRequest = listSkillRegistryRequestSchema.parse({
+      projectId: request.projectId ?? null,
+      query: request.query ?? null,
+      includeUnavailable: request.includeUnavailable ?? true,
+    })
+    return invokeTyped(COMMANDS.listSkillRegistry, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  reloadSkillRegistry(request = {}) {
+    const parsedRequest = listSkillRegistryRequestSchema.parse({
+      projectId: request.projectId ?? null,
+      query: request.query ?? null,
+      includeUnavailable: request.includeUnavailable ?? true,
+    })
+    return invokeTyped(COMMANDS.reloadSkillRegistry, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  setSkillEnabled(request) {
+    const parsedRequest = setSkillEnabledRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.setSkillEnabled, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  removeSkill(request) {
+    const parsedRequest = removeSkillRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.removeSkill, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  upsertSkillLocalRoot(request) {
+    const parsedRequest = upsertSkillLocalRootRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.upsertSkillLocalRoot, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  removeSkillLocalRoot(request) {
+    const parsedRequest = removeSkillLocalRootRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.removeSkillLocalRoot, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  updateProjectSkillSource(request) {
+    const parsedRequest = updateProjectSkillSourceRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.updateProjectSkillSource, skillRegistrySchema, {
+      request: parsedRequest,
+    })
+  },
+
+  updateGithubSkillSource(request) {
+    const parsedRequest = updateGithubSkillSourceRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.updateGithubSkillSource, skillRegistrySchema, {
+      request: parsedRequest,
     })
   },
 

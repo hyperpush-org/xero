@@ -72,6 +72,7 @@ export * from './cadence-model/autonomous'
 export * from './cadence-model/agent'
 export * from './cadence-model/runtime-stream'
 export * from './cadence-model/mcp'
+export * from './cadence-model/skills'
 
 export const projectSnapshotResponseSchema = z
   .object({

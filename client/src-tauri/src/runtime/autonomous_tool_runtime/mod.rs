@@ -26,10 +26,10 @@ use super::autonomous_web_runtime::{
 };
 
 use super::autonomous_skill_runtime::{
-    AutonomousSkillRuntime, CadenceSkillSourceKind, CadenceSkillSourceState,
-    CadenceSkillToolAccessDecision, CadenceSkillToolContextPayload, CadenceSkillToolDiagnostic,
-    CadenceSkillToolInput, CadenceSkillToolLifecycleEvent, CadenceSkillToolOperation,
-    CadenceSkillTrustState,
+    load_skill_source_settings_from_path, AutonomousSkillRuntime, AutonomousSkillRuntimeConfig,
+    CadenceSkillSourceKind, CadenceSkillSourceState, CadenceSkillToolAccessDecision,
+    CadenceSkillToolContextPayload, CadenceSkillToolDiagnostic, CadenceSkillToolInput,
+    CadenceSkillToolLifecycleEvent, CadenceSkillToolOperation, CadenceSkillTrustState,
 };
 use crate::{
     commands::{
@@ -408,15 +408,31 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<Self> {
         let browser_executor = browser::tauri_browser_executor(app.clone(), state.clone());
         let repo_root = resolve_imported_repo_root(app, state, project_id)?;
-        let skill_runtime = AutonomousSkillRuntime::for_app(app, state).map(|runtime| {
-            runtime.with_installed_skill_registry(Arc::new(
+        let skill_settings =
+            load_skill_source_settings_from_path(&state.skill_source_settings_file(app)?)?;
+        let skill_runtime_config = AutonomousSkillRuntimeConfig {
+            default_source_repo: skill_settings.github.repo.clone(),
+            default_source_ref: skill_settings.github.reference.clone(),
+            default_source_root: skill_settings.github.root.clone(),
+            ..AutonomousSkillRuntimeConfig::for_platform()
+        };
+        let skill_cache_root = state.autonomous_skill_cache_dir(app)?;
+        let skill_runtime = AutonomousSkillRuntime::new(skill_runtime_config, skill_cache_root)
+            .with_installed_skill_registry(Arc::new(
                 crate::db::project_store::ProjectStoreInstalledSkillRegistry::project(
                     repo_root.clone(),
                     project_id.to_owned(),
                 )
                 .expect("project id already validated by imported project registry"),
-            ))
-        })?;
+            ));
+        let local_skill_roots = skill_settings
+            .enabled_local_roots()
+            .into_iter()
+            .map(|root| AutonomousLocalSkillRoot {
+                root_id: root.root_id,
+                root_path: PathBuf::from(root.path),
+            })
+            .collect::<Vec<_>>();
         let runtime = Self::with_limits_and_web_config(
             repo_root,
             AutonomousToolRuntimeLimits::default(),
@@ -425,11 +441,13 @@ impl AutonomousToolRuntime {
         .with_browser_executor(browser_executor)
         .with_emulator_executor(emulator::tauri_emulator_executor(app.clone()))
         .with_mcp_registry_path(state.mcp_registry_file(app)?)
-        .with_skill_tool(
+        .with_skill_tool_config(
             project_id.to_owned(),
             skill_runtime,
             default_bundled_skill_roots(app),
-            default_local_skill_roots(),
+            local_skill_roots,
+            skill_settings.project_discovery_enabled(project_id),
+            skill_settings.github.enabled,
         );
 
         let runtime = match app.try_state::<crate::commands::SolanaState>() {
@@ -491,11 +509,33 @@ impl AutonomousToolRuntime {
         bundled_roots: Vec<AutonomousBundledSkillRoot>,
         local_roots: Vec<AutonomousLocalSkillRoot>,
     ) -> Self {
+        self = self.with_skill_tool_config(
+            project_id,
+            github_runtime,
+            bundled_roots,
+            local_roots,
+            true,
+            true,
+        );
+        self
+    }
+
+    pub fn with_skill_tool_config(
+        mut self,
+        project_id: impl Into<String>,
+        github_runtime: AutonomousSkillRuntime,
+        bundled_roots: Vec<AutonomousBundledSkillRoot>,
+        local_roots: Vec<AutonomousLocalSkillRoot>,
+        project_skills_enabled: bool,
+        github_enabled: bool,
+    ) -> Self {
         self.skill_tool = Some(AutonomousSkillToolRuntime::new(
             project_id.into(),
             github_runtime,
             bundled_roots,
             local_roots,
+            project_skills_enabled,
+            github_enabled,
         ));
         self
     }
@@ -1711,6 +1751,8 @@ pub(super) struct AutonomousSkillToolRuntime {
     github_runtime: AutonomousSkillRuntime,
     bundled_roots: Vec<AutonomousBundledSkillRoot>,
     local_roots: Vec<AutonomousLocalSkillRoot>,
+    project_skills_enabled: bool,
+    github_enabled: bool,
     discovery_cache: Arc<Mutex<BTreeMap<String, skills::CachedSkillToolCandidate>>>,
 }
 
@@ -1720,12 +1762,16 @@ impl AutonomousSkillToolRuntime {
         github_runtime: AutonomousSkillRuntime,
         bundled_roots: Vec<AutonomousBundledSkillRoot>,
         local_roots: Vec<AutonomousLocalSkillRoot>,
+        project_skills_enabled: bool,
+        github_enabled: bool,
     ) -> Self {
         Self {
             project_id,
             github_runtime,
             bundled_roots,
             local_roots,
+            project_skills_enabled,
+            github_enabled,
             discovery_cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -1741,19 +1787,6 @@ fn default_bundled_skill_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<Autonomous
             vec![AutonomousBundledSkillRoot {
                 bundle_id: "cadence".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
-                root_path: root,
-            }]
-        })
-        .unwrap_or_default()
-}
-
-fn default_local_skill_roots() -> Vec<AutonomousLocalSkillRoot> {
-    dirs::home_dir()
-        .map(|home| home.join(".cadence").join("skills"))
-        .filter(|root| root.is_dir())
-        .map(|root| {
-            vec![AutonomousLocalSkillRoot {
-                root_id: "user".into(),
                 root_path: root,
             }]
         })

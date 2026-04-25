@@ -71,6 +71,12 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     mcpRegistryMutationStatus,
     pendingMcpServerId,
     mcpRegistryMutationError,
+    skillRegistry,
+    skillRegistryLoadStatus,
+    skillRegistryLoadError,
+    skillRegistryMutationStatus,
+    pendingSkillSourceId,
+    skillRegistryMutationError,
     isDesktopRuntime,
     selectProject,
     importProject,
@@ -105,6 +111,14 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     removeMcpServer,
     importMcpServers,
     refreshMcpServerStatuses,
+    refreshSkillRegistry,
+    reloadSkillRegistry,
+    setSkillEnabled,
+    removeSkill,
+    upsertSkillLocalRoot,
+    removeSkillLocalRoot,
+    updateProjectSkillSource,
+    updateGithubSkillSource,
     refreshNotificationRoutes,
     upsertNotificationRoute,
     createAgentSession,
@@ -545,6 +559,20 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onRemoveMcpServer={(serverId) => removeMcpServer(serverId)}
         onImportMcpServers={(path) => importMcpServers(path)}
         onRefreshMcpServerStatuses={(options) => refreshMcpServerStatuses(options)}
+        skillRegistry={skillRegistry}
+        skillRegistryLoadStatus={skillRegistryLoadStatus}
+        skillRegistryLoadError={skillRegistryLoadError}
+        skillRegistryMutationStatus={skillRegistryMutationStatus}
+        pendingSkillSourceId={pendingSkillSourceId}
+        skillRegistryMutationError={skillRegistryMutationError}
+        onRefreshSkillRegistry={(options) => refreshSkillRegistry(options)}
+        onReloadSkillRegistry={(options) => reloadSkillRegistry(options)}
+        onSetSkillEnabled={(request) => setSkillEnabled(request)}
+        onRemoveSkill={(request) => removeSkill(request)}
+        onUpsertSkillLocalRoot={(request) => upsertSkillLocalRoot(request)}
+        onRemoveSkillLocalRoot={(request) => removeSkillLocalRoot(request)}
+        onUpdateProjectSkillSource={(request) => updateProjectSkillSource(request)}
+        onUpdateGithubSkillSource={(request) => updateGithubSkillSource(request)}
         platformOverride={platformOverride}
         onPlatformOverrideChange={setPlatformOverride}
         onStartOnboarding={() => {

@@ -22,6 +22,7 @@ use crate::{
 pub const REGISTRY_FILE_NAME: &str = "project-registry.json";
 pub const RUNTIME_SETTINGS_FILE_NAME: &str = "runtime-settings.json";
 pub const MCP_REGISTRY_FILE_NAME: &str = "mcp-registry.json";
+pub const SKILL_SOURCE_SETTINGS_FILE_NAME: &str = "skill-sources.json";
 pub const OPENROUTER_CREDENTIAL_FILE_NAME: &str = "openrouter-credentials.json";
 pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
 
@@ -49,6 +50,7 @@ pub struct DesktopState {
     provider_model_catalog_cache_file_override: Option<PathBuf>,
     runtime_settings_file_override: Option<PathBuf>,
     mcp_registry_file_override: Option<PathBuf>,
+    skill_source_settings_file_override: Option<PathBuf>,
     openrouter_credential_file_override: Option<PathBuf>,
     autonomous_skill_cache_dir_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
@@ -105,6 +107,11 @@ impl DesktopState {
 
     pub fn with_mcp_registry_file_override(mut self, path: PathBuf) -> Self {
         self.mcp_registry_file_override = Some(path);
+        self
+    }
+
+    pub fn with_skill_source_settings_file_override(mut self, path: PathBuf) -> Self {
+        self.skill_source_settings_file_override = Some(path);
         self
     }
 
@@ -310,6 +317,19 @@ impl DesktopState {
         }
 
         Ok(self.app_data_dir(app)?.join(MCP_REGISTRY_FILE_NAME))
+    }
+
+    pub fn skill_source_settings_file<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<PathBuf, CommandError> {
+        if let Some(path) = &self.skill_source_settings_file_override {
+            return Ok(path.clone());
+        }
+
+        Ok(self
+            .app_data_dir(app)?
+            .join(SKILL_SOURCE_SETTINGS_FILE_NAME))
     }
 
     pub fn provider_profiles_file<R: Runtime>(

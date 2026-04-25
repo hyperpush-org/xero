@@ -26,6 +26,7 @@ pub mod remove_project;
 pub mod resolve_operator_action;
 pub mod resume_operator_run;
 pub mod search_project;
+pub mod skills;
 pub mod solana;
 pub mod start_autonomous_run;
 pub mod start_openai_login;
@@ -99,6 +100,11 @@ pub use remove_project::remove_project;
 pub use resolve_operator_action::resolve_operator_action;
 pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
+pub use skills::{
+    list_skill_registry, reload_skill_registry, remove_skill, remove_skill_local_root,
+    set_skill_enabled, update_github_skill_source, update_project_skill_source,
+    upsert_skill_local_root,
+};
 pub use solana::{
     solana_alt_create, solana_alt_extend, solana_alt_resolve, solana_cluster_drift_check,
     solana_cluster_drift_tracked_programs, solana_cluster_list, solana_cluster_start,
@@ -135,7 +141,7 @@ pub use upsert_notification_route_credentials::upsert_notification_route_credent
 pub use upsert_runtime_settings::upsert_runtime_settings;
 
 pub use contracts::{
-    agent::*, autonomous::*, error::*, mcp::*, notifications::*, runtime::*, surface::*,
+    agent::*, autonomous::*, error::*, mcp::*, notifications::*, runtime::*, skills::*, surface::*,
     workflow::*,
 };
 

@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { type McpRegistryDto } from '@/src/lib/cadence-model/mcp'
 import { projectRuntimeSettingsFromProviderProfiles } from '@/src/lib/cadence-model/provider-profiles'
+import { type SkillRegistryDto } from '@/src/lib/cadence-model/skills'
 import type {
   CadenceDesktopMutationActions,
   UseCadenceDesktopMutationsArgs,
@@ -19,6 +20,14 @@ function createMcpRegistrySyncKey(registry: McpRegistryDto | null): string {
   return JSON.stringify(registry)
 }
 
+function createSkillRegistrySyncKey(registry: SkillRegistryDto | null): string {
+  if (!registry) {
+    return 'none'
+  }
+
+  return JSON.stringify(registry)
+}
+
 export function useRuntimeSettingsNotificationMutations({
   adapter,
   refs,
@@ -27,6 +36,7 @@ export function useRuntimeSettingsNotificationMutations({
   providerProfilesLoadStatus,
   runtimeSettingsLoadStatus,
   mcpRegistryLoadStatus,
+  skillRegistryLoadStatus,
 }: UseCadenceDesktopMutationsArgs): Pick<
   CadenceDesktopMutationActions,
   | 'refreshProviderProfiles'
@@ -39,6 +49,14 @@ export function useRuntimeSettingsNotificationMutations({
   | 'removeMcpServer'
   | 'importMcpServers'
   | 'refreshMcpServerStatuses'
+  | 'refreshSkillRegistry'
+  | 'reloadSkillRegistry'
+  | 'setSkillEnabled'
+  | 'removeSkill'
+  | 'upsertSkillLocalRoot'
+  | 'removeSkillLocalRoot'
+  | 'updateProjectSkillSource'
+  | 'updateGithubSkillSource'
   | 'refreshNotificationRoutes'
   | 'upsertNotificationRoute'
 > {
@@ -50,6 +68,8 @@ export function useRuntimeSettingsNotificationMutations({
     runtimeSettingsLoadInFlightRef,
     mcpRegistryRef,
     mcpRegistryLoadInFlightRef,
+    skillRegistryRef,
+    skillRegistryLoadInFlightRef,
   } = refs
   const {
     setNotificationRoutes,
@@ -75,6 +95,12 @@ export function useRuntimeSettingsNotificationMutations({
     setMcpRegistryMutationStatus,
     setPendingMcpServerId,
     setMcpRegistryMutationError,
+    setSkillRegistry,
+    setSkillRegistryLoadStatus,
+    setSkillRegistryLoadError,
+    setSkillRegistryMutationStatus,
+    setPendingSkillSourceId,
+    setSkillRegistryMutationError,
   } = setters
   const { loadNotificationRoutes } = operations
 
@@ -121,6 +147,24 @@ export function useRuntimeSettingsNotificationMutations({
       return nextSyncKey === currentSyncKey && currentRegistry ? currentRegistry : response
     },
     [mcpRegistryRef, setMcpRegistry, setMcpRegistryLoadError, setMcpRegistryLoadStatus],
+  )
+
+  const applySkillRegistrySnapshot = useCallback(
+    (response: SkillRegistryDto) => {
+      const currentRegistry = skillRegistryRef.current
+      const nextSyncKey = createSkillRegistrySyncKey(response)
+      const currentSyncKey = createSkillRegistrySyncKey(currentRegistry)
+
+      if (nextSyncKey !== currentSyncKey) {
+        setSkillRegistry(response)
+      }
+
+      setSkillRegistryLoadStatus('ready')
+      setSkillRegistryLoadError(null)
+
+      return nextSyncKey === currentSyncKey && currentRegistry ? currentRegistry : response
+    },
+    [setSkillRegistry, setSkillRegistryLoadError, setSkillRegistryLoadStatus, skillRegistryRef],
   )
 
   const refreshProviderProfiles = useCallback(
@@ -521,6 +565,323 @@ export function useRuntimeSettingsNotificationMutations({
     ],
   )
 
+  const refreshSkillRegistry = useCallback(
+    async (options: Parameters<CadenceDesktopMutationActions['refreshSkillRegistry']>[0] = {}) => {
+      if (skillRegistryLoadInFlightRef.current) {
+        return skillRegistryLoadInFlightRef.current
+      }
+
+      const projectId = options.projectId ?? activeProjectIdRef.current ?? null
+      const cachedRegistry = skillRegistryRef.current
+      if (
+        !options.force &&
+        cachedRegistry &&
+        skillRegistryLoadStatus === 'ready' &&
+        cachedRegistry.projectId === projectId
+      ) {
+        return cachedRegistry
+      }
+
+      setSkillRegistryLoadStatus('loading')
+      setSkillRegistryLoadError(null)
+
+      const loadPromise = (async () => {
+        try {
+          const response = await adapter.listSkillRegistry({
+            projectId,
+            query: options.query ?? null,
+            includeUnavailable: options.includeUnavailable ?? true,
+          })
+          return applySkillRegistrySnapshot(response)
+        } catch (error) {
+          setSkillRegistryLoadStatus('error')
+          setSkillRegistryLoadError(
+            getOperatorActionError(error, 'Cadence could not load app-local skill sources.'),
+          )
+          throw error
+        } finally {
+          skillRegistryLoadInFlightRef.current = null
+        }
+      })()
+
+      skillRegistryLoadInFlightRef.current = loadPromise
+      return loadPromise
+    },
+    [
+      activeProjectIdRef,
+      adapter,
+      applySkillRegistrySnapshot,
+      setSkillRegistryLoadError,
+      setSkillRegistryLoadStatus,
+      skillRegistryLoadInFlightRef,
+      skillRegistryLoadStatus,
+      skillRegistryRef,
+    ],
+  )
+
+  const reloadSkillRegistry = useCallback(
+    async (options: Parameters<CadenceDesktopMutationActions['reloadSkillRegistry']>[0] = {}) => {
+      setSkillRegistryLoadStatus('loading')
+      setSkillRegistryLoadError(null)
+
+      try {
+        const response = await adapter.reloadSkillRegistry({
+          projectId: options.projectId ?? activeProjectIdRef.current ?? null,
+          query: options.query ?? null,
+          includeUnavailable: options.includeUnavailable ?? true,
+        })
+        return applySkillRegistrySnapshot(response)
+      } catch (error) {
+        setSkillRegistryLoadStatus('error')
+        setSkillRegistryLoadError(
+          getOperatorActionError(error, 'Cadence could not reload skill sources.'),
+        )
+        throw error
+      }
+    },
+    [activeProjectIdRef, adapter, applySkillRegistrySnapshot, setSkillRegistryLoadError, setSkillRegistryLoadStatus],
+  )
+
+  const setSkillEnabled = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['setSkillEnabled']>[0]) => {
+      setSkillRegistryMutationStatus('running')
+      setPendingSkillSourceId(request.sourceId)
+      setSkillRegistryMutationError(null)
+
+      try {
+        const response = await adapter.setSkillEnabled(request)
+        const snapshot = applySkillRegistrySnapshot(response)
+        setSkillRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setSkillRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not update the skill state.'),
+        )
+
+        try {
+          await refreshSkillRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful skill registry snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setSkillRegistryMutationStatus('idle')
+        setPendingSkillSourceId(null)
+      }
+    },
+    [
+      adapter,
+      applySkillRegistrySnapshot,
+      refreshSkillRegistry,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
+      setSkillRegistryMutationStatus,
+    ],
+  )
+
+  const removeSkill = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['removeSkill']>[0]) => {
+      setSkillRegistryMutationStatus('running')
+      setPendingSkillSourceId(request.sourceId)
+      setSkillRegistryMutationError(null)
+
+      try {
+        const response = await adapter.removeSkill(request)
+        const snapshot = applySkillRegistrySnapshot(response)
+        setSkillRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setSkillRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not remove the installed skill.'),
+        )
+
+        try {
+          await refreshSkillRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful skill registry snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setSkillRegistryMutationStatus('idle')
+        setPendingSkillSourceId(null)
+      }
+    },
+    [
+      adapter,
+      applySkillRegistrySnapshot,
+      refreshSkillRegistry,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
+      setSkillRegistryMutationStatus,
+    ],
+  )
+
+  const upsertSkillLocalRoot = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['upsertSkillLocalRoot']>[0]) => {
+      setSkillRegistryMutationStatus('running')
+      setPendingSkillSourceId(request.rootId ?? request.path)
+      setSkillRegistryMutationError(null)
+
+      try {
+        const response = await adapter.upsertSkillLocalRoot({
+          ...request,
+          projectId: request.projectId ?? activeProjectIdRef.current ?? null,
+        })
+        const snapshot = applySkillRegistrySnapshot(response)
+        setSkillRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setSkillRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not save the local skill source.'),
+        )
+
+        try {
+          await refreshSkillRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful skill registry snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setSkillRegistryMutationStatus('idle')
+        setPendingSkillSourceId(null)
+      }
+    },
+    [
+      activeProjectIdRef,
+      adapter,
+      applySkillRegistrySnapshot,
+      refreshSkillRegistry,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
+      setSkillRegistryMutationStatus,
+    ],
+  )
+
+  const removeSkillLocalRoot = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['removeSkillLocalRoot']>[0]) => {
+      setSkillRegistryMutationStatus('running')
+      setPendingSkillSourceId(request.rootId)
+      setSkillRegistryMutationError(null)
+
+      try {
+        const response = await adapter.removeSkillLocalRoot({
+          ...request,
+          projectId: request.projectId ?? activeProjectIdRef.current ?? null,
+        })
+        const snapshot = applySkillRegistrySnapshot(response)
+        setSkillRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setSkillRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not remove the local skill source.'),
+        )
+
+        try {
+          await refreshSkillRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful skill registry snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setSkillRegistryMutationStatus('idle')
+        setPendingSkillSourceId(null)
+      }
+    },
+    [
+      activeProjectIdRef,
+      adapter,
+      applySkillRegistrySnapshot,
+      refreshSkillRegistry,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
+      setSkillRegistryMutationStatus,
+    ],
+  )
+
+  const updateProjectSkillSource = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['updateProjectSkillSource']>[0]) => {
+      setSkillRegistryMutationStatus('running')
+      setPendingSkillSourceId(`project:${request.projectId}`)
+      setSkillRegistryMutationError(null)
+
+      try {
+        const response = await adapter.updateProjectSkillSource(request)
+        const snapshot = applySkillRegistrySnapshot(response)
+        setSkillRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setSkillRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not update project skill discovery.'),
+        )
+
+        try {
+          await refreshSkillRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful skill registry snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setSkillRegistryMutationStatus('idle')
+        setPendingSkillSourceId(null)
+      }
+    },
+    [
+      adapter,
+      applySkillRegistrySnapshot,
+      refreshSkillRegistry,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
+      setSkillRegistryMutationStatus,
+    ],
+  )
+
+  const updateGithubSkillSource = useCallback(
+    async (request: Parameters<CadenceDesktopMutationActions['updateGithubSkillSource']>[0]) => {
+      setSkillRegistryMutationStatus('running')
+      setPendingSkillSourceId('github')
+      setSkillRegistryMutationError(null)
+
+      try {
+        const response = await adapter.updateGithubSkillSource({
+          ...request,
+          projectId: request.projectId ?? activeProjectIdRef.current ?? null,
+        })
+        const snapshot = applySkillRegistrySnapshot(response)
+        setSkillRegistryMutationError(null)
+        return snapshot
+      } catch (error) {
+        setSkillRegistryMutationError(
+          getOperatorActionError(error, 'Cadence could not save the GitHub skill source.'),
+        )
+
+        try {
+          await refreshSkillRegistry({ force: true })
+        } catch {
+          // Preserve the last truthful skill registry snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setSkillRegistryMutationStatus('idle')
+        setPendingSkillSourceId(null)
+      }
+    },
+    [
+      activeProjectIdRef,
+      adapter,
+      applySkillRegistrySnapshot,
+      refreshSkillRegistry,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
+      setSkillRegistryMutationStatus,
+    ],
+  )
+
   const refreshNotificationRoutes = useCallback(
     async (options: { force?: boolean } = {}) => {
       const projectId = getActiveProjectId(
@@ -635,6 +996,14 @@ export function useRuntimeSettingsNotificationMutations({
     removeMcpServer,
     importMcpServers,
     refreshMcpServerStatuses,
+    refreshSkillRegistry,
+    reloadSkillRegistry,
+    setSkillEnabled,
+    removeSkill,
+    upsertSkillLocalRoot,
+    removeSkillLocalRoot,
+    updateProjectSkillSource,
+    updateGithubSkillSource,
     refreshNotificationRoutes,
     upsertNotificationRoute,
   }

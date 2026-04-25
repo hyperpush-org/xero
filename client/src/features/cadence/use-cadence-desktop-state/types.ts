@@ -47,6 +47,14 @@ import type {
   RuntimeStreamView,
   RuntimeStreamViewItem,
   SyncNotificationAdaptersResponseDto,
+  ListSkillRegistryRequestDto,
+  RemoveSkillLocalRootRequestDto,
+  RemoveSkillRequestDto,
+  SetSkillEnabledRequestDto,
+  SkillRegistryDto,
+  UpdateGithubSkillSourceRequestDto,
+  UpdateProjectSkillSourceRequestDto,
+  UpsertSkillLocalRootRequestDto,
   UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
   UpsertProviderProfileRequestDto,
@@ -97,6 +105,8 @@ export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type RuntimeSettingsSaveStatus = 'idle' | 'running'
 export type McpRegistryLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type McpRegistryMutationStatus = 'idle' | 'running'
+export type SkillRegistryLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
+export type SkillRegistryMutationStatus = 'idle' | 'running'
 export type NotificationRouteHealthState = 'disabled' | 'idle' | 'pending' | 'healthy' | 'degraded'
 export type AgentTrustSignalState = 'healthy' | 'degraded' | 'unavailable'
 export type AgentRunControlTruthSource = 'runtime_run' | 'fallback'
@@ -398,6 +408,12 @@ export interface UseCadenceDesktopStateResult {
   mcpRegistryMutationStatus: McpRegistryMutationStatus
   pendingMcpServerId: string | null
   mcpRegistryMutationError: OperatorActionErrorView | null
+  skillRegistry: SkillRegistryDto | null
+  skillRegistryLoadStatus: SkillRegistryLoadStatus
+  skillRegistryLoadError: OperatorActionErrorView | null
+  skillRegistryMutationStatus: SkillRegistryMutationStatus
+  pendingSkillSourceId: string | null
+  skillRegistryMutationError: OperatorActionErrorView | null
   refreshSource: RefreshSource
   isDesktopRuntime: boolean
   operatorActionStatus: OperatorActionStatus
@@ -456,6 +472,14 @@ export interface UseCadenceDesktopStateResult {
   removeMcpServer: (serverId: string) => Promise<McpRegistryDto>
   importMcpServers: (path: string) => Promise<ImportMcpServersResponseDto>
   refreshMcpServerStatuses: (options?: { serverIds?: string[] }) => Promise<McpRegistryDto>
+  refreshSkillRegistry: (options?: Partial<ListSkillRegistryRequestDto> & { force?: boolean }) => Promise<SkillRegistryDto>
+  reloadSkillRegistry: (options?: Partial<ListSkillRegistryRequestDto>) => Promise<SkillRegistryDto>
+  setSkillEnabled: (request: SetSkillEnabledRequestDto) => Promise<SkillRegistryDto>
+  removeSkill: (request: RemoveSkillRequestDto) => Promise<SkillRegistryDto>
+  upsertSkillLocalRoot: (request: UpsertSkillLocalRootRequestDto) => Promise<SkillRegistryDto>
+  removeSkillLocalRoot: (request: RemoveSkillLocalRootRequestDto) => Promise<SkillRegistryDto>
+  updateProjectSkillSource: (request: UpdateProjectSkillSourceRequestDto) => Promise<SkillRegistryDto>
+  updateGithubSkillSource: (request: UpdateGithubSkillSourceRequestDto) => Promise<SkillRegistryDto>
   refreshNotificationRoutes: (options?: { force?: boolean }) => Promise<NotificationRouteDto[]>
   upsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, 'projectId'>,

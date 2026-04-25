@@ -516,6 +516,9 @@ impl AutonomousToolRuntime {
         entries: &mut BTreeMap<String, CachedSkillToolCandidate>,
         diagnostics: &mut Vec<CadenceSkillToolDiagnostic>,
     ) -> CommandResult<()> {
+        if !skill_tool.project_skills_enabled {
+            return Ok(());
+        }
         let discovered = discover_project_skill_directory(&skill_tool.project_id, &self.repo_root)?;
         push_discovery(entries, diagnostics, discovered);
         Ok(())
@@ -559,6 +562,9 @@ impl AutonomousToolRuntime {
         entries: &mut BTreeMap<String, CachedSkillToolCandidate>,
         diagnostics: &mut Vec<CadenceSkillToolDiagnostic>,
     ) -> CommandResult<()> {
+        if !skill_tool.github_enabled {
+            return Ok(());
+        }
         let discovered = match skill_tool.github_runtime.discover(
             crate::runtime::AutonomousSkillDiscoverRequest {
                 query: query.to_owned(),

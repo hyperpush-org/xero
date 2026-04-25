@@ -4,5 +4,6 @@ pub mod error;
 pub mod mcp;
 pub mod notifications;
 pub mod runtime;
+pub mod skills;
 pub mod surface;
 pub mod workflow;

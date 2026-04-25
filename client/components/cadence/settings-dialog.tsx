@@ -9,6 +9,8 @@ import type {
   ProviderModelCatalogLoadStatus,
   ProviderProfilesLoadStatus,
   ProviderProfilesSaveStatus,
+  SkillRegistryLoadStatus,
+  SkillRegistryMutationStatus,
 } from "@/src/features/cadence/use-cadence-desktop-state"
 import type {
   ImportMcpServersResponseDto,
@@ -17,12 +19,20 @@ import type {
   ProviderModelCatalogDto,
   ProviderProfilesDto,
   RuntimeSessionView,
+  ListSkillRegistryRequestDto,
+  RemoveSkillLocalRootRequestDto,
+  RemoveSkillRequestDto,
+  SetSkillEnabledRequestDto,
+  SkillRegistryDto,
+  UpdateGithubSkillSourceRequestDto,
+  UpdateProjectSkillSourceRequestDto,
+  UpsertSkillLocalRootRequestDto,
   UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
   UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
 import type { PlatformVariant } from "@/components/cadence/shell"
-import { Bell, Code2, Globe, KeyRound, Palette, PlugZap } from "lucide-react"
+import { Bell, Code2, Globe, KeyRound, Palette, PlugZap, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -35,9 +45,10 @@ import { DevelopmentSection } from "@/components/cadence/settings-dialog/develop
 import { McpSection } from "@/components/cadence/settings-dialog/mcp-section"
 import { NotificationsSection } from "@/components/cadence/settings-dialog/notifications-section"
 import { ProvidersSection } from "@/components/cadence/settings-dialog/providers-section"
+import { SkillsSection } from "@/components/cadence/settings-dialog/skills-section"
 import { ThemesSection } from "@/components/cadence/settings-dialog/themes-section"
 
-type SettingsSection = "providers" | "notifications" | "mcp" | "browser" | "themes" | "development"
+type SettingsSection = "providers" | "notifications" | "mcp" | "skills" | "browser" | "themes" | "development"
 
 interface NavItem {
   id: SettingsSection
@@ -58,6 +69,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "providers", label: "Providers", icon: KeyRound },
     { id: "notifications", label: "Notifications", icon: Bell },
     { id: "mcp", label: "MCP", icon: PlugZap },
+    { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "browser", label: "Browser", icon: Globe },
   ],
 }
@@ -112,6 +124,20 @@ export interface SettingsDialogProps {
   onRemoveMcpServer?: (serverId: string) => Promise<McpRegistryDto>
   onImportMcpServers?: (path: string) => Promise<ImportMcpServersResponseDto>
   onRefreshMcpServerStatuses?: (options?: { serverIds?: string[] }) => Promise<McpRegistryDto>
+  skillRegistry?: SkillRegistryDto | null
+  skillRegistryLoadStatus?: SkillRegistryLoadStatus
+  skillRegistryLoadError?: OperatorActionErrorView | null
+  skillRegistryMutationStatus?: SkillRegistryMutationStatus
+  pendingSkillSourceId?: string | null
+  skillRegistryMutationError?: OperatorActionErrorView | null
+  onRefreshSkillRegistry?: (options?: Partial<ListSkillRegistryRequestDto> & { force?: boolean }) => Promise<SkillRegistryDto>
+  onReloadSkillRegistry?: (options?: Partial<ListSkillRegistryRequestDto>) => Promise<SkillRegistryDto>
+  onSetSkillEnabled?: (request: SetSkillEnabledRequestDto) => Promise<SkillRegistryDto>
+  onRemoveSkill?: (request: RemoveSkillRequestDto) => Promise<SkillRegistryDto>
+  onUpsertSkillLocalRoot?: (request: UpsertSkillLocalRootRequestDto) => Promise<SkillRegistryDto>
+  onRemoveSkillLocalRoot?: (request: RemoveSkillLocalRootRequestDto) => Promise<SkillRegistryDto>
+  onUpdateProjectSkillSource?: (request: UpdateProjectSkillSourceRequestDto) => Promise<SkillRegistryDto>
+  onUpdateGithubSkillSource?: (request: UpdateGithubSkillSourceRequestDto) => Promise<SkillRegistryDto>
   platformOverride?: PlatformVariant | null
   onPlatformOverrideChange?: (value: PlatformVariant | null) => void
   onStartOnboarding?: () => void
@@ -148,6 +174,20 @@ export function SettingsDialog({
   onRemoveMcpServer,
   onImportMcpServers,
   onRefreshMcpServerStatuses,
+  skillRegistry = null,
+  skillRegistryLoadStatus = "idle",
+  skillRegistryLoadError = null,
+  skillRegistryMutationStatus = "idle",
+  pendingSkillSourceId = null,
+  skillRegistryMutationError = null,
+  onRefreshSkillRegistry,
+  onReloadSkillRegistry,
+  onSetSkillEnabled,
+  onRemoveSkill,
+  onUpsertSkillLocalRoot,
+  onRemoveSkillLocalRoot,
+  onUpdateProjectSkillSource,
+  onUpdateGithubSkillSource,
   platformOverride,
   onPlatformOverrideChange,
   onStartOnboarding,
@@ -174,6 +214,14 @@ export function SettingsDialog({
     void onRefreshMcpRegistry({ force: true }).catch(() => undefined)
   }, [onRefreshMcpRegistry, open])
 
+  useEffect(() => {
+    if (!open || !onRefreshSkillRegistry) {
+      return
+    }
+
+    void onRefreshSkillRegistry({ force: true }).catch(() => undefined)
+  }, [onRefreshSkillRegistry, open])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -182,7 +230,7 @@ export function SettingsDialog({
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
-          Configure providers, notification routes, and development options.
+          Configure providers, skills, notification routes, and development options.
         </DialogDescription>
 
         <div className="flex min-h-0 flex-1">
@@ -280,6 +328,24 @@ export function SettingsDialog({
                   onRemoveMcpServer={onRemoveMcpServer}
                   onImportMcpServers={onImportMcpServers}
                   onRefreshMcpServerStatuses={onRefreshMcpServerStatuses}
+                />
+              ) : section === "skills" ? (
+                <SkillsSection
+                  agent={agent}
+                  skillRegistry={skillRegistry}
+                  skillRegistryLoadStatus={skillRegistryLoadStatus}
+                  skillRegistryLoadError={skillRegistryLoadError}
+                  skillRegistryMutationStatus={skillRegistryMutationStatus}
+                  pendingSkillSourceId={pendingSkillSourceId}
+                  skillRegistryMutationError={skillRegistryMutationError}
+                  onRefreshSkillRegistry={onRefreshSkillRegistry}
+                  onReloadSkillRegistry={onReloadSkillRegistry}
+                  onSetSkillEnabled={onSetSkillEnabled}
+                  onRemoveSkill={onRemoveSkill}
+                  onUpsertSkillLocalRoot={onUpsertSkillLocalRoot}
+                  onRemoveSkillLocalRoot={onRemoveSkillLocalRoot}
+                  onUpdateProjectSkillSource={onUpdateProjectSkillSource}
+                  onUpdateGithubSkillSource={onUpdateGithubSkillSource}
                 />
               ) : section === "browser" ? (
                 <BrowserSection />

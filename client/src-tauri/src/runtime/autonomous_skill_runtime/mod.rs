@@ -3,6 +3,7 @@ mod contract;
 mod discovery;
 mod inspection;
 mod runtime;
+mod settings;
 mod skill_tool;
 mod source;
 
@@ -30,6 +31,11 @@ pub use runtime::{
     AutonomousSkillRegistrySuccess, AutonomousSkillResolveOutput, AutonomousSkillResolveRequest,
     AutonomousSkillRuntime, AutonomousSkillRuntimeConfig, AutonomousSkillRuntimeLimits,
     AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO, AUTONOMOUS_SKILL_SOURCE_ROOT,
+};
+pub use settings::{
+    load_skill_source_settings_from_path, persist_skill_source_settings, SkillGithubSourceSetting,
+    SkillLocalRootSetting, SkillProjectSourceSetting, SkillSourceSettings,
+    SKILL_SOURCE_SETTINGS_SCHEMA_VERSION,
 };
 pub use skill_tool::{
     decide_skill_tool_access, model_may_discover_skill_source,

@@ -25,9 +25,17 @@ import {
   type RuntimeStreamEventDto,
   type SubscribeRuntimeStreamResponseDto,
   type RuntimeUpdatedPayloadDto,
+  type SkillRegistryDto,
 } from '@/src/lib/cadence-model'
 import { CadenceDesktopError, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
+
+type SetSkillEnabledRequest = Parameters<CadenceDesktopAdapter['setSkillEnabled']>[0]
+type RemoveSkillRequest = Parameters<CadenceDesktopAdapter['removeSkill']>[0]
+type UpsertSkillLocalRootRequest = Parameters<CadenceDesktopAdapter['upsertSkillLocalRoot']>[0]
+type RemoveSkillLocalRootRequest = Parameters<CadenceDesktopAdapter['removeSkillLocalRoot']>[0]
+type UpdateProjectSkillSourceRequest = Parameters<CadenceDesktopAdapter['updateProjectSkillSource']>[0]
+type UpdateGithubSkillSourceRequest = Parameters<CadenceDesktopAdapter['updateGithubSkillSource']>[0]
 
 function makeProjectSummary(id: string, name: string) {
   return {
@@ -370,6 +378,64 @@ function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDt
   }
 }
 
+function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegistryDto {
+  return {
+    projectId: 'project-1',
+    reloadedAt: '2026-04-24T05:00:00Z',
+    entries: [
+      {
+        sourceId: 'project:project-1:reviewer',
+        skillId: 'reviewer',
+        name: 'Reviewer',
+        description: 'Reviews code changes.',
+        sourceKind: 'project',
+        scope: 'project',
+        projectId: 'project-1',
+        sourceState: 'enabled',
+        trustState: 'user_approved',
+        enabled: true,
+        installed: true,
+        userInvocable: true,
+        versionHash: 'abcdef123456',
+        lastUsedAt: null,
+        lastDiagnostic: null,
+        source: {
+          label: 'Project skill .cadence/skills/reviewer',
+          repo: null,
+          reference: null,
+          path: '.cadence/skills/reviewer',
+          rootId: null,
+          rootPath: null,
+          relativePath: '.cadence/skills/reviewer',
+          bundleId: null,
+          pluginId: null,
+          serverId: null,
+        },
+      },
+    ],
+    sources: {
+      localRoots: [],
+      github: {
+        repo: 'vercel-labs/skills',
+        reference: 'main',
+        root: 'skills',
+        enabled: true,
+        updatedAt: '2026-04-24T05:00:00Z',
+      },
+      projects: [
+        {
+          projectId: 'project-1',
+          enabled: true,
+          updatedAt: '2026-04-24T05:00:00Z',
+        },
+      ],
+      updatedAt: '2026-04-24T05:00:00Z',
+    },
+    diagnostics: [],
+    ...overrides,
+  }
+}
+
 function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
   return {
     projectId,
@@ -514,6 +580,7 @@ function createMockAdapter(options?: {
   runtimeRuns?: Record<string, RuntimeRunDto | null>
   runtimeSettings?: RuntimeSettingsDto
   mcpRegistry?: McpRegistryDto
+  skillRegistry?: SkillRegistryDto
   providerProfiles?: ProviderProfilesDto
   providerModelCatalogs?: Record<string, ProviderModelCatalogDto>
   providerModelCatalogErrors?: Record<string, Error>
@@ -582,6 +649,9 @@ function createMockAdapter(options?: {
   }
   const currentMcpRegistry = {
     value: options?.mcpRegistry ?? makeMcpRegistry(),
+  }
+  const currentSkillRegistry = {
+    value: options?.skillRegistry ?? makeSkillRegistry(),
   }
   const currentProviderProfiles = {
     value: options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value),
@@ -775,6 +845,98 @@ function createMockAdapter(options?: {
     }
 
     return currentMcpRegistry.value
+  })
+  const listSkillRegistry = vi.fn(async () => currentSkillRegistry.value)
+  const reloadSkillRegistry = vi.fn(async () => currentSkillRegistry.value)
+  const setSkillEnabled = vi.fn(async (request: SetSkillEnabledRequest) => {
+    currentSkillRegistry.value = {
+      ...currentSkillRegistry.value,
+      entries: currentSkillRegistry.value.entries.map((entry) =>
+        entry.sourceId === request.sourceId
+          ? {
+              ...entry,
+              enabled: request.enabled,
+              sourceState: request.enabled ? 'enabled' : 'disabled',
+            }
+          : entry,
+      ),
+      reloadedAt: '2026-04-24T05:03:00Z',
+    }
+    return currentSkillRegistry.value
+  })
+  const removeSkill = vi.fn(async (request: RemoveSkillRequest) => {
+    currentSkillRegistry.value = {
+      ...currentSkillRegistry.value,
+      entries: currentSkillRegistry.value.entries.filter((entry) => entry.sourceId !== request.sourceId),
+      reloadedAt: '2026-04-24T05:04:00Z',
+    }
+    return currentSkillRegistry.value
+  })
+  const upsertSkillLocalRoot = vi.fn(async (request: UpsertSkillLocalRootRequest) => {
+    const rootId = request.rootId ?? 'local-test'
+    currentSkillRegistry.value = {
+      ...currentSkillRegistry.value,
+      sources: {
+        ...currentSkillRegistry.value.sources,
+        localRoots: [
+          ...currentSkillRegistry.value.sources.localRoots.filter((root) => root.rootId !== rootId),
+          {
+            rootId,
+            path: request.path,
+            enabled: request.enabled,
+            updatedAt: '2026-04-24T05:05:00Z',
+          },
+        ],
+      },
+      reloadedAt: '2026-04-24T05:05:00Z',
+    }
+    return currentSkillRegistry.value
+  })
+  const removeSkillLocalRoot = vi.fn(async (request: RemoveSkillLocalRootRequest) => {
+    currentSkillRegistry.value = {
+      ...currentSkillRegistry.value,
+      sources: {
+        ...currentSkillRegistry.value.sources,
+        localRoots: currentSkillRegistry.value.sources.localRoots.filter((root) => root.rootId !== request.rootId),
+      },
+      reloadedAt: '2026-04-24T05:06:00Z',
+    }
+    return currentSkillRegistry.value
+  })
+  const updateProjectSkillSource = vi.fn(async (request: UpdateProjectSkillSourceRequest) => {
+    currentSkillRegistry.value = {
+      ...currentSkillRegistry.value,
+      sources: {
+        ...currentSkillRegistry.value.sources,
+        projects: [
+          ...currentSkillRegistry.value.sources.projects.filter((project) => project.projectId !== request.projectId),
+          {
+            projectId: request.projectId,
+            enabled: request.enabled,
+            updatedAt: '2026-04-24T05:07:00Z',
+          },
+        ],
+      },
+      reloadedAt: '2026-04-24T05:07:00Z',
+    }
+    return currentSkillRegistry.value
+  })
+  const updateGithubSkillSource = vi.fn(async (request: UpdateGithubSkillSourceRequest) => {
+    currentSkillRegistry.value = {
+      ...currentSkillRegistry.value,
+      sources: {
+        ...currentSkillRegistry.value.sources,
+        github: {
+          repo: request.repo,
+          reference: request.reference,
+          root: request.root,
+          enabled: request.enabled,
+          updatedAt: '2026-04-24T05:08:00Z',
+        },
+      },
+      reloadedAt: '2026-04-24T05:08:00Z',
+    }
+    return currentSkillRegistry.value
   })
   const getProviderModelCatalog = vi.fn(
     async (
@@ -1305,6 +1467,14 @@ function createMockAdapter(options?: {
     removeMcpServer,
     importMcpServers,
     refreshMcpServerStatuses,
+    listSkillRegistry,
+    reloadSkillRegistry,
+    setSkillEnabled,
+    removeSkill,
+    upsertSkillLocalRoot,
+    removeSkillLocalRoot,
+    updateProjectSkillSource,
+    updateGithubSkillSource,
     getProviderModelCatalog,
     getProviderProfiles,
     startOpenAiLogin,
@@ -1428,6 +1598,14 @@ function createMockAdapter(options?: {
     removeMcpServer,
     importMcpServers,
     refreshMcpServerStatuses,
+    listSkillRegistry,
+    reloadSkillRegistry,
+    setSkillEnabled,
+    removeSkill,
+    upsertSkillLocalRoot,
+    removeSkillLocalRoot,
+    updateProjectSkillSource,
+    updateGithubSkillSource,
     getProviderModelCatalog,
     getProviderProfiles,
     listProjectFiles,

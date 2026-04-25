@@ -53,6 +53,7 @@ import {
   type RuntimeStreamStatus,
   type RuntimeStreamView,
   type RuntimeStreamViewItem,
+  type SkillRegistryDto,
   type SyncNotificationAdaptersResponseDto,
   type UpsertNotificationRouteRequestDto,
   type UpsertProviderProfileRequestDto,
@@ -114,6 +115,8 @@ import type {
   RuntimeSettingsSaveStatus,
   McpRegistryLoadStatus,
   McpRegistryMutationStatus,
+  SkillRegistryLoadStatus,
+  SkillRegistryMutationStatus,
   UseCadenceDesktopStateOptions,
   UseCadenceDesktopStateResult,
   WorkflowPaneView,
@@ -148,6 +151,8 @@ export type {
   RuntimeSettingsSaveStatus,
   McpRegistryLoadStatus,
   McpRegistryMutationStatus,
+  SkillRegistryLoadStatus,
+  SkillRegistryMutationStatus,
   UseCadenceDesktopStateOptions,
   UseCadenceDesktopStateResult,
   WorkflowPaneView,
@@ -370,6 +375,14 @@ export function useCadenceDesktopState(
     useState<McpRegistryMutationStatus>('idle')
   const [pendingMcpServerId, setPendingMcpServerId] = useState<string | null>(null)
   const [mcpRegistryMutationError, setMcpRegistryMutationError] = useState<OperatorActionErrorView | null>(null)
+  const [skillRegistry, setSkillRegistry] = useState<SkillRegistryDto | null>(null)
+  const [skillRegistryLoadStatus, setSkillRegistryLoadStatus] = useState<SkillRegistryLoadStatus>('idle')
+  const [skillRegistryLoadError, setSkillRegistryLoadError] = useState<OperatorActionErrorView | null>(null)
+  const [skillRegistryMutationStatus, setSkillRegistryMutationStatus] =
+    useState<SkillRegistryMutationStatus>('idle')
+  const [pendingSkillSourceId, setPendingSkillSourceId] = useState<string | null>(null)
+  const [skillRegistryMutationError, setSkillRegistryMutationError] =
+    useState<OperatorActionErrorView | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
@@ -411,6 +424,8 @@ export function useCadenceDesktopState(
   const runtimeSettingsLoadInFlightRef = useRef<Promise<RuntimeSettingsDto> | null>(null)
   const mcpRegistryRef = useRef<McpRegistryDto | null>(null)
   const mcpRegistryLoadInFlightRef = useRef<Promise<McpRegistryDto> | null>(null)
+  const skillRegistryRef = useRef<SkillRegistryDto | null>(null)
+  const skillRegistryLoadInFlightRef = useRef<Promise<SkillRegistryDto> | null>(null)
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockedNotificationSyncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockedNotificationSyncPollTargetRef = useRef<BlockedNotificationSyncPollTarget | null>(null)
@@ -490,6 +505,10 @@ export function useCadenceDesktopState(
   useEffect(() => {
     mcpRegistryRef.current = mcpRegistry
   }, [mcpRegistry])
+
+  useEffect(() => {
+    skillRegistryRef.current = skillRegistry
+  }, [skillRegistry])
 
   const supersedeInFlightProjectLoad = useCallback((projectId: string) => {
     if (activeProjectIdRef.current !== projectId) {
@@ -1157,6 +1176,14 @@ export function useCadenceDesktopState(
     removeMcpServer,
     importMcpServers,
     refreshMcpServerStatuses,
+    refreshSkillRegistry,
+    reloadSkillRegistry,
+    setSkillEnabled,
+    removeSkill,
+    upsertSkillLocalRoot,
+    removeSkillLocalRoot,
+    updateProjectSkillSource,
+    updateGithubSkillSource,
     refreshNotificationRoutes,
     upsertNotificationRoute,
     createAgentSession,
@@ -1175,6 +1202,8 @@ export function useCadenceDesktopState(
       runtimeSettingsLoadInFlightRef,
       mcpRegistryRef,
       mcpRegistryLoadInFlightRef,
+      skillRegistryRef,
+      skillRegistryLoadInFlightRef,
     },
     setters: {
       setProjects,
@@ -1215,6 +1244,12 @@ export function useCadenceDesktopState(
       setMcpRegistryMutationStatus,
       setPendingMcpServerId,
       setMcpRegistryMutationError,
+      setSkillRegistry,
+      setSkillRegistryLoadStatus,
+      setSkillRegistryLoadError,
+      setSkillRegistryMutationStatus,
+      setPendingSkillSourceId,
+      setSkillRegistryMutationError,
     },
     operations: {
       bootstrap,
@@ -1230,6 +1265,7 @@ export function useCadenceDesktopState(
     providerProfilesLoadStatus,
     runtimeSettingsLoadStatus,
     mcpRegistryLoadStatus,
+    skillRegistryLoadStatus,
   })
 
   useEffect(() => {
@@ -1255,6 +1291,27 @@ export function useCadenceDesktopState(
 
     void refreshMcpRegistry().catch(() => undefined)
   }, [mcpRegistryLoadStatus, refreshMcpRegistry])
+
+  useEffect(() => {
+    if (skillRegistryLoadStatus !== 'idle') {
+      return
+    }
+
+    void refreshSkillRegistry().catch(() => undefined)
+  }, [refreshSkillRegistry, skillRegistryLoadStatus])
+
+  useEffect(() => {
+    if (skillRegistryLoadStatus !== 'ready') {
+      return
+    }
+
+    const currentProjectId = skillRegistryRef.current?.projectId ?? null
+    if (currentProjectId === activeProjectId) {
+      return
+    }
+
+    void refreshSkillRegistry({ force: true }).catch(() => undefined)
+  }, [activeProjectId, refreshSkillRegistry, skillRegistryLoadStatus])
 
   useEffect(() => {
     const nextDependencyKeys = getProviderModelCatalogDependencyKeys(providerProfiles)
@@ -1604,6 +1661,12 @@ export function useCadenceDesktopState(
     mcpRegistryMutationStatus,
     pendingMcpServerId,
     mcpRegistryMutationError,
+    skillRegistry,
+    skillRegistryLoadStatus,
+    skillRegistryLoadError,
+    skillRegistryMutationStatus,
+    pendingSkillSourceId,
+    skillRegistryMutationError,
     refreshSource,
     isDesktopRuntime: adapter.isDesktopRuntime(),
     operatorActionStatus,
@@ -1652,6 +1715,14 @@ export function useCadenceDesktopState(
     removeMcpServer,
     importMcpServers,
     refreshMcpServerStatuses,
+    refreshSkillRegistry,
+    reloadSkillRegistry,
+    setSkillEnabled,
+    removeSkill,
+    upsertSkillLocalRoot,
+    removeSkillLocalRoot,
+    updateProjectSkillSource,
+    updateGithubSkillSource,
     refreshNotificationRoutes,
     upsertNotificationRoute,
     createAgentSession,

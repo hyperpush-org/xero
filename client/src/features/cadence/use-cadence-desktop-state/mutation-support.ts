@@ -9,6 +9,7 @@ import {
   type McpImportDiagnosticDto,
   type McpRegistryDto,
 } from '@/src/lib/cadence-model/mcp'
+import { type SkillRegistryDto } from '@/src/lib/cadence-model/skills'
 import { type NotificationRouteDto } from '@/src/lib/cadence-model/notifications'
 import { type ProjectListItem } from '@/src/lib/cadence-model/project'
 import {
@@ -40,6 +41,8 @@ import type {
   RuntimeSettingsSaveStatus,
   McpRegistryLoadStatus,
   McpRegistryMutationStatus,
+  SkillRegistryLoadStatus,
+  SkillRegistryMutationStatus,
   UseCadenceDesktopStateResult,
 } from './types'
 
@@ -83,6 +86,14 @@ export type CadenceDesktopMutationActions = Pick<
   | 'removeMcpServer'
   | 'importMcpServers'
   | 'refreshMcpServerStatuses'
+  | 'refreshSkillRegistry'
+  | 'reloadSkillRegistry'
+  | 'setSkillEnabled'
+  | 'removeSkill'
+  | 'upsertSkillLocalRoot'
+  | 'removeSkillLocalRoot'
+  | 'updateProjectSkillSource'
+  | 'updateGithubSkillSource'
   | 'refreshNotificationRoutes'
   | 'upsertNotificationRoute'
   | 'createAgentSession'
@@ -101,6 +112,8 @@ export interface UseCadenceDesktopMutationsRefs {
   runtimeSettingsLoadInFlightRef: MutableRefObject<Promise<RuntimeSettingsDto> | null>
   mcpRegistryRef: MutableRefObject<McpRegistryDto | null>
   mcpRegistryLoadInFlightRef: MutableRefObject<Promise<McpRegistryDto> | null>
+  skillRegistryRef: MutableRefObject<SkillRegistryDto | null>
+  skillRegistryLoadInFlightRef: MutableRefObject<Promise<SkillRegistryDto> | null>
 }
 
 export interface UseCadenceDesktopMutationsSetters {
@@ -142,6 +155,12 @@ export interface UseCadenceDesktopMutationsSetters {
   setMcpRegistryMutationStatus: SetState<McpRegistryMutationStatus>
   setPendingMcpServerId: SetState<string | null>
   setMcpRegistryMutationError: SetState<OperatorActionErrorView | null>
+  setSkillRegistry: SetState<SkillRegistryDto | null>
+  setSkillRegistryLoadStatus: SetState<SkillRegistryLoadStatus>
+  setSkillRegistryLoadError: SetState<OperatorActionErrorView | null>
+  setSkillRegistryMutationStatus: SetState<SkillRegistryMutationStatus>
+  setPendingSkillSourceId: SetState<string | null>
+  setSkillRegistryMutationError: SetState<OperatorActionErrorView | null>
 }
 
 export interface UseCadenceDesktopMutationsOperations {
@@ -178,6 +197,7 @@ export interface UseCadenceDesktopMutationsArgs {
   providerProfilesLoadStatus: ProviderProfilesLoadStatus
   runtimeSettingsLoadStatus: RuntimeSettingsLoadStatus
   mcpRegistryLoadStatus: McpRegistryLoadStatus
+  skillRegistryLoadStatus: SkillRegistryLoadStatus
 }
 
 export function getActiveProjectId(

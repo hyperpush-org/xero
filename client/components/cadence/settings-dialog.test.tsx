@@ -17,11 +17,18 @@ import type {
   ProviderProfileDto,
   ProviderProfilesDto,
   RuntimeSessionView,
+  SkillRegistryDto,
   UpsertProviderProfileRequestDto,
 } from '@/src/lib/cadence-model'
 
 type NotificationRouteRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertNotificationRoute']>>[0]
 type McpUpsertRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertMcpServer']>>[0]
+type SetSkillEnabledRequest = Parameters<NonNullable<SettingsDialogProps['onSetSkillEnabled']>>[0]
+type RemoveSkillRequest = Parameters<NonNullable<SettingsDialogProps['onRemoveSkill']>>[0]
+type UpsertSkillLocalRootRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertSkillLocalRoot']>>[0]
+type RemoveSkillLocalRootRequest = Parameters<NonNullable<SettingsDialogProps['onRemoveSkillLocalRoot']>>[0]
+type UpdateProjectSkillSourceRequest = Parameters<NonNullable<SettingsDialogProps['onUpdateProjectSkillSource']>>[0]
+type UpdateGithubSkillSourceRequest = Parameters<NonNullable<SettingsDialogProps['onUpdateGithubSkillSource']>>[0]
 
 function makeOpenAiProfile(overrides: Partial<ProviderProfileDto> = {}): ProviderProfileDto {
   return {
@@ -379,6 +386,105 @@ function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDt
   }
 }
 
+function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegistryDto {
+  return {
+    projectId: 'project-1',
+    reloadedAt: '2026-04-24T05:00:00Z',
+    sources: {
+      localRoots: [
+        {
+          rootId: 'team-skills',
+          path: '/tmp/cadence-skills',
+          enabled: true,
+          updatedAt: '2026-04-24T05:00:00Z',
+        },
+      ],
+      github: {
+        repo: 'vercel-labs/skills',
+        reference: 'main',
+        root: 'skills',
+        enabled: true,
+        updatedAt: '2026-04-24T05:00:00Z',
+      },
+      projects: [
+        {
+          projectId: 'project-1',
+          enabled: true,
+          updatedAt: '2026-04-24T05:00:00Z',
+        },
+      ],
+      updatedAt: '2026-04-24T05:00:00Z',
+    },
+    diagnostics: [],
+    entries: [
+      {
+        sourceId: 'project:project-1:reviewer',
+        skillId: 'reviewer',
+        name: 'Reviewer',
+        description: 'Reviews code changes before the agent finishes.',
+        sourceKind: 'project',
+        scope: 'project',
+        projectId: 'project-1',
+        sourceState: 'enabled',
+        trustState: 'user_approved',
+        enabled: true,
+        installed: true,
+        userInvocable: true,
+        versionHash: 'abcdef1234567890',
+        lastUsedAt: '2026-04-24T04:30:00Z',
+        lastDiagnostic: null,
+        source: {
+          label: 'Project skill .cadence/skills/reviewer',
+          repo: null,
+          reference: null,
+          path: '.cadence/skills/reviewer',
+          rootId: null,
+          rootPath: null,
+          relativePath: '.cadence/skills/reviewer',
+          bundleId: null,
+          pluginId: null,
+          serverId: null,
+        },
+      },
+      {
+        sourceId: 'local:team-skills:release-notes',
+        skillId: 'release-notes',
+        name: 'Release Notes',
+        description: 'Drafts release notes from recent commits.',
+        sourceKind: 'local',
+        scope: 'global',
+        projectId: null,
+        sourceState: 'discoverable',
+        trustState: 'approval_required',
+        enabled: false,
+        installed: false,
+        userInvocable: true,
+        versionHash: '123456abcdef',
+        lastUsedAt: null,
+        lastDiagnostic: {
+          code: 'skill_load_warning',
+          message: 'Skill has not been approved for this project.',
+          retryable: true,
+          recordedAt: '2026-04-24T04:00:00Z',
+        },
+        source: {
+          label: 'Local root team-skills - release-notes',
+          repo: null,
+          reference: null,
+          path: '/tmp/cadence-skills',
+          rootId: 'team-skills',
+          rootPath: '/tmp/cadence-skills',
+          relativePath: 'release-notes',
+          bundleId: null,
+          pluginId: null,
+          serverId: null,
+        },
+      },
+    ],
+    ...overrides,
+  }
+}
+
 function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
   return {
     project: {
@@ -515,6 +621,20 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> = {}): 
     onRemoveMcpServer: vi.fn(async (_serverId: string) => makeMcpRegistry()),
     onImportMcpServers: vi.fn(async (_path: string) => ({ registry: makeMcpRegistry(), diagnostics: [] })),
     onRefreshMcpServerStatuses: vi.fn(async (_options?: { serverIds?: string[] }) => makeMcpRegistry()),
+    skillRegistry: makeSkillRegistry(),
+    skillRegistryLoadStatus: 'ready',
+    skillRegistryLoadError: null,
+    skillRegistryMutationStatus: 'idle',
+    pendingSkillSourceId: null,
+    skillRegistryMutationError: null,
+    onRefreshSkillRegistry: vi.fn(async () => makeSkillRegistry()),
+    onReloadSkillRegistry: vi.fn(async () => makeSkillRegistry()),
+    onSetSkillEnabled: vi.fn(async (_request: SetSkillEnabledRequest) => makeSkillRegistry()),
+    onRemoveSkill: vi.fn(async (_request: RemoveSkillRequest) => makeSkillRegistry()),
+    onUpsertSkillLocalRoot: vi.fn(async (_request: UpsertSkillLocalRootRequest) => makeSkillRegistry()),
+    onRemoveSkillLocalRoot: vi.fn(async (_request: RemoveSkillLocalRootRequest) => makeSkillRegistry()),
+    onUpdateProjectSkillSource: vi.fn(async (_request: UpdateProjectSkillSourceRequest) => makeSkillRegistry()),
+    onUpdateGithubSkillSource: vi.fn(async (_request: UpdateGithubSkillSourceRequest) => makeSkillRegistry()),
     ...overrides,
   }
 }
@@ -1323,6 +1443,179 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('Memory Server')).toBeVisible()
     expect(screen.getByText('Failed')).toBeVisible()
     expect(screen.getByText('Cadence could not connect to this MCP endpoint.')).toBeVisible()
+  })
+
+  it('renders the Skills registry with metadata, search, enable toggles, and remove actions', async () => {
+    const onRefreshSkillRegistry = vi.fn(async () => makeSkillRegistry())
+    const onSetSkillEnabled = vi.fn(async (_request: SetSkillEnabledRequest) => makeSkillRegistry())
+    const onRemoveSkill = vi.fn(async (_request: RemoveSkillRequest) => makeSkillRegistry())
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          onRefreshSkillRegistry,
+          onSetSkillEnabled,
+          onRemoveSkill,
+        })}
+      />,
+    )
+
+    await waitFor(() => expect(onRefreshSkillRegistry).toHaveBeenCalledWith({ force: true }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+
+    expect(screen.getByText('Reviewer')).toBeVisible()
+    expect(screen.getByText('Release Notes')).toBeVisible()
+    expect(screen.getByText('Skill has not been approved for this project.')).toBeVisible()
+
+    fireEvent.click(screen.getAllByText('Source metadata')[0])
+    expect(screen.getByText('project:project-1:reviewer')).toBeVisible()
+    expect(screen.getAllByText('.cadence/skills/reviewer').length).toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'release' } })
+
+    expect(screen.queryByText('Reviewer')).not.toBeInTheDocument()
+    expect(screen.getByText('Release Notes')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: '' } })
+    fireEvent.click(screen.getByLabelText('Disable Reviewer'))
+
+    await waitFor(() =>
+      expect(onSetSkillEnabled).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sourceId: 'project:project-1:reviewer',
+        enabled: false,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Reviewer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+
+    await waitFor(() =>
+      expect(onRemoveSkill).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sourceId: 'project:project-1:reviewer',
+      }),
+    )
+  })
+
+  it('validates and saves skill source management settings', async () => {
+    const onUpsertSkillLocalRoot = vi.fn(async (_request: UpsertSkillLocalRootRequest) => makeSkillRegistry())
+    const onRemoveSkillLocalRoot = vi.fn(async (_request: RemoveSkillLocalRootRequest) => makeSkillRegistry())
+    const onUpdateProjectSkillSource = vi.fn(async (_request: UpdateProjectSkillSourceRequest) => makeSkillRegistry())
+    const onUpdateGithubSkillSource = vi.fn(async (_request: UpdateGithubSkillSourceRequest) => makeSkillRegistry())
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          onUpsertSkillLocalRoot,
+          onRemoveSkillLocalRoot,
+          onUpdateProjectSkillSource,
+          onUpdateGithubSkillSource,
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+
+    fireEvent.change(screen.getByLabelText('Local root path'), {
+      target: { value: 'relative/skills' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    expect(screen.getByText('Use an absolute directory path.')).toBeVisible()
+    expect(onUpsertSkillLocalRoot).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('Root id'), {
+      target: { value: 'team-extra' },
+    })
+    fireEvent.change(screen.getByLabelText('Local root path'), {
+      target: { value: '/tmp/team-extra-skills' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    await waitFor(() =>
+      expect(onUpsertSkillLocalRoot).toHaveBeenCalledWith({
+        rootId: 'team-extra',
+        path: '/tmp/team-extra-skills',
+        enabled: true,
+        projectId: 'project-1',
+      }),
+    )
+
+    fireEvent.click(screen.getByLabelText('Disable local skill root team-skills'))
+
+    await waitFor(() =>
+      expect(onUpsertSkillLocalRoot).toHaveBeenCalledWith({
+        rootId: 'team-skills',
+        path: '/tmp/cadence-skills',
+        enabled: false,
+        projectId: 'project-1',
+      }),
+    )
+
+    fireEvent.click(screen.getByLabelText('Remove local skill root team-skills'))
+
+    await waitFor(() =>
+      expect(onRemoveSkillLocalRoot).toHaveBeenCalledWith({
+        rootId: 'team-skills',
+        projectId: 'project-1',
+      }),
+    )
+
+    fireEvent.click(screen.getByLabelText('Enable project skill discovery'))
+    await waitFor(() =>
+      expect(onUpdateProjectSkillSource).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        enabled: false,
+      }),
+    )
+
+    fireEvent.change(screen.getByLabelText('GitHub skill repository'), {
+      target: { value: 'acme/skills' },
+    })
+    fireEvent.change(screen.getByLabelText('GitHub skill reference'), {
+      target: { value: 'stable' },
+    })
+    fireEvent.change(screen.getByLabelText('GitHub skill root'), {
+      target: { value: 'catalog' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(onUpdateGithubSkillSource).toHaveBeenCalledWith({
+        repo: 'acme/skills',
+        reference: 'stable',
+        root: 'catalog',
+        enabled: true,
+        projectId: 'project-1',
+      }),
+    )
+  })
+
+  it('keeps the last truthful skill registry visible when typed load or mutation errors are projected', () => {
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          skillRegistryLoadStatus: 'error',
+          skillRegistryLoadError: makeError({
+            code: 'skill_registry_failed',
+            message: 'Cadence could not load app-local skill sources.',
+          }),
+          skillRegistryMutationError: makeError({
+            code: 'skill_source_path_unsafe',
+            message: 'Cadence requires local skill directories to use absolute paths.',
+          }),
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+
+    expect(screen.getByText('Cadence could not load app-local skill sources.')).toBeVisible()
+    expect(screen.getByText('Cadence requires local skill directories to use absolute paths.')).toBeVisible()
+    expect(screen.getByText('Reviewer')).toBeVisible()
+    expect(screen.getByText('Release Notes')).toBeVisible()
   })
 
   it('keeps the last truthful provider snapshot visible when a typed load error is present', () => {
