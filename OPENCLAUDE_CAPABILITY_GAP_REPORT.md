@@ -272,6 +272,159 @@ Cadence already has an autonomous skill runtime, but it should be connected to t
 - A model-visible SkillTool equivalent.
 - A settings UI for installed skills/plugins, source trust, and reload.
 
+#### Priority 2 Implementation Plan
+
+Reader and action for this plan: a future implementation agent should be able to claim one slice, complete it without needing extra product context, and leave tests proving the slice works. Each slice should be small enough for one agent turn or one narrow pull request. UI slices must use ShadCN/Radix patterns already present in Cadence, and agents should use unit or e2e tests rather than temporary debug UI.
+
+##### Phase 0: Freeze The Contract Before Adding Surfaces
+
+Outcome: Cadence has one shared vocabulary for skills, skill sources, plugin sources, trust state, install state, and reload behavior.
+
+- [x] Slice 2.0.1: Define the Cadence skill-source taxonomy.
+  - Scope: write the internal contract for `bundled`, `local`, `project`, `github`, `dynamic`, `mcp`, and `plugin` sources; define which fields are required for each source type; decide whether source identity is global or project-scoped.
+  - Acceptance: the contract distinguishes discoverable, installed, enabled, disabled, stale, failed, and blocked states; it names the trust states Cadence will expose to users; it keeps GitHub-backed autonomous skills compatible with the existing runtime.
+  - Verification: focused Rust or TypeScript contract tests validate source ids, duplicate handling, and unsupported state transitions.
+  - Completed: 2026-04-25. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_source_contract` passed 5 tests and `cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_runtime` passed 7 tests.
+
+- Slice 2.0.2: Define SkillTool semantics.
+  - Scope: specify model-visible operations for listing, resolving, installing, invoking, and reloading skills; define what skill markdown and supporting assets are allowed to enter model context; define lifecycle events for success and failure.
+  - Acceptance: the contract makes it clear when a model may discover a skill, when user approval is required, and how failures are returned without leaking secrets or raw local paths unnecessarily.
+  - Verification: schema tests cover valid and invalid tool inputs, redacted error payloads, and lifecycle event projection.
+
+##### Phase 1: Make Installed Skills Durable
+
+Outcome: Cadence can remember installed skills from multiple source types, not just cache a GitHub skill for one invocation.
+
+- Slice 2.1.1: Add a durable installed-skill registry.
+  - Scope: persist installed skill records with source identity, resolved metadata, cache key or local location, enabled state, trust state, version/hash, timestamps, and last diagnostic.
+  - Acceptance: installed skill records survive app restart and can be listed by project and by global scope; duplicate source records converge instead of creating parallel entries.
+  - Verification: project-store tests cover create, update, list, disable, re-enable, remove, and corrupt-record rejection.
+
+- Slice 2.1.2: Register GitHub autonomous skills after install/invoke.
+  - Scope: connect the existing GitHub autonomous skill runtime to the installed-skill registry so successful install or invoke operations leave a durable record.
+  - Acceptance: installing a GitHub-backed skill updates registry state and preserves existing cache/lifecycle behavior.
+  - Verification: autonomous skill runtime tests assert registry updates for cache hit, cache miss, refresh, and failed install paths.
+
+- Slice 2.1.3: Add local and project skill directory scanning.
+  - Scope: scan configured local skill directories and project skill directories for valid `SKILL.md` documents and supported assets using the same validation limits as cached autonomous skills.
+  - Acceptance: local/project skills appear as discoverable candidates, invalid skills produce typed diagnostics, and scanning never follows paths outside the declared source root.
+  - Verification: filesystem fixture tests cover valid skill discovery, missing frontmatter, duplicate ids, oversized files, unsupported assets, and path traversal attempts.
+
+- Slice 2.1.4: Add bundled skill discovery.
+  - Scope: define Cadence-owned bundled skill roots and expose bundled skills through the same registry/discovery path as local and GitHub skills.
+  - Acceptance: bundled skills can be discovered and invoked without network access; bundled skill metadata includes a Cadence-controlled version/hash.
+  - Verification: unit tests run discovery against fixture bundled skills and assert deterministic ordering.
+
+##### Phase 2: Expose Skills To The Model Loop
+
+Outcome: owned agents can see, choose, install, and invoke skills through a Cadence-native SkillTool.
+
+- Slice 2.2.1: Add a model-visible SkillTool descriptor.
+  - Scope: add a tool descriptor for skill discovery and resolution with strict input schemas and concise descriptions suitable for model planning.
+  - Acceptance: the tool appears in owned-agent tool discovery only when skill support is enabled and reports unavailable states clearly when no sources are configured.
+  - Verification: owned-agent tool registry tests cover enabled/disabled availability and tool-search discoverability.
+
+- Slice 2.2.2: Implement SkillTool discover and resolve.
+  - Scope: route model requests through the durable registry plus source scanners; return ranked candidates with source type, trust state, enabled state, and short descriptions.
+  - Acceptance: discovery merges GitHub, bundled, local, and project skills; disabled or blocked skills are visible only when the request asks for them or when needed for diagnostics.
+  - Verification: backend tests cover merged source ordering, query matching, trust filtering, and malformed request rejection.
+
+- Slice 2.2.3: Implement SkillTool install and invoke.
+  - Scope: install missing skills when allowed, load validated skill markdown/assets, and return a model-consumable invocation payload while recording lifecycle events.
+  - Acceptance: invocation works for cached GitHub skills, bundled skills, local skills, and project skills; approval is required for untrusted sources before first use; failures leave durable diagnostics.
+  - Verification: owned-agent runtime tests cover trusted invocation, approval-required invocation, rejected invocation, stale source refresh, and asset loading.
+
+- Slice 2.2.4: Add dynamic skill discovery during work.
+  - Scope: let the model create a discoverable dynamic skill candidate from an approved source or completed run artifact without automatically trusting it.
+  - Acceptance: dynamic skills start disabled or untrusted, can be reviewed later in settings, and never become model-invocable until explicitly enabled or trusted by policy.
+  - Verification: tests cover dynamic candidate creation, duplicate merging, disabled-by-default behavior, and lifecycle telemetry.
+
+##### Phase 3: Add User-Facing Skill Management
+
+Outcome: users can inspect and control skills/plugins from Cadence settings without using hidden commands.
+
+- Slice 2.3.1: Add a Skills settings tab.
+  - Scope: build a ShadCN-based settings surface showing installed/discoverable skills, source type, trust state, enabled state, version/hash, last used time, and last diagnostic.
+  - Acceptance: users can filter/search skills, enable/disable a skill, remove an installed skill, and inspect the non-secret source metadata for a skill.
+  - Verification: React tests cover empty state, populated state, search/filter, enable/disable, remove confirmation, and diagnostic rendering.
+
+- Slice 2.3.2: Add source management for local/project/GitHub skill roots.
+  - Scope: add controls for adding/removing local skill directories, enabling project skill discovery, and configuring GitHub source repo/ref values.
+  - Acceptance: unsafe paths are rejected with clear errors; changing a source triggers a reload request; source settings persist at the correct global or project scope.
+  - Verification: state-management tests cover add/remove/update, invalid paths, project-scope persistence, and reload triggering.
+
+- Slice 2.3.3: Surface skill lifecycle in the agent run view.
+  - Scope: connect existing skill lifecycle events to a compact user-facing lane that shows discovery, install, invoke, cache status, and diagnostics.
+  - Acceptance: successful skill use is visible without overwhelming the transcript, and failed skill use exposes the actionable diagnostic already stored in the runtime state.
+  - Verification: React tests cover successful and failed lifecycle rows, replayed events after reconnect, and malformed event handling.
+
+##### Phase 4: Add Plugin Sources Without Making Plugins A Second Runtime
+
+Outcome: plugins can contribute skills and commands through Cadence-controlled manifests, trust checks, and reload mechanics.
+
+- Slice 2.4.1: Define and validate a plugin manifest.
+  - Scope: define the minimal plugin manifest for id, name, version, description, trust declaration, contributed skills, contributed commands, and entry locations.
+  - Acceptance: manifests are schema-validated, plugin ids are stable, unsupported fields fail closed, and contributed paths must stay inside the plugin root.
+  - Verification: parser tests cover valid manifests, missing required fields, duplicate ids, bad versions, unknown capability types, and path traversal.
+
+- Slice 2.4.2: Add plugin discovery and installed-plugin registry state.
+  - Scope: scan configured plugin roots, persist installed plugin metadata, and track enabled/disabled/trusted/blocked state independently from contributed skills.
+  - Acceptance: disabling a plugin disables its contributed skills and commands without deleting their records; removing a plugin marks contributions unavailable instead of leaving dangling invocations.
+  - Verification: registry tests cover plugin install, disable, enable, remove, contribution projection, and stale contribution cleanup.
+
+- Slice 2.4.3: Project plugin-contributed skills into SkillTool.
+  - Scope: expose plugin skills through the same SkillTool discovery/resolve/invoke path as other skills, while preserving plugin provenance and trust state.
+  - Acceptance: plugin skills cannot bypass skill validation, approval, asset limits, or disabled-plugin state.
+  - Verification: SkillTool tests cover trusted plugin skills, untrusted plugin approval, disabled plugin behavior, and invalid plugin skill assets.
+
+- Slice 2.4.4: Add plugin command loading and reload.
+  - Scope: load plugin-contributed commands into the Cadence command/action registry without duplicating slash-command UI from OpenClaude; add explicit reload behavior and diagnostics.
+  - Acceptance: commands have stable ids, labels, descriptions, availability rules, and trust provenance; reload updates added/removed commands without restarting the app.
+  - Verification: command-registry tests cover load, conflict resolution, disabled plugins, reload success, reload failure, and stale command removal.
+
+- Slice 2.4.5: Add a Plugins settings tab.
+  - Scope: build a ShadCN-based settings surface for installed plugins, source roots, trust state, enabled state, contributed skills/commands, reload, and diagnostics.
+  - Acceptance: users can enable/disable plugins, reload plugins, inspect contributions, and see why a plugin is blocked.
+  - Verification: React tests cover list rendering, details view, enable/disable, reload, blocked state, and contribution counts.
+
+##### Phase 5: Add MCP-Provided Skills
+
+Outcome: MCP servers can contribute model-visible skills without weakening the existing MCP registry approval model.
+
+- Slice 2.5.1: Extend MCP projection with skill metadata.
+  - Scope: map MCP-provided skill resources/prompts, where available, into Cadence skill candidate records with server provenance and approval state.
+  - Acceptance: MCP skills are visible only for approved/connected servers and include enough provenance for users to identify the contributing server.
+  - Verification: MCP projection tests cover connected, blocked, stale, and misconfigured servers.
+
+- Slice 2.5.2: Invoke MCP-provided skills through SkillTool.
+  - Scope: route MCP skill invocation through existing MCP tool/resource/prompt invocation mechanics instead of creating a parallel transport.
+  - Acceptance: server approval, authentication failures, and transport failures surface as typed skill diagnostics and do not corrupt installed skill state.
+  - Verification: integration-style tests cover successful invocation, auth-required failure, disconnected server failure, and lifecycle event persistence.
+
+##### Phase 6: Hardening, Docs, And Completion Criteria
+
+Outcome: Priority 2 is safe enough to call complete and hand to normal users.
+
+- Slice 2.6.1: Add source trust and policy hardening.
+  - Scope: enforce explicit trust boundaries for local, project, GitHub, MCP, dynamic, and plugin-provided skills; redact local secrets and absolute paths from model-facing outputs where they are not required for execution.
+  - Acceptance: untrusted sources cannot become model-invocable silently, blocked sources fail closed, and diagnostics give users enough information to fix configuration safely.
+  - Verification: security-focused tests cover trust escalation attempts, disabled source use, secret redaction, and path redaction.
+
+- Slice 2.6.2: Add reload and stale-state hardening.
+  - Scope: make reload idempotent across skill and plugin sources; mark stale records when source content changes or disappears; preserve last-known diagnostics for troubleshooting.
+  - Acceptance: repeated reloads do not create duplicates, removed sources become unavailable, and changed hashes/versions are reflected in registry state.
+  - Verification: registry tests cover repeated reload, content change, deleted source, partial failure, and recovery after failure.
+
+- Slice 2.6.3: Document the user and agent workflows.
+  - Scope: document how users add skills/plugins, how agents discover and invoke skills, what trust states mean, and how to troubleshoot blocked or failed skills.
+  - Acceptance: a fresh engineer can implement a new skill source against the documented contract, and a user can understand why a skill is unavailable.
+  - Verification: docs review plus focused tests for any examples or fixtures included with the docs.
+
+- Slice 2.6.4: Declare Priority 2 complete.
+  - Scope: run the focused Rust tests for skill/plugin registry and SkillTool behavior, focused React tests for settings and run-view surfaces, and the existing autonomous skill runtime tests.
+  - Acceptance: the report can mark Priority 2 complete only after local/project/bundled/GitHub skills, plugin-provided skills, MCP-provided skills, model-visible invocation, settings management, trust controls, reload, and diagnostics all have passing verification.
+  - Verification: record the exact commands and passing results in the completion note, using one Cargo command at a time.
+
 ### Priority 3: Build Runtime Diagnostics And Provider Setup Parity
 
 Cadence's provider UI is good, but OpenClaude has stronger startup and troubleshooting loops:

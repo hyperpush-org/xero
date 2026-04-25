@@ -27,7 +27,8 @@ pub use agent_core::{
     OWNED_AGENT_SUPERVISOR_KIND,
 };
 pub use autonomous_skill_runtime::{
-    AutonomousSkillCacheError, AutonomousSkillCacheInstallFile, AutonomousSkillCacheManifest,
+    merge_skill_source_records, validate_skill_source_state_transition, AutonomousSkillCacheError,
+    AutonomousSkillCacheInstallFile, AutonomousSkillCacheManifest,
     AutonomousSkillCacheManifestFile, AutonomousSkillCacheStatus, AutonomousSkillCacheStore,
     AutonomousSkillDiscoverOutput, AutonomousSkillDiscoverRequest,
     AutonomousSkillDiscoveryCandidate, AutonomousSkillInstallOutput, AutonomousSkillInstallRequest,
@@ -37,9 +38,11 @@ pub use autonomous_skill_runtime::{
     AutonomousSkillSourceEntryKind, AutonomousSkillSourceError, AutonomousSkillSourceFileRequest,
     AutonomousSkillSourceFileResponse, AutonomousSkillSourceMetadata,
     AutonomousSkillSourceTreeEntry, AutonomousSkillSourceTreeRequest,
-    AutonomousSkillSourceTreeResponse, FilesystemAutonomousSkillCacheStore,
-    GithubAutonomousSkillSource, AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO,
-    AUTONOMOUS_SKILL_SOURCE_ROOT,
+    AutonomousSkillSourceTreeResponse, CadenceSkillSourceKind, CadenceSkillSourceLocator,
+    CadenceSkillSourceRecord, CadenceSkillSourceScope, CadenceSkillSourceState,
+    CadenceSkillTrustState, FilesystemAutonomousSkillCacheStore, GithubAutonomousSkillSource,
+    AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO, AUTONOMOUS_SKILL_SOURCE_ROOT,
+    CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
 };
 pub use autonomous_tool_runtime::{
     resolve_imported_repo_root, resolve_imported_repo_root_from_registry, AutonomousCodeDiagnostic,
