@@ -851,7 +851,7 @@ fn render_command_for_summary(argv: &[String]) -> String {
     render_command_for_persistence(argv)
 }
 
-fn apply_sanitized_command_environment(command: &mut Command) {
+pub(super) fn apply_sanitized_command_environment(command: &mut Command) {
     command.env_clear();
     for key in SAFE_COMMAND_ENV_KEYS {
         if let Some(value) = env::var_os(key) {

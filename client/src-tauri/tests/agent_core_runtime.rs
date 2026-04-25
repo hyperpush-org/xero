@@ -226,6 +226,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "todo",
         "notebook_edit",
         "code_intel",
+        "lsp",
         "powershell",
         "tool_search",
         "web_search",
@@ -286,6 +287,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
     assert!(registry.descriptor("todo").is_some());
     assert!(registry.descriptor("notebook_edit").is_some());
     assert!(registry.descriptor("code_intel").is_some());
+    assert!(registry.descriptor("lsp").is_some());
     assert!(registry.descriptor("powershell").is_some());
     assert!(registry.descriptor("tool_search").is_some());
     let emulator = registry
@@ -378,6 +380,7 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     assert!(priority_names.contains("todo"));
     assert!(priority_names.contains("tool_search"));
     assert!(priority_names.contains("code_intel"));
+    assert!(priority_names.contains("lsp"));
     assert!(priority_names.contains("notebook_edit"));
     assert!(priority_names.contains("powershell"));
 
@@ -492,6 +495,7 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
             "tool:todo_upsert Inspect the owned-agent priority surface",
             "tool:subagent Explore priority one work",
             "tool:code_intel_symbols src/lib.rs greet",
+            "tool:lsp_symbols src/lib.rs greet",
             "tool:mcp_list",
         ]
         .join("\n"),
@@ -514,10 +518,16 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
     assert!(tool_names.contains(&"todo"));
     assert!(tool_names.contains(&"subagent"));
     assert!(tool_names.contains(&"code_intel"));
+    assert!(tool_names.contains(&"lsp"));
     assert!(tool_names.contains(&"mcp"));
     assert!(snapshot.messages.iter().any(|message| {
         message.role == db::project_store::AgentMessageRole::Tool
             && message.content.contains("\"toolName\":\"code_intel\"")
+            && message.content.contains("\"name\":\"greet\"")
+    }));
+    assert!(snapshot.messages.iter().any(|message| {
+        message.role == db::project_store::AgentMessageRole::Tool
+            && message.content.contains("\"toolName\":\"lsp\"")
             && message.content.contains("\"name\":\"greet\"")
     }));
     assert!(snapshot.messages.iter().any(|message| {

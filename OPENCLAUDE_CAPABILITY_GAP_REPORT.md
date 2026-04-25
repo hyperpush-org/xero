@@ -1,6 +1,7 @@
 # OpenClaude Capability Gap Report
 
 Date: 2026-04-25
+Last updated: 2026-04-25
 
 ## Reader And Action
 
@@ -16,9 +17,9 @@ Some OpenClaude modules are feature-gated or internal-only. I counted a capabili
 
 Cadence already covers the broad desktop shell, project import, file editing, provider profiles, OpenAI Codex OAuth, runtime supervision, operator approval flows, notifications, MCP registry management, in-app browser automation, emulator automation, and a large Solana workbench. In several areas Cadence is beyond OpenClaude, especially mobile device automation and Solana-specific tooling.
 
-The largest missing OpenClaude-equivalent area is not another sidebar. It is the mature agent operating system around the model loop: terminal CLI/REPL, slash commands, first-class tools, MCP invocation, plugins, skills, memory/compaction, diagnostics, provider launch profiles, subagents, and editor/remote integrations.
+The largest missing OpenClaude-equivalent area is not another sidebar. It is the mature agent operating system around the model loop: terminal CLI/REPL, slash commands, plugins, skills, memory/compaction, diagnostics, provider launch profiles, and editor/remote integrations.
 
-Cadence has a native owned-agent runtime and autonomous tool runtime, but it is not yet equivalent to OpenClaude's CLI agent runtime. The current Cadence tool surface is strong for files, git, commands, web fetch/search, browser, emulator, and Solana. It is still missing OpenClaude-grade subagents, MCP tool/resource invocation, plugin/skill command loading, notebook editing, PowerShell-specific behavior, LSP tools, default web search providers, task/todo tools, and command-rich session management.
+Cadence has a native owned-agent runtime and autonomous tool runtime, but it is not yet equivalent to OpenClaude's CLI agent runtime. The Priority 1 native tool-surface gap is now closed: owned agents have MCP invocation, subagents, todo/task state, notebook editing, PowerShell, LSP/code intelligence, tool search, and command-session support. Remaining gaps are now concentrated in plugin/skill command loading, default web search provider breadth, memory/context management, diagnostics, session operations, and external integration surfaces.
 
 ## OpenClaude Capability Inventory
 
@@ -164,7 +165,7 @@ OpenClaude exposes a large slash-command surface. Important user-visible groups 
 - Agent sessions and agent runs.
 - Start task, send message, cancel run, resume run, get/list runs, and subscribe to agent stream.
 - Provider adapters for OpenAI Responses, OpenAI-compatible chat, Anthropic, Bedrock, and Vertex.
-- Tool registry with file, git, command, web, browser, emulator, and Solana descriptors.
+- Tool registry with file, git, command, web, browser, emulator, Solana, MCP, subagent, todo, notebook edit, code intelligence, LSP, PowerShell, and tool-search descriptors.
 - Safety decisions for allow, require approval, and deny.
 - Persistent agent messages, tool calls, checkpoints, file changes, action requests, and run status.
 
@@ -177,6 +178,7 @@ OpenClaude exposes a large slash-command surface. Important user-visible groups 
 - Browser automation tool wrapping the in-app browser.
 - Emulator automation tool wrapping iOS/Android device commands.
 - Solana tool group with clusters, logs, transactions, simulation, explanation, ALTs, IDL, Codama, PDA, program build/deploy/upgrade checks, Squads, verified builds, audits, replay, indexer, secrets, drift, costs, and docs.
+- Priority agent tools: MCP tool/resource/prompt invocation, subagents, todo/task state, notebook cell edits, code intelligence, LSP server discovery/symbols/diagnostics with install suggestions, PowerShell wrapping, and tool search.
 - Tool-access discovery/request behavior for expanding tool groups.
 
 ### MCP Registry
@@ -213,16 +215,16 @@ OpenClaude exposes a large slash-command surface. Important user-visible groups 
 | Provider launch profiles | App-local provider profile store | No `.openclaude-profile.json` compatibility, profile launcher scripts, provider recommendation, or CLI profile bootstrap |
 | Provider breadth | Strong built-in presets for common cloud/local providers | Missing direct Mistral, Atomic Chat, NVIDIA NIM, MiniMax, Foundry, LiteLLM-oriented docs/profile flow, and GitHub device onboarding |
 | Per-agent routing | Active profile/model controls | No settings-level agent model routing by agent name/type |
-| Core tool parity | Native autonomous tools for files/git/commands/web/browser/emulator/Solana | Missing notebook edit, PowerShell-specific tool, LSP tool, TodoWrite/task tools, cron/monitor, first-class AskUserQuestion tool, and mature tool search |
-| Subagents | Agent sessions and owned-agent runs | No OpenClaude-style AgentTool with built-in Explore/Plan/general-purpose/verification subagents, custom agents, team/swarm tools, or model-routed subagents |
-| MCP runtime use | Registry, probes, and projection to detached runtime | Native owned-agent runtime does not appear to invoke MCP tools/resources/prompts as first-class model tools |
+| Core tool parity | Native autonomous tools for files/git/commands/web/browser/emulator/Solana plus Priority 1 agent tools | Priority 1 is complete; still missing cron/monitor and first-class AskUserQuestion equivalents |
+| Subagents | Native owned-agent subagent tool with built-in Explore/Plan/general/verification types and model routing | Still missing custom agent definitions and team/swarm tools |
+| MCP runtime use | Registry, probes, projection to detached runtime, and native owned-agent MCP tool/resource/prompt invocation | Still missing broader MCP auth/server approval UX and marketplace-style discovery |
 | Plugins | None equivalent in UI/runtime | No plugin marketplace, plugin command loader, plugin skills, trust warning, or reload flow |
 | Skills | Autonomous skill discovery/install/invoke from a GitHub source | Not equivalent to OpenClaude's skill directories, bundled skills, dynamic skills, plugin skills, MCP skills, and SlashCommand/SkillTool integration |
 | Memory/context | Runtime stream and project DB state | No OpenClaude-equivalent memory files, memdir/team memory, auto-dream, session memory extraction, context visualization, auto-compact, or transcript search |
 | Session operations | Agent sessions/runs and runtime sessions | Missing user-facing resume/rename/export/branch/rewind/compact/copy/history search equivalents |
 | Web search | Configurable search provider endpoint | No built-in free DuckDuckGo fallback or first-class Firecrawl/Bing/Exa/Jina/Linkup/Mojeek/Tavily/You providers |
 | Web fetch | Basic HTTP plus HTML/plain extraction | No Firecrawl scrape path for JS-rendered or blocked pages |
-| Attachments/media | Code editor and browser screenshots | No OpenClaude-style image input pipeline, base64/url images as model attachments, PDF/image processing, or notebook cell editing |
+| Attachments/media | Code editor, browser screenshots, and notebook cell editing | No OpenClaude-style image input pipeline, base64/url images as model attachments, or PDF/image processing |
 | IDE/editor integration | Desktop editor and file operations | No VS Code extension, IDE status/selection hooks, or terminal launch integration |
 | GitHub/Slack integrations | Git status/diff and Solana GitHub usage in specific tools | No GitHub app install flow, PR comments command, Slack app install flow, or GitHub Models OAuth/device onboarding |
 | Remote workflows | Detached local runtime supervisor | No remote control/bridge, direct-connect, teleport, mobile QR/session URL equivalent |
@@ -245,17 +247,17 @@ Recommended decision record:
 - OpenClaude parity is pursued where it improves agent autonomy, not where it duplicates terminal UI affordances.
 - A compatibility layer may still be useful for provider profiles, skills, MCP, and diagnostics.
 
-### Priority 1: Mature The Native Agent Tool Surface
+### Priority 1: Mature The Native Agent Tool Surface - Completed
 
-The owned-agent runtime should gain the most important OpenClaude tool categories:
+Status: completed on 2026-04-25. The owned-agent runtime now covers the most important OpenClaude tool categories from this priority. Verification evidence: Rust formatting, focused autonomous-tool runtime tests, owned-agent runtime tests, library tests, full `cargo test`, and diff whitespace checks all passed after the final implementation.
 
-- MCP tool/resource/prompt invocation as native tools.
-- Subagent spawning with built-in agent types and per-agent model routing.
-- Todo/task tools for model-visible planning state.
-- Notebook edit support if notebooks are in scope.
-- LSP/code-intelligence tool for symbol lookup and diagnostics.
-- PowerShell-specific tool behavior for Windows parity.
-- Better tool search/deferred tool loading for large tool surfaces.
+- [x] MCP tool/resource/prompt invocation as native tools.
+- [x] Subagent spawning with built-in agent types and per-agent model routing.
+- [x] Todo/task tools for model-visible planning state.
+- [x] Notebook edit support.
+- [x] LSP/code-intelligence tool for symbol lookup and diagnostics, including safe install suggestions when a server is missing.
+- [x] PowerShell-specific tool behavior for Windows parity.
+- [x] Better tool search/deferred tool loading for large tool surfaces.
 
 ### Priority 2: Bring Over Skills And Plugins In A Cadence-Native Way
 
@@ -319,11 +321,11 @@ Cadence should not blindly copy OpenClaude in these areas because it already has
 
 ## Suggested Milestone Order
 
-1. Agent parity foundation: add MCP invocation, subagents, todo/task tools, tool search, and LSP/notebook decisions to the owned-agent runtime.
-2. Skills and plugins: make skills first-class in the UI and model tool list, then add plugin source/trust/reload mechanics.
-3. Provider and diagnostics: add doctor reports, provider repair, profile recommendation, and missing provider presets.
-4. Memory and sessions: add compact/export/search/resume/rename/branch-style user flows.
-5. External surfaces: add headless API and editor/remote integrations if Cadence is meant to be used outside the desktop app.
+1. [x] Agent parity foundation: MCP invocation, subagents, todo/task tools, tool search, LSP, notebook editing, and PowerShell are now in the owned-agent runtime.
+2. [ ] Skills and plugins: make skills first-class in the UI and model tool list, then add plugin source/trust/reload mechanics.
+3. [ ] Provider and diagnostics: add doctor reports, provider repair, profile recommendation, and missing provider presets.
+4. [ ] Memory and sessions: add compact/export/search/resume/rename/branch-style user flows.
+5. [ ] External surfaces: add headless API and editor/remote integrations if Cadence is meant to be used outside the desktop app.
 
 ## Cold-Read Check
 

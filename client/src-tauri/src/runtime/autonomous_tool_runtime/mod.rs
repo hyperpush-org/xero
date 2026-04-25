@@ -91,6 +91,7 @@ pub const AUTONOMOUS_TOOL_SUBAGENT: &str = "subagent";
 pub const AUTONOMOUS_TOOL_TODO: &str = "todo";
 pub const AUTONOMOUS_TOOL_NOTEBOOK_EDIT: &str = "notebook_edit";
 pub const AUTONOMOUS_TOOL_CODE_INTEL: &str = "code_intel";
+pub const AUTONOMOUS_TOOL_LSP: &str = "lsp";
 pub const AUTONOMOUS_TOOL_POWERSHELL: &str = "powershell";
 pub const AUTONOMOUS_TOOL_TOOL_SEARCH: &str = "tool_search";
 
@@ -167,7 +168,7 @@ const TOOL_ACCESS_AGENT_OPS_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_SEARCH,
 ];
 const TOOL_ACCESS_MCP_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MCP];
-const TOOL_ACCESS_INTELLIGENCE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_CODE_INTEL];
+const TOOL_ACCESS_INTELLIGENCE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP];
 const TOOL_ACCESS_NOTEBOOK_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_NOTEBOOK_EDIT];
 const TOOL_ACCESS_POWERSHELL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_POWERSHELL];
 
@@ -500,6 +501,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::Todo(request) => self.todo(request),
             AutonomousToolRequest::NotebookEdit(request) => self.notebook_edit(request),
             AutonomousToolRequest::CodeIntel(request) => self.code_intel(request),
+            AutonomousToolRequest::Lsp(request) => self.lsp(request),
             AutonomousToolRequest::PowerShell(request) => self.powershell(request),
             AutonomousToolRequest::ToolSearch(request) => self.tool_search(request),
             AutonomousToolRequest::Browser(request) => self.browser(request),
@@ -827,6 +829,7 @@ pub enum AutonomousToolRequest {
     Todo(AutonomousTodoRequest),
     NotebookEdit(AutonomousNotebookEditRequest),
     CodeIntel(AutonomousCodeIntelRequest),
+    Lsp(AutonomousLspRequest),
     #[serde(rename = "powershell")]
     PowerShell(AutonomousPowerShellRequest),
     ToolSearch(AutonomousToolSearchRequest),
@@ -1146,6 +1149,30 @@ pub struct AutonomousCodeIntelRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousLspAction {
+    Servers,
+    Symbols,
+    Diagnostics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousLspRequest {
+    pub action: AutonomousLspAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousPowerShellRequest {
@@ -1224,6 +1251,7 @@ pub enum AutonomousToolOutput {
     Todo(AutonomousTodoOutput),
     NotebookEdit(AutonomousNotebookEditOutput),
     CodeIntel(AutonomousCodeIntelOutput),
+    Lsp(AutonomousLspOutput),
     ToolSearch(AutonomousToolSearchOutput),
     Browser(AutonomousBrowserOutput),
     Emulator(AutonomousEmulatorOutput),
@@ -1513,6 +1541,56 @@ pub struct AutonomousCodeIntelOutput {
     pub diagnostics: Vec<AutonomousCodeDiagnostic>,
     pub scanned_files: usize,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousLspServerStatus {
+    pub server_id: String,
+    pub language: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub available: bool,
+    pub supports_symbols: bool,
+    pub supports_diagnostics: bool,
+    pub bundled: bool,
+    pub bundle_note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_suggestion: Option<AutonomousLspInstallSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousLspInstallSuggestion {
+    pub server_id: String,
+    pub language: String,
+    pub reason: String,
+    pub candidate_commands: Vec<AutonomousLspInstallCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousLspInstallCommand {
+    pub label: String,
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousLspOutput {
+    pub action: AutonomousLspAction,
+    pub mode: String,
+    pub servers: Vec<AutonomousLspServerStatus>,
+    pub symbols: Vec<AutonomousCodeSymbol>,
+    pub diagnostics: Vec<AutonomousCodeDiagnostic>,
+    pub scanned_files: usize,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lsp_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_suggestion: Option<AutonomousLspInstallSuggestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

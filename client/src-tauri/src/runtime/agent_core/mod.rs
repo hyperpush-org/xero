@@ -59,7 +59,7 @@ use crate::{
         AUTONOMOUS_TOOL_COMMAND_SESSION_START, AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
         AUTONOMOUS_TOOL_DELETE, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND,
         AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH,
-        AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_MKDIR,
+        AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_MKDIR,
         AUTONOMOUS_TOOL_NOTEBOOK_EDIT, AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_POWERSHELL,
         AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_RENAME, AUTONOMOUS_TOOL_SEARCH,
         AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS,
@@ -1811,7 +1811,7 @@ fn assemble_system_prompt(
         .collect::<Vec<_>>()
         .join(", ");
     Ok(format!(
-        "{SYSTEM_PROMPT_VERSION}\n\nYou are Cadence's owned software-building agent. Work directly in the imported repository, use tools for filesystem and command work, record evidence, and stop only when the task is done or a configured safety boundary requires user input.\n\nOperate like a production coding agent: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion. Before modifying an existing file, read or hash the target in the current run so Cadence can detect stale writes safely.\n\nAvailable tools: {tool_names}\n\nIf a relevant capability is not currently available, call `tool_access` to request the smallest needed tool group before proceeding.\n\nRepository instructions:\n{}",
+        "{SYSTEM_PROMPT_VERSION}\n\nYou are Cadence's owned software-building agent. Work directly in the imported repository, use tools for filesystem and command work, record evidence, and stop only when the task is done or a configured safety boundary requires user input.\n\nOperate like a production coding agent: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion. Before modifying an existing file, read or hash the target in the current run so Cadence can detect stale writes safely.\n\nAvailable tools: {tool_names}\n\nIf a relevant capability is not currently available, call `tool_access` to request the smallest needed tool group before proceeding. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.\n\nRepository instructions:\n{}",
         if agents_instructions.trim().is_empty() {
             "(none)"
         } else {
@@ -2057,6 +2057,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             }
             line if line.starts_with("tool:code_intel_") => {
                 names.insert(AUTONOMOUS_TOOL_CODE_INTEL.into());
+            }
+            line if line.starts_with("tool:lsp_") => {
+                names.insert(AUTONOMOUS_TOOL_LSP.into());
             }
             line if line.starts_with("tool:powershell ") => {
                 names.insert(AUTONOMOUS_TOOL_POWERSHELL.into());
@@ -2515,6 +2518,30 @@ fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             ),
         ),
         descriptor(
+            AUTONOMOUS_TOOL_LSP,
+            "Inspect language-server availability and resolve source symbols or diagnostics through LSP with native fallback.",
+            object_schema(
+                &["action"],
+                &[
+                    (
+                        "action",
+                        enum_schema(
+                            "LSP action to execute.",
+                            &["servers", "symbols", "diagnostics"],
+                        ),
+                    ),
+                    ("query", string_schema("Optional symbol query.")),
+                    ("path", string_schema("Optional repo-relative file or directory scope.")),
+                    ("limit", integer_schema("Maximum result count.")),
+                    ("serverId", string_schema("Optional known LSP server id to force.")),
+                    (
+                        "timeoutMs",
+                        integer_schema("Optional LSP server timeout in milliseconds."),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
             AUTONOMOUS_TOOL_POWERSHELL,
             "Run PowerShell through the same repo-scoped command policy used for shell commands.",
             object_schema(
@@ -2924,6 +2951,28 @@ fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
                     "query": query,
                     "limit": 20
                 }),
+            });
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("tool:lsp_symbols ") {
+            let (path, query) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-lsp-{}", calls.len() + 1),
+                tool_name: "lsp".into(),
+                input: json!({
+                    "action": "symbols",
+                    "path": path,
+                    "query": query,
+                    "limit": 20
+                }),
+            });
+            continue;
+        }
+        if line == "tool:lsp_servers" {
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-lsp-{}", calls.len() + 1),
+                tool_name: "lsp".into(),
+                input: json!({ "action": "servers" }),
             });
             continue;
         }

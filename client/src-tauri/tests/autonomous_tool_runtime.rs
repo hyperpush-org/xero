@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
@@ -17,20 +17,21 @@ use cadence_desktop_lib::{
         repository::{ensure_cadence_excluded, CanonicalRepository},
     },
     mcp::{
-        persist_mcp_registry, McpConnectionState, McpConnectionStatus, McpRegistry,
-        McpServerRecord, McpTransport,
+        persist_mcp_registry, McpConnectionState, McpConnectionStatus, McpEnvironmentReference,
+        McpRegistry, McpServerRecord, McpTransport,
     },
     registry::{self, RegistryProjectRecord},
     runtime::{
         AutonomousCodeIntelAction, AutonomousCodeIntelRequest, AutonomousCommandPolicyOutcome,
         AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
-        AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousMcpAction,
-        AutonomousMcpRequest, AutonomousNotebookEditRequest, AutonomousReadRequest,
-        AutonomousSearchRequest, AutonomousSubagentRequest, AutonomousSubagentType,
-        AutonomousTodoAction, AutonomousTodoRequest, AutonomousToolAccessAction,
-        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
-        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousToolSearchRequest,
-        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousLspAction,
+        AutonomousLspRequest, AutonomousMcpAction, AutonomousMcpRequest,
+        AutonomousNotebookEditRequest, AutonomousReadRequest, AutonomousSearchRequest,
+        AutonomousSubagentRequest, AutonomousSubagentType, AutonomousTodoAction,
+        AutonomousTodoRequest, AutonomousToolAccessAction, AutonomousToolAccessRequest,
+        AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime,
+        AutonomousToolRuntimeLimits, AutonomousToolSearchRequest, AutonomousWebConfig,
+        AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
         AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
@@ -456,6 +457,53 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
         }
         other => panic!("unexpected tool search output: {other:?}"),
     }
+    let hash_search = runtime
+        .tool_search(AutonomousToolSearchRequest {
+            query: "hash".into(),
+            limit: None,
+        })
+        .expect("tool search for file hash");
+    match hash_search.output {
+        AutonomousToolOutput::ToolSearch(output) => {
+            assert!(output
+                .matches
+                .iter()
+                .any(|item| item.tool_name == "file_hash"));
+        }
+        other => panic!("unexpected hash tool search output: {other:?}"),
+    }
+    let lsp_search = runtime
+        .tool_search(AutonomousToolSearchRequest {
+            query: "lsp".into(),
+            limit: None,
+        })
+        .expect("tool search for lsp");
+    match lsp_search.output {
+        AutonomousToolOutput::ToolSearch(output) => {
+            assert!(output
+                .matches
+                .iter()
+                .any(|item| item.tool_name == "lsp" && item.group == "intelligence"));
+        }
+        other => panic!("unexpected lsp tool search output: {other:?}"),
+    }
+    let solana_search = runtime
+        .tool_search(AutonomousToolSearchRequest {
+            query: "solana".into(),
+            limit: Some(3),
+        })
+        .expect("tool search for deferred solana tools");
+    match solana_search.output {
+        AutonomousToolOutput::ToolSearch(output) => {
+            assert_eq!(output.matches.len(), 3);
+            assert!(output.truncated);
+            assert!(output
+                .matches
+                .iter()
+                .all(|item| item.group == "solana" && item.tool_name.starts_with("solana_")));
+        }
+        other => panic!("unexpected solana tool search output: {other:?}"),
+    }
 
     let todo = runtime
         .todo(AutonomousTodoRequest {
@@ -505,6 +553,53 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
         other => panic!("unexpected code intel output: {other:?}"),
     }
 
+    let lsp_servers = runtime
+        .lsp(AutonomousLspRequest {
+            action: AutonomousLspAction::Servers,
+            query: None,
+            path: None,
+            limit: None,
+            server_id: None,
+            timeout_ms: None,
+        })
+        .expect("lsp servers");
+    match lsp_servers.output {
+        AutonomousToolOutput::Lsp(output) => {
+            assert!(output
+                .servers
+                .iter()
+                .any(|server| server.server_id == "rust_analyzer"));
+            assert_eq!(output.mode, "server_catalog");
+        }
+        other => panic!("unexpected lsp server output: {other:?}"),
+    }
+
+    let lsp_symbols = runtime
+        .lsp(AutonomousLspRequest {
+            action: AutonomousLspAction::Symbols,
+            query: Some("greet".into()),
+            path: Some("src/lib.rs".into()),
+            limit: Some(10),
+            server_id: Some("rust_analyzer".into()),
+            timeout_ms: Some(500),
+        })
+        .expect("lsp symbols");
+    match lsp_symbols.output {
+        AutonomousToolOutput::Lsp(output) => {
+            assert!(output.symbols.iter().any(|symbol| symbol.name == "greet"));
+            assert!(output.mode.starts_with("native_fallback") || output.mode == "external_lsp");
+            if output.mode == "native_fallback_lsp_unavailable" {
+                let suggestion = output
+                    .install_suggestion
+                    .as_ref()
+                    .expect("missing rust analyzer should include install suggestion");
+                assert_eq!(suggestion.server_id, "rust_analyzer");
+                assert!(!suggestion.candidate_commands.is_empty());
+            }
+        }
+        other => panic!("unexpected lsp symbol output: {other:?}"),
+    }
+
     let notebook = runtime
         .notebook_edit(AutonomousNotebookEditRequest {
             path: "work.ipynb".into(),
@@ -539,13 +634,71 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
 }
 
 #[test]
+fn tool_runtime_todo_generated_ids_do_not_collide_after_deletes() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(root.path()).expect("runtime");
+
+    for title in ["First task", "Second task"] {
+        runtime
+            .todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::Upsert,
+                id: None,
+                title: Some(title.into()),
+                notes: None,
+                status: None,
+            })
+            .expect("auto todo upsert");
+    }
+    runtime
+        .todo(AutonomousTodoRequest {
+            action: AutonomousTodoAction::Delete,
+            id: Some("todo-1".into()),
+            title: None,
+            notes: None,
+            status: None,
+        })
+        .expect("delete first generated todo");
+
+    let third = runtime
+        .todo(AutonomousTodoRequest {
+            action: AutonomousTodoAction::Upsert,
+            id: None,
+            title: Some("Third task".into()),
+            notes: None,
+            status: None,
+        })
+        .expect("third generated todo should not overwrite todo-2");
+
+    match third.output {
+        AutonomousToolOutput::Todo(output) => {
+            assert_eq!(
+                output.changed_item.as_ref().map(|item| item.id.as_str()),
+                Some("todo-3")
+            );
+            assert_eq!(
+                output
+                    .items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["todo-2", "todo-3"]
+            );
+        }
+        other => panic!("unexpected todo output: {other:?}"),
+    }
+}
+
+#[test]
 fn tool_runtime_invokes_mcp_capabilities_across_transports() {
     let root = tempfile::tempdir().expect("temp dir");
+    env::set_var("CADENCE_TEST_MCP_LEAK_SECRET", "should-not-leak");
+    env::set_var("CADENCE_TEST_MCP_ALLOWED_SECRET", "allowed-secret");
     let stdio_server = root.path().join("mcp_stdio_server.py");
     fs::write(
         &stdio_server,
         r#"
 import json
+import os
 import sys
 
 def read_message():
@@ -580,6 +733,21 @@ while True:
         result = {"protocolVersion": "2024-11-05", "capabilities": {}}
     elif method == "tools/list":
         result = {"tools": [{"name": "stdio_tool", "description": "test tool"}]}
+    elif method == "tools/call":
+        result = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "allowed": os.environ.get("MCP_ALLOWED_SECRET"),
+                            "leaked": os.environ.get("CADENCE_TEST_MCP_LEAK_SECRET"),
+                            "sanitized": os.environ.get("CADENCE_AGENT_SANITIZED_ENV"),
+                        }
+                    ),
+                }
+            ]
+        }
     else:
         result = {"echoed": method}
     write_message({"jsonrpc": "2.0", "id": message["id"], "result": result})
@@ -602,7 +770,10 @@ while True:
                         command: "python3".into(),
                         args: vec![stdio_server.to_string_lossy().into_owned()],
                     },
-                    env: Vec::new(),
+                    env: vec![McpEnvironmentReference {
+                        key: "MCP_ALLOWED_SECRET".into(),
+                        from_env: "CADENCE_TEST_MCP_ALLOWED_SECRET".into(),
+                    }],
                     cwd: None,
                     connection: McpConnectionState {
                         status: McpConnectionStatus::Connected,
@@ -679,6 +850,37 @@ while True:
             other => panic!("unexpected mcp output: {other:?}"),
         }
     }
+
+    let env_result = runtime
+        .mcp(AutonomousMcpRequest {
+            action: AutonomousMcpAction::InvokeTool,
+            server_id: Some("stdio-mcp".into()),
+            name: Some("env".into()),
+            uri: None,
+            arguments: Some(serde_json::json!({})),
+            timeout_ms: Some(5_000),
+        })
+        .expect("invoke stdio mcp tool with explicit env mapping");
+    match env_result.output {
+        AutonomousToolOutput::Mcp(output) => {
+            let result = output.result.expect("mcp tool call result");
+            let text = result
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .expect("text content with env report");
+            let env_report: serde_json::Value =
+                serde_json::from_str(text).expect("env report json");
+            assert_eq!(env_report["allowed"], "allowed-secret");
+            assert_eq!(env_report["sanitized"], "1");
+            assert!(env_report["leaked"].is_null());
+        }
+        other => panic!("unexpected mcp env output: {other:?}"),
+    }
+    env::remove_var("CADENCE_TEST_MCP_LEAK_SECRET");
+    env::remove_var("CADENCE_TEST_MCP_ALLOWED_SECRET");
 }
 
 #[test]
