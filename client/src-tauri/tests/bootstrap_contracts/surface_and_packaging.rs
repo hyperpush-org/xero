@@ -9,8 +9,8 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        64,
-        "expected sixty-four desktop commands"
+        67,
+        "expected sixty-seven desktop commands"
     );
 
     tauri::test::assert_ipc_response(
@@ -177,6 +177,16 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
         &webview,
         invoke_request(SPEECH_DICTATION_STATUS_COMMAND, json!({})),
         Ok(expected_dictation_status),
+    );
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(SPEECH_DICTATION_STOP_COMMAND, json!({})),
+        Ok(()),
+    );
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(SPEECH_DICTATION_CANCEL_COMMAND, json!({})),
+        Ok(()),
     );
 
     let expected_mcp_registry = cadence_desktop_lib::commands::list_mcp_servers(

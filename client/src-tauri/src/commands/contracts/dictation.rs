@@ -111,6 +111,7 @@ pub enum DictationEventDto {
         speech: DictationPermissionStateDto,
     },
     Started {
+        #[serde(rename = "sessionId")]
         session_id: String,
         engine: DictationEngineDto,
         locale: String,
@@ -119,20 +120,24 @@ pub enum DictationEventDto {
         progress: Option<f32>,
     },
     Partial {
+        #[serde(rename = "sessionId")]
         session_id: String,
         text: String,
         sequence: u64,
     },
     Final {
+        #[serde(rename = "sessionId")]
         session_id: String,
         text: String,
         sequence: u64,
     },
     Stopped {
+        #[serde(rename = "sessionId")]
         session_id: String,
         reason: DictationStopReasonDto,
     },
     Error {
+        #[serde(rename = "sessionId")]
         session_id: Option<String>,
         code: String,
         message: String,

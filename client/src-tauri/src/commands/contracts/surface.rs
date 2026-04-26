@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     autonomous::AutonomousRunDto,
+    dictation::{
+        SPEECH_DICTATION_CANCEL_COMMAND, SPEECH_DICTATION_START_COMMAND,
+        SPEECH_DICTATION_STOP_COMMAND,
+    },
     runtime::AgentSessionDto,
     workflow::{
         OperatorApprovalDto, PhaseSummaryDto, ResumeHistoryEntryDto, VerificationRecordDto,
@@ -147,6 +151,9 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     SYNC_NOTIFICATION_ADAPTERS_COMMAND,
     UPSERT_RUNTIME_SETTINGS_COMMAND,
     SPEECH_DICTATION_STATUS_COMMAND,
+    SPEECH_DICTATION_START_COMMAND,
+    SPEECH_DICTATION_STOP_COMMAND,
+    SPEECH_DICTATION_CANCEL_COMMAND,
 ];
 
 pub const PROJECT_UPDATED_EVENT: &str = "project:updated";

@@ -71,7 +71,10 @@ pub use browser::{
     BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
-pub use dictation::{speech_dictation_status, DictationState};
+pub use dictation::{
+    speech_dictation_cancel, speech_dictation_start, speech_dictation_status,
+    speech_dictation_stop, DictationState,
+};
 pub use doctor_report::run_doctor_report;
 pub use emulator::{
     emulator_android_provision, emulator_android_provision_status, emulator_input,

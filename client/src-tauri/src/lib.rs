@@ -60,6 +60,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 use tauri::Manager;
+                commands::dictation::shutdown_on_close(window.app_handle());
                 commands::emulator::shutdown::shutdown_on_close(window.app_handle());
             }
         })
@@ -161,6 +162,9 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::submit_notification_reply::submit_notification_reply,
             commands::sync_notification_adapters::sync_notification_adapters,
             commands::dictation::speech_dictation_status,
+            commands::dictation::speech_dictation_start,
+            commands::dictation::speech_dictation_stop,
+            commands::dictation::speech_dictation_cancel,
             commands::browser::browser_show,
             commands::browser::browser_resize,
             commands::browser::browser_hide,

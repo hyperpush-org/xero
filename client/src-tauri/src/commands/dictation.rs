@@ -1,19 +1,30 @@
 use std::{
-    ffi::{c_char, CStr},
+    ffi::{c_char, c_void, CStr, CString},
+    fmt,
+    ptr::NonNull,
+    str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::Deserialize;
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use tauri::{
+    ipc::{Channel, JavaScriptChannelId},
+    AppHandle, Manager, Runtime, State, Webview,
+};
 
 use crate::commands::{
     ActiveDictationSessionDto, CommandError, CommandResult, DictationEngineDto,
-    DictationEngineStatusDto, DictationPermissionStateDto, DictationPlatformDto,
-    DictationStatusDto,
+    DictationEnginePreferenceDto, DictationEngineStatusDto, DictationEventDto,
+    DictationPermissionStateDto, DictationPlatformDto, DictationPrivacyModeDto,
+    DictationStartRequestDto, DictationStartResponseDto, DictationStatusDto,
+    DictationStopReasonDto,
 };
+
+static DICTATION_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub struct DictationCancellationHandle {
@@ -39,11 +50,12 @@ impl DictationCancellationHandle {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ActiveDictationSession {
     session_id: String,
     engine: DictationEngineDto,
     cancellation: DictationCancellationHandle,
+    native: Option<native_shim::Session>,
 }
 
 impl ActiveDictationSession {
@@ -53,6 +65,25 @@ impl ActiveDictationSession {
             engine: self.engine,
         }
     }
+
+    fn stop_native(mut self) -> CommandResult<()> {
+        if let Some(native) = self.native.take() {
+            native
+                .stop()
+                .map_err(NativeOperationError::into_command_error)?;
+        }
+        Ok(())
+    }
+
+    fn cancel_native(mut self) -> CommandResult<()> {
+        self.cancellation.cancel();
+        if let Some(native) = self.native.take() {
+            native
+                .cancel()
+                .map_err(NativeOperationError::into_command_error)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -60,11 +91,12 @@ struct DictationStateInner {
     active: Option<ActiveDictationSession>,
 }
 
-/// Process-wide dictation state. Phase 0 only exposes status, but the state
-/// owns the one-session guard and cancellation handle that later phases use.
-#[derive(Debug, Default)]
+/// Process-wide dictation state. The state owns the one-session guard and the
+/// native session handle so command, channel, native, and window-close paths
+/// all clean up the same active session.
+#[derive(Debug, Clone, Default)]
 pub struct DictationState {
-    inner: Mutex<DictationStateInner>,
+    inner: Arc<Mutex<DictationStateInner>>,
 }
 
 impl DictationState {
@@ -75,7 +107,6 @@ impl DictationState {
             .and_then(|inner| inner.active.as_ref().map(ActiveDictationSession::to_dto))
     }
 
-    #[allow(dead_code)]
     fn begin_session(
         &self,
         session_id: String,
@@ -103,22 +134,39 @@ impl DictationState {
             session_id,
             engine,
             cancellation,
+            native: None,
         });
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn clear_session(&self, session_id: &str, cancel: bool) -> bool {
+    fn attach_native_session(
+        &self,
+        session_id: &str,
+        native: native_shim::Session,
+    ) -> Result<(), native_shim::Session> {
         let Ok(mut inner) = self.inner.lock() else {
-            return false;
+            return Err(native);
         };
-
-        let Some(active) = inner.active.as_ref() else {
-            return false;
+        let Some(active) = inner.active.as_mut() else {
+            return Err(native);
         };
-
         if active.session_id != session_id {
-            return false;
+            return Err(native);
+        }
+
+        active.native = Some(native);
+        Ok(())
+    }
+
+    fn take_session(&self, session_id: &str, cancel: bool) -> Option<ActiveDictationSession> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return None;
+        };
+        let Some(active) = inner.active.as_ref() else {
+            return None;
+        };
+        if active.session_id != session_id {
+            return None;
         }
 
         let active = inner
@@ -128,7 +176,29 @@ impl DictationState {
         if cancel {
             active.cancellation.cancel();
         }
-        true
+        Some(active)
+    }
+
+    fn take_active_session(&self, cancel: bool) -> Option<ActiveDictationSession> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return None;
+        };
+        let active = inner.active.take()?;
+        if cancel {
+            active.cancellation.cancel();
+        }
+        Some(active)
+    }
+
+    #[cfg(test)]
+    fn clear_session(&self, session_id: &str, cancel: bool) -> bool {
+        self.take_session(session_id, cancel).is_some()
+    }
+
+    fn cancel_active_for_shutdown(&self) {
+        if let Some(active) = self.take_active_session(true) {
+            let _ = active.cancel_native();
+        }
     }
 }
 
@@ -139,6 +209,223 @@ pub fn speech_dictation_status(
     let mut status = probe_dictation_status();
     status.active_session = state.active_session();
     Ok(status)
+}
+
+#[tauri::command]
+pub fn speech_dictation_start<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, DictationState>,
+    request: DictationStartRequestDto,
+) -> CommandResult<DictationStartResponseDto> {
+    let channel = resolve_channel(&webview, request.channel.as_deref())?;
+    let request = normalize_start_request(request);
+    let status = probe_dictation_status();
+    ensure_macos_platform(&status)?;
+
+    let engine = select_engine(&status, request.engine_preference)?;
+    let locale = request
+        .locale
+        .clone()
+        .or_else(|| status.default_locale.clone())
+        .unwrap_or_else(|| "en_US".to_string());
+    let session_id = next_session_id();
+    let cancellation = DictationCancellationHandle::default();
+
+    state.begin_session(session_id.clone(), engine, cancellation)?;
+
+    let context = Arc::new(NativeCallbackContext {
+        session_id: session_id.clone(),
+        state: state.inner().clone(),
+        channel,
+    });
+    let native_request = NativeSessionRequest {
+        session_id: session_id.clone(),
+        engine,
+        locale: locale.clone(),
+        privacy_mode: request.privacy_mode,
+        contextual_phrases: request.contextual_phrases,
+    };
+
+    let native = match native_shim::Session::create(&native_request, context) {
+        Ok(native) => native,
+        Err(error) => {
+            state.take_session(&session_id, true);
+            return Err(CommandError::system_fault(
+                "dictation_native_session_unavailable",
+                format!("Cadence could not create a native dictation session: {error}"),
+            ));
+        }
+    };
+
+    let start_response = match native.start() {
+        Ok(response) => response,
+        Err(error) => {
+            state.take_session(&session_id, true);
+            return Err(error.into_command_error());
+        }
+    };
+
+    let response = DictationStartResponseDto {
+        session_id: start_response
+            .session_id
+            .unwrap_or_else(|| session_id.clone()),
+        engine: start_response.engine.unwrap_or(engine),
+        locale: normalize_optional_text(start_response.locale).unwrap_or(locale),
+    };
+    if response.session_id != session_id {
+        state.take_session(&session_id, true);
+        return Err(CommandError::system_fault(
+            "dictation_native_session_mismatch",
+            "Cadence received a native dictation response for a different session.",
+        ));
+    }
+
+    if state.attach_native_session(&session_id, native).is_err() {
+        return Err(CommandError::retryable(
+            "dictation_session_closed",
+            "Cadence started dictation, but the session closed before the native handle could be attached.",
+        ));
+    }
+
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn speech_dictation_stop(state: State<'_, DictationState>) -> CommandResult<()> {
+    if let Some(active) = state.take_active_session(false) {
+        active.stop_native()?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn speech_dictation_cancel(state: State<'_, DictationState>) -> CommandResult<()> {
+    if let Some(active) = state.take_active_session(true) {
+        active.cancel_native()?;
+    }
+    Ok(())
+}
+
+pub fn shutdown_on_close<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(state) = app.try_state::<DictationState>() {
+        state.cancel_active_for_shutdown();
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedDictationStartRequest {
+    locale: Option<String>,
+    engine_preference: DictationEnginePreferenceDto,
+    privacy_mode: DictationPrivacyModeDto,
+    contextual_phrases: Vec<String>,
+}
+
+fn normalize_start_request(request: DictationStartRequestDto) -> NormalizedDictationStartRequest {
+    NormalizedDictationStartRequest {
+        locale: normalize_optional_text(request.locale),
+        engine_preference: request
+            .engine_preference
+            .unwrap_or(DictationEnginePreferenceDto::Automatic),
+        privacy_mode: request
+            .privacy_mode
+            .unwrap_or(DictationPrivacyModeDto::OnDevicePreferred),
+        contextual_phrases: request
+            .contextual_phrases
+            .into_iter()
+            .filter_map(|phrase| normalize_optional_text(Some(phrase)))
+            .collect(),
+    }
+}
+
+fn ensure_macos_platform(status: &DictationStatusDto) -> CommandResult<()> {
+    if status.platform == DictationPlatformDto::Macos {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "dictation_unsupported_platform",
+        "Cadence dictation is only available on macOS in this release.",
+    ))
+}
+
+fn select_engine(
+    status: &DictationStatusDto,
+    preference: DictationEnginePreferenceDto,
+) -> CommandResult<DictationEngineDto> {
+    match preference {
+        DictationEnginePreferenceDto::Modern if status.modern.available => {
+            Ok(DictationEngineDto::Modern)
+        }
+        DictationEnginePreferenceDto::Modern => Err(engine_unavailable_error(
+            "dictation_modern_unavailable",
+            "modern",
+            &status.modern,
+        )),
+        DictationEnginePreferenceDto::Legacy if status.legacy.available => {
+            Ok(DictationEngineDto::Legacy)
+        }
+        DictationEnginePreferenceDto::Legacy => Err(engine_unavailable_error(
+            "dictation_legacy_unavailable",
+            "legacy",
+            &status.legacy,
+        )),
+        DictationEnginePreferenceDto::Automatic if status.modern.available => {
+            Ok(DictationEngineDto::Modern)
+        }
+        DictationEnginePreferenceDto::Automatic if status.legacy.available => {
+            Ok(DictationEngineDto::Legacy)
+        }
+        DictationEnginePreferenceDto::Automatic => Err(CommandError::user_fixable(
+            "dictation_engine_unavailable",
+            "Cadence could not find an available native macOS dictation engine.",
+        )),
+    }
+}
+
+fn engine_unavailable_error(
+    code: &'static str,
+    engine_label: &'static str,
+    status: &DictationEngineStatusDto,
+) -> CommandError {
+    let detail = status
+        .reason
+        .as_deref()
+        .map(|reason| format!(" Reason: {reason}."))
+        .unwrap_or_default();
+    CommandError::user_fixable(
+        code,
+        format!("Cadence could not start the requested {engine_label} dictation engine.{detail}"),
+    )
+}
+
+fn resolve_channel<R: Runtime>(
+    webview: &Webview<R>,
+    raw_channel: Option<&str>,
+) -> CommandResult<Channel<DictationEventDto>> {
+    let Some(raw_channel) = raw_channel else {
+        return Err(CommandError::user_fixable(
+            "dictation_channel_missing",
+            "Cadence requires a dictation channel before it can stream native speech events.",
+        ));
+    };
+
+    let channel_id = JavaScriptChannelId::from_str(raw_channel).map_err(|_| {
+        CommandError::user_fixable(
+            "dictation_channel_invalid",
+            "Cadence received an invalid dictation channel handle from the desktop shell.",
+        )
+    })?;
+
+    Ok(channel_id.channel_on(webview.clone()))
+}
+
+fn next_session_id() -> String {
+    let counter = DICTATION_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("dictation-{now:x}-{counter:x}")
 }
 
 #[derive(Debug, Clone)]
@@ -292,13 +579,360 @@ fn permission_state(value: Option<&str>) -> DictationPermissionStateDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSessionRequest {
+    session_id: String,
+    engine: DictationEngineDto,
+    locale: String,
+    privacy_mode: DictationPrivacyModeDto,
+    contextual_phrases: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeOperationResponse {
+    ok: bool,
+    session_id: Option<String>,
+    engine: Option<DictationEngineDto>,
+    locale: Option<String>,
+    code: Option<String>,
+    message: Option<String>,
+    retryable: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeOperationError {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+impl NativeOperationError {
+    fn into_command_error(self) -> CommandError {
+        if self.retryable {
+            CommandError::retryable(self.code, self.message)
+        } else {
+            CommandError::user_fixable(self.code, self.message)
+        }
+    }
+}
+
+fn native_operation_result(
+    response: NativeOperationResponse,
+) -> Result<NativeOperationResponse, NativeOperationError> {
+    if response.ok {
+        Ok(response)
+    } else {
+        Err(NativeOperationError {
+            code: response
+                .code
+                .unwrap_or_else(|| "dictation_native_operation_failed".into()),
+            message: response.message.unwrap_or_else(|| {
+                "Cadence could not complete the native dictation operation.".into()
+            }),
+            retryable: response.retryable.unwrap_or(false),
+        })
+    }
+}
+
+struct NativeCallbackContext {
+    session_id: String,
+    state: DictationState,
+    channel: Channel<DictationEventDto>,
+}
+
+impl NativeCallbackContext {
+    fn handle_payload(&self, payload: &str) {
+        let event = match serde_json::from_str::<NativeDictationEvent>(payload) {
+            Ok(event) => match event.into_dto(&self.session_id) {
+                Ok(event) => event,
+                Err(error) => NativeEventOutcome {
+                    event: DictationEventDto::Error {
+                        session_id: Some(self.session_id.clone()),
+                        code: error.code,
+                        message: error.message,
+                        retryable: error.retryable,
+                    },
+                    terminal: true,
+                },
+            },
+            Err(error) => NativeEventOutcome {
+                event: DictationEventDto::Error {
+                    session_id: Some(self.session_id.clone()),
+                    code: "dictation_native_event_malformed".into(),
+                    message: format!(
+                        "Cadence received a malformed native dictation event: {error}"
+                    ),
+                    retryable: true,
+                },
+                terminal: true,
+            },
+        };
+
+        if self.channel.send(event.event.clone()).is_err() {
+            drop(self.state.take_session(&self.session_id, true));
+            return;
+        }
+
+        if event.terminal {
+            drop(self.state.take_session(&self.session_id, false));
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum NativeDictationEvent {
+    Permission {
+        microphone: DictationPermissionStateDto,
+        speech: DictationPermissionStateDto,
+    },
+    Started {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        engine: DictationEngineDto,
+        locale: String,
+    },
+    AssetInstalling {
+        progress: Option<f32>,
+    },
+    Partial {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        text: String,
+        sequence: u64,
+    },
+    Final {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        text: String,
+        sequence: u64,
+    },
+    Stopped {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        reason: DictationStopReasonDto,
+    },
+    Error {
+        #[serde(rename = "sessionId")]
+        session_id: Option<String>,
+        code: String,
+        message: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct NativeEventOutcome {
+    event: DictationEventDto,
+    terminal: bool,
+}
+
+impl NativeDictationEvent {
+    fn into_dto(
+        self,
+        expected_session_id: &str,
+    ) -> Result<NativeEventOutcome, NativeOperationError> {
+        match self {
+            NativeDictationEvent::Permission { microphone, speech } => Ok(NativeEventOutcome {
+                event: DictationEventDto::Permission { microphone, speech },
+                terminal: false,
+            }),
+            NativeDictationEvent::Started {
+                session_id,
+                engine,
+                locale,
+            } => {
+                validate_native_session_id(expected_session_id, &session_id)?;
+                Ok(NativeEventOutcome {
+                    event: DictationEventDto::Started {
+                        session_id,
+                        engine,
+                        locale,
+                    },
+                    terminal: false,
+                })
+            }
+            NativeDictationEvent::AssetInstalling { progress } => Ok(NativeEventOutcome {
+                event: DictationEventDto::AssetInstalling { progress },
+                terminal: false,
+            }),
+            NativeDictationEvent::Partial {
+                session_id,
+                text,
+                sequence,
+            } => {
+                validate_native_session_id(expected_session_id, &session_id)?;
+                Ok(NativeEventOutcome {
+                    event: DictationEventDto::Partial {
+                        session_id,
+                        text,
+                        sequence,
+                    },
+                    terminal: false,
+                })
+            }
+            NativeDictationEvent::Final {
+                session_id,
+                text,
+                sequence,
+            } => {
+                validate_native_session_id(expected_session_id, &session_id)?;
+                Ok(NativeEventOutcome {
+                    event: DictationEventDto::Final {
+                        session_id,
+                        text,
+                        sequence,
+                    },
+                    terminal: false,
+                })
+            }
+            NativeDictationEvent::Stopped { session_id, reason } => {
+                validate_native_session_id(expected_session_id, &session_id)?;
+                Ok(NativeEventOutcome {
+                    event: DictationEventDto::Stopped { session_id, reason },
+                    terminal: true,
+                })
+            }
+            NativeDictationEvent::Error {
+                session_id,
+                code,
+                message,
+                retryable,
+            } => {
+                if let Some(session_id) = session_id.as_deref() {
+                    validate_native_session_id(expected_session_id, session_id)?;
+                }
+                Ok(NativeEventOutcome {
+                    event: DictationEventDto::Error {
+                        session_id,
+                        code,
+                        message,
+                        retryable,
+                    },
+                    terminal: true,
+                })
+            }
+        }
+    }
+}
+
+fn validate_native_session_id(
+    expected_session_id: &str,
+    actual_session_id: &str,
+) -> Result<(), NativeOperationError> {
+    if actual_session_id == expected_session_id {
+        return Ok(());
+    }
+
+    Err(NativeOperationError {
+        code: "dictation_native_session_mismatch".into(),
+        message: "Cadence received a native dictation event for a different session.".into(),
+        retryable: false,
+    })
+}
+
+extern "C" fn native_event_callback(context: *mut c_void, payload: *const c_char) {
+    if context.is_null() || payload.is_null() {
+        return;
+    }
+
+    unsafe {
+        Arc::increment_strong_count(context as *const NativeCallbackContext);
+    }
+    let context = unsafe { Arc::from_raw(context as *const NativeCallbackContext) };
+    let payload = unsafe { CStr::from_ptr(payload).to_string_lossy().into_owned() };
+    context.handle_payload(&payload);
+}
+
 #[cfg(all(target_os = "macos", cadence_dictation_native_shim))]
 mod native_shim {
     use super::*;
 
+    type EventCallback = extern "C" fn(*mut c_void, *const c_char);
+
     extern "C" {
         fn cadence_dictation_capability_status_json() -> *mut c_char;
+        fn cadence_dictation_create_session(
+            request_json: *const c_char,
+            callback: EventCallback,
+            context: *mut c_void,
+        ) -> *mut c_void;
+        fn cadence_dictation_start_session(session: *mut c_void) -> *mut c_char;
+        fn cadence_dictation_stop_session(session: *mut c_void) -> *mut c_char;
+        fn cadence_dictation_cancel_session(session: *mut c_void) -> *mut c_char;
+        fn cadence_dictation_release_session(session: *mut c_void);
         fn cadence_dictation_free_string(value: *mut c_char);
+    }
+
+    pub(super) struct Session {
+        ptr: NonNull<c_void>,
+        context: *const NativeCallbackContext,
+    }
+
+    unsafe impl Send for Session {}
+
+    impl fmt::Debug for Session {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("Session")
+                .field("ptr", &self.ptr)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl Session {
+        pub(super) fn create(
+            request: &NativeSessionRequest,
+            context: Arc<NativeCallbackContext>,
+        ) -> Result<Self, String> {
+            let request_json = serde_json::to_string(request)
+                .map_err(|error| format!("native_session_request_malformed: {error}"))?;
+            let request_json = CString::new(request_json)
+                .map_err(|error| format!("native_session_request_contains_nul: {error}"))?;
+            let context = Arc::into_raw(context);
+            let ptr = unsafe {
+                cadence_dictation_create_session(
+                    request_json.as_ptr(),
+                    native_event_callback,
+                    context as *mut c_void,
+                )
+            };
+            let Some(ptr) = NonNull::new(ptr) else {
+                unsafe {
+                    drop(Arc::from_raw(context));
+                }
+                return Err("native_session_create_failed".into());
+            };
+
+            Ok(Self { ptr, context })
+        }
+
+        pub(super) fn start(&self) -> Result<NativeOperationResponse, NativeOperationError> {
+            decode_operation_response(unsafe { cadence_dictation_start_session(self.ptr.as_ptr()) })
+        }
+
+        pub(super) fn stop(&self) -> Result<(), NativeOperationError> {
+            decode_operation_response(unsafe { cadence_dictation_stop_session(self.ptr.as_ptr()) })
+                .map(|_| ())
+        }
+
+        pub(super) fn cancel(&self) -> Result<(), NativeOperationError> {
+            decode_operation_response(unsafe {
+                cadence_dictation_cancel_session(self.ptr.as_ptr())
+            })
+            .map(|_| ())
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            unsafe {
+                cadence_dictation_release_session(self.ptr.as_ptr());
+                drop(Arc::from_raw(self.context));
+            }
+        }
     }
 
     pub(super) fn capability_status_json() -> Result<String, String> {
@@ -311,18 +945,105 @@ mod native_shim {
         unsafe { cadence_dictation_free_string(ptr) };
         Ok(value)
     }
+
+    fn decode_operation_response(
+        ptr: *mut c_char,
+    ) -> Result<NativeOperationResponse, NativeOperationError> {
+        if ptr.is_null() {
+            return Err(NativeOperationError {
+                code: "dictation_native_response_missing".into(),
+                message: "Cadence did not receive a native dictation response.".into(),
+                retryable: true,
+            });
+        }
+
+        let value = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
+        unsafe { cadence_dictation_free_string(ptr) };
+        let response =
+            serde_json::from_str::<NativeOperationResponse>(&value).map_err(|error| {
+                NativeOperationError {
+                    code: "dictation_native_response_malformed".into(),
+                    message: format!(
+                        "Cadence received a malformed native dictation response: {error}"
+                    ),
+                    retryable: true,
+                }
+            })?;
+        native_operation_result(response)
+    }
 }
 
 #[cfg(not(all(target_os = "macos", cadence_dictation_native_shim)))]
 mod native_shim {
+    use super::*;
+
+    pub(super) struct Session;
+
+    impl fmt::Debug for Session {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.debug_struct("Session").finish_non_exhaustive()
+        }
+    }
+
+    impl Session {
+        pub(super) fn create(
+            _request: &NativeSessionRequest,
+            _context: Arc<NativeCallbackContext>,
+        ) -> Result<Self, String> {
+            Err("native_shim_unavailable".into())
+        }
+
+        pub(super) fn start(&self) -> Result<NativeOperationResponse, NativeOperationError> {
+            Err(native_unavailable_error())
+        }
+
+        pub(super) fn stop(&self) -> Result<(), NativeOperationError> {
+            Ok(())
+        }
+
+        pub(super) fn cancel(&self) -> Result<(), NativeOperationError> {
+            Ok(())
+        }
+    }
+
     pub(super) fn capability_status_json() -> Result<String, String> {
         Err("native_shim_unavailable".into())
+    }
+
+    fn native_unavailable_error() -> NativeOperationError {
+        NativeOperationError {
+            code: "dictation_native_shim_unavailable".into(),
+            message: "Cadence was built without the native macOS dictation shim.".into(),
+            retryable: false,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn available_status() -> DictationStatusDto {
+        DictationStatusDto {
+            platform: DictationPlatformDto::Macos,
+            default_locale: Some("en_US".into()),
+            modern: DictationEngineStatusDto {
+                available: false,
+                compiled: false,
+                runtime_supported: false,
+                reason: Some("modern_sdk_unavailable".into()),
+            },
+            legacy: DictationEngineStatusDto {
+                available: true,
+                compiled: true,
+                runtime_supported: true,
+                reason: None,
+            },
+            microphone_permission: DictationPermissionStateDto::NotDetermined,
+            speech_permission: DictationPermissionStateDto::NotDetermined,
+            active_session: None,
+        }
+    }
 
     #[test]
     fn session_guard_allows_only_one_active_session() {
@@ -387,6 +1108,83 @@ mod tests {
                 DictationCancellationHandle::default(),
             )
             .expect("guard should be released");
+    }
+
+    #[test]
+    fn stop_and_cancel_state_transitions_are_idempotent() {
+        let state = DictationState::default();
+        let stop_cancel = DictationCancellationHandle::default();
+
+        state
+            .begin_session(
+                "session-stop".into(),
+                DictationEngineDto::Legacy,
+                stop_cancel.clone(),
+            )
+            .expect("session should start");
+        let stopped = state
+            .take_active_session(false)
+            .expect("active session should be present");
+        assert_eq!(stopped.session_id, "session-stop");
+        assert!(!stop_cancel.is_cancelled());
+        assert!(state.take_active_session(false).is_none());
+
+        let cancel_cancel = DictationCancellationHandle::default();
+        state
+            .begin_session(
+                "session-cancel".into(),
+                DictationEngineDto::Legacy,
+                cancel_cancel.clone(),
+            )
+            .expect("session should start");
+        drop(state.take_active_session(true));
+        assert!(cancel_cancel.is_cancelled());
+        assert!(state.take_active_session(true).is_none());
+    }
+
+    #[test]
+    fn engine_selection_honors_preferences_and_reports_user_fixable_errors() {
+        let status = available_status();
+        assert_eq!(
+            select_engine(&status, DictationEnginePreferenceDto::Automatic).unwrap(),
+            DictationEngineDto::Legacy
+        );
+        assert_eq!(
+            select_engine(&status, DictationEnginePreferenceDto::Legacy).unwrap(),
+            DictationEngineDto::Legacy
+        );
+
+        let error = select_engine(&status, DictationEnginePreferenceDto::Modern)
+            .expect_err("modern should be unavailable");
+        assert_eq!(error.code, "dictation_modern_unavailable");
+    }
+
+    #[test]
+    fn native_events_convert_to_dictation_dtos() {
+        let event: NativeDictationEvent = serde_json::from_str(
+            r#"{"kind":"started","sessionId":"session-1","engine":"legacy","locale":"en_US"}"#,
+        )
+        .expect("event should parse");
+        let event = event
+            .into_dto("session-1")
+            .expect("event should convert to dto");
+        assert!(!event.terminal);
+        assert_eq!(
+            event.event,
+            DictationEventDto::Started {
+                session_id: "session-1".into(),
+                engine: DictationEngineDto::Legacy,
+                locale: "en_US".into(),
+            }
+        );
+
+        let mismatched: NativeDictationEvent =
+            serde_json::from_str(r#"{"kind":"stopped","sessionId":"other","reason":"user"}"#)
+                .expect("event should parse");
+        let error = mismatched
+            .into_dto("session-1")
+            .expect_err("mismatched session should fail");
+        assert_eq!(error.code, "dictation_native_session_mismatch");
     }
 
     #[test]

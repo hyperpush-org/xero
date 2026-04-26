@@ -230,7 +230,16 @@ import {
   type RuntimeStreamItemKindDto,
   type SubscribeRuntimeStreamResponseDto,
 } from '@/src/lib/cadence-model/runtime-stream'
-import { dictationStatusSchema, type DictationStatusDto } from '@/src/lib/cadence-model/dictation'
+import {
+  dictationEventSchema,
+  dictationStartRequestSchema,
+  dictationStartResponseSchema,
+  dictationStatusSchema,
+  type DictationEventDto,
+  type DictationStartRequestInputDto,
+  type DictationStartResponseDto,
+  type DictationStatusDto,
+} from '@/src/lib/cadence-model/dictation'
 import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
@@ -372,6 +381,9 @@ const COMMANDS = {
   submitNotificationReply: 'submit_notification_reply',
   syncNotificationAdapters: 'sync_notification_adapters',
   speechDictationStatus: 'speech_dictation_status',
+  speechDictationStart: 'speech_dictation_start',
+  speechDictationStop: 'speech_dictation_stop',
+  speechDictationCancel: 'speech_dictation_cancel',
   subscribeRuntimeStream: 'subscribe_runtime_stream',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
@@ -545,6 +557,13 @@ export interface CadenceAgentStreamSubscription {
   unsubscribe: () => void
 }
 
+export interface CadenceDictationSession {
+  response: DictationStartResponseDto
+  unsubscribe: () => void
+  stop: () => Promise<void>
+  cancel: () => Promise<void>
+}
+
 export interface CadenceDesktopAdapter {
   isDesktopRuntime(): boolean
   pickRepositoryFolder(): Promise<string | null>
@@ -702,6 +721,13 @@ export interface CadenceDesktopAdapter {
   submitNotificationReply(request: SubmitNotificationReplyRequestDto): Promise<SubmitNotificationReplyResponseDto>
   syncNotificationAdapters(projectId: string): Promise<SyncNotificationAdaptersResponseDto>
   speechDictationStatus?(): Promise<DictationStatusDto>
+  speechDictationStart?(
+    request: DictationStartRequestInputDto,
+    handler: (event: DictationEventDto) => void,
+    onError?: (error: CadenceDesktopError) => void,
+  ): Promise<CadenceDictationSession>
+  speechDictationStop?(): Promise<void>
+  speechDictationCancel?(): Promise<void>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -1078,6 +1104,82 @@ async function createAgentStreamSubscription(
   } catch (error) {
     unsubscribe()
     throw normalizeError(error, `Command ${COMMANDS.subscribeAgentStream}`)
+  }
+}
+
+async function createDictationSession(
+  request: DictationStartRequestInputDto,
+  handler: (event: DictationEventDto) => void,
+  onError?: (error: CadenceDesktopError) => void,
+): Promise<CadenceDictationSession> {
+  ensureDesktopRuntime(`Command ${COMMANDS.speechDictationStart}`)
+
+  let disposed = false
+  let response: DictationStartResponseDto | null = null
+  const pendingPayloads: unknown[] = []
+  const channel = new Channel<unknown>()
+
+  const unsubscribe = () => {
+    disposed = true
+    pendingPayloads.length = 0
+    channel.onmessage = () => undefined
+  }
+
+  const deliver = (payload: unknown, activeResponse: DictationStartResponseDto) => {
+    if (disposed) {
+      return
+    }
+
+    try {
+      const event = dictationEventSchema.parse(payload)
+      if ('sessionId' in event && event.sessionId !== activeResponse.sessionId) {
+        throw new CadenceDesktopError({
+          code: 'adapter_contract_mismatch',
+          errorClass: 'adapter_contract_mismatch',
+          message: `Command ${COMMANDS.speechDictationStart} channel returned a dictation event for session ${event.sessionId} while ${activeResponse.sessionId} is active.`,
+        })
+      }
+      handler(event)
+    } catch (error) {
+      onError?.(normalizeError(error, `Command ${COMMANDS.speechDictationStart} channel`))
+    }
+  }
+
+  channel.onmessage = (payload) => {
+    if (disposed) {
+      return
+    }
+
+    if (response === null) {
+      pendingPayloads.push(payload)
+      return
+    }
+
+    deliver(payload, response)
+  }
+
+  try {
+    const parsedRequest = dictationStartRequestSchema.parse(request)
+    response = await invokeTyped(COMMANDS.speechDictationStart, dictationStartResponseSchema, {
+      request: {
+        ...parsedRequest,
+        channel,
+      },
+    })
+
+    for (const pendingPayload of pendingPayloads.splice(0, pendingPayloads.length)) {
+      deliver(pendingPayload, response)
+    }
+
+    return {
+      response,
+      unsubscribe,
+      stop: () => invokeRaw(COMMANDS.speechDictationStop),
+      cancel: () => invokeRaw(COMMANDS.speechDictationCancel),
+    }
+  } catch (error) {
+    unsubscribe()
+    throw normalizeError(error, `Command ${COMMANDS.speechDictationStart}`)
   }
 }
 
@@ -1831,6 +1933,18 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   speechDictationStatus() {
     return invokeTyped(COMMANDS.speechDictationStatus, dictationStatusSchema)
+  },
+
+  speechDictationStart(request, handler, onError) {
+    return createDictationSession(request, handler, onError)
+  },
+
+  speechDictationStop() {
+    return invokeRaw(COMMANDS.speechDictationStop)
+  },
+
+  speechDictationCancel() {
+    return invokeRaw(COMMANDS.speechDictationCancel)
   },
 
   async browserEval(js, options) {

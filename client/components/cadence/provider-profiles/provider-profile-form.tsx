@@ -1422,15 +1422,19 @@ export function ProviderProfileForm({
             <div
               key={card.key}
               className={cn(
-                "rounded-lg border bg-card px-3.5 py-3 transition-colors",
-                isSelected ? "border-primary/40 bg-primary/[0.03]" : "border-border/70",
+                "group rounded-lg border bg-card px-3.5 py-3 transition-[border-color,background-color,box-shadow] duration-150 ease-out motion-reduce:transition-none",
+                isSelected
+                  ? "border-primary/40 bg-primary/[0.03] hover:border-primary/55 hover:bg-primary/[0.05]"
+                  : "border-border/70 hover:border-border hover:bg-secondary/30 hover:shadow-sm",
               )}
             >
               <div className="flex items-center gap-3">
                 <div
                   className={cn(
-                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border",
-                    isSelected ? "border-primary/40 bg-primary/[0.08] text-primary" : "border-border/70 bg-secondary/40 text-foreground/70",
+                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors duration-150 ease-out motion-reduce:transition-none",
+                    isSelected
+                      ? "border-primary/40 bg-primary/[0.08] text-primary group-hover:border-primary/55 group-hover:bg-primary/[0.12]"
+                      : "border-border/70 bg-secondary/40 text-foreground/70 group-hover:border-border group-hover:bg-secondary/70 group-hover:text-foreground",
                   )}
                 >
                   <Icon className="h-3.5 w-3.5" />

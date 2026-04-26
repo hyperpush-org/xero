@@ -72,6 +72,14 @@ export const dictationStartRequestSchema = z
   })
   .strict()
 
+export const dictationStartResponseSchema = z
+  .object({
+    sessionId: z.string().trim().min(1),
+    engine: dictationEngineSchema,
+    locale: z.string().trim().min(1),
+  })
+  .strict()
+
 const dictationSequenceSchema = z.number().int().nonnegative()
 
 export const dictationEventSchema = z.discriminatedUnion('kind', [
@@ -139,5 +147,7 @@ export type DictationStopReasonDto = z.infer<typeof dictationStopReasonSchema>
 export type DictationEngineStatusDto = z.infer<typeof dictationEngineStatusSchema>
 export type ActiveDictationSessionDto = z.infer<typeof activeDictationSessionSchema>
 export type DictationStatusDto = z.infer<typeof dictationStatusSchema>
+export type DictationStartRequestInputDto = z.input<typeof dictationStartRequestSchema>
 export type DictationStartRequestDto = z.infer<typeof dictationStartRequestSchema>
+export type DictationStartResponseDto = z.infer<typeof dictationStartResponseSchema>
 export type DictationEventDto = z.infer<typeof dictationEventSchema>

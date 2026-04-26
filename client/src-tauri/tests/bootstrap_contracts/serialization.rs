@@ -1,6 +1,7 @@
 use super::support::*;
 use cadence_desktop_lib::{
     commands::{
+        DictationEngineDto, DictationEventDto, DictationStopReasonDto,
         ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto,
         RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
         RuntimeRunPendingControlSnapshotDto,
@@ -2167,6 +2168,33 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             "agentSessionId": "agent-session-main",
             "channel": "__CHANNEL__:77",
             "itemKinds": ["transcript", "tool", "skill", "activity", "failure"]
+        })
+    );
+
+    assert_eq!(
+        serde_json::to_value(DictationEventDto::Started {
+            session_id: "session-1".into(),
+            engine: DictationEngineDto::Legacy,
+            locale: "en_US".into(),
+        })
+        .expect("dictation started event should serialize"),
+        json!({
+            "kind": "started",
+            "sessionId": "session-1",
+            "engine": "legacy",
+            "locale": "en_US"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(DictationEventDto::Stopped {
+            session_id: "session-1".into(),
+            reason: DictationStopReasonDto::Cancelled,
+        })
+        .expect("dictation stopped event should serialize"),
+        json!({
+            "kind": "stopped",
+            "sessionId": "session-1",
+            "reason": "cancelled"
         })
     );
 

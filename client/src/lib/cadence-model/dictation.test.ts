@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { dictationEventSchema, dictationStartRequestSchema, dictationStatusSchema } from './dictation'
+import {
+  dictationEventSchema,
+  dictationStartRequestSchema,
+  dictationStartResponseSchema,
+  dictationStatusSchema,
+} from './dictation'
 
 describe('dictation contract', () => {
   it('normalizes status optional text without changing capability truth', () => {
@@ -41,6 +46,18 @@ describe('dictation contract', () => {
       enginePreference: 'automatic',
       privacyMode: 'on_device_preferred',
       contextualPhrases: ['Cadence', 'Tauri'],
+    })
+
+    expect(
+      dictationStartResponseSchema.parse({
+        sessionId: 'session-1',
+        engine: 'legacy',
+        locale: 'en_US',
+      }),
+    ).toEqual({
+      sessionId: 'session-1',
+      engine: 'legacy',
+      locale: 'en_US',
     })
 
     expect(
