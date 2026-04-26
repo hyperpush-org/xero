@@ -266,6 +266,84 @@ function getProfileCards(providerProfiles: ProviderProfilesDto | null): Provider
   return cards
 }
 
+type ProviderGroupId = "oauth" | "hosted" | "cloud_ambient" | "local"
+
+interface ProviderProfileCardGroup {
+  id: ProviderGroupId
+  label: string
+  description: string
+  cards: ProviderProfileCard[]
+}
+
+const PROVIDER_GROUP_ORDER: ProviderGroupId[] = ["oauth", "hosted", "cloud_ambient", "local"]
+
+const PROVIDER_GROUP_META: Record<ProviderGroupId, { label: string; description: string }> = {
+  oauth: {
+    label: "Browser sign-in",
+    description: "Sign in through your browser when binding a runtime session.",
+  },
+  hosted: {
+    label: "Hosted (API key)",
+    description: "Save an app-local API key for hosted inference endpoints.",
+  },
+  cloud_ambient: {
+    label: "Cloud (ambient credentials)",
+    description: "Reuse ambient cloud credentials from the desktop host.",
+  },
+  local: {
+    label: "Local / self-hosted",
+    description: "Connect to a local endpoint without storing an API key.",
+  },
+}
+
+function getProviderGroupId(card: ProviderProfileCard): ProviderGroupId {
+  switch (card.preset.authMode) {
+    case "oauth":
+      return "oauth"
+    case "ambient":
+      return "cloud_ambient"
+    case "local":
+      return "local"
+    default:
+      return "hosted"
+  }
+}
+
+function groupProfileCards(
+  cards: ProviderProfileCard[],
+  activeProfileId: string | null,
+): ProviderProfileCardGroup[] {
+  const groups = new Map<ProviderGroupId, ProviderProfileCardGroup>()
+  for (const groupId of PROVIDER_GROUP_ORDER) {
+    groups.set(groupId, {
+      id: groupId,
+      label: PROVIDER_GROUP_META[groupId].label,
+      description: PROVIDER_GROUP_META[groupId].description,
+      cards: [],
+    })
+  }
+
+  for (const card of cards) {
+    groups.get(getProviderGroupId(card))!.cards.push(card)
+  }
+
+  const ordered = PROVIDER_GROUP_ORDER.map((id) => groups.get(id)!).filter(
+    (group) => group.cards.length > 0,
+  )
+
+  if (activeProfileId) {
+    const activeIdx = ordered.findIndex((group) =>
+      group.cards.some((card) => card.profile?.profileId === activeProfileId),
+    )
+    if (activeIdx > 0) {
+      const [activeGroup] = ordered.splice(activeIdx, 1)
+      ordered.unshift(activeGroup)
+    }
+  }
+
+  return ordered
+}
+
 function getProviderReadinessBadge(profile: ProviderProfileDto | null) {
   if (!profile || profile.providerId === "openai_codex") return null
 
@@ -730,6 +808,10 @@ export function ProviderProfileForm({
   const [appliedRecipeIds, setAppliedRecipeIds] = useState<Record<string, ProviderSetupRecipeIdDto>>({})
 
   const cards = getProfileCards(providerProfiles)
+  const cardGroups = useMemo(
+    () => groupProfileCards(cards, providerProfiles?.activeProfileId ?? null),
+    [cards, providerProfiles?.activeProfileId],
+  )
   const recommendationSet = useMemo(() => recommendProviderSetup(providerProfiles), [providerProfiles])
   const selectedRecipe = getProviderSetupRecipe(selectedRecipeId) ?? recipes[0] ?? null
   const isRefreshing = providerProfilesLoadStatus === "loading"
@@ -1237,8 +1319,24 @@ export function ProviderProfileForm({
         ) : null}
       </div>
 
-      <div className="grid gap-3">
-        {cards.map((card) => {
+      <div className="flex flex-col gap-5">
+        {cardGroups.map((group) => (
+          <div key={group.id} className="flex flex-col gap-2">
+            <div className="flex items-baseline justify-between gap-3 px-0.5">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+                  {group.label}
+                </p>
+                <p className="mt-0.5 text-[11.5px] leading-[1.45] text-muted-foreground">
+                  {group.description}
+                </p>
+              </div>
+              <Badge variant="outline" className="shrink-0 text-[10.5px]">
+                {group.cards.length}
+              </Badge>
+            </div>
+            <div className="grid gap-3">
+              {group.cards.map((card) => {
           const draft = getDraft(card)
           const appliedRecipe = getAppliedRecipe(card)
           const apiKeyRequirement = getDraftApiKeyRequirement(card, draft, appliedRecipe)
@@ -1861,7 +1959,10 @@ export function ProviderProfileForm({
               ) : null}
             </div>
           )
-        })}
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )

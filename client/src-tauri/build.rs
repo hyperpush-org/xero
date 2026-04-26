@@ -17,11 +17,159 @@ const IDB_COMPANION_SHA256: &str =
 const IDB_COMPANION_DIR: &str = "idb-companion.universal";
 
 fn main() {
+    configure_custom_cfgs();
     tauri_build::build();
+    compile_dictation_shim();
     build_cookie_importer();
     fetch_scrcpy_server();
     fetch_idb_companion();
     compile_idb_proto();
+}
+
+fn configure_custom_cfgs() {
+    println!("cargo:rustc-check-cfg=cfg(cadence_dictation_native_shim)");
+    println!("cargo:rustc-check-cfg=cfg(cadence_dictation_modern_sdk)");
+}
+
+fn compile_dictation_shim() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=native/dictation/CapabilityStatus.swift");
+    println!("cargo:rerun-if-changed=native/dictation/ModernAvailable.swift");
+    println!("cargo:rerun-if-changed=native/dictation/ModernStub.swift");
+    println!("cargo:rerun-if-env-changed=CADENCE_SKIP_DICTATION_SHIM");
+
+    println!("cargo:rustc-env=CADENCE_MACOS_SDK_VERSION=");
+    println!("cargo:rustc-env=CADENCE_DICTATION_MODERN_COMPILED=0");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+
+    println!("cargo:rustc-link-lib=framework=Speech");
+    println!("cargo:rustc-link-lib=framework=AVFoundation");
+    println!("cargo:rustc-link-lib=framework=Foundation");
+
+    if std::env::var_os("CADENCE_SKIP_DICTATION_SHIM").is_some() {
+        println!(
+            "cargo:warning=CADENCE_SKIP_DICTATION_SHIM is set; dictation status will report the native shim unavailable."
+        );
+        return;
+    }
+
+    let Some(swiftc) = xcrun_find("swiftc") else {
+        println!(
+            "cargo:warning=swiftc was not found via xcrun; dictation status will report the native shim unavailable."
+        );
+        return;
+    };
+    let Some(sdk_path) = xcrun_output(&["--sdk", "macosx", "--show-sdk-path"]) else {
+        println!(
+            "cargo:warning=macOS SDK path was not found via xcrun; dictation status will report the native shim unavailable."
+        );
+        return;
+    };
+    let sdk_version = xcrun_output(&["--sdk", "macosx", "--show-sdk-version"]).unwrap_or_default();
+    let modern_sdk = macos_sdk_supports_modern_dictation(&sdk_version);
+
+    println!("cargo:rustc-env=CADENCE_MACOS_SDK_VERSION={sdk_version}");
+    println!(
+        "cargo:rustc-env=CADENCE_DICTATION_MODERN_COMPILED={}",
+        if modern_sdk { "1" } else { "0" }
+    );
+    if modern_sdk {
+        println!("cargo:rustc-cfg=cadence_dictation_modern_sdk");
+    }
+
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let shim_dir = manifest_dir.join("native/dictation");
+    let modern_source = if modern_sdk {
+        shim_dir.join("ModernAvailable.swift")
+    } else {
+        shim_dir.join("ModernStub.swift")
+    };
+    let output = out_dir.join("libCadenceDictationShim.a");
+
+    let status = Command::new(&swiftc)
+        .arg("-emit-library")
+        .arg("-static")
+        .arg("-parse-as-library")
+        .arg("-module-name")
+        .arg("CadenceDictationShim")
+        .arg("-sdk")
+        .arg(&sdk_path)
+        .arg("-o")
+        .arg(&output)
+        .arg(shim_dir.join("CapabilityStatus.swift"))
+        .arg(modern_source)
+        .status()
+        .expect("failed to spawn swiftc for dictation shim");
+
+    if !status.success() {
+        panic!("failed to compile Cadence dictation Swift shim (exit {status:?})");
+    }
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    for runtime_path in swift_runtime_library_paths(&swiftc) {
+        println!("cargo:rustc-link-search=native={runtime_path}");
+    }
+    println!("cargo:rustc-link-lib=static=CadenceDictationShim");
+    println!("cargo:rustc-cfg=cadence_dictation_native_shim");
+}
+
+fn xcrun_find(tool: &str) -> Option<PathBuf> {
+    xcrun_output(&["--find", tool]).map(PathBuf::from)
+}
+
+fn xcrun_output(args: &[&str]) -> Option<String> {
+    let output = Command::new("xcrun").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn macos_sdk_supports_modern_dictation(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 26)
+}
+
+fn swift_runtime_library_paths(swiftc: &Path) -> Vec<String> {
+    let output = Command::new(swiftc).arg("-print-target-info").output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(key_index) = text.find("\"runtimeLibraryPaths\"") else {
+        return Vec::new();
+    };
+    let Some(start_offset) = text[key_index..].find('[') else {
+        return Vec::new();
+    };
+    let start = key_index + start_offset + 1;
+    let Some(end_offset) = text[start..].find(']') else {
+        return Vec::new();
+    };
+    let array = &text[start..start + end_offset];
+
+    array
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .collect()
 }
 
 /// Compile `proto/idb.proto` into a tonic gRPC client. Only runs when the

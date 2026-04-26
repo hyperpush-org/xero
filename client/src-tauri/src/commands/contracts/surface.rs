@@ -77,6 +77,7 @@ pub const RECORD_NOTIFICATION_DISPATCH_OUTCOME_COMMAND: &str =
 pub const SUBMIT_NOTIFICATION_REPLY_COMMAND: &str = "submit_notification_reply";
 pub const SYNC_NOTIFICATION_ADAPTERS_COMMAND: &str = "sync_notification_adapters";
 pub const UPSERT_RUNTIME_SETTINGS_COMMAND: &str = "upsert_runtime_settings";
+pub const SPEECH_DICTATION_STATUS_COMMAND: &str = "speech_dictation_status";
 pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     IMPORT_REPOSITORY_COMMAND,
     LIST_PROJECTS_COMMAND,
@@ -145,6 +146,7 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     SUBMIT_NOTIFICATION_REPLY_COMMAND,
     SYNC_NOTIFICATION_ADAPTERS_COMMAND,
     UPSERT_RUNTIME_SETTINGS_COMMAND,
+    SPEECH_DICTATION_STATUS_COMMAND,
 ];
 
 pub const PROJECT_UPDATED_EVENT: &str = "project:updated";

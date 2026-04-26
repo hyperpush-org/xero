@@ -230,6 +230,7 @@ import {
   type RuntimeStreamItemKindDto,
   type SubscribeRuntimeStreamResponseDto,
 } from '@/src/lib/cadence-model/runtime-stream'
+import { dictationStatusSchema, type DictationStatusDto } from '@/src/lib/cadence-model/dictation'
 import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
@@ -370,6 +371,7 @@ const COMMANDS = {
   recordNotificationDispatchOutcome: 'record_notification_dispatch_outcome',
   submitNotificationReply: 'submit_notification_reply',
   syncNotificationAdapters: 'sync_notification_adapters',
+  speechDictationStatus: 'speech_dictation_status',
   subscribeRuntimeStream: 'subscribe_runtime_stream',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
@@ -699,6 +701,7 @@ export interface CadenceDesktopAdapter {
   ): Promise<RecordNotificationDispatchOutcomeResponseDto>
   submitNotificationReply(request: SubmitNotificationReplyRequestDto): Promise<SubmitNotificationReplyResponseDto>
   syncNotificationAdapters(projectId: string): Promise<SyncNotificationAdaptersResponseDto>
+  speechDictationStatus?(): Promise<DictationStatusDto>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -1824,6 +1827,10 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     return invokeTyped(COMMANDS.syncNotificationAdapters, syncNotificationAdaptersResponseSchema, {
       request,
     })
+  },
+
+  speechDictationStatus() {
+    return invokeTyped(COMMANDS.speechDictationStatus, dictationStatusSchema)
   },
 
   async browserEval(js, options) {

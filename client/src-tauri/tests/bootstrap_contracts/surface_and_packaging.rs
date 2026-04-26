@@ -9,8 +9,8 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        63,
-        "expected sixty-three desktop commands"
+        64,
+        "expected sixty-four desktop commands"
     );
 
     tauri::test::assert_ipc_response(
@@ -168,6 +168,15 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
             openrouter_api_key_configured: false,
             anthropic_api_key_configured: false,
         }),
+    );
+
+    let expected_dictation_status =
+        cadence_desktop_lib::commands::speech_dictation_status(app.state::<DictationState>())
+            .expect("dictation status should probe capability shape");
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(SPEECH_DICTATION_STATUS_COMMAND, json!({})),
+        Ok(expected_dictation_status),
     );
 
     let expected_mcp_registry = cadence_desktop_lib::commands::list_mcp_servers(
@@ -808,6 +817,7 @@ pub(crate) fn config_and_capability_files_lock_the_packaged_vite_shell_and_auth_
         .expect("valid tauri config json");
     let capability: Value = serde_json::from_str(include_str!("../../capabilities/default.json"))
         .expect("valid capability json");
+    let info_plist = include_str!("../../Info.plist");
 
     assert_eq!(
         tauri_config["build"]["devUrl"],
@@ -841,6 +851,11 @@ pub(crate) fn config_and_capability_files_lock_the_packaged_vite_shell_and_auth_
         tauri_config["bundle"]["targets"],
         json!(["app"]),
         "tauri.conf bundle.targets drifted; debug release-gate builds must bundle only the macOS app artifact in deterministic local environments"
+    );
+    assert!(
+        info_plist.contains("NSMicrophoneUsageDescription")
+            && info_plist.contains("NSSpeechRecognitionUsageDescription"),
+        "Info.plist must keep microphone and speech-recognition privacy strings for native dictation"
     );
 
     assert_eq!(

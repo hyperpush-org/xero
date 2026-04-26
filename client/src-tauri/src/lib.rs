@@ -24,6 +24,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
     builder
         .manage(desktop_state)
         .manage(commands::BrowserState::default())
+        .manage(commands::DictationState::default())
         .manage(commands::EmulatorState::default())
         .manage(commands::SolanaState::default())
         .register_asynchronous_uri_scheme_protocol(
@@ -159,6 +160,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::record_notification_dispatch_outcome::record_notification_dispatch_outcome,
             commands::submit_notification_reply::submit_notification_reply,
             commands::sync_notification_adapters::sync_notification_adapters,
+            commands::dictation::speech_dictation_status,
             commands::browser::browser_show,
             commands::browser::browser_resize,
             commands::browser::browser_hide,

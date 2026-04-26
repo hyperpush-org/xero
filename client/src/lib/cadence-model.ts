@@ -76,6 +76,7 @@ export * from './cadence-model/runtime-stream'
 export * from './cadence-model/mcp'
 export * from './cadence-model/skills'
 export * from './cadence-model/session-context'
+export * from './cadence-model/dictation'
 
 export const projectSnapshotResponseSchema = z
   .object({

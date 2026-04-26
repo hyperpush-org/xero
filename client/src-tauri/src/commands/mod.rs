@@ -2,6 +2,7 @@ pub mod agent_session;
 pub mod agent_task;
 pub mod browser;
 pub mod cancel_autonomous_run;
+pub mod dictation;
 pub mod doctor_report;
 pub mod emulator;
 pub mod get_autonomous_run;
@@ -70,6 +71,7 @@ pub use browser::{
     BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
+pub use dictation::{speech_dictation_status, DictationState};
 pub use doctor_report::run_doctor_report;
 pub use emulator::{
     emulator_android_provision, emulator_android_provision_status, emulator_input,
@@ -157,8 +159,8 @@ pub use upsert_notification_route_credentials::upsert_notification_route_credent
 pub use upsert_runtime_settings::upsert_runtime_settings;
 
 pub use contracts::{
-    agent::*, autonomous::*, error::*, mcp::*, notifications::*, runtime::*, session_context::*,
-    skills::*, surface::*, workflow::*,
+    agent::*, autonomous::*, dictation::*, error::*, mcp::*, notifications::*, runtime::*,
+    session_context::*, skills::*, surface::*, workflow::*,
 };
 
 pub(crate) use contracts::{
