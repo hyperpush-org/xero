@@ -30,6 +30,8 @@ fn seed_project(root: &TempDir, project_id: &str, repository_id: &str, repo_name
         has_staged_changes: false,
         has_unstaged_changes: false,
         has_untracked_changes: false,
+        additions: 0,
+        deletions: 0,
     };
 
     let state = DesktopState::default();

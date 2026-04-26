@@ -152,6 +152,8 @@ fn seed_project(root: &TempDir, project_id: &str, repo_name: &str) -> PathBuf {
         has_staged_changes: false,
         has_unstaged_changes: false,
         has_untracked_changes: false,
+        additions: 0,
+        deletions: 0,
     };
 
     db::import_project(&repository, DesktopState::default().import_failpoints())

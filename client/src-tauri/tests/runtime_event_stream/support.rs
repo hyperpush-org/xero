@@ -179,6 +179,8 @@ pub(crate) fn seed_project(
         has_staged_changes: false,
         has_unstaged_changes: false,
         has_untracked_changes: false,
+        additions: 0,
+        deletions: 0,
     };
 
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())

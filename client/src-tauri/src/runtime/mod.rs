@@ -3,6 +3,7 @@ pub mod autonomous_orchestrator;
 pub mod autonomous_skill_runtime;
 pub mod autonomous_tool_runtime;
 pub mod autonomous_web_runtime;
+pub mod diagnostics;
 pub mod platform_adapter;
 pub(crate) mod process_tree;
 pub mod protocol;
@@ -111,6 +112,18 @@ pub use autonomous_web_runtime::{
     AutonomousWebSearchOutput, AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest,
     AutonomousWebTransport, AutonomousWebTransportError, AutonomousWebTransportRequest,
     AutonomousWebTransportResponse, AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
+};
+pub use diagnostics::{
+    ambient_auth_failure_diagnostic, invalid_base_url_diagnostic,
+    provider_model_catalog_diagnostic, provider_profile_readiness_diagnostic, render_doctor_report,
+    stale_runtime_binding_diagnostic, summarize_diagnostic_checks, unsupported_provider_diagnostic,
+    validate_diagnostic_check, validate_doctor_report, CadenceDiagnosticCheck,
+    CadenceDiagnosticCheckInput, CadenceDiagnosticEndpointMetadata,
+    CadenceDiagnosticRedactionClass, CadenceDiagnosticSeverity, CadenceDiagnosticStatus,
+    CadenceDiagnosticSubject, CadenceDoctorReport, CadenceDoctorReportInput,
+    CadenceDoctorReportMode, CadenceDoctorReportOutputMode, CadenceDoctorReportSummary,
+    CadenceDoctorVersionInfo, CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+    CADENCE_DOCTOR_REPORT_CONTRACT_VERSION,
 };
 pub use platform_adapter::{
     bind_openai_callback_listener, default_openai_callback_policy, resolve_openai_callback_policy,

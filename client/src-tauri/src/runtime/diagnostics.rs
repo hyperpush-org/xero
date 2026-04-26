@@ -1,0 +1,1149 @@
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::{
+    commands::{CommandError, CommandResult},
+    provider_models::{ProviderModelCatalog, ProviderModelCatalogSource},
+    provider_profiles::{
+        ProviderProfileReadinessProjection, ProviderProfileReadinessStatus, ProviderProfileRecord,
+    },
+};
+
+pub const CADENCE_DIAGNOSTIC_CONTRACT_VERSION: u32 = 1;
+pub const CADENCE_DOCTOR_REPORT_CONTRACT_VERSION: u32 = 1;
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CadenceDiagnosticSubject {
+    ProviderProfile,
+    ModelCatalog,
+    RuntimeBinding,
+    RuntimeSupervisor,
+    McpRegistry,
+    SettingsDependency,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CadenceDiagnosticStatus {
+    Passed,
+    Warning,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CadenceDiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CadenceDiagnosticRedactionClass {
+    Public,
+    EndpointCredential,
+    LocalPath,
+    Secret,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadenceDiagnosticEndpointMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_list_strategy: Option<String>,
+    #[serde(default)]
+    pub redacted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadenceDiagnosticCheck {
+    pub contract_version: u32,
+    pub check_id: String,
+    pub subject: CadenceDiagnosticSubject,
+    pub status: CadenceDiagnosticStatus,
+    pub severity: CadenceDiagnosticSeverity,
+    pub retryable: bool,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affected_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affected_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<CadenceDiagnosticEndpointMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+    pub redaction_class: CadenceDiagnosticRedactionClass,
+    #[serde(default)]
+    pub redacted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CadenceDiagnosticCheckInput {
+    pub subject: CadenceDiagnosticSubject,
+    pub status: CadenceDiagnosticStatus,
+    pub severity: CadenceDiagnosticSeverity,
+    pub retryable: bool,
+    pub code: String,
+    pub message: String,
+    pub affected_profile_id: Option<String>,
+    pub affected_provider_id: Option<String>,
+    pub endpoint: Option<CadenceDiagnosticEndpointMetadata>,
+    pub remediation: Option<String>,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadenceDoctorReportMode {
+    QuickLocal,
+    ExtendedNetwork,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadenceDoctorReportOutputMode {
+    CompactHuman,
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadenceDoctorVersionInfo {
+    pub app_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_supervisor_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_protocol_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadenceDoctorReportSummary {
+    pub passed: u32,
+    pub warnings: u32,
+    pub failed: u32,
+    pub skipped: u32,
+    pub total: u32,
+    pub highest_severity: CadenceDiagnosticSeverity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CadenceDoctorReport {
+    pub contract_version: u32,
+    pub report_id: String,
+    pub generated_at: String,
+    pub mode: CadenceDoctorReportMode,
+    pub versions: CadenceDoctorVersionInfo,
+    pub summary: CadenceDoctorReportSummary,
+    #[serde(default)]
+    pub profile_checks: Vec<CadenceDiagnosticCheck>,
+    #[serde(default)]
+    pub model_catalog_checks: Vec<CadenceDiagnosticCheck>,
+    #[serde(default)]
+    pub runtime_supervisor_checks: Vec<CadenceDiagnosticCheck>,
+    #[serde(default)]
+    pub mcp_dependency_checks: Vec<CadenceDiagnosticCheck>,
+    #[serde(default)]
+    pub settings_dependency_checks: Vec<CadenceDiagnosticCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CadenceDoctorReportInput {
+    pub report_id: String,
+    pub generated_at: String,
+    pub mode: CadenceDoctorReportMode,
+    pub versions: CadenceDoctorVersionInfo,
+    pub profile_checks: Vec<CadenceDiagnosticCheck>,
+    pub model_catalog_checks: Vec<CadenceDiagnosticCheck>,
+    pub runtime_supervisor_checks: Vec<CadenceDiagnosticCheck>,
+    pub mcp_dependency_checks: Vec<CadenceDiagnosticCheck>,
+    pub settings_dependency_checks: Vec<CadenceDiagnosticCheck>,
+}
+
+impl CadenceDiagnosticCheck {
+    pub fn new(input: CadenceDiagnosticCheckInput) -> CommandResult<Self> {
+        let (message, message_redacted, message_class) = sanitize_diagnostic_text(&input.message);
+        let (remediation, remediation_redacted, remediation_class) =
+            sanitize_optional_diagnostic_text(input.remediation.as_deref());
+        let (endpoint, endpoint_redacted, endpoint_class) =
+            sanitize_endpoint_metadata(input.endpoint);
+        let redaction_class = strongest_redaction_class(
+            strongest_redaction_class(message_class, remediation_class),
+            endpoint_class,
+        );
+
+        let check = Self {
+            contract_version: CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+            check_id: diagnostic_check_id(
+                input.subject,
+                input.affected_provider_id.as_deref(),
+                input.affected_profile_id.as_deref(),
+                &input.code,
+            ),
+            subject: input.subject,
+            status: input.status,
+            severity: input.severity,
+            retryable: input.retryable,
+            code: input.code.trim().to_owned(),
+            message,
+            affected_profile_id: normalize_optional_text(input.affected_profile_id),
+            affected_provider_id: normalize_optional_text(input.affected_provider_id),
+            endpoint,
+            remediation,
+            redaction_class,
+            redacted: message_redacted || remediation_redacted || endpoint_redacted,
+        };
+
+        validate_diagnostic_check(check)
+    }
+
+    pub fn passed(
+        subject: CadenceDiagnosticSubject,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> CommandResult<Self> {
+        Self::new(CadenceDiagnosticCheckInput {
+            subject,
+            status: CadenceDiagnosticStatus::Passed,
+            severity: CadenceDiagnosticSeverity::Info,
+            retryable: false,
+            code: code.into(),
+            message: message.into(),
+            affected_profile_id: None,
+            affected_provider_id: None,
+            endpoint: None,
+            remediation: None,
+        })
+    }
+
+    pub fn skipped(
+        subject: CadenceDiagnosticSubject,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        remediation: Option<String>,
+    ) -> CommandResult<Self> {
+        Self::new(CadenceDiagnosticCheckInput {
+            subject,
+            status: CadenceDiagnosticStatus::Skipped,
+            severity: CadenceDiagnosticSeverity::Info,
+            retryable: false,
+            code: code.into(),
+            message: message.into(),
+            affected_profile_id: None,
+            affected_provider_id: None,
+            endpoint: None,
+            remediation,
+        })
+    }
+}
+
+impl CadenceDoctorReport {
+    pub fn new(input: CadenceDoctorReportInput) -> CommandResult<Self> {
+        let mut report = Self {
+            contract_version: CADENCE_DOCTOR_REPORT_CONTRACT_VERSION,
+            report_id: input.report_id.trim().to_owned(),
+            generated_at: input.generated_at.trim().to_owned(),
+            mode: input.mode,
+            versions: CadenceDoctorVersionInfo {
+                app_version: sanitize_diagnostic_text(&input.versions.app_version).0,
+                runtime_supervisor_version: sanitize_optional_diagnostic_text(
+                    input.versions.runtime_supervisor_version.as_deref(),
+                )
+                .0,
+                runtime_protocol_version: sanitize_optional_diagnostic_text(
+                    input.versions.runtime_protocol_version.as_deref(),
+                )
+                .0,
+            },
+            summary: CadenceDoctorReportSummary {
+                passed: 0,
+                warnings: 0,
+                failed: 0,
+                skipped: 0,
+                total: 0,
+                highest_severity: CadenceDiagnosticSeverity::Info,
+            },
+            profile_checks: sort_and_validate_checks(input.profile_checks)?,
+            model_catalog_checks: sort_and_validate_checks(input.model_catalog_checks)?,
+            runtime_supervisor_checks: sort_and_validate_checks(input.runtime_supervisor_checks)?,
+            mcp_dependency_checks: sort_and_validate_checks(input.mcp_dependency_checks)?,
+            settings_dependency_checks: sort_and_validate_checks(input.settings_dependency_checks)?,
+        };
+        report.summary = summarize_diagnostic_checks(report.all_checks());
+        validate_doctor_report(report)
+    }
+
+    pub fn all_checks(&self) -> Vec<&CadenceDiagnosticCheck> {
+        self.profile_checks
+            .iter()
+            .chain(self.model_catalog_checks.iter())
+            .chain(self.runtime_supervisor_checks.iter())
+            .chain(self.mcp_dependency_checks.iter())
+            .chain(self.settings_dependency_checks.iter())
+            .collect()
+    }
+}
+
+pub fn provider_profile_readiness_diagnostic(
+    profile: &ProviderProfileRecord,
+    readiness: &ProviderProfileReadinessProjection,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    let endpoint = endpoint_metadata_from_profile(profile);
+    match readiness.status {
+        ProviderProfileReadinessStatus::Ready => CadenceDiagnosticCheck::new(
+            CadenceDiagnosticCheckInput {
+                subject: CadenceDiagnosticSubject::ProviderProfile,
+                status: CadenceDiagnosticStatus::Passed,
+                severity: CadenceDiagnosticSeverity::Info,
+                retryable: false,
+                code: "provider_profile_ready".into(),
+                message: format!(
+                    "Provider profile `{}` is ready for `{}`.",
+                    profile.profile_id, profile.provider_id
+                ),
+                affected_profile_id: Some(profile.profile_id.clone()),
+                affected_provider_id: Some(profile.provider_id.clone()),
+                endpoint,
+                remediation: None,
+            },
+        ),
+        ProviderProfileReadinessStatus::Missing => CadenceDiagnosticCheck::new(
+            CadenceDiagnosticCheckInput {
+                subject: CadenceDiagnosticSubject::ProviderProfile,
+                status: CadenceDiagnosticStatus::Failed,
+                severity: CadenceDiagnosticSeverity::Error,
+                retryable: false,
+                code: "provider_profile_credentials_missing".into(),
+                message: format!(
+                    "Provider profile `{}` is missing credentials for `{}`.",
+                    profile.profile_id, profile.provider_id
+                ),
+                affected_profile_id: Some(profile.profile_id.clone()),
+                affected_provider_id: Some(profile.provider_id.clone()),
+                endpoint,
+                remediation: Some(provider_profile_remediation(profile)),
+            },
+        ),
+        ProviderProfileReadinessStatus::Malformed => CadenceDiagnosticCheck::new(
+            CadenceDiagnosticCheckInput {
+                subject: CadenceDiagnosticSubject::ProviderProfile,
+                status: CadenceDiagnosticStatus::Failed,
+                severity: CadenceDiagnosticSeverity::Error,
+                retryable: false,
+                code: "provider_profile_credentials_malformed".into(),
+                message: format!(
+                    "Provider profile `{}` has a credential link that no longer matches its stored credential record.",
+                    profile.profile_id
+                ),
+                affected_profile_id: Some(profile.profile_id.clone()),
+                affected_provider_id: Some(profile.provider_id.clone()),
+                endpoint,
+                remediation: Some(
+                    "Reconnect or resave this provider profile so Cadence can rebuild the app-local credential link.".into(),
+                ),
+            },
+        ),
+    }
+}
+
+pub fn unsupported_provider_diagnostic(
+    profile_id: Option<&str>,
+    provider_id: &str,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+        subject: CadenceDiagnosticSubject::ProviderProfile,
+        status: CadenceDiagnosticStatus::Failed,
+        severity: CadenceDiagnosticSeverity::Error,
+        retryable: false,
+        code: "provider_id_unsupported".into(),
+        message: format!("Cadence does not support provider id `{provider_id}`."),
+        affected_profile_id: profile_id.map(str::to_owned),
+        affected_provider_id: Some(provider_id.into()),
+        endpoint: None,
+        remediation: Some(
+            "Choose a supported provider preset or configure this endpoint through an OpenAI-compatible recipe.".into(),
+        ),
+    })
+}
+
+pub fn invalid_base_url_diagnostic(
+    profile: &ProviderProfileRecord,
+    base_url: &str,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+        subject: CadenceDiagnosticSubject::ProviderProfile,
+        status: CadenceDiagnosticStatus::Failed,
+        severity: CadenceDiagnosticSeverity::Error,
+        retryable: false,
+        code: "provider_profile_base_url_invalid".into(),
+        message: format!(
+            "Provider profile `{}` has an invalid base URL.",
+            profile.profile_id
+        ),
+        affected_profile_id: Some(profile.profile_id.clone()),
+        affected_provider_id: Some(profile.provider_id.clone()),
+        endpoint: Some(CadenceDiagnosticEndpointMetadata {
+            base_url: Some(base_url.into()),
+            host: None,
+            api_version: profile.api_version.clone(),
+            region: profile.region.clone(),
+            project_id: profile.project_id.clone(),
+            model_list_strategy: None,
+            redacted: false,
+        }),
+        remediation: Some(
+            "Enter a valid http or https endpoint, usually ending in `/v1` for OpenAI-compatible providers.".into(),
+        ),
+    })
+}
+
+pub fn stale_runtime_binding_diagnostic(
+    profile_id: Option<&str>,
+    provider_id: &str,
+    runtime_kind: &str,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+        subject: CadenceDiagnosticSubject::RuntimeBinding,
+        status: CadenceDiagnosticStatus::Failed,
+        severity: CadenceDiagnosticSeverity::Error,
+        retryable: false,
+        code: "runtime_binding_stale".into(),
+        message: format!(
+            "The runtime binding for provider `{provider_id}` and runtime `{runtime_kind}` is stale."
+        ),
+        affected_profile_id: profile_id.map(str::to_owned),
+        affected_provider_id: Some(provider_id.into()),
+        endpoint: None,
+        remediation: Some(
+            "Restart the runtime session after resaving or reselecting the provider profile.".into(),
+        ),
+    })
+}
+
+pub fn ambient_auth_failure_diagnostic(
+    profile: &ProviderProfileRecord,
+    message: &str,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+        subject: CadenceDiagnosticSubject::ProviderProfile,
+        status: CadenceDiagnosticStatus::Failed,
+        severity: CadenceDiagnosticSeverity::Error,
+        retryable: true,
+        code: "provider_profile_ambient_auth_failed".into(),
+        message: message.into(),
+        affected_profile_id: Some(profile.profile_id.clone()),
+        affected_provider_id: Some(profile.provider_id.clone()),
+        endpoint: endpoint_metadata_from_profile(profile),
+        remediation: Some(
+            "Refresh the ambient provider login in your shell or cloud SDK, then run diagnostics again.".into(),
+        ),
+    })
+}
+
+pub fn provider_model_catalog_diagnostic(
+    catalog: &ProviderModelCatalog,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    if let Some(error) = &catalog.last_refresh_error {
+        let has_stale_snapshot = matches!(
+            catalog.source,
+            ProviderModelCatalogSource::Cache | ProviderModelCatalogSource::Manual
+        ) && !catalog.models.is_empty();
+        return CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+            subject: CadenceDiagnosticSubject::ModelCatalog,
+            status: if has_stale_snapshot {
+                CadenceDiagnosticStatus::Warning
+            } else {
+                CadenceDiagnosticStatus::Failed
+            },
+            severity: if has_stale_snapshot {
+                CadenceDiagnosticSeverity::Warning
+            } else {
+                CadenceDiagnosticSeverity::Error
+            },
+            retryable: error.retryable,
+            code: error.code.clone(),
+            message: error.message.clone(),
+            affected_profile_id: Some(catalog.profile_id.clone()),
+            affected_provider_id: Some(catalog.provider_id.clone()),
+            endpoint: None,
+            remediation: Some(provider_catalog_remediation(
+                &catalog.provider_id,
+                error.retryable,
+            )),
+        });
+    }
+
+    match catalog.source {
+        ProviderModelCatalogSource::Live | ProviderModelCatalogSource::Cache => {
+            CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+                subject: CadenceDiagnosticSubject::ModelCatalog,
+                status: CadenceDiagnosticStatus::Passed,
+                severity: CadenceDiagnosticSeverity::Info,
+                retryable: false,
+                code: "provider_model_catalog_ready".into(),
+                message: format!(
+                    "Model catalog for profile `{}` is available from {:?}.",
+                    catalog.profile_id, catalog.source
+                ),
+                affected_profile_id: Some(catalog.profile_id.clone()),
+                affected_provider_id: Some(catalog.provider_id.clone()),
+                endpoint: None,
+                remediation: None,
+            })
+        }
+        ProviderModelCatalogSource::Manual => {
+            CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+                subject: CadenceDiagnosticSubject::ModelCatalog,
+                status: CadenceDiagnosticStatus::Skipped,
+                severity: CadenceDiagnosticSeverity::Info,
+                retryable: false,
+                code: "provider_model_catalog_manual".into(),
+                message: format!(
+                    "Provider `{}` uses manual model catalog configuration.",
+                    catalog.provider_id
+                ),
+                affected_profile_id: Some(catalog.profile_id.clone()),
+                affected_provider_id: Some(catalog.provider_id.clone()),
+                endpoint: None,
+                remediation: Some(
+                    "Confirm the configured model id is still accepted by the provider endpoint."
+                        .into(),
+                ),
+            })
+        }
+        ProviderModelCatalogSource::Unavailable => {
+            CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+                subject: CadenceDiagnosticSubject::ModelCatalog,
+                status: CadenceDiagnosticStatus::Failed,
+                severity: CadenceDiagnosticSeverity::Error,
+                retryable: true,
+                code: "provider_model_catalog_unavailable".into(),
+                message: format!(
+                    "Model catalog for profile `{}` is unavailable.",
+                    catalog.profile_id
+                ),
+                affected_profile_id: Some(catalog.profile_id.clone()),
+                affected_provider_id: Some(catalog.provider_id.clone()),
+                endpoint: None,
+                remediation: Some(provider_catalog_remediation(&catalog.provider_id, true)),
+            })
+        }
+    }
+}
+
+pub fn validate_diagnostic_check(
+    check: CadenceDiagnosticCheck,
+) -> CommandResult<CadenceDiagnosticCheck> {
+    if check.contract_version != CADENCE_DIAGNOSTIC_CONTRACT_VERSION {
+        return Err(CommandError::user_fixable(
+            "diagnostic_contract_version_invalid",
+            "Cadence diagnostic checks must use the current diagnostic contract version.",
+        ));
+    }
+    ensure_non_empty(&check.check_id, "checkId")?;
+    ensure_non_empty(&check.code, "code")?;
+    ensure_non_empty(&check.message, "message")?;
+    if let Some(profile_id) = &check.affected_profile_id {
+        ensure_non_empty(profile_id, "affectedProfileId")?;
+    }
+    if let Some(provider_id) = &check.affected_provider_id {
+        ensure_non_empty(provider_id, "affectedProviderId")?;
+    }
+
+    match check.status {
+        CadenceDiagnosticStatus::Passed => {
+            if check.severity != CadenceDiagnosticSeverity::Info || check.retryable {
+                return Err(invalid_state_combo(
+                    "Passed diagnostic checks must use severity `info` and retryable=false.",
+                ));
+            }
+            if check.remediation.is_some() {
+                return Err(invalid_state_combo(
+                    "Passed diagnostic checks must not include remediation text.",
+                ));
+            }
+        }
+        CadenceDiagnosticStatus::Skipped => {
+            if check.severity != CadenceDiagnosticSeverity::Info || check.retryable {
+                return Err(invalid_state_combo(
+                    "Skipped diagnostic checks must use severity `info` and retryable=false.",
+                ));
+            }
+        }
+        CadenceDiagnosticStatus::Warning => {
+            if check.severity != CadenceDiagnosticSeverity::Warning {
+                return Err(invalid_state_combo(
+                    "Warning diagnostic checks must use severity `warning`.",
+                ));
+            }
+            ensure_non_empty_option(check.remediation.as_deref(), "remediation")?;
+        }
+        CadenceDiagnosticStatus::Failed => {
+            if check.severity != CadenceDiagnosticSeverity::Error {
+                return Err(invalid_state_combo(
+                    "Failed diagnostic checks must use severity `error`.",
+                ));
+            }
+            ensure_non_empty_option(check.remediation.as_deref(), "remediation")?;
+        }
+    }
+
+    if check.redaction_class == CadenceDiagnosticRedactionClass::Public && check.redacted {
+        return Err(invalid_state_combo(
+            "Public diagnostic checks must not be marked redacted.",
+        ));
+    }
+    if check.redaction_class != CadenceDiagnosticRedactionClass::Public && !check.redacted {
+        return Err(invalid_state_combo(
+            "Non-public diagnostic redaction classes must set redacted=true.",
+        ));
+    }
+
+    Ok(check)
+}
+
+pub fn validate_doctor_report(report: CadenceDoctorReport) -> CommandResult<CadenceDoctorReport> {
+    if report.contract_version != CADENCE_DOCTOR_REPORT_CONTRACT_VERSION {
+        return Err(CommandError::user_fixable(
+            "doctor_report_contract_version_invalid",
+            "Cadence doctor reports must use the current doctor report contract version.",
+        ));
+    }
+    ensure_non_empty(&report.report_id, "reportId")?;
+    ensure_non_empty(&report.generated_at, "generatedAt")?;
+    ensure_non_empty(&report.versions.app_version, "versions.appVersion")?;
+
+    let checks = report.all_checks();
+    for check in &checks {
+        validate_diagnostic_check((*check).clone())?;
+    }
+
+    let expected = summarize_diagnostic_checks(checks);
+    if report.summary != expected {
+        return Err(CommandError::user_fixable(
+            "doctor_report_summary_invalid",
+            "Cadence doctor report summary counts must match the included checks.",
+        ));
+    }
+
+    Ok(report)
+}
+
+pub fn render_doctor_report(
+    report: &CadenceDoctorReport,
+    mode: CadenceDoctorReportOutputMode,
+) -> CommandResult<String> {
+    validate_doctor_report(report.clone())?;
+    match mode {
+        CadenceDoctorReportOutputMode::Json => {
+            serde_json::to_string_pretty(report).map_err(|error| {
+                CommandError::system_fault(
+                    "doctor_report_json_serialize_failed",
+                    format!("Cadence could not serialize the doctor report: {error}"),
+                )
+            })
+        }
+        CadenceDoctorReportOutputMode::CompactHuman => Ok(render_compact_human_report(report)),
+    }
+}
+
+pub fn summarize_diagnostic_checks(
+    checks: Vec<&CadenceDiagnosticCheck>,
+) -> CadenceDoctorReportSummary {
+    let mut summary = CadenceDoctorReportSummary {
+        passed: 0,
+        warnings: 0,
+        failed: 0,
+        skipped: 0,
+        total: checks.len() as u32,
+        highest_severity: CadenceDiagnosticSeverity::Info,
+    };
+
+    for check in checks {
+        match check.status {
+            CadenceDiagnosticStatus::Passed => summary.passed += 1,
+            CadenceDiagnosticStatus::Warning => summary.warnings += 1,
+            CadenceDiagnosticStatus::Failed => summary.failed += 1,
+            CadenceDiagnosticStatus::Skipped => summary.skipped += 1,
+        }
+        summary.highest_severity = highest_severity(summary.highest_severity, check.severity);
+    }
+
+    summary
+}
+
+pub fn sanitize_diagnostic_text(value: &str) -> (String, bool, CadenceDiagnosticRedactionClass) {
+    let mut redacted = false;
+    let mut redaction_class = CadenceDiagnosticRedactionClass::Public;
+    let mut redact_next = false;
+    let words = value
+        .split_whitespace()
+        .map(|word| {
+            let bare = trim_word_punctuation(word);
+            let lower = bare.to_ascii_lowercase();
+            if redact_next {
+                redact_next = false;
+                redacted = true;
+                redaction_class = strongest_redaction_class(
+                    redaction_class,
+                    CadenceDiagnosticRedactionClass::Secret,
+                );
+                return word.replace(bare, "[redacted]");
+            }
+
+            if lower == "bearer" || lower == "authorization:" || lower == "authorization" {
+                redact_next = true;
+                return word.to_owned();
+            }
+
+            if let Some(redacted_assignment) = redact_sensitive_assignment(bare) {
+                redacted = true;
+                redaction_class = strongest_redaction_class(
+                    redaction_class,
+                    CadenceDiagnosticRedactionClass::Secret,
+                );
+                return word.replace(bare, &redacted_assignment);
+            }
+
+            if looks_like_secret_token(bare) {
+                redacted = true;
+                redaction_class = strongest_redaction_class(
+                    redaction_class,
+                    CadenceDiagnosticRedactionClass::Secret,
+                );
+                "[redacted]".into()
+            } else if looks_like_raw_local_path(bare) {
+                redacted = true;
+                redaction_class = strongest_redaction_class(
+                    redaction_class,
+                    CadenceDiagnosticRedactionClass::LocalPath,
+                );
+                word.replace(bare, "[redacted-path]")
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    (words.join(" "), redacted, redaction_class)
+}
+
+fn sort_and_validate_checks(
+    checks: Vec<CadenceDiagnosticCheck>,
+) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
+    let mut checks = checks
+        .into_iter()
+        .map(validate_diagnostic_check)
+        .collect::<CommandResult<Vec<_>>>()?;
+    checks.sort_by(|left, right| {
+        (
+            left.subject,
+            left.affected_provider_id.as_deref().unwrap_or_default(),
+            left.affected_profile_id.as_deref().unwrap_or_default(),
+            left.code.as_str(),
+            left.check_id.as_str(),
+        )
+            .cmp(&(
+                right.subject,
+                right.affected_provider_id.as_deref().unwrap_or_default(),
+                right.affected_profile_id.as_deref().unwrap_or_default(),
+                right.code.as_str(),
+                right.check_id.as_str(),
+            ))
+    });
+    Ok(checks)
+}
+
+fn render_compact_human_report(report: &CadenceDoctorReport) -> String {
+    let mut lines = vec![
+        format!("Cadence doctor report {}", report.report_id),
+        format!("Generated: {}", report.generated_at),
+        format!("Mode: {:?}", report.mode),
+        format!(
+            "Summary: {} passed, {} warning(s), {} failed, {} skipped",
+            report.summary.passed,
+            report.summary.warnings,
+            report.summary.failed,
+            report.summary.skipped
+        ),
+    ];
+    push_human_group(&mut lines, "Provider profiles", &report.profile_checks);
+    push_human_group(&mut lines, "Model catalogs", &report.model_catalog_checks);
+    push_human_group(
+        &mut lines,
+        "Runtime supervisor",
+        &report.runtime_supervisor_checks,
+    );
+    push_human_group(
+        &mut lines,
+        "MCP dependencies",
+        &report.mcp_dependency_checks,
+    );
+    push_human_group(
+        &mut lines,
+        "Settings dependencies",
+        &report.settings_dependency_checks,
+    );
+    lines.join("\n")
+}
+
+fn push_human_group(lines: &mut Vec<String>, label: &str, checks: &[CadenceDiagnosticCheck]) {
+    if checks.is_empty() {
+        return;
+    }
+    lines.push(format!("{label}:"));
+    for check in checks {
+        let remediation = check
+            .remediation
+            .as_deref()
+            .map(|value| format!(" Remediation: {value}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- [{:?}] {}: {}{}",
+            check.status, check.code, check.message, remediation
+        ));
+    }
+}
+
+fn sanitize_optional_diagnostic_text(
+    value: Option<&str>,
+) -> (Option<String>, bool, CadenceDiagnosticRedactionClass) {
+    let Some(value) = value else {
+        return (None, false, CadenceDiagnosticRedactionClass::Public);
+    };
+    let (sanitized, redacted, class) = sanitize_diagnostic_text(value);
+    (Some(sanitized), redacted, class)
+}
+
+fn sanitize_endpoint_metadata(
+    endpoint: Option<CadenceDiagnosticEndpointMetadata>,
+) -> (
+    Option<CadenceDiagnosticEndpointMetadata>,
+    bool,
+    CadenceDiagnosticRedactionClass,
+) {
+    let Some(endpoint) = endpoint else {
+        return (None, false, CadenceDiagnosticRedactionClass::Public);
+    };
+
+    let (base_url, base_url_redacted, base_url_class, host) = endpoint
+        .base_url
+        .as_deref()
+        .map(sanitize_endpoint_url)
+        .unwrap_or((None, false, CadenceDiagnosticRedactionClass::Public, None));
+    let (api_version, api_redacted, api_class) =
+        sanitize_optional_diagnostic_text(endpoint.api_version.as_deref());
+    let (region, region_redacted, region_class) =
+        sanitize_optional_diagnostic_text(endpoint.region.as_deref());
+    let (project_id, project_redacted, project_class) =
+        sanitize_optional_diagnostic_text(endpoint.project_id.as_deref());
+    let (model_list_strategy, model_strategy_redacted, model_strategy_class) =
+        sanitize_optional_diagnostic_text(endpoint.model_list_strategy.as_deref());
+    let redaction_class = [
+        base_url_class,
+        api_class,
+        region_class,
+        project_class,
+        model_strategy_class,
+    ]
+    .into_iter()
+    .fold(
+        CadenceDiagnosticRedactionClass::Public,
+        strongest_redaction_class,
+    );
+    let redacted = endpoint.redacted
+        || base_url_redacted
+        || api_redacted
+        || region_redacted
+        || project_redacted
+        || model_strategy_redacted;
+
+    (
+        Some(CadenceDiagnosticEndpointMetadata {
+            base_url,
+            host: host.or_else(|| normalize_optional_text(endpoint.host)),
+            api_version,
+            region,
+            project_id,
+            model_list_strategy,
+            redacted,
+        }),
+        redacted,
+        redaction_class,
+    )
+}
+
+fn sanitize_endpoint_url(
+    value: &str,
+) -> (
+    Option<String>,
+    bool,
+    CadenceDiagnosticRedactionClass,
+    Option<String>,
+) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return (None, false, CadenceDiagnosticRedactionClass::Public, None);
+    }
+
+    let Ok(mut parsed) = Url::parse(trimmed) else {
+        let (sanitized, redacted, class) = sanitize_diagnostic_text(trimmed);
+        return (Some(sanitized), redacted, class, None);
+    };
+
+    let mut redacted = false;
+    if !parsed.username().is_empty() {
+        let _ = parsed.set_username("redacted");
+        redacted = true;
+    }
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(None);
+        redacted = true;
+    }
+
+    if let Some(segments) = parsed.path_segments() {
+        if segments.clone().any(looks_like_secret_path_segment) {
+            parsed.set_path("/[redacted-path]");
+            redacted = true;
+        }
+    }
+
+    if parsed.query().is_some() {
+        let pairs = parsed
+            .query_pairs()
+            .map(|(key, value)| {
+                if is_sensitive_name(&key) && !value.is_empty() {
+                    redacted = true;
+                    (key.into_owned(), "[redacted]".to_owned())
+                } else {
+                    (key.into_owned(), value.into_owned())
+                }
+            })
+            .collect::<Vec<_>>();
+        parsed.set_query(None);
+        if !pairs.is_empty() {
+            let query = pairs
+                .into_iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            parsed.set_query(Some(&query));
+        }
+    }
+
+    let host = parsed.host_str().map(str::to_owned);
+    (
+        Some(parsed.to_string()),
+        redacted,
+        if redacted {
+            CadenceDiagnosticRedactionClass::EndpointCredential
+        } else {
+            CadenceDiagnosticRedactionClass::Public
+        },
+        host,
+    )
+}
+
+fn endpoint_metadata_from_profile(
+    profile: &ProviderProfileRecord,
+) -> Option<CadenceDiagnosticEndpointMetadata> {
+    if profile.base_url.is_none()
+        && profile.api_version.is_none()
+        && profile.region.is_none()
+        && profile.project_id.is_none()
+    {
+        return None;
+    }
+
+    Some(CadenceDiagnosticEndpointMetadata {
+        base_url: profile.base_url.clone(),
+        host: None,
+        api_version: profile.api_version.clone(),
+        region: profile.region.clone(),
+        project_id: profile.project_id.clone(),
+        model_list_strategy: None,
+        redacted: false,
+    })
+}
+
+fn provider_profile_remediation(profile: &ProviderProfileRecord) -> String {
+    match profile.provider_id.as_str() {
+        "ollama" => {
+            "Start Ollama or update the local endpoint, then check the connection again.".into()
+        }
+        "bedrock" | "vertex" => {
+            "Configure ambient cloud credentials and confirm the region/project metadata.".into()
+        }
+        "openai_codex" => "Sign in to OpenAI Codex from Providers settings.".into(),
+        _ => {
+            "Add credentials or choose another ready provider profile in Providers settings.".into()
+        }
+    }
+}
+
+fn provider_catalog_remediation(provider_id: &str, retryable: bool) -> String {
+    if retryable {
+        format!("Check network access and credentials for `{provider_id}`, then refresh the model catalog.")
+    } else {
+        format!("Review the saved provider profile for `{provider_id}` before refreshing the model catalog.")
+    }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn ensure_non_empty(value: &str, field: &'static str) -> CommandResult<()> {
+    if value.trim().is_empty() {
+        return Err(CommandError::invalid_request(field));
+    }
+    Ok(())
+}
+
+fn ensure_non_empty_option(value: Option<&str>, field: &'static str) -> CommandResult<()> {
+    let Some(value) = value else {
+        return Err(CommandError::invalid_request(field));
+    };
+    ensure_non_empty(value, field)
+}
+
+fn invalid_state_combo(message: impl Into<String>) -> CommandError {
+    CommandError::user_fixable("diagnostic_state_invalid", message)
+}
+
+fn diagnostic_check_id(
+    subject: CadenceDiagnosticSubject,
+    provider_id: Option<&str>,
+    profile_id: Option<&str>,
+    code: &str,
+) -> String {
+    format!(
+        "diagnostic:v{}:{:?}:{}:{}:{}",
+        CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+        subject,
+        provider_id.unwrap_or("global"),
+        profile_id.unwrap_or("global"),
+        code.trim()
+    )
+    .to_ascii_lowercase()
+    .replace("::", ":")
+}
+
+fn highest_severity(
+    current: CadenceDiagnosticSeverity,
+    next: CadenceDiagnosticSeverity,
+) -> CadenceDiagnosticSeverity {
+    if next > current {
+        next
+    } else {
+        current
+    }
+}
+
+fn strongest_redaction_class(
+    left: CadenceDiagnosticRedactionClass,
+    right: CadenceDiagnosticRedactionClass,
+) -> CadenceDiagnosticRedactionClass {
+    if right > left {
+        right
+    } else {
+        left
+    }
+}
+
+fn trim_word_punctuation(value: &str) -> &str {
+    value.trim_matches(|character: char| {
+        matches!(
+            character,
+            ',' | ';' | ':' | '.' | ')' | '(' | '[' | ']' | '"' | '\''
+        )
+    })
+}
+
+fn redact_sensitive_assignment(value: &str) -> Option<String> {
+    for separator in ['=', ':'] {
+        if let Some((key, secret)) = value.split_once(separator) {
+            if is_sensitive_name(key) && !secret.trim().is_empty() {
+                return Some(format!("{}{}[redacted]", key, separator));
+            }
+        }
+    }
+    None
+}
+
+fn is_sensitive_name(value: &str) -> bool {
+    let normalized = value
+        .trim()
+        .trim_start_matches('-')
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    matches!(
+        normalized.as_str(),
+        "access_token"
+            | "api_key"
+            | "apikey"
+            | "authorization"
+            | "auth_token"
+            | "bearer"
+            | "client_secret"
+            | "password"
+            | "private_key"
+            | "refresh_token"
+            | "secret"
+            | "session_id"
+            | "session_token"
+            | "token"
+            | "x_api_key"
+    )
+}
+
+fn looks_like_secret_token(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    normalized.contains("sk-")
+        || normalized.contains("github_pat_")
+        || normalized.contains("ghp_")
+        || normalized.contains("gho_")
+        || normalized.contains("ghu_")
+        || normalized.contains("ghs_")
+        || normalized.contains("glpat-")
+        || normalized.contains("xoxb-")
+        || normalized.contains("xoxp-")
+        || normalized.contains("ya29.")
+        || normalized.contains("-----begin")
+        || normalized.starts_with("akia")
+}
+
+fn looks_like_raw_local_path(value: &str) -> bool {
+    value.starts_with("/Users/")
+        || value.starts_with("/home/")
+        || value.starts_with("/var/folders/")
+        || value.starts_with("/tmp/")
+        || value.starts_with("~/")
+        || value.starts_with("\\Users\\")
+        || value.contains(":\\Users\\")
+}
+
+fn looks_like_secret_path_segment(value: &str) -> bool {
+    looks_like_secret_token(value)
+        || (value.len() >= 32
+            && value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric()))
+}

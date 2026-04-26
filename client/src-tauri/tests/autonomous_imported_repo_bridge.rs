@@ -158,6 +158,8 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         has_staged_changes: false,
         has_unstaged_changes: false,
         has_untracked_changes: false,
+        additions: 0,
+        deletions: 0,
     };
 
     ensure_cadence_excluded(&repository, app.state::<DesktopState>().import_failpoints())

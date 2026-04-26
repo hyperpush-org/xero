@@ -555,6 +555,8 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
             has_staged_changes: true,
             has_unstaged_changes: false,
             has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
         },
     })
     .expect("status payload should serialize");

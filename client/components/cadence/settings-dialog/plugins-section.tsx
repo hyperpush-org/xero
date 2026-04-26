@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   AlertCircle,
+  ChevronRight,
   FolderPlus,
   LoaderCircle,
   Plug,
@@ -38,8 +39,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -70,6 +69,8 @@ type PluginRootForm = {
 }
 
 type PluginRootErrors = Partial<Record<keyof PluginRootForm, string>>
+
+type Tone = 'good' | 'info' | 'warn' | 'bad' | 'neutral'
 
 function defaultPluginRootForm(): PluginRootForm {
   return {
@@ -123,33 +124,57 @@ function hasErrors(errors: PluginRootErrors): boolean {
   return Object.values(errors).some(Boolean)
 }
 
-function stateTone(state: PluginRegistryEntryDto['state']): string {
+function stateTone(state: PluginRegistryEntryDto['state']): Tone {
   switch (state) {
     case 'enabled':
-      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-100'
+      return 'good'
     case 'discoverable':
     case 'installed':
-      return 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-100'
+      return 'info'
     case 'disabled':
     case 'stale':
-      return 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-100'
+      return 'warn'
     case 'failed':
     case 'blocked':
-      return 'bg-destructive/15 text-destructive'
+      return 'bad'
   }
 }
 
-function trustTone(trust: PluginRegistryEntryDto['trust']): string {
+function trustTone(trust: PluginRegistryEntryDto['trust']): Tone {
   switch (trust) {
     case 'trusted':
     case 'user_approved':
-      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-100'
+      return 'good'
     case 'approval_required':
     case 'untrusted':
-      return 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-100'
+      return 'warn'
     case 'blocked':
-      return 'bg-destructive/15 text-destructive'
+      return 'bad'
   }
+}
+
+const TONE_CLASS: Record<Tone, string> = {
+  good:
+    'border-emerald-500/30 bg-emerald-500/[0.08] text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-400/[0.08] dark:text-emerald-200',
+  info:
+    'border-sky-500/30 bg-sky-500/[0.08] text-sky-700 dark:border-sky-400/40 dark:bg-sky-400/[0.08] dark:text-sky-200',
+  warn:
+    'border-amber-500/30 bg-amber-500/[0.08] text-amber-800 dark:border-amber-400/40 dark:bg-amber-400/[0.08] dark:text-amber-200',
+  bad: 'border-destructive/40 bg-destructive/[0.08] text-destructive',
+  neutral: 'border-border bg-secondary/60 text-foreground/70',
+}
+
+function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex h-[18px] items-center rounded-full border px-1.5 text-[10.5px] font-medium',
+        TONE_CLASS[tone],
+      )}
+    >
+      {children}
+    </span>
+  )
 }
 
 function pluginPendingId(pluginId: string): string {
@@ -175,7 +200,7 @@ function pluginMatchesQuery(plugin: PluginRegistryEntryDto, query: string): bool
 }
 
 export function PluginsSection({
-  agent,
+  agent: _agent,
   skillRegistry,
   skillRegistryLoadStatus,
   skillRegistryLoadError,
@@ -189,7 +214,7 @@ export function PluginsSection({
   onSetPluginEnabled,
   onRemovePlugin,
 }: PluginsSectionProps) {
-  const projectId = agent?.project.id ?? skillRegistry?.projectId ?? null
+  const projectId = _agent?.project.id ?? skillRegistry?.projectId ?? null
   const [query, setQuery] = useState('')
   const [rootForm, setRootForm] = useState<PluginRootForm>(() => defaultPluginRootForm())
   const [rootErrors, setRootErrors] = useState<PluginRootErrors>({})
@@ -204,6 +229,10 @@ export function PluginsSection({
     }
     return plugins.filter((plugin) => pluginMatchesQuery(plugin, normalizedQuery))
   }, [query, skillRegistry?.plugins])
+
+  const totalPlugins = skillRegistry?.plugins.length ?? 0
+  const totalCommands = skillRegistry?.pluginCommands.length ?? 0
+  const pluginRoots = skillRegistry?.sources.pluginRoots ?? []
 
   const handleReload = () => {
     if (onReloadSkillRegistry) {
@@ -235,15 +264,16 @@ export function PluginsSection({
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <SectionHeader
         title="Plugins"
-        description="Manage plugin sources that contribute skills and commands into the existing Cadence runtime."
+        description="Manage plugin sources that contribute skills and commands into the Cadence runtime."
         actions={
           <Button
             type="button"
             variant="outline"
             size="sm"
+            className="h-8 gap-1.5 text-[12px]"
             disabled={loading || (!onReloadSkillRegistry && !onRefreshSkillRegistry)}
             onClick={handleReload}
           >
@@ -253,60 +283,156 @@ export function PluginsSection({
         }
       />
 
-      {skillRegistryLoadError ? (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Plugin registry unavailable</AlertTitle>
-          <AlertDescription>{skillRegistryLoadError.message}</AlertDescription>
-        </Alert>
-      ) : null}
+      {skillRegistryLoadError ? <ErrorBanner message={skillRegistryLoadError.message} /> : null}
+      {skillRegistryMutationError ? <ErrorBanner message={skillRegistryMutationError.message} /> : null}
 
-      {skillRegistryMutationError ? (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Plugin update failed</AlertTitle>
-          <AlertDescription>{skillRegistryMutationError.message}</AlertDescription>
-        </Alert>
-      ) : null}
-
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="h-8 pl-8 text-[12px]"
-              placeholder="Search plugins"
-              aria-label="Search plugins"
-            />
+      {/* Plugin roots */}
+      <div className="rounded-lg border border-border bg-card px-5 py-4">
+        <div className="flex items-start gap-3.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
+            <FolderPlus className="h-4 w-4 text-foreground/70" />
           </div>
-          <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-            <Badge variant="secondary" className="text-[10px]">
-              {skillRegistry?.plugins.length ?? 0} plugins
-            </Badge>
-            <Badge variant="secondary" className="text-[10px]">
-              {skillRegistry?.pluginCommands.length ?? 0} commands
-            </Badge>
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] font-medium text-foreground">Plugin roots</p>
+            <p className="mt-0.5 text-[12px] text-muted-foreground">
+              Directories Cadence scans for plugin manifests.
+              {pluginRoots.length > 0 ? ` ${pluginRoots.length} configured.` : ''}
+            </p>
           </div>
         </div>
 
-        <div className="rounded-md border border-border/70">
+        <div className="mt-4 grid gap-2 sm:grid-cols-[0.7fr_1.4fr_auto_auto]">
+          <div>
+            <Label htmlFor="plugin-root-id" className="sr-only">
+              Plugin root id
+            </Label>
+            <Input
+              id="plugin-root-id"
+              value={rootForm.rootId}
+              onChange={(event) => setRootForm((current) => ({ ...current, rootId: event.target.value }))}
+              className="h-9 font-mono text-[12px]"
+              placeholder="root-id"
+              aria-invalid={Boolean(rootErrors.rootId)}
+            />
+            {rootErrors.rootId ? <p className="mt-1 text-[11px] text-destructive">{rootErrors.rootId}</p> : null}
+          </div>
+          <div>
+            <Label htmlFor="plugin-root-path" className="sr-only">
+              Plugin root path
+            </Label>
+            <Input
+              id="plugin-root-path"
+              value={rootForm.path}
+              onChange={(event) => setRootForm((current) => ({ ...current, path: event.target.value }))}
+              className="h-9 font-mono text-[12px]"
+              placeholder="/absolute/path/to/plugins"
+              aria-invalid={Boolean(rootErrors.path)}
+            />
+            {rootErrors.path ? <p className="mt-1 text-[11px] text-destructive">{rootErrors.path}</p> : null}
+          </div>
+          <label className="flex h-9 items-center gap-2 px-1 text-[12px] text-muted-foreground">
+            <Switch
+              checked={rootForm.enabled}
+              onCheckedChange={(enabled) => setRootForm((current) => ({ ...current, enabled }))}
+              aria-label="Enable new plugin root"
+            />
+            Enabled
+          </label>
+          <Button
+            type="button"
+            size="sm"
+            className="h-9 gap-1.5 text-[12px]"
+            disabled={mutating || !onUpsertPluginRoot}
+            onClick={() => void handleAddRoot()}
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+            Add
+          </Button>
+        </div>
+
+        {pluginRoots.length > 0 ? (
+          <div className="mt-3.5 grid gap-0.5 border-t border-border pt-2.5">
+            {pluginRoots.map((root) => (
+              <div
+                key={root.rootId}
+                className="-mx-1.5 flex items-center gap-2 rounded-md px-2.5 py-2 transition-colors hover:bg-secondary/30"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium text-foreground">{root.rootId}</p>
+                  <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted-foreground">{root.path}</p>
+                </div>
+                {pendingSkillSourceId === root.rootId ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                ) : null}
+                <span className="shrink-0 text-[11px] text-muted-foreground">{root.enabled ? 'On' : 'Off'}</span>
+                <Switch
+                  checked={root.enabled}
+                  disabled={mutating || !onUpsertPluginRoot}
+                  aria-label={`${root.enabled ? 'Disable' : 'Enable'} plugin root ${root.rootId}`}
+                  onCheckedChange={(enabled) => {
+                    void onUpsertPluginRoot?.({
+                      rootId: root.rootId,
+                      path: root.path,
+                      enabled,
+                      projectId,
+                    }).catch(() => undefined)
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  disabled={mutating || !onRemovePluginRoot}
+                  aria-label={`Remove plugin root ${root.rootId}`}
+                  onClick={() => void onRemovePluginRoot?.({ rootId: root.rootId, projectId }).catch(() => undefined)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {/* Plugins list */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <h4 className="text-[12.5px] font-semibold text-foreground">Plugins</h4>
+          <span className="text-[11.5px] text-muted-foreground">
+            {totalPlugins} {totalPlugins === 1 ? 'plugins' : 'plugins'} · {totalCommands} {totalCommands === 1 ? 'commands' : 'commands'}
+          </span>
+        </div>
+
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="h-9 pl-8 text-[12.5px]"
+            placeholder="Search plugins"
+            aria-label="Search plugins"
+          />
+        </div>
+
+        <div className="rounded-lg border border-border bg-card">
           {loading && !skillRegistry ? (
             <div className="flex items-center justify-center gap-2 px-4 py-12 text-[12px] text-muted-foreground">
               <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
               Loading plugins
             </div>
           ) : filteredPlugins.length === 0 ? (
-            <div className="px-4 py-12 text-center">
-              <Plug className="mx-auto h-4 w-4 text-muted-foreground/70" />
+            <div className="px-5 py-10 text-center">
+              <div className="mx-auto flex h-9 w-9 items-center justify-center rounded-md border border-border/70 bg-secondary/40">
+                <Plug className="h-4 w-4 text-muted-foreground" />
+              </div>
               <p className="mt-3 text-[13px] font-medium text-foreground">No plugins found</p>
               <p className="mt-1 text-[12px] text-muted-foreground">
                 {query ? 'Adjust the search query.' : 'Add a plugin root or reload configured roots.'}
               </p>
             </div>
           ) : (
-            <div className="divide-y divide-border/70">
+            <div className="divide-y divide-border/60">
               {filteredPlugins.map((plugin) => (
                 <PluginRow
                   key={plugin.pluginId}
@@ -321,135 +447,42 @@ export function PluginsSection({
             </div>
           )}
         </div>
-      </section>
+      </div>
 
-      <section className="rounded-md border border-border/70 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h4 className="text-[12px] font-semibold text-foreground">Plugin roots</h4>
-            <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-              {skillRegistry?.sources.pluginRoots.length ?? 0} configured
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-3 grid gap-2 sm:grid-cols-[0.8fr_1.4fr_auto_auto]">
-          <div>
-            <Label htmlFor="plugin-root-id" className="sr-only">
-              Plugin root id
-            </Label>
-            <Input
-              id="plugin-root-id"
-              value={rootForm.rootId}
-              onChange={(event) => setRootForm((current) => ({ ...current, rootId: event.target.value }))}
-              className="h-8 text-[12px]"
-              placeholder="root id"
-              aria-invalid={Boolean(rootErrors.rootId)}
-            />
-            {rootErrors.rootId ? <p className="mt-1 text-[11px] text-destructive">{rootErrors.rootId}</p> : null}
-          </div>
-          <div>
-            <Label htmlFor="plugin-root-path" className="sr-only">
-              Plugin root path
-            </Label>
-            <Input
-              id="plugin-root-path"
-              value={rootForm.path}
-              onChange={(event) => setRootForm((current) => ({ ...current, path: event.target.value }))}
-              className="h-8 text-[12px]"
-              placeholder="/absolute/path/to/plugins"
-              aria-invalid={Boolean(rootErrors.path)}
-            />
-            {rootErrors.path ? <p className="mt-1 text-[11px] text-destructive">{rootErrors.path}</p> : null}
-          </div>
-          <label className="flex h-8 items-center gap-2 text-[12px] text-muted-foreground">
-            <Switch
-              checked={rootForm.enabled}
-              onCheckedChange={(enabled) => setRootForm((current) => ({ ...current, enabled }))}
-              aria-label="Enable new plugin root"
-            />
-            Enabled
-          </label>
-          <Button
-            type="button"
-            size="sm"
-            disabled={mutating || !onUpsertPluginRoot}
-            onClick={() => void handleAddRoot()}
-          >
-            <FolderPlus className="h-3.5 w-3.5" />
-            Add
-          </Button>
-        </div>
-
-        {skillRegistry?.sources.pluginRoots.length ? (
-          <div className="mt-3 divide-y divide-border/70 rounded-md border border-border/70">
-            {skillRegistry.sources.pluginRoots.map((root) => (
-              <div key={root.rootId} className="flex items-center justify-between gap-3 px-3 py-2">
-                <div className="min-w-0">
-                  <p className="truncate text-[12px] font-medium text-foreground">{root.rootId}</p>
-                  <p className="truncate text-[11.5px] text-muted-foreground">{root.path}</p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {pendingSkillSourceId === root.rootId ? (
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                  ) : null}
-                  <span className="text-[11.5px] text-muted-foreground">
-                    {root.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                  <Switch
-                    checked={root.enabled}
-                    disabled={mutating || !onUpsertPluginRoot}
-                    aria-label={`${root.enabled ? 'Disable' : 'Enable'} plugin root ${root.rootId}`}
-                    onCheckedChange={(enabled) => {
-                      void onUpsertPluginRoot?.({
-                        rootId: root.rootId,
-                        path: root.path,
-                        enabled,
-                        projectId,
-                      }).catch(() => undefined)
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    disabled={mutating || !onRemovePluginRoot}
-                    aria-label={`Remove plugin root ${root.rootId}`}
-                    onClick={() => void onRemovePluginRoot?.({ rootId: root.rootId, projectId }).catch(() => undefined)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </section>
-
-      <section className="rounded-md border border-border/70 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h4 className="text-[12px] font-semibold text-foreground">Plugin commands</h4>
-            <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-              {skillRegistry?.pluginCommands.length ?? 0} projected
-            </p>
-          </div>
+      {/* Plugin commands */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <h4 className="text-[12.5px] font-semibold text-foreground">Plugin commands</h4>
+          <span className="text-[11.5px] text-muted-foreground">{totalCommands} projected</span>
         </div>
 
         {skillRegistry?.pluginCommands.length ? (
-          <div className="mt-3 divide-y divide-border/70 rounded-md border border-border/70">
+          <div className="rounded-lg border border-border bg-card divide-y divide-border/60">
             {skillRegistry.pluginCommands.map((command) => (
               <PluginCommandRow key={command.commandId} command={command} />
             ))}
           </div>
         ) : (
-          <div className="mt-3 rounded-md border border-dashed border-border/70 px-4 py-8 text-center">
-            <p className="text-[13px] font-medium text-foreground">No plugin commands</p>
-            <p className="mt-1 text-[12px] text-muted-foreground">Enabled plugins with command contributions appear here.</p>
+          <div className="rounded-lg border border-dashed border-border/70 bg-card/40 px-5 py-10 text-center">
+            <div className="mx-auto flex h-9 w-9 items-center justify-center rounded-md border border-border/70 bg-secondary/40">
+              <Plug className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <p className="mt-3 text-[13px] font-medium text-foreground">No plugin commands</p>
+            <p className="mt-1 text-[12px] text-muted-foreground">
+              Enabled plugins with command contributions appear here.
+            </p>
           </div>
         )}
-      </section>
+      </div>
+    </div>
+  )
+}
+
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] text-destructive">
+      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+      <span>{message}</span>
     </div>
   )
 }
@@ -475,22 +508,19 @@ function PluginRow({
   const blocked = plugin.trust === 'blocked' || plugin.state === 'blocked'
 
   return (
-    <div className="px-3 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+    <div className="px-4 py-3.5">
+      <div className="flex items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60">
+          <Plug className="h-4 w-4 text-foreground/70" />
+        </div>
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <p className="truncate text-[13px] font-semibold text-foreground">{plugin.name}</p>
-            <Badge variant="secondary" className="text-[10px]">
-              {plugin.version}
-            </Badge>
-            <Badge className={cn('text-[10px]', stateTone(plugin.state))}>
-              {getSkillSourceStateLabel(plugin.state)}
-            </Badge>
-            <Badge className={cn('text-[10px]', trustTone(plugin.trust))}>
-              {getSkillTrustStateLabel(plugin.trust)}
-            </Badge>
+            <p className="truncate text-[13.5px] font-medium text-foreground">{plugin.name}</p>
+            <Pill tone="neutral">{plugin.version}</Pill>
+            <Pill tone={stateTone(plugin.state)}>{getSkillSourceStateLabel(plugin.state)}</Pill>
+            <Pill tone={trustTone(plugin.trust)}>{getSkillTrustStateLabel(plugin.trust)}</Pill>
           </div>
-          <p className="mt-1 line-clamp-2 text-[12px] leading-[1.45] text-muted-foreground">
+          <p className="mt-1 line-clamp-2 text-[12px] leading-[1.5] text-muted-foreground">
             {plugin.description || plugin.pluginId}
           </p>
         </div>
@@ -546,66 +576,68 @@ function PluginRow({
         </div>
       </div>
 
-      <div className="mt-2 grid gap-2 text-[11.5px] text-muted-foreground sm:grid-cols-3">
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">Plugin </span>
-          <span className="font-mono">{plugin.pluginId}</span>
-        </div>
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">Skills </span>
-          <span>{plugin.skillCount}</span>
-        </div>
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">Commands </span>
-          <span>{plugin.commandCount}</span>
-        </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground/60">Plugin</span>
+          <span className="font-mono text-foreground/80">{plugin.pluginId}</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground/60">Skills</span>
+          <span className="text-foreground/80">{plugin.skillCount}</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground/60">Commands</span>
+          <span className="text-foreground/80">{plugin.commandCount}</span>
+        </span>
       </div>
 
       {plugin.lastDiagnostic ? (
-        <div className="mt-2 flex items-start gap-2 rounded-md bg-destructive/10 px-2 py-1.5 text-[11.5px] text-destructive">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{plugin.lastDiagnostic.message}</span>
+        <div className="mt-2.5 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-2.5 py-1.5 text-[11.5px] text-destructive">
+          <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0">{plugin.lastDiagnostic.message}</span>
         </div>
       ) : null}
 
       <details className="mt-2 group">
-        <summary className="cursor-pointer select-none text-[11.5px] font-medium text-muted-foreground hover:text-foreground">
+        <summary className="inline-flex cursor-pointer select-none items-center gap-1 rounded-md text-[11.5px] font-medium text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden [&::marker]:hidden">
+          <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
           Plugin metadata
         </summary>
-        <dl className="mt-2 grid gap-x-3 gap-y-1 rounded-md bg-muted/40 p-2 text-[11px] sm:grid-cols-[120px_1fr]">
+        <dl className="mt-2 grid gap-x-4 gap-y-1 rounded-md border border-border/70 bg-secondary/30 p-3 text-[11.5px] sm:grid-cols-[120px_1fr]">
           <div className="contents">
             <dt className="text-muted-foreground">Root id</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground">{plugin.rootId}</dd>
+            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.rootId}</dd>
           </div>
           <div className="contents">
             <dt className="text-muted-foreground">Root path</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground">{plugin.rootPath}</dd>
+            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.rootPath}</dd>
           </div>
           <div className="contents">
             <dt className="text-muted-foreground">Plugin path</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground">{plugin.pluginRootPath}</dd>
+            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.pluginRootPath}</dd>
           </div>
           <div className="contents">
             <dt className="text-muted-foreground">Manifest</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground">{plugin.manifestPath}</dd>
+            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.manifestPath}</dd>
           </div>
           <div className="contents">
             <dt className="text-muted-foreground">Hash</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground">{formatHash(plugin.manifestHash)}</dd>
+            <dd className="min-w-0 break-words font-mono text-foreground/85">{formatHash(plugin.manifestHash)}</dd>
           </div>
           <div className="contents">
             <dt className="text-muted-foreground">Reloaded</dt>
-            <dd className="min-w-0 break-words text-foreground">{formatTimestamp(plugin.lastReloadedAt)}</dd>
+            <dd className="min-w-0 break-words text-foreground/85">{formatTimestamp(plugin.lastReloadedAt)}</dd>
           </div>
         </dl>
       </details>
 
       {plugin.skills.length || plugin.commands.length ? (
         <details className="mt-2 group">
-          <summary className="cursor-pointer select-none text-[11.5px] font-medium text-muted-foreground hover:text-foreground">
+          <summary className="inline-flex cursor-pointer select-none items-center gap-1 rounded-md text-[11.5px] font-medium text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden [&::marker]:hidden">
+            <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
             Contributions
           </summary>
-          <div className="mt-2 grid gap-2 text-[11px] lg:grid-cols-2">
+          <div className="mt-2 grid gap-2 lg:grid-cols-2">
             <ContributionList
               title="Skills"
               emptyLabel="No skill contributions"
@@ -639,19 +671,19 @@ interface ContributionListProps {
 
 function ContributionList({ title, emptyLabel, rows }: ContributionListProps) {
   return (
-    <div className="rounded-md border border-border/70 p-2">
-      <p className="text-[11px] font-semibold text-foreground">{title}</p>
+    <div className="rounded-md border border-border/70 bg-secondary/30 p-2.5 text-[11.5px]">
+      <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">{title}</p>
       {rows.length ? (
-        <div className="mt-1.5 space-y-1.5">
+        <div className="mt-2 space-y-1.5">
           {rows.map((row) => (
             <div key={row.id} className="min-w-0">
-              <p className="truncate font-medium text-foreground">{row.label}</p>
+              <p className="truncate font-medium text-foreground/90">{row.label}</p>
               <p className="break-words font-mono text-muted-foreground">{row.value}</p>
             </div>
           ))}
         </div>
       ) : (
-        <p className="mt-1.5 text-muted-foreground">{emptyLabel}</p>
+        <p className="mt-2 text-muted-foreground">{emptyLabel}</p>
       )}
     </div>
   )
@@ -659,35 +691,27 @@ function ContributionList({ title, emptyLabel, rows }: ContributionListProps) {
 
 function PluginCommandRow({ command }: { command: PluginCommandContributionDto }) {
   return (
-    <div className="px-3 py-2">
+    <div className="px-4 py-3">
       <div className="flex flex-wrap items-center gap-1.5">
-        <p className="text-[12px] font-semibold text-foreground">{command.label}</p>
-        <Badge variant="secondary" className="text-[10px]">
-          {getPluginCommandAvailabilityLabel(command.availability)}
-        </Badge>
-        <Badge className={cn('text-[10px]', stateTone(command.state))}>
-          {getSkillSourceStateLabel(command.state)}
-        </Badge>
-        <Badge className={cn('text-[10px]', trustTone(command.trust))}>
-          {getSkillTrustStateLabel(command.trust)}
-        </Badge>
+        <p className="text-[13px] font-medium text-foreground">{command.label}</p>
+        <Pill tone="neutral">{getPluginCommandAvailabilityLabel(command.availability)}</Pill>
+        <Pill tone={stateTone(command.state)}>{getSkillSourceStateLabel(command.state)}</Pill>
+        <Pill tone={trustTone(command.trust)}>{getSkillTrustStateLabel(command.trust)}</Pill>
       </div>
-      <p className="mt-1 line-clamp-2 text-[11.5px] leading-[1.45] text-muted-foreground">
-        {command.description}
-      </p>
-      <div className="mt-2 grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-3">
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">Command </span>
-          <span className="break-words font-mono">{command.commandId}</span>
-        </div>
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">Plugin </span>
-          <span className="break-words font-mono">{command.pluginId}</span>
-        </div>
-        <div className="min-w-0">
-          <span className="font-medium text-foreground">Entry </span>
-          <span className="break-words font-mono">{command.entry}</span>
-        </div>
+      <p className="mt-1 line-clamp-2 text-[12px] leading-[1.5] text-muted-foreground">{command.description}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground/60">Command</span>
+          <span className="font-mono text-foreground/80">{command.commandId}</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground/60">Plugin</span>
+          <span className="font-mono text-foreground/80">{command.pluginId}</span>
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground/60">Entry</span>
+          <span className="font-mono text-foreground/80">{command.entry}</span>
+        </span>
       </div>
     </div>
   )

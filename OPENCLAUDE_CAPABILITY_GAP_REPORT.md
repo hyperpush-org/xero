@@ -1,7 +1,7 @@
 # OpenClaude Capability Gap Report
 
 Date: 2026-04-25
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 ## Reader And Action
 
@@ -17,9 +17,9 @@ Some OpenClaude modules are feature-gated or internal-only. I counted a capabili
 
 Cadence already covers the broad desktop shell, project import, file editing, provider profiles, OpenAI Codex OAuth, runtime supervision, operator approval flows, notifications, MCP registry management, in-app browser automation, emulator automation, and a large Solana workbench. In several areas Cadence is beyond OpenClaude, especially mobile device automation and Solana-specific tooling.
 
-The largest missing OpenClaude-equivalent area is not another sidebar. It is the mature agent operating system around the model loop: terminal CLI/REPL, slash commands, plugins, skills, memory/compaction, diagnostics, provider launch profiles, and editor/remote integrations.
+The largest remaining OpenClaude-equivalent area is not another sidebar. It is the mature agent operating system around the model loop: terminal CLI/REPL, broad command operations, memory/compaction, diagnostics, provider launch/profile repair workflows, web search breadth, and editor/remote integrations.
 
-Cadence has a native owned-agent runtime and autonomous tool runtime, but it is not yet equivalent to OpenClaude's CLI agent runtime. The Priority 1 native tool-surface gap is now closed: owned agents have MCP invocation, subagents, todo/task state, notebook editing, PowerShell, LSP/code intelligence, tool search, and command-session support. Remaining gaps are now concentrated in plugin/skill command loading, default web search provider breadth, memory/context management, diagnostics, session operations, and external integration surfaces.
+Cadence has a native owned-agent runtime and autonomous tool runtime, but it is not yet equivalent to OpenClaude's CLI agent runtime. The Priority 1 native tool-surface gap is now closed: owned agents have MCP invocation, subagents, todo/task state, notebook editing, PowerShell, LSP/code intelligence, tool search, and command-session support. Priority 2 is also closed: skills and plugins now have durable source registries, model-visible invocation, settings surfaces, trust controls, MCP/plugin/dynamic source coverage, and reload diagnostics. Remaining gaps are now concentrated in provider setup parity, runtime diagnostics, memory/context management, session operations, web search provider breadth, and external integration surfaces.
 
 ## OpenClaude Capability Inventory
 
@@ -211,15 +211,15 @@ OpenClaude exposes a large slash-command surface. Important user-visible groups 
 | --- | --- | --- |
 | Terminal CLI/REPL | Desktop-only Tauri app with detached PTY runtime | No `openclaude`-style standalone CLI, terminal UI, npm binary, or direct terminal REPL surface |
 | Headless external API | Internal Tauri IPC and supervisor TCP control | No public gRPC/HTTP streaming service equivalent to OpenClaude's AgentService |
-| Slash commands | Desktop settings/actions and runtime controls | No command registry equivalent for provider, doctor, compact, memory, plugin, skills, mcp, review, security-review, permissions, etc. |
+| Slash commands | Desktop settings/actions, plugin-contributed command projection, and runtime controls | No broad command-operations equivalent for provider doctor, compact, memory, mcp, review, security-review, permissions, usage, and related workflows |
 | Provider launch profiles | App-local provider profile store | No `.openclaude-profile.json` compatibility, profile launcher scripts, provider recommendation, or CLI profile bootstrap |
 | Provider breadth | Strong built-in presets for common cloud/local providers | Missing direct Mistral, Atomic Chat, NVIDIA NIM, MiniMax, Foundry, LiteLLM-oriented docs/profile flow, and GitHub device onboarding |
 | Per-agent routing | Active profile/model controls | No settings-level agent model routing by agent name/type |
 | Core tool parity | Native autonomous tools for files/git/commands/web/browser/emulator/Solana plus Priority 1 agent tools | Priority 1 is complete; still missing cron/monitor and first-class AskUserQuestion equivalents |
 | Subagents | Native owned-agent subagent tool with built-in Explore/Plan/general/verification types and model routing | Still missing custom agent definitions and team/swarm tools |
 | MCP runtime use | Registry, probes, projection to detached runtime, and native owned-agent MCP tool/resource/prompt invocation | Still missing broader MCP auth/server approval UX and marketplace-style discovery |
-| Plugins | None equivalent in UI/runtime | No plugin marketplace, plugin command loader, plugin skills, trust warning, or reload flow |
-| Skills | Autonomous skill discovery/install/invoke from a GitHub source | Not equivalent to OpenClaude's skill directories, bundled skills, dynamic skills, plugin skills, MCP skills, and SlashCommand/SkillTool integration |
+| Plugins | Cadence-native plugin roots, manifests, trust state, settings UI, contributed skills/commands, reload, and diagnostics | Still missing a public marketplace/distribution story and broader command-palette integration; no need to clone OpenClaude slash-command UI exactly |
+| Skills | Durable installed skills across local/project/bundled/GitHub/dynamic/plugin/MCP sources, SkillTool discovery/invoke, settings UI, trust controls, reload, and diagnostics | Mostly covered for native parity; remaining work is polish around default bundled catalog breadth and future command/agent workflow integrations |
 | Memory/context | Runtime stream and project DB state | No OpenClaude-equivalent memory files, memdir/team memory, auto-dream, session memory extraction, context visualization, auto-compact, or transcript search |
 | Session operations | Agent sessions/runs and runtime sessions | Missing user-facing resume/rename/export/branch/rewind/compact/copy/history search equivalents |
 | Web search | Configurable search provider endpoint | No built-in free DuckDuckGo fallback or first-class Firecrawl/Bing/Exa/Jina/Linkup/Mojeek/Tavily/You providers |
@@ -350,24 +350,27 @@ Outcome: owned agents can see, choose, install, and invoke skills through a Cade
   - Verification: tests cover dynamic candidate creation, duplicate merging, disabled-by-default behavior, and lifecycle telemetry.
   - Completed: 2026-04-25. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_skill_model_tool` passed dynamic candidate creation, duplicate merge, disabled/untrusted defaults, lifecycle output, and non-invocable behavior.
 
-##### Phase 3: Add User-Facing Skill Management
+##### Phase 3: Add User-Facing Skill Management - Completed
 
 Outcome: users can inspect and control skills/plugins from Cadence settings without using hidden commands.
 
-- Slice 2.3.1: Add a Skills settings tab.
+- [x] Slice 2.3.1: Add a Skills settings tab.
   - Scope: build a ShadCN-based settings surface showing installed/discoverable skills, source type, trust state, enabled state, version/hash, last used time, and last diagnostic.
   - Acceptance: users can filter/search skills, enable/disable a skill, remove an installed skill, and inspect the non-secret source metadata for a skill.
   - Verification: React tests cover empty state, populated state, search/filter, enable/disable, remove confirmation, and diagnostic rendering.
+  - Completed: 2026-04-25. Verification evidence: `pnpm --dir client test -- settings-dialog.test.tsx agent-runtime.test.tsx use-cadence-desktop-state.test.tsx` passed coverage for Skills registry metadata, search, enable toggles, remove actions, source metadata, and diagnostic rendering.
 
-- Slice 2.3.2: Add source management for local/project/GitHub skill roots.
+- [x] Slice 2.3.2: Add source management for local/project/GitHub skill roots.
   - Scope: add controls for adding/removing local skill directories, enabling project skill discovery, and configuring GitHub source repo/ref values.
   - Acceptance: unsafe paths are rejected with clear errors; changing a source triggers a reload request; source settings persist at the correct global or project scope.
   - Verification: state-management tests cover add/remove/update, invalid paths, project-scope persistence, and reload triggering.
+  - Completed: 2026-04-25. Verification evidence: `pnpm --dir client test -- settings-dialog.test.tsx agent-runtime.test.tsx use-cadence-desktop-state.test.tsx` passed coverage for invalid local paths, local root add/disable/remove, project skill discovery toggling, GitHub repo/ref/root saves, and reload-triggering state mutations.
 
-- Slice 2.3.3: Surface skill lifecycle in the agent run view.
+- [x] Slice 2.3.3: Surface skill lifecycle in the agent run view.
   - Scope: connect existing skill lifecycle events to a compact user-facing lane that shows discovery, install, invoke, cache status, and diagnostics.
   - Acceptance: successful skill use is visible without overwhelming the transcript, and failed skill use exposes the actionable diagnostic already stored in the runtime state.
   - Verification: React tests cover successful and failed lifecycle rows, replayed events after reconnect, and malformed event handling.
+  - Completed: 2026-04-25. Verification evidence: `pnpm --dir client test -- settings-dialog.test.tsx agent-runtime.test.tsx use-cadence-desktop-state.test.tsx` passed coverage for the agent runtime Skill lane, source/cache details, failed invocation diagnostics, empty skill activity state, and stream replay/projection behavior.
 
 ##### Phase 4: Add Plugin Sources Without Making Plugins A Second Runtime - Completed
 
@@ -460,6 +463,8 @@ Outcome: Priority 2 is safe enough to call complete and hand to normal users.
 
 ### Priority 3: Build Runtime Diagnostics And Provider Setup Parity
 
+Cadence already has provider profiles, readiness projections, provider-model catalog refresh, cached/stale/manual catalog states, provider-specific runtime binding, and typed runtime/session diagnostics. Priority 3 should turn those primitives into an OpenClaude-grade troubleshooting loop: a single report that can explain why a provider or runtime is not ready, guide users through repair, and broaden provider setup without weakening Cadence's desktop-first product boundary.
+
 Cadence's provider UI is good, but OpenClaude has stronger startup and troubleshooting loops:
 
 - Provider reachability diagnostics.
@@ -469,6 +474,126 @@ Cadence's provider UI is good, but OpenClaude has stronger startup and troublesh
 - LiteLLM/OpenAI-compatible setup guidance.
 - GitHub Models device onboarding.
 - Mistral, Atomic Chat, NVIDIA NIM, MiniMax, and Foundry presets or documented OpenAI-compatible recipes.
+
+#### Priority 3 Implementation Plan
+
+Reader and action for this plan: a future implementation agent should be able to claim one slice, complete it without needing extra product context, and leave tests proving the slice works. Each slice should build on Cadence's existing provider profiles, provider-model catalogs, runtime session diagnostics, and ShadCN settings surfaces. UI slices must stay user-facing only, and verification should use Rust/TypeScript/unit/e2e tests rather than temporary debug UI.
+
+##### Phase 0: Define One Diagnostics Contract
+
+Outcome: Cadence has one shared vocabulary for provider readiness, reachability, profile repair, runtime health, report severity, redaction, and machine-readable doctor output.
+
+- [x] Slice 3.0.1: Define the provider diagnostic contract.
+  - Scope: add typed records for provider checks, severity, retryability, affected profile id, affected provider id, endpoint metadata, remediation text, and redaction class; map existing provider-profile readiness states and provider-model catalog errors into the new contract.
+  - Acceptance: missing credentials, malformed profile links, unsupported provider ids, invalid base URLs, stale runtime bindings, catalog transport failures, and ambient-auth failures all normalize to one diagnostic shape without leaking API keys, OAuth session ids, or secret-bearing paths.
+  - Verification: Rust and TypeScript schema tests cover valid diagnostics, invalid severity/state combinations, retryable vs non-retryable mapping, and secret redaction.
+  - Completed: 2026-04-26. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test provider_diagnostics_contract` passed 3 contract tests; `pnpm --dir client vitest run src/lib/cadence-model/diagnostics.test.ts` passed 3 TypeScript/Zod contract tests; `cargo test --manifest-path client/src-tauri/Cargo.toml` passed the full Rust suite; `pnpm --dir client build` passed with the existing Vite large-chunk warning.
+
+- [x] Slice 3.0.2: Define the doctor report contract.
+  - Scope: define a report DTO with report id, generated timestamp, app/runtime version fields, profile checks, model catalog checks, runtime supervisor checks, MCP/settings dependency checks, summary counts, and output modes for compact human text and JSON.
+  - Acceptance: a doctor report can be generated without network access, can mark checks as skipped when a dependency is unavailable, and has stable JSON suitable for copying into support or future CLI/headless surfaces.
+  - Verification: contract tests cover human/JSON serialization, deterministic ordering, skipped checks, and no secret leakage in nested diagnostics.
+  - Completed: 2026-04-26. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test provider_diagnostics_contract` passed stable JSON/human rendering, deterministic counts, skipped checks, and redaction coverage; `pnpm --dir client vitest run src/lib/cadence-model/diagnostics.test.ts` passed frontend report parsing, rendering, sorting, and redaction coverage; `cargo fmt --manifest-path client/src-tauri/Cargo.toml`, `cargo test --manifest-path client/src-tauri/Cargo.toml`, and `pnpm --dir client build` all passed.
+
+##### Phase 1: Build Provider Reachability Checks
+
+Outcome: Cadence can actively test configured provider profiles and explain whether failure is credentials, endpoint shape, network, catalog parsing, local service readiness, or ambient auth.
+
+- [ ] Slice 3.1.1: Add a provider profile validation engine.
+  - Scope: inspect saved provider-profile metadata and credentials before any network probe; validate active profile, profile/provider/runtime-kind alignment, required base URL/API version/region/project fields, credential-link freshness, local readiness proofs, and ambient readiness proofs.
+  - Acceptance: malformed or partially migrated profiles return actionable repair suggestions and do not require model catalog refresh to reveal the problem.
+  - Verification: Rust tests cover ready/missing/malformed profiles for OpenAI Codex, OpenRouter, Anthropic, GitHub Models, OpenAI-compatible, Ollama, Azure OpenAI, Gemini AI Studio, Bedrock, and Vertex.
+
+- [ ] Slice 3.1.2: Add active provider reachability probes.
+  - Scope: reuse existing provider-model catalog and auth clients to run explicit reachability probes for the active profile, including OpenAI-compatible `/models`, GitHub Models catalog, Ollama local endpoint, OpenRouter, Anthropic-family providers, Bedrock, and Vertex.
+  - Acceptance: probes classify DNS/connect timeout, 401/403, 404 endpoint-shape errors, 429/rate-limit, bad JSON, missing local service, and unsupported catalog strategies with provider-specific recovery text.
+  - Verification: backend tests use mocked HTTP/auth clients and local fixture responses for success, timeout, auth failure, rate limit, bad JSON, stale cache fallback, and manual-catalog providers.
+
+- [ ] Slice 3.1.3: Surface profile repair suggestions in Settings.
+  - Scope: extend the existing Providers settings surface with compact diagnostic rows, repair calls to action, and a "Check connection" action that runs validation/probe for one profile.
+  - Acceptance: users can see whether the issue is key, endpoint, model catalog, local service, or ambient auth; existing model catalog choices remain visible when Cadence has a stale usable cache.
+  - Verification: React tests cover ready, missing key, malformed credential link, invalid base URL, unreachable local Ollama, stale cache with warning, and successful recheck.
+
+##### Phase 2: Add Runtime Doctor Reports
+
+Outcome: Cadence can produce an OpenClaude-style doctor report from the desktop app, with both readable and JSON forms.
+
+- [ ] Slice 3.2.1: Implement the backend doctor report command.
+  - Scope: add a Tauri command that gathers provider profile validation, provider reachability when requested, runtime session reconciliation, detached supervisor state, provider-model catalog state, MCP registry health, notification route readiness, and important app paths.
+  - Acceptance: the command supports a quick local mode and an extended network mode; it reports partial failures without aborting the whole report; JSON output is stable and redacted.
+  - Verification: Rust integration tests cover quick mode, extended mode, partial failure aggregation, unavailable app-data files, stale runtime session, and JSON redaction.
+
+- [ ] Slice 3.2.2: Add a diagnostics settings surface.
+  - Scope: add a ShadCN-based Diagnostics section or tab that displays doctor summary counts, grouped checks, last run timestamp, copyable JSON, and per-check remediation.
+  - Acceptance: users can run quick or extended diagnostics, inspect failures without scrolling through raw logs, and copy the redacted report for support.
+  - Verification: React tests cover empty state, running state, passed/warning/failed/skipped groups, JSON copy action, and malformed report handling.
+
+- [ ] Slice 3.2.3: Thread doctor diagnostics into runtime startup failures.
+  - Scope: connect runtime start/session failures to the same diagnostic vocabulary so a failed provider bind can offer "run diagnostics" and show the relevant provider/profile check inline.
+  - Acceptance: runtime failures for stale binding, missing credentials, provider mismatch, unavailable local endpoint, and ambient auth missing all link back to the same remediation text users see in Settings.
+  - Verification: state/view-builder tests cover runtime session failure projection, run-start failure projection, doctor suggestion visibility, and secret-free persisted diagnostics.
+
+##### Phase 3: Add Provider Recommendation And Setup Guides
+
+Outcome: Cadence can recommend a usable profile path for common local/cloud setups and help users configure OpenAI-compatible endpoints without guessing.
+
+- [ ] Slice 3.3.1: Add provider recommendation logic.
+  - Scope: inspect saved profiles, credential readiness, local Ollama reachability, configured OpenAI-compatible endpoints, and ambient Bedrock/Vertex readiness to recommend a default profile path.
+  - Acceptance: recommendations distinguish fastest-ready profile, best local profile, missing-key cloud profile, and unsupported/incomplete profile; recommendations never activate or mutate profiles without user action.
+  - Verification: pure tests cover no profiles, OpenAI Codex ready, OpenRouter ready, Ollama reachable, local OpenAI-compatible endpoint, Bedrock/Vertex ambient ready, and multiple competing ready profiles.
+
+- [ ] Slice 3.3.2: Add OpenAI-compatible and LiteLLM setup recipes.
+  - Scope: add structured recipe metadata for common OpenAI-compatible setups, including LiteLLM, LM Studio, Groq, Together, DeepSeek, and custom `/v1` gateways; map each recipe to provider profile fields, auth mode, model catalog expectations, and repair suggestions.
+  - Acceptance: users can choose a recipe that pre-fills label/base URL/API-key expectations while still saving through the existing provider-profile contract.
+  - Verification: TypeScript tests cover recipe validation, generated upsert requests, required-field prompts, local endpoint no-key behavior, and catalog/manual-model expectations.
+
+- [ ] Slice 3.3.3: Present setup guidance in Providers Settings.
+  - Scope: add a ShadCN recipe picker and compact guidance inside the existing Providers section, without replacing the current provider cards.
+  - Acceptance: recipes make the setup path clearer for LiteLLM/OpenAI-compatible/local gateways, and they feed into the same save/check connection flow as first-class presets.
+  - Verification: React tests cover recipe selection, prefilled fields, required key/base URL messaging, save flow, check connection handoff, and no temporary debug controls.
+
+##### Phase 4: Fill Missing Provider Preset Parity
+
+Outcome: Cadence covers OpenClaude's missing provider setup surface either as first-class presets or as documented OpenAI-compatible recipes.
+
+- [ ] Slice 3.4.1: Add direct Mistral provider support or a first-class Mistral recipe.
+  - Scope: decide whether Mistral should be a dedicated provider id or a locked OpenAI-compatible recipe; implement the selected path through provider presets, runtime provider identity, endpoint resolution, model catalog behavior, and settings UI.
+  - Acceptance: users can save a Mistral-backed profile, validate it, refresh or manually specify models according to the chosen transport, and launch a runtime without secret leakage.
+  - Verification: Rust and React tests cover profile save, endpoint resolution, catalog behavior, runtime binding, stale binding, settings rendering, and diagnostics.
+
+- [ ] Slice 3.4.2: Add NVIDIA NIM, MiniMax, and Foundry recipes.
+  - Scope: add recipe metadata and validation for NVIDIA NIM, MiniMax, and Foundry-compatible endpoints using the existing OpenAI-compatible profile path unless a direct provider is required.
+  - Acceptance: each recipe has clear required fields, default endpoint guidance, catalog/manual-model behavior, and provider-specific repair text.
+  - Verification: TypeScript recipe tests and provider-profile form tests cover generated requests, invalid/missing fields, catalog expectations, and repair text.
+
+- [ ] Slice 3.4.3: Add Atomic Chat local setup support.
+  - Scope: add a local recipe or provider preset for Atomic Chat with no fake key requirement, local endpoint reachability, and manual-model fallback when catalog discovery is unavailable.
+  - Acceptance: users can configure Atomic Chat as a local model backend, see local readiness state, and run connection checks without storing placeholder secrets.
+  - Verification: Rust tests cover local readiness and endpoint resolution; React tests cover setup, missing local service, manual model fallback, and runtime launch handoff.
+
+- [ ] Slice 3.4.4: Add GitHub Models device onboarding only if it fits Cadence auth.
+  - Scope: evaluate and implement a GitHub Models device-flow path only if it can share Cadence's existing provider-profile credential store and redaction rules; otherwise document API-token setup as the supported path and keep device onboarding out of scope.
+  - Acceptance: the chosen path is explicit in the report/docs; if implemented, device onboarding saves a redacted app-local token link and reuses profile readiness/catalog diagnostics.
+  - Verification: auth-flow tests cover successful device flow or documented non-support, cancellation, stale flow rejection, token redaction, profile readiness, and catalog discovery.
+
+##### Phase 5: Documentation And Completion Criteria
+
+Outcome: Priority 3 is safe enough to call complete and useful for both users and implementation agents.
+
+- [ ] Slice 3.5.1: Document provider setup and diagnostics workflows.
+  - Scope: document how users configure each supported provider path, how recipe-based OpenAI-compatible setup works, what each diagnostic state means, and when to use quick vs extended doctor reports.
+  - Acceptance: a fresh user can set up a common cloud provider, a local provider, and a custom OpenAI-compatible endpoint without reading source code; a support engineer can interpret a redacted doctor JSON report.
+  - Verification: docs review plus tests for any executable examples or fixture-backed recipes included in the docs.
+
+- [ ] Slice 3.5.2: Add privacy and no-secret hardening for diagnostics.
+  - Scope: audit doctor output, provider diagnostics, copied JSON, runtime failure text, and model-facing diagnostics for leaked API keys, OAuth tokens, local secret file contents, and unnecessary absolute paths.
+  - Acceptance: diagnostics include enough non-secret metadata to repair the issue while excluding raw secrets and secret-bearing paths from persisted, copied, and model-visible surfaces.
+  - Verification: Rust and TypeScript tests cover redaction of API keys, bearer headers, OAuth/session ids, ADC/AWS path content, local endpoint credentials, and nested diagnostic payloads.
+
+- [ ] Slice 3.5.3: Declare Priority 3 complete.
+  - Scope: run focused Rust tests for provider profiles, provider model catalogs, runtime session/supervisor diagnostics, and doctor report generation; run focused React tests for Providers and Diagnostics settings surfaces; run build/type checks.
+  - Acceptance: the report can mark Priority 3 complete only after provider reachability, doctor reports, profile repair, recommendations, setup recipes/presets, docs, and privacy hardening all have passing verification.
+  - Verification: record the exact commands and passing results in the completion note, using one Cargo command at a time.
 
 ### Priority 4: Add Session Memory And Context Management
 
