@@ -19,7 +19,7 @@ use cadence_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     runtime::{
         continue_owned_agent_run, create_owned_agent_run, run_owned_agent_task,
-        AgentProviderConfig, AgentToolCall, AutonomousCommandRequest,
+        AgentAutoCompactPreference, AgentProviderConfig, AgentToolCall, AutonomousCommandRequest,
         AutonomousCommandSessionOperation, AutonomousCommandSessionStartRequest,
         AutonomousCommandSessionStopRequest, AutonomousToolOutput, AutonomousToolRuntime,
         ContinueOwnedAgentRunRequest, OpenAiCompatibleProviderConfig, OwnedAgentRunRequest,
@@ -196,6 +196,37 @@ fn wait_for_agent_run_status(
             snapshot.run.status
         );
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn append_auto_compact_fixture_messages(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    timestamp_minute: &str,
+    count: usize,
+    chars_per_message: usize,
+) {
+    for index in 0..count {
+        let role = if index % 2 == 0 {
+            db::project_store::AgentMessageRole::Assistant
+        } else {
+            db::project_store::AgentMessageRole::User
+        };
+        db::project_store::append_agent_message(
+            repo_root,
+            &db::project_store::NewAgentMessageRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                role,
+                content: format!(
+                    "auto compact fixture message {index}: {}",
+                    "x".repeat(chars_per_message)
+                ),
+                created_at: format!("{timestamp_minute}:{:02}Z", index + 3),
+            },
+        )
+        .expect("append auto compact fixture message");
     }
 }
 
@@ -763,6 +794,7 @@ fn owned_agent_continuation_rejects_over_budget_prompt_without_mutating_history(
         tool_runtime: continue_tool_runtime,
         provider_config,
         answer_pending_actions: false,
+        auto_compact: None,
     })
     .expect_err("over-budget continuation should be rejected before mutation");
 
@@ -838,6 +870,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         answer_pending_actions: false,
+        auto_compact: None,
     })
     .expect("continue compacted owned-agent run");
 
@@ -919,6 +952,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         answer_pending_actions: false,
+        auto_compact: None,
     })
     .expect_err("covered transcript mutation should reject compacted replay");
 
@@ -929,6 +963,216 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         .messages
         .iter()
         .any(|message| message.content == "Continue after tamper."));
+}
+
+#[test]
+fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "owned-run-auto-compact-1";
+    let create_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime for auto-compact source");
+    create_owned_agent_run(&OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: run_id.into(),
+        prompt: "Prepare an auto-compact source run.".into(),
+        controls: None,
+        tool_runtime: create_tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+    })
+    .expect("create auto-compact source run");
+    append_auto_compact_fixture_messages(
+        &repo_root,
+        &project_id,
+        run_id,
+        "2026-04-26T17:00",
+        8,
+        4_000,
+    );
+    db::project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        run_id,
+        db::project_store::AgentRunStatus::Completed,
+        None,
+        "2026-04-26T17:00:50Z",
+    )
+    .expect("complete auto-compact source run");
+    let before = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
+        .expect("load auto-compact source run");
+    let before_message_count = before.messages.len();
+
+    let continue_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime for auto-compact continuation");
+    let continued = continue_owned_agent_run(ContinueOwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        run_id: run_id.into(),
+        prompt: "Continue after automatic compaction.".into(),
+        controls: None,
+        tool_runtime: continue_tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        answer_pending_actions: false,
+        auto_compact: Some(AgentAutoCompactPreference {
+            enabled: true,
+            threshold_percent: Some(1),
+            raw_tail_message_count: Some(2),
+        }),
+    })
+    .expect("auto-compact continuation should succeed");
+
+    assert_eq!(
+        continued.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
+    assert!(continued.messages.len() > before_message_count);
+    assert!(continued.messages.iter().any(|message| {
+        message.role == db::project_store::AgentMessageRole::User
+            && message.content == "Continue after automatic compaction."
+    }));
+    let compactions = db::project_store::list_agent_compactions(
+        &repo_root,
+        &project_id,
+        db::project_store::DEFAULT_AGENT_SESSION_ID,
+    )
+    .expect("list auto compactions");
+    assert_eq!(compactions.len(), 1);
+    assert_eq!(
+        compactions[0].trigger,
+        db::project_store::AgentCompactionTrigger::Auto
+    );
+    assert_eq!(
+        compactions[0].policy_reason,
+        "auto_compact_threshold_reached"
+    );
+    assert_eq!(compactions[0].raw_tail_message_count, 2);
+    assert!(continued.events.iter().any(|event| {
+        event.event_kind == db::project_store::AgentRunEventKind::ValidationCompleted
+            && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                .is_ok_and(|payload| payload.get("label") == Some(&json!("auto_compact")))
+    }));
+}
+
+#[test]
+fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "owned-run-auto-compact-failure-1";
+    db::project_store::insert_agent_run(
+        &repo_root,
+        &db::project_store::NewAgentRunRecord {
+            project_id: project_id.clone(),
+            agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: run_id.into(),
+            provider_id: "openai_api".into(),
+            model_id: "gpt-5.4".into(),
+            prompt: "Prepare an auto-compact failure source.".into(),
+            system_prompt: "You are Cadence.".into(),
+            now: "2026-04-26T18:00:00Z".into(),
+        },
+    )
+    .expect("insert auto-compact failure source run");
+    db::project_store::append_agent_message(
+        &repo_root,
+        &db::project_store::NewAgentMessageRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.into(),
+            role: db::project_store::AgentMessageRole::System,
+            content: "You are Cadence.".into(),
+            created_at: "2026-04-26T18:00:01Z".into(),
+        },
+    )
+    .expect("append failure source system message");
+    db::project_store::append_agent_message(
+        &repo_root,
+        &db::project_store::NewAgentMessageRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.into(),
+            role: db::project_store::AgentMessageRole::User,
+            content: "Prepare an auto-compact failure source.".into(),
+            created_at: "2026-04-26T18:00:02Z".into(),
+        },
+    )
+    .expect("append failure source user message");
+    append_auto_compact_fixture_messages(
+        &repo_root,
+        &project_id,
+        run_id,
+        "2026-04-26T18:00",
+        6,
+        4_000,
+    );
+    db::project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        run_id,
+        db::project_store::AgentRunStatus::Completed,
+        None,
+        "2026-04-26T18:00:50Z",
+    )
+    .expect("complete auto-compact failure source run");
+    let before = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
+        .expect("load failure source before continuation");
+    let before_message_count = before.messages.len();
+
+    let continue_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime for failed auto-compact continuation");
+    let error = continue_owned_agent_run(ContinueOwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        run_id: run_id.into(),
+        prompt: "This should not be appended.".into(),
+        controls: None,
+        tool_runtime: continue_tool_runtime,
+        provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+            provider_id: "openai_api".into(),
+            model_id: "gpt-5.4".into(),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            api_key: None,
+            api_version: None,
+            timeout_ms: 50,
+        }),
+        answer_pending_actions: false,
+        auto_compact: Some(AgentAutoCompactPreference {
+            enabled: true,
+            threshold_percent: Some(1),
+            raw_tail_message_count: Some(2),
+        }),
+    })
+    .expect_err("provider compaction failure should reject before mutation");
+
+    assert!(error.retryable || error.code.contains("provider"));
+    let after = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
+        .expect("load failure source after continuation");
+    assert_eq!(after.messages.len(), before_message_count);
+    assert!(!after
+        .messages
+        .iter()
+        .any(|message| message.content == "This should not be appended."));
+    assert_eq!(after.run.status, before.run.status);
+    assert!(db::project_store::list_agent_compactions(
+        &repo_root,
+        &project_id,
+        db::project_store::DEFAULT_AGENT_SESSION_ID,
+    )
+    .expect("list compactions after failed auto compact")
+    .is_empty());
 }
 
 #[test]
@@ -1188,6 +1432,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         answer_pending_actions: true,
+        auto_compact: None,
     })
     .expect("approved safety action should replay original tool call");
 
@@ -1321,6 +1566,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         answer_pending_actions: false,
+        auto_compact: None,
     })
     .expect("resume interrupted owned agent run");
 
@@ -1437,6 +1683,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         answer_pending_actions: true,
+        auto_compact: None,
     })
     .expect("approved command action should replay original tool call");
 
@@ -1855,6 +2102,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             run_id: runtime_run.run_id.clone(),
             controls: None,
             prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+            auto_compact: None,
         },
     )
     .expect("runtime prompt should start owned agent run");
@@ -1880,6 +2128,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             run_id: runtime_run.run_id.clone(),
             controls: None,
             prompt: Some("Thanks, summarize the result.".into()),
+            auto_compact: None,
         },
     )
     .expect("runtime prompt should continue owned agent run");

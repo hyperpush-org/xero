@@ -34,6 +34,7 @@ import type {
   RepositoryStatusView,
   ResumeHistoryEntryView,
   RuntimeAuthPhaseDto,
+  RuntimeAutoCompactPreferenceDto,
   RuntimeRunActiveControlSnapshotView,
   RuntimeRunApprovalModeDto,
   RuntimeRunControlInputDto,
@@ -122,6 +123,7 @@ export type AgentRunControlTruthSource = 'runtime_run' | 'fallback'
 export interface RuntimeRunControlMutationRequest {
   controls?: RuntimeRunControlInputDto | null
   prompt?: string | null
+  autoCompact?: RuntimeAutoCompactPreferenceDto | null
 }
 
 export interface AgentRunControlSelectionView {

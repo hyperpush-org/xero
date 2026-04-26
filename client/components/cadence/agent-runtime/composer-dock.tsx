@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import type {
@@ -43,6 +44,7 @@ interface ComposerDockProps {
   composerThinkingPlaceholder: string
   composerApprovalMode: RuntimeRunApprovalModeDto
   composerApprovalOptions: ComposerApprovalOption[]
+  autoCompactEnabled: boolean
   controlsDisabled: boolean
   runtimeSessionBindInFlight: boolean
   runtimeRunActionStatus: RuntimeRunActionStatus
@@ -52,6 +54,7 @@ interface ComposerDockProps {
   onOpenDiagnostics?: () => void
   onDraftPromptChange: (value: string) => void
   onSubmitDraftPrompt: () => void
+  onAutoCompactEnabledChange: (value: boolean) => void
   onComposerModelChange: (value: string) => void
   onComposerThinkingLevelChange: (value: ProviderModelThinkingEffortDto) => void
   onComposerApprovalModeChange: (value: RuntimeRunApprovalModeDto) => void
@@ -77,6 +80,7 @@ export function ComposerDock({
   composerThinkingPlaceholder,
   composerApprovalMode,
   composerApprovalOptions,
+  autoCompactEnabled,
   controlsDisabled,
   runtimeSessionBindInFlight,
   runtimeRunActionStatus,
@@ -86,6 +90,7 @@ export function ComposerDock({
   onOpenDiagnostics,
   onDraftPromptChange,
   onSubmitDraftPrompt,
+  onAutoCompactEnabledChange,
   onComposerModelChange,
   onComposerThinkingLevelChange,
   onComposerApprovalModeChange,
@@ -180,6 +185,16 @@ export function ComposerDock({
                       ))}
                     </SelectContent>
                   </Select>
+                  <span aria-hidden="true" className="h-3.5 w-px bg-border/60" />
+                  <label className="flex h-7 shrink-0 items-center gap-2 rounded-md px-2 text-[12px] font-medium text-muted-foreground/90 transition-colors hover:bg-muted/60 hover:text-foreground">
+                    <Switch
+                      aria-label="Auto-compact before sending"
+                      checked={autoCompactEnabled}
+                      disabled={runtimeRunActionStatus === 'running'}
+                      onCheckedChange={onAutoCompactEnabledChange}
+                    />
+                    <span>Auto-compact</span>
+                  </label>
                 </div>
                 <div className="flex items-center gap-2">
                   <span

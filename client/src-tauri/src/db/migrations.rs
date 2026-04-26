@@ -1776,6 +1776,96 @@ pub fn migrations() -> &'static Migrations<'static> {
                 END;
                 "#,
             ),
+            M::up(
+                r#"
+                CREATE TABLE IF NOT EXISTS agent_session_lineage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lineage_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    child_agent_session_id TEXT NOT NULL,
+                    source_agent_session_id TEXT,
+                    source_run_id TEXT,
+                    source_boundary_kind TEXT NOT NULL,
+                    source_message_id INTEGER,
+                    source_checkpoint_id INTEGER,
+                    source_compaction_id TEXT,
+                    source_title TEXT NOT NULL,
+                    branch_title TEXT NOT NULL,
+                    replay_run_id TEXT NOT NULL,
+                    file_change_summary TEXT NOT NULL DEFAULT '',
+                    diagnostic_json TEXT,
+                    created_at TEXT NOT NULL,
+                    source_deleted_at TEXT,
+                    CHECK (lineage_id <> ''),
+                    CHECK (child_agent_session_id <> ''),
+                    CHECK (source_agent_session_id IS NULL OR source_agent_session_id <> ''),
+                    CHECK (source_run_id IS NULL OR source_run_id <> ''),
+                    CHECK (source_boundary_kind IN ('run', 'message', 'checkpoint')),
+                    CHECK (source_compaction_id IS NULL OR source_compaction_id <> ''),
+                    CHECK (source_title <> ''),
+                    CHECK (branch_title <> ''),
+                    CHECK (replay_run_id <> ''),
+                    CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+                    CHECK (source_deleted_at IS NULL OR source_deleted_at <> ''),
+                    CHECK (
+                        source_deleted_at IS NOT NULL
+                        OR (source_agent_session_id IS NOT NULL AND source_run_id IS NOT NULL)
+                    ),
+                    CHECK (
+                        (source_boundary_kind = 'run' AND source_message_id IS NULL AND source_checkpoint_id IS NULL)
+                        OR (source_boundary_kind = 'message' AND source_message_id IS NOT NULL AND source_checkpoint_id IS NULL)
+                        OR (source_boundary_kind = 'checkpoint' AND source_message_id IS NULL AND source_checkpoint_id IS NOT NULL)
+                    ),
+                    UNIQUE (project_id, lineage_id),
+                    UNIQUE (project_id, child_agent_session_id),
+                    FOREIGN KEY (project_id, child_agent_session_id)
+                        REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+                    FOREIGN KEY (project_id, replay_run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_session_lineage_source
+                    ON agent_session_lineage(project_id, source_agent_session_id, source_run_id);
+                CREATE INDEX IF NOT EXISTS idx_agent_session_lineage_replay_run
+                    ON agent_session_lineage(project_id, replay_run_id);
+
+                CREATE TRIGGER IF NOT EXISTS agent_session_lineage_mark_deleted_source_run
+                AFTER DELETE ON agent_runs
+                BEGIN
+                    UPDATE agent_session_lineage
+                    SET source_agent_session_id = NULL,
+                        source_run_id = NULL,
+                        source_message_id = NULL,
+                        source_checkpoint_id = NULL,
+                        source_compaction_id = NULL,
+                        source_deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        diagnostic_json = json_object(
+                            'code', 'branch_source_deleted',
+                            'message', 'The source run for this branch was deleted. Cadence preserved the branch replay copy and cleared the source reference.'
+                        )
+                    WHERE project_id = old.project_id
+                      AND source_run_id = old.run_id;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS agent_session_lineage_mark_deleted_source_session
+                BEFORE DELETE ON agent_sessions
+                BEGIN
+                    UPDATE agent_session_lineage
+                    SET source_agent_session_id = NULL,
+                        source_run_id = NULL,
+                        source_message_id = NULL,
+                        source_checkpoint_id = NULL,
+                        source_compaction_id = NULL,
+                        source_deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        diagnostic_json = json_object(
+                            'code', 'branch_source_deleted',
+                            'message', 'The source session for this branch was deleted. Cadence preserved the branch replay copy and cleared the source reference.'
+                        )
+                    WHERE project_id = old.project_id
+                      AND source_agent_session_id = old.agent_session_id;
+                END;
+                "#,
+            ),
         ])
     });
 

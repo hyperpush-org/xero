@@ -15,6 +15,7 @@ import {
   Loader2,
   MessageSquare,
   MoreHorizontal,
+  PanelLeftClose,
   Pencil,
   Pin,
   PinOff,
@@ -61,6 +62,7 @@ interface AgentSessionsSidebarProps {
   pendingSessionId?: string | null
   isCreating?: boolean
   collapsed?: boolean
+  onCollapse?: () => void
 }
 
 const PINNED_SESSIONS_STORAGE_PREFIX = 'cadence:pinned-sessions:'
@@ -70,7 +72,7 @@ const MAX_WIDTH = 560
 const RIGHT_PADDING = 360
 const WIDTH_STORAGE_KEY = 'cadence.agentSessions.width'
 
-function readPinnedSessionIds(projectId: string | null): Set<string> {
+export function readPinnedSessionIds(projectId: string | null): Set<string> {
   if (!projectId || typeof window === 'undefined') return new Set()
   try {
     const raw = window.localStorage.getItem(`${PINNED_SESSIONS_STORAGE_PREFIX}${projectId}`)
@@ -148,6 +150,7 @@ export function AgentSessionsSidebar({
   pendingSessionId,
   isCreating,
   collapsed = false,
+  onCollapse,
 }: AgentSessionsSidebarProps) {
   const activeSessions = useMemo(
     () => sessions.filter((session) => session.isActive),
@@ -478,6 +481,19 @@ export function AgentSessionsSidebar({
                 <Plus className="h-3.5 w-3.5" />
               )}
             </button>
+            {onCollapse ? (
+              <button
+                aria-label="Collapse sessions sidebar"
+                className={cn(
+                  'flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors',
+                  'hover:bg-primary/10 hover:text-primary',
+                )}
+                onClick={onCollapse}
+                type="button"
+              >
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -628,7 +644,7 @@ function SidebarSectionHeader({ label }: { label: string }) {
   )
 }
 
-interface AgentSessionsSidebarItemProps {
+export interface AgentSessionsSidebarItemProps {
   session: AgentSessionView
   isActive: boolean
   isPending: boolean
@@ -638,9 +654,10 @@ interface AgentSessionsSidebarItemProps {
   onArchiveSession: (agentSessionId: string) => void
   onTogglePin: (agentSessionId: string) => void
   onRenameSession?: (session: AgentSessionView) => void
+  compact?: 'icon' | 'list' | 'full'
 }
 
-function AgentSessionsSidebarItem({
+export function AgentSessionsSidebarItem({
   session,
   isActive,
   isPending,
@@ -650,8 +667,85 @@ function AgentSessionsSidebarItem({
   onArchiveSession,
   onTogglePin,
   onRenameSession,
+  compact = 'full',
 }: AgentSessionsSidebarItemProps) {
   const formattedCreatedAt = formatRelativeDate(session.createdAt)
+
+  if (compact === 'icon') {
+    return (
+      <button
+        aria-label={session.title}
+        className={cn(
+          'flex w-full items-center justify-center rounded-md p-1 transition-colors',
+          isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/60',
+        )}
+        onClick={() => onSelectSession(session.agentSessionId)}
+        title={session.title}
+        type="button"
+      >
+        <span
+          className={cn(
+            'relative flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
+            isActive
+              ? 'border-primary/45 bg-primary/15 text-primary'
+              : 'border-border/70 bg-secondary/70 text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground',
+          )}
+        >
+          {isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <MessageSquare className="h-3.5 w-3.5" />
+          )}
+          {isPinned ? (
+            <Pin
+              aria-hidden
+              className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 -rotate-45 text-muted-foreground/80"
+            />
+          ) : null}
+        </span>
+      </button>
+    )
+  }
+
+  if (compact === 'list') {
+    return (
+      <button
+        className={cn(
+          'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
+          isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
+        )}
+        onClick={() => onSelectSession(session.agentSessionId)}
+        title={session.title}
+        type="button"
+      >
+        <span
+          className={cn(
+            'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors',
+            isActive
+              ? 'border-primary/45 bg-primary/15 text-primary'
+              : 'border-border/70 bg-secondary/70 text-muted-foreground group-hover:border-border group-hover:bg-secondary group-hover:text-foreground',
+          )}
+        >
+          {isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <MessageSquare className="h-2.5 w-2.5" />
+          )}
+        </span>
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate text-[12px] leading-tight',
+            isActive ? 'text-foreground' : 'text-foreground/85 group-hover:text-foreground',
+          )}
+        >
+          {session.title}
+        </span>
+        {isPinned ? (
+          <Pin aria-hidden className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70" />
+        ) : null}
+      </button>
+    )
+  }
 
   return (
     <div className="group relative">

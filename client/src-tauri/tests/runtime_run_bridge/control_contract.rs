@@ -94,6 +94,7 @@ pub(crate) fn queued_runtime_controls_apply_on_next_model_boundary_and_recover_r
                 plan_mode_required: running.controls.active.plan_mode_required,
             }),
             prompt: Some(queued_prompt.into()),
+            auto_compact: None,
         },
     )
     .expect("queue runtime controls");
@@ -259,6 +260,7 @@ pub(crate) fn queued_runtime_controls_duplicate_boundary_is_idempotent() {
                 plan_mode_required: running.controls.active.plan_mode_required,
             }),
             prompt: None,
+            auto_compact: None,
         },
     )
     .expect("queue runtime controls for duplicate boundary proof");

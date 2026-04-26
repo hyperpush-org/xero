@@ -88,6 +88,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::session_history::search_session_transcripts,
             commands::session_history::get_session_context_snapshot,
             commands::session_history::compact_session_history,
+            commands::session_history::branch_agent_session,
+            commands::session_history::rewind_agent_session,
             commands::session_history::list_session_memories,
             commands::session_history::extract_session_memory_candidates,
             commands::session_history::update_session_memory,

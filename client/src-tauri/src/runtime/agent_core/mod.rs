@@ -39,10 +39,12 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use crate::{
     auth::now_timestamp,
     commands::{
-        context_budget, estimate_tokens, provider_context_budget_tokens,
-        redact_session_context_text, CommandError, CommandErrorClass, CommandResult,
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
-        RuntimeRunControlStateDto, SessionContextBudgetPressureDto,
+        context_budget, estimate_tokens, evaluate_compaction_policy,
+        provider_context_budget_tokens, redact_session_context_text, CommandError,
+        CommandErrorClass, CommandResult, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+        SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
+        SessionContextPolicyActionDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentMessageRecord, AgentMessageRole, AgentRunEventKind,

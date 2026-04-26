@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   ProviderModelThinkingEffortDto,
+  RuntimeAutoCompactPreferenceDto,
   RuntimeRunApprovalModeDto,
   RuntimeRunControlInputDto,
   RuntimeRunView,
@@ -54,6 +55,7 @@ interface UseAgentRuntimeControllerOptions {
   onUpdateRuntimeRunControls?: (request?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
+    autoCompact?: RuntimeAutoCompactPreferenceDto | null
   }) => Promise<RuntimeRunView | null>
   onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
   onResolveOperatorAction?: (
@@ -74,6 +76,23 @@ function getErrorMessage(error: unknown, fallback: string): string {
   }
 
   return fallback
+}
+
+const AUTO_COMPACT_STORAGE_KEY = 'cadence.agent.autoCompact.enabled'
+const AUTO_COMPACT_DEFAULT_PREFERENCE: RuntimeAutoCompactPreferenceDto = {
+  enabled: true,
+  thresholdPercent: 85,
+  rawTailMessageCount: 8,
+}
+
+function readStoredAutoCompactEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+
+  try {
+    return window.localStorage.getItem(AUTO_COMPACT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 export function useAgentRuntimeController({
@@ -111,6 +130,7 @@ export function useAgentRuntimeController({
   const [runtimeSessionBindInFlight, setRuntimeSessionBindInFlight] = useState(false)
   const [queuedDraftAcknowledgement, setQueuedDraftAcknowledgement] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
+  const [autoCompactEnabled, setAutoCompactEnabled] = useState(readStoredAutoCompactEnabled)
   const [operatorAnswers, setOperatorAnswers] = useState<Record<string, string>>({})
   const [pendingOperatorIntent, setPendingOperatorIntent] = useState<PendingOperatorIntent | null>(null)
   const [recentRunReplacement, setRecentRunReplacement] = useState<{
@@ -163,6 +183,16 @@ export function useAgentRuntimeController({
           !renderableRuntimeRun.isTerminal &&
           onUpdateRuntimeRunControls)),
   )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    try {
+      window.localStorage.setItem(AUTO_COMPACT_STORAGE_KEY, autoCompactEnabled ? '1' : '0')
+    } catch {
+      /* storage unavailable, keep the in-memory preference */
+    }
+  }, [autoCompactEnabled])
 
   useEffect(() => {
     if (renderableRuntimeRun) {
@@ -368,7 +398,10 @@ export function useAgentRuntimeController({
     setRuntimeRunActionMessage(null)
 
     try {
-      await onUpdateRuntimeRunControls({ prompt: trimmedDraftPrompt })
+      await onUpdateRuntimeRunControls({
+        prompt: trimmedDraftPrompt,
+        ...(autoCompactEnabled ? { autoCompact: AUTO_COMPACT_DEFAULT_PREFERENCE } : {}),
+      })
       setQueuedDraftAcknowledgement(trimmedDraftPrompt)
     } catch (error) {
       setQueuedDraftAcknowledgement(null)
@@ -392,6 +425,10 @@ export function useAgentRuntimeController({
 
   function handleDraftPromptChange(value: string) {
     setDraftPrompt(value)
+  }
+
+  function handleAutoCompactEnabledChange(value: boolean) {
+    setAutoCompactEnabled(value)
   }
 
   function handleComposerModelChange(value: string) {
@@ -530,6 +567,7 @@ export function useAgentRuntimeController({
 
   return {
     draftPrompt,
+    autoCompactEnabled,
     composerModelId: effectiveModelId,
     composerThinkingEffort: effectiveThinkingEffort,
     composerApprovalMode: effectiveApprovalMode,
@@ -544,6 +582,7 @@ export function useAgentRuntimeController({
     runtimeRunActionError: resolvedRuntimeRunActionError,
     runtimeRunActionErrorTitle,
     handleDraftPromptChange,
+    handleAutoCompactEnabledChange,
     handleSubmitDraftPrompt,
     handleComposerModelChange,
     handleComposerThinkingLevelChange,

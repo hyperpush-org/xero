@@ -10,7 +10,10 @@ use crate::db::project_store::{
     AgentToolCallState, AgentUsageRecord,
 };
 
-use super::runtime::{RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState};
+use super::runtime::{
+    AgentSessionDto, AgentSessionLineageBoundaryKindDto, AgentSessionLineageDto,
+    RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
+};
 
 pub const CADENCE_SESSION_CONTEXT_CONTRACT_VERSION: u32 = 1;
 
@@ -656,6 +659,47 @@ pub struct UpdateSessionMemoryRequestDto {
 pub struct DeleteSessionMemoryRequestDto {
     pub project_id: String,
     pub memory_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchAgentSessionRequestDto {
+    pub project_id: String,
+    pub source_agent_session_id: String,
+    pub source_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default = "default_selected_branch")]
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RewindAgentSessionRequestDto {
+    pub project_id: String,
+    pub source_agent_session_id: String,
+    pub source_run_id: String,
+    pub boundary_kind: AgentSessionLineageBoundaryKindDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checkpoint_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default = "default_selected_branch")]
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSessionBranchResponseDto {
+    pub session: AgentSessionDto,
+    pub lineage: AgentSessionLineageDto,
+    pub replay_run_id: String,
+}
+
+fn default_selected_branch() -> bool {
+    true
 }
 
 pub fn usage_totals_from_agent_usage(record: &AgentUsageRecord) -> SessionUsageTotalsDto {

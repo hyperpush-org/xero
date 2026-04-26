@@ -179,10 +179,19 @@ export const startAgentTaskRequestSchema = z
   })
   .strict()
 
+export const agentAutoCompactPreferenceSchema = z
+  .object({
+    enabled: z.boolean(),
+    thresholdPercent: z.number().int().min(1).max(100).nullable().optional(),
+    rawTailMessageCount: z.number().int().min(2).max(24).nullable().optional(),
+  })
+  .strict()
+
 export const sendAgentMessageRequestSchema = z
   .object({
     runId: z.string().trim().min(1),
     prompt: z.string().trim().min(1),
+    autoCompact: agentAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
 
@@ -196,6 +205,7 @@ export const resumeAgentRunRequestSchema = z
   .object({
     runId: z.string().trim().min(1),
     response: z.string().trim().min(1),
+    autoCompact: agentAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
 
@@ -247,6 +257,7 @@ export type AgentActionRequestDto = z.infer<typeof agentActionRequestSchema>
 export type AgentRunDto = z.infer<typeof agentRunSchema>
 export type AgentRunSummaryDto = z.infer<typeof agentRunSummarySchema>
 export type StartAgentTaskRequestDto = z.infer<typeof startAgentTaskRequestSchema>
+export type AgentAutoCompactPreferenceDto = z.infer<typeof agentAutoCompactPreferenceSchema>
 export type SendAgentMessageRequestDto = z.infer<typeof sendAgentMessageRequestSchema>
 export type CancelAgentRunRequestDto = z.infer<typeof cancelAgentRunRequestSchema>
 export type ResumeAgentRunRequestDto = z.infer<typeof resumeAgentRunRequestSchema>

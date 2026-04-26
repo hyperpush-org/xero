@@ -763,20 +763,23 @@ Outcome: useful durable context can survive individual runs, but users remain in
 
 Outcome: users can recover and explore from prior conversation points without destructive transcript edits, and long-running sessions can compact themselves when policy allows.
 
-- [ ] Slice 4.5.1: Branch a session from a historical run.
+- [x] Slice 4.5.1: Branch a session from a historical run.
   - Scope: add branch lineage records and commands that create a new active session from a selected source session/run, carrying the relevant compacted context and transcript references without mutating the source session.
   - Acceptance: users can branch from a search result or run history row, the new session is selected, source lineage is visible, and continuing the branch does not append to the original session.
   - Verification: store tests cover branch creation, lineage loading, archived source sessions, duplicate titles, and source deletion behavior; React tests cover branch action, selected-session switch, and lineage display.
+  - Completed: 2026-04-26. Implementation: added durable branch lineage records, branch commands, branch replay runs, source-deletion diagnostics, App-level branch selection, run-history branch controls, and lineage display in the Agent history panel. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_history_commands` passed 7 tests; `pnpm --dir client exec vitest run src/lib/cadence-model/runtime.test.ts src/lib/cadence-model/agent.test.ts src/lib/cadence-model/session-context.test.ts components/cadence/agent-runtime.test.tsx components/cadence/agent-sessions-sidebar.test.tsx` passed 5 files and 62 tests.
 
-- [ ] Slice 4.5.2: Rewind by branching from a checkpoint or message boundary.
+- [x] Slice 4.5.2: Rewind by branching from a checkpoint or message boundary.
   - Scope: add a safe rewind workflow that creates a branch from a selected checkpoint/message boundary and replays only the selected context prefix plus any active compaction summary.
   - Acceptance: rewind never deletes the original run, clearly identifies file rollback limitations, and preserves enough checkpoint metadata to explain what changed before the branch point.
   - Verification: Rust tests cover message-boundary rewind, checkpoint-boundary rewind, tool-call pair boundaries, file-change checkpoint metadata, invalid boundary rejection, and branch continuation.
+  - Completed: 2026-04-26. Implementation: added message/checkpoint rewind commands, prefix replay copying for messages/events/tool calls/file changes/checkpoints/action requests, file rollback limitation summaries, App-level rewind selection, and transcript-row rewind controls. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_history_commands` passed 7 tests, including message/checkpoint rewind and invalid boundary rejection; targeted React/schema Vitest passed 62 tests.
 
-- [ ] Slice 4.5.3: Add auto-compact policy after manual compact is stable.
+- [x] Slice 4.5.3: Add auto-compact policy after manual compact is stable.
   - Scope: add opt-in auto-compact behavior that triggers when context pressure crosses configured thresholds before a continuation, reusing the manual compact pipeline and producing the same diagnostics.
   - Acceptance: auto-compact can be disabled, never runs without a provider/profile capable of summarization, preserves raw history, and reports whether compaction happened before the next provider turn.
   - Verification: policy tests cover disabled, enabled below-threshold, enabled above-threshold, provider unavailable, provider failure, cancellation, and successful continuation after auto-compact.
+  - Completed: 2026-04-26. Implementation: added opt-in auto-compact preferences to owned-agent continuations and runtime-run controls, reused the manual compaction pipeline before provider continuation, emitted durable auto-compact diagnostics, preserved raw transcript history, and exposed a ShadCN composer switch. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test agent_core_runtime` passed 32 tests, including successful auto-compact-before-continuation and provider-failure no-mutation coverage; `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_context_contract` passed 8 tests covering policy disabled/below-threshold/above-threshold/provider-unavailable branches; `pnpm --dir client exec tsc --noEmit`, targeted ESLint, and `pnpm --dir client build` passed.
 
 ##### Phase 6: Hardening, Docs, And Completion Criteria
 

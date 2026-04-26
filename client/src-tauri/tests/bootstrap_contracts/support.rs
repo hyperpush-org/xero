@@ -471,6 +471,7 @@ pub(crate) fn sample_agent_session() -> AgentSessionDto {
         last_run_id: Some("run-1".into()),
         last_runtime_kind: Some("openai_codex".into()),
         last_provider_id: Some("openai_codex".into()),
+        lineage: None,
     }
 }
 

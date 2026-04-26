@@ -17,6 +17,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 afterEach(() => {
   openUrlMock.mockReset()
   saveDialogMock.mockReset()
+  window.localStorage.clear()
 })
 
 if (!HTMLElement.prototype.hasPointerCapture) {
@@ -35,6 +36,7 @@ import { AgentRuntime } from '@/components/cadence/agent-runtime'
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   AgentSessionView,
+  AgentSessionBranchResponseDto,
   CompactSessionHistoryResponseDto,
   DeleteSessionMemoryRequestDto,
   ExtractSessionMemoryCandidatesRequestDto,
@@ -126,8 +128,53 @@ function makeAgentSession(overrides: Partial<AgentSessionView> = {}): AgentSessi
     lastRunId: 'run-history-2',
     lastRuntimeKind: 'owned_agent',
     lastProviderId: 'openrouter',
+    lineage: null,
     isActive: true,
     isArchived: false,
+    ...overrides,
+  }
+}
+
+function makeAgentSessionBranchResponse(
+  overrides: Partial<AgentSessionBranchResponseDto> = {},
+): AgentSessionBranchResponseDto {
+  const lineage = {
+    lineageId: 'lineage-branch-1',
+    projectId: 'project-1',
+    childAgentSessionId: 'agent-session-branch',
+    sourceAgentSessionId: 'agent-session-main',
+    sourceRunId: 'run-history-2',
+    sourceBoundaryKind: 'run' as const,
+    sourceMessageId: null,
+    sourceCheckpointId: null,
+    sourceCompactionId: null,
+    sourceTitle: 'History session',
+    branchTitle: 'History session branch',
+    replayRunId: 'run-history-branch',
+    fileChangeSummary: '1 file-change record and 1 checkpoint were before the branch point.',
+    diagnostic: null,
+    createdAt: '2026-04-26T12:00:00Z',
+    sourceDeletedAt: null,
+  }
+
+  return {
+    session: {
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-branch',
+      title: 'History session branch',
+      summary: 'Branched session history',
+      status: 'active',
+      selected: true,
+      createdAt: '2026-04-26T12:00:00Z',
+      updatedAt: '2026-04-26T12:00:00Z',
+      archivedAt: null,
+      lastRunId: 'run-history-branch',
+      lastRuntimeKind: 'owned_agent',
+      lastProviderId: 'openrouter',
+      lineage,
+    },
+    lineage,
+    replayRunId: 'run-history-branch',
     ...overrides,
   }
 }
@@ -2480,6 +2527,42 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('Approval · yolo')
   })
 
+  it('opts owned-agent continuations into auto-compact from the composer', async () => {
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun({
+            runtimeKind: 'owned_agent',
+            runtimeLabel: 'Owned agent · Running',
+            supervisorKind: 'owned_agent',
+            supervisorLabel: 'Owned agent',
+          }),
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-compact before sending' }))
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Continue after compacting old context.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Continue after compacting old context.',
+        autoCompact: {
+          enabled: true,
+          thresholdPercent: 85,
+          rawTailMessageCount: 8,
+        },
+      }),
+    )
+  })
+
   it('loads session history, navigates prior runs, and exports the selected run', async () => {
     const transcript = makeSessionTranscript()
     const redaction = {
@@ -2574,6 +2657,118 @@ describe('AgentRuntime current UI', () => {
       expect(onSaveSessionTranscriptExport).toHaveBeenCalledWith({
         path: '/tmp/history.json',
         content: 'json export for run-history-2',
+      }),
+    )
+  })
+
+  it('branches history runs, rewinds transcript boundaries, and surfaces lineage', async () => {
+    const transcript = makeSessionTranscript()
+    transcript.items = [
+      ...transcript.items,
+      {
+        ...transcript.items[1],
+        itemId: 'message:42',
+        sourceTable: 'agent_messages',
+        sourceId: '42',
+        sequence: 3,
+        title: 'User message',
+        text: 'Boundary message',
+      },
+      {
+        ...transcript.items[1],
+        itemId: 'checkpoint:7',
+        sourceTable: 'agent_checkpoints',
+        sourceId: '7',
+        sequence: 4,
+        kind: 'checkpoint',
+        actor: 'cadence',
+        title: 'Checkpoint',
+        text: null,
+        summary: 'Checkpoint summary',
+        checkpointKind: 'tool',
+      },
+    ]
+
+    const lineage = {
+      lineageId: 'lineage-message-1',
+      projectId: 'project-1',
+      childAgentSessionId: 'agent-session-main',
+      sourceAgentSessionId: 'source-session',
+      sourceRunId: 'run-source',
+      sourceBoundaryKind: 'message' as const,
+      sourceMessageId: 42,
+      sourceCheckpointId: null,
+      sourceCompactionId: null,
+      sourceTitle: 'Original session',
+      branchTitle: 'History session',
+      replayRunId: 'run-history-2',
+      fileChangeSummary: 'Branching does not roll files back automatically.',
+      diagnostic: null,
+      createdAt: '2026-04-26T12:00:00Z',
+      sourceDeletedAt: null,
+    }
+    const selectedSession = makeAgentSession({ lineage })
+    const onBranchAgentSession = vi.fn(async () => makeAgentSessionBranchResponse())
+    const onRewindAgentSession = vi.fn(async () =>
+      makeAgentSessionBranchResponse({
+        session: {
+          ...makeAgentSessionBranchResponse().session,
+          title: 'History session rewind',
+        },
+        replayRunId: 'run-history-rewind',
+      }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          project: makeProject({
+            agentSessions: [selectedSession],
+            selectedAgentSession: selectedSession,
+            selectedAgentSessionId: 'agent-session-main',
+          }),
+        })}
+        onLoadSessionTranscript={vi.fn(async () => transcript)}
+        onBranchAgentSession={onBranchAgentSession}
+        onRewindAgentSession={onRewindAgentSession}
+      />,
+    )
+
+    expect(await screen.findByText('Branch lineage')).toBeVisible()
+    expect(screen.getByText('Message 42')).toBeVisible()
+    expect(await screen.findByText('Boundary message')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Branch run run-history-2' }))
+    await waitFor(() =>
+      expect(onBranchAgentSession).toHaveBeenCalledWith({
+        sourceAgentSessionId: 'agent-session-main',
+        sourceRunId: 'run-history-2',
+        selected: true,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind session to message 3' }))
+    await waitFor(() =>
+      expect(onRewindAgentSession).toHaveBeenLastCalledWith({
+        sourceAgentSessionId: 'agent-session-main',
+        sourceRunId: 'run-history-2',
+        boundaryKind: 'message',
+        sourceMessageId: 42,
+        sourceCheckpointId: null,
+        selected: true,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind session to checkpoint 4' }))
+    await waitFor(() =>
+      expect(onRewindAgentSession).toHaveBeenLastCalledWith({
+        sourceAgentSessionId: 'agent-session-main',
+        sourceRunId: 'run-history-2',
+        boundaryKind: 'checkpoint',
+        sourceMessageId: null,
+        sourceCheckpointId: 7,
+        selected: true,
       }),
     )
   })

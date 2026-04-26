@@ -161,6 +161,37 @@ describe('runtime run control schemas', () => {
       },
       initialPrompt: 'Continue with the next verifier step.',
     })
+
+    const compactingUpdate = updateRuntimeRunControlsRequestSchema.parse({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-project-1',
+      prompt: 'Continue after compaction.',
+      autoCompact: {
+        enabled: true,
+        thresholdPercent: 85,
+        rawTailMessageCount: 8,
+      },
+    })
+    expect(compactingUpdate.autoCompact).toEqual({
+      enabled: true,
+      thresholdPercent: 85,
+      rawTailMessageCount: 8,
+    })
+
+    expect(() =>
+      updateRuntimeRunControlsRequestSchema.parse({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runId: 'run-project-1',
+        prompt: 'Continue.',
+        autoCompact: {
+          enabled: true,
+          thresholdPercent: 101,
+          rawTailMessageCount: 8,
+        },
+      }),
+    ).toThrow(/less than or equal/)
   })
 
   it('defaults planModeRequired to false and rejects malformed plan mode values', () => {

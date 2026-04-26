@@ -233,6 +233,8 @@ import {
 import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
+  agentSessionBranchResponseSchema,
+  branchAgentSessionRequestSchema,
   deleteSessionMemoryRequestSchema,
   extractSessionMemoryCandidatesRequestSchema,
   extractSessionMemoryCandidatesResponseSchema,
@@ -241,6 +243,7 @@ import {
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
+  rewindAgentSessionRequestSchema,
   saveSessionTranscriptExportRequestSchema,
   searchSessionTranscriptsRequestSchema,
   searchSessionTranscriptsResponseSchema,
@@ -249,6 +252,8 @@ import {
   sessionTranscriptExportResponseSchema,
   sessionTranscriptSchema,
   type ExportSessionTranscriptRequestDto,
+  type AgentSessionBranchResponseDto,
+  type BranchAgentSessionRequestDto,
   type CompactSessionHistoryRequestDto,
   type CompactSessionHistoryResponseDto,
   type DeleteSessionMemoryRequestDto,
@@ -258,6 +263,7 @@ import {
   type GetSessionTranscriptRequestDto,
   type ListSessionMemoriesRequestDto,
   type ListSessionMemoriesResponseDto,
+  type RewindAgentSessionRequestDto,
   type SaveSessionTranscriptExportRequestDto,
   type SearchSessionTranscriptsRequestDto,
   type SearchSessionTranscriptsResponseDto,
@@ -313,6 +319,8 @@ const COMMANDS = {
   searchSessionTranscripts: 'search_session_transcripts',
   getSessionContextSnapshot: 'get_session_context_snapshot',
   compactSessionHistory: 'compact_session_history',
+  branchAgentSession: 'branch_agent_session',
+  rewindAgentSession: 'rewind_agent_session',
   listSessionMemories: 'list_session_memories',
   extractSessionMemoryCandidates: 'extract_session_memory_candidates',
   updateSessionMemory: 'update_session_memory',
@@ -573,9 +581,17 @@ export interface CadenceDesktopAdapter {
     prompt: string,
     options?: { controls?: RuntimeRunControlInputDto | null },
   ): Promise<AgentRunDto>
-  sendAgentMessage?(runId: string, prompt: string): Promise<AgentRunDto>
+  sendAgentMessage?(
+    runId: string,
+    prompt: string,
+    options?: { autoCompact?: SendAgentMessageRequestDto['autoCompact'] },
+  ): Promise<AgentRunDto>
   cancelAgentRun?(runId: string): Promise<AgentRunDto>
-  resumeAgentRun?(runId: string, response: string): Promise<AgentRunDto>
+  resumeAgentRun?(
+    runId: string,
+    response: string,
+    options?: { autoCompact?: ResumeAgentRunRequestDto['autoCompact'] },
+  ): Promise<AgentRunDto>
   getAgentRun?(runId: string): Promise<AgentRunDto>
   listAgentRuns?(projectId: string, agentSessionId: string): Promise<ListAgentRunsResponseDto>
   getSessionTranscript?(request: GetSessionTranscriptRequestDto): Promise<SessionTranscriptDto>
@@ -592,6 +608,8 @@ export interface CadenceDesktopAdapter {
   compactSessionHistory?(
     request: CompactSessionHistoryRequestDto,
   ): Promise<CompactSessionHistoryResponseDto>
+  branchAgentSession?(request: BranchAgentSessionRequestDto): Promise<AgentSessionBranchResponseDto>
+  rewindAgentSession?(request: RewindAgentSessionRequestDto): Promise<AgentSessionBranchResponseDto>
   listSessionMemories?(
     request: ListSessionMemoriesRequestDto,
   ): Promise<ListSessionMemoriesResponseDto>
@@ -1286,10 +1304,11 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     })
   },
 
-  sendAgentMessage(runId, prompt) {
+  sendAgentMessage(runId, prompt, options) {
     const request: SendAgentMessageRequestDto = sendAgentMessageRequestSchema.parse({
       runId,
       prompt,
+      autoCompact: options?.autoCompact ?? null,
     })
     return invokeTyped(COMMANDS.sendAgentMessage, agentRunSchema, {
       request,
@@ -1305,10 +1324,11 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     })
   },
 
-  resumeAgentRun(runId, response) {
+  resumeAgentRun(runId, response, options) {
     const request: ResumeAgentRunRequestDto = resumeAgentRunRequestSchema.parse({
       runId,
       response,
+      autoCompact: options?.autoCompact ?? null,
     })
     return invokeTyped(COMMANDS.resumeAgentRun, agentRunSchema, {
       request,
@@ -1371,6 +1391,26 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     const parsed = compactSessionHistoryRequestSchema.parse(request)
     return invokeTyped(COMMANDS.compactSessionHistory, compactSessionHistoryResponseSchema, {
       request: parsed,
+    })
+  },
+
+  branchAgentSession(request) {
+    const parsed = branchAgentSessionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.branchAgentSession, agentSessionBranchResponseSchema, {
+      request: {
+        ...parsed,
+        selected: parsed.selected ?? true,
+      },
+    })
+  },
+
+  rewindAgentSession(request) {
+    const parsed = rewindAgentSessionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.rewindAgentSession, agentSessionBranchResponseSchema, {
+      request: {
+        ...parsed,
+        selected: parsed.selected ?? true,
+      },
     })
   },
 

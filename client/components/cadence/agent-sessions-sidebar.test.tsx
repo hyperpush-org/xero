@@ -21,6 +21,7 @@ const sessions: AgentSessionView[] = [
     lastRunId: null,
     lastRuntimeKind: null,
     lastProviderId: null,
+    lineage: null,
     isActive: true,
     isArchived: false,
   },

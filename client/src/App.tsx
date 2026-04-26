@@ -22,7 +22,12 @@ import { SettingsDialog, type SettingsSection } from '@/components/cadence/setti
 import { VcsSidebar } from '@/components/cadence/vcs-sidebar'
 import { CadenceDesktopAdapter as DefaultCadenceDesktopAdapter, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { mapAgentSession } from '@/src/lib/cadence-model/runtime'
-import type { SessionTranscriptSearchResultSnippetDto } from '@/src/lib/cadence-model/session-context'
+import type {
+  AgentSessionBranchResponseDto,
+  BranchAgentSessionRequestDto,
+  RewindAgentSessionRequestDto,
+  SessionTranscriptSearchResultSnippetDto,
+} from '@/src/lib/cadence-model/session-context'
 import { type RepositoryDiffScope } from '@/src/lib/cadence-model/project'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
 import { cn } from '@/lib/utils'
@@ -249,11 +254,56 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     })
   }
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [explorerCollapsed, setExplorerCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem('cadence.explorer.collapsed') === '1'
+    } catch {
+      return false
+    }
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(
+        'cadence.explorer.collapsed',
+        explorerCollapsed ? '1' : '0',
+      )
+    } catch {
+      /* storage unavailable — revert silently */
+    }
+  }, [explorerCollapsed])
+
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const shouldRestoreSidebarFromAutoCollapseRef = useRef(false)
+  const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
   const previousViewRef = useRef<View>(activeView)
+  const previousBrowserOpenRef = useRef<boolean>(browserOpen)
+
+  useEffect(() => {
+    const wasBrowserOpen = previousBrowserOpenRef.current
+
+    if (activeView === 'agent' && browserOpen && !wasBrowserOpen) {
+      shouldRestoreExplorerFromAutoCollapseRef.current = !explorerCollapsed
+      if (!explorerCollapsed) {
+        setExplorerCollapsed(true)
+      }
+    } else if (
+      !browserOpen &&
+      wasBrowserOpen &&
+      shouldRestoreExplorerFromAutoCollapseRef.current
+    ) {
+      shouldRestoreExplorerFromAutoCollapseRef.current = false
+      if (explorerCollapsed) {
+        setExplorerCollapsed(false)
+      }
+    }
+
+    previousBrowserOpenRef.current = browserOpen
+  }, [activeView, browserOpen, explorerCollapsed])
 
   const footerRepositoryStatus = repositoryStatus ?? activeProject?.repositoryStatus ?? null
   const footerLastCommit = footerRepositoryStatus?.lastCommit ?? null
@@ -322,6 +372,107 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     setHistorySearchResult(null)
   }, [activeProjectId])
 
+  const handleSelectAgentSession = (agentSessionId: string) => {
+    if (!activeProject) return
+    if (agentSessionId === activeProject.selectedAgentSessionId) return
+    setPendingAgentSessionId(agentSessionId)
+    void selectAgentSession(agentSessionId).finally(() => {
+      setPendingAgentSessionId(null)
+    })
+  }
+
+  const handleCreateAgentSession = () => {
+    if (!activeProject) return
+    setIsCreatingAgentSession(true)
+    void createAgentSession().finally(() => {
+      setIsCreatingAgentSession(false)
+    })
+  }
+
+  const handleArchiveAgentSession = (agentSessionId: string) => {
+    setPendingAgentSessionId(agentSessionId)
+    void archiveAgentSession(agentSessionId).finally(() => {
+      setPendingAgentSessionId(null)
+    })
+  }
+
+  const handleRenameAgentSession = async (agentSessionId: string, title: string) => {
+    await renameAgentSession(agentSessionId, title)
+  }
+
+  const handleOpenSearchResult = (result: SessionTranscriptSearchResultSnippetDto) => {
+    if (!activeProject) return
+    setActiveView('agent')
+    setHistorySearchResult(result)
+    setHistoryTarget({
+      agentSessionId: result.agentSessionId,
+      runId: result.runId === 'session' ? null : result.runId,
+      source: 'search',
+      nonce: Date.now(),
+    })
+    if (!result.archived && result.agentSessionId !== activeProject.selectedAgentSessionId) {
+      handleSelectAgentSession(result.agentSessionId)
+    }
+  }
+
+  const handleBranchAgentSession = async (
+    request: Omit<BranchAgentSessionRequestDto, 'projectId'>,
+  ): Promise<AgentSessionBranchResponseDto> => {
+    if (!activeProject || !resolvedAdapter.branchAgentSession) {
+      throw new Error('Cadence cannot branch sessions until an imported project is selected.')
+    }
+
+    const response = await resolvedAdapter.branchAgentSession({
+      ...request,
+      projectId: activeProject.id,
+      selected: request.selected ?? true,
+    })
+    setPendingAgentSessionId(response.session.agentSessionId)
+    try {
+      await selectAgentSession(response.session.agentSessionId)
+      setActiveView('agent')
+      setHistorySearchResult(null)
+      setHistoryTarget({
+        agentSessionId: response.session.agentSessionId,
+        runId: response.replayRunId,
+        source: 'session',
+        nonce: Date.now(),
+      })
+    } finally {
+      setPendingAgentSessionId(null)
+    }
+    return response
+  }
+
+  const handleRewindAgentSession = async (
+    request: Omit<RewindAgentSessionRequestDto, 'projectId'>,
+  ): Promise<AgentSessionBranchResponseDto> => {
+    if (!activeProject || !resolvedAdapter.rewindAgentSession) {
+      throw new Error('Cadence cannot rewind sessions until an imported project is selected.')
+    }
+
+    const response = await resolvedAdapter.rewindAgentSession({
+      ...request,
+      projectId: activeProject.id,
+      selected: request.selected ?? true,
+    })
+    setPendingAgentSessionId(response.session.agentSessionId)
+    try {
+      await selectAgentSession(response.session.agentSessionId)
+      setActiveView('agent')
+      setHistorySearchResult(null)
+      setHistoryTarget({
+        agentSessionId: response.session.agentSessionId,
+        runId: response.replayRunId,
+        source: 'session',
+        nonce: Date.now(),
+      })
+    } finally {
+      setPendingAgentSessionId(null)
+    }
+    return response
+  }
+
   const renderBody = () => {
     if (isLoading && !activeProject) {
       return (
@@ -348,46 +499,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     }
 
     const shouldRenderExecutionPanel = Boolean(executionView && activeProjectId)
-
-    const handleSelectAgentSession = (agentSessionId: string) => {
-      if (agentSessionId === activeProject.selectedAgentSessionId) return
-      setPendingAgentSessionId(agentSessionId)
-      void selectAgentSession(agentSessionId).finally(() => {
-        setPendingAgentSessionId(null)
-      })
-    }
-
-    const handleCreateAgentSession = () => {
-      setIsCreatingAgentSession(true)
-      void createAgentSession().finally(() => {
-        setIsCreatingAgentSession(false)
-      })
-    }
-
-    const handleArchiveAgentSession = (agentSessionId: string) => {
-      setPendingAgentSessionId(agentSessionId)
-      void archiveAgentSession(agentSessionId).finally(() => {
-        setPendingAgentSessionId(null)
-      })
-    }
-
-    const handleRenameAgentSession = async (agentSessionId: string, title: string) => {
-      await renameAgentSession(agentSessionId, title)
-    }
-
-    const handleOpenSearchResult = (result: SessionTranscriptSearchResultSnippetDto) => {
-      setActiveView('agent')
-      setHistorySearchResult(result)
-      setHistoryTarget({
-        agentSessionId: result.agentSessionId,
-        runId: result.runId === 'session' ? null : result.runId,
-        source: 'search',
-        nonce: Date.now(),
-      })
-      if (!result.archived && result.agentSessionId !== activeProject.selectedAgentSessionId) {
-        handleSelectAgentSession(result.agentSessionId)
-      }
-    }
 
     const isExecutionVisible = activeView === 'execution'
     const getViewPaneClassName = (visible: boolean) =>
@@ -426,7 +537,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           onOpenSearchResult={handleOpenSearchResult}
           pendingSessionId={pendingAgentSessionId}
           isCreating={isCreatingAgentSession}
-          collapsed={activeView !== 'agent'}
+          collapsed={activeView !== 'agent' || explorerCollapsed}
+          onCollapse={() => setExplorerCollapsed(true)}
         />
         <ArchivedSessionsDialog
           open={archivedSessionsOpen}
@@ -507,6 +619,12 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
                 onLoadSessionTranscript={resolvedAdapter.getSessionTranscript?.bind(resolvedAdapter)}
                 onExportSessionTranscript={resolvedAdapter.exportSessionTranscript?.bind(resolvedAdapter)}
                 onSaveSessionTranscriptExport={resolvedAdapter.saveSessionTranscriptExport?.bind(resolvedAdapter)}
+                onBranchAgentSession={
+                  resolvedAdapter.branchAgentSession ? handleBranchAgentSession : undefined
+                }
+                onRewindAgentSession={
+                  resolvedAdapter.rewindAgentSession ? handleRewindAgentSession : undefined
+                }
                 onLoadSessionContextSnapshot={resolvedAdapter.getSessionContextSnapshot?.bind(resolvedAdapter)}
                 onCompactSessionHistory={resolvedAdapter.compactSessionHistory?.bind(resolvedAdapter)}
                 onListSessionMemories={resolvedAdapter.listSessionMemories?.bind(resolvedAdapter)}
@@ -657,6 +775,16 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         pendingProjectRemovalId={pendingProjectRemovalId}
         projectRemovalStatus={projectRemovalStatus}
         projects={projects}
+        explorerCollapsed={activeView === 'agent' && explorerCollapsed && Boolean(activeProject)}
+        onExpandExplorer={() => setExplorerCollapsed(false)}
+        sessions={activeProject?.agentSessions}
+        selectedSessionId={activeProject?.selectedAgentSessionId ?? null}
+        pendingSessionId={pendingAgentSessionId}
+        isCreatingSession={isCreatingAgentSession}
+        onSelectSession={handleSelectAgentSession}
+        onCreateSession={handleCreateAgentSession}
+        onArchiveSession={handleArchiveAgentSession}
+        onOpenArchivedSessions={() => setArchivedSessionsOpen(true)}
       />
       {renderBody()}
       <GamesSidebar open={gamesOpen} />

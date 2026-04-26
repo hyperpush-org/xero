@@ -5,6 +5,8 @@ import { useMemo } from 'react'
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   ExportSessionTranscriptRequestDto,
+  BranchAgentSessionRequestDto,
+  AgentSessionBranchResponseDto,
   CompactSessionHistoryRequestDto,
   CompactSessionHistoryResponseDto,
   DeleteSessionMemoryRequestDto,
@@ -14,7 +16,9 @@ import type {
   GetSessionTranscriptRequestDto,
   ListSessionMemoriesRequestDto,
   ListSessionMemoriesResponseDto,
+  RewindAgentSessionRequestDto,
   RuntimeRunView,
+  RuntimeAutoCompactPreferenceDto,
   RuntimeSessionView,
   SessionContextSnapshotDto,
   SessionMemoryRecordDto,
@@ -76,6 +80,7 @@ interface AgentRuntimeProps {
   onUpdateRuntimeRunControls?: (request?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
+    autoCompact?: RuntimeAutoCompactPreferenceDto | null
   }) => Promise<RuntimeRunView | null>
   onStartRuntimeSession?: () => Promise<RuntimeSessionView | null>
   onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
@@ -99,6 +104,12 @@ interface AgentRuntimeProps {
     request: ExportSessionTranscriptRequestDto,
   ) => Promise<SessionTranscriptExportResponseDto>
   onSaveSessionTranscriptExport?: (request: { path: string; content: string }) => Promise<void>
+  onBranchAgentSession?: (
+    request: Omit<BranchAgentSessionRequestDto, 'projectId'>,
+  ) => Promise<AgentSessionBranchResponseDto>
+  onRewindAgentSession?: (
+    request: Omit<RewindAgentSessionRequestDto, 'projectId'>,
+  ) => Promise<AgentSessionBranchResponseDto>
   onLoadSessionContextSnapshot?: (
     request: GetSessionContextSnapshotRequestDto,
   ) => Promise<SessionContextSnapshotDto>
@@ -132,6 +143,8 @@ export function AgentRuntime({
   onLoadSessionTranscript,
   onExportSessionTranscript,
   onSaveSessionTranscriptExport,
+  onBranchAgentSession,
+  onRewindAgentSession,
   onLoadSessionContextSnapshot,
   onCompactSessionHistory,
   onListSessionMemories,
@@ -323,6 +336,8 @@ export function AgentRuntime({
                 onLoadTranscript={onLoadSessionTranscript}
                 onExportTranscript={onExportSessionTranscript}
                 onSaveTranscriptExport={onSaveSessionTranscriptExport}
+                onBranchSession={onBranchAgentSession}
+                onRewindSession={onRewindAgentSession}
               />
               <ContextVisualizationSection
                 projectId={agent.project.id}
@@ -380,6 +395,7 @@ export function AgentRuntime({
         <ComposerDock
           composerApprovalMode={controller.composerApprovalMode}
           composerApprovalOptions={composerApprovalOptions}
+          autoCompactEnabled={controller.autoCompactEnabled}
           composerModelGroups={composerModelGroups}
           composerModelId={controller.composerModelId}
           composerThinkingLevel={controller.composerThinkingEffort}
@@ -390,6 +406,7 @@ export function AgentRuntime({
           isPromptDisabled={controller.isPromptDisabled}
           isSendDisabled={!controller.canSubmitPrompt}
           onComposerApprovalModeChange={controller.handleComposerApprovalModeChange}
+          onAutoCompactEnabledChange={controller.handleAutoCompactEnabledChange}
           onComposerModelChange={controller.handleComposerModelChange}
           onComposerThinkingLevelChange={controller.handleComposerThinkingLevelChange}
           onDraftPromptChange={controller.handleDraftPromptChange}

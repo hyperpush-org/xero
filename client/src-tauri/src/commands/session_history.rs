@@ -20,18 +20,20 @@ use crate::{
         session_transcript_from_runs, usage_totals_from_agent_usage,
         validate_context_snapshot_contract, validate_export_payload_contract,
         validate_session_compaction_record_contract, validate_session_memory_record_contract,
-        validate_session_transcript_contract, CommandError, CommandResult,
-        CompactSessionHistoryRequestDto, CompactSessionHistoryResponseDto,
+        validate_session_transcript_contract, AgentSessionBranchResponseDto,
+        AgentSessionLineageBoundaryKindDto, BranchAgentSessionRequestDto, CommandError,
+        CommandResult, CompactSessionHistoryRequestDto, CompactSessionHistoryResponseDto,
         DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
         ExtractSessionMemoryCandidatesRequestDto, ExtractSessionMemoryCandidatesResponseDto,
         GetSessionContextSnapshotRequestDto, GetSessionTranscriptRequestDto,
         ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto,
-        SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
-        SearchSessionTranscriptsResponseDto, SessionCompactionPolicyInput,
-        SessionContextContributorDto, SessionContextContributorKindDto,
-        SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDto,
-        SessionMemoryDiagnosticDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
-        SessionTranscriptDto, SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
+        RewindAgentSessionRequestDto, SaveSessionTranscriptExportRequestDto,
+        SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
+        SessionCompactionPolicyInput, SessionContextContributorDto,
+        SessionContextContributorKindDto, SessionContextRedactionClassDto,
+        SessionContextRedactionDto, SessionContextSnapshotDto, SessionMemoryDiagnosticDto,
+        SessionMemoryRecordDto, SessionMemoryReviewStateDto, SessionTranscriptDto,
+        SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
         SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptScopeDto,
         SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
         UpdateSessionMemoryRequestDto, CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
@@ -39,7 +41,8 @@ use crate::{
     db::project_store::{
         self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
         AgentMemoryReviewState, AgentMemoryScope, AgentMessageRecord, AgentMessageRole,
-        AgentRunSnapshotRecord, AgentSessionRecord, NewAgentCompactionRecord, NewAgentMemoryRecord,
+        AgentRunSnapshotRecord, AgentSessionBranchBoundary, AgentSessionBranchCreateRecord,
+        AgentSessionRecord, NewAgentCompactionRecord, NewAgentMemoryRecord,
     },
     runtime::{
         agent_core::{
@@ -53,6 +56,7 @@ use crate::{
 };
 
 use super::{
+    agent_session::{agent_session_dto, agent_session_lineage_dto},
     runtime_support::{resolve_owned_agent_provider_config, resolve_project_root},
     validate_non_empty,
 };
@@ -282,6 +286,8 @@ pub fn compact_session_history<R: Runtime>(
         &request.agent_session_id,
         request.run_id.as_deref(),
         request.raw_tail_message_count,
+        AgentCompactionTrigger::Manual,
+        "manual_compact_requested",
         provider.as_ref(),
     )?;
     let context_snapshot = build_session_context_snapshot(
@@ -304,6 +310,61 @@ pub fn compact_session_history<R: Runtime>(
         )
     })?;
     Ok(response)
+}
+
+#[tauri::command]
+pub fn branch_agent_session<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: BranchAgentSessionRequestDto,
+) -> CommandResult<AgentSessionBranchResponseDto> {
+    validate_branch_request(
+        &request.project_id,
+        &request.source_agent_session_id,
+        &request.source_run_id,
+        request.title.as_deref(),
+    )?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let record = project_store::create_agent_session_branch(
+        &repo_root,
+        &AgentSessionBranchCreateRecord {
+            project_id: request.project_id,
+            source_agent_session_id: request.source_agent_session_id,
+            source_run_id: request.source_run_id,
+            title: request.title,
+            selected: request.selected,
+            boundary: AgentSessionBranchBoundary::Run,
+        },
+    )?;
+    Ok(agent_session_branch_response_dto(record))
+}
+
+#[tauri::command]
+pub fn rewind_agent_session<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: RewindAgentSessionRequestDto,
+) -> CommandResult<AgentSessionBranchResponseDto> {
+    validate_branch_request(
+        &request.project_id,
+        &request.source_agent_session_id,
+        &request.source_run_id,
+        request.title.as_deref(),
+    )?;
+    let boundary = rewind_boundary_from_request(&request)?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let record = project_store::create_agent_session_branch(
+        &repo_root,
+        &AgentSessionBranchCreateRecord {
+            project_id: request.project_id,
+            source_agent_session_id: request.source_agent_session_id,
+            source_run_id: request.source_run_id,
+            title: request.title,
+            selected: request.selected,
+            boundary,
+        },
+    )?;
+    Ok(agent_session_branch_response_dto(record))
 }
 
 #[tauri::command]
@@ -444,6 +505,61 @@ fn validate_transcript_request(
         validate_non_empty(run_id, "runId")?;
     }
     Ok(())
+}
+
+fn validate_branch_request(
+    project_id: &str,
+    source_agent_session_id: &str,
+    source_run_id: &str,
+    title: Option<&str>,
+) -> CommandResult<()> {
+    validate_non_empty(project_id, "projectId")?;
+    validate_non_empty(source_agent_session_id, "sourceAgentSessionId")?;
+    validate_non_empty(source_run_id, "sourceRunId")?;
+    if let Some(title) = title {
+        validate_non_empty(title, "title")?;
+    }
+    Ok(())
+}
+
+fn rewind_boundary_from_request(
+    request: &RewindAgentSessionRequestDto,
+) -> CommandResult<AgentSessionBranchBoundary> {
+    match &request.boundary_kind {
+        AgentSessionLineageBoundaryKindDto::Run => {
+            Err(CommandError::invalid_request("boundaryKind"))
+        }
+        AgentSessionLineageBoundaryKindDto::Message => {
+            if request.source_checkpoint_id.is_some() {
+                return Err(CommandError::invalid_request("sourceCheckpointId"));
+            }
+            let message_id = request
+                .source_message_id
+                .filter(|message_id| *message_id > 0)
+                .ok_or_else(|| CommandError::invalid_request("sourceMessageId"))?;
+            Ok(AgentSessionBranchBoundary::Message { message_id })
+        }
+        AgentSessionLineageBoundaryKindDto::Checkpoint => {
+            if request.source_message_id.is_some() {
+                return Err(CommandError::invalid_request("sourceMessageId"));
+            }
+            let checkpoint_id = request
+                .source_checkpoint_id
+                .filter(|checkpoint_id| *checkpoint_id > 0)
+                .ok_or_else(|| CommandError::invalid_request("sourceCheckpointId"))?;
+            Ok(AgentSessionBranchBoundary::Checkpoint { checkpoint_id })
+        }
+    }
+}
+
+fn agent_session_branch_response_dto(
+    record: project_store::AgentSessionBranchRecord,
+) -> AgentSessionBranchResponseDto {
+    AgentSessionBranchResponseDto {
+        session: agent_session_dto(&record.session),
+        replay_run_id: record.replay_run.run.run_id.clone(),
+        lineage: agent_session_lineage_dto(&record.lineage),
+    }
 }
 
 fn build_session_transcript(
@@ -658,12 +774,14 @@ fn build_session_context_snapshot(
     Ok(snapshot)
 }
 
-fn compact_session_history_with_provider(
+pub(crate) fn compact_session_history_with_provider(
     repo_root: &Path,
     project_id: &str,
     agent_session_id: &str,
     run_id: Option<&str>,
     raw_tail_message_count: Option<u32>,
+    trigger: AgentCompactionTrigger,
+    policy_reason: &str,
     provider: &dyn ProviderAdapter,
 ) -> CommandResult<crate::commands::SessionCompactionRecordDto> {
     let session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
@@ -768,8 +886,8 @@ fn compact_session_history_with_provider(
             input_tokens,
             summary_tokens: estimate_tokens(&summary),
             raw_tail_message_count,
-            policy_reason: "manual_compact_requested".into(),
-            trigger: AgentCompactionTrigger::Manual,
+            policy_reason: policy_reason.into(),
+            trigger,
             diagnostic: None,
             created_at: now.clone(),
         },

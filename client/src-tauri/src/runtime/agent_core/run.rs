@@ -253,6 +253,9 @@ pub fn prepare_owned_agent_continuation(
         ));
     }
 
+    maybe_auto_compact_before_continuation(request, provider.as_ref(), &before)?;
+    before =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
     ensure_context_budget_allows_continuation(request, &before)?;
 
     if request.answer_pending_actions {
@@ -330,6 +333,95 @@ fn ensure_context_budget_allows_continuation(
         return Ok(());
     };
 
+    let estimate = estimate_continuation_context_tokens(request, snapshot)?;
+    let budget = context_budget(estimate.estimated_tokens, Some(budget_tokens));
+    if budget.pressure != SessionContextBudgetPressureDto::Over {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "agent_context_budget_exceeded",
+        format!(
+            "Cadence estimated {} tokens for run `{}` after this continuation, which exceeds the known {} token context budget for `{}/{}`. Open the Context panel, shorten the prompt, or start a fresh session before continuing.",
+            budget.estimated_tokens,
+            snapshot.run.run_id,
+            budget_tokens,
+            snapshot.run.provider_id,
+            snapshot.run.model_id
+        ),
+    ))
+}
+
+fn maybe_auto_compact_before_continuation(
+    request: &ContinueOwnedAgentRunRequest,
+    provider: &dyn ProviderAdapter,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let Some(preference) = request.auto_compact.as_ref() else {
+        return Ok(());
+    };
+    if !preference.enabled {
+        return Ok(());
+    }
+    let active_compaction = project_store::load_active_agent_compaction(
+        &request.repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+    )?;
+    if active_compaction.is_some() {
+        return Ok(());
+    }
+    let estimate = estimate_continuation_context_tokens(request, snapshot)?;
+    let decision = evaluate_compaction_policy(SessionCompactionPolicyInput {
+        manual_requested: false,
+        auto_enabled: true,
+        provider_supports_compaction: true,
+        active_compaction_present: false,
+        estimated_tokens: estimate.estimated_tokens,
+        budget_tokens: estimate.budget_tokens,
+        threshold_percent: preference.threshold_percent,
+    });
+    if decision.action != SessionContextPolicyActionDto::CompactNow {
+        return Ok(());
+    }
+    let compaction = crate::commands::session_history::compact_session_history_with_provider(
+        &request.repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+        Some(&snapshot.run.run_id),
+        preference.raw_tail_message_count,
+        project_store::AgentCompactionTrigger::Auto,
+        &decision.reason_code,
+        provider,
+    )?;
+    append_event(
+        &request.repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+        AgentRunEventKind::ValidationCompleted,
+        json!({
+            "label": "auto_compact",
+            "outcome": "passed",
+            "compactionId": compaction.compaction_id,
+            "reasonCode": decision.reason_code,
+            "estimatedTokens": estimate.estimated_tokens,
+            "budgetTokens": estimate.budget_tokens,
+        }),
+    )?;
+    Ok(())
+}
+
+struct ContinuationContextEstimate {
+    estimated_tokens: u64,
+    budget_tokens: Option<u64>,
+}
+
+fn estimate_continuation_context_tokens(
+    request: &ContinueOwnedAgentRunRequest,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<ContinuationContextEstimate> {
+    let budget_tokens =
+        provider_context_budget_tokens(&snapshot.run.provider_id, &snapshot.run.model_id);
     let controls = runtime_controls_from_request(request.controls.as_ref());
     let tool_registry = tool_registry_for_snapshot(
         &request.repo_root,
@@ -376,22 +468,10 @@ fn ensure_context_budget_allows_continuation(
         .saturating_add(message_tokens)
         .saturating_add(tool_descriptor_tokens)
         .saturating_add(estimate_tokens(&request.prompt));
-    let budget = context_budget(estimated_tokens, Some(budget_tokens));
-    if budget.pressure != SessionContextBudgetPressureDto::Over {
-        return Ok(());
-    }
-
-    Err(CommandError::user_fixable(
-        "agent_context_budget_exceeded",
-        format!(
-            "Cadence estimated {} tokens for run `{}` after this continuation, which exceeds the known {} token context budget for `{}/{}`. Open the Context panel, shorten the prompt, or start a fresh session before continuing.",
-            budget.estimated_tokens,
-            snapshot.run.run_id,
-            budget_tokens,
-            snapshot.run.provider_id,
-            snapshot.run.model_id
-        ),
-    ))
+    Ok(ContinuationContextEstimate {
+        estimated_tokens,
+        budget_tokens,
+    })
 }
 
 pub fn drive_owned_agent_continuation(

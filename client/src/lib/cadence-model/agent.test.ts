@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   agentRunSchema,
   mapAgentRun,
+  resumeAgentRunRequestSchema,
+  sendAgentMessageRequestSchema,
   startAgentTaskRequestSchema,
   subscribeAgentStreamResponseSchema,
 } from './agent'
@@ -122,6 +124,39 @@ describe('owned agent run schemas', () => {
 
     expect(request.controls?.planModeRequired).toBe(false)
     expect(subscription.replayedEventCount).toBe(3)
+  })
+
+  it('validates auto-compact preferences on owned-agent continuations', () => {
+    expect(
+      sendAgentMessageRequestSchema.parse({
+        runId: 'run-agent-1',
+        prompt: 'Continue after trimming old context.',
+        autoCompact: {
+          enabled: true,
+          thresholdPercent: 85,
+          rawTailMessageCount: 8,
+        },
+      }).autoCompact?.thresholdPercent,
+    ).toBe(85)
+    expect(
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
+        autoCompact: {
+          enabled: false,
+        },
+      }).autoCompact?.enabled,
+    ).toBe(false)
+    expect(() =>
+      sendAgentMessageRequestSchema.parse({
+        runId: 'run-agent-1',
+        prompt: 'Continue.',
+        autoCompact: {
+          enabled: true,
+          rawTailMessageCount: 1,
+        },
+      }),
+    ).toThrow(/greater than or equal/)
   })
 
   it('rejects malformed event kinds and empty prompts', () => {

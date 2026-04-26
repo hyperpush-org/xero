@@ -11,13 +11,14 @@ use crate::{
     runtime::{
         create_owned_agent_run, drive_owned_agent_continuation, drive_owned_agent_run,
         prepare_owned_agent_continuation,
-        update_runtime_run_controls as update_supervised_runtime_run_controls, AgentRunSupervisor,
-        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
-        RuntimeSupervisorUpdateControlsRequest,
+        update_runtime_run_controls as update_supervised_runtime_run_controls,
+        AgentAutoCompactPreference, AgentRunSupervisor, AutonomousToolRuntime,
+        ContinueOwnedAgentRunRequest, OwnedAgentRunRequest, RuntimeSupervisorUpdateControlsRequest,
     },
     state::DesktopState,
 };
 
+use super::agent_task::auto_compact_preference;
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run,
     normalize_requested_runtime_run_controls, resolve_owned_agent_provider_config,
@@ -59,6 +60,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
     }
 
     if existing.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
+        let auto_compact = auto_compact_preference(request.auto_compact.clone())?;
         let after = update_owned_runtime_run_controls(
             &repo_root,
             existing,
@@ -73,7 +75,14 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
             &Some(after.clone()),
         )?;
         if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
-            drive_owned_runtime_prompt(&app, state.inner(), &repo_root, &after, prompt)?;
+            drive_owned_runtime_prompt(
+                &app,
+                state.inner(),
+                &repo_root,
+                &after,
+                prompt,
+                auto_compact,
+            )?;
         }
         return Ok(runtime_run_dto_from_snapshot(&after));
     }
@@ -113,6 +122,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
     prompt: String,
+    auto_compact: Option<AgentAutoCompactPreference>,
 ) -> CommandResult<()> {
     if state
         .agent_run_supervisor()
@@ -145,6 +155,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 tool_runtime,
                 provider_config,
                 answer_pending_actions,
+                auto_compact,
             };
             prepare_owned_agent_continuation(&continuation)?;
             spawn_owned_agent_continuation(

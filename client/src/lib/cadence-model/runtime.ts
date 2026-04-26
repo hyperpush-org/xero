@@ -163,6 +163,14 @@ export const runtimeRunControlInputSchema = z
   })
   .strict()
 
+export const runtimeAutoCompactPreferenceSchema = z
+  .object({
+    enabled: z.boolean(),
+    thresholdPercent: z.number().int().min(1).max(100).nullable().optional(),
+    rawTailMessageCount: z.number().int().min(2).max(24).nullable().optional(),
+  })
+  .strict()
+
 export const runtimeRunActiveControlSnapshotSchema = z
   .object({
     modelId: z.string().trim().min(1),
@@ -218,6 +226,36 @@ export const runtimeRunControlStateSchema = z
 
 export const agentSessionStatusSchema = z.enum(['active', 'archived'])
 
+export const agentSessionLineageBoundaryKindSchema = z.enum(['run', 'message', 'checkpoint'])
+
+export const agentSessionLineageDiagnosticSchema = z
+  .object({
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+  })
+  .strict()
+
+export const agentSessionLineageSchema = z
+  .object({
+    lineageId: z.string().trim().min(1),
+    projectId: z.string().trim().min(1),
+    childAgentSessionId: z.string().trim().min(1),
+    sourceAgentSessionId: nonEmptyOptionalTextSchema,
+    sourceRunId: nonEmptyOptionalTextSchema,
+    sourceBoundaryKind: agentSessionLineageBoundaryKindSchema,
+    sourceMessageId: z.number().int().positive().nullable().optional(),
+    sourceCheckpointId: z.number().int().positive().nullable().optional(),
+    sourceCompactionId: nonEmptyOptionalTextSchema,
+    sourceTitle: z.string().trim().min(1),
+    branchTitle: z.string().trim().min(1),
+    replayRunId: z.string().trim().min(1),
+    fileChangeSummary: z.string(),
+    diagnostic: agentSessionLineageDiagnosticSchema.nullable().optional(),
+    createdAt: isoTimestampSchema,
+    sourceDeletedAt: isoTimestampSchema.nullable().optional(),
+  })
+  .strict()
+
 export const agentSessionSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -232,6 +270,7 @@ export const agentSessionSchema = z
     lastRunId: nonEmptyOptionalTextSchema,
     lastRuntimeKind: nonEmptyOptionalTextSchema,
     lastProviderId: nonEmptyOptionalTextSchema,
+    lineage: agentSessionLineageSchema.nullable().optional(),
   })
   .strict()
 
@@ -351,6 +390,7 @@ export const updateRuntimeRunControlsRequestSchema = z
     runId: z.string().trim().min(1),
     controls: runtimeRunControlInputSchema.nullable().optional(),
     prompt: z.string().trim().min(1).nullable().optional(),
+    autoCompact: runtimeAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
   .superRefine((request, ctx) => {
@@ -387,10 +427,14 @@ export type RuntimeRunCheckpointDto = z.infer<typeof runtimeRunCheckpointSchema>
 export type RuntimeRunThinkingEffortDto = z.infer<typeof runtimeRunThinkingEffortSchema>
 export type RuntimeRunApprovalModeDto = z.infer<typeof runtimeRunApprovalModeSchema>
 export type RuntimeRunControlInputDto = z.infer<typeof runtimeRunControlInputSchema>
+export type RuntimeAutoCompactPreferenceDto = z.infer<typeof runtimeAutoCompactPreferenceSchema>
 export type RuntimeRunActiveControlSnapshotDto = z.infer<typeof runtimeRunActiveControlSnapshotSchema>
 export type RuntimeRunPendingControlSnapshotDto = z.infer<typeof runtimeRunPendingControlSnapshotSchema>
 export type RuntimeRunControlStateDto = z.infer<typeof runtimeRunControlStateSchema>
 export type AgentSessionStatusDto = z.infer<typeof agentSessionStatusSchema>
+export type AgentSessionLineageBoundaryKindDto = z.infer<typeof agentSessionLineageBoundaryKindSchema>
+export type AgentSessionLineageDiagnosticDto = z.infer<typeof agentSessionLineageDiagnosticSchema>
+export type AgentSessionLineageDto = z.infer<typeof agentSessionLineageSchema>
 export type AgentSessionDto = z.infer<typeof agentSessionSchema>
 export type CreateAgentSessionRequestDto = z.infer<typeof createAgentSessionRequestSchema>
 export type ListAgentSessionsRequestDto = z.infer<typeof listAgentSessionsRequestSchema>
@@ -530,6 +574,7 @@ export interface AgentSessionView {
   lastRunId: string | null
   lastRuntimeKind: string | null
   lastProviderId: string | null
+  lineage: AgentSessionLineageDto | null
   isActive: boolean
   isArchived: boolean
 }
@@ -830,6 +875,7 @@ export function mapAgentSession(agentSession: AgentSessionDto): AgentSessionView
     lastRunId: normalizeOptionalText(agentSession.lastRunId),
     lastRuntimeKind: normalizeOptionalText(agentSession.lastRuntimeKind),
     lastProviderId: normalizeOptionalText(agentSession.lastProviderId),
+    lineage: agentSession.lineage ?? null,
     isActive: agentSession.status === 'active',
     isArchived: agentSession.status === 'archived',
   }

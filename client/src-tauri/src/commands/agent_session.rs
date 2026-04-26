@@ -2,14 +2,16 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
-        validate_non_empty, AgentSessionDto, AgentSessionStatusDto, ArchiveAgentSessionRequestDto,
-        CommandResult, CreateAgentSessionRequestDto, DeleteAgentSessionRequestDto,
-        GetAgentSessionRequestDto, ListAgentSessionsRequestDto, ListAgentSessionsResponseDto,
-        RestoreAgentSessionRequestDto, UpdateAgentSessionRequestDto,
+        validate_non_empty, AgentSessionDto, AgentSessionLineageBoundaryKindDto,
+        AgentSessionLineageDiagnosticDto, AgentSessionLineageDto, AgentSessionStatusDto,
+        ArchiveAgentSessionRequestDto, CommandResult, CreateAgentSessionRequestDto,
+        DeleteAgentSessionRequestDto, GetAgentSessionRequestDto, ListAgentSessionsRequestDto,
+        ListAgentSessionsResponseDto, RestoreAgentSessionRequestDto, UpdateAgentSessionRequestDto,
     },
     db::project_store::{
-        self, AgentSessionCreateRecord, AgentSessionRecord, AgentSessionStatus,
-        AgentSessionUpdateRecord, DEFAULT_AGENT_SESSION_TITLE,
+        self, AgentSessionCreateRecord, AgentSessionLineageBoundaryKind, AgentSessionLineageRecord,
+        AgentSessionRecord, AgentSessionStatus, AgentSessionUpdateRecord,
+        DEFAULT_AGENT_SESSION_TITLE,
     },
     state::DesktopState,
 };
@@ -172,5 +174,41 @@ pub(crate) fn agent_session_dto(record: &AgentSessionRecord) -> AgentSessionDto 
         last_run_id: record.last_run_id.clone(),
         last_runtime_kind: record.last_runtime_kind.clone(),
         last_provider_id: record.last_provider_id.clone(),
+        lineage: record.lineage.as_ref().map(agent_session_lineage_dto),
+    }
+}
+
+pub(crate) fn agent_session_lineage_dto(
+    record: &AgentSessionLineageRecord,
+) -> AgentSessionLineageDto {
+    AgentSessionLineageDto {
+        lineage_id: record.lineage_id.clone(),
+        project_id: record.project_id.clone(),
+        child_agent_session_id: record.child_agent_session_id.clone(),
+        source_agent_session_id: record.source_agent_session_id.clone(),
+        source_run_id: record.source_run_id.clone(),
+        source_boundary_kind: match &record.source_boundary_kind {
+            AgentSessionLineageBoundaryKind::Run => AgentSessionLineageBoundaryKindDto::Run,
+            AgentSessionLineageBoundaryKind::Message => AgentSessionLineageBoundaryKindDto::Message,
+            AgentSessionLineageBoundaryKind::Checkpoint => {
+                AgentSessionLineageBoundaryKindDto::Checkpoint
+            }
+        },
+        source_message_id: record.source_message_id,
+        source_checkpoint_id: record.source_checkpoint_id,
+        source_compaction_id: record.source_compaction_id.clone(),
+        source_title: record.source_title.clone(),
+        branch_title: record.branch_title.clone(),
+        replay_run_id: record.replay_run_id.clone(),
+        file_change_summary: record.file_change_summary.clone(),
+        diagnostic: record
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| AgentSessionLineageDiagnosticDto {
+                code: diagnostic.code.clone(),
+                message: diagnostic.message.clone(),
+            }),
+        created_at: record.created_at.clone(),
+        source_deleted_at: record.source_deleted_at.clone(),
     }
 }

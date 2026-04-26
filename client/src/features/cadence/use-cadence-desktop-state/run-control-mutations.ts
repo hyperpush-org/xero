@@ -4,7 +4,9 @@ import { mapAutonomousRunInspection } from '@/src/lib/cadence-model/autonomous'
 import {
   mapRuntimeRun,
   selectAgentSessionId,
+  type RuntimeAutoCompactPreferenceDto,
   type RuntimeRunControlInputDto,
+  type UpdateRuntimeRunControlsRequestDto,
 } from '@/src/lib/cadence-model/runtime'
 
 import type {
@@ -229,7 +231,11 @@ export function useRunControlMutations({
   ])
 
   const updateRuntimeRunControls = useCallback(
-    async (request: { controls?: RuntimeRunControlInputDto | null; prompt?: string | null } = {}) => {
+    async (request: {
+      controls?: RuntimeRunControlInputDto | null
+      prompt?: string | null
+      autoCompact?: RuntimeAutoCompactPreferenceDto | null
+    } = {}) => {
       const projectId = getActiveProjectId(
         activeProjectIdRef,
         'Select an imported project before queueing supervised runtime-run controls.',
@@ -261,13 +267,17 @@ export function useRunControlMutations({
       setRuntimeRunActionError(null)
 
       try {
-        const response = await adapter.updateRuntimeRunControls({
+        const updateRequest: UpdateRuntimeRunControlsRequestDto = {
           projectId,
           agentSessionId,
           runId: resolvedRunId,
           controls: request.controls ?? null,
           prompt: request.prompt ?? null,
-        })
+        }
+        if (request.autoCompact !== undefined) {
+          updateRequest.autoCompact = request.autoCompact
+        }
+        const response = await adapter.updateRuntimeRunControls(updateRequest)
         return applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
           clearGlobalError: false,
           loadError: null,

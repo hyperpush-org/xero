@@ -22,6 +22,14 @@ pub struct ContinueOwnedAgentRunRequest {
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
     pub answer_pending_actions: bool,
+    pub auto_compact: Option<AgentAutoCompactPreference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAutoCompactPreference {
+    pub enabled: bool,
+    pub threshold_percent: Option<u8>,
+    pub raw_tail_message_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

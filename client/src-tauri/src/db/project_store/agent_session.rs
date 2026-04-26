@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, Error as SqlError, Transaction};
 use crate::{auth::now_timestamp, commands::CommandError, db::database_path_for_repo};
 
 use super::{
+    agent_lineage::{read_agent_session_lineage_for_child, AgentSessionLineageRecord},
     decode_optional_non_empty_text, open_runtime_database, read_project_row,
     require_non_empty_owned, validate_non_empty_text,
 };
@@ -33,6 +34,7 @@ pub struct AgentSessionRecord {
     pub last_run_id: Option<String>,
     pub last_runtime_kind: Option<String>,
     pub last_provider_id: Option<String>,
+    pub lineage: Option<AgentSessionLineageRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,7 +259,7 @@ pub fn list_agent_sessions(
 
     let mut sessions = Vec::new();
     for row in rows {
-        sessions.push(decode_agent_session_row(
+        let mut session = decode_agent_session_row(
             row.map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_query_failed",
@@ -268,7 +270,14 @@ pub fn list_agent_sessions(
                 )
             })?,
             &database_path,
-        )?);
+        )?;
+        session.lineage = read_agent_session_lineage_for_child(
+            &connection,
+            &database_path,
+            &session.project_id,
+            &session.agent_session_id,
+        )?;
+        sessions.push(session);
     }
     Ok(sessions)
 }
@@ -693,7 +702,16 @@ pub(crate) fn read_agent_session_row(
     );
 
     match row {
-        Ok(row) => decode_agent_session_row(row, database_path).map(Some),
+        Ok(row) => {
+            let mut session = decode_agent_session_row(row, database_path)?;
+            session.lineage = read_agent_session_lineage_for_child(
+                connection,
+                database_path,
+                &session.project_id,
+                &session.agent_session_id,
+            )?;
+            Ok(Some(session))
+        }
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(CommandError::system_fault(
             "agent_session_query_failed",
@@ -750,7 +768,16 @@ pub(crate) fn read_selected_agent_session_row(
     );
 
     match row {
-        Ok(row) => decode_agent_session_row(row, database_path).map(Some),
+        Ok(row) => {
+            let mut session = decode_agent_session_row(row, database_path)?;
+            session.lineage = read_agent_session_lineage_for_child(
+                connection,
+                database_path,
+                &session.project_id,
+                &session.agent_session_id,
+            )?;
+            Ok(Some(session))
+        }
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(CommandError::system_fault(
             "agent_session_query_failed",
@@ -762,7 +789,7 @@ pub(crate) fn read_selected_agent_session_row(
     }
 }
 
-fn clear_selected_agent_session(
+pub(crate) fn clear_selected_agent_session(
     transaction: &Transaction<'_>,
     database_path: &Path,
     project_id: &str,
@@ -889,6 +916,7 @@ fn decode_agent_session_row(
             database_path,
             "agent_session_decode_failed",
         )?,
+        lineage: None,
     })
 }
 

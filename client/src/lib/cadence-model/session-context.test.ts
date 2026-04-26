@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+  agentSessionBranchResponseSchema,
+  branchAgentSessionRequestSchema,
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
   createContextBudget,
@@ -14,6 +16,7 @@ import {
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
+  rewindAgentSessionRequestSchema,
   runTranscriptSchema,
   saveSessionTranscriptExportRequestSchema,
   searchSessionTranscriptsRequestSchema,
@@ -385,6 +388,76 @@ describe('session context contract', () => {
         truncated: false,
       }).results[0].snippet,
     ).toContain('validation')
+  })
+
+  it('validates branch and rewind session DTOs with lineage', () => {
+    const lineage = {
+      lineageId: 'lineage-1',
+      projectId,
+      childAgentSessionId: 'agent-session-branch',
+      sourceAgentSessionId: agentSessionId,
+      sourceRunId: runId,
+      sourceBoundaryKind: 'message',
+      sourceMessageId: 4,
+      sourceCheckpointId: null,
+      sourceCompactionId: null,
+      sourceTitle: 'Original session',
+      branchTitle: 'Original session rewind',
+      replayRunId: 'run-replay',
+      fileChangeSummary: 'No file-change or checkpoint metadata was before the branch point.',
+      diagnostic: null,
+      createdAt,
+      sourceDeletedAt: null,
+    }
+    const session = {
+      projectId,
+      agentSessionId: 'agent-session-branch',
+      title: 'Original session rewind',
+      summary: 'Branched from historical context.',
+      status: 'active',
+      selected: true,
+      createdAt,
+      updatedAt: createdAt,
+      archivedAt: null,
+      lastRunId: 'run-replay',
+      lastRuntimeKind: 'owned_agent',
+      lastProviderId: providerId,
+      lineage,
+    }
+
+    expect(
+      branchAgentSessionRequestSchema.parse({
+        projectId,
+        sourceAgentSessionId: agentSessionId,
+        sourceRunId: runId,
+        selected: true,
+      }),
+    ).toEqual({ projectId, sourceAgentSessionId: agentSessionId, sourceRunId: runId, selected: true })
+    expect(
+      rewindAgentSessionRequestSchema.parse({
+        projectId,
+        sourceAgentSessionId: agentSessionId,
+        sourceRunId: runId,
+        boundaryKind: 'message',
+        sourceMessageId: 4,
+      }).sourceMessageId,
+    ).toBe(4)
+    expect(() =>
+      rewindAgentSessionRequestSchema.parse({
+        projectId,
+        sourceAgentSessionId: agentSessionId,
+        sourceRunId: runId,
+        boundaryKind: 'checkpoint',
+        sourceMessageId: 4,
+      }),
+    ).toThrow(/sourceCheckpointId/)
+    expect(
+      agentSessionBranchResponseSchema.parse({
+        session,
+        lineage,
+        replayRunId: 'run-replay',
+      }).lineage.sourceBoundaryKind,
+    ).toBe('message')
   })
 
   it('validates manual compaction request and response DTOs', () => {

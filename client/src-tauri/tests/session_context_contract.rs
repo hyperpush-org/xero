@@ -227,6 +227,7 @@ fn archived_empty_sessions_have_a_valid_session_transcript_shape() {
         last_run_id: None,
         last_runtime_kind: None,
         last_provider_id: None,
+        lineage: None,
     };
 
     let transcript = session_transcript_from_runs(&session, Vec::new());

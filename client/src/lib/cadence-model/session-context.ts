@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { isoTimestampSchema, nonEmptyOptionalTextSchema } from './shared'
+import { agentSessionLineageSchema, agentSessionSchema } from './runtime'
 
 export const CADENCE_SESSION_CONTEXT_CONTRACT_VERSION = 1
 
@@ -580,6 +581,67 @@ export const deleteSessionMemoryRequestSchema = z
   })
   .strict()
 
+export const branchAgentSessionRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    sourceAgentSessionId: z.string().trim().min(1),
+    sourceRunId: z.string().trim().min(1),
+    title: z.string().trim().min(1).nullable().optional(),
+    selected: z.boolean().optional(),
+  })
+  .strict()
+
+export const rewindAgentSessionRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    sourceAgentSessionId: z.string().trim().min(1),
+    sourceRunId: z.string().trim().min(1),
+    boundaryKind: z.enum(['message', 'checkpoint']),
+    sourceMessageId: z.number().int().positive().nullable().optional(),
+    sourceCheckpointId: z.number().int().positive().nullable().optional(),
+    title: z.string().trim().min(1).nullable().optional(),
+    selected: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    if (request.boundaryKind === 'message' && !request.sourceMessageId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceMessageId'],
+        message: 'Message rewind requests require sourceMessageId.',
+      })
+    }
+    if (request.boundaryKind === 'message' && request.sourceCheckpointId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceCheckpointId'],
+        message: 'Message rewind requests must not include sourceCheckpointId.',
+      })
+    }
+    if (request.boundaryKind === 'checkpoint' && !request.sourceCheckpointId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceCheckpointId'],
+        message: 'Checkpoint rewind requests require sourceCheckpointId.',
+      })
+    }
+    if (request.boundaryKind === 'checkpoint' && request.sourceMessageId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceMessageId'],
+        message: 'Checkpoint rewind requests must not include sourceMessageId.',
+      })
+    }
+  })
+
+export const agentSessionBranchResponseSchema = z
+  .object({
+    session: agentSessionSchema,
+    lineage: agentSessionLineageSchema,
+    replayRunId: z.string().trim().min(1),
+  })
+  .strict()
+
 export type SessionTranscriptScopeDto = z.infer<typeof sessionTranscriptScopeSchema>
 export type SessionTranscriptExportFormatDto = z.infer<typeof sessionTranscriptExportFormatSchema>
 export type SessionTranscriptSourceKindDto = z.infer<typeof sessionTranscriptSourceKindSchema>
@@ -628,6 +690,9 @@ export type ExtractSessionMemoryCandidatesRequestDto = z.infer<typeof extractSes
 export type ExtractSessionMemoryCandidatesResponseDto = z.infer<typeof extractSessionMemoryCandidatesResponseSchema>
 export type UpdateSessionMemoryRequestDto = z.infer<typeof updateSessionMemoryRequestSchema>
 export type DeleteSessionMemoryRequestDto = z.infer<typeof deleteSessionMemoryRequestSchema>
+export type BranchAgentSessionRequestDto = z.infer<typeof branchAgentSessionRequestSchema>
+export type RewindAgentSessionRequestDto = z.infer<typeof rewindAgentSessionRequestSchema>
+export type AgentSessionBranchResponseDto = z.infer<typeof agentSessionBranchResponseSchema>
 
 export function createPublicSessionContextRedaction(): SessionContextRedactionDto {
   return { redactionClass: 'public', redacted: false, reason: null }

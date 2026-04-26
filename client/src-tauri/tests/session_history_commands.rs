@@ -5,15 +5,17 @@ use std::{
 
 use cadence_desktop_lib::{
     commands::{
-        compact_session_history, delete_session_memory, export_session_transcript,
-        extract_session_memory_candidates, get_session_context_snapshot, get_session_transcript,
-        list_session_memories, save_session_transcript_export, search_session_transcripts,
-        update_session_memory, validate_context_snapshot_contract,
-        validate_export_payload_contract, validate_session_memory_record_contract,
-        validate_session_transcript_contract, CompactSessionHistoryRequestDto,
-        DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
-        ExtractSessionMemoryCandidatesRequestDto, GetSessionContextSnapshotRequestDto,
-        GetSessionTranscriptRequestDto, ListSessionMemoriesRequestDto,
+        branch_agent_session, compact_session_history, delete_session_memory,
+        export_session_transcript, extract_session_memory_candidates, get_session_context_snapshot,
+        get_session_transcript, list_session_memories, rewind_agent_session,
+        save_session_transcript_export, search_session_transcripts, update_session_memory,
+        validate_context_snapshot_contract, validate_export_payload_contract,
+        validate_session_memory_record_contract, validate_session_transcript_contract,
+        AgentSessionLineageBoundaryKindDto, BranchAgentSessionRequestDto,
+        CompactSessionHistoryRequestDto, DeleteSessionMemoryRequestDto,
+        ExportSessionTranscriptRequestDto, ExtractSessionMemoryCandidatesRequestDto,
+        GetSessionContextSnapshotRequestDto, GetSessionTranscriptRequestDto,
+        ListSessionMemoriesRequestDto, RewindAgentSessionRequestDto,
         SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
         SessionCompactionTriggerDto, SessionContextContributorKindDto,
         SessionContextPolicyActionDto, SessionContextPolicyDecisionKindDto, SessionMemoryKindDto,
@@ -653,6 +655,241 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
             && !record.active
             && record.superseded_at.is_some()
     }));
+}
+
+#[test]
+fn branch_agent_session_creates_selected_lineage_from_archived_source() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_fake_provider_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    seed_history_run_with_provider(
+        &repo_root,
+        &project_id,
+        FAKE_PROVIDER_ID,
+        FAKE_MODEL_ID,
+        "run-branch-1",
+        "2026-04-26T14:00:00Z",
+        "Create a branchable owned-agent run.",
+        None,
+    );
+
+    project_store::archive_agent_session(&repo_root, &project_id, SESSION_ID)
+        .expect("archive source session before branch");
+    let first_branch = branch_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        BranchAgentSessionRequestDto {
+            project_id: project_id.clone(),
+            source_agent_session_id: SESSION_ID.into(),
+            source_run_id: "run-branch-1".into(),
+            title: Some("Exploration branch".into()),
+            selected: true,
+        },
+    )
+    .expect("branch archived source session");
+
+    assert_eq!(first_branch.session.title, "Exploration branch");
+    assert!(first_branch.session.selected);
+    assert_eq!(
+        first_branch.lineage.source_boundary_kind,
+        AgentSessionLineageBoundaryKindDto::Run
+    );
+    assert_eq!(
+        first_branch.lineage.source_agent_session_id.as_deref(),
+        Some(SESSION_ID)
+    );
+    assert_eq!(
+        first_branch.lineage.source_run_id.as_deref(),
+        Some("run-branch-1")
+    );
+    assert_eq!(
+        first_branch.replay_run_id,
+        first_branch.lineage.replay_run_id
+    );
+    assert!(first_branch.session.lineage.is_some());
+
+    let replay =
+        project_store::load_agent_run(&repo_root, &project_id, &first_branch.replay_run_id)
+            .expect("load branch replay run");
+    assert_eq!(
+        replay.run.agent_session_id,
+        first_branch.session.agent_session_id
+    );
+    assert!(replay
+        .messages
+        .iter()
+        .any(|message| message.content == "The durable validation path is ready for export."));
+    let source_after_branch =
+        project_store::load_agent_run(&repo_root, &project_id, "run-branch-1")
+            .expect("source run remains available after branch");
+    assert_eq!(source_after_branch.run.agent_session_id, SESSION_ID);
+
+    let second_branch = branch_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        BranchAgentSessionRequestDto {
+            project_id: project_id.clone(),
+            source_agent_session_id: SESSION_ID.into(),
+            source_run_id: "run-branch-1".into(),
+            title: Some("Exploration branch".into()),
+            selected: false,
+        },
+    )
+    .expect("duplicate branch titles are allowed");
+    assert_eq!(second_branch.session.title, "Exploration branch");
+    assert!(!second_branch.session.selected);
+
+    let selected = project_store::list_agent_sessions(&repo_root, &project_id, true)
+        .expect("list sessions after branching")
+        .into_iter()
+        .filter(|session| session.selected)
+        .collect::<Vec<_>>();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].agent_session_id,
+        first_branch.session.agent_session_id
+    );
+
+    project_store::delete_agent_session(&repo_root, &project_id, SESSION_ID)
+        .expect("delete archived source session");
+    let branch_after_source_delete = project_store::get_agent_session(
+        &repo_root,
+        &project_id,
+        &first_branch.session.agent_session_id,
+    )
+    .expect("load branch after deleting source")
+    .expect("branch session survives source delete");
+    let lineage = branch_after_source_delete
+        .lineage
+        .expect("branch keeps lineage after source delete");
+    assert!(lineage.source_agent_session_id.is_none());
+    assert!(lineage.source_run_id.is_none());
+    assert_eq!(
+        lineage
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.as_str()),
+        Some("branch_source_deleted")
+    );
+    project_store::load_agent_run(&repo_root, &project_id, &first_branch.replay_run_id)
+        .expect("branch replay run survives source delete");
+}
+
+#[test]
+fn rewind_agent_session_branches_from_message_and_checkpoint_boundaries() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    seed_history_run(
+        &repo_root,
+        &project_id,
+        "run-rewind-1",
+        "2026-04-26T15:00:00Z",
+        "Create rewind coverage.",
+        None,
+    );
+    let source = project_store::load_agent_run(&repo_root, &project_id, "run-rewind-1")
+        .expect("load rewind source run");
+    let assistant_message_id = source
+        .messages
+        .iter()
+        .find(|message| message.content == "The durable validation path is ready for export.")
+        .map(|message| message.id)
+        .expect("assistant message boundary");
+    let checkpoint_id = source
+        .checkpoints
+        .first()
+        .map(|checkpoint| checkpoint.id)
+        .expect("checkpoint boundary");
+
+    let message_rewind = rewind_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        RewindAgentSessionRequestDto {
+            project_id: project_id.clone(),
+            source_agent_session_id: SESSION_ID.into(),
+            source_run_id: "run-rewind-1".into(),
+            boundary_kind: AgentSessionLineageBoundaryKindDto::Message,
+            source_message_id: Some(assistant_message_id),
+            source_checkpoint_id: None,
+            title: Some("Message rewind".into()),
+            selected: true,
+        },
+    )
+    .expect("rewind from message boundary");
+    assert_eq!(
+        message_rewind.lineage.source_boundary_kind,
+        AgentSessionLineageBoundaryKindDto::Message
+    );
+    assert_eq!(
+        message_rewind.lineage.source_message_id,
+        Some(assistant_message_id)
+    );
+    let message_replay =
+        project_store::load_agent_run(&repo_root, &project_id, &message_rewind.replay_run_id)
+            .expect("load message rewind replay");
+    assert_eq!(message_replay.messages.len(), 2);
+    assert!(!message_replay
+        .messages
+        .iter()
+        .any(|message| message.role == project_store::AgentMessageRole::Tool));
+    assert!(message_replay.file_changes.is_empty());
+    assert!(message_replay.checkpoints.is_empty());
+    assert!(message_rewind
+        .lineage
+        .file_change_summary
+        .contains("No file-change or checkpoint metadata"));
+
+    let checkpoint_rewind = rewind_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        RewindAgentSessionRequestDto {
+            project_id: project_id.clone(),
+            source_agent_session_id: SESSION_ID.into(),
+            source_run_id: "run-rewind-1".into(),
+            boundary_kind: AgentSessionLineageBoundaryKindDto::Checkpoint,
+            source_message_id: None,
+            source_checkpoint_id: Some(checkpoint_id),
+            title: Some("Checkpoint rewind".into()),
+            selected: true,
+        },
+    )
+    .expect("rewind from checkpoint boundary");
+    assert_eq!(
+        checkpoint_rewind.lineage.source_boundary_kind,
+        AgentSessionLineageBoundaryKindDto::Checkpoint
+    );
+    assert_eq!(
+        checkpoint_rewind.lineage.source_checkpoint_id,
+        Some(checkpoint_id)
+    );
+    let checkpoint_replay =
+        project_store::load_agent_run(&repo_root, &project_id, &checkpoint_rewind.replay_run_id)
+            .expect("load checkpoint rewind replay");
+    assert_eq!(checkpoint_replay.messages.len(), source.messages.len());
+    assert_eq!(checkpoint_replay.file_changes.len(), 1);
+    assert_eq!(checkpoint_replay.checkpoints.len(), 1);
+    assert!(checkpoint_rewind
+        .lineage
+        .file_change_summary
+        .contains("Branching does not roll files back automatically."));
+
+    let invalid = rewind_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        RewindAgentSessionRequestDto {
+            project_id,
+            source_agent_session_id: SESSION_ID.into(),
+            source_run_id: "run-rewind-1".into(),
+            boundary_kind: AgentSessionLineageBoundaryKindDto::Message,
+            source_message_id: None,
+            source_checkpoint_id: None,
+            title: None,
+            selected: true,
+        },
+    )
+    .expect_err("message rewind requires a message id");
+    assert_eq!(invalid.code, "invalid_request");
 }
 
 #[test]

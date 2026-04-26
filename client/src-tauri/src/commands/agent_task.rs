@@ -18,8 +18,8 @@ use crate::{
     runtime::{
         cancel_owned_agent_run, create_owned_agent_run, drive_owned_agent_continuation,
         drive_owned_agent_run, prepare_owned_agent_continuation, subscribe_agent_events,
-        AgentEventSubscription, AgentRunSupervisor, AutonomousToolRuntime,
-        ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
+        AgentAutoCompactPreference, AgentEventSubscription, AgentRunSupervisor,
+        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
     },
     state::DesktopState,
 };
@@ -84,6 +84,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
         tool_runtime,
         provider_config,
         answer_pending_actions: false,
+        auto_compact: auto_compact_preference(request.auto_compact)?,
     };
     let snapshot = prepare_owned_agent_continuation(&continuation)?;
     spawn_owned_agent_continuation(
@@ -142,6 +143,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         tool_runtime,
         provider_config,
         answer_pending_actions: true,
+        auto_compact: auto_compact_preference(request.auto_compact)?,
     };
     let snapshot = prepare_owned_agent_continuation(&continuation)?;
     spawn_owned_agent_continuation(
@@ -273,6 +275,33 @@ fn ensure_agent_run_not_active(state: &DesktopState, run_id: &str) -> CommandRes
         ));
     }
     Ok(())
+}
+
+pub(crate) fn auto_compact_preference(
+    preference: Option<crate::commands::AgentAutoCompactPreferenceDto>,
+) -> CommandResult<Option<AgentAutoCompactPreference>> {
+    let Some(preference) = preference else {
+        return Ok(None);
+    };
+    if let Some(threshold_percent) = preference.threshold_percent {
+        if !(1..=100).contains(&threshold_percent) {
+            return Err(CommandError::invalid_request(
+                "autoCompact.thresholdPercent",
+            ));
+        }
+    }
+    if let Some(raw_tail_message_count) = preference.raw_tail_message_count {
+        if !(2..=24).contains(&raw_tail_message_count) {
+            return Err(CommandError::invalid_request(
+                "autoCompact.rawTailMessageCount",
+            ));
+        }
+    }
+    Ok(Some(AgentAutoCompactPreference {
+        enabled: preference.enabled,
+        threshold_percent: preference.threshold_percent,
+        raw_tail_message_count: preference.raw_tail_message_count,
+    }))
 }
 
 fn stream_live_agent_events(

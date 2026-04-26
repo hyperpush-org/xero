@@ -193,6 +193,8 @@ pub struct StartAgentTaskRequestDto {
 pub struct SendAgentMessageRequestDto {
     pub run_id: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<AgentAutoCompactPreferenceDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,6 +208,18 @@ pub struct CancelAgentRunRequestDto {
 pub struct ResumeAgentRunRequestDto {
     pub run_id: String,
     pub response: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compact: Option<AgentAutoCompactPreferenceDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAutoCompactPreferenceDto {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_tail_message_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

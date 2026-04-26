@@ -18,6 +18,8 @@ pub const UPDATE_AGENT_SESSION_COMMAND: &str = "update_agent_session";
 pub const ARCHIVE_AGENT_SESSION_COMMAND: &str = "archive_agent_session";
 pub const RESTORE_AGENT_SESSION_COMMAND: &str = "restore_agent_session";
 pub const DELETE_AGENT_SESSION_COMMAND: &str = "delete_agent_session";
+pub const BRANCH_AGENT_SESSION_COMMAND: &str = "branch_agent_session";
+pub const REWIND_AGENT_SESSION_COMMAND: &str = "rewind_agent_session";
 pub const GET_AUTONOMOUS_RUN_COMMAND: &str = "get_autonomous_run";
 pub const GET_PROJECT_SNAPSHOT_COMMAND: &str = "get_project_snapshot";
 pub const GET_REPOSITORY_STATUS_COMMAND: &str = "get_repository_status";
@@ -86,6 +88,8 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     ARCHIVE_AGENT_SESSION_COMMAND,
     RESTORE_AGENT_SESSION_COMMAND,
     DELETE_AGENT_SESSION_COMMAND,
+    BRANCH_AGENT_SESSION_COMMAND,
+    REWIND_AGENT_SESSION_COMMAND,
     GET_AUTONOMOUS_RUN_COMMAND,
     GET_PROJECT_SNAPSHOT_COMMAND,
     GET_REPOSITORY_STATUS_COMMAND,
