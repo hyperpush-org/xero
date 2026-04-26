@@ -225,6 +225,14 @@ export const getSessionTranscriptRequestSchema = z
   })
   .strict()
 
+export const getSessionContextSnapshotRequestSchema = getSessionTranscriptRequestSchema
+  .extend({
+    providerId: nonEmptyOptionalTextSchema,
+    modelId: nonEmptyOptionalTextSchema,
+    pendingPrompt: z.string().nullable().optional(),
+  })
+  .strict()
+
 export const exportSessionTranscriptRequestSchema = getSessionTranscriptRequestSchema
   .extend({
     format: sessionTranscriptExportFormatSchema,
@@ -283,6 +291,7 @@ export const sessionContextBudgetSchema = z
   .object({
     budgetTokens: z.number().int().positive().nullable().optional(),
     estimatedTokens: z.number().int().nonnegative(),
+    estimationSource: sessionUsageSourceSchema,
     pressure: sessionContextBudgetPressureSchema,
     knownProviderBudget: z.boolean(),
   })
@@ -418,6 +427,7 @@ export type SessionTranscriptDto = z.infer<typeof sessionTranscriptSchema>
 export type SessionTranscriptExportPayloadDto = z.infer<typeof sessionTranscriptExportPayloadSchema>
 export type SessionTranscriptSearchResultSnippetDto = z.infer<typeof sessionTranscriptSearchResultSnippetSchema>
 export type GetSessionTranscriptRequestDto = z.infer<typeof getSessionTranscriptRequestSchema>
+export type GetSessionContextSnapshotRequestDto = z.infer<typeof getSessionContextSnapshotRequestSchema>
 export type ExportSessionTranscriptRequestDto = z.infer<typeof exportSessionTranscriptRequestSchema>
 export type SessionTranscriptExportResponseDto = z.infer<typeof sessionTranscriptExportResponseSchema>
 export type SaveSessionTranscriptExportRequestDto = z.infer<typeof saveSessionTranscriptExportRequestSchema>
@@ -461,12 +471,18 @@ export function createRedactedSessionContextText(
 
 export function createContextBudget(estimatedTokens: number, budgetTokens?: number | null): SessionContextBudgetDto {
   if (!budgetTokens || budgetTokens <= 0) {
-    return { budgetTokens: null, estimatedTokens, pressure: 'unknown', knownProviderBudget: false }
+    return {
+      budgetTokens: null,
+      estimatedTokens,
+      estimationSource: 'estimated',
+      pressure: 'unknown',
+      knownProviderBudget: false,
+    }
   }
   const percent = Math.floor((estimatedTokens / budgetTokens) * 100)
   const pressure: SessionContextBudgetPressureDto =
     percent < 50 ? 'low' : percent < 80 ? 'medium' : percent <= 100 ? 'high' : 'over'
-  return { budgetTokens, estimatedTokens, pressure, knownProviderBudget: true }
+  return { budgetTokens, estimatedTokens, estimationSource: 'estimated', pressure, knownProviderBudget: true }
 }
 
 function validateStrictSequence(

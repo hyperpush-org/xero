@@ -6,17 +6,27 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::now_timestamp,
     commands::{
-        redact_session_context_text, run_transcript_from_agent_snapshot,
-        session_transcript_from_runs, validate_export_payload_contract,
-        validate_session_transcript_contract, CommandError, CommandResult,
-        ExportSessionTranscriptRequestDto, GetSessionTranscriptRequestDto,
-        SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
-        SearchSessionTranscriptsResponseDto, SessionContextRedactionDto, SessionTranscriptDto,
+        context_budget_with_source, estimate_tokens, evaluate_compaction_policy,
+        provider_context_budget_tokens, redact_session_context_text,
+        run_transcript_from_agent_snapshot, session_transcript_from_runs,
+        usage_totals_from_agent_usage, validate_context_snapshot_contract,
+        validate_export_payload_contract, validate_session_transcript_contract, CommandError,
+        CommandResult, ExportSessionTranscriptRequestDto, GetSessionContextSnapshotRequestDto,
+        GetSessionTranscriptRequestDto, SaveSessionTranscriptExportRequestDto,
+        SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
+        SessionCompactionPolicyInput, SessionContextContributorDto,
+        SessionContextContributorKindDto, SessionContextRedactionClassDto,
+        SessionContextRedactionDto, SessionContextSnapshotDto, SessionTranscriptDto,
         SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
         SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptScopeDto,
-        SessionTranscriptSearchResultSnippetDto, CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
+        CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
     },
-    db::project_store::{self, AgentRunSnapshotRecord, AgentSessionRecord},
+    db::project_store::{self, AgentMessageRole, AgentRunSnapshotRecord, AgentSessionRecord},
+    runtime::{
+        agent_core::{runtime_controls_from_request, tool_registry_for_snapshot},
+        AgentToolDescriptor,
+    },
     state::DesktopState,
 };
 
@@ -25,6 +35,8 @@ use super::{runtime_support::resolve_project_root, validate_non_empty};
 const DEFAULT_SEARCH_LIMIT: usize = 25;
 const MAX_SEARCH_LIMIT: usize = 100;
 const MAX_FALLBACK_SNIPPET_CHARS: usize = 220;
+const CONTEXT_PREVIEW_CHARS: usize = 600;
+const UNAVAILABLE_CONTEXT_ID: &str = "unavailable";
 
 #[tauri::command]
 pub fn get_session_transcript<R: Runtime>(
@@ -190,6 +202,36 @@ pub fn search_session_transcripts<R: Runtime>(
     })
 }
 
+#[tauri::command]
+pub fn get_session_context_snapshot<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: GetSessionContextSnapshotRequestDto,
+) -> CommandResult<SessionContextSnapshotDto> {
+    validate_transcript_request(
+        &request.project_id,
+        &request.agent_session_id,
+        request.run_id.as_deref(),
+    )?;
+    if let Some(provider_id) = request.provider_id.as_deref() {
+        validate_non_empty(provider_id, "providerId")?;
+    }
+    if let Some(model_id) = request.model_id.as_deref() {
+        validate_non_empty(model_id, "modelId")?;
+    }
+
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    build_session_context_snapshot(
+        &repo_root,
+        &request.project_id,
+        &request.agent_session_id,
+        request.run_id.as_deref(),
+        request.provider_id.as_deref(),
+        request.model_id.as_deref(),
+        request.pending_prompt.as_deref(),
+    )
+}
+
 fn validate_transcript_request(
     project_id: &str,
     agent_session_id: &str,
@@ -234,6 +276,610 @@ fn build_session_transcript(
         )
     })?;
     Ok(transcript)
+}
+
+fn build_session_context_snapshot(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    request_provider_id: Option<&str>,
+    request_model_id: Option<&str>,
+    pending_prompt: Option<&str>,
+) -> CommandResult<SessionContextSnapshotDto> {
+    let session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
+        .ok_or_else(|| missing_session_error(project_id, agent_session_id))?;
+    let snapshots = load_context_snapshots(repo_root, project_id, agent_session_id, run_id)?;
+    let latest_snapshot = snapshots
+        .iter()
+        .map(|(snapshot, _)| snapshot)
+        .max_by(|left, right| {
+            left.run
+                .started_at
+                .cmp(&right.run.started_at)
+                .then_with(|| left.run.run_id.cmp(&right.run.run_id))
+        });
+    let provider_id = latest_snapshot
+        .map(|snapshot| snapshot.run.provider_id.as_str())
+        .or_else(|| request_provider_id)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(session.last_provider_id.as_deref())
+        .unwrap_or(UNAVAILABLE_CONTEXT_ID)
+        .to_string();
+    let model_id = latest_snapshot
+        .map(|snapshot| snapshot.run.model_id.as_str())
+        .or_else(|| request_model_id)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(UNAVAILABLE_CONTEXT_ID)
+        .to_string();
+    let generated_at = now_timestamp();
+    let instruction_text = read_instruction_file(repo_root);
+    let mut contributors = Vec::new();
+
+    if let Some(snapshot) = latest_snapshot {
+        append_system_prompt_contributor(
+            &mut contributors,
+            project_id,
+            agent_session_id,
+            snapshot,
+            instruction_text.as_deref(),
+        );
+    }
+    append_instruction_file_contributor(
+        &mut contributors,
+        project_id,
+        agent_session_id,
+        instruction_text.as_deref(),
+    );
+    if let Some(snapshot) = latest_snapshot {
+        append_tool_descriptor_contributors(
+            &mut contributors,
+            repo_root,
+            project_id,
+            agent_session_id,
+            snapshot,
+        )?;
+    }
+    append_history_contributors(&mut contributors, project_id, agent_session_id, &snapshots);
+    append_usage_contributors(&mut contributors, project_id, agent_session_id, &snapshots);
+    append_pending_prompt_contributor(
+        &mut contributors,
+        project_id,
+        agent_session_id,
+        run_id.or_else(|| latest_snapshot.map(|snapshot| snapshot.run.run_id.as_str())),
+        pending_prompt,
+    );
+
+    let usage_totals = context_usage_totals(&session, &snapshots, run_id);
+    let estimated_tokens = contributors
+        .iter()
+        .filter(|contributor| contributor.included && contributor.model_visible)
+        .fold(0_u64, |total, contributor| {
+            total.saturating_add(contributor.estimated_tokens)
+        });
+    let budget_tokens = provider_context_budget_tokens(&provider_id, &model_id);
+    let estimation_source = if usage_totals.is_some() {
+        SessionUsageSourceDto::Mixed
+    } else if contributors.is_empty() {
+        SessionUsageSourceDto::Unavailable
+    } else {
+        SessionUsageSourceDto::Estimated
+    };
+    let budget = context_budget_with_source(estimated_tokens, budget_tokens, estimation_source);
+    let policy_decisions = vec![evaluate_compaction_policy(SessionCompactionPolicyInput {
+        manual_requested: false,
+        auto_enabled: false,
+        provider_supports_compaction: false,
+        active_compaction_present: false,
+        estimated_tokens,
+        budget_tokens,
+        threshold_percent: Some(80),
+    })];
+    let redaction = strongest_context_redaction(
+        contributors
+            .iter()
+            .map(|contributor| &contributor.redaction)
+            .chain(policy_decisions.iter().map(|decision| &decision.redaction)),
+    );
+    let snapshot = SessionContextSnapshotDto {
+        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        snapshot_id: format!(
+            "context:{}:{}:{}:{}",
+            project_id,
+            agent_session_id,
+            run_id.unwrap_or("session"),
+            generated_at
+        ),
+        project_id: project_id.into(),
+        agent_session_id: agent_session_id.into(),
+        run_id: run_id.map(ToOwned::to_owned),
+        provider_id,
+        model_id,
+        generated_at,
+        budget,
+        contributors,
+        policy_decisions,
+        usage_totals,
+        redaction,
+    };
+
+    validate_context_snapshot_contract(&snapshot).map_err(|details| {
+        CommandError::system_fault(
+            "session_context_snapshot_invalid",
+            format!("Cadence projected an invalid context snapshot: {details}"),
+        )
+    })?;
+    Ok(snapshot)
+}
+
+fn load_context_snapshots(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+) -> CommandResult<
+    Vec<(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )>,
+> {
+    if let Some(run_id) = run_id {
+        let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+        ensure_run_belongs_to_session(&snapshot, project_id, agent_session_id)?;
+        let usage = project_store::load_agent_usage(repo_root, project_id, run_id)?;
+        return Ok(vec![(snapshot, usage)]);
+    }
+
+    project_store::load_agent_session_run_snapshots(repo_root, project_id, agent_session_id)
+}
+
+fn read_instruction_file(repo_root: &Path) -> Option<String> {
+    fs::read_to_string(repo_root.join("AGENTS.md"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn append_system_prompt_contributor(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    snapshot: &AgentRunSnapshotRecord,
+    instruction_text: Option<&str>,
+) {
+    let system_prompt = system_prompt_without_instruction_text(
+        snapshot.run.system_prompt.as_str(),
+        instruction_text.unwrap_or_default(),
+    );
+    if system_prompt.trim().is_empty() {
+        return;
+    }
+
+    append_context_contributor(
+        contributors,
+        ContextContributorParts {
+            contributor_id: format!("system_prompt:{}", snapshot.run.run_id),
+            kind: SessionContextContributorKindDto::SystemPrompt,
+            label: "System prompt".into(),
+            project_id: Some(project_id),
+            agent_session_id: Some(agent_session_id),
+            run_id: Some(snapshot.run.run_id.as_str()),
+            source_id: Some("owned_agent_system_prompt"),
+            raw_text: Some(system_prompt.as_str()),
+            estimate_text: Some(system_prompt.as_str()),
+            included: true,
+            model_visible: true,
+        },
+    );
+}
+
+fn append_instruction_file_contributor(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    instruction_text: Option<&str>,
+) {
+    let Some(instruction_text) = instruction_text else {
+        return;
+    };
+    append_context_contributor(
+        contributors,
+        ContextContributorParts {
+            contributor_id: "instruction:AGENTS.md".into(),
+            kind: SessionContextContributorKindDto::InstructionFile,
+            label: "Project instructions".into(),
+            project_id: Some(project_id),
+            agent_session_id: Some(agent_session_id),
+            run_id: None,
+            source_id: Some("AGENTS.md"),
+            raw_text: Some(instruction_text),
+            estimate_text: Some(instruction_text),
+            included: true,
+            model_visible: true,
+        },
+    );
+}
+
+fn append_tool_descriptor_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let controls = runtime_controls_from_request(None);
+    let registry = tool_registry_for_snapshot(repo_root, snapshot, &controls, true)?;
+    let mut descriptors = registry.into_descriptors();
+    descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+
+    for descriptor in descriptors {
+        let estimate_text = tool_descriptor_estimate_text(&descriptor)?;
+        append_context_contributor(
+            contributors,
+            ContextContributorParts {
+                contributor_id: format!("tool_descriptor:{}", descriptor.name),
+                kind: SessionContextContributorKindDto::ToolDescriptor,
+                label: format!("Tool descriptor: {}", descriptor.name),
+                project_id: Some(project_id),
+                agent_session_id: Some(agent_session_id),
+                run_id: Some(snapshot.run.run_id.as_str()),
+                source_id: Some(descriptor.name.as_str()),
+                raw_text: Some(descriptor.description.as_str()),
+                estimate_text: Some(estimate_text.as_str()),
+                included: true,
+                model_visible: true,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn tool_descriptor_estimate_text(descriptor: &AgentToolDescriptor) -> CommandResult<String> {
+    serde_json::to_string(descriptor).map_err(|error| {
+        CommandError::system_fault(
+            "session_context_tool_descriptor_serialize_failed",
+            format!("Cadence could not estimate a tool descriptor context contribution: {error}"),
+        )
+    })
+}
+
+fn append_history_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+) {
+    let mut sorted = snapshots
+        .iter()
+        .map(|(snapshot, _)| snapshot)
+        .collect::<Vec<_>>();
+    sorted.sort_by(|left, right| {
+        left.run
+            .started_at
+            .cmp(&right.run.started_at)
+            .then_with(|| left.run.run_id.cmp(&right.run.run_id))
+    });
+
+    for snapshot in sorted {
+        append_run_prompt_contributor_if_needed(
+            contributors,
+            project_id,
+            agent_session_id,
+            snapshot,
+        );
+        let mut messages = snapshot.messages.iter().collect::<Vec<_>>();
+        messages.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for message in messages {
+            match message.role {
+                AgentMessageRole::System => {}
+                AgentMessageRole::Tool => {
+                    let message_id = message.id.to_string();
+                    append_context_contributor(
+                        contributors,
+                        ContextContributorParts {
+                            contributor_id: format!(
+                                "tool_result:{}:{}",
+                                message.run_id, message.id
+                            ),
+                            kind: SessionContextContributorKindDto::ToolResult,
+                            label: tool_result_label(&message.content),
+                            project_id: Some(project_id),
+                            agent_session_id: Some(agent_session_id),
+                            run_id: Some(message.run_id.as_str()),
+                            source_id: Some(message_id.as_str()),
+                            raw_text: Some(message.content.as_str()),
+                            estimate_text: Some(message.content.as_str()),
+                            included: true,
+                            model_visible: true,
+                        },
+                    );
+                }
+                AgentMessageRole::Developer
+                | AgentMessageRole::User
+                | AgentMessageRole::Assistant => {
+                    let message_id = message.id.to_string();
+                    append_context_contributor(
+                        contributors,
+                        ContextContributorParts {
+                            contributor_id: format!("message:{}:{}", message.run_id, message.id),
+                            kind: SessionContextContributorKindDto::ConversationTail,
+                            label: format!("{} message", message_role_label(&message.role)),
+                            project_id: Some(project_id),
+                            agent_session_id: Some(agent_session_id),
+                            run_id: Some(message.run_id.as_str()),
+                            source_id: Some(message_id.as_str()),
+                            raw_text: Some(message.content.as_str()),
+                            estimate_text: Some(message.content.as_str()),
+                            included: true,
+                            model_visible: true,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn append_run_prompt_contributor_if_needed(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    snapshot: &AgentRunSnapshotRecord,
+) {
+    if snapshot.run.prompt.trim().is_empty() {
+        return;
+    }
+    let prompt_in_messages = snapshot.messages.iter().any(|message| {
+        matches!(
+            message.role,
+            AgentMessageRole::Developer | AgentMessageRole::User
+        ) && message.content == snapshot.run.prompt
+    });
+    if prompt_in_messages {
+        return;
+    }
+
+    append_context_contributor(
+        contributors,
+        ContextContributorParts {
+            contributor_id: format!("run_prompt:{}", snapshot.run.run_id),
+            kind: SessionContextContributorKindDto::ConversationTail,
+            label: "Run prompt".into(),
+            project_id: Some(project_id),
+            agent_session_id: Some(agent_session_id),
+            run_id: Some(snapshot.run.run_id.as_str()),
+            source_id: Some(snapshot.run.run_id.as_str()),
+            raw_text: Some(snapshot.run.prompt.as_str()),
+            estimate_text: Some(snapshot.run.prompt.as_str()),
+            included: true,
+            model_visible: true,
+        },
+    );
+}
+
+fn append_usage_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+) {
+    for (snapshot, usage) in snapshots {
+        let Some(usage) = usage else {
+            continue;
+        };
+        let text = format!(
+            "{} input + {} output = {} total tokens. Estimated cost: {} micros.",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
+            usage.estimated_cost_micros
+        );
+        append_context_contributor(
+            contributors,
+            ContextContributorParts {
+                contributor_id: format!("provider_usage:{}", snapshot.run.run_id),
+                kind: SessionContextContributorKindDto::ProviderUsage,
+                label: "Provider usage".into(),
+                project_id: Some(project_id),
+                agent_session_id: Some(agent_session_id),
+                run_id: Some(snapshot.run.run_id.as_str()),
+                source_id: Some(snapshot.run.run_id.as_str()),
+                raw_text: Some(text.as_str()),
+                estimate_text: None,
+                included: false,
+                model_visible: false,
+            },
+        );
+    }
+}
+
+fn append_pending_prompt_contributor(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    pending_prompt: Option<&str>,
+) {
+    let Some(pending_prompt) = pending_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    append_context_contributor(
+        contributors,
+        ContextContributorParts {
+            contributor_id: "pending_prompt".into(),
+            kind: SessionContextContributorKindDto::ConversationTail,
+            label: "Pending prompt".into(),
+            project_id: Some(project_id),
+            agent_session_id: Some(agent_session_id),
+            run_id,
+            source_id: Some("pending_prompt"),
+            raw_text: Some(pending_prompt),
+            estimate_text: Some(pending_prompt),
+            included: true,
+            model_visible: true,
+        },
+    );
+}
+
+fn context_usage_totals(
+    session: &AgentSessionRecord,
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+    run_id: Option<&str>,
+) -> Option<SessionUsageTotalsDto> {
+    if run_id.is_some() {
+        return snapshots
+            .first()
+            .and_then(|(_, usage)| usage.as_ref())
+            .map(usage_totals_from_agent_usage);
+    }
+
+    let run_transcripts = snapshots
+        .iter()
+        .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
+        .collect::<Vec<_>>();
+    session_transcript_from_runs(session, run_transcripts).usage_totals
+}
+
+fn system_prompt_without_instruction_text(system_prompt: &str, instruction_text: &str) -> String {
+    let trimmed_prompt = system_prompt.trim();
+    let trimmed_instruction = instruction_text.trim();
+    if trimmed_prompt.is_empty() || trimmed_instruction.is_empty() {
+        return trimmed_prompt.to_string();
+    }
+
+    trimmed_prompt
+        .replacen(
+            trimmed_instruction,
+            "(project instructions counted separately)",
+            1,
+        )
+        .trim()
+        .to_string()
+}
+
+fn tool_result_label(content: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("toolName")
+                .or_else(|| value.get("tool_name"))
+                .and_then(|tool_name| tool_name.as_str())
+                .map(|tool_name| format!("Tool result: {tool_name}"))
+        })
+        .unwrap_or_else(|| "Tool result".into())
+}
+
+fn message_role_label(role: &AgentMessageRole) -> &'static str {
+    match role {
+        AgentMessageRole::System => "System",
+        AgentMessageRole::Developer => "Developer",
+        AgentMessageRole::User => "User",
+        AgentMessageRole::Assistant => "Assistant",
+        AgentMessageRole::Tool => "Tool",
+    }
+}
+
+struct ContextContributorParts<'a> {
+    contributor_id: String,
+    kind: SessionContextContributorKindDto,
+    label: String,
+    project_id: Option<&'a str>,
+    agent_session_id: Option<&'a str>,
+    run_id: Option<&'a str>,
+    source_id: Option<&'a str>,
+    raw_text: Option<&'a str>,
+    estimate_text: Option<&'a str>,
+    included: bool,
+    model_visible: bool,
+}
+
+fn append_context_contributor(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    parts: ContextContributorParts<'_>,
+) {
+    let (text, redaction) = parts
+        .raw_text
+        .map(redact_session_context_text)
+        .map(|(text, redaction)| (Some(preview_context_text(&text)), redaction))
+        .unwrap_or_else(|| (None, SessionContextRedactionDto::public()));
+    let char_text = parts.estimate_text.or(parts.raw_text).unwrap_or_default();
+    contributors.push(SessionContextContributorDto {
+        contributor_id: parts.contributor_id,
+        kind: parts.kind,
+        label: parts.label,
+        project_id: parts.project_id.map(ToOwned::to_owned),
+        agent_session_id: parts.agent_session_id.map(ToOwned::to_owned),
+        run_id: parts.run_id.map(ToOwned::to_owned),
+        source_id: parts.source_id.map(ToOwned::to_owned),
+        sequence: contributors.len() as u64 + 1,
+        estimated_tokens: parts.estimate_text.map(estimate_tokens).unwrap_or(0),
+        estimated_chars: char_text.chars().count() as u64,
+        included: parts.included,
+        model_visible: parts.model_visible,
+        text,
+        redaction,
+    });
+}
+
+fn preview_context_text(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= CONTEXT_PREVIEW_CHARS {
+        return trimmed.to_string();
+    }
+
+    let mut preview = trimmed
+        .chars()
+        .take(CONTEXT_PREVIEW_CHARS)
+        .collect::<String>();
+    preview.push_str("...");
+    preview
+}
+
+fn strongest_context_redaction<'a>(
+    redactions: impl IntoIterator<Item = &'a SessionContextRedactionDto>,
+) -> SessionContextRedactionDto {
+    redactions
+        .into_iter()
+        .cloned()
+        .reduce(|left, right| {
+            if context_redaction_rank(&left.redaction_class)
+                >= context_redaction_rank(&right.redaction_class)
+            {
+                left
+            } else {
+                right
+            }
+        })
+        .unwrap_or_else(SessionContextRedactionDto::public)
+}
+
+fn context_redaction_rank(class: &SessionContextRedactionClassDto) -> u8 {
+    match class {
+        SessionContextRedactionClassDto::Public => 0,
+        SessionContextRedactionClassDto::LocalPath => 1,
+        SessionContextRedactionClassDto::Transcript => 2,
+        SessionContextRedactionClassDto::RawPayload => 3,
+        SessionContextRedactionClassDto::Secret => 4,
+    }
 }
 
 fn ensure_run_belongs_to_session(

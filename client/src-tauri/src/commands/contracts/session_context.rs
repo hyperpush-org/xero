@@ -331,6 +331,21 @@ pub struct SearchSessionTranscriptsResponseDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetSessionContextSnapshotRequestDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionContextContributorKindDto {
     SystemPrompt,
@@ -359,6 +374,7 @@ pub struct SessionContextBudgetDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
     pub estimated_tokens: u64,
+    pub estimation_source: SessionUsageSourceDto,
     pub pressure: SessionContextBudgetPressureDto,
     pub known_provider_budget: bool,
 }
@@ -1092,10 +1108,23 @@ pub fn context_budget(
     estimated_tokens: u64,
     budget_tokens: Option<u64>,
 ) -> SessionContextBudgetDto {
+    context_budget_with_source(
+        estimated_tokens,
+        budget_tokens,
+        SessionUsageSourceDto::Estimated,
+    )
+}
+
+pub fn context_budget_with_source(
+    estimated_tokens: u64,
+    budget_tokens: Option<u64>,
+    estimation_source: SessionUsageSourceDto,
+) -> SessionContextBudgetDto {
     let Some(budget) = budget_tokens else {
         return SessionContextBudgetDto {
             budget_tokens: None,
             estimated_tokens,
+            estimation_source,
             pressure: SessionContextBudgetPressureDto::Unknown,
             known_provider_budget: false,
         };
@@ -1115,9 +1144,50 @@ pub fn context_budget(
     SessionContextBudgetDto {
         budget_tokens: Some(budget),
         estimated_tokens,
+        estimation_source,
         pressure,
         known_provider_budget: true,
     }
+}
+
+pub fn provider_context_budget_tokens(provider_id: &str, model_id: &str) -> Option<u64> {
+    let provider = provider_id.trim().to_ascii_lowercase();
+    let model = model_id.trim().to_ascii_lowercase();
+    if provider.is_empty()
+        || model.is_empty()
+        || provider == "unavailable"
+        || model == "unavailable"
+    {
+        return None;
+    }
+
+    if model.contains("gemini-1.5-pro")
+        || model.contains("gemini-1.5-flash")
+        || model.contains("gemini-2.")
+    {
+        return Some(1_000_000);
+    }
+    if model.contains("claude")
+        || provider == "anthropic"
+        || provider == "bedrock"
+        || provider == "vertex"
+    {
+        return Some(200_000);
+    }
+    if model.contains("gpt-5")
+        || model.contains("gpt-4.1")
+        || model.contains("gpt-4o")
+        || model.contains("o3")
+        || model.contains("o4")
+        || provider == "openai_codex"
+        || (provider == "github_models" && model.contains("gpt"))
+        || model.contains("mistral-large")
+        || model.contains("codestral")
+    {
+        return Some(128_000);
+    }
+
+    None
 }
 
 pub fn validate_run_transcript_contract(transcript: &RunTranscriptDto) -> Result<(), String> {
@@ -1713,7 +1783,7 @@ fn memory_label(memory: &SessionMemoryRecordDto) -> String {
     format!("{scope} {kind}")
 }
 
-fn estimate_tokens(value: &str) -> u64 {
+pub fn estimate_tokens(value: &str) -> u64 {
     let chars = value.chars().count() as u64;
     chars.saturating_add(3) / 4
 }

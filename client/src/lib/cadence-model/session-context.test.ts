@@ -5,6 +5,7 @@ import {
   createPublicSessionContextRedaction,
   createRedactedSessionContextText,
   exportSessionTranscriptRequestSchema,
+  getSessionContextSnapshotRequestSchema,
   getSessionTranscriptRequestSchema,
   runTranscriptSchema,
   saveSessionTranscriptExportRequestSchema,
@@ -141,6 +142,7 @@ describe('session context contract', () => {
     })
 
     expect(snapshot.budget.pressure).toBe('high')
+    expect(snapshot.budget.estimationSource).toBe('estimated')
     expect(() =>
       sessionContextSnapshotSchema.parse({
         ...snapshot,
@@ -216,6 +218,23 @@ describe('session context contract', () => {
         runId: runId,
       }),
     ).toEqual({ projectId, agentSessionId, runId })
+    expect(
+      getSessionContextSnapshotRequestSchema.parse({
+        projectId,
+        agentSessionId,
+        runId,
+        providerId,
+        modelId,
+        pendingPrompt: 'Continue with verification.',
+      }),
+    ).toEqual({
+      projectId,
+      agentSessionId,
+      runId,
+      providerId,
+      modelId,
+      pendingPrompt: 'Continue with verification.',
+    })
     expect(() => getSessionTranscriptRequestSchema.parse({ projectId, agentSessionId, extra: true })).toThrow()
     expect(
       exportSessionTranscriptRequestSchema.parse({

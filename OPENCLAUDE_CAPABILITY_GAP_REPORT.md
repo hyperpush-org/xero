@@ -685,20 +685,23 @@ Outcome: users can find, inspect, and export prior work without reopening raw da
 
 Outcome: users can see what Cadence will send to the model and when a conversation is approaching context pressure.
 
-- [ ] Slice 4.2.1: Compute context contributors and usage rollups.
+- [x] Slice 4.2.1: Compute context contributors and usage rollups.
   - Scope: derive context contributors from the active system prompt, `AGENTS.md`, selected tool descriptors, approved memory, conversation tail, compacted summaries, tool results, and provider usage records.
   - Acceptance: Cadence can report per-run and per-session token/character estimates, known provider usage totals, largest contributors, and whether estimates came from provider data or local approximation.
   - Verification: Rust tests cover empty runs, long transcripts, tool-heavy runs, existing `agent_usage` records, missing usage records, and deterministic contributor ordering.
+  - Completed: 2026-04-26. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_history_commands` passed 3 tests covering run-scoped context snapshots, no-run session snapshots, usage rollups, tool descriptors, tool results, instruction files, provider-budget classification, redaction, and session mismatch rejection; `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_context_contract` passed 8 tests including provider budget family coverage and context snapshot invariants. Approved-memory and compaction-summary contributor kinds are contract/UI-ready; their persisted stores are still later Priority 4 phases.
 
-- [ ] Slice 4.2.2: Add a context visualization panel.
+- [x] Slice 4.2.2: Add a context visualization panel.
   - Scope: build a ShadCN-based panel in the agent experience that shows context contributors, approximate budget pressure, compacted vs raw history, approved memory, instruction-file sources, and the next-turn replay shape.
   - Acceptance: users can understand what will enter the next provider call without reading logs, and the panel remains useful for sessions with no runs, short runs, and long runs.
   - Verification: React tests cover no-run state, normal context, over-budget warning, compacted summary display, memory contributors, instruction-file contributors, and responsive layout.
+  - Completed: 2026-04-26. Verification evidence: `pnpm --dir client exec vitest run src/lib/cadence-model/session-context.test.ts components/cadence/agent-runtime.test.tsx` passed 41 tests covering the context snapshot schema, adapter request shape, context panel load/rendering, budget pressure badges, instruction-file/tool contributors, usage display, and pending-prompt refresh; `pnpm --dir client exec tsc --noEmit` exited 0; targeted ESLint over touched frontend files exited 0.
 
-- [ ] Slice 4.2.3: Warn before over-budget continuations.
+- [x] Slice 4.2.3: Warn before over-budget continuations.
   - Scope: integrate context pressure checks into `send_agent_message`/owned-agent continuation preparation and surface actionable warnings in the agent UI before a continuation is likely to exceed the provider context budget.
   - Acceptance: warnings do not block short sessions, do not mutate history, point users to manual compact when available, and classify unknown-provider-budget cases separately from known over-budget cases.
   - Verification: Rust continuation tests cover below-threshold, near-threshold, over-threshold, unknown-budget, and already-compacted sessions; React tests cover warning rendering and continuation retry after compaction.
+  - Completed: 2026-04-26. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test agent_core_runtime` passed 28 tests, including an over-budget continuation test that verifies the guard returns `agent_context_budget_exceeded` before appending a message or changing run status; the focused Vitest command above passed over-budget warning rendering and pending-prompt request assertions. Unknown provider budgets remain non-blocking and render separately in the context panel.
 
 ##### Phase 3: Add Manual Compact And Compaction-Aware Replay
 

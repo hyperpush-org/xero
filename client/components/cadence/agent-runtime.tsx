@@ -5,9 +5,11 @@ import { useMemo } from 'react'
 import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-state'
 import type {
   ExportSessionTranscriptRequestDto,
+  GetSessionContextSnapshotRequestDto,
   GetSessionTranscriptRequestDto,
   RuntimeRunView,
   RuntimeSessionView,
+  SessionContextSnapshotDto,
   SessionTranscriptDto,
   SessionTranscriptExportResponseDto,
   SessionTranscriptSearchResultSnippetDto,
@@ -36,6 +38,7 @@ import {
   isSelectedProviderReadyForSession,
 } from './agent-runtime/composer-helpers'
 import { ComposerDock } from './agent-runtime/composer-dock'
+import { ContextVisualizationSection } from './agent-runtime/context-visualization-section'
 import {
   getStreamRunId,
   getStreamStatusMeta,
@@ -87,6 +90,9 @@ interface AgentRuntimeProps {
     request: ExportSessionTranscriptRequestDto,
   ) => Promise<SessionTranscriptExportResponseDto>
   onSaveSessionTranscriptExport?: (request: { path: string; content: string }) => Promise<void>
+  onLoadSessionContextSnapshot?: (
+    request: GetSessionContextSnapshotRequestDto,
+  ) => Promise<SessionContextSnapshotDto>
 }
 
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
@@ -106,6 +112,7 @@ export function AgentRuntime({
   onLoadSessionTranscript,
   onExportSessionTranscript,
   onSaveSessionTranscriptExport,
+  onLoadSessionContextSnapshot,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -265,6 +272,9 @@ export function AgentRuntime({
     const targetSessionId = historyTarget?.agentSessionId ?? agent.project.selectedAgentSessionId
     return agent.project.agentSessions.find((session) => session.agentSessionId === targetSessionId) ?? null
   }, [agent.project.agentSessions, agent.project.selectedAgentSessionId, historyTarget?.agentSessionId])
+  const contextRunId =
+    historyTarget?.runId ?? renderableRuntimeRun?.runId ?? selectedAgentSession?.lastRunId ?? null
+  const contextPendingPrompt = historyTarget?.runId ? '' : controller.draftPrompt
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -288,6 +298,15 @@ export function AgentRuntime({
                 onLoadTranscript={onLoadSessionTranscript}
                 onExportTranscript={onExportSessionTranscript}
                 onSaveTranscriptExport={onSaveSessionTranscriptExport}
+              />
+              <ContextVisualizationSection
+                projectId={agent.project.id}
+                selectedSession={selectedAgentSession}
+                runId={contextRunId}
+                providerId={selectedProviderId}
+                modelId={selectedModelId}
+                pendingPrompt={contextPendingPrompt}
+                onLoadContextSnapshot={onLoadSessionContextSnapshot}
               />
               {hasAgentFeedSurface ? (
                 <AgentFeedSection

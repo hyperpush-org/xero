@@ -86,6 +86,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::session_history::export_session_transcript,
             commands::session_history::save_session_transcript_export,
             commands::session_history::search_session_transcripts,
+            commands::session_history::get_session_context_snapshot,
             commands::get_project_snapshot::get_project_snapshot,
             commands::get_repository_status::get_repository_status,
             commands::get_repository_diff::get_repository_diff,

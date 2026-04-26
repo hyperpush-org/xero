@@ -247,6 +247,8 @@ pub fn prepare_owned_agent_continuation(
         ));
     }
 
+    ensure_context_budget_allows_continuation(request, &before)?;
+
     if request.answer_pending_actions {
         project_store::answer_pending_agent_action_requests(
             &request.repo_root,
@@ -310,6 +312,75 @@ pub fn prepare_owned_agent_continuation(
         None,
         &now_timestamp(),
     )
+}
+
+fn ensure_context_budget_allows_continuation(
+    request: &ContinueOwnedAgentRunRequest,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let Some(budget_tokens) =
+        provider_context_budget_tokens(&snapshot.run.provider_id, &snapshot.run.model_id)
+    else {
+        return Ok(());
+    };
+
+    let controls = runtime_controls_from_request(request.controls.as_ref());
+    let tool_registry = tool_registry_for_snapshot(
+        &request.repo_root,
+        snapshot,
+        &controls,
+        request.tool_runtime.skill_tool_enabled(),
+    )?;
+    let system_prompt = assemble_system_prompt(&request.repo_root, tool_registry.descriptors())?;
+    let provider_messages = provider_messages_from_snapshot(snapshot)?;
+    let message_tokens = provider_messages.iter().try_fold(0_u64, |total, message| {
+        let serialized = serde_json::to_string(message).map_err(|error| {
+            CommandError::system_fault(
+                "agent_context_message_serialize_failed",
+                format!(
+                    "Cadence could not estimate context size for run `{}`: {error}",
+                    snapshot.run.run_id
+                ),
+            )
+        })?;
+        Ok(total.saturating_add(estimate_tokens(&serialized)))
+    })?;
+    let tool_descriptor_tokens =
+        tool_registry
+            .descriptors()
+            .iter()
+            .try_fold(0_u64, |total, descriptor| {
+                let serialized = serde_json::to_string(descriptor).map_err(|error| {
+                    CommandError::system_fault(
+                        "agent_context_tool_descriptor_serialize_failed",
+                        format!(
+                            "Cadence could not estimate tool context size for run `{}`: {error}",
+                            snapshot.run.run_id
+                        ),
+                    )
+                })?;
+                Ok(total.saturating_add(estimate_tokens(&serialized)))
+            })?;
+    let estimated_tokens = estimate_tokens(&system_prompt)
+        .saturating_add(message_tokens)
+        .saturating_add(tool_descriptor_tokens)
+        .saturating_add(estimate_tokens(&request.prompt));
+    let budget = context_budget(estimated_tokens, Some(budget_tokens));
+    if budget.pressure != SessionContextBudgetPressureDto::Over {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "agent_context_budget_exceeded",
+        format!(
+            "Cadence estimated {} tokens for run `{}` after this continuation, which exceeds the known {} token context budget for `{}/{}`. Open the Context panel, shorten the prompt, or start a fresh session before continuing.",
+            budget.estimated_tokens,
+            snapshot.run.run_id,
+            budget_tokens,
+            snapshot.run.provider_id,
+            snapshot.run.model_id
+        ),
+    ))
 }
 
 pub fn drive_owned_agent_continuation(

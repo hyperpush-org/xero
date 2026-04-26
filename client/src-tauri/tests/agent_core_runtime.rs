@@ -21,7 +21,8 @@ use cadence_desktop_lib::{
         AgentProviderConfig, AgentToolCall, AutonomousCommandRequest,
         AutonomousCommandSessionOperation, AutonomousCommandSessionStartRequest,
         AutonomousCommandSessionStopRequest, AutonomousToolOutput, AutonomousToolRuntime,
-        ContinueOwnedAgentRunRequest, OwnedAgentRunRequest, ToolRegistry,
+        ContinueOwnedAgentRunRequest, OpenAiCompatibleProviderConfig, OwnedAgentRunRequest,
+        ToolRegistry,
     },
     state::DesktopState,
 };
@@ -672,6 +673,71 @@ fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
         db::project_store::load_agent_run(&repo_root, &project_id, run_id).expect("load run");
     assert_eq!(snapshot.run.last_heartbeat_at.as_deref(), Some(heartbeat));
     assert_eq!(snapshot.run.updated_at, heartbeat);
+}
+
+#[test]
+fn owned_agent_continuation_rejects_over_budget_prompt_without_mutating_history() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "owned-run-context-budget-1";
+    let provider_config = AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+        provider_id: "openai_api".into(),
+        model_id: "gpt-4.1-mini".into(),
+        base_url: "http://127.0.0.1:9/v1".into(),
+        api_key: None,
+        api_version: None,
+        timeout_ms: 1,
+    });
+    let create_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime for initial run");
+    create_owned_agent_run(&OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: run_id.into(),
+        prompt: "Prepare a budget-guarded run.".into(),
+        controls: None,
+        tool_runtime: create_tool_runtime,
+        provider_config: provider_config.clone(),
+    })
+    .expect("create owned agent run");
+    let before = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
+        .expect("load run before over-budget continuation");
+    let before_message_count = before.messages.len();
+
+    let continue_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime for continuation");
+    let huge_prompt = "x".repeat(700_000);
+    let error = continue_owned_agent_run(ContinueOwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        run_id: run_id.into(),
+        prompt: huge_prompt.clone(),
+        controls: None,
+        tool_runtime: continue_tool_runtime,
+        provider_config,
+        answer_pending_actions: false,
+    })
+    .expect_err("over-budget continuation should be rejected before mutation");
+
+    assert_eq!(error.code, "agent_context_budget_exceeded");
+    let after = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
+        .expect("load run after over-budget continuation");
+    assert_eq!(after.messages.len(), before_message_count);
+    assert!(!after
+        .messages
+        .iter()
+        .any(|message| message.content == huge_prompt));
+    assert_eq!(after.run.status, before.run.status);
 }
 
 #[test]

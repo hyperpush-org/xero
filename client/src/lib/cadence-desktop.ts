@@ -232,17 +232,21 @@ import {
 } from '@/src/lib/cadence-model/runtime-stream'
 import {
   exportSessionTranscriptRequestSchema,
+  getSessionContextSnapshotRequestSchema,
   getSessionTranscriptRequestSchema,
   saveSessionTranscriptExportRequestSchema,
   searchSessionTranscriptsRequestSchema,
   searchSessionTranscriptsResponseSchema,
+  sessionContextSnapshotSchema,
   sessionTranscriptExportResponseSchema,
   sessionTranscriptSchema,
   type ExportSessionTranscriptRequestDto,
+  type GetSessionContextSnapshotRequestDto,
   type GetSessionTranscriptRequestDto,
   type SaveSessionTranscriptExportRequestDto,
   type SearchSessionTranscriptsRequestDto,
   type SearchSessionTranscriptsResponseDto,
+  type SessionContextSnapshotDto,
   type SessionTranscriptDto,
   type SessionTranscriptExportResponseDto,
 } from '@/src/lib/cadence-model/session-context'
@@ -289,6 +293,7 @@ const COMMANDS = {
   exportSessionTranscript: 'export_session_transcript',
   saveSessionTranscriptExport: 'save_session_transcript_export',
   searchSessionTranscripts: 'search_session_transcripts',
+  getSessionContextSnapshot: 'get_session_context_snapshot',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
   getRuntimeSettings: 'get_runtime_settings',
@@ -558,6 +563,9 @@ export interface CadenceDesktopAdapter {
   searchSessionTranscripts?(
     request: SearchSessionTranscriptsRequestDto,
   ): Promise<SearchSessionTranscriptsResponseDto>
+  getSessionContextSnapshot?(
+    request: GetSessionContextSnapshotRequestDto,
+  ): Promise<SessionContextSnapshotDto>
   getRuntimeRun(projectId: string, agentSessionId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   getRuntimeSettings(): Promise<RuntimeSettingsDto>
@@ -1314,6 +1322,13 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   searchSessionTranscripts(request) {
     const parsed = searchSessionTranscriptsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.searchSessionTranscripts, searchSessionTranscriptsResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  getSessionContextSnapshot(request) {
+    const parsed = getSessionContextSnapshotRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.getSessionContextSnapshot, sessionContextSnapshotSchema, {
       request: parsed,
     })
   },

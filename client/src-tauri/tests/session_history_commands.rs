@@ -5,12 +5,14 @@ use std::{
 
 use cadence_desktop_lib::{
     commands::{
-        export_session_transcript, get_session_transcript, save_session_transcript_export,
-        search_session_transcripts, validate_export_payload_contract,
+        export_session_transcript, get_session_context_snapshot, get_session_transcript,
+        save_session_transcript_export, search_session_transcripts,
+        validate_context_snapshot_contract, validate_export_payload_contract,
         validate_session_transcript_contract, ExportSessionTranscriptRequestDto,
-        GetSessionTranscriptRequestDto, SaveSessionTranscriptExportRequestDto,
-        SearchSessionTranscriptsRequestDto, SessionTranscriptExportFormatDto,
-        SessionTranscriptExportPayloadDto, SessionTranscriptScopeDto,
+        GetSessionContextSnapshotRequestDto, GetSessionTranscriptRequestDto,
+        SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
+        SessionContextContributorKindDto, SessionTranscriptExportFormatDto,
+        SessionTranscriptExportPayloadDto, SessionTranscriptScopeDto, SessionUsageSourceDto,
     },
     configure_builder_with_state,
     db::{self, project_store},
@@ -221,6 +223,58 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     assert!(!serialized.contains("sk-history-secret"));
     assert!(!serialized.contains("/Users/sn0w/.config"));
 
+    let context_snapshot = get_session_context_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetSessionContextSnapshotRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some("run-history-1".into()),
+            provider_id: None,
+            model_id: None,
+            pending_prompt: Some("Continue with final checks.".into()),
+        },
+    )
+    .expect("run context snapshot");
+    validate_context_snapshot_contract(&context_snapshot).expect("valid context snapshot");
+    assert_eq!(context_snapshot.run_id.as_deref(), Some("run-history-1"));
+    assert_eq!(
+        context_snapshot.budget.estimation_source,
+        SessionUsageSourceDto::Mixed
+    );
+    assert_eq!(
+        context_snapshot.usage_totals.as_ref().unwrap().total_tokens,
+        160
+    );
+    assert!(context_snapshot.budget.known_provider_budget);
+    assert!(context_snapshot
+        .contributors
+        .iter()
+        .any(|contributor| { contributor.kind == SessionContextContributorKindDto::SystemPrompt }));
+    assert!(context_snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::InstructionFile
+            && contributor.source_id.as_deref() == Some("AGENTS.md")
+    }));
+    assert!(context_snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::ToolDescriptor
+    }));
+    assert!(context_snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::ConversationTail
+            && contributor.label == "Pending prompt"
+    }));
+    assert!(context_snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::ToolResult
+            && contributor.label == "Tool result: read"
+    }));
+    assert!(context_snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::ProviderUsage
+            && !contributor.model_visible
+            && !contributor.included
+    }));
+    let context_json = serde_json::to_string(&context_snapshot).expect("serialize context");
+    assert!(!context_json.contains("sk-history-secret"));
+    assert!(!context_json.contains("/Users/sn0w/.config"));
+
     let markdown_export = export_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -404,6 +458,21 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
     .expect_err("run scoped transcript should reject another session's run");
     assert_eq!(mismatch.code, "agent_run_session_mismatch");
 
+    let context_mismatch = get_session_context_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetSessionContextSnapshotRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some("run-parallel-history".into()),
+            provider_id: None,
+            model_id: None,
+            pending_prompt: None,
+        },
+    )
+    .expect_err("run scoped context should reject another session's run");
+    assert_eq!(context_mismatch.code, "agent_run_session_mismatch");
+
     let transcript = get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -419,6 +488,48 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
         .items
         .iter()
         .all(|item| item.run_id == "run-parallel-history"));
+}
+
+#[test]
+fn context_snapshot_handles_sessions_without_runs() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let empty_session = project_store::create_agent_session(
+        &repo_root,
+        &project_store::AgentSessionCreateRecord {
+            project_id: project_id.clone(),
+            title: "Empty context session".into(),
+            summary: String::new(),
+            selected: false,
+        },
+    )
+    .expect("create empty session");
+
+    let snapshot = get_session_context_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetSessionContextSnapshotRequestDto {
+            project_id,
+            agent_session_id: empty_session.agent_session_id,
+            run_id: None,
+            provider_id: Some(PROVIDER_ID.into()),
+            model_id: Some(MODEL_ID.into()),
+            pending_prompt: None,
+        },
+    )
+    .expect("empty session context snapshot");
+
+    validate_context_snapshot_contract(&snapshot).expect("valid empty context snapshot");
+    assert!(snapshot.run_id.is_none());
+    assert_eq!(snapshot.provider_id, PROVIDER_ID);
+    assert_eq!(snapshot.model_id, MODEL_ID);
+    assert!(snapshot.usage_totals.is_none());
+    assert!(snapshot.budget.known_provider_budget);
+    assert!(snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::InstructionFile
+            && contributor.model_visible
+    }));
 }
 
 fn seed_history_run(
@@ -454,6 +565,24 @@ fn seed_history_run(
         },
     )
     .expect("append assistant message");
+    project_store::append_agent_message(
+        repo_root,
+        &project_store::NewAgentMessageRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            role: project_store::AgentMessageRole::Tool,
+            content: json!({
+                "toolCallId": format!("{run_id}-tool-read"),
+                "toolName": "read",
+                "ok": true,
+                "summary": "Read tracked file.",
+                "output": { "stdout": "alpha\nbeta\n" }
+            })
+            .to_string(),
+            created_at: plus_seconds(started_at, 3),
+        },
+    )
+    .expect("append tool result message");
     project_store::append_agent_event(
         repo_root,
         &project_store::NewAgentEventRecord {
@@ -465,7 +594,7 @@ fn seed_history_run(
                 "detail": "Keep events chronological."
             })
             .to_string(),
-            created_at: plus_seconds(started_at, 3),
+            created_at: plus_seconds(started_at, 4),
         },
     )
     .expect("append reasoning event");
@@ -477,7 +606,7 @@ fn seed_history_run(
             tool_call_id: format!("{run_id}-tool-read"),
             tool_name: "read".into(),
             input_json: json!({ "path": "src/tracked.txt" }).to_string(),
-            started_at: plus_seconds(started_at, 4),
+            started_at: plus_seconds(started_at, 5),
         },
     )
     .expect("start tool call");
@@ -490,7 +619,7 @@ fn seed_history_run(
             state: project_store::AgentToolCallState::Succeeded,
             result_json: Some(json!({ "stdout": "x".repeat(800) }).to_string()),
             error: None,
-            completed_at: plus_seconds(started_at, 5),
+            completed_at: plus_seconds(started_at, 6),
         },
     )
     .expect("finish tool call");
@@ -503,7 +632,7 @@ fn seed_history_run(
             operation: "write".into(),
             old_hash: None,
             new_hash: None,
-            created_at: plus_seconds(started_at, 6),
+            created_at: plus_seconds(started_at, 7),
         },
     )
     .expect("append file change");
@@ -515,7 +644,7 @@ fn seed_history_run(
             checkpoint_kind: "validation".into(),
             summary: "Validation passed after cargo test.".into(),
             payload_json: Some(json!({ "command": "cargo test" }).to_string()),
-            created_at: plus_seconds(started_at, 7),
+            created_at: plus_seconds(started_at, 8),
         },
     )
     .expect("append checkpoint");
@@ -528,7 +657,7 @@ fn seed_history_run(
             action_type: "operator_review".into(),
             title: "Review export".into(),
             detail: "Confirm the transcript export is safe.".into(),
-            created_at: plus_seconds(started_at, 8),
+            created_at: plus_seconds(started_at, 9),
         },
     )
     .expect("append action request");
@@ -542,7 +671,7 @@ fn seed_history_run(
         run_id,
         project_store::AgentRunStatus::Completed,
         None,
-        &plus_seconds(started_at, 9),
+        &plus_seconds(started_at, 10),
     )
     .expect("complete run");
 

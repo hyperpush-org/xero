@@ -3,15 +3,16 @@ use std::collections::BTreeSet;
 use cadence_desktop_lib::{
     commands::{
         approved_memory_context_contributors, context_budget, evaluate_compaction_policy,
-        run_transcript_from_agent_snapshot, run_transcript_from_runtime_stream_items,
-        session_transcript_from_runs, validate_context_snapshot_contract,
-        validate_run_transcript_contract, RuntimeStreamItemDto, RuntimeStreamItemKind,
-        RuntimeToolCallState, SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
-        SessionContextContributorKindDto, SessionContextPolicyActionDto,
-        SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDto,
-        SessionMemoryKindDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
-        SessionMemoryScopeDto, SessionTranscriptActorDto, SessionTranscriptItemKindDto,
-        SessionTranscriptSourceKindDto, SessionTranscriptToolStateDto,
+        provider_context_budget_tokens, run_transcript_from_agent_snapshot,
+        run_transcript_from_runtime_stream_items, session_transcript_from_runs,
+        validate_context_snapshot_contract, validate_run_transcript_contract, RuntimeStreamItemDto,
+        RuntimeStreamItemKind, RuntimeToolCallState, SessionCompactionPolicyInput,
+        SessionContextBudgetPressureDto, SessionContextContributorKindDto,
+        SessionContextPolicyActionDto, SessionContextRedactionClassDto, SessionContextRedactionDto,
+        SessionContextSnapshotDto, SessionMemoryKindDto, SessionMemoryRecordDto,
+        SessionMemoryReviewStateDto, SessionMemoryScopeDto, SessionTranscriptActorDto,
+        SessionTranscriptItemKindDto, SessionTranscriptSourceKindDto,
+        SessionTranscriptToolStateDto, SessionUsageSourceDto,
         CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
@@ -430,6 +431,10 @@ fn context_snapshot_contract_validates_budget_and_contributor_integrity() {
         snapshot.budget.pressure,
         SessionContextBudgetPressureDto::Medium
     );
+    assert_eq!(
+        snapshot.budget.estimation_source,
+        SessionUsageSourceDto::Estimated
+    );
     validate_context_snapshot_contract(&snapshot).expect("valid context snapshot");
 
     let mut invalid = snapshot.clone();
@@ -443,6 +448,30 @@ fn context_snapshot_contract_validates_budget_and_contributor_integrity() {
     assert!(validate_context_snapshot_contract(&invalid_visibility)
         .expect_err("model-visible excluded contributor rejected")
         .contains("model-visible"));
+}
+
+#[test]
+fn provider_context_budget_tokens_cover_known_model_families() {
+    assert_eq!(
+        provider_context_budget_tokens("anthropic", "claude-sonnet-4.5"),
+        Some(200_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("openrouter", "openai/gpt-5.4"),
+        Some(128_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("github_models", "openai/gpt-4.1"),
+        Some(128_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("google", "gemini-2.5-pro"),
+        Some(1_000_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("custom", "unknown-model"),
+        None
+    );
 }
 
 fn sample_snapshot() -> AgentRunSnapshotRecord {

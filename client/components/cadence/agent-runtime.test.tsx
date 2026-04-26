@@ -39,6 +39,7 @@ import type {
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeStreamView,
+  SessionContextSnapshotDto,
   SessionTranscriptDto,
   SessionTranscriptExportResponseDto,
 } from '@/src/lib/cadence-model'
@@ -237,6 +238,143 @@ function makeSessionTranscript(): SessionTranscriptDto {
     ],
     usageTotals: null,
     redaction,
+  }
+}
+
+function makeContextSnapshot(overrides: Partial<SessionContextSnapshotDto> = {}): SessionContextSnapshotDto {
+  const redaction = {
+    redactionClass: 'public' as const,
+    redacted: false,
+    reason: null,
+  }
+  const contributors: SessionContextSnapshotDto['contributors'] = [
+    {
+      contributorId: 'system_prompt:run-1',
+      kind: 'system_prompt',
+      label: 'System prompt',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-1',
+      sourceId: 'owned_agent_system_prompt',
+      sequence: 1,
+      estimatedTokens: 180,
+      estimatedChars: 720,
+      included: true,
+      modelVisible: true,
+      text: 'Owned-agent system prompt.',
+      redaction,
+    },
+    {
+      contributorId: 'instruction:AGENTS.md',
+      kind: 'instruction_file',
+      label: 'Project instructions',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: null,
+      sourceId: 'AGENTS.md',
+      sequence: 2,
+      estimatedTokens: 120,
+      estimatedChars: 480,
+      included: true,
+      modelVisible: true,
+      text: 'Use ShadCN for all UI where possible.',
+      redaction,
+    },
+    {
+      contributorId: 'tool_descriptor:read',
+      kind: 'tool_descriptor',
+      label: 'Tool descriptor: read',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-1',
+      sourceId: 'read',
+      sequence: 3,
+      estimatedTokens: 220,
+      estimatedChars: 880,
+      included: true,
+      modelVisible: true,
+      text: 'Read a file from the imported repository.',
+      redaction,
+    },
+    {
+      contributorId: 'message:run-1:2',
+      kind: 'conversation_tail',
+      label: 'User message',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-1',
+      sourceId: '2',
+      sequence: 4,
+      estimatedTokens: 360,
+      estimatedChars: 1440,
+      included: true,
+      modelVisible: true,
+      text: 'Implement the context panel.',
+      redaction,
+    },
+    {
+      contributorId: 'provider_usage:run-1',
+      kind: 'provider_usage',
+      label: 'Provider usage',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-1',
+      sourceId: 'run-1',
+      sequence: 5,
+      estimatedTokens: 0,
+      estimatedChars: 48,
+      included: false,
+      modelVisible: false,
+      text: '1200 input + 400 output = 1600 total tokens.',
+      redaction,
+    },
+  ]
+
+  return {
+    contractVersion: 1,
+    snapshotId: 'context:project-1:agent-session-main:run-1',
+    projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
+    runId: 'run-1',
+    providerId: 'openrouter',
+    modelId: 'openai/gpt-5.4',
+    generatedAt: '2026-04-26T12:00:00Z',
+    budget: {
+      budgetTokens: 1000,
+      estimatedTokens: 880,
+      estimationSource: 'mixed',
+      pressure: 'high',
+      knownProviderBudget: true,
+    },
+    contributors,
+    policyDecisions: [
+      {
+        contractVersion: 1,
+        decisionId: 'compaction:auto:disabled',
+        kind: 'compaction',
+        action: 'skipped',
+        trigger: 'auto',
+        reasonCode: 'auto_compact_disabled',
+        message: 'Auto-compact is disabled for this session.',
+        rawTranscriptPreserved: true,
+        modelVisible: false,
+        redaction,
+      },
+    ],
+    usageTotals: {
+      projectId: 'project-1',
+      runId: 'run-1',
+      providerId: 'openrouter',
+      modelId: 'openai/gpt-5.4',
+      inputTokens: 1200,
+      outputTokens: 400,
+      totalTokens: 1600,
+      estimatedCostMicros: 42,
+      source: 'provider',
+      updatedAt: '2026-04-26T12:00:00Z',
+    },
+    redaction,
+    ...overrides,
   }
 }
 
@@ -2321,6 +2459,87 @@ describe('AgentRuntime current UI', () => {
       expect(onSaveSessionTranscriptExport).toHaveBeenCalledWith({
         path: '/tmp/history.json',
         content: 'json export for run-history-2',
+      }),
+    )
+  })
+
+  it('loads context visualization with budget pressure and contributors', async () => {
+    const onLoadSessionContextSnapshot = vi.fn(async () => makeContextSnapshot())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          project: makeProject({
+            agentSessions: [makeAgentSession({ lastRunId: 'run-1' })],
+            selectedAgentSession: makeAgentSession({ lastRunId: 'run-1' }),
+            selectedAgentSessionId: 'agent-session-main',
+          }),
+        })}
+        onLoadSessionContextSnapshot={onLoadSessionContextSnapshot}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun({ runId: 'run-1' }))}
+      />,
+    )
+
+    expect(await screen.findByText('Context')).toBeVisible()
+    await waitFor(() =>
+      expect(onLoadSessionContextSnapshot).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runId: 'run-1',
+        providerId: 'openai_codex',
+        modelId: 'openai_codex',
+        pendingPrompt: null,
+      }),
+    )
+    expect(screen.getByText('High pressure')).toBeVisible()
+    expect(screen.getByText('AGENTS.md included')).toBeVisible()
+    expect(screen.getByText('Tool descriptor: read')).toBeVisible()
+    expect(screen.getByText('Provider usage: 1.6K tokens recorded.')).toBeVisible()
+  })
+
+  it('includes the draft prompt in context preflight and shows over-budget pressure', async () => {
+    const onLoadSessionContextSnapshot = vi.fn(async () =>
+      makeContextSnapshot({
+        budget: {
+          budgetTokens: 1000,
+          estimatedTokens: 1200,
+          estimationSource: 'mixed',
+          pressure: 'over',
+          knownProviderBudget: true,
+        },
+      }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-1' }),
+          project: makeProject({
+            agentSessions: [makeAgentSession({ lastRunId: 'run-1' })],
+            selectedAgentSession: makeAgentSession({ lastRunId: 'run-1' }),
+            selectedAgentSessionId: 'agent-session-main',
+          }),
+        })}
+        onLoadSessionContextSnapshot={onLoadSessionContextSnapshot}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun({ runId: 'run-1' }))}
+      />,
+    )
+
+    expect(await screen.findByText('Likely over context budget')).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Continue with the largest remaining task.' },
+    })
+
+    await waitFor(() =>
+      expect(onLoadSessionContextSnapshot).toHaveBeenLastCalledWith({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runId: 'run-1',
+        providerId: 'openai_codex',
+        modelId: 'openai_codex',
+        pendingPrompt: 'Continue with the largest remaining task.',
       }),
     )
   })
