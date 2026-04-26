@@ -142,6 +142,7 @@ impl DictationState {
     fn attach_native_session(
         &self,
         session_id: &str,
+        engine: DictationEngineDto,
         native: native_shim::Session,
     ) -> Result<(), native_shim::Session> {
         let Ok(mut inner) = self.inner.lock() else {
@@ -154,6 +155,7 @@ impl DictationState {
             return Err(native);
         }
 
+        active.engine = engine;
         active.native = Some(native);
         Ok(())
     }
@@ -238,7 +240,7 @@ pub fn speech_dictation_start<R: Runtime>(
         state: state.inner().clone(),
         channel,
     });
-    let native_request = NativeSessionRequest {
+    let mut native_request = NativeSessionRequest {
         session_id: session_id.clone(),
         engine,
         locale: locale.clone(),
@@ -246,30 +248,33 @@ pub fn speech_dictation_start<R: Runtime>(
         contextual_phrases: request.contextual_phrases,
     };
 
-    let native = match native_shim::Session::create(&native_request, context) {
-        Ok(native) => native,
+    let (native, start_response) = match create_and_start_native_session(&native_request, &context)
+    {
+        Ok(started) => started,
         Err(error) => {
-            state.take_session(&session_id, true);
-            return Err(CommandError::system_fault(
-                "dictation_native_session_unavailable",
-                format!("Cadence could not create a native dictation session: {error}"),
-            ));
+            if should_fallback_to_legacy(request.engine_preference, engine, &status, &error) {
+                native_request.engine = DictationEngineDto::Legacy;
+                match create_and_start_native_session(&native_request, &context) {
+                    Ok(started) => started,
+                    Err(fallback_error) => {
+                        state.take_session(&session_id, true);
+                        return Err(fallback_error.into_command_error());
+                    }
+                }
+            } else {
+                state.take_session(&session_id, true);
+                return Err(error.into_command_error());
+            }
         }
     };
 
-    let start_response = match native.start() {
-        Ok(response) => response,
-        Err(error) => {
-            state.take_session(&session_id, true);
-            return Err(error.into_command_error());
-        }
-    };
+    let response_engine = start_response.engine.unwrap_or(native_request.engine);
 
     let response = DictationStartResponseDto {
         session_id: start_response
             .session_id
             .unwrap_or_else(|| session_id.clone()),
-        engine: start_response.engine.unwrap_or(engine),
+        engine: response_engine,
         locale: normalize_optional_text(start_response.locale).unwrap_or(locale),
     };
     if response.session_id != session_id {
@@ -280,7 +285,10 @@ pub fn speech_dictation_start<R: Runtime>(
         ));
     }
 
-    if state.attach_native_session(&session_id, native).is_err() {
+    if state
+        .attach_native_session(&session_id, response.engine, native)
+        .is_err()
+    {
         return Err(CommandError::retryable(
             "dictation_session_closed",
             "Cadence started dictation, but the session closed before the native handle could be attached.",
@@ -309,6 +317,38 @@ pub fn speech_dictation_cancel(state: State<'_, DictationState>) -> CommandResul
 pub fn shutdown_on_close<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<DictationState>() {
         state.cancel_active_for_shutdown();
+    }
+}
+
+fn create_and_start_native_session(
+    request: &NativeSessionRequest,
+    context: &Arc<NativeCallbackContext>,
+) -> Result<(native_shim::Session, NativeOperationResponse), NativeStartError> {
+    let native = native_shim::Session::create(request, Arc::clone(context))
+        .map_err(NativeStartError::Create)?;
+    let start_response = native.start().map_err(NativeStartError::Start)?;
+    Ok((native, start_response))
+}
+
+fn should_fallback_to_legacy(
+    preference: DictationEnginePreferenceDto,
+    attempted_engine: DictationEngineDto,
+    status: &DictationStatusDto,
+    error: &NativeStartError,
+) -> bool {
+    if preference != DictationEnginePreferenceDto::Automatic
+        || attempted_engine != DictationEngineDto::Modern
+        || !status.legacy.available
+    {
+        return false;
+    }
+
+    match error {
+        NativeStartError::Start(error) => !matches!(
+            error.code.as_str(),
+            "dictation_microphone_permission_denied" | "dictation_speech_permission_denied"
+        ),
+        NativeStartError::Create(_) => false,
     }
 }
 
@@ -614,6 +654,24 @@ impl NativeOperationError {
             CommandError::retryable(self.code, self.message)
         } else {
             CommandError::user_fixable(self.code, self.message)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum NativeStartError {
+    Create(String),
+    Start(NativeOperationError),
+}
+
+impl NativeStartError {
+    fn into_command_error(self) -> CommandError {
+        match self {
+            NativeStartError::Create(error) => CommandError::system_fault(
+                "dictation_native_session_unavailable",
+                format!("Cadence could not create a native dictation session: {error}"),
+            ),
+            NativeStartError::Start(error) => error.into_command_error(),
         }
     }
 }
@@ -1157,6 +1215,48 @@ mod tests {
         let error = select_engine(&status, DictationEnginePreferenceDto::Modern)
             .expect_err("modern should be unavailable");
         assert_eq!(error.code, "dictation_modern_unavailable");
+    }
+
+    #[test]
+    fn automatic_mode_falls_back_only_for_modern_startup_failures() {
+        let mut status = available_status();
+        status.modern = DictationEngineStatusDto {
+            available: true,
+            compiled: true,
+            runtime_supported: true,
+            reason: None,
+        };
+
+        let startup_error = NativeStartError::Start(NativeOperationError {
+            code: "dictation_modern_asset_install_failed".into(),
+            message: "asset install failed".into(),
+            retryable: true,
+        });
+        assert!(should_fallback_to_legacy(
+            DictationEnginePreferenceDto::Automatic,
+            DictationEngineDto::Modern,
+            &status,
+            &startup_error,
+        ));
+
+        let permission_error = NativeStartError::Start(NativeOperationError {
+            code: "dictation_microphone_permission_denied".into(),
+            message: "permission denied".into(),
+            retryable: false,
+        });
+        assert!(!should_fallback_to_legacy(
+            DictationEnginePreferenceDto::Automatic,
+            DictationEngineDto::Modern,
+            &status,
+            &permission_error,
+        ));
+
+        assert!(!should_fallback_to_legacy(
+            DictationEnginePreferenceDto::Modern,
+            DictationEngineDto::Modern,
+            &status,
+            &startup_error,
+        ));
     }
 
     #[test]

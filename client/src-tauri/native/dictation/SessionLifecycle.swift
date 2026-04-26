@@ -11,9 +11,11 @@ private struct CadenceDictationSessionRequest: Decodable {
     let sessionId: String
     let engine: String
     let locale: String
+    let privacyMode: String?
+    let contextualPhrases: [String]?
 }
 
-private struct CadenceDictationOperationResponse: Encodable {
+struct CadenceDictationOperationResponse: Encodable {
     let ok: Bool
     let sessionId: String?
     let engine: String?
@@ -57,36 +59,79 @@ private final class CadenceDictationSession {
     private let sessionId: String
     private let engine: String
     private let locale: String
+    private let privacyMode: String
+    private let contextualPhrases: [String]
     private let callback: CadenceDictationEventCallback?
     private let context: UnsafeMutableRawPointer?
     private let queue: DispatchQueue
+    private let callbackQueue: DispatchQueue
     private var state: LifecycleState = .created
+    private var modernEngine: CadenceModernDictationEngine?
 
     init(request: CadenceDictationSessionRequest, callback: CadenceDictationEventCallback?, context: UnsafeMutableRawPointer?) {
         self.sessionId = request.sessionId
         self.engine = request.engine
         self.locale = request.locale
+        self.privacyMode = request.privacyMode ?? "on_device_preferred"
+        self.contextualPhrases = request.contextualPhrases ?? []
         self.callback = callback
         self.context = context
         self.queue = DispatchQueue(label: "dev.cadence.dictation.session.\(request.sessionId)")
+        self.callbackQueue = DispatchQueue(label: "dev.cadence.dictation.session.\(request.sessionId).events")
+    }
+
+    deinit {
+        if let modernEngine {
+            _ = modernEngine.cancel()
+        }
     }
 
     func start() -> CadenceDictationOperationResponse {
         queue.sync {
             switch state {
             case .created:
-                state = .started
-                emit([
-                    "kind": "permission",
-                    "microphone": microphonePermissionState(),
-                    "speech": speechPermissionState(),
-                ])
-                emit([
-                    "kind": "started",
-                    "sessionId": sessionId,
-                    "engine": engine,
-                    "locale": locale,
-                ])
+                if engine == "modern" {
+                    if #available(macOS 26.0, *) {
+                        let modernEngine = CadenceModernDictationEngine(
+                            sessionId: sessionId,
+                            localeIdentifier: locale,
+                            privacyMode: privacyMode,
+                            contextualPhrases: contextualPhrases,
+                            emit: { [weak self] payload in
+                                self?.emit(payload)
+                            }
+                        )
+                        self.modernEngine = modernEngine
+                        let response = modernEngine.start()
+                        if response.ok {
+                            state = .started
+                        } else {
+                            state = .stopped
+                            self.modernEngine = nil
+                        }
+                        return response
+                    }
+
+                    state = .stopped
+                    return .failure(
+                        code: "dictation_modern_runtime_unavailable",
+                        message: "Cadence could not start modern dictation because macOS 26 SpeechAnalyzer is unavailable.",
+                        retryable: false
+                    )
+                } else {
+                    state = .started
+                    emit([
+                        "kind": "permission",
+                        "microphone": microphonePermissionState(),
+                        "speech": speechPermissionState(),
+                    ])
+                    emit([
+                        "kind": "started",
+                        "sessionId": sessionId,
+                        "engine": engine,
+                        "locale": locale,
+                    ])
+                }
             case .started:
                 break
             case .stopped:
@@ -101,11 +146,38 @@ private final class CadenceDictationSession {
     }
 
     func stop() -> CadenceDictationOperationResponse {
-        end(reason: "user")
+        if engine == "modern" {
+            return endModern(reason: "user")
+        }
+
+        return end(reason: "user")
     }
 
     func cancel() -> CadenceDictationOperationResponse {
-        end(reason: "cancelled")
+        if engine == "modern" {
+            return endModern(reason: "cancelled")
+        }
+
+        return end(reason: "cancelled")
+    }
+
+    private func endModern(reason: String) -> CadenceDictationOperationResponse {
+        queue.sync {
+            switch state {
+            case .created, .started:
+                state = .stopped
+                let response: CadenceDictationOperationResponse
+                if reason == "cancelled" {
+                    response = modernEngine?.cancel() ?? .success()
+                } else {
+                    response = modernEngine?.stop(reason: reason) ?? .success()
+                }
+                modernEngine = nil
+                return response
+            case .stopped:
+                return .success()
+            }
+        }
     }
 
     private func end(reason: String) -> CadenceDictationOperationResponse {
@@ -127,21 +199,23 @@ private final class CadenceDictationSession {
     }
 
     private func emit(_ payload: [String: Any]) {
-        guard let callback else {
-            return
-        }
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8) else {
-            let fallback = #"{"kind":"error","sessionId":null,"code":"native_event_encoding_failed","message":"Cadence could not encode a native dictation event.","retryable":false}"#
-            fallback.withCString { pointer in
+        callbackQueue.sync { [callback, context] in
+            guard let callback else {
+                return
+            }
+            guard JSONSerialization.isValidJSONObject(payload),
+                  let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let json = String(data: data, encoding: .utf8) else {
+                let fallback = #"{"kind":"error","sessionId":null,"code":"native_event_encoding_failed","message":"Cadence could not encode a native dictation event.","retryable":false}"#
+                fallback.withCString { pointer in
+                    callback(context, pointer)
+                }
+                return
+            }
+
+            json.withCString { pointer in
                 callback(context, pointer)
             }
-            return
-        }
-
-        json.withCString { pointer in
-            callback(context, pointer)
         }
     }
 }

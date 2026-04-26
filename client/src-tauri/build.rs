@@ -114,6 +114,7 @@ fn compile_dictation_shim() {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     for runtime_path in swift_runtime_library_paths(&swiftc) {
         println!("cargo:rustc-link-search=native={runtime_path}");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{runtime_path}");
     }
     println!("cargo:rustc-link-lib=static=CadenceDictationShim");
     println!("cargo:rustc-cfg=cadence_dictation_native_shim");
