@@ -233,26 +233,40 @@ import {
 import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
+  deleteSessionMemoryRequestSchema,
+  extractSessionMemoryCandidatesRequestSchema,
+  extractSessionMemoryCandidatesResponseSchema,
   exportSessionTranscriptRequestSchema,
   getSessionContextSnapshotRequestSchema,
   getSessionTranscriptRequestSchema,
+  listSessionMemoriesRequestSchema,
+  listSessionMemoriesResponseSchema,
   saveSessionTranscriptExportRequestSchema,
   searchSessionTranscriptsRequestSchema,
   searchSessionTranscriptsResponseSchema,
   sessionContextSnapshotSchema,
+  sessionMemoryRecordSchema,
   sessionTranscriptExportResponseSchema,
   sessionTranscriptSchema,
   type ExportSessionTranscriptRequestDto,
   type CompactSessionHistoryRequestDto,
   type CompactSessionHistoryResponseDto,
+  type DeleteSessionMemoryRequestDto,
+  type ExtractSessionMemoryCandidatesRequestDto,
+  type ExtractSessionMemoryCandidatesResponseDto,
   type GetSessionContextSnapshotRequestDto,
   type GetSessionTranscriptRequestDto,
+  type ListSessionMemoriesRequestDto,
+  type ListSessionMemoriesResponseDto,
   type SaveSessionTranscriptExportRequestDto,
   type SearchSessionTranscriptsRequestDto,
   type SearchSessionTranscriptsResponseDto,
   type SessionContextSnapshotDto,
+  type SessionMemoryRecordDto,
   type SessionTranscriptDto,
   type SessionTranscriptExportResponseDto,
+  type UpdateSessionMemoryRequestDto,
+  updateSessionMemoryRequestSchema,
 } from '@/src/lib/cadence-model/session-context'
 import { projectSnapshotResponseSchema, type ProjectSnapshotResponseDto } from '@/src/lib/cadence-model'
 
@@ -299,6 +313,10 @@ const COMMANDS = {
   searchSessionTranscripts: 'search_session_transcripts',
   getSessionContextSnapshot: 'get_session_context_snapshot',
   compactSessionHistory: 'compact_session_history',
+  listSessionMemories: 'list_session_memories',
+  extractSessionMemoryCandidates: 'extract_session_memory_candidates',
+  updateSessionMemory: 'update_session_memory',
+  deleteSessionMemory: 'delete_session_memory',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
   getRuntimeSettings: 'get_runtime_settings',
@@ -574,6 +592,14 @@ export interface CadenceDesktopAdapter {
   compactSessionHistory?(
     request: CompactSessionHistoryRequestDto,
   ): Promise<CompactSessionHistoryResponseDto>
+  listSessionMemories?(
+    request: ListSessionMemoriesRequestDto,
+  ): Promise<ListSessionMemoriesResponseDto>
+  extractSessionMemoryCandidates?(
+    request: ExtractSessionMemoryCandidatesRequestDto,
+  ): Promise<ExtractSessionMemoryCandidatesResponseDto>
+  updateSessionMemory?(request: UpdateSessionMemoryRequestDto): Promise<SessionMemoryRecordDto>
+  deleteSessionMemory?(request: DeleteSessionMemoryRequestDto): Promise<void>
   getRuntimeRun(projectId: string, agentSessionId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
   getRuntimeSettings(): Promise<RuntimeSettingsDto>
@@ -1346,6 +1372,32 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     return invokeTyped(COMMANDS.compactSessionHistory, compactSessionHistoryResponseSchema, {
       request: parsed,
     })
+  },
+
+  listSessionMemories(request) {
+    const parsed = listSessionMemoriesRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.listSessionMemories, listSessionMemoriesResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  extractSessionMemoryCandidates(request) {
+    const parsed = extractSessionMemoryCandidatesRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.extractSessionMemoryCandidates, extractSessionMemoryCandidatesResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  updateSessionMemory(request) {
+    const parsed = updateSessionMemoryRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.updateSessionMemory, sessionMemoryRecordSchema, {
+      request: parsed,
+    })
+  },
+
+  async deleteSessionMemory(request) {
+    const parsed = deleteSessionMemoryRequestSchema.parse(request)
+    await invokeRaw(COMMANDS.deleteSessionMemory, { request: parsed })
   },
 
   getRuntimeRun(projectId, agentSessionId) {

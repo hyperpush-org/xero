@@ -13,32 +13,39 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::now_timestamp,
     commands::{
-        context_budget_with_source, estimate_tokens, evaluate_compaction_policy,
-        provider_context_budget_tokens, redact_session_context_text,
-        run_transcript_from_agent_snapshot, session_compaction_record_dto,
+        approved_memory_context_contributors, context_budget_with_source, estimate_tokens,
+        evaluate_compaction_policy, memory_policy_decision, provider_context_budget_tokens,
+        redact_session_context_text, run_transcript_from_agent_snapshot,
+        session_compaction_record_dto, session_memory_diagnostic_dto, session_memory_record_dto,
         session_transcript_from_runs, usage_totals_from_agent_usage,
         validate_context_snapshot_contract, validate_export_payload_contract,
-        validate_session_compaction_record_contract, validate_session_transcript_contract,
-        CommandError, CommandResult, CompactSessionHistoryRequestDto,
-        CompactSessionHistoryResponseDto, ExportSessionTranscriptRequestDto,
+        validate_session_compaction_record_contract, validate_session_memory_record_contract,
+        validate_session_transcript_contract, CommandError, CommandResult,
+        CompactSessionHistoryRequestDto, CompactSessionHistoryResponseDto,
+        DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
+        ExtractSessionMemoryCandidatesRequestDto, ExtractSessionMemoryCandidatesResponseDto,
         GetSessionContextSnapshotRequestDto, GetSessionTranscriptRequestDto,
+        ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto,
         SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
         SearchSessionTranscriptsResponseDto, SessionCompactionPolicyInput,
         SessionContextContributorDto, SessionContextContributorKindDto,
         SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDto,
+        SessionMemoryDiagnosticDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
         SessionTranscriptDto, SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
         SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptScopeDto,
         SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
-        CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        UpdateSessionMemoryRequestDto, CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
-        self, AgentCompactionTrigger, AgentMessageRecord, AgentMessageRole, AgentRunSnapshotRecord,
-        AgentSessionRecord, NewAgentCompactionRecord,
+        self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
+        AgentMemoryReviewState, AgentMemoryScope, AgentMessageRecord, AgentMessageRole,
+        AgentRunSnapshotRecord, AgentSessionRecord, NewAgentCompactionRecord, NewAgentMemoryRecord,
     },
     runtime::{
         agent_core::{
             create_provider_adapter, runtime_controls_from_request, tool_registry_for_snapshot,
-            ProviderAdapter, ProviderCompactionRequest,
+            ProviderAdapter, ProviderCompactionRequest, ProviderMemoryCandidate,
+            ProviderMemoryExtractionRequest,
         },
         AgentToolDescriptor,
     },
@@ -58,6 +65,8 @@ const UNAVAILABLE_CONTEXT_ID: &str = "unavailable";
 const DEFAULT_RAW_TAIL_MESSAGE_COUNT: u32 = 8;
 const MAX_RAW_TAIL_MESSAGE_COUNT: u32 = 24;
 const MAX_COMPACTION_SUMMARY_TOKENS: u64 = 1_500;
+const MAX_MEMORY_CANDIDATES: u8 = 8;
+const MIN_MEMORY_CONFIDENCE: u8 = 50;
 
 #[tauri::command]
 pub fn get_session_transcript<R: Runtime>(
@@ -297,6 +306,133 @@ pub fn compact_session_history<R: Runtime>(
     Ok(response)
 }
 
+#[tauri::command]
+pub fn list_session_memories<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ListSessionMemoriesRequestDto,
+) -> CommandResult<ListSessionMemoriesResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    if let Some(agent_session_id) = request.agent_session_id.as_deref() {
+        validate_non_empty(agent_session_id, "agentSessionId")?;
+    }
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let memories = project_store::list_agent_memories(
+        &repo_root,
+        &request.project_id,
+        AgentMemoryListFilter {
+            agent_session_id: request.agent_session_id.as_deref(),
+            include_disabled: request.include_disabled,
+            include_rejected: request.include_rejected,
+        },
+    )?
+    .iter()
+    .map(session_memory_record_dto)
+    .collect::<Vec<_>>();
+    for memory in &memories {
+        validate_session_memory_record_contract(memory).map_err(|details| {
+            CommandError::system_fault(
+                "session_memory_invalid",
+                format!("Cadence projected an invalid memory record: {details}"),
+            )
+        })?;
+    }
+    Ok(ListSessionMemoriesResponseDto {
+        project_id: request.project_id,
+        agent_session_id: request.agent_session_id,
+        memories,
+    })
+}
+
+#[tauri::command]
+pub fn extract_session_memory_candidates<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ExtractSessionMemoryCandidatesRequestDto,
+) -> CommandResult<ExtractSessionMemoryCandidatesResponseDto> {
+    validate_transcript_request(
+        &request.project_id,
+        &request.agent_session_id,
+        request.run_id.as_deref(),
+    )?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let provider_config = resolve_owned_agent_provider_config(&app, state.inner(), None)?;
+    let provider = create_provider_adapter(provider_config)?;
+    extract_session_memory_candidates_with_provider(
+        &repo_root,
+        &request.project_id,
+        &request.agent_session_id,
+        request.run_id.as_deref(),
+        provider.as_ref(),
+    )
+}
+
+#[tauri::command]
+pub fn update_session_memory<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: UpdateSessionMemoryRequestDto,
+) -> CommandResult<SessionMemoryRecordDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.memory_id, "memoryId")?;
+    if request.review_state.is_none() && request.enabled.is_none() {
+        return Err(CommandError::invalid_request("memoryUpdate"));
+    }
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let review_state = request
+        .review_state
+        .as_ref()
+        .map(agent_memory_review_state_from_dto);
+    let enabled = match request.review_state {
+        Some(SessionMemoryReviewStateDto::Approved) => Some(request.enabled.unwrap_or(true)),
+        Some(SessionMemoryReviewStateDto::Candidate | SessionMemoryReviewStateDto::Rejected) => {
+            Some(false)
+        }
+        None => request.enabled,
+    };
+    if review_state == Some(AgentMemoryReviewState::Approved) {
+        let existing =
+            project_store::get_agent_memory(&repo_root, &request.project_id, &request.memory_id)?;
+        let (_text, redaction) = redact_session_context_text(&existing.text);
+        if redaction.redacted {
+            return Err(CommandError::user_fixable(
+                "session_memory_secret_blocked",
+                "Cadence will not approve memory text that looks secret-bearing.",
+            ));
+        }
+    }
+    let record = project_store::update_agent_memory(
+        &repo_root,
+        &project_store::AgentMemoryUpdateRecord {
+            project_id: request.project_id,
+            memory_id: request.memory_id,
+            review_state,
+            enabled,
+            diagnostic: None,
+        },
+    )?;
+    let dto = session_memory_record_dto(&record);
+    validate_session_memory_record_contract(&dto).map_err(|details| {
+        CommandError::system_fault(
+            "session_memory_invalid",
+            format!("Cadence projected an invalid memory record: {details}"),
+        )
+    })?;
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn delete_session_memory<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: DeleteSessionMemoryRequestDto,
+) -> CommandResult<()> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.memory_id, "memoryId")?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    project_store::delete_agent_memory(&repo_root, &request.project_id, &request.memory_id)
+}
+
 fn validate_transcript_request(
     project_id: &str,
     agent_session_id: &str,
@@ -381,6 +517,11 @@ fn build_session_context_snapshot(
         .to_string();
     let generated_at = now_timestamp();
     let instruction_text = read_instruction_file(repo_root);
+    let approved_memories =
+        project_store::list_approved_agent_memories(repo_root, project_id, Some(agent_session_id))?
+            .iter()
+            .map(session_memory_record_dto)
+            .collect::<Vec<_>>();
     let mut contributors = Vec::new();
 
     if let Some(snapshot) = latest_snapshot {
@@ -390,6 +531,7 @@ fn build_session_context_snapshot(
             agent_session_id,
             snapshot,
             instruction_text.as_deref(),
+            approved_memories.as_slice(),
         );
     }
     append_instruction_file_contributor(
@@ -398,6 +540,7 @@ fn build_session_context_snapshot(
         agent_session_id,
         instruction_text.as_deref(),
     );
+    append_approved_memory_contributors(&mut contributors, approved_memories.as_slice());
     if let Some(snapshot) = latest_snapshot {
         append_tool_descriptor_contributors(
             &mut contributors,
@@ -452,7 +595,7 @@ fn build_session_context_snapshot(
         SessionUsageSourceDto::Estimated
     };
     let budget = context_budget_with_source(estimated_tokens, budget_tokens, estimation_source);
-    let policy_decisions = vec![evaluate_compaction_policy(SessionCompactionPolicyInput {
+    let mut policy_decisions = vec![evaluate_compaction_policy(SessionCompactionPolicyInput {
         manual_requested: false,
         auto_enabled: false,
         provider_supports_compaction: true,
@@ -461,6 +604,23 @@ fn build_session_context_snapshot(
         budget_tokens,
         threshold_percent: Some(80),
     })];
+    policy_decisions.push(if approved_memories.is_empty() {
+        memory_policy_decision(
+            "memory:approved:none",
+            crate::commands::SessionContextPolicyActionDto::ExcludeMemory,
+            "approved_memory_absent",
+            "No reviewed memory is currently enabled for this session.",
+            false,
+        )
+    } else {
+        memory_policy_decision(
+            "memory:approved:inject",
+            crate::commands::SessionContextPolicyActionDto::InjectMemory,
+            "approved_memory_enabled",
+            "Approved memory is included in the next provider system prompt.",
+            true,
+        )
+    });
     let redaction = strongest_context_redaction(
         contributors
             .iter()
@@ -616,6 +776,304 @@ fn compact_session_history_with_provider(
     )?;
 
     Ok(session_compaction_record_dto(&record))
+}
+
+fn extract_session_memory_candidates_with_provider(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    provider: &dyn ProviderAdapter,
+) -> CommandResult<ExtractSessionMemoryCandidatesResponseDto> {
+    let _session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
+        .ok_or_else(|| missing_session_error(project_id, agent_session_id))?;
+    let snapshots = load_context_snapshots(repo_root, project_id, agent_session_id, run_id)?;
+    let completed_snapshots = snapshots
+        .iter()
+        .filter(|(snapshot, _)| snapshot.run.status == project_store::AgentRunStatus::Completed)
+        .cloned()
+        .collect::<Vec<_>>();
+    if completed_snapshots.is_empty() {
+        return Err(CommandError::user_fixable(
+            "session_memory_no_completed_runs",
+            "Cadence needs at least one completed owned-agent run before it can propose reviewed memory.",
+        ));
+    }
+
+    let source = build_memory_extraction_source(&completed_snapshots)?;
+    let existing_memories = project_store::list_agent_memories(
+        repo_root,
+        project_id,
+        AgentMemoryListFilter {
+            agent_session_id: Some(agent_session_id),
+            include_disabled: true,
+            include_rejected: false,
+        },
+    )?;
+    let existing_texts = existing_memories
+        .iter()
+        .map(|memory| memory.text.clone())
+        .collect::<Vec<_>>();
+    let request = ProviderMemoryExtractionRequest {
+        project_id: project_id.into(),
+        agent_session_id: agent_session_id.into(),
+        run_id: run_id.map(ToOwned::to_owned),
+        provider_id: provider.provider_id().into(),
+        model_id: provider.model_id().into(),
+        transcript: source.transcript.clone(),
+        existing_memories: existing_texts,
+        max_candidates: MAX_MEMORY_CANDIDATES,
+    };
+    let mut ignored_stream_event = |_event| Ok(());
+    let outcome = provider.extract_memory_candidates(&request, &mut ignored_stream_event)?;
+
+    let mut created = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut skipped_duplicate_count = 0_usize;
+    let mut rejected_count = 0_usize;
+    let now = now_timestamp();
+
+    for candidate in outcome
+        .candidates
+        .into_iter()
+        .take(MAX_MEMORY_CANDIDATES as usize)
+    {
+        match prepare_new_memory_candidate(
+            project_id,
+            agent_session_id,
+            &source,
+            candidate,
+            now.as_str(),
+        ) {
+            Ok(record) => {
+                let text_hash = project_store::agent_memory_text_hash(&record.text);
+                if project_store::find_active_agent_memory_by_hash(
+                    repo_root,
+                    project_id,
+                    &record.scope,
+                    record.agent_session_id.as_deref(),
+                    &record.kind,
+                    &text_hash,
+                )?
+                .is_some()
+                {
+                    skipped_duplicate_count = skipped_duplicate_count.saturating_add(1);
+                    continue;
+                }
+                let persisted = project_store::insert_agent_memory(repo_root, &record)?;
+                created.push(session_memory_record_dto(&persisted));
+            }
+            Err(diagnostic) => {
+                rejected_count = rejected_count.saturating_add(1);
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+
+    for memory in &created {
+        validate_session_memory_record_contract(memory).map_err(|details| {
+            CommandError::system_fault(
+                "session_memory_invalid",
+                format!("Cadence projected an invalid memory record: {details}"),
+            )
+        })?;
+    }
+    let memories = project_store::list_agent_memories(
+        repo_root,
+        project_id,
+        AgentMemoryListFilter {
+            agent_session_id: Some(agent_session_id),
+            include_disabled: true,
+            include_rejected: false,
+        },
+    )?
+    .iter()
+    .map(session_memory_record_dto)
+    .collect::<Vec<_>>();
+
+    Ok(ExtractSessionMemoryCandidatesResponseDto {
+        project_id: project_id.into(),
+        agent_session_id: agent_session_id.into(),
+        memories,
+        created_count: created.len(),
+        skipped_duplicate_count,
+        rejected_count,
+        diagnostics,
+    })
+}
+
+struct MemoryExtractionSource {
+    transcript: String,
+    source_run_id: Option<String>,
+    source_item_ids: Vec<String>,
+}
+
+fn build_memory_extraction_source(
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+) -> CommandResult<MemoryExtractionSource> {
+    let run_transcripts = snapshots
+        .iter()
+        .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
+        .collect::<Vec<_>>();
+    let source_run_id = run_transcripts.last().map(|run| run.run_id.clone());
+    let mut source_item_ids = Vec::new();
+    let mut transcript = String::from(
+        "Review this completed Cadence session transcript for durable memory candidates.\n",
+    );
+    for run in &run_transcripts {
+        transcript.push_str(&format!(
+            "\nRun {} provider={} model={} status={}\n",
+            run.run_id, run.provider_id, run.model_id, run.status
+        ));
+        for item in &run.items {
+            source_item_ids.push(item.item_id.clone());
+            let text = item
+                .text
+                .as_deref()
+                .or(item.summary.as_deref())
+                .unwrap_or_default();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let (text, _redaction) = redact_session_context_text(text);
+            transcript.push_str(&format!(
+                "- [{}] {} {}: {}\n",
+                item.item_id,
+                item_kind_label(item),
+                item.actor_label(),
+                preview_context_text(&text)
+            ));
+        }
+    }
+    Ok(MemoryExtractionSource {
+        transcript,
+        source_run_id,
+        source_item_ids,
+    })
+}
+
+trait SessionTranscriptItemActorLabel {
+    fn actor_label(&self) -> &'static str;
+}
+
+impl SessionTranscriptItemActorLabel for SessionTranscriptItemDto {
+    fn actor_label(&self) -> &'static str {
+        match self.actor {
+            crate::commands::SessionTranscriptActorDto::System => "system",
+            crate::commands::SessionTranscriptActorDto::Developer => "developer",
+            crate::commands::SessionTranscriptActorDto::User => "user",
+            crate::commands::SessionTranscriptActorDto::Assistant => "assistant",
+            crate::commands::SessionTranscriptActorDto::Tool => "tool",
+            crate::commands::SessionTranscriptActorDto::Runtime => "runtime",
+            crate::commands::SessionTranscriptActorDto::Cadence => "cadence",
+            crate::commands::SessionTranscriptActorDto::Operator => "operator",
+        }
+    }
+}
+
+fn prepare_new_memory_candidate(
+    project_id: &str,
+    agent_session_id: &str,
+    source: &MemoryExtractionSource,
+    candidate: ProviderMemoryCandidate,
+    created_at: &str,
+) -> Result<NewAgentMemoryRecord, SessionMemoryDiagnosticDto> {
+    let scope = agent_memory_scope_from_provider(&candidate.scope).ok_or_else(|| {
+        session_memory_diagnostic_dto(
+            "session_memory_candidate_scope_invalid",
+            "A provider memory candidate used an unsupported scope.",
+        )
+    })?;
+    let kind = agent_memory_kind_from_provider(&candidate.kind).ok_or_else(|| {
+        session_memory_diagnostic_dto(
+            "session_memory_candidate_kind_invalid",
+            "A provider memory candidate used an unsupported kind.",
+        )
+    })?;
+    let text = candidate.text.trim().to_string();
+    if text.is_empty() {
+        return Err(session_memory_diagnostic_dto(
+            "session_memory_candidate_empty",
+            "A provider memory candidate did not include text.",
+        ));
+    }
+    let confidence = candidate.confidence.unwrap_or(0).min(100);
+    if confidence < MIN_MEMORY_CONFIDENCE {
+        return Err(session_memory_diagnostic_dto(
+            "session_memory_candidate_low_confidence",
+            "Cadence skipped a low-confidence memory candidate.",
+        ));
+    }
+    let (_redacted_text, redaction) = redact_session_context_text(&text);
+    if redaction.redacted {
+        return Err(session_memory_diagnostic_dto(
+            "session_memory_candidate_secret",
+            "Cadence skipped a memory candidate because its text looked secret-bearing.",
+        ));
+    }
+    let mut source_item_ids = candidate
+        .source_item_ids
+        .into_iter()
+        .map(|item_id| item_id.trim().to_string())
+        .filter(|item_id| !item_id.is_empty())
+        .collect::<Vec<_>>();
+    if source_item_ids.is_empty() {
+        source_item_ids = source.source_item_ids.iter().take(8).cloned().collect();
+    }
+    Ok(NewAgentMemoryRecord {
+        memory_id: project_store::generate_agent_memory_id(),
+        project_id: project_id.into(),
+        agent_session_id: match scope {
+            AgentMemoryScope::Project => None,
+            AgentMemoryScope::Session => Some(agent_session_id.into()),
+        },
+        scope,
+        kind,
+        text,
+        review_state: AgentMemoryReviewState::Candidate,
+        enabled: false,
+        confidence: Some(confidence),
+        source_run_id: source.source_run_id.clone(),
+        source_item_ids,
+        diagnostic: None,
+        created_at: created_at.into(),
+    })
+}
+
+fn agent_memory_scope_from_provider(value: &str) -> Option<AgentMemoryScope> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "project" => Some(AgentMemoryScope::Project),
+        "session" => Some(AgentMemoryScope::Session),
+        _ => None,
+    }
+}
+
+fn agent_memory_kind_from_provider(value: &str) -> Option<AgentMemoryKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "project_fact" | "project fact" | "fact" => Some(AgentMemoryKind::ProjectFact),
+        "user_preference" | "user preference" | "preference" => {
+            Some(AgentMemoryKind::UserPreference)
+        }
+        "decision" => Some(AgentMemoryKind::Decision),
+        "session_summary" | "session summary" | "summary" => Some(AgentMemoryKind::SessionSummary),
+        "troubleshooting" | "troubleshooting_fact" | "troubleshooting fact" => {
+            Some(AgentMemoryKind::Troubleshooting)
+        }
+        _ => None,
+    }
+}
+
+fn agent_memory_review_state_from_dto(
+    review_state: &SessionMemoryReviewStateDto,
+) -> AgentMemoryReviewState {
+    match review_state {
+        SessionMemoryReviewStateDto::Candidate => AgentMemoryReviewState::Candidate,
+        SessionMemoryReviewStateDto::Approved => AgentMemoryReviewState::Approved,
+        SessionMemoryReviewStateDto::Rejected => AgentMemoryReviewState::Rejected,
+    }
 }
 
 struct CompactionSource<'a> {
@@ -856,10 +1314,12 @@ fn append_system_prompt_contributor(
     agent_session_id: &str,
     snapshot: &AgentRunSnapshotRecord,
     instruction_text: Option<&str>,
+    approved_memories: &[SessionMemoryRecordDto],
 ) {
-    let system_prompt = system_prompt_without_instruction_text(
+    let system_prompt = system_prompt_without_known_context_text(
         snapshot.run.system_prompt.as_str(),
         instruction_text.unwrap_or_default(),
+        approved_memories,
     );
     if system_prompt.trim().is_empty() {
         return;
@@ -942,6 +1402,18 @@ fn append_tool_descriptor_contributors(
         );
     }
     Ok(())
+}
+
+fn append_approved_memory_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    memories: &[SessionMemoryRecordDto],
+) {
+    let start_sequence = contributors.len() as u64;
+    let memory_contributors = approved_memory_context_contributors(memories, true);
+    for (index, mut contributor) in memory_contributors.into_iter().enumerate() {
+        contributor.sequence = start_sequence + index as u64 + 1;
+        contributors.push(contributor);
+    }
 }
 
 fn tool_descriptor_estimate_text(descriptor: &AgentToolDescriptor) -> CommandResult<String> {
@@ -1204,21 +1676,35 @@ fn context_usage_totals(
     session_transcript_from_runs(session, run_transcripts).usage_totals
 }
 
-fn system_prompt_without_instruction_text(system_prompt: &str, instruction_text: &str) -> String {
+fn system_prompt_without_known_context_text(
+    system_prompt: &str,
+    instruction_text: &str,
+    approved_memories: &[SessionMemoryRecordDto],
+) -> String {
     let trimmed_prompt = system_prompt.trim();
     let trimmed_instruction = instruction_text.trim();
-    if trimmed_prompt.is_empty() || trimmed_instruction.is_empty() {
+    if trimmed_prompt.is_empty() {
         return trimmed_prompt.to_string();
     }
 
-    trimmed_prompt
-        .replacen(
+    let mut prompt = trimmed_prompt.to_string();
+    if !trimmed_instruction.is_empty() {
+        prompt = prompt.replacen(
             trimmed_instruction,
             "(project instructions counted separately)",
             1,
-        )
-        .trim()
-        .to_string()
+        );
+    }
+    for memory in approved_memories {
+        if !memory.text.trim().is_empty() {
+            prompt = prompt.replacen(
+                memory.text.trim(),
+                "(approved memory counted separately)",
+                1,
+            );
+        }
+    }
+    prompt.trim().to_string()
 }
 
 fn tool_result_label(content: &str) -> String {

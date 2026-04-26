@@ -735,25 +735,29 @@ Outcome: long sessions can continue with a compacted context while raw history s
 
 Outcome: useful durable context can survive individual runs, but users remain in control of what becomes model-visible memory.
 
-- [ ] Slice 4.4.1: Add a reviewed memory store.
+- [x] Slice 4.4.1: Add a reviewed memory store.
   - Scope: persist memory candidates and approved memories with project/session scope, kind, text, source run/message references, confidence, review state, enabled state, timestamps, and diagnostics.
   - Acceptance: unreviewed candidates are not injected into model context, approved memories are queryable by scope, disabled memories remain visible to users but unavailable to replay, and deleted source sessions do not leave broken references.
   - Verification: migration/store tests cover candidate creation, approve, disable, re-enable, delete, source-reference cleanup, project vs session scope, and redacted diagnostics.
+  - Completed: 2026-04-26. Implementation: added the `agent_memories` store with project/session scoping, review/enabled gating, source provenance, diagnostics, duplicate text hashing, and source-run/session cleanup triggers. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_history_commands` passed 5 tests, including candidate create/approve/disable/re-enable/delete and deleted-source cleanup.
 
-- [ ] Slice 4.4.2: Extract memory candidates from completed runs.
+- [x] Slice 4.4.2: Extract memory candidates from completed runs.
   - Scope: add a command or post-run job that proposes memories from completed transcripts, file changes, user preferences, project decisions, and durable troubleshooting facts without auto-approving them.
   - Acceptance: candidates cite their source run/session, avoid duplicating existing approved memory, and distinguish project facts from session summaries and user preferences.
   - Verification: fake-provider tests cover candidate extraction, duplicate merging, low-confidence rejection, source citation, no-auto-approval behavior, and secret redaction.
+  - Completed: 2026-04-26. Implementation: added `extract_session_memory_candidates` with provider-backed extraction, deterministic fake-provider fixtures, confidence/secret rejection, duplicate skipping, source item citation, and candidate-only persistence. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_history_commands` passed 5 tests; `cargo test --manifest-path client/src-tauri/Cargo.toml --test session_context_contract` passed 8 tests.
 
-- [ ] Slice 4.4.3: Add memory review UI.
+- [x] Slice 4.4.3: Add memory review UI.
   - Scope: build a ShadCN-based Memory surface in Settings or the agent context panel for reviewing, approving, disabling, deleting, filtering, and inspecting memory provenance.
   - Acceptance: users can understand and control every model-visible memory item, and memory diagnostics are actionable without exposing secret-bearing paths or raw credentials.
   - Verification: React tests cover empty state, candidate list, approve/disable/delete, filtering by scope/kind, provenance display, failed action diagnostics, and responsive layout.
+  - Completed: 2026-04-26. Implementation: added a ShadCN Memory section to the agent Context panel with load/refresh/extract, approve/reject, enable/disable, delete, scope/kind filters, provenance, confidence, diagnostics, and context refresh after model-visible changes. Verification evidence: `pnpm --dir client exec vitest run src/lib/cadence-model/session-context.test.ts components/cadence/agent-runtime.test.tsx` passed 2 files and 46 tests; targeted `pnpm --dir client exec eslint ...` passed.
 
-- [ ] Slice 4.4.4: Inject approved memory and instruction files into the system prompt.
+- [x] Slice 4.4.4: Inject approved memory and instruction files into the system prompt.
   - Scope: extend `assemble_system_prompt` to include deterministic, redacted approved memory plus supported project instruction files such as `AGENTS.md` and any Cadence-supported memory file contract.
   - Acceptance: injected memory appears in the context visualization panel, ordering is stable, disabled/unreviewed memory is excluded, and missing or malformed instruction files produce diagnostics rather than provider-call failure.
   - Verification: Rust tests cover approved memory injection, disabled candidate exclusion, project vs session scope ordering, instruction-file detection, malformed file diagnostics, and unchanged behavior when no memory exists.
+  - Completed: 2026-04-26. Implementation: assembled owned-agent prompts now include supported project instructions (`AGENTS.md`) and deterministically ordered, redacted approved memory only; context snapshots show approved-memory contributors and explain inject/exclude policy decisions while excluding disabled or unreviewed memory. Verification evidence: `cargo test --manifest-path client/src-tauri/Cargo.toml --test agent_core_runtime` passed 30 tests, including redacted approved-memory system prompt coverage; `pnpm --dir client exec tsc --noEmit` passed.
 
 ##### Phase 5: Add Branch, Rewind, And Auto-Compact Workflows
 

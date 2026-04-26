@@ -601,9 +601,13 @@ fn memory(
     created_at: &str,
 ) -> SessionMemoryRecordDto {
     SessionMemoryRecordDto {
+        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
         memory_id: memory_id.into(),
         project_id: PROJECT_ID.into(),
-        agent_session_id: Some(SESSION_ID.into()),
+        agent_session_id: match scope {
+            SessionMemoryScopeDto::Project => None,
+            SessionMemoryScopeDto::Session => Some(SESSION_ID.into()),
+        },
         scope,
         kind,
         text: text.into(),
@@ -614,6 +618,7 @@ fn memory(
         source_item_ids: vec!["message:1".into()],
         created_at: created_at.into(),
         updated_at: created_at.into(),
+        diagnostic: None,
         redaction: SessionContextRedactionDto::public(),
     }
 }

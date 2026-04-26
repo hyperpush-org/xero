@@ -1,5 +1,6 @@
 mod agent_context;
 mod agent_core;
+mod agent_memory;
 mod agent_session;
 mod autonomous;
 mod connection;
@@ -14,6 +15,7 @@ pub(crate) mod workflow;
 
 pub use agent_context::*;
 pub use agent_core::*;
+pub use agent_memory::*;
 pub use agent_session::*;
 pub(crate) use agent_session::{ensure_agent_session_active, touch_agent_session_runtime_run};
 pub use autonomous::*;

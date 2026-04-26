@@ -1691,6 +1691,91 @@ pub fn migrations() -> &'static Migrations<'static> {
                     ON agent_compactions(project_id, source_run_id, active);
                 "#,
             ),
+            M::up(
+                r#"
+                CREATE TABLE IF NOT EXISTS agent_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    agent_session_id TEXT,
+                    scope_kind TEXT NOT NULL,
+                    memory_kind TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    text_hash TEXT NOT NULL,
+                    review_state TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                    confidence INTEGER CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 100)),
+                    source_run_id TEXT,
+                    source_item_ids_json TEXT NOT NULL DEFAULT '[]',
+                    diagnostic_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK (memory_id <> ''),
+                    CHECK (agent_session_id IS NULL OR agent_session_id <> ''),
+                    CHECK (scope_kind IN ('project', 'session')),
+                    CHECK (memory_kind IN ('project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting')),
+                    CHECK (text <> ''),
+                    CHECK (length(text_hash) = 64),
+                    CHECK (text_hash NOT GLOB '*[^0-9a-f]*'),
+                    CHECK (review_state IN ('candidate', 'approved', 'rejected')),
+                    CHECK (
+                        (scope_kind = 'project' AND agent_session_id IS NULL)
+                        OR (scope_kind = 'session' AND agent_session_id IS NOT NULL)
+                    ),
+                    CHECK (review_state = 'approved' OR enabled = 0),
+                    CHECK (source_run_id IS NULL OR source_run_id <> ''),
+                    CHECK (source_item_ids_json <> '' AND json_valid(source_item_ids_json)),
+                    CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+                    UNIQUE (project_id, memory_id),
+                    FOREIGN KEY (project_id, agent_session_id)
+                        REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_memories_scope_review
+                    ON agent_memories(project_id, scope_kind, agent_session_id, review_state, enabled, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_agent_memories_source_run
+                    ON agent_memories(project_id, source_run_id)
+                    WHERE source_run_id IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memories_active_text
+                    ON agent_memories(project_id, scope_kind, COALESCE(agent_session_id, ''), memory_kind, text_hash)
+                    WHERE review_state IN ('candidate', 'approved');
+
+                CREATE TRIGGER IF NOT EXISTS agent_memories_clear_deleted_source_run
+                AFTER DELETE ON agent_runs
+                BEGIN
+                    UPDATE agent_memories
+                    SET source_run_id = NULL,
+                        source_item_ids_json = '[]',
+                        diagnostic_json = json_object(
+                            'code', 'memory_source_deleted',
+                            'message', 'The source run for this memory was deleted, so Cadence cleared its provenance reference.'
+                        ),
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE project_id = old.project_id
+                      AND source_run_id = old.run_id;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS agent_memories_clear_deleted_session_sources
+                BEFORE DELETE ON agent_sessions
+                BEGIN
+                    UPDATE agent_memories
+                    SET source_run_id = NULL,
+                        source_item_ids_json = '[]',
+                        diagnostic_json = json_object(
+                            'code', 'memory_source_deleted',
+                            'message', 'The source session for this memory was deleted, so Cadence cleared its provenance reference.'
+                        ),
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE project_id = old.project_id
+                      AND source_run_id IN (
+                        SELECT run_id
+                        FROM agent_runs
+                        WHERE project_id = old.project_id
+                          AND agent_session_id = old.agent_session_id
+                      );
+                END;
+                "#,
+            ),
         ])
     });
 

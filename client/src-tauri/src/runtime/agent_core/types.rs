@@ -244,6 +244,55 @@ pub trait ProviderAdapter {
             )),
         }
     }
+
+    fn extract_memory_candidates(
+        &self,
+        request: &ProviderMemoryExtractionRequest,
+        emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+    ) -> CommandResult<ProviderMemoryExtractionOutcome> {
+        let existing = if request.existing_memories.is_empty() {
+            "(none)".to_string()
+        } else {
+            request
+                .existing_memories
+                .iter()
+                .map(|memory| format!("- {memory}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let prompt = format!(
+            "Extract durable memory candidates from this Cadence coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
+            request.transcript
+        );
+        let turn = ProviderTurnRequest {
+            system_prompt: "You propose reviewed memory candidates for a coding-agent desktop app. Return strict JSON only, never markdown. Capture stable project facts, user preferences, decisions, session summaries, and troubleshooting facts. Prefer no item over a weak item. Never include secrets.".into(),
+            messages: vec![ProviderMessage::User { content: prompt }],
+            tools: Vec::new(),
+            turn_index: 0,
+            controls: RuntimeRunControlStateDto {
+                active: RuntimeRunActiveControlSnapshotDto {
+                    model_id: request.model_id.clone(),
+                    thinking_effort: None,
+                    approval_mode: RuntimeRunApprovalModeDto::Yolo,
+                    plan_mode_required: false,
+                    revision: 1,
+                    applied_at: crate::auth::now_timestamp(),
+                },
+                pending: None,
+            },
+        };
+
+        match self.stream_turn(&turn, emit)? {
+            ProviderTurnOutcome::Complete { message, usage } => {
+                let candidates = parse_provider_memory_candidates(&message)?;
+                Ok(ProviderMemoryExtractionOutcome { candidates, usage })
+            }
+            ProviderTurnOutcome::ToolCalls { .. } => Err(CommandError::user_fixable(
+                "session_memory_provider_requested_tools",
+                "Cadence asked the provider to extract memory candidates, but the provider requested tool calls instead of returning JSON.",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +344,56 @@ pub struct ProviderCompactionRequest {
 pub struct ProviderCompactionOutcome {
     pub summary: String,
     pub usage: Option<ProviderUsage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderMemoryExtractionRequest {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub run_id: Option<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub transcript: String,
+    pub existing_memories: Vec<String>,
+    pub max_candidates: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderMemoryCandidate {
+    pub scope: String,
+    pub kind: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
+    #[serde(default)]
+    pub source_item_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderMemoryExtractionOutcome {
+    pub candidates: Vec<ProviderMemoryCandidate>,
+    pub usage: Option<ProviderUsage>,
+}
+
+fn parse_provider_memory_candidates(message: &str) -> CommandResult<Vec<ProviderMemoryCandidate>> {
+    let trimmed = message.trim();
+    let json_text = trimmed
+        .strip_prefix("```json")
+        .and_then(|value| value.strip_suffix("```"))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("```")
+                .and_then(|value| value.strip_suffix("```"))
+        })
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    serde_json::from_str::<Vec<ProviderMemoryCandidate>>(json_text).map_err(|error| {
+        CommandError::retryable(
+            "session_memory_provider_json_invalid",
+            format!("Cadence could not decode provider memory candidates as JSON: {error}"),
+        )
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,4 +516,121 @@ impl ProviderAdapter for FakeProviderAdapter {
             }),
         })
     }
+
+    fn extract_memory_candidates(
+        &self,
+        request: &ProviderMemoryExtractionRequest,
+        emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+    ) -> CommandResult<ProviderMemoryExtractionOutcome> {
+        emit(ProviderStreamEvent::ReasoningSummary(
+            "Fake provider generated deterministic memory candidates.".into(),
+        ))?;
+        let mut candidates = Vec::new();
+        for line in request.transcript.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lowered = trimmed.to_ascii_lowercase();
+            if let Some(text) = text_after_marker(trimmed, "project fact:") {
+                candidates.push(fake_memory_candidate("project", "project_fact", text, 92));
+            } else if let Some(text) = text_after_marker(trimmed, "user preference:") {
+                candidates.push(fake_memory_candidate(
+                    "project",
+                    "user_preference",
+                    text,
+                    90,
+                ));
+            } else if let Some(text) = text_after_marker(trimmed, "decision:") {
+                candidates.push(fake_memory_candidate("project", "decision", text, 88));
+            } else if let Some(text) = text_after_marker(trimmed, "troubleshooting:") {
+                candidates.push(fake_memory_candidate(
+                    "session",
+                    "troubleshooting",
+                    text,
+                    84,
+                ));
+            } else if let Some(text) = text_after_marker(trimmed, "low confidence:") {
+                candidates.push(fake_memory_candidate(
+                    "session",
+                    "session_summary",
+                    text,
+                    35,
+                ));
+            } else if lowered.contains("cadence redacted sensitive session-context text")
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate.text.contains("sk-fake-memory-secret"))
+            {
+                candidates.push(fake_memory_candidate(
+                    "project",
+                    "project_fact",
+                    "Use api_key=sk-fake-memory-secret for memory extraction tests.",
+                    92,
+                ));
+            } else if lowered.contains("session summary:") {
+                if let Some(text) = text_after_marker(trimmed, "session summary:") {
+                    candidates.push(fake_memory_candidate(
+                        "session",
+                        "session_summary",
+                        text,
+                        72,
+                    ));
+                }
+            }
+            if candidates.len() >= request.max_candidates as usize {
+                break;
+            }
+        }
+        if candidates.is_empty() && !request.transcript.trim().is_empty() {
+            let summary = request
+                .transcript
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" ");
+            candidates.push(fake_memory_candidate(
+                "session",
+                "session_summary",
+                format!(
+                    "Session discussed {}",
+                    summary.chars().take(180).collect::<String>()
+                ),
+                64,
+            ));
+        }
+        emit(ProviderStreamEvent::MessageDelta(format!(
+            "Generated {} memory candidate(s).",
+            candidates.len()
+        )))?;
+        Ok(ProviderMemoryExtractionOutcome {
+            candidates,
+            usage: Some(ProviderUsage::default()),
+        })
+    }
+}
+
+fn fake_memory_candidate(
+    scope: impl Into<String>,
+    kind: impl Into<String>,
+    text: impl Into<String>,
+    confidence: u8,
+) -> ProviderMemoryCandidate {
+    ProviderMemoryCandidate {
+        scope: scope.into(),
+        kind: kind.into(),
+        text: text.into().trim().to_string(),
+        confidence: Some(confidence),
+        source_item_ids: Vec::new(),
+    }
+}
+
+fn text_after_marker<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let lowered = line.to_ascii_lowercase();
+    let index = lowered.find(marker)?;
+    let start = index.saturating_add(marker.len());
+    line.get(start..)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }

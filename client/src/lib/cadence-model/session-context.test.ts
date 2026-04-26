@@ -6,9 +6,14 @@ import {
   createContextBudget,
   createPublicSessionContextRedaction,
   createRedactedSessionContextText,
+  deleteSessionMemoryRequestSchema,
   exportSessionTranscriptRequestSchema,
+  extractSessionMemoryCandidatesRequestSchema,
+  extractSessionMemoryCandidatesResponseSchema,
   getSessionContextSnapshotRequestSchema,
   getSessionTranscriptRequestSchema,
+  listSessionMemoriesRequestSchema,
+  listSessionMemoriesResponseSchema,
   runTranscriptSchema,
   saveSessionTranscriptExportRequestSchema,
   searchSessionTranscriptsRequestSchema,
@@ -18,10 +23,12 @@ import {
   sessionContextPolicyDecisionSchema,
   sessionContextSnapshotSchema,
   sessionTranscriptExportResponseSchema,
+  sessionMemoryDiagnosticSchema,
   sessionMemoryRecordSchema,
   sessionTranscriptExportPayloadSchema,
   sessionTranscriptSearchResultSnippetSchema,
   sessionTranscriptSchema,
+  updateSessionMemoryRequestSchema,
   type RunTranscriptDto,
   type SessionContextContributorDto,
   type SessionContextPolicyDecisionDto,
@@ -177,9 +184,10 @@ describe('session context contract', () => {
     })
 
     const memory = sessionMemoryRecordSchema.parse({
+      contractVersion: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
       memoryId: 'memory-1',
       projectId,
-      agentSessionId,
+      agentSessionId: null,
       scope: 'project',
       kind: 'decision',
       text: redacted.value,
@@ -190,12 +198,88 @@ describe('session context contract', () => {
       sourceItemIds: ['message:1'],
       createdAt,
       updatedAt: createdAt,
+      diagnostic: null,
       redaction: redacted.redaction,
+    })
+    const diagnostic = sessionMemoryDiagnosticSchema.parse({
+      code: 'memory_source_deleted',
+      message: 'The source run was deleted.',
+      redaction: createPublicSessionContextRedaction(),
+    })
+    const candidate = sessionMemoryRecordSchema.parse({
+      contractVersion: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+      memoryId: 'memory-candidate',
+      projectId,
+      agentSessionId,
+      scope: 'session',
+      kind: 'session_summary',
+      text: 'The session established the reviewed memory workflow.',
+      reviewState: 'candidate',
+      enabled: false,
+      confidence: 72,
+      sourceRunId: runId,
+      sourceItemIds: ['message:1'],
+      createdAt,
+      updatedAt: createdAt,
+      diagnostic,
+      redaction: createPublicSessionContextRedaction(),
     })
 
     const serialized = JSON.stringify(memory)
     expect(serialized).not.toContain('sk-context-secret')
     expect(memory.reviewState).toBe('approved')
+    expect(candidate.diagnostic?.code).toBe('memory_source_deleted')
+    expect(() => sessionMemoryRecordSchema.parse({ ...candidate, enabled: true })).toThrow(/Only approved/)
+    expect(() => sessionMemoryRecordSchema.parse({ ...memory, agentSessionId, scope: 'project' })).toThrow(
+      /Project memory/,
+    )
+    expect(
+      listSessionMemoriesRequestSchema.parse({
+        projectId,
+        agentSessionId,
+        includeDisabled: true,
+        includeRejected: false,
+      }),
+    ).toEqual({ projectId, agentSessionId, includeDisabled: true, includeRejected: false })
+    expect(
+      listSessionMemoriesResponseSchema.parse({
+        projectId,
+        agentSessionId,
+        memories: [memory, candidate],
+      }).memories,
+    ).toHaveLength(2)
+    expect(
+      extractSessionMemoryCandidatesRequestSchema.parse({
+        projectId,
+        agentSessionId,
+        runId,
+      }),
+    ).toEqual({ projectId, agentSessionId, runId })
+    expect(
+      extractSessionMemoryCandidatesResponseSchema.parse({
+        projectId,
+        agentSessionId,
+        memories: [memory, candidate],
+        createdCount: 2,
+        skippedDuplicateCount: 1,
+        rejectedCount: 1,
+        diagnostics: [diagnostic],
+      }).skippedDuplicateCount,
+    ).toBe(1)
+    expect(
+      updateSessionMemoryRequestSchema.parse({
+        projectId,
+        memoryId: memory.memoryId,
+        reviewState: 'approved',
+        enabled: true,
+      }).enabled,
+    ).toBe(true)
+    expect(
+      deleteSessionMemoryRequestSchema.parse({
+        projectId,
+        memoryId: memory.memoryId,
+      }).memoryId,
+    ).toBe(memory.memoryId)
   })
 
   it('validates transcript command request, export, save, and search DTOs', () => {

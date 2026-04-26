@@ -15,6 +15,7 @@ pub(crate) fn drive_provider_loop(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
+    agent_session_id: &str,
     cancellation: &AgentRunCancellationToken,
 ) -> CommandResult<()> {
     let mut workspace_guard = AgentWorkspaceGuard::default();
@@ -23,7 +24,12 @@ pub(crate) fn drive_provider_loop(
     for turn_index in 0..MAX_PROVIDER_TURNS {
         cancellation.check_cancelled()?;
         touch_agent_run_heartbeat(repo_root, project_id, run_id)?;
-        let turn_system_prompt = assemble_system_prompt(repo_root, tool_registry.descriptors())?;
+        let turn_system_prompt = assemble_system_prompt_for_session(
+            repo_root,
+            Some(project_id),
+            Some(agent_session_id),
+            tool_registry.descriptors(),
+        )?;
         let turn = ProviderTurnRequest {
             system_prompt: turn_system_prompt,
             messages: messages.clone(),

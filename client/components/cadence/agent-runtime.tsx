@@ -7,14 +7,21 @@ import type {
   ExportSessionTranscriptRequestDto,
   CompactSessionHistoryRequestDto,
   CompactSessionHistoryResponseDto,
+  DeleteSessionMemoryRequestDto,
+  ExtractSessionMemoryCandidatesRequestDto,
+  ExtractSessionMemoryCandidatesResponseDto,
   GetSessionContextSnapshotRequestDto,
   GetSessionTranscriptRequestDto,
+  ListSessionMemoriesRequestDto,
+  ListSessionMemoriesResponseDto,
   RuntimeRunView,
   RuntimeSessionView,
   SessionContextSnapshotDto,
+  SessionMemoryRecordDto,
   SessionTranscriptDto,
   SessionTranscriptExportResponseDto,
   SessionTranscriptSearchResultSnippetDto,
+  UpdateSessionMemoryRequestDto,
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/cadence-model'
 import {
@@ -98,6 +105,14 @@ interface AgentRuntimeProps {
   onCompactSessionHistory?: (
     request: CompactSessionHistoryRequestDto,
   ) => Promise<CompactSessionHistoryResponseDto>
+  onListSessionMemories?: (
+    request: ListSessionMemoriesRequestDto,
+  ) => Promise<ListSessionMemoriesResponseDto>
+  onExtractSessionMemoryCandidates?: (
+    request: ExtractSessionMemoryCandidatesRequestDto,
+  ) => Promise<ExtractSessionMemoryCandidatesResponseDto>
+  onUpdateSessionMemory?: (request: UpdateSessionMemoryRequestDto) => Promise<SessionMemoryRecordDto>
+  onDeleteSessionMemory?: (request: DeleteSessionMemoryRequestDto) => Promise<void>
 }
 
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
@@ -119,6 +134,10 @@ export function AgentRuntime({
   onSaveSessionTranscriptExport,
   onLoadSessionContextSnapshot,
   onCompactSessionHistory,
+  onListSessionMemories,
+  onExtractSessionMemoryCandidates,
+  onUpdateSessionMemory,
+  onDeleteSessionMemory,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -314,6 +333,10 @@ export function AgentRuntime({
                 pendingPrompt={contextPendingPrompt}
                 onLoadContextSnapshot={onLoadSessionContextSnapshot}
                 onCompactSessionHistory={onCompactSessionHistory}
+                onListSessionMemories={onListSessionMemories}
+                onExtractSessionMemoryCandidates={onExtractSessionMemoryCandidates}
+                onUpdateSessionMemory={onUpdateSessionMemory}
+                onDeleteSessionMemory={onDeleteSessionMemory}
               />
               {hasAgentFeedSurface ? (
                 <AgentFeedSection

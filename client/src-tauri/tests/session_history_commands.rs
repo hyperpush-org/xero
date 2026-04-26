@@ -5,15 +5,21 @@ use std::{
 
 use cadence_desktop_lib::{
     commands::{
-        compact_session_history, export_session_transcript, get_session_context_snapshot,
-        get_session_transcript, save_session_transcript_export, search_session_transcripts,
-        validate_context_snapshot_contract, validate_export_payload_contract,
+        compact_session_history, delete_session_memory, export_session_transcript,
+        extract_session_memory_candidates, get_session_context_snapshot, get_session_transcript,
+        list_session_memories, save_session_transcript_export, search_session_transcripts,
+        update_session_memory, validate_context_snapshot_contract,
+        validate_export_payload_contract, validate_session_memory_record_contract,
         validate_session_transcript_contract, CompactSessionHistoryRequestDto,
-        ExportSessionTranscriptRequestDto, GetSessionContextSnapshotRequestDto,
-        GetSessionTranscriptRequestDto, SaveSessionTranscriptExportRequestDto,
-        SearchSessionTranscriptsRequestDto, SessionCompactionTriggerDto,
-        SessionContextContributorKindDto, SessionTranscriptExportFormatDto,
+        DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
+        ExtractSessionMemoryCandidatesRequestDto, GetSessionContextSnapshotRequestDto,
+        GetSessionTranscriptRequestDto, ListSessionMemoriesRequestDto,
+        SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
+        SessionCompactionTriggerDto, SessionContextContributorKindDto,
+        SessionContextPolicyActionDto, SessionContextPolicyDecisionKindDto, SessionMemoryKindDto,
+        SessionMemoryReviewStateDto, SessionMemoryScopeDto, SessionTranscriptExportFormatDto,
         SessionTranscriptExportPayloadDto, SessionTranscriptScopeDto, SessionUsageSourceDto,
+        UpdateSessionMemoryRequestDto,
     },
     configure_builder_with_state,
     db::{self, project_store},
@@ -649,6 +655,223 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
     }));
 }
 
+#[test]
+fn memory_extraction_review_and_context_injection_are_review_gated() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_fake_provider_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    seed_memory_candidate_run(&repo_root, &project_id);
+
+    let extracted = extract_session_memory_candidates(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ExtractSessionMemoryCandidatesRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some("run-memory-1".into()),
+        },
+    )
+    .expect("extract memory candidates");
+
+    assert_eq!(extracted.created_count, 4);
+    assert_eq!(extracted.rejected_count, 2);
+    assert!(extracted
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "session_memory_candidate_low_confidence"));
+    assert!(extracted
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "session_memory_candidate_secret"));
+    assert!(extracted.memories.iter().all(|memory| {
+        validate_session_memory_record_contract(memory).is_ok()
+            && memory.review_state == SessionMemoryReviewStateDto::Candidate
+            && !memory.enabled
+    }));
+    assert!(extracted.memories.iter().any(|memory| {
+        memory.scope == SessionMemoryScopeDto::Project
+            && memory.kind == SessionMemoryKindDto::ProjectFact
+            && memory.agent_session_id.is_none()
+            && memory.source_run_id.as_deref() == Some("run-memory-1")
+            && memory.text.contains("repo-local SQLite")
+    }));
+    assert!(extracted.memories.iter().any(|memory| {
+        memory.scope == SessionMemoryScopeDto::Session
+            && memory.kind == SessionMemoryKindDto::Troubleshooting
+            && memory.agent_session_id.as_deref() == Some(SESSION_ID)
+    }));
+
+    let duplicate = extract_session_memory_candidates(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ExtractSessionMemoryCandidatesRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some("run-memory-1".into()),
+        },
+    )
+    .expect("duplicate memory extraction");
+    assert_eq!(duplicate.created_count, 0);
+    assert_eq!(duplicate.skipped_duplicate_count, 4);
+    assert_eq!(duplicate.rejected_count, 2);
+
+    let project_fact = extracted
+        .memories
+        .iter()
+        .find(|memory| {
+            memory.kind == SessionMemoryKindDto::ProjectFact
+                && memory.text.contains("repo-local SQLite")
+        })
+        .expect("project fact memory candidate")
+        .clone();
+    let approved = update_session_memory(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateSessionMemoryRequestDto {
+            project_id: project_id.clone(),
+            memory_id: project_fact.memory_id.clone(),
+            review_state: Some(SessionMemoryReviewStateDto::Approved),
+            enabled: None,
+        },
+    )
+    .expect("approve memory");
+    assert_eq!(approved.review_state, SessionMemoryReviewStateDto::Approved);
+    assert!(approved.enabled);
+
+    let approved_snapshot = get_session_context_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetSessionContextSnapshotRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some("run-memory-1".into()),
+            provider_id: None,
+            model_id: None,
+            pending_prompt: None,
+        },
+    )
+    .expect("context snapshot with approved memory");
+    validate_context_snapshot_contract(&approved_snapshot).expect("valid approved-memory context");
+    assert!(approved_snapshot.contributors.iter().any(|contributor| {
+        contributor.kind == SessionContextContributorKindDto::ApprovedMemory
+            && contributor.model_visible
+            && contributor
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("repo-local SQLite"))
+    }));
+    assert!(approved_snapshot.policy_decisions.iter().any(|decision| {
+        decision.kind == SessionContextPolicyDecisionKindDto::MemoryInjection
+            && decision.action == SessionContextPolicyActionDto::InjectMemory
+            && decision.model_visible
+    }));
+
+    let disabled = update_session_memory(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateSessionMemoryRequestDto {
+            project_id: project_id.clone(),
+            memory_id: approved.memory_id.clone(),
+            review_state: None,
+            enabled: Some(false),
+        },
+    )
+    .expect("disable approved memory");
+    assert_eq!(disabled.review_state, SessionMemoryReviewStateDto::Approved);
+    assert!(!disabled.enabled);
+
+    let disabled_snapshot = get_session_context_snapshot(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetSessionContextSnapshotRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some("run-memory-1".into()),
+            provider_id: None,
+            model_id: None,
+            pending_prompt: None,
+        },
+    )
+    .expect("context snapshot with disabled memory");
+    assert!(!disabled_snapshot
+        .contributors
+        .iter()
+        .any(|contributor| contributor.kind == SessionContextContributorKindDto::ApprovedMemory));
+    assert!(disabled_snapshot.policy_decisions.iter().any(|decision| {
+        decision.kind == SessionContextPolicyDecisionKindDto::MemoryInjection
+            && decision.action == SessionContextPolicyActionDto::ExcludeMemory
+            && !decision.model_visible
+    }));
+
+    let reenabled = update_session_memory(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateSessionMemoryRequestDto {
+            project_id: project_id.clone(),
+            memory_id: approved.memory_id.clone(),
+            review_state: None,
+            enabled: Some(true),
+        },
+    )
+    .expect("re-enable approved memory");
+    assert!(reenabled.enabled);
+
+    project_store::archive_agent_session(&repo_root, &project_id, SESSION_ID)
+        .expect("archive source session");
+    project_store::delete_agent_session(&repo_root, &project_id, SESSION_ID)
+        .expect("delete source session");
+    let after_source_delete = list_session_memories(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ListSessionMemoriesRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            include_disabled: true,
+            include_rejected: true,
+        },
+    )
+    .expect("list project memories after source delete");
+    let cleaned = after_source_delete
+        .memories
+        .iter()
+        .find(|memory| memory.memory_id == reenabled.memory_id)
+        .expect("project memory survives source session delete");
+    assert!(cleaned.source_run_id.is_none());
+    assert!(cleaned.source_item_ids.is_empty());
+    assert_eq!(
+        cleaned
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.as_str()),
+        Some("memory_source_deleted")
+    );
+
+    delete_session_memory(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        DeleteSessionMemoryRequestDto {
+            project_id: project_id.clone(),
+            memory_id: reenabled.memory_id.clone(),
+        },
+    )
+    .expect("delete memory");
+    let after_delete = list_session_memories(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ListSessionMemoriesRequestDto {
+            project_id,
+            agent_session_id: None,
+            include_disabled: true,
+            include_rejected: true,
+        },
+    )
+    .expect("list memories after memory delete");
+    assert!(!after_delete
+        .memories
+        .iter()
+        .any(|memory| memory.memory_id == reenabled.memory_id));
+}
+
 fn seed_history_run(
     repo_root: &Path,
     project_id: &str,
@@ -869,6 +1092,67 @@ fn seed_minimal_run_with_provider(
         },
     )
     .expect("insert agent run");
+}
+
+fn seed_memory_candidate_run(repo_root: &Path, project_id: &str) {
+    let run_id = "run-memory-1";
+    let started_at = "2026-04-26T13:00:00Z";
+    seed_minimal_run_with_provider(
+        repo_root,
+        project_id,
+        SESSION_ID,
+        FAKE_PROVIDER_ID,
+        FAKE_MODEL_ID,
+        run_id,
+        started_at,
+        "Project fact: Cadence stores reviewed memory in repo-local SQLite.",
+    );
+
+    let messages = [
+        (
+            project_store::AgentMessageRole::User,
+            "User preference: Use ShadCN components for UI memory review.",
+        ),
+        (
+            project_store::AgentMessageRole::Assistant,
+            "Decision: Approved memory is model-visible only after review.",
+        ),
+        (
+            project_store::AgentMessageRole::Assistant,
+            "Troubleshooting: If provider replay grows, compact before extracting.",
+        ),
+        (
+            project_store::AgentMessageRole::Assistant,
+            "Low confidence: Maybe the project uses an unstated convention.",
+        ),
+        (
+            project_store::AgentMessageRole::User,
+            "Project fact: use api_key=sk-memory-secret when testing memory.",
+        ),
+    ];
+    for (index, (role, content)) in messages.into_iter().enumerate() {
+        project_store::append_agent_message(
+            repo_root,
+            &project_store::NewAgentMessageRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                role,
+                content: content.into(),
+                created_at: plus_seconds(started_at, index as u32 + 1),
+            },
+        )
+        .expect("append memory extraction message");
+    }
+
+    let _ = project_store::update_agent_run_status(
+        repo_root,
+        project_id,
+        run_id,
+        project_store::AgentRunStatus::Completed,
+        None,
+        &plus_seconds(started_at, 7),
+    )
+    .expect("complete memory extraction run");
 }
 
 fn plus_seconds(timestamp: &str, seconds: u32) -> String {

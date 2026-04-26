@@ -19,11 +19,20 @@ import type { AgentSessionView } from '@/src/lib/cadence-model'
 import type {
   CompactSessionHistoryRequestDto,
   CompactSessionHistoryResponseDto,
+  DeleteSessionMemoryRequestDto,
+  ExtractSessionMemoryCandidatesRequestDto,
+  ExtractSessionMemoryCandidatesResponseDto,
   SessionCompactionRecordDto,
   GetSessionContextSnapshotRequestDto,
+  ListSessionMemoriesRequestDto,
+  ListSessionMemoriesResponseDto,
   SessionContextContributorDto,
   SessionContextSnapshotDto,
+  SessionMemoryRecordDto,
+  UpdateSessionMemoryRequestDto,
 } from '@/src/lib/cadence-model/session-context'
+
+import { MemoryReviewSection } from './memory-review-section'
 
 interface ContextVisualizationSectionProps {
   projectId: string
@@ -38,6 +47,14 @@ interface ContextVisualizationSectionProps {
   onCompactSessionHistory?: (
     request: CompactSessionHistoryRequestDto,
   ) => Promise<CompactSessionHistoryResponseDto>
+  onListSessionMemories?: (
+    request: ListSessionMemoriesRequestDto,
+  ) => Promise<ListSessionMemoriesResponseDto>
+  onExtractSessionMemoryCandidates?: (
+    request: ExtractSessionMemoryCandidatesRequestDto,
+  ) => Promise<ExtractSessionMemoryCandidatesResponseDto>
+  onUpdateSessionMemory?: (request: UpdateSessionMemoryRequestDto) => Promise<SessionMemoryRecordDto>
+  onDeleteSessionMemory?: (request: DeleteSessionMemoryRequestDto) => Promise<void>
 }
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
@@ -80,6 +97,10 @@ export function ContextVisualizationSection({
   pendingPrompt,
   onLoadContextSnapshot,
   onCompactSessionHistory,
+  onListSessionMemories,
+  onExtractSessionMemoryCandidates,
+  onUpdateSessionMemory,
+  onDeleteSessionMemory,
 }: ContextVisualizationSectionProps) {
   const targetSessionId = selectedSession?.agentSessionId ?? null
   const [snapshot, setSnapshot] = useState<SessionContextSnapshotDto | null>(null)
@@ -168,6 +189,7 @@ export function ContextVisualizationSection({
     [visibleContributors],
   )
   const usageContributorCount = snapshot?.contributors.filter((contributor) => contributor.kind === 'provider_usage').length ?? 0
+  const approvedMemoryCount = snapshot?.contributors.filter((contributor) => contributor.kind === 'approved_memory').length ?? 0
   const hasCompactionSummary = Boolean(
     snapshot?.contributors.some((contributor) => contributor.kind === 'compaction_summary'),
   )
@@ -317,6 +339,9 @@ export function ContextVisualizationSection({
               {usageContributorCount > 0 ? (
                 <Badge variant="outline">{usageContributorCount.toLocaleString()} usage rollup</Badge>
               ) : null}
+              {approvedMemoryCount > 0 ? (
+                <Badge variant="outline">{approvedMemoryCount.toLocaleString()} approved memory</Badge>
+              ) : null}
             </div>
 
             {noReplayYet ? (
@@ -340,6 +365,17 @@ export function ContextVisualizationSection({
                 Provider usage: {formatTokens(snapshot.usageTotals.totalTokens)} recorded.
               </p>
             ) : null}
+
+            <MemoryReviewSection
+              projectId={projectId}
+              selectedSession={selectedSession}
+              runId={runId}
+              onListSessionMemories={onListSessionMemories}
+              onExtractSessionMemoryCandidates={onExtractSessionMemoryCandidates}
+              onUpdateSessionMemory={onUpdateSessionMemory}
+              onDeleteSessionMemory={onDeleteSessionMemory}
+              onContextRefresh={loadSnapshot}
+            />
           </div>
         ) : status === 'loading' ? (
           <p className="text-sm text-muted-foreground">Loading context usage...</p>

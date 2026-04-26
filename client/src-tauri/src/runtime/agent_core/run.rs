@@ -26,7 +26,12 @@ pub fn create_owned_agent_run(
             skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
         },
     );
-    let system_prompt = assemble_system_prompt(&request.repo_root, tool_registry.descriptors())?;
+    let system_prompt = assemble_system_prompt_for_session(
+        &request.repo_root,
+        Some(&request.project_id),
+        Some(&request.agent_session_id),
+        tool_registry.descriptors(),
+    )?;
     let provider = create_provider_adapter(request.provider_config.clone())?;
     let now = now_timestamp();
 
@@ -143,6 +148,7 @@ pub fn drive_owned_agent_run(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
+        &snapshot.run.agent_session_id,
         &cancellation,
     ) {
         Ok(()) => {
@@ -331,7 +337,12 @@ fn ensure_context_budget_allows_continuation(
         &controls,
         request.tool_runtime.skill_tool_enabled(),
     )?;
-    let system_prompt = assemble_system_prompt(&request.repo_root, tool_registry.descriptors())?;
+    let system_prompt = assemble_system_prompt_for_session(
+        &request.repo_root,
+        Some(&snapshot.run.project_id),
+        Some(&snapshot.run.agent_session_id),
+        tool_registry.descriptors(),
+    )?;
     let provider_messages = provider_messages_from_snapshot(&request.repo_root, snapshot)?;
     let message_tokens = provider_messages.iter().try_fold(0_u64, |total, message| {
         let serialized = serde_json::to_string(message).map_err(|error| {
@@ -450,6 +461,7 @@ pub fn drive_owned_agent_continuation(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
+        &snapshot.run.agent_session_id,
         &cancellation,
     ) {
         Ok(()) => {

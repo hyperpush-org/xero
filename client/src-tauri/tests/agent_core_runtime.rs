@@ -564,6 +564,32 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
+    db::project_store::insert_agent_memory(
+        &repo_root,
+        &db::project_store::NewAgentMemoryRecord {
+            memory_id: "memory-runtime-approved".into(),
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            scope: db::project_store::AgentMemoryScope::Project,
+            kind: db::project_store::AgentMemoryKind::Decision,
+            text: "Use api_key=sk-runtime-secret when replaying approved memory.".into(),
+            review_state: db::project_store::AgentMemoryReviewState::Approved,
+            enabled: true,
+            confidence: Some(91),
+            source_run_id: None,
+            source_item_ids: Vec::new(),
+            diagnostic: None,
+            created_at: "2026-04-26T12:00:00Z".into(),
+        },
+    )
+    .expect("seed approved memory");
+    let seeded_memories = db::project_store::list_approved_agent_memories(
+        &repo_root,
+        &project_id,
+        Some(db::project_store::DEFAULT_AGENT_SESSION_ID),
+    )
+    .expect("list approved memories");
+    assert_eq!(seeded_memories.len(), 1);
     let tool_runtime = AutonomousToolRuntime::for_project(
         &app.handle().clone(),
         app.state::<DesktopState>().inner(),
@@ -595,6 +621,15 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         .run
         .system_prompt
         .contains("Keep test work repo-local."));
+    assert!(snapshot.run.system_prompt.contains("Approved memory:"));
+    assert!(
+        snapshot
+            .run
+            .system_prompt
+            .contains("Cadence redacted sensitive session-context text."),
+        "approved memory secrets should be redacted in the system prompt"
+    );
+    assert!(!snapshot.run.system_prompt.contains("sk-runtime-secret"));
     assert!(snapshot.messages.iter().any(|message| {
         message.role == db::project_store::AgentMessageRole::User
             && message.content.contains("tool:read src/tracked.txt")

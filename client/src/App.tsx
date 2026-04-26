@@ -509,6 +509,10 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
                 onSaveSessionTranscriptExport={resolvedAdapter.saveSessionTranscriptExport?.bind(resolvedAdapter)}
                 onLoadSessionContextSnapshot={resolvedAdapter.getSessionContextSnapshot?.bind(resolvedAdapter)}
                 onCompactSessionHistory={resolvedAdapter.compactSessionHistory?.bind(resolvedAdapter)}
+                onListSessionMemories={resolvedAdapter.listSessionMemories?.bind(resolvedAdapter)}
+                onExtractSessionMemoryCandidates={resolvedAdapter.extractSessionMemoryCandidates?.bind(resolvedAdapter)}
+                onUpdateSessionMemory={resolvedAdapter.updateSessionMemory?.bind(resolvedAdapter)}
+                onDeleteSessionMemory={resolvedAdapter.deleteSessionMemory?.bind(resolvedAdapter)}
               />
             </div>
           ) : null}

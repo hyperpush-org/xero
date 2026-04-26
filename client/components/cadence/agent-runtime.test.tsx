@@ -36,14 +36,19 @@ import type { AgentPaneView } from '@/src/features/cadence/use-cadence-desktop-s
 import type {
   AgentSessionView,
   CompactSessionHistoryResponseDto,
+  DeleteSessionMemoryRequestDto,
+  ExtractSessionMemoryCandidatesRequestDto,
+  ListSessionMemoriesRequestDto,
   ProjectDetailView,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeStreamView,
   SessionCompactionRecordDto,
   SessionContextSnapshotDto,
+  SessionMemoryRecordDto,
   SessionTranscriptDto,
   SessionTranscriptExportResponseDto,
+  UpdateSessionMemoryRequestDto,
 } from '@/src/lib/cadence-model'
 
 type CheckpointControlLoopCard = NonNullable<AgentPaneView['checkpointControlLoop']>['items'][number]
@@ -445,6 +450,34 @@ function makeSessionCompactionRecord(
     diagnostic: null,
     createdAt: '2026-04-26T12:05:00Z',
     supersededAt: null,
+    redaction,
+    ...overrides,
+  }
+}
+
+function makeMemoryRecord(overrides: Partial<SessionMemoryRecordDto> = {}): SessionMemoryRecordDto {
+  const redaction = {
+    redactionClass: 'public' as const,
+    redacted: false,
+    reason: null,
+  }
+
+  return {
+    contractVersion: 1,
+    memoryId: 'memory-project-fact',
+    projectId: 'project-1',
+    agentSessionId: null,
+    scope: 'project',
+    kind: 'project_fact',
+    text: 'Cadence stores reviewed memory in repo-local SQLite.',
+    reviewState: 'candidate',
+    enabled: false,
+    confidence: 92,
+    sourceRunId: 'run-1',
+    sourceItemIds: ['run_prompt:run-1'],
+    createdAt: '2026-04-26T12:00:00Z',
+    updatedAt: '2026-04-26T12:00:00Z',
+    diagnostic: null,
     redaction,
     ...overrides,
   }
@@ -2578,6 +2611,177 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('AGENTS.md included')).toBeVisible()
     expect(screen.getByText('Tool descriptor: read')).toBeVisible()
     expect(screen.getByText('Provider usage: 1.6K tokens recorded.')).toBeVisible()
+  })
+
+  it('reviews extracted memory candidates from the context panel', async () => {
+    const onLoadSessionContextSnapshot = vi.fn(async () => makeContextSnapshot())
+    let memories: SessionMemoryRecordDto[] = [
+      makeMemoryRecord(),
+      makeMemoryRecord({
+        memoryId: 'memory-decision',
+        kind: 'decision',
+        text: 'Approved memory requires explicit review before provider replay.',
+        confidence: 88,
+      }),
+      makeMemoryRecord({
+        memoryId: 'memory-troubleshooting',
+        agentSessionId: 'agent-session-main',
+        scope: 'session',
+        kind: 'troubleshooting',
+        text: 'Compact replay before extracting memory from very long sessions.',
+        reviewState: 'approved',
+        enabled: false,
+        confidence: 84,
+      }),
+    ]
+    const onListSessionMemories = vi.fn(async (_request: ListSessionMemoriesRequestDto) => ({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      memories,
+    }))
+    const onExtractSessionMemoryCandidates = vi.fn(
+      async (_request: ExtractSessionMemoryCandidatesRequestDto) => {
+        memories = [
+          ...memories,
+          makeMemoryRecord({
+            memoryId: 'memory-preference',
+            kind: 'user_preference',
+            text: 'Use focused e2e tests for reviewed memory workflows.',
+            confidence: 90,
+          }),
+        ]
+        return {
+          projectId: 'project-1',
+          agentSessionId: 'agent-session-main',
+          memories,
+          createdCount: 1,
+          skippedDuplicateCount: 1,
+          rejectedCount: 1,
+          diagnostics: [
+            {
+              code: 'session_memory_candidate_low_confidence',
+              message: 'Cadence skipped a low-confidence memory candidate.',
+              redaction: {
+                redactionClass: 'public' as const,
+                redacted: false,
+                reason: null,
+              },
+            },
+          ],
+        }
+      },
+    )
+    const onUpdateSessionMemory = vi.fn(async (request: UpdateSessionMemoryRequestDto) => {
+      const current = memories.find((memory) => memory.memoryId === request.memoryId)
+      if (!current) throw new Error('missing memory')
+      const reviewState = request.reviewState ?? current.reviewState
+      const enabled = reviewState === 'approved' ? request.enabled ?? current.enabled : false
+      const updated: SessionMemoryRecordDto = {
+        ...current,
+        reviewState,
+        enabled,
+        updatedAt: '2026-04-26T12:10:00Z',
+      }
+      memories = memories.map((memory) => (memory.memoryId === updated.memoryId ? updated : memory))
+      return updated
+    })
+    const onDeleteSessionMemory = vi.fn(async (request: DeleteSessionMemoryRequestDto) => {
+      memories = memories.filter((memory) => memory.memoryId !== request.memoryId)
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          project: makeProject({
+            agentSessions: [makeAgentSession({ lastRunId: 'run-1' })],
+            selectedAgentSession: makeAgentSession({ lastRunId: 'run-1' }),
+            selectedAgentSessionId: 'agent-session-main',
+          }),
+        })}
+        onLoadSessionContextSnapshot={onLoadSessionContextSnapshot}
+        onListSessionMemories={onListSessionMemories}
+        onExtractSessionMemoryCandidates={onExtractSessionMemoryCandidates}
+        onUpdateSessionMemory={onUpdateSessionMemory}
+        onDeleteSessionMemory={onDeleteSessionMemory}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun({ runId: 'run-1' }))}
+      />,
+    )
+
+    expect(await screen.findByText('Memory')).toBeVisible()
+    await waitFor(() =>
+      expect(onListSessionMemories).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        includeDisabled: true,
+        includeRejected: false,
+      }),
+    )
+    expect(screen.getByText('Cadence stores reviewed memory in repo-local SQLite.')).toBeVisible()
+    expect(screen.getAllByText('Source run-1 · 1 item').length).toBeGreaterThan(0)
+
+    fireEvent.keyDown(screen.getByLabelText('Memory scope filter'), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Session' }))
+    expect(screen.getByText('Compact replay before extracting memory from very long sessions.')).toBeVisible()
+    expect(screen.queryByText('Cadence stores reviewed memory in repo-local SQLite.')).not.toBeInTheDocument()
+
+    fireEvent.keyDown(screen.getByLabelText('Memory scope filter'), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'All scopes' }))
+    fireEvent.keyDown(screen.getByLabelText('Memory kind filter'), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Decisions' }))
+    expect(screen.getByText('Approved memory requires explicit review before provider replay.')).toBeVisible()
+    expect(screen.queryByText('Cadence stores reviewed memory in repo-local SQLite.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Extract' }))
+    await waitFor(() =>
+      expect(onExtractSessionMemoryCandidates).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runId: 'run-1',
+      }),
+    )
+    expect(await screen.findByText(/Cadence proposed 1 memory candidate/)).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() =>
+      expect(onUpdateSessionMemory).toHaveBeenLastCalledWith({
+        projectId: 'project-1',
+        memoryId: 'memory-decision',
+        reviewState: 'approved',
+        enabled: true,
+      }),
+    )
+    expect(await screen.findByText('Memory approved and enabled.')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+    await waitFor(() =>
+      expect(onUpdateSessionMemory).toHaveBeenLastCalledWith({
+        projectId: 'project-1',
+        memoryId: 'memory-decision',
+        enabled: false,
+      }),
+    )
+    expect(await screen.findByText('Memory disabled.')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
+    await waitFor(() =>
+      expect(onUpdateSessionMemory).toHaveBeenLastCalledWith({
+        projectId: 'project-1',
+        memoryId: 'memory-decision',
+        enabled: true,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete memory memory-decision' }))
+    await waitFor(() =>
+      expect(onDeleteSessionMemory).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        memoryId: 'memory-decision',
+      }),
+    )
+    expect(await screen.findByText('Memory deleted.')).toBeVisible()
+    expect(screen.queryByText('Approved memory requires explicit review before provider replay.')).not.toBeInTheDocument()
+    expect(onLoadSessionContextSnapshot.mock.calls.length).toBeGreaterThan(1)
   })
 
   it('includes the draft prompt in context preflight and shows over-budget pressure', async () => {

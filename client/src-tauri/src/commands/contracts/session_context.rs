@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::db::project_store::{
-    agent_run_status_sql_value, AgentCompactionRecord, AgentCompactionTrigger, AgentRunEventKind,
-    AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus, AgentSessionRecord, AgentSessionStatus,
+    agent_run_status_sql_value, AgentCompactionRecord, AgentCompactionTrigger, AgentMemoryKind,
+    AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope, AgentRunEventKind, AgentRunRecord,
+    AgentRunSnapshotRecord, AgentRunStatus, AgentSessionRecord, AgentSessionStatus,
     AgentToolCallState, AgentUsageRecord,
 };
 
@@ -566,7 +567,16 @@ pub enum SessionMemoryReviewStateDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionMemoryDiagnosticDto {
+    pub code: String,
+    pub message: String,
+    pub redaction: SessionContextRedactionDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionMemoryRecordDto {
+    pub contract_version: u32,
     pub memory_id: String,
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -583,7 +593,69 @@ pub struct SessionMemoryRecordDto {
     pub source_item_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<SessionMemoryDiagnosticDto>,
     pub redaction: SessionContextRedactionDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListSessionMemoriesRequestDto {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub include_disabled: bool,
+    #[serde(default)]
+    pub include_rejected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListSessionMemoriesResponseDto {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    pub memories: Vec<SessionMemoryRecordDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtractSessionMemoryCandidatesRequestDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtractSessionMemoryCandidatesResponseDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub memories: Vec<SessionMemoryRecordDto>,
+    pub created_count: usize,
+    pub skipped_duplicate_count: usize,
+    pub rejected_count: usize,
+    pub diagnostics: Vec<SessionMemoryDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateSessionMemoryRequestDto {
+    pub project_id: String,
+    pub memory_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_state: Option<SessionMemoryReviewStateDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteSessionMemoryRequestDto {
+    pub project_id: String,
+    pub memory_id: String,
 }
 
 pub fn usage_totals_from_agent_usage(record: &AgentUsageRecord) -> SessionUsageTotalsDto {
@@ -643,6 +715,65 @@ pub fn session_compaction_record_dto(record: &AgentCompactionRecord) -> SessionC
         created_at: record.created_at.clone(),
         superseded_at: record.superseded_at.clone(),
         redaction: strongest_redaction(&summary_redaction, &diagnostic_redaction),
+    }
+}
+
+pub fn session_memory_record_dto(record: &AgentMemoryRecord) -> SessionMemoryRecordDto {
+    let (text, text_redaction) = sanitize_context_text(&record.text);
+    let diagnostic = record.diagnostic.as_ref().map(|diagnostic| {
+        let (message, redaction) = sanitize_context_text(&diagnostic.message);
+        SessionMemoryDiagnosticDto {
+            code: diagnostic.code.clone(),
+            message,
+            redaction,
+        }
+    });
+    let diagnostic_redaction = diagnostic
+        .as_ref()
+        .map(|diagnostic| diagnostic.redaction.clone())
+        .unwrap_or_else(SessionContextRedactionDto::public);
+    SessionMemoryRecordDto {
+        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        memory_id: record.memory_id.clone(),
+        project_id: record.project_id.clone(),
+        agent_session_id: record.agent_session_id.clone(),
+        scope: match record.scope {
+            AgentMemoryScope::Project => SessionMemoryScopeDto::Project,
+            AgentMemoryScope::Session => SessionMemoryScopeDto::Session,
+        },
+        kind: match record.kind {
+            AgentMemoryKind::ProjectFact => SessionMemoryKindDto::ProjectFact,
+            AgentMemoryKind::UserPreference => SessionMemoryKindDto::UserPreference,
+            AgentMemoryKind::Decision => SessionMemoryKindDto::Decision,
+            AgentMemoryKind::SessionSummary => SessionMemoryKindDto::SessionSummary,
+            AgentMemoryKind::Troubleshooting => SessionMemoryKindDto::Troubleshooting,
+        },
+        text,
+        review_state: match record.review_state {
+            AgentMemoryReviewState::Candidate => SessionMemoryReviewStateDto::Candidate,
+            AgentMemoryReviewState::Approved => SessionMemoryReviewStateDto::Approved,
+            AgentMemoryReviewState::Rejected => SessionMemoryReviewStateDto::Rejected,
+        },
+        enabled: record.enabled,
+        confidence: record.confidence,
+        source_run_id: record.source_run_id.clone(),
+        source_item_ids: record.source_item_ids.clone(),
+        created_at: record.created_at.clone(),
+        updated_at: record.updated_at.clone(),
+        diagnostic,
+        redaction: strongest_redaction(&text_redaction, &diagnostic_redaction),
+    }
+}
+
+pub fn session_memory_diagnostic_dto(
+    code: impl Into<String>,
+    message: impl AsRef<str>,
+) -> SessionMemoryDiagnosticDto {
+    let (message, redaction) = sanitize_context_text(message.as_ref());
+    SessionMemoryDiagnosticDto {
+        code: code.into(),
+        message,
+        redaction,
     }
 }
 
@@ -1419,6 +1550,35 @@ pub fn validate_session_compaction_record_contract(
     ensure_secret_free_json(compaction)
 }
 
+pub fn validate_session_memory_record_contract(
+    memory: &SessionMemoryRecordDto,
+) -> Result<(), String> {
+    if memory.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+        return Err("session memory contract version is unsupported".into());
+    }
+    if memory.text.trim().is_empty() {
+        return Err("session memory text must not be empty".into());
+    }
+    match memory.scope {
+        SessionMemoryScopeDto::Project if memory.agent_session_id.is_some() => {
+            return Err("project memory must not be session scoped".into());
+        }
+        SessionMemoryScopeDto::Session if memory.agent_session_id.is_none() => {
+            return Err("session memory must include an agent session id".into());
+        }
+        _ => {}
+    }
+    if memory.review_state != SessionMemoryReviewStateDto::Approved && memory.enabled {
+        return Err("only approved memories can be enabled".into());
+    }
+    if let Some(confidence) = memory.confidence {
+        if confidence > 100 {
+            return Err("session memory confidence must be between 0 and 100".into());
+        }
+    }
+    ensure_secret_free_json(memory)
+}
+
 struct TimelineCandidate {
     created_at: String,
     source_rank: u8,
@@ -1889,6 +2049,28 @@ fn policy_decision(
         reason_code: reason_code.into(),
         message,
         raw_transcript_preserved,
+        model_visible,
+        redaction,
+    }
+}
+
+pub fn memory_policy_decision(
+    decision_id: impl Into<String>,
+    action: SessionContextPolicyActionDto,
+    reason_code: impl Into<String>,
+    message: impl AsRef<str>,
+    model_visible: bool,
+) -> SessionContextPolicyDecisionDto {
+    let (message, redaction) = sanitize_context_text(message.as_ref());
+    SessionContextPolicyDecisionDto {
+        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        decision_id: decision_id.into(),
+        kind: SessionContextPolicyDecisionKindDto::MemoryInjection,
+        action,
+        trigger: None,
+        reason_code: reason_code.into(),
+        message,
+        raw_transcript_preserved: true,
         model_visible,
         redaction,
     }

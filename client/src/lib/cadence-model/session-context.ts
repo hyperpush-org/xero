@@ -469,6 +469,7 @@ export const sessionMemoryKindSchema = z.enum([
 export const sessionMemoryReviewStateSchema = z.enum(['candidate', 'approved', 'rejected'])
 export const sessionMemoryRecordSchema = z
   .object({
+    contractVersion: z.literal(CADENCE_SESSION_CONTEXT_CONTRACT_VERSION),
     memoryId: z.string().trim().min(1),
     projectId: z.string().trim().min(1),
     agentSessionId: nonEmptyOptionalTextSchema,
@@ -482,7 +483,100 @@ export const sessionMemoryRecordSchema = z
     sourceItemIds: z.array(z.string().trim().min(1)),
     createdAt: isoTimestampSchema,
     updatedAt: isoTimestampSchema,
+    diagnostic: z
+      .object({
+        code: z.string().trim().min(1),
+        message: z.string().trim().min(1),
+        redaction: sessionContextRedactionSchema,
+      })
+      .strict()
+      .nullable()
+      .optional(),
     redaction: sessionContextRedactionSchema,
+  })
+  .strict()
+  .superRefine((memory, ctx) => {
+    if (memory.scope === 'project' && memory.agentSessionId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentSessionId'],
+        message: 'Project memory must not include a session id.',
+      })
+    }
+    if (memory.scope === 'session' && !memory.agentSessionId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentSessionId'],
+        message: 'Session memory must include a session id.',
+      })
+    }
+    if (memory.reviewState !== 'approved' && memory.enabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['enabled'],
+        message: 'Only approved memory can be enabled.',
+      })
+    }
+  })
+
+export const listSessionMemoriesRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: nonEmptyOptionalTextSchema,
+    includeDisabled: z.boolean().optional(),
+    includeRejected: z.boolean().optional(),
+  })
+  .strict()
+
+export const listSessionMemoriesResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: nonEmptyOptionalTextSchema,
+    memories: z.array(sessionMemoryRecordSchema),
+  })
+  .strict()
+
+export const extractSessionMemoryCandidatesRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: z.string().trim().min(1),
+    runId: nonEmptyOptionalTextSchema,
+  })
+  .strict()
+
+export const sessionMemoryDiagnosticSchema = z
+  .object({
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    redaction: sessionContextRedactionSchema,
+  })
+  .strict()
+
+export const extractSessionMemoryCandidatesResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: z.string().trim().min(1),
+    memories: z.array(sessionMemoryRecordSchema),
+    createdCount: z.number().int().nonnegative(),
+    skippedDuplicateCount: z.number().int().nonnegative(),
+    rejectedCount: z.number().int().nonnegative(),
+    diagnostics: z.array(sessionMemoryDiagnosticSchema),
+  })
+  .strict()
+
+export const updateSessionMemoryRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    memoryId: z.string().trim().min(1),
+    reviewState: sessionMemoryReviewStateSchema.nullable().optional(),
+    enabled: z.boolean().nullable().optional(),
+  })
+  .strict()
+
+export const deleteSessionMemoryRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    memoryId: z.string().trim().min(1),
   })
   .strict()
 
@@ -527,6 +621,13 @@ export type SessionMemoryScopeDto = z.infer<typeof sessionMemoryScopeSchema>
 export type SessionMemoryKindDto = z.infer<typeof sessionMemoryKindSchema>
 export type SessionMemoryReviewStateDto = z.infer<typeof sessionMemoryReviewStateSchema>
 export type SessionMemoryRecordDto = z.infer<typeof sessionMemoryRecordSchema>
+export type ListSessionMemoriesRequestDto = z.infer<typeof listSessionMemoriesRequestSchema>
+export type ListSessionMemoriesResponseDto = z.infer<typeof listSessionMemoriesResponseSchema>
+export type SessionMemoryDiagnosticDto = z.infer<typeof sessionMemoryDiagnosticSchema>
+export type ExtractSessionMemoryCandidatesRequestDto = z.infer<typeof extractSessionMemoryCandidatesRequestSchema>
+export type ExtractSessionMemoryCandidatesResponseDto = z.infer<typeof extractSessionMemoryCandidatesResponseSchema>
+export type UpdateSessionMemoryRequestDto = z.infer<typeof updateSessionMemoryRequestSchema>
+export type DeleteSessionMemoryRequestDto = z.infer<typeof deleteSessionMemoryRequestSchema>
 
 export function createPublicSessionContextRedaction(): SessionContextRedactionDto {
   return { redactionClass: 'public', redacted: false, reason: null }

@@ -111,8 +111,10 @@ pub use resolve_operator_action::resolve_operator_action;
 pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
 pub use session_history::{
-    compact_session_history, export_session_transcript, get_session_context_snapshot,
-    get_session_transcript, save_session_transcript_export, search_session_transcripts,
+    compact_session_history, delete_session_memory, export_session_transcript,
+    extract_session_memory_candidates, get_session_context_snapshot, get_session_transcript,
+    list_session_memories, save_session_transcript_export, search_session_transcripts,
+    update_session_memory,
 };
 pub use skills::{
     list_skill_registry, reload_skill_registry, remove_plugin, remove_plugin_root, remove_skill,
