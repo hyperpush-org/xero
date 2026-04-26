@@ -67,6 +67,7 @@ private final class CadenceDictationSession {
     private let callbackQueue: DispatchQueue
     private var state: LifecycleState = .created
     private var modernEngine: CadenceModernDictationEngine?
+    private var legacyEngine: CadenceLegacyDictationEngine?
 
     init(request: CadenceDictationSessionRequest, callback: CadenceDictationEventCallback?, context: UnsafeMutableRawPointer?) {
         self.sessionId = request.sessionId
@@ -119,18 +120,24 @@ private final class CadenceDictationSession {
                         retryable: false
                     )
                 } else {
-                    state = .started
-                    emit([
-                        "kind": "permission",
-                        "microphone": microphonePermissionState(),
-                        "speech": speechPermissionState(),
-                    ])
-                    emit([
-                        "kind": "started",
-                        "sessionId": sessionId,
-                        "engine": engine,
-                        "locale": locale,
-                    ])
+                    let legacyEngine = CadenceLegacyDictationEngine(
+                        sessionId: sessionId,
+                        localeIdentifier: locale,
+                        privacyMode: privacyMode,
+                        contextualPhrases: contextualPhrases,
+                        emit: { [weak self] payload in
+                            self?.emit(payload)
+                        }
+                    )
+                    self.legacyEngine = legacyEngine
+                    let response = legacyEngine.start()
+                    if response.ok {
+                        state = .started
+                    } else {
+                        state = .stopped
+                        self.legacyEngine = nil
+                    }
+                    return response
                 }
             case .started:
                 break
@@ -150,7 +157,7 @@ private final class CadenceDictationSession {
             return endModern(reason: "user")
         }
 
-        return end(reason: "user")
+        return endLegacy(reason: "user")
     }
 
     func cancel() -> CadenceDictationOperationResponse {
@@ -158,7 +165,7 @@ private final class CadenceDictationSession {
             return endModern(reason: "cancelled")
         }
 
-        return end(reason: "cancelled")
+        return endLegacy(reason: "cancelled")
     }
 
     private func endModern(reason: String) -> CadenceDictationOperationResponse {
@@ -180,21 +187,22 @@ private final class CadenceDictationSession {
         }
     }
 
-    private func end(reason: String) -> CadenceDictationOperationResponse {
+    private func endLegacy(reason: String) -> CadenceDictationOperationResponse {
         queue.sync {
             switch state {
             case .created, .started:
                 state = .stopped
-                emit([
-                    "kind": "stopped",
-                    "sessionId": sessionId,
-                    "reason": reason,
-                ])
+                let response: CadenceDictationOperationResponse
+                if reason == "cancelled" {
+                    response = legacyEngine?.cancel() ?? .success()
+                } else {
+                    response = legacyEngine?.stop(reason: reason) ?? .success()
+                }
+                legacyEngine = nil
+                return response
             case .stopped:
-                break
+                return .success()
             }
-
-            return .success()
         }
     }
 

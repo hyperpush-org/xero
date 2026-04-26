@@ -35,6 +35,7 @@ fn compile_dictation_shim() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=native/dictation/CapabilityStatus.swift");
     println!("cargo:rerun-if-changed=native/dictation/SessionLifecycle.swift");
+    println!("cargo:rerun-if-changed=native/dictation/LegacyEngine.swift");
     println!("cargo:rerun-if-changed=native/dictation/ModernAvailable.swift");
     println!("cargo:rerun-if-changed=native/dictation/ModernStub.swift");
     println!("cargo:rerun-if-env-changed=CADENCE_SKIP_DICTATION_SHIM");
@@ -103,6 +104,7 @@ fn compile_dictation_shim() {
         .arg(&output)
         .arg(shim_dir.join("CapabilityStatus.swift"))
         .arg(shim_dir.join("SessionLifecycle.swift"))
+        .arg(shim_dir.join("LegacyEngine.swift"))
         .arg(modern_source)
         .status()
         .expect("failed to spawn swiftc for dictation shim");
