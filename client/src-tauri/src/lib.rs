@@ -40,6 +40,50 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::toolchain::configure_tauri_roots(app.handle());
             window_state::configure_main_window(app.handle().clone());
 
+            // Phase 2.6: one-shot legacy JSON → SQLite migrations. Each store's importer is
+            // idempotent and only runs when (a) its destination table is empty and (b) the
+            // legacy file exists, so re-running across boots is safe.
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                let desktop_state = app_handle.state::<state::DesktopState>();
+                if let Ok(app_data_dir) = desktop_state.app_data_dir(&app_handle) {
+                    let paths = global_db::LegacyJsonImportPaths {
+                        global_db: desktop_state
+                            .global_db_path(&app_handle)
+                            .unwrap_or_else(|_| {
+                                app_data_dir.join(global_db::GLOBAL_DATABASE_FILE_NAME)
+                            }),
+                        provider_profiles: app_data_dir
+                            .join(provider_profiles::PROVIDER_PROFILES_FILE_NAME),
+                        provider_profile_credentials: app_data_dir
+                            .join(provider_profiles::PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME),
+                        legacy_runtime_settings: app_data_dir
+                            .join(state::RUNTIME_SETTINGS_FILE_NAME),
+                        legacy_openrouter_credentials: app_data_dir
+                            .join(state::OPENROUTER_CREDENTIAL_FILE_NAME),
+                        openai_codex_auth: app_data_dir
+                            .join(auth::OPENAI_CODEX_AUTH_STORE_FILE_NAME),
+                        notification_credentials: app_data_dir
+                            .join(notifications::NOTIFICATION_CREDENTIAL_STORE_FILE_NAME),
+                        dictation_settings: app_data_dir
+                            .join(state::DICTATION_SETTINGS_FILE_NAME),
+                        skill_sources: app_data_dir
+                            .join(state::SKILL_SOURCE_SETTINGS_FILE_NAME),
+                        mcp_registry: app_data_dir.join(state::MCP_REGISTRY_FILE_NAME),
+                        provider_model_catalog_cache: app_data_dir
+                            .join(provider_models::PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME),
+                        project_registry: app_data_dir.join(state::REGISTRY_FILE_NAME),
+                    };
+                    if let Err(error) = global_db::run_legacy_json_imports(&paths) {
+                        eprintln!(
+                            "[storage] legacy JSON import skipped: {} ({})",
+                            error.message, error.code
+                        );
+                    }
+                }
+            }
+
             // Bridge agent-usage updates from the provider loop (which has no
             // AppHandle in scope) to the frontend. The closure captures a
             // clone of the AppHandle and forwards each call to tauri::Emitter.

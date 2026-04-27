@@ -15,6 +15,60 @@ pub use importer::{
     import_legacy_provider_model_catalog_cache, import_legacy_skill_sources,
 };
 
+/// Locations of the legacy JSON files this orchestrator may consume on first boot.
+/// Every field is required; missing files are skipped silently.
+pub struct LegacyJsonImportPaths {
+    pub global_db: PathBuf,
+    pub provider_profiles: PathBuf,
+    pub provider_profile_credentials: PathBuf,
+    pub legacy_runtime_settings: PathBuf,
+    pub legacy_openrouter_credentials: PathBuf,
+    pub openai_codex_auth: PathBuf,
+    pub notification_credentials: PathBuf,
+    pub dictation_settings: PathBuf,
+    pub skill_sources: PathBuf,
+    pub mcp_registry: PathBuf,
+    pub provider_model_catalog_cache: PathBuf,
+    pub project_registry: PathBuf,
+}
+
+/// Runs every legacy-JSON importer once at app startup. Each importer is idempotent: it short-
+/// circuits when its destination table already has rows, so re-running this function across
+/// boots is safe.
+///
+/// Returns the first error encountered; importers run in the listed order. Phase 2.6 wires this
+/// in `lib.rs::configure_builder_with_state` after the global DB has been opened.
+pub fn run_legacy_json_imports(paths: &LegacyJsonImportPaths) -> Result<(), CommandError> {
+    let mut connection = open_global_database(&paths.global_db)?;
+
+    crate::provider_profiles::import_legacy_provider_profiles(
+        &mut connection,
+        &paths.provider_profiles,
+        &paths.provider_profile_credentials,
+        &paths.legacy_runtime_settings,
+        &paths.legacy_openrouter_credentials,
+        &paths.openai_codex_auth,
+    )?;
+
+    crate::auth::import_legacy_openai_codex_sessions(&connection, &paths.openai_codex_auth)?;
+
+    crate::notifications::import_legacy_notification_credentials(
+        &mut connection,
+        &paths.notification_credentials,
+    )?;
+
+    import_legacy_dictation_settings(&connection, &paths.dictation_settings)?;
+    import_legacy_skill_sources(&connection, &paths.skill_sources)?;
+    import_legacy_mcp_registry(&connection, &paths.mcp_registry)?;
+    import_legacy_provider_model_catalog_cache(&connection, &paths.provider_model_catalog_cache)?;
+
+    drop(connection);
+
+    crate::registry::import_legacy_project_registry(&paths.global_db, &paths.project_registry)?;
+
+    Ok(())
+}
+
 pub const GLOBAL_DATABASE_FILE_NAME: &str = "cadence.db";
 
 pub fn global_database_path(app_data_dir: &Path) -> PathBuf {
