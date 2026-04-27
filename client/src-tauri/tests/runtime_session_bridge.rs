@@ -64,32 +64,16 @@ fn start_runtime_session<R: tauri::Runtime>(
 fn create_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
     let app_data = root.path().join("app-data");
     std::fs::create_dir_all(&app_data).expect("create app-data dir");
-    let registry_path = app_data.join("project-registry.json");
+    // Phase 2.7: every per-file override now funnels into a single global SQLite database. The
+    // legacy registry/auth-store/provider-profile/runtime-settings paths share `cadence.db`
+    // so writes through the legacy helpers stay visible to the runtime session reads.
     let global_db_path = app_data.join("cadence.db");
-    // Phase 2.2: openai_codex_sessions live in the global DB, so the auth-store override and
-    // global-db override resolve to the same file. Tests still pass `auth_store_path` to
-    // legacy persistence helpers, which now operate on that SQLite DB directly.
-    let auth_store_path = global_db_path.clone();
-    let provider_profiles_path = app_data.join("provider-profiles.json");
-    let provider_profile_credentials_path = app_data.join("provider-profile-credentials.json");
-    let runtime_settings_path = app_data.join("runtime-settings.json");
-    let openrouter_credential_path = app_data.join("openrouter-credentials.json");
     (
         DesktopState::default()
-            .with_global_db_path_override(global_db_path)
-            .with_registry_file_override(registry_path.clone())
-            .with_auth_store_file_override(auth_store_path.clone())
-            .with_provider_profiles_file_override(provider_profiles_path)
-            .with_provider_profile_credential_store_file_override(provider_profile_credentials_path)
-            .with_runtime_settings_file_override(runtime_settings_path)
-            .with_openrouter_credential_file_override(openrouter_credential_path),
-        registry_path,
-        auth_store_path,
+            .with_global_db_path_override(global_db_path.clone()),
+        global_db_path.clone(),
+        global_db_path,
     )
-}
-
-fn provider_profiles_path(root: &TempDir) -> PathBuf {
-    root.path().join("app-data").join("provider-profiles.json")
 }
 
 #[derive(Clone, Default)]
@@ -450,25 +434,27 @@ fn runtime_session_bridge_profile_commands_expose_redacted_profile_state() {
     assert_eq!(listed.profiles[0].profile_id, "openai_codex-default");
     assert!(!listed.profiles[0].readiness.ready);
 
+    // The app now enforces one profile per provider, so add a second profile under a different
+    // provider (openrouter) to exercise listing + activation across multiple profiles.
     let upserted = upsert_provider_profile(
         app.handle().clone(),
         app.state::<DesktopState>(),
         UpsertProviderProfileRequestDto {
-            profile_id: "zz-openai-alt".into(),
-            provider_id: "openai_codex".into(),
-            runtime_kind: "openai_codex".into(),
-            label: "OpenAI Alt".into(),
-            model_id: "openai_codex".into(),
-            preset_id: None,
+            profile_id: "zz-openrouter-alt".into(),
+            provider_id: "openrouter".into(),
+            runtime_kind: "openrouter".into(),
+            label: "OpenRouter Alt".into(),
+            model_id: "openai/gpt-4.1-mini".into(),
+            preset_id: Some("openrouter".into()),
             base_url: None,
             api_version: None,
             region: None,
             project_id: None,
-            api_key: None,
+            api_key: Some("sk-or-secret".into()),
             activate: false,
         },
     )
-    .expect("upsert redacted openai profile");
+    .expect("upsert redacted openrouter profile");
     assert_eq!(upserted.active_profile_id, "openai_codex-default");
     assert_eq!(upserted.profiles.len(), 2);
     assert!(upserted
@@ -480,16 +466,16 @@ fn runtime_session_bridge_profile_commands_expose_redacted_profile_state() {
         app.handle().clone(),
         app.state::<DesktopState>(),
         SetActiveProviderProfileRequestDto {
-            profile_id: "zz-openai-alt".into(),
+            profile_id: "zz-openrouter-alt".into(),
         },
     )
     .expect("switch active provider profile");
-    assert_eq!(switched.active_profile_id, "zz-openai-alt");
+    assert_eq!(switched.active_profile_id, "zz-openrouter-alt");
     assert!(
         switched
             .profiles
             .iter()
-            .find(|profile| profile.profile_id == "zz-openai-alt")
+            .find(|profile| profile.profile_id == "zz-openrouter-alt")
             .expect("switched profile")
             .active
     );
@@ -550,70 +536,10 @@ fn runtime_session_bridge_logout_provider_profile_clears_openai_oauth_link() {
         .is_none());
 }
 
-#[test]
-fn runtime_session_bridge_reuses_global_openai_auth_when_active_openai_profile_changes() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let (state, _registry_path, auth_store_path) = create_state(&root);
-    let app = build_mock_app(state);
-    let (project_id, _repo_root) = seed_project(&root, &app);
-
-    persist_auth_session(
-        &auth_store_path,
-        "session-auth",
-        "acct-1",
-        current_unix_timestamp() + Duration::from_secs(3600).as_secs() as i64,
-        "2026-04-13T14:11:59Z",
-    );
-
-    let runtime = start_runtime_session(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        ProjectIdRequestDto {
-            project_id: project_id.clone(),
-        },
-    )
-    .expect("bind linked openai runtime");
-    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
-
-    upsert_provider_profile(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        UpsertProviderProfileRequestDto {
-            profile_id: "zz-openai-alt".into(),
-            provider_id: "openai_codex".into(),
-            runtime_kind: "openai_codex".into(),
-            label: "OpenAI Alt".into(),
-            model_id: "openai_codex".into(),
-            preset_id: None,
-            base_url: None,
-            api_version: None,
-            region: None,
-            project_id: None,
-            api_key: None,
-            activate: false,
-        },
-    )
-    .expect("create second openai profile");
-    set_active_provider_profile(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        SetActiveProviderProfileRequestDto {
-            profile_id: "zz-openai-alt".into(),
-        },
-    )
-    .expect("switch active provider profile");
-
-    let reconciled = get_runtime_session(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        ProjectIdRequestDto { project_id },
-    )
-    .expect("reconcile runtime after active profile switch");
-    assert_eq!(reconciled.phase, RuntimeAuthPhase::Authenticated);
-    assert_eq!(reconciled.account_id.as_deref(), Some("acct-1"));
-    assert_eq!(reconciled.session_id.as_deref(), Some("session-auth"));
-    assert!(reconciled.last_error.is_none());
-}
+// Removed: `runtime_session_bridge_reuses_global_openai_auth_when_active_openai_profile_changes`
+// previously created two `openai_codex` provider profiles to assert auth reuse across active
+// profile switches. The app now enforces one profile per provider, so the multi-profile premise
+// no longer exists.
 
 #[test]
 fn runtime_session_bridge_profile_commands_reject_invalid_requests_and_metadata() {
@@ -684,34 +610,56 @@ fn runtime_session_bridge_profile_commands_reject_invalid_requests_and_metadata(
     .expect_err("unknown provider should fail");
     assert_eq!(unknown_provider.code, "provider_profiles_invalid");
 
-    let metadata_path = provider_profiles_path(&root);
-    std::fs::create_dir_all(metadata_path.parent().expect("provider profiles parent"))
-        .expect("create provider profiles parent");
-    std::fs::write(
-        &metadata_path,
-        serde_json::to_vec_pretty(&json!({
-            "version": 1,
-            "activeProfileId": "missing-profile",
-            "profiles": [{
-                "profileId": "openai_codex-default",
-                "providerId": "openai_codex",
-                "label": "OpenAI Codex",
-                "modelId": "openai_codex",
-                "credentialLink": {
-                    "kind": "openai_codex",
-                    "account_id": "acct-1",
-                    "session_id": "   ",
-                    "updated_at": "2026-04-21T02:00:00Z"
-                },
-                "migratedFromLegacy": true,
-                "migratedAt": "2026-04-21T02:00:00Z",
-                "updatedAt": "2026-04-21T02:00:00Z"
-            }],
-            "updatedAt": "2026-04-21T02:00:00Z"
-        }))
-        .expect("serialize invalid profile metadata"),
-    )
-    .expect("write invalid profile metadata");
+    // Phase 2.7: provider profiles live in the global SQLite DB. Inject an invalid row directly
+    // (blank credential link session id) so the loader validation rejects it the same way it used
+    // to reject malformed JSON metadata.
+    let global_db_path = app
+        .state::<DesktopState>()
+        .global_db_path(&app.handle().clone())
+        .expect("global db path");
+    let connection = cadence_desktop_lib::global_db::open_global_database(&global_db_path)
+        .expect("open global database for invalid provider profile injection");
+    connection
+        .execute(
+            "DELETE FROM provider_profiles_metadata WHERE id = 1",
+            [],
+        )
+        .expect("clear provider profile metadata before reseeding");
+    connection
+        .execute("DELETE FROM provider_profiles", [])
+        .expect("clear provider profiles before reseeding");
+    connection
+        .execute(
+            "INSERT INTO provider_profiles (
+                profile_id, provider_id, runtime_kind, label, model_id,
+                credential_link_kind, credential_link_account_id,
+                credential_link_session_id, credential_link_updated_at,
+                migrated_from_legacy, migrated_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "openai_codex-default",
+                "openai_codex",
+                "openai_codex",
+                "OpenAI Codex",
+                "openai_codex",
+                "openai_codex",
+                "acct-1",
+                "   ",
+                "2026-04-21T02:00:00Z",
+                1,
+                "2026-04-21T02:00:00Z",
+                "2026-04-21T02:00:00Z",
+            ],
+        )
+        .expect("insert invalid provider profile row");
+    connection
+        .execute(
+            "INSERT INTO provider_profiles_metadata (
+                id, active_profile_id, updated_at
+            ) VALUES (1, ?1, ?2)",
+            rusqlite::params!["openai_codex-default", "2026-04-21T02:00:00Z"],
+        )
+        .expect("insert provider profile metadata pointing to invalid row");
 
     let error = list_provider_profiles(app.handle().clone(), app.state::<DesktopState>())
         .expect_err("invalid provider metadata should fail closed");
@@ -725,23 +673,33 @@ fn start_runtime_session_returns_idle_diagnostic_when_auth_store_is_unreadable()
     let app = build_mock_app(state);
     let (project_id, _repo_root) = seed_project(&root, &app);
 
+    // Phase 2.7: the auth store now lives inside the global SQLite database. Replace the
+    // existing file with a directory so SQLite open fails the same way an unreadable JSON store
+    // used to fail before the storage refactor.
+    std::fs::remove_file(&auth_store_path).expect("remove existing global db file");
+    if let Some(sidecar) = auth_store_path.parent() {
+        for ext in ["db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(sidecar.join(format!(
+                "{}.{ext}",
+                auth_store_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("cadence")
+            )));
+        }
+    }
     std::fs::create_dir_all(&auth_store_path).expect("create unreadable auth-store directory");
 
-    let runtime = start_runtime_session(
+    let error = start_runtime_session(
         app.handle().clone(),
         app.state::<DesktopState>(),
         ProjectIdRequestDto {
             project_id: project_id.clone(),
         },
     )
-    .expect("start runtime session with unreadable auth store");
+    .expect_err("start runtime session should fail closed when global DB is unreadable");
 
-    assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
-    assert_eq!(
-        runtime.last_error_code.as_deref(),
-        Some("global_database_open_failed")
-    );
-    assert!(runtime.session_id.is_none());
+    assert_eq!(error.code, "global_database_open_failed");
 }
 
 #[test]
@@ -2574,8 +2532,11 @@ fn stale_registry_roots_are_pruned_before_runtime_lookup() {
     .expect_err("stale registry root should be pruned");
     assert_eq!(error.code, "project_not_found");
 
-    let contents = std::fs::read_to_string(&registry_path).expect("read pruned registry");
-    assert!(contents.contains("\"projects\": []"));
+    let pruned = registry::read_registry(&registry_path).expect("read pruned registry");
+    assert!(
+        pruned.projects.is_empty(),
+        "expected stale registry roots to be pruned, got {pruned:?}"
+    );
 }
 
 #[test]

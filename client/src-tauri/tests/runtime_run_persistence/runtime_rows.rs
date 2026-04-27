@@ -1,67 +1,14 @@
 use super::support::*;
 
-pub(crate) fn legacy_repo_local_state_is_upgraded_before_runtime_run_reads() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let repo_root = root.path().join("legacy-repo");
-    std::fs::create_dir_all(&repo_root).expect("create legacy repo root");
-    let project_id = "project-legacy";
-    let database_path = create_legacy_state_db(&repo_root, project_id);
-
-    let recovered = project_store::load_runtime_run(
-        &repo_root,
-        project_id,
-        project_store::DEFAULT_AGENT_SESSION_ID,
-    )
-    .expect("load upgraded runtime run state");
-    assert!(recovered.is_none());
-
-    let connection = Connection::open(&database_path).expect("reopen upgraded database");
-    let tables: Vec<String> = connection
-        .prepare(
-            r#"
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name IN ('runtime_runs', 'runtime_run_checkpoints')
-            ORDER BY name ASC
-            "#,
-        )
-        .expect("prepare sqlite_master query")
-        .query_map([], |row| row.get(0))
-        .expect("query sqlite_master")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("collect upgraded table names");
-
-    assert_eq!(
-        tables,
-        vec![
-            "runtime_run_checkpoints".to_string(),
-            "runtime_runs".to_string(),
-        ]
-    );
-
-    let auth_row: (String, String, String) = connection
-        .query_row(
-            "SELECT runtime_kind, provider_id, auth_phase FROM runtime_sessions WHERE project_id = ?1",
-            [project_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("load legacy auth row after migration");
-    assert_eq!(
-        auth_row,
-        (
-            "openai_codex".to_string(),
-            "openai_codex".to_string(),
-            "authenticated".to_string(),
-        )
-    );
-}
-
 pub(crate) fn pre_agent_session_runtime_rows_migrate_into_default_session_scope() {
     let root = tempfile::tempdir().expect("temp dir");
     let repo_root = root.path().join("legacy-runtime-repo");
-    std::fs::create_dir_all(repo_root.join(".cadence")).expect("create legacy repo state dir");
+    std::fs::create_dir_all(&repo_root).expect("create repo root");
+    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
     let database_path = db::database_path_for_repo(&repo_root);
+    if let Some(parent) = database_path.parent() {
+        std::fs::create_dir_all(parent).expect("create per-project state dir");
+    }
     let mut connection = Connection::open(&database_path).expect("open legacy runtime database");
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")

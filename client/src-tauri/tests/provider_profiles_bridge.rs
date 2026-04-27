@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use cadence_desktop_lib::{
-    auth::{persist_openai_codex_session, StoredOpenAiCodexSession},
     commands::CommandResult,
     db::{self, database_path_for_repo, import_project},
     git::repository::CanonicalRepository,
@@ -85,19 +84,27 @@ fn persist_openai_session(
     access_token: &str,
     refresh_token: &str,
 ) {
-    persist_openai_codex_session(
+    // The provider-profiles importer reads legacy `openai-auth.json` directly (pre-Phase 2.2
+    // format) so it can build a migration link before the auth importer copies rows into the
+    // global SQLite database. Write the legacy JSON shape here to match what real users would
+    // have on disk before upgrading.
+    write_json(
         path,
-        StoredOpenAiCodexSession {
-            provider_id: "openai_codex".into(),
-            session_id: session_id.into(),
-            account_id: account_id.into(),
-            access_token: access_token.into(),
-            refresh_token: refresh_token.into(),
-            expires_at: 4_102_444_800,
-            updated_at: updated_at.into(),
-        },
-    )
-    .expect("persist openai session");
+        serde_json::json!({
+            "openaiCodexSessions": {
+                account_id: {
+                    "providerId": "openai_codex",
+                    "sessionId": session_id,
+                    "accountId": account_id,
+                    "accessToken": access_token,
+                    "refreshToken": refresh_token,
+                    "expiresAt": 4_102_444_800i64,
+                    "updatedAt": updated_at,
+                }
+            },
+            "updatedAt": updated_at,
+        }),
+    );
 }
 
 fn seed_repo_database(root: &tempfile::TempDir) -> PathBuf {

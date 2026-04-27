@@ -10,6 +10,7 @@ pub(crate) use std::{
 pub(crate) use cadence_desktop_lib::{
     db::{self, database_path_for_repo, project_store},
     git::repository::CanonicalRepository,
+    registry::{self, RegistryProjectRecord},
     runtime::protocol::{
         SupervisorControlRequest, SupervisorControlResponse, SupervisorLiveEventPayload,
         SupervisorToolCallState, SUPERVISOR_PROTOCOL_VERSION,
@@ -101,7 +102,7 @@ pub(crate) fn seed_project(
         project_id: project_id.into(),
         repository_id: repository_id.into(),
         root_path: canonical_root.clone(),
-        root_path_string,
+        root_path_string: root_path_string.clone(),
         common_git_dir: canonical_root.join(".git"),
         display_name: repo_name.into(),
         branch_name: Some("main".into()),
@@ -116,9 +117,19 @@ pub(crate) fn seed_project(
         deletions: 0,
     };
 
-    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
+    let registry_path = root.path().join("app-data").join("cadence.db");
+    db::configure_project_database_paths(&registry_path);
     let state = DesktopState::default();
     db::import_project(&repository, state.import_failpoints()).expect("import project");
+    registry::replace_projects(
+        &registry_path,
+        vec![RegistryProjectRecord {
+            project_id: repository.project_id.clone(),
+            repository_id: repository.repository_id.clone(),
+            root_path: root_path_string,
+        }],
+    )
+    .expect("persist registry entry");
 
     canonical_root
 }

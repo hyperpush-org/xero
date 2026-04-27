@@ -4,11 +4,6 @@ mod runtime_rows;
 mod support;
 
 #[test]
-fn legacy_repo_local_state_is_upgraded_before_runtime_run_reads() {
-    runtime_rows::legacy_repo_local_state_is_upgraded_before_runtime_run_reads();
-}
-
-#[test]
 fn pre_agent_session_runtime_rows_migrate_into_default_session_scope() {
     runtime_rows::pre_agent_session_runtime_rows_migrate_into_default_session_scope();
 }

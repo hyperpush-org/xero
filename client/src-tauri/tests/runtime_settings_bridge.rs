@@ -25,6 +25,11 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 #[derive(Debug)]
 struct TestPaths {
+    /// Phase 2.7: every per-file override now funnels into the same global SQLite database.
+    /// `provider_profiles_path` and friends are kept as fields so individual tests can write
+    /// legacy JSON fixtures and then drive the legacy importer themselves; the runtime settings
+    /// commands read straight from `global_db_path`.
+    global_db_path: PathBuf,
     provider_profiles_path: PathBuf,
     provider_profile_credentials_path: PathBuf,
     legacy_settings_path: PathBuf,
@@ -33,33 +38,62 @@ struct TestPaths {
 }
 
 fn create_state(root: &TempDir) -> (DesktopState, TestPaths) {
+    let app_data = root.path().join("app-data");
     let paths = TestPaths {
-        provider_profiles_path: root.path().join("app-data").join("provider-profiles.json"),
-        provider_profile_credentials_path: root
-            .path()
-            .join("app-data")
-            .join("provider-profile-credentials.json"),
-        legacy_settings_path: root.path().join("app-data").join("runtime-settings.json"),
-        legacy_openrouter_credentials_path: root
-            .path()
-            .join("app-data")
-            .join("openrouter-credentials.json"),
-        legacy_openai_auth_path: root.path().join("app-data").join("openai-auth.json"),
+        global_db_path: app_data.join("cadence.db"),
+        provider_profiles_path: app_data.join("provider-profiles.json"),
+        provider_profile_credentials_path: app_data.join("provider-profile-credentials.json"),
+        legacy_settings_path: app_data.join("runtime-settings.json"),
+        legacy_openrouter_credentials_path: app_data.join("openrouter-credentials.json"),
+        legacy_openai_auth_path: app_data.join("openai-auth.json"),
     };
 
     (
-        DesktopState::default()
-            .with_provider_profiles_file_override(paths.provider_profiles_path.clone())
-            .with_provider_profile_credential_store_file_override(
-                paths.provider_profile_credentials_path.clone(),
-            )
-            .with_runtime_settings_file_override(paths.legacy_settings_path.clone())
-            .with_openrouter_credential_file_override(
-                paths.legacy_openrouter_credentials_path.clone(),
-            )
-            .with_auth_store_file_override(paths.legacy_openai_auth_path.clone()),
+        DesktopState::default().with_global_db_path_override(paths.global_db_path.clone()),
         paths,
     )
+}
+
+/// Walks the legacy JSON importers in the same order as the production startup orchestrator so
+/// individual tests can validate the migration outcomes against the global SQLite database.
+fn run_legacy_importers(paths: &TestPaths) -> cadence_desktop_lib::commands::CommandResult<()> {
+    let mut connection =
+        cadence_desktop_lib::global_db::open_global_database(&paths.global_db_path)?;
+    cadence_desktop_lib::provider_profiles::import_legacy_provider_profiles(
+        &mut connection,
+        &paths.provider_profiles_path,
+        &paths.provider_profile_credentials_path,
+        &paths.legacy_settings_path,
+        &paths.legacy_openrouter_credentials_path,
+        &paths.legacy_openai_auth_path,
+    )?;
+    cadence_desktop_lib::auth::import_legacy_openai_codex_sessions(
+        &connection,
+        &paths.legacy_openai_auth_path,
+    )?;
+    Ok(())
+}
+
+fn load_profiles_snapshot(
+    global_db_path: &PathBuf,
+) -> cadence_desktop_lib::provider_profiles::ProviderProfilesSnapshot {
+    let connection = cadence_desktop_lib::global_db::open_global_database(global_db_path)
+        .expect("open global database for snapshot read");
+    cadence_desktop_lib::provider_profiles::load_provider_profiles_or_default(&connection)
+        .expect("load provider profiles snapshot")
+}
+
+fn snapshot_metadata_text(
+    snapshot: &cadence_desktop_lib::provider_profiles::ProviderProfilesSnapshot,
+) -> String {
+    serde_json::to_string_pretty(&snapshot.metadata).expect("serialize provider profile metadata")
+}
+
+fn snapshot_credentials_text(
+    snapshot: &cadence_desktop_lib::provider_profiles::ProviderProfilesSnapshot,
+) -> String {
+    serde_json::to_string_pretty(&snapshot.credentials)
+        .expect("serialize provider profile credentials")
 }
 
 #[test]
@@ -75,11 +109,12 @@ fn get_runtime_settings_returns_redacted_default_when_no_files_exist() {
         settings,
         RuntimeSettingsDto {
             provider_id: "openai_codex".into(),
-            model_id: "openai_codex".into(),
+            model_id: "gpt-5.4".into(),
             openrouter_api_key_configured: false,
             anthropic_api_key_configured: false,
         }
     );
+    // Phase 2.7: defaults live in the global SQLite database; no legacy JSON files are created.
     assert!(!paths.provider_profiles_path.exists());
     assert!(!paths.provider_profile_credentials_path.exists());
     assert!(!paths.legacy_settings_path.exists());
@@ -114,14 +149,12 @@ fn upsert_runtime_settings_persists_redacted_provider_profile_metadata() {
         }
     );
 
-    let metadata_file =
-        std::fs::read_to_string(&paths.provider_profiles_path).expect("read provider profiles");
+    let metadata_file = snapshot_metadata_text(&load_profiles_snapshot(&paths.global_db_path));
     assert!(metadata_file.contains("\"activeProfileId\": \"openrouter-default\""));
     assert!(metadata_file.contains("\"profileId\": \"openrouter-default\""));
     assert!(!metadata_file.contains("credential-value-1"));
 
-    let credential_file = std::fs::read_to_string(&paths.provider_profile_credentials_path)
-        .expect("read provider profile credentials");
+    let credential_file = snapshot_credentials_text(&load_profiles_snapshot(&paths.global_db_path));
     assert!(credential_file.contains("\"apiKey\": \"credential-value-1\""));
     assert!(!paths.legacy_settings_path.exists());
     assert!(!paths.legacy_openrouter_credentials_path.exists());
@@ -161,8 +194,7 @@ fn upsert_runtime_settings_preserves_existing_openrouter_key_when_request_omits_
     assert_eq!(response.model_id, "openai/gpt-4.1-mini");
     assert!(response.openrouter_api_key_configured);
 
-    let credential_file = std::fs::read_to_string(&paths.provider_profile_credentials_path)
-        .expect("read credential file");
+    let credential_file = snapshot_credentials_text(&load_profiles_snapshot(&paths.global_db_path));
     assert!(credential_file.contains("credential-value-1"));
 }
 
@@ -194,14 +226,12 @@ fn upsert_runtime_settings_persists_redacted_anthropic_provider_profile_metadata
         }
     );
 
-    let metadata_file =
-        std::fs::read_to_string(&paths.provider_profiles_path).expect("read provider profiles");
+    let metadata_file = snapshot_metadata_text(&load_profiles_snapshot(&paths.global_db_path));
     assert!(metadata_file.contains("\"activeProfileId\": \"anthropic-default\""));
     assert!(metadata_file.contains("\"profileId\": \"anthropic-default\""));
     assert!(!metadata_file.contains("anthropic-secret-value-1"));
 
-    let credential_file = std::fs::read_to_string(&paths.provider_profile_credentials_path)
-        .expect("read provider profile credentials");
+    let credential_file = snapshot_credentials_text(&load_profiles_snapshot(&paths.global_db_path));
     assert!(credential_file.contains("\"apiKeys\""));
     assert!(credential_file.contains("\"apiKey\": \"anthropic-secret-value-1\""));
 
@@ -295,59 +325,11 @@ fn upsert_runtime_settings_clears_openrouter_key_when_request_uses_empty_string(
     assert!(!paths.provider_profile_credentials_path.exists());
 }
 
-#[test]
-fn upsert_runtime_settings_rolls_back_metadata_when_profile_credential_write_fails() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let blocked_parent = root.path().join("blocked-parent");
-    std::fs::write(&blocked_parent, "not-a-directory").expect("create blocking file");
-
-    let provider_profiles_path = root.path().join("app-data").join("provider-profiles.json");
-    let state = DesktopState::default()
-        .with_provider_profiles_file_override(provider_profiles_path.clone())
-        .with_provider_profile_credential_store_file_override(
-            blocked_parent.join("provider-profile-credentials.json"),
-        )
-        .with_runtime_settings_file_override(
-            root.path().join("app-data").join("runtime-settings.json"),
-        )
-        .with_openrouter_credential_file_override(
-            root.path()
-                .join("app-data")
-                .join("openrouter-credentials.json"),
-        )
-        .with_auth_store_file_override(root.path().join("app-data").join("openai-auth.json"));
-    let app = build_mock_app(state);
-
-    let error = upsert_runtime_settings(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        UpsertRuntimeSettingsRequestDto {
-            provider_id: "openrouter".into(),
-            model_id: "openai/gpt-4.1-mini".into(),
-            openrouter_api_key: Some("credential-value-rollback".into()),
-            anthropic_api_key: None,
-        },
-    )
-    .expect_err("credential write failure should roll back metadata");
-
-    assert_eq!(
-        error.code,
-        "provider_profile_credentials_directory_unavailable"
-    );
-
-    let settings = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect("settings load after rollback");
-    assert_eq!(
-        settings,
-        RuntimeSettingsDto {
-            provider_id: "openai_codex".into(),
-            model_id: "openai_codex".into(),
-            openrouter_api_key_configured: false,
-            anthropic_api_key_configured: false,
-        }
-    );
-    assert!(!provider_profiles_path.exists());
-}
+// Removed: `upsert_runtime_settings_rolls_back_metadata_when_profile_credential_write_fails`
+// previously simulated a JSON-credential-file directory failure to assert that the metadata write
+// rolled back. After Phase 2.7 the metadata and credentials live in the same SQLite database and
+// upsert_runtime_settings writes them inside a single transaction, so the dual-file rollback
+// scenario the test was constructed to cover no longer exists.
 
 #[test]
 fn get_runtime_settings_rejects_invalid_legacy_settings_json() {
@@ -362,8 +344,10 @@ fn get_runtime_settings_rejects_invalid_legacy_settings_json() {
     std::fs::create_dir_all(parent).expect("create settings parent");
     std::fs::write(&paths.legacy_settings_path, "{not-json").expect("write malformed settings");
 
-    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect_err("malformed settings json should fail");
+    // Phase 2.7: legacy JSON validation now runs in the startup importer (not in
+    // `get_runtime_settings`). Drive the importer here to assert the same fail-closed contract.
+    let _ = app;
+    let error = run_legacy_importers(&paths).expect_err("malformed settings json should fail");
     assert_eq!(error.code, "runtime_settings_decode_failed");
     assert!(!paths.provider_profiles_path.exists());
 }
@@ -382,8 +366,9 @@ fn get_runtime_settings_rejects_invalid_legacy_openrouter_credentials_json() {
     std::fs::write(&paths.legacy_openrouter_credentials_path, "{not-json")
         .expect("write malformed credentials");
 
-    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect_err("malformed credentials json should fail");
+    let _ = app;
+    let error =
+        run_legacy_importers(&paths).expect_err("malformed credentials json should fail");
     assert_eq!(error.code, "provider_profiles_migration_contract_failed");
 }
 
@@ -408,8 +393,9 @@ fn get_runtime_settings_rejects_legacy_credentials_without_matching_settings_fil
     )
     .expect("write credentials file");
 
-    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect_err("credentials without settings should fail closed");
+    let _ = app;
+    let error =
+        run_legacy_importers(&paths).expect_err("credentials without settings should fail closed");
     assert_eq!(error.code, "provider_profiles_migration_contract_failed");
 }
 
@@ -436,8 +422,9 @@ fn get_runtime_settings_rejects_legacy_mismatched_redacted_key_state() {
     )
     .expect("write settings file");
 
-    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect_err("missing credential file should fail closed");
+    let _ = app;
+    let error =
+        run_legacy_importers(&paths).expect_err("missing credential file should fail closed");
     assert_eq!(error.code, "runtime_settings_contract_failed");
 }
 
@@ -464,8 +451,8 @@ fn get_runtime_settings_rejects_blank_provider_id_in_legacy_settings() {
     )
     .expect("write settings file");
 
-    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect_err("blank provider id should fail");
+    let _ = app;
+    let error = run_legacy_importers(&paths).expect_err("blank provider id should fail");
     assert_eq!(error.code, "runtime_settings_decode_failed");
 }
 
@@ -492,8 +479,8 @@ fn get_runtime_settings_rejects_blank_model_id_in_legacy_settings() {
     )
     .expect("write settings file");
 
-    let error = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
-        .expect_err("blank model id should fail");
+    let _ = app;
+    let error = run_legacy_importers(&paths).expect_err("blank model id should fail");
     assert_eq!(error.code, "runtime_settings_decode_failed");
 }
 
@@ -689,6 +676,10 @@ fn get_runtime_settings_projects_ollama_provider_profiles_without_fake_api_keys(
     )
     .expect("write provider profiles file");
 
+    // Phase 2.7: legacy `provider-profiles.json` is consumed by the startup importer; in tests
+    // we run the same importer so the runtime-settings projection sees the migrated rows.
+    run_legacy_importers(&paths).expect("import provider profiles into global db");
+
     let settings = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
         .expect("load ollama runtime settings");
 
@@ -740,6 +731,8 @@ fn get_runtime_settings_projects_vertex_provider_profiles_without_secret_flags()
         .expect("serialize provider profiles"),
     )
     .expect("write provider profiles file");
+
+    run_legacy_importers(&paths).expect("import provider profiles into global db");
 
     let settings = get_runtime_settings(app.handle().clone(), app.state::<DesktopState>())
         .expect("load vertex runtime settings");

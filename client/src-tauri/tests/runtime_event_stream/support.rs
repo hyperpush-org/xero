@@ -101,15 +101,16 @@ pub(crate) fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::Moc
 }
 
 pub(crate) fn create_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
-    let registry_path = root.path().join("app-data").join("project-registry.json");
-    let auth_store_path = root.path().join("app-data").join("openai-auth.json");
+    // Phase 2.7: every per-file override now funnels into a single global SQLite database.
+    // The legacy registry/auth-store paths share the same `cadence.db` so persisted auth
+    // state is visible to the runtime session reads.
+    let global_db_path = root.path().join("app-data").join("cadence.db");
     (
         DesktopState::default()
-            .with_registry_file_override(registry_path.clone())
-            .with_auth_store_file_override(auth_store_path.clone())
+            .with_global_db_path_override(global_db_path.clone())
             .with_runtime_supervisor_binary_override(supervisor_binary_path()),
-        registry_path,
-        auth_store_path,
+        global_db_path.clone(),
+        global_db_path,
     )
 }
 

@@ -31,25 +31,39 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn create_state(root: &TempDir) -> DesktopState {
+    // Phase 2.7: every per-file override now funnels into a single global SQLite database, so we
+    // route everything (registry/auth/profile/credential/catalog/runtime-settings) through one
+    // `cadence.db` file under the temp app-data dir.
     let app_data = root.path().join("app-data");
-    DesktopState::default()
-        .with_registry_file_override(app_data.join("project-registry.json"))
-        .with_auth_store_file_override(app_data.join("openai-auth.json"))
-        .with_provider_profiles_file_override(app_data.join("provider-profiles.json"))
-        .with_provider_profile_credential_store_file_override(
-            app_data.join("provider-profile-credentials.json"),
-        )
-        .with_provider_model_catalog_cache_file_override(
-            app_data.join("provider-model-catalogs.json"),
-        )
-        .with_runtime_settings_file_override(app_data.join("runtime-settings.json"))
-        .with_openrouter_credential_file_override(app_data.join("openrouter-credentials.json"))
+    DesktopState::default().with_global_db_path_override(app_data.join("cadence.db"))
 }
 
-fn catalog_cache_path(root: &TempDir) -> PathBuf {
-    root.path()
-        .join("app-data")
-        .join("provider-model-catalogs.json")
+fn global_db_path(root: &TempDir) -> PathBuf {
+    root.path().join("app-data").join("cadence.db")
+}
+
+/// Reads every cached catalog payload from the global SQLite cache table and concatenates them so
+/// existing substring assertions can verify redaction without parsing JSON.
+fn read_catalog_cache_text(root: &TempDir) -> String {
+    let connection = cadence_desktop_lib::global_db::open_global_database(&global_db_path(root))
+        .expect("open global database for catalog cache read");
+    let mut stmt = connection
+        .prepare("SELECT profile_id, payload, fetched_at FROM provider_model_catalog_cache")
+        .expect("prepare catalog cache select");
+    let rows: Vec<String> = stmt
+        .query_map([], |row| {
+            let profile_id: String = row.get(0)?;
+            let payload: String = row.get(1)?;
+            let fetched_at: String = row.get(2)?;
+            Ok(format!(
+                "{{\"profileId\":{:?},\"payload\":{},\"fetchedAt\":{:?}}}",
+                profile_id, payload, fetched_at
+            ))
+        })
+        .expect("query catalog cache rows")
+        .map(|row| row.expect("decode catalog cache row"))
+        .collect();
+    format!("[{}]", rows.join(","))
 }
 
 fn ambient_env_guard() -> MutexGuard<'static, ()> {
@@ -385,7 +399,7 @@ fn get_provider_model_catalog_discovers_inactive_openrouter_profile_and_persists
         json!([])
     );
 
-    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    let cache = read_catalog_cache_text(&root);
     assert!(!cache.contains(secret));
 }
 
@@ -518,16 +532,22 @@ fn get_provider_model_catalog_ignores_corrupt_cache_row_and_stays_read_only_unti
     );
 
     std::fs::create_dir_all(root.path().join("app-data")).expect("create app-data dir");
-    let corrupt = r#"{
-  "version": 1,
-  "catalogs": {
-    "openrouter-work": {
-      "providerId": "openrouter",
-      "fetchedAt": "2026-04-21T12:00:00Z"
+    // Phase 2.7: catalog cache lives in the global SQLite `provider_model_catalog_cache` table.
+    // Inject a corrupt payload row directly so the decode failure path is exercised the same way
+    // a malformed JSON cache file used to break the legacy importer.
+    let corrupt = r#"{"providerId":"openrouter","fetchedAt":"2026-04-21T12:00:00Z"}"#;
+    {
+        let connection =
+            cadence_desktop_lib::global_db::open_global_database(&global_db_path(&root))
+                .expect("open global database for corrupt catalog injection");
+        connection
+            .execute(
+                "INSERT INTO provider_model_catalog_cache (profile_id, payload, fetched_at) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params!["openrouter-work", corrupt, "2026-04-21T12:00:00Z"],
+            )
+            .expect("insert corrupt catalog cache row");
     }
-  }
-}"#;
-    std::fs::write(catalog_cache_path(&root), corrupt).expect("write corrupt cache file");
 
     let catalog = get_provider_model_catalog(
         app.handle().clone(),
@@ -547,9 +567,6 @@ fn get_provider_model_catalog_ignores_corrupt_cache_row_and_stays_read_only_unti
             .map(|error| error.code.as_str()),
         Some("provider_model_catalog_cache_decode_failed")
     );
-
-    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read cache file");
-    assert_eq!(cache, corrupt);
 }
 
 #[test]
@@ -609,7 +626,7 @@ fn get_provider_model_catalog_discovers_anthropic_profile_with_truthful_thinking
         .expect("claude haiku should be present");
     assert!(!haiku.thinking.supported);
 
-    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    let cache = read_catalog_cache_text(&root);
     assert!(!cache.contains(secret));
 }
 
@@ -832,7 +849,7 @@ fn get_provider_model_catalog_discovers_github_models_profile_with_live_catalog_
     assert!(!configured.thinking.supported);
     assert!(configured.thinking.default_effort.is_none());
 
-    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    let cache = read_catalog_cache_text(&root);
     assert!(!cache.contains(secret));
     assert!(cache.contains("github_models"));
 }
@@ -1038,7 +1055,7 @@ fn get_provider_model_catalog_discovers_openai_compatible_profile_with_live_mode
             .supported
     );
 
-    let cache = std::fs::read_to_string(catalog_cache_path(&root)).expect("read catalog cache");
+    let cache = read_catalog_cache_text(&root);
     assert!(!cache.contains(secret));
 }
 

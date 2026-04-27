@@ -63,6 +63,13 @@ pub fn configure_project_database_paths(global_db_path: &Path) {
         config.registry_path = Some(registry_path);
         config.repo_root_to_database_path.clear();
     });
+
+    // Propagate the configured global DB path to child processes (notably the detached
+    // runtime supervisor sidecar) via the shared env var so they resolve the same DB.
+    std::env::set_var(
+        crate::runtime::supervisor::CADENCE_GLOBAL_DB_PATH_ENV,
+        global_db_path,
+    );
 }
 
 pub fn database_path_for_project(project_id: &str) -> PathBuf {

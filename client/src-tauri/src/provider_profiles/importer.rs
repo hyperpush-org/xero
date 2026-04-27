@@ -1,9 +1,10 @@
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use rusqlite::Connection;
+use serde::Deserialize;
 
 use crate::{
-    auth::{load_latest_openai_codex_session, AuthFlowError, StoredOpenAiCodexSession},
+    auth::StoredOpenAiCodexSession,
     commands::{
         get_runtime_settings::{
             load_runtime_settings_snapshot_from_paths, RuntimeSettingsSnapshot,
@@ -376,10 +377,51 @@ fn openai_session_link(
     }))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyOpenAiAuthFile {
+    #[serde(default)]
+    openai_codex_sessions: HashMap<String, StoredOpenAiCodexSession>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    updated_at: String,
+}
+
+/// Reads the legacy `openai-auth.json` directly so the provider-profiles importer can build a
+/// migration link to the latest OpenAI session before the auth importer copies the rows into
+/// `openai_codex_sessions`. After Phase 2.2 the runtime auth-store helpers expect SQLite, so we
+/// can no longer reuse `load_latest_openai_codex_session` for this legacy JSON path.
 fn openai_latest_session(
     legacy_openai_auth_path: &Path,
 ) -> CommandResult<Option<StoredOpenAiCodexSession>> {
-    load_latest_openai_codex_session(legacy_openai_auth_path).map_err(map_auth_store_error)
+    if !legacy_openai_auth_path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(legacy_openai_auth_path).map_err(|error| {
+        CommandError::retryable(
+            "provider_profiles_migration_auth_store_read_failed",
+            format!(
+                "Cadence could not read the legacy auth store at {} during provider-profile migration: {error}",
+                legacy_openai_auth_path.display()
+            ),
+        )
+    })?;
+
+    let parsed: LegacyOpenAiAuthFile = serde_json::from_str(&contents).map_err(|error| {
+        CommandError::user_fixable(
+            "provider_profiles_migration_auth_store_decode_failed",
+            format!(
+                "Cadence could not decode the legacy auth store at {} during provider-profile migration: {error}",
+                legacy_openai_auth_path.display()
+            ),
+        )
+    })?;
+
+    Ok(parsed
+        .openai_codex_sessions
+        .into_values()
+        .max_by(|left, right| left.updated_at.cmp(&right.updated_at)))
 }
 
 fn should_create_openrouter_profile(runtime_settings: Option<&RuntimeSettingsSnapshot>) -> bool {
@@ -398,13 +440,4 @@ fn profile_openai_updated_at(
     }
 
     session.map(|session| session.updated_at.trim().to_owned())
-}
-
-fn map_auth_store_error(error: AuthFlowError) -> CommandError {
-    let code = format!("provider_profiles_migration_{}", error.code);
-    if error.retryable {
-        CommandError::retryable(code, error.message)
-    } else {
-        CommandError::user_fixable(code, error.message)
-    }
 }

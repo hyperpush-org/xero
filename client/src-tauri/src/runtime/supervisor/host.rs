@@ -1142,6 +1142,12 @@ fn apply_sidecar_launch_environment(
         );
     }
 
+    if let Ok(global_db_path) = std::env::var(CADENCE_GLOBAL_DB_PATH_ENV) {
+        if !global_db_path.trim().is_empty() {
+            sidecar.env(CADENCE_GLOBAL_DB_PATH_ENV, global_db_path);
+        }
+    }
+
     for (key, value) in launch_env.iter() {
         sidecar.env(key, value);
     }

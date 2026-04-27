@@ -1216,30 +1216,33 @@ pub(crate) fn detached_supervisor_rejects_mcp_contract_with_malformed_projection
     let repo_root = seed_project(&root, project_id, "repo-mcp-contract-malformed", "repo");
     let state = DesktopState::default();
 
-    let malformed_projection_path = root.path().join("app-data").join("mcp-malformed.json");
+    let malformed_projection_path = root.path().join("app-data").join("mcp-malformed.db");
     std::fs::create_dir_all(
         malformed_projection_path
             .parent()
             .expect("malformed projection parent"),
     )
     .expect("create malformed projection parent");
-    std::fs::write(
-        &malformed_projection_path,
-        r#"{
-  "version": 1,
-  "servers": [
     {
-      "id": "bad id",
-      "name": "Bad Server",
-      "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "bad"] },
-      "updatedAt": "2026-04-20T10:00:00Z"
+        let connection =
+            cadence_desktop_lib::global_db::open_global_database(&malformed_projection_path)
+                .expect("open malformed mcp projection db");
+        connection
+            .execute(
+                "INSERT INTO mcp_registry (server_id, payload, updated_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    "bad id",
+                    r#"{
+                        "id": "bad id",
+                        "name": "Bad Server",
+                        "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "bad"] },
+                        "updatedAt": "2026-04-20T10:00:00Z"
+                    }"#,
+                    "2026-04-20T10:00:00Z",
+                ],
+            )
+            .expect("insert malformed mcp registry row");
     }
-  ],
-  "updatedAt": "2026-04-20T10:00:00Z"
-}
-"#,
-    )
-    .expect("write malformed mcp projection contract");
 
     let mut request = openai_compatible_launch_request(
         project_id,
