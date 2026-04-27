@@ -379,11 +379,22 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
     let mut descriptors = vec![
         descriptor(
             AUTONOMOUS_TOOL_READ,
-            "Read a UTF-8 text file by repo-relative path.",
+            "Read a repo-relative file as text, image preview, binary metadata, byte range, or line-hash anchored text.",
             object_schema(
                 &["path"],
                 &[
-                    ("path", string_schema("Repo-relative file path to read.")),
+                    ("path", string_schema("Repo-relative file path to read. Absolute paths require systemPath=true and operator approval.")),
+                    (
+                        "systemPath",
+                        boolean_schema("Treat path as an absolute or ~-relative system path. Requires operator approval."),
+                    ),
+                    (
+                        "mode",
+                        enum_schema(
+                            "Read mode. Auto preserves repo-scoped text reads while returning image previews or binary metadata when appropriate.",
+                            &["auto", "text", "image", "binary_metadata"],
+                        ),
+                    ),
                     (
                         "startLine",
                         integer_schema("1-based starting line. Defaults to 1."),
@@ -392,19 +403,59 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "lineCount",
                         integer_schema("Maximum number of lines to return."),
                     ),
+                    (
+                        "byteOffset",
+                        integer_schema("Optional byte offset for large text/log slices."),
+                    ),
+                    (
+                        "byteCount",
+                        integer_schema("Maximum bytes to return when byteOffset or byteCount is set."),
+                    ),
+                    (
+                        "includeLineHashes",
+                        boolean_schema("Include SHA-256 hashes for returned text lines so later edits can use startLineHash/endLineHash anchors."),
+                    ),
                 ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_SEARCH,
-            "Search text across repo-scoped files.",
+            "Search repo-scoped files with regex or literal matching, globs, context lines, hidden/ignored controls, and deterministic capped results.",
             object_schema(
                 &["query"],
                 &[
-                    ("query", string_schema("Literal text query to search for.")),
+                    ("query", string_schema("Text or regex query to search for.")),
                     (
                         "path",
                         string_schema("Optional repo-relative directory scope."),
+                    ),
+                    ("regex", boolean_schema("Treat query as a regex instead of literal text.")),
+                    ("ignoreCase", boolean_schema("Use case-insensitive matching.")),
+                    ("includeHidden", boolean_schema("Include hidden dotfiles/directories.")),
+                    ("includeIgnored", boolean_schema("Include files ignored by .gitignore and global git excludes.")),
+                    (
+                        "includeGlobs",
+                        json!({
+                            "type": "array",
+                            "description": "Optional repo-relative glob allow-list.",
+                            "items": { "type": "string" }
+                        }),
+                    ),
+                    (
+                        "excludeGlobs",
+                        json!({
+                            "type": "array",
+                            "description": "Optional repo-relative glob deny-list.",
+                            "items": { "type": "string" }
+                        }),
+                    ),
+                    (
+                        "contextLines",
+                        integer_schema("Number of surrounding lines per match, capped by the runtime."),
+                    ),
+                    (
+                        "maxResults",
+                        integer_schema("Maximum matches to return, capped by the runtime."),
                     ),
                 ],
             ),
@@ -480,7 +531,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_EDIT,
-            "Apply an exact expected-text line-range edit.",
+            "Apply an exact expected-text line-range edit with optional file and line hash anchors.",
             object_schema(
                 &["path", "startLine", "endLine", "expected", "replacement"],
                 &[
@@ -497,6 +548,18 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "replacement",
                         string_schema("Replacement text for the selected range."),
+                    ),
+                    (
+                        "expectedHash",
+                        string_schema("Optional lowercase SHA-256 expected current file hash."),
+                    ),
+                    (
+                        "startLineHash",
+                        string_schema("Optional SHA-256 hash for the current start line, from read includeLineHashes."),
+                    ),
+                    (
+                        "endLineHash",
+                        string_schema("Optional SHA-256 hash for the current end line, from read includeLineHashes."),
                     ),
                 ],
             ),

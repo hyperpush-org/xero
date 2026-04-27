@@ -617,7 +617,11 @@ fn replay_answered_tool_action_requests(
                 input,
             },
             replay_kind == AnsweredToolReplayKind::ApprovedExistingWrite,
-            replay_kind == AnsweredToolReplayKind::OperatorApprovedCommand,
+            matches!(
+                replay_kind,
+                AnsweredToolReplayKind::OperatorApprovedCommand
+                    | AnsweredToolReplayKind::OperatorApprovedSystemRead
+            ),
         )?;
         let result_content = serde_json::to_string(&result).map_err(|error| {
             CommandError::system_fault(
@@ -640,6 +644,7 @@ fn replay_answered_tool_action_requests(
 enum AnsweredToolReplayKind {
     ApprovedExistingWrite,
     OperatorApprovedCommand,
+    OperatorApprovedSystemRead,
 }
 
 fn answered_tool_replay_kind(
@@ -656,6 +661,16 @@ fn answered_tool_replay_kind(
         })
     {
         return Ok(Some(AnsweredToolReplayKind::ApprovedExistingWrite));
+    }
+
+    if tool_call.state == AgentToolCallState::Failed
+        && answered_tool_action_ids.contains(action_id.as_str())
+        && tool_call
+            .error
+            .as_ref()
+            .is_some_and(|error| error.code == "autonomous_tool_system_read_requires_approval")
+    {
+        return Ok(Some(AnsweredToolReplayKind::OperatorApprovedSystemRead));
     }
 
     if tool_call.state == AgentToolCallState::Succeeded

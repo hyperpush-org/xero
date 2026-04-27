@@ -1,6 +1,15 @@
-use std::{fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs::{self, File},
+    io::{Cursor, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+};
 
-use globset::GlobMatcher;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
+use ignore::WalkBuilder;
+use image::{GenericImageView, ImageFormat};
+use regex::{Regex, RegexBuilder};
 
 use super::{
     repo_scope::{
@@ -9,24 +18,140 @@ use super::{
     },
     AutonomousDeleteOutput, AutonomousDeleteRequest, AutonomousEditOutput, AutonomousEditRequest,
     AutonomousFindOutput, AutonomousFindRequest, AutonomousHashOutput, AutonomousHashRequest,
-    AutonomousListEntry, AutonomousListOutput, AutonomousListRequest, AutonomousMkdirOutput,
-    AutonomousMkdirRequest, AutonomousPatchOutput, AutonomousPatchRequest, AutonomousReadOutput,
-    AutonomousReadRequest, AutonomousRenameOutput, AutonomousRenameRequest, AutonomousSearchMatch,
-    AutonomousSearchOutput, AutonomousSearchRequest, AutonomousToolOutput, AutonomousToolResult,
-    AutonomousToolRuntime, AutonomousWriteOutput, AutonomousWriteRequest, AUTONOMOUS_TOOL_DELETE,
-    AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST,
-    AUTONOMOUS_TOOL_MKDIR, AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_RENAME,
-    AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_WRITE,
+    AutonomousLineEnding, AutonomousListEntry, AutonomousListOutput, AutonomousListRequest,
+    AutonomousMkdirOutput, AutonomousMkdirRequest, AutonomousPatchOutput, AutonomousPatchRequest,
+    AutonomousReadContentKind, AutonomousReadLineHash, AutonomousReadMode, AutonomousReadOutput,
+    AutonomousReadRequest, AutonomousRenameOutput, AutonomousRenameRequest,
+    AutonomousSearchContextLine, AutonomousSearchMatch, AutonomousSearchOutput,
+    AutonomousSearchRequest, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AutonomousWriteOutput, AutonomousWriteRequest, AUTONOMOUS_TOOL_DELETE, AUTONOMOUS_TOOL_EDIT,
+    AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_MKDIR,
+    AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_RENAME, AUTONOMOUS_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_WRITE,
 };
 
-use crate::commands::{validate_non_empty, CommandError, CommandResult};
+use crate::commands::{validate_non_empty, CommandError, CommandErrorClass, CommandResult};
+
+const MAX_SEARCH_CONTEXT_LINES: usize = 5;
+const MAX_BINARY_READ_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_BINARY_EXCERPT_BYTES: usize = 4 * 1024;
+const IMAGE_PREVIEW_MAX_DIMENSION: u32 = 1024;
+const MUTATION_DIFF_CONTEXT_LINES: usize = 3;
+const MAX_MUTATION_DIFF_LINES: usize = 80;
 
 impl AutonomousToolRuntime {
     pub fn read(&self, request: AutonomousReadRequest) -> CommandResult<AutonomousToolResult> {
+        self.read_with_approval(request, false)
+    }
+
+    pub fn read_with_operator_approval(
+        &self,
+        request: AutonomousReadRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.read_with_approval(request, true)
+    }
+
+    fn read_with_approval(
+        &self,
+        request: AutonomousReadRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
-        let relative_path = normalize_relative_path(&request.path, "path")?;
-        let resolved_path = self.resolve_existing_path(&relative_path)?;
-        let text = self.read_text_file(&resolved_path)?;
+        let target = self.resolve_read_target(&request, operator_approved)?;
+        let metadata = fs::metadata(&target.path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_read_metadata_failed",
+                format!(
+                    "Cadence could not inspect {}: {error}",
+                    target.path.display()
+                ),
+            )
+        })?;
+        if metadata.is_dir() {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_read_directory",
+                format!(
+                    "Cadence cannot read `{}` because it is a directory.",
+                    target.display_path
+                ),
+            ));
+        }
+
+        let mode = request.mode.unwrap_or(AutonomousReadMode::Auto);
+        if request.byte_offset.is_some() || request.byte_count.is_some() {
+            return self.read_byte_range(request, target, metadata.len(), mode);
+        }
+
+        if metadata.len() > MAX_BINARY_READ_BYTES {
+            return Ok(self.binary_metadata_result(
+                target.display_path,
+                metadata.len(),
+                None,
+                Vec::new(),
+                true,
+            ));
+        }
+
+        let bytes = read_file_bytes(&target.path, "autonomous_tool_read_failed")?;
+        let is_supported_image = is_supported_image_path(&target.path);
+        if matches!(mode, AutonomousReadMode::Image) {
+            return self.image_result(target.display_path, bytes, true);
+        }
+        if matches!(mode, AutonomousReadMode::Auto) && is_supported_image {
+            if let Ok(result) = self.image_result(target.display_path.clone(), bytes.clone(), false)
+            {
+                return Ok(result);
+            }
+        }
+
+        if matches!(mode, AutonomousReadMode::BinaryMetadata) {
+            return Ok(self.binary_metadata_result(
+                target.display_path,
+                metadata.len(),
+                Some(sha256_hex(&bytes)),
+                bytes,
+                false,
+            ));
+        }
+
+        match decode_text_bytes(bytes.clone()) {
+            Ok(decoded) => {
+                self.text_read_result(request, target.display_path, decoded, metadata.len())
+            }
+            Err(_) if matches!(mode, AutonomousReadMode::Text) => Err(CommandError::user_fixable(
+                "autonomous_tool_file_not_text",
+                format!(
+                    "Cadence refused to read `{}` as text because it is not valid UTF-8 text.",
+                    target.display_path
+                ),
+            )),
+            Err(_) => {
+                if !is_supported_image {
+                    if let Ok(result) =
+                        self.image_result(target.display_path.clone(), bytes.clone(), false)
+                    {
+                        return Ok(result);
+                    }
+                }
+                Ok(self.binary_metadata_result(
+                    target.display_path,
+                    metadata.len(),
+                    Some(sha256_hex(&bytes)),
+                    bytes,
+                    false,
+                ))
+            }
+        }
+    }
+
+    fn text_read_result(
+        &self,
+        request: AutonomousReadRequest,
+        display_path: String,
+        decoded: DecodedText,
+        total_bytes: u64,
+    ) -> CommandResult<AutonomousToolResult> {
+        let text = decoded.text;
         let line_count = request
             .line_count
             .unwrap_or(self.limits.default_read_line_count);
@@ -59,7 +184,12 @@ impl AutonomousToolRuntime {
         }
 
         let (content, actual_line_count, truncated) = slice_lines(&text, start_line, line_count)?;
-        let display_path = path_to_forward_slash(&relative_path);
+        let line_hashes = if request.include_line_hashes {
+            line_hashes_for_content(&content, start_line)
+        } else {
+            Vec::new()
+        };
+        let sha256 = decoded.raw_sha256;
         let summary = if truncated {
             format!(
                 "Read {actual_line_count} line(s) from `{display_path}` starting at line {start_line} (truncated from {total_lines} total lines)."
@@ -81,6 +211,21 @@ impl AutonomousToolRuntime {
                 total_lines,
                 truncated,
                 content,
+                content_kind: Some(AutonomousReadContentKind::Text),
+                total_bytes: Some(total_bytes),
+                byte_offset: None,
+                byte_count: None,
+                sha256: Some(sha256),
+                line_hashes,
+                encoding: Some("utf-8".into()),
+                line_ending: Some(decoded.line_ending),
+                has_bom: Some(decoded.has_bom),
+                media_type: Some("text/plain; charset=utf-8".into()),
+                image_width: None,
+                image_height: None,
+                preview_base64: None,
+                preview_bytes: None,
+                binary_excerpt_base64: None,
             }),
         })
     }
@@ -111,35 +256,31 @@ impl AutonomousToolRuntime {
             None => self.repo_root.clone(),
         };
 
-        let mut matches = Vec::new();
-        let mut walk = WalkState::default();
-        self.search_scope(&scope_path, request.query.as_str(), &mut matches, &mut walk)?;
+        let search_options = SearchOptions::from_request(&request, self.limits.max_search_results)?;
+        let search_result =
+            self.search_scope(&scope_path, request.query.as_str(), &search_options)?;
 
         let scope_string = scope
             .as_ref()
             .map(|path| path_to_forward_slash(path.as_path()));
-        let matched_files = matches
-            .iter()
-            .map(|entry| entry.path.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        let summary = if matches.is_empty() {
+        let matched_files = search_result.matched_files.len();
+        let summary = if search_result.matches.is_empty() {
             match scope_string.as_deref() {
                 Some(scope) => format!("Found 0 matches for `{}` under `{scope}`.", request.query),
                 None => format!("Found 0 matches for `{}` in the repository.", request.query),
             }
-        } else if walk.truncated {
+        } else if search_result.truncated {
             format!(
                 "Found {} match(es) for `{}` across {} file(s); results truncated at {} match(es).",
-                matches.len(),
+                search_result.matches.len(),
                 request.query,
                 matched_files,
-                self.limits.max_search_results
+                search_options.max_results
             )
         } else {
             format!(
                 "Found {} match(es) for `{}` across {} file(s).",
-                matches.len(),
+                search_result.matches.len(),
                 request.query,
                 matched_files
             )
@@ -152,9 +293,19 @@ impl AutonomousToolRuntime {
             output: AutonomousToolOutput::Search(AutonomousSearchOutput {
                 query: request.query,
                 scope: scope_string,
-                matches,
-                scanned_files: walk.scanned_files,
-                truncated: walk.truncated,
+                matches: search_result.matches,
+                scanned_files: search_result.scanned_files,
+                truncated: search_result.truncated,
+                total_matches: Some(search_result.total_matches),
+                matched_files: Some(matched_files),
+                engine: Some("ignore-walk-regex".into()),
+                regex: search_options.regex,
+                ignore_case: search_options.ignore_case,
+                include_hidden: search_options.include_hidden,
+                include_ignored: search_options.include_ignored,
+                include_globs: request.include_globs,
+                exclude_globs: request.exclude_globs,
+                context_lines: search_options.context_lines,
             }),
         })
     }
@@ -257,7 +408,13 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let existing = self.read_text_file(&resolved_path)?;
+        let decoded = self.read_decoded_text_file(&resolved_path)?;
+        validate_expected_hash_for_bytes(
+            request.expected_hash.as_deref(),
+            &decoded.raw_bytes,
+            "autonomous_tool_edit_expected_hash_mismatch",
+        )?;
+        let existing = decoded.text;
         let total_lines = count_lines(&existing);
         if total_lines == 0 || request.start_line > total_lines || request.end_line > total_lines {
             return Err(CommandError::user_fixable(
@@ -267,6 +424,20 @@ impl AutonomousToolRuntime {
                 ),
             ));
         }
+        validate_optional_line_hash(
+            request.start_line_hash.as_deref(),
+            &existing,
+            request.start_line,
+            "startLineHash",
+            "autonomous_tool_edit_line_hash_mismatch",
+        )?;
+        validate_optional_line_hash(
+            request.end_line_hash.as_deref(),
+            &existing,
+            request.end_line,
+            "endLineHash",
+            "autonomous_tool_edit_line_hash_mismatch",
+        )?;
 
         let (start_byte, end_byte) =
             line_byte_range(&existing, request.start_line, request.end_line)?;
@@ -278,13 +449,15 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let mut updated =
-            String::with_capacity(existing.len() - current.len() + request.replacement.len());
+        let replacement =
+            normalize_replacement_line_endings(&request.replacement, decoded.line_ending);
+        let mut updated = String::with_capacity(existing.len() - current.len() + replacement.len());
         updated.push_str(&existing[..start_byte]);
-        updated.push_str(&request.replacement);
+        updated.push_str(&replacement);
         updated.push_str(&existing[end_byte..]);
+        let updated_bytes = encode_text_bytes(&updated, decoded.has_bom);
 
-        fs::write(&resolved_path, updated.as_bytes()).map_err(|error| {
+        fs::write(&resolved_path, &updated_bytes).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_edit_write_failed",
                 format!(
@@ -295,6 +468,9 @@ impl AutonomousToolRuntime {
         })?;
 
         let display_path = path_to_forward_slash(&relative_path);
+        let old_hash = sha256_hex(&decoded.raw_bytes);
+        let new_hash = sha256_hex(&updated_bytes);
+        let diff = compact_text_diff(&display_path, &existing, &updated);
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_EDIT.into(),
             summary: format!(
@@ -306,7 +482,12 @@ impl AutonomousToolRuntime {
                 path: display_path,
                 start_line: request.start_line,
                 end_line: request.end_line,
-                replacement_len: request.replacement.chars().count(),
+                replacement_len: replacement.chars().count(),
+                old_hash: Some(old_hash),
+                new_hash: Some(new_hash),
+                diff: Some(diff),
+                line_ending: Some(decoded.line_ending),
+                bom_preserved: Some(decoded.has_bom),
             }),
         })
     }
@@ -361,12 +542,14 @@ impl AutonomousToolRuntime {
         validate_non_empty(&request.search, "search")?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
-        let existing = self.read_text_file(&resolved_path)?;
-        validate_expected_hash(
+        let decoded = self.read_decoded_text_file(&resolved_path)?;
+        validate_expected_hash_for_bytes(
             request.expected_hash.as_deref(),
-            &existing,
+            &decoded.raw_bytes,
             "autonomous_tool_patch_expected_hash_mismatch",
         )?;
+        let existing = decoded.text;
+        let replace = normalize_replacement_line_endings(&request.replace, decoded.line_ending);
 
         let matches = existing.matches(&request.search).count();
         if matches == 0 {
@@ -383,11 +566,12 @@ impl AutonomousToolRuntime {
         }
 
         let updated = if request.replace_all {
-            existing.replace(&request.search, &request.replace)
+            existing.replace(&request.search, &replace)
         } else {
-            existing.replacen(&request.search, &request.replace, 1)
+            existing.replacen(&request.search, &replace, 1)
         };
-        fs::write(&resolved_path, updated.as_bytes()).map_err(|error| {
+        let updated_bytes = encode_text_bytes(&updated, decoded.has_bom);
+        fs::write(&resolved_path, &updated_bytes).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_patch_write_failed",
                 format!(
@@ -399,6 +583,9 @@ impl AutonomousToolRuntime {
 
         let display_path = path_to_forward_slash(&relative_path);
         let replacements = if request.replace_all { matches } else { 1 };
+        let old_hash = sha256_hex(&decoded.raw_bytes);
+        let new_hash = sha256_hex(&updated_bytes);
+        let diff = compact_text_diff(&display_path, &existing, &updated);
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_PATCH.into(),
             summary: format!("Patched `{display_path}` with {replacements} replacement(s)."),
@@ -406,7 +593,12 @@ impl AutonomousToolRuntime {
             output: AutonomousToolOutput::Patch(AutonomousPatchOutput {
                 path: display_path,
                 replacements,
-                bytes_written: updated.len(),
+                bytes_written: updated_bytes.len(),
+                old_hash: Some(old_hash),
+                new_hash: Some(new_hash),
+                diff: Some(diff),
+                line_ending: Some(decoded.line_ending),
+                bom_preserved: Some(decoded.has_bom),
             }),
         })
     }
@@ -422,8 +614,8 @@ impl AutonomousToolRuntime {
             ));
         }
         if resolved_path.is_file() {
-            let existing = self.read_text_file(&resolved_path)?;
-            validate_expected_hash(
+            let existing = read_file_bytes(&resolved_path, "autonomous_tool_delete_read_failed")?;
+            validate_expected_hash_for_bytes(
                 request.expected_hash.as_deref(),
                 &existing,
                 "autonomous_tool_delete_expected_hash_mismatch",
@@ -487,8 +679,8 @@ impl AutonomousToolRuntime {
             ));
         }
         if from_resolved.is_file() {
-            let existing = self.read_text_file(&from_resolved)?;
-            validate_expected_hash(
+            let existing = read_file_bytes(&from_resolved, "autonomous_tool_rename_read_failed")?;
+            validate_expected_hash_for_bytes(
                 request.expected_hash.as_deref(),
                 &existing,
                 "autonomous_tool_rename_expected_hash_mismatch",
@@ -625,48 +817,115 @@ impl AutonomousToolRuntime {
         &self,
         scope: &Path,
         query: &str,
-        matches: &mut Vec<AutonomousSearchMatch>,
-        walk: &mut WalkState,
-    ) -> CommandResult<()> {
-        self.walk_scope(
-            scope,
-            WalkErrorCodes {
-                metadata_failed: "autonomous_tool_search_metadata_failed",
-                read_dir_failed: "autonomous_tool_search_read_dir_failed",
-            },
-            walk,
-            &mut |path, walk| {
-                let text = match self.read_text_file(path) {
-                    Ok(text) => text,
-                    Err(error) if should_skip_search_file_error(&error) => return Ok(()),
-                    Err(error) => return Err(error),
-                };
-                let relative = path_to_forward_slash(&self.repo_relative_path(path)?);
+        options: &SearchOptions,
+    ) -> CommandResult<SearchResult> {
+        let regex = build_search_regex(query, options.regex, options.ignore_case)?;
+        let mut result = SearchResult::default();
+        let mut matched_files = BTreeSet::new();
 
-                for (line_index, line) in text.lines().enumerate() {
-                    for (byte_offset, _) in line.match_indices(query) {
-                        if !push_bounded(
-                            matches,
-                            AutonomousSearchMatch {
-                                path: relative.clone(),
-                                line: line_index + 1,
-                                column: byte_offset + 1,
-                                preview: truncate_chars(
-                                    line.trim(),
-                                    self.limits.max_search_preview_chars,
-                                ),
-                            },
-                            self.limits.max_search_results,
-                            &mut walk.truncated,
-                        ) {
-                            return Ok(());
-                        }
-                    }
+        let mut builder = WalkBuilder::new(scope);
+        let repo_root = self.repo_root.clone();
+        builder
+            .hidden(!options.include_hidden)
+            .git_ignore(!options.include_ignored)
+            .git_exclude(!options.include_ignored)
+            .git_global(!options.include_ignored)
+            .parents(true)
+            .follow_links(false)
+            .sort_by_file_name(|left, right| left.cmp(right))
+            .filter_entry(move |entry| {
+                !(entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_dir())
+                    && should_skip_directory_for_root(&repo_root, entry.path()))
+            });
+
+        let include_globs = options.include_globs.as_ref();
+        let exclude_globs = options.exclude_globs.as_ref();
+
+        'walk: for entry in builder.build() {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+
+            let repo_relative = self.repo_relative_path(path)?;
+            let display_path = path_to_forward_slash(&repo_relative);
+            if let Some(globs) = include_globs {
+                if !globs.is_match(display_path.as_str()) {
+                    continue;
                 }
+            }
+            if let Some(globs) = exclude_globs {
+                if globs.is_match(display_path.as_str()) {
+                    continue;
+                }
+            }
 
-                Ok(())
-            },
-        )
+            result.scanned_files = result.scanned_files.saturating_add(1);
+            let decoded = match self.read_decoded_text_file(path) {
+                Ok(decoded) => decoded,
+                Err(error) if should_skip_search_file_error(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            let lines = decoded.text.lines().collect::<Vec<_>>();
+            let mut file_matched = false;
+
+            for (line_index, line) in lines.iter().enumerate() {
+                for found in regex.find_iter(line) {
+                    result.total_matches = result.total_matches.saturating_add(1);
+                    if result.matches.len() >= options.max_results {
+                        result.truncated = true;
+                        break 'walk;
+                    }
+
+                    let line_number = line_index + 1;
+                    let match_text = found.as_str();
+                    matched_files.insert(display_path.clone());
+                    result.matches.push(AutonomousSearchMatch {
+                        path: display_path.clone(),
+                        line: line_number,
+                        column: utf8_char_col(line, found.start()),
+                        preview: build_search_preview(
+                            line,
+                            found.start(),
+                            found.end(),
+                            self.limits.max_search_preview_chars,
+                        ),
+                        end_column: Some(utf8_char_col(line, found.end())),
+                        match_text: Some(truncate_chars(
+                            match_text,
+                            self.limits.max_search_preview_chars,
+                        )),
+                        line_hash: Some(line_hash(line)),
+                        context_before: context_lines_before(
+                            &lines,
+                            line_index,
+                            options.context_lines,
+                            self.limits.max_search_preview_chars,
+                        ),
+                        context_after: context_lines_after(
+                            &lines,
+                            line_index,
+                            options.context_lines,
+                            self.limits.max_search_preview_chars,
+                        ),
+                    });
+                    file_matched = true;
+                }
+            }
+
+            if file_matched {
+                matched_files.insert(display_path);
+            }
+        }
+
+        result.matched_files = matched_files;
+        Ok(result)
     }
 
     fn find_scope(
@@ -783,14 +1042,248 @@ impl AutonomousToolRuntime {
         Ok(())
     }
 
-    fn read_text_file(&self, path: &Path) -> CommandResult<String> {
-        let bytes = fs::read(path).map_err(|error| {
-            CommandError::retryable(
-                "autonomous_tool_read_failed",
-                format!("Cadence could not read {}: {error}", path.display()),
+    fn resolve_read_target(
+        &self,
+        request: &AutonomousReadRequest,
+        operator_approved: bool,
+    ) -> CommandResult<ReadTarget> {
+        if request.system_path {
+            if !operator_approved {
+                return Err(CommandError::new(
+                    "autonomous_tool_system_read_requires_approval",
+                    CommandErrorClass::PolicyDenied,
+                    "Cadence requires operator approval before reading an absolute system path outside the imported repository.",
+                    false,
+                ));
+            }
+            let expanded = expand_system_path(&request.path)?;
+            if !expanded.is_absolute() {
+                return Err(CommandError::user_fixable(
+                    "autonomous_tool_system_read_path_invalid",
+                    "Cadence requires system read paths to be absolute or `~`-relative.",
+                ));
+            }
+            let resolved = fs::canonicalize(&expanded).map_err(|error| {
+                CommandError::retryable(
+                    "autonomous_tool_system_read_resolve_failed",
+                    format!(
+                        "Cadence could not resolve system path {}: {error}",
+                        expanded.display()
+                    ),
+                )
+            })?;
+            return Ok(ReadTarget {
+                display_path: resolved.display().to_string(),
+                path: resolved,
+            });
+        }
+
+        let relative_path = normalize_relative_path(&request.path, "path")?;
+        let resolved_path = self.resolve_existing_path(&relative_path)?;
+        Ok(ReadTarget {
+            display_path: path_to_forward_slash(&relative_path),
+            path: resolved_path,
+        })
+    }
+
+    fn read_byte_range(
+        &self,
+        request: AutonomousReadRequest,
+        target: ReadTarget,
+        total_bytes: u64,
+        mode: AutonomousReadMode,
+    ) -> CommandResult<AutonomousToolResult> {
+        let byte_offset = request.byte_offset.unwrap_or(0);
+        if byte_offset > total_bytes {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_read_byte_offset_invalid",
+                format!(
+                    "Cadence requires byteOffset to stay within the file's 0..={total_bytes} byte range."
+                ),
+            ));
+        }
+        let requested_count = request
+            .byte_count
+            .unwrap_or(self.limits.max_text_file_bytes)
+            .min(self.limits.max_text_file_bytes);
+        if requested_count == 0 {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_read_byte_count_invalid",
+                "Cadence requires byteCount to be at least 1.",
+            ));
+        }
+        let bytes = read_file_byte_range(&target.path, byte_offset, requested_count)?;
+        let truncated = byte_offset + (bytes.len() as u64) < total_bytes;
+
+        if matches!(mode, AutonomousReadMode::BinaryMetadata) {
+            return Ok(self.binary_metadata_result(
+                target.display_path,
+                total_bytes,
+                None,
+                bytes,
+                truncated,
+            ));
+        }
+
+        let decoded = decode_text_bytes(bytes.clone()).map_err(|_| {
+            CommandError::user_fixable(
+                "autonomous_tool_file_not_text",
+                "Cadence refused to decode the requested byte range because it is not valid UTF-8 text.",
             )
         })?;
-        if bytes.len() > self.limits.max_text_file_bytes {
+        let total_lines = count_lines(&decoded.text);
+        let line_hashes = if request.include_line_hashes {
+            line_hashes_for_content(&decoded.text, 1)
+        } else {
+            Vec::new()
+        };
+        let actual_byte_count = bytes.len();
+        let summary = format!(
+            "Read {actual_byte_count} byte(s) from `{}` starting at byte {byte_offset}.",
+            target.display_path
+        );
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_READ.into(),
+            summary,
+            command_result: None,
+            output: AutonomousToolOutput::Read(AutonomousReadOutput {
+                path: target.display_path,
+                start_line: 1,
+                line_count: total_lines,
+                total_lines,
+                truncated,
+                content: decoded.text,
+                content_kind: Some(AutonomousReadContentKind::Text),
+                total_bytes: Some(total_bytes),
+                byte_offset: Some(byte_offset),
+                byte_count: Some(actual_byte_count),
+                sha256: Some(decoded.raw_sha256),
+                line_hashes,
+                encoding: Some("utf-8".into()),
+                line_ending: Some(decoded.line_ending),
+                has_bom: Some(decoded.has_bom),
+                media_type: Some("text/plain; charset=utf-8".into()),
+                image_width: None,
+                image_height: None,
+                preview_base64: None,
+                preview_bytes: None,
+                binary_excerpt_base64: None,
+            }),
+        })
+    }
+
+    fn image_result(
+        &self,
+        display_path: String,
+        bytes: Vec<u8>,
+        strict: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let image = image::load_from_memory(&bytes).map_err(|error| {
+            let message = format!("Cadence could not decode `{display_path}` as an image: {error}");
+            if strict {
+                CommandError::user_fixable("autonomous_tool_image_decode_failed", message)
+            } else {
+                CommandError::user_fixable("autonomous_tool_file_not_image", message)
+            }
+        })?;
+        let (width, height) = image.dimensions();
+        let preview = image.thumbnail(IMAGE_PREVIEW_MAX_DIMENSION, IMAGE_PREVIEW_MAX_DIMENSION);
+        let mut encoded = Cursor::new(Vec::new());
+        preview
+            .write_to(&mut encoded, ImageFormat::Png)
+            .map_err(|error| {
+                CommandError::retryable(
+                    "autonomous_tool_image_preview_failed",
+                    format!(
+                        "Cadence could not encode an image preview for `{display_path}`: {error}"
+                    ),
+                )
+            })?;
+        let preview = encoded.into_inner();
+        let preview_len = preview.len();
+        let summary =
+            format!("Read image metadata and preview for `{display_path}` ({width}x{height}).");
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_READ.into(),
+            summary,
+            command_result: None,
+            output: AutonomousToolOutput::Read(AutonomousReadOutput {
+                path: display_path,
+                start_line: 0,
+                line_count: 0,
+                total_lines: 0,
+                truncated: false,
+                content: String::new(),
+                content_kind: Some(AutonomousReadContentKind::Image),
+                total_bytes: Some(bytes.len() as u64),
+                byte_offset: None,
+                byte_count: None,
+                sha256: Some(sha256_hex(&bytes)),
+                line_hashes: Vec::new(),
+                encoding: None,
+                line_ending: None,
+                has_bom: None,
+                media_type: Some("image/png".into()),
+                image_width: Some(width),
+                image_height: Some(height),
+                preview_base64: Some(BASE64_STANDARD.encode(preview)),
+                preview_bytes: Some(preview_len),
+                binary_excerpt_base64: None,
+            }),
+        })
+    }
+
+    fn binary_metadata_result(
+        &self,
+        display_path: String,
+        total_bytes: u64,
+        sha256: Option<String>,
+        bytes: Vec<u8>,
+        truncated: bool,
+    ) -> AutonomousToolResult {
+        let excerpt = if bytes.is_empty() {
+            None
+        } else {
+            Some(BASE64_STANDARD.encode(&bytes[..bytes.len().min(MAX_BINARY_EXCERPT_BYTES)]))
+        };
+        AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_READ.into(),
+            summary: format!("Read binary metadata for `{display_path}` ({total_bytes} byte(s))."),
+            command_result: None,
+            output: AutonomousToolOutput::Read(AutonomousReadOutput {
+                path: display_path,
+                start_line: 0,
+                line_count: 0,
+                total_lines: 0,
+                truncated,
+                content: String::new(),
+                content_kind: Some(AutonomousReadContentKind::BinaryMetadata),
+                total_bytes: Some(total_bytes),
+                byte_offset: None,
+                byte_count: None,
+                sha256,
+                line_hashes: Vec::new(),
+                encoding: None,
+                line_ending: None,
+                has_bom: None,
+                media_type: Some("application/octet-stream".into()),
+                image_width: None,
+                image_height: None,
+                preview_base64: None,
+                preview_bytes: None,
+                binary_excerpt_base64: excerpt,
+            }),
+        }
+    }
+
+    fn read_decoded_text_file(&self, path: &Path) -> CommandResult<DecodedText> {
+        let metadata = fs::metadata(path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_read_metadata_failed",
+                format!("Cadence could not inspect {}: {error}", path.display()),
+            )
+        })?;
+        if metadata.len() as usize > self.limits.max_text_file_bytes {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_file_too_large",
                 format!(
@@ -800,7 +1293,8 @@ impl AutonomousToolRuntime {
                 ),
             ));
         }
-        String::from_utf8(bytes).map_err(|_| {
+        let bytes = read_file_bytes(path, "autonomous_tool_read_failed")?;
+        decode_text_bytes(bytes).map_err(|_| {
             CommandError::user_fixable(
                 "autonomous_tool_file_not_text",
                 format!(
@@ -810,6 +1304,79 @@ impl AutonomousToolRuntime {
             )
         })
     }
+}
+
+#[derive(Debug, Clone)]
+struct ReadTarget {
+    display_path: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct DecodedText {
+    text: String,
+    raw_bytes: Vec<u8>,
+    raw_sha256: String,
+    has_bom: bool,
+    line_ending: AutonomousLineEnding,
+}
+
+#[derive(Debug)]
+struct SearchOptions {
+    regex: bool,
+    ignore_case: bool,
+    include_hidden: bool,
+    include_ignored: bool,
+    include_globs: Option<GlobSet>,
+    exclude_globs: Option<GlobSet>,
+    context_lines: usize,
+    max_results: usize,
+}
+
+impl SearchOptions {
+    fn from_request(
+        request: &AutonomousSearchRequest,
+        default_max_results: usize,
+    ) -> CommandResult<Self> {
+        let context_lines = request.context_lines.unwrap_or(0);
+        if context_lines > MAX_SEARCH_CONTEXT_LINES {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_search_context_too_large",
+                format!(
+                    "Cadence requires search contextLines to be between 0 and {MAX_SEARCH_CONTEXT_LINES}."
+                ),
+            ));
+        }
+        let max_results = request.max_results.unwrap_or(default_max_results);
+        if max_results == 0 || max_results > default_max_results {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_search_max_results_invalid",
+                format!(
+                    "Cadence requires search maxResults to be between 1 and {default_max_results}."
+                ),
+            ));
+        }
+
+        Ok(Self {
+            regex: request.regex,
+            ignore_case: request.ignore_case,
+            include_hidden: request.include_hidden,
+            include_ignored: request.include_ignored,
+            include_globs: build_search_globset(&request.include_globs, "includeGlobs")?,
+            exclude_globs: build_search_globset(&request.exclude_globs, "excludeGlobs")?,
+            context_lines,
+            max_results,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct SearchResult {
+    matches: Vec<AutonomousSearchMatch>,
+    matched_files: BTreeSet<String>,
+    scanned_files: usize,
+    total_matches: usize,
+    truncated: bool,
 }
 
 fn slice_lines(
@@ -902,6 +1469,314 @@ fn truncate_chars(value: &str, limit: usize) -> String {
     format!("{truncated}…")
 }
 
+fn read_file_bytes(path: &Path, error_code: &'static str) -> CommandResult<Vec<u8>> {
+    fs::read(path).map_err(|error| {
+        CommandError::retryable(
+            error_code,
+            format!("Cadence could not read {}: {error}", path.display()),
+        )
+    })
+}
+
+fn read_file_byte_range(path: &Path, offset: u64, byte_count: usize) -> CommandResult<Vec<u8>> {
+    let mut file = File::open(path).map_err(|error| {
+        CommandError::retryable(
+            "autonomous_tool_read_failed",
+            format!("Cadence could not open {}: {error}", path.display()),
+        )
+    })?;
+    file.seek(SeekFrom::Start(offset)).map_err(|error| {
+        CommandError::retryable(
+            "autonomous_tool_read_seek_failed",
+            format!("Cadence could not seek in {}: {error}", path.display()),
+        )
+    })?;
+    let mut buffer = vec![0_u8; byte_count];
+    let read = file.read(&mut buffer).map_err(|error| {
+        CommandError::retryable(
+            "autonomous_tool_read_failed",
+            format!("Cadence could not read {}: {error}", path.display()),
+        )
+    })?;
+    buffer.truncate(read);
+    Ok(buffer)
+}
+
+fn decode_text_bytes(bytes: Vec<u8>) -> Result<DecodedText, std::string::FromUtf8Error> {
+    let raw_sha256 = sha256_hex(&bytes);
+    let has_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let text_bytes = if has_bom {
+        bytes[3..].to_vec()
+    } else {
+        bytes.clone()
+    };
+    let text = String::from_utf8(text_bytes)?;
+    let line_ending = detect_line_ending(&text);
+    Ok(DecodedText {
+        text,
+        raw_bytes: bytes,
+        raw_sha256,
+        has_bom,
+        line_ending,
+    })
+}
+
+fn encode_text_bytes(text: &str, has_bom: bool) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len() + if has_bom { 3 } else { 0 });
+    if has_bom {
+        bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+
+fn detect_line_ending(text: &str) -> AutonomousLineEnding {
+    let bytes = text.as_bytes();
+    let lf = bytes.iter().filter(|byte| **byte == b'\n').count();
+    if lf == 0 {
+        return AutonomousLineEnding::None;
+    }
+    let crlf = bytes.windows(2).filter(|window| *window == b"\r\n").count();
+    match (crlf, lf) {
+        (0, _) => AutonomousLineEnding::Lf,
+        (crlf, lf) if crlf == lf => AutonomousLineEnding::Crlf,
+        _ => AutonomousLineEnding::Mixed,
+    }
+}
+
+fn normalize_replacement_line_endings(
+    replacement: &str,
+    line_ending: AutonomousLineEnding,
+) -> String {
+    match line_ending {
+        AutonomousLineEnding::Crlf => replacement.replace("\r\n", "\n").replace('\n', "\r\n"),
+        AutonomousLineEnding::Lf => replacement.replace("\r\n", "\n"),
+        AutonomousLineEnding::Mixed | AutonomousLineEnding::None => replacement.to_string(),
+    }
+}
+
+fn build_search_regex(query: &str, is_regex: bool, ignore_case: bool) -> CommandResult<Regex> {
+    let pattern = if is_regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    RegexBuilder::new(&pattern)
+        .case_insensitive(ignore_case)
+        .build()
+        .map_err(|error| {
+            CommandError::user_fixable(
+                "autonomous_tool_search_regex_invalid",
+                format!("Cadence could not compile search regex `{query}`: {error}"),
+            )
+        })
+}
+
+fn build_search_globset(
+    patterns: &[String],
+    field: &'static str,
+) -> CommandResult<Option<GlobSet>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut builder = GlobSetBuilder::new();
+    for raw in patterns {
+        let pattern = normalize_glob_pattern(raw).map_err(|error| {
+            CommandError::user_fixable(
+                "autonomous_tool_search_glob_invalid",
+                format!(
+                    "Cadence could not parse {field} entry `{raw}`: {}",
+                    error.message
+                ),
+            )
+        })?;
+        let glob = GlobBuilder::new(&pattern)
+            .literal_separator(true)
+            .build()
+            .map_err(|error| {
+                CommandError::user_fixable(
+                    "autonomous_tool_search_glob_invalid",
+                    format!("Cadence could not parse {field} entry `{raw}`: {error}"),
+                )
+            })?;
+        builder.add(glob);
+    }
+    let set = builder.build().map_err(|error| {
+        CommandError::user_fixable(
+            "autonomous_tool_search_glob_invalid",
+            format!("Cadence could not build {field}: {error}"),
+        )
+    })?;
+    Ok(Some(set))
+}
+
+fn build_search_preview(line: &str, match_start: usize, match_end: usize, limit: usize) -> String {
+    if line.chars().count() <= limit {
+        return line.trim().to_string();
+    }
+    let left_budget = limit / 3;
+    let right_budget = limit.saturating_sub(left_budget).saturating_sub(1);
+    let start = snap_char_boundary(line, match_start.saturating_sub(left_budget));
+    let end = snap_char_boundary(line, (match_end + right_budget).min(line.len()));
+    let mut preview = line[start..end].trim().to_string();
+    if start > 0 {
+        preview.insert(0, '…');
+    }
+    if end < line.len() {
+        preview.push('…');
+    }
+    preview
+}
+
+fn context_lines_before(
+    lines: &[&str],
+    line_index: usize,
+    context_lines: usize,
+    limit: usize,
+) -> Vec<AutonomousSearchContextLine> {
+    if context_lines == 0 {
+        return Vec::new();
+    }
+    let start = line_index.saturating_sub(context_lines);
+    lines[start..line_index]
+        .iter()
+        .enumerate()
+        .map(|(offset, text)| AutonomousSearchContextLine {
+            line: start + offset + 1,
+            text: truncate_chars(text.trim(), limit),
+        })
+        .collect()
+}
+
+fn context_lines_after(
+    lines: &[&str],
+    line_index: usize,
+    context_lines: usize,
+    limit: usize,
+) -> Vec<AutonomousSearchContextLine> {
+    if context_lines == 0 {
+        return Vec::new();
+    }
+    let start = (line_index + 1).min(lines.len());
+    let end = (start + context_lines).min(lines.len());
+    lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, text)| AutonomousSearchContextLine {
+            line: start + offset + 1,
+            text: truncate_chars(text.trim(), limit),
+        })
+        .collect()
+}
+
+fn utf8_char_col(line: &str, byte_offset: usize) -> usize {
+    let clamped = snap_char_boundary(line, byte_offset.min(line.len()));
+    line[..clamped].chars().count() + 1
+}
+
+fn snap_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn line_hashes_for_content(content: &str, start_line: usize) -> Vec<AutonomousReadLineHash> {
+    content
+        .lines()
+        .enumerate()
+        .map(|(offset, line)| AutonomousReadLineHash {
+            line: start_line + offset,
+            hash: line_hash(line),
+        })
+        .collect()
+}
+
+fn line_hash(line: &str) -> String {
+    sha256_hex(line.as_bytes())
+}
+
+fn validate_optional_line_hash(
+    expected_hash: Option<&str>,
+    text: &str,
+    line: usize,
+    field: &'static str,
+    error_code: &'static str,
+) -> CommandResult<()> {
+    let Some(expected_hash) = expected_hash else {
+        return Ok(());
+    };
+    validate_sha256(expected_hash, field)?;
+    let line_text = line_content_without_ending(text, line)?;
+    let actual = line_hash(line_text);
+    if actual != expected_hash {
+        return Err(CommandError::user_fixable(
+            error_code,
+            format!("Cadence refused the edit because {field} no longer matches line {line}."),
+        ));
+    }
+    Ok(())
+}
+
+fn line_content_without_ending(text: &str, line: usize) -> CommandResult<&str> {
+    let (start, end) = line_byte_range(text, line, line)?;
+    Ok(text[start..end]
+        .trim_end_matches('\n')
+        .trim_end_matches('\r'))
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn expand_system_path(value: &str) -> CommandResult<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed == "~" || trimmed.starts_with("~/") {
+        let home = dirs::home_dir().ok_or_else(|| {
+            CommandError::system_fault(
+                "autonomous_tool_system_read_home_unavailable",
+                "Cadence could not resolve the current user's home directory.",
+            )
+        })?;
+        if trimmed == "~" {
+            return Ok(home);
+        }
+        return Ok(home.join(&trimmed[2..]));
+    }
+    Ok(PathBuf::from(trimmed))
+}
+
+fn should_skip_directory_for_root(repo_root: &Path, path: &Path) -> bool {
+    path != repo_root
+        && path.file_name().is_some_and(|name| {
+            [
+                ".git",
+                ".cadence",
+                "node_modules",
+                "target",
+                ".next",
+                "dist",
+                "build",
+                "coverage",
+                ".turbo",
+                ".yarn",
+                ".pnpm-store",
+            ]
+            .contains(&name.to_string_lossy().as_ref())
+        })
+}
+
 fn should_skip_search_file_error(error: &CommandError) -> bool {
     matches!(
         error.code.as_str(),
@@ -911,15 +1786,27 @@ fn should_skip_search_file_error(error: &CommandError) -> bool {
     )
 }
 
-fn validate_expected_hash(
+fn validate_expected_hash_for_bytes(
     expected_hash: Option<&str>,
-    current_text: &str,
+    current_bytes: &[u8],
     error_code: &'static str,
 ) -> CommandResult<()> {
     let Some(expected_hash) = expected_hash else {
         return Ok(());
     };
-    let expected_hash = expected_hash.trim();
+    validate_sha256(expected_hash, "expectedHash")?;
+    let actual = sha256_hex(current_bytes);
+    if actual != expected_hash.trim() {
+        return Err(CommandError::user_fixable(
+            error_code,
+            "Cadence refused the file operation because expectedHash no longer matches the current file contents.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str, field: &'static str) -> CommandResult<()> {
+    let expected_hash = value.trim();
     if expected_hash.len() != 64
         || !expected_hash
             .bytes()
@@ -927,17 +1814,90 @@ fn validate_expected_hash(
     {
         return Err(CommandError::user_fixable(
             "autonomous_tool_expected_hash_invalid",
-            "Cadence requires expectedHash to be a lowercase SHA-256 hex digest.",
-        ));
-    }
-    let actual = sha256_hex(current_text.as_bytes());
-    if actual != expected_hash {
-        return Err(CommandError::user_fixable(
-            error_code,
-            "Cadence refused the file operation because expectedHash no longer matches the current file contents.",
+            format!("Cadence requires {field} to be a lowercase SHA-256 hex digest."),
         ));
     }
     Ok(())
+}
+
+fn compact_text_diff(path: &str, before: &str, after: &str) -> String {
+    if before == after {
+        return format!("--- {path}\n+++ {path}\n");
+    }
+
+    let before_lines = before.lines().collect::<Vec<_>>();
+    let after_lines = after.lines().collect::<Vec<_>>();
+    let mut prefix = 0;
+    while prefix < before_lines.len()
+        && prefix < after_lines.len()
+        && before_lines[prefix] == after_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut before_suffix = before_lines.len();
+    let mut after_suffix = after_lines.len();
+    while before_suffix > prefix
+        && after_suffix > prefix
+        && before_lines[before_suffix - 1] == after_lines[after_suffix - 1]
+    {
+        before_suffix -= 1;
+        after_suffix -= 1;
+    }
+
+    let context_start = prefix.saturating_sub(MUTATION_DIFF_CONTEXT_LINES);
+    let context_end = (before_suffix + MUTATION_DIFF_CONTEXT_LINES).min(before_lines.len());
+    let old_start = context_start + 1;
+    let old_count = context_end.saturating_sub(context_start);
+    let new_count = (after_suffix + MUTATION_DIFF_CONTEXT_LINES)
+        .min(after_lines.len())
+        .saturating_sub(context_start.min(after_lines.len()));
+
+    let mut output = format!(
+        "--- {path}\n+++ {path}\n@@ -{old_start},{old_count} +{old_start},{new_count} @@\n"
+    );
+    let mut emitted = 0;
+    for line in &before_lines[context_start..prefix] {
+        if emitted >= MAX_MUTATION_DIFF_LINES {
+            output.push_str(" ...\n");
+            return output;
+        }
+        output.push_str(" ");
+        output.push_str(&truncate_chars(line, 240));
+        output.push('\n');
+        emitted += 1;
+    }
+    for line in &before_lines[prefix..before_suffix] {
+        if emitted >= MAX_MUTATION_DIFF_LINES {
+            output.push_str(" ...\n");
+            return output;
+        }
+        output.push_str("-");
+        output.push_str(&truncate_chars(line, 240));
+        output.push('\n');
+        emitted += 1;
+    }
+    for line in &after_lines[prefix..after_suffix] {
+        if emitted >= MAX_MUTATION_DIFF_LINES {
+            output.push_str(" ...\n");
+            return output;
+        }
+        output.push_str("+");
+        output.push_str(&truncate_chars(line, 240));
+        output.push('\n');
+        emitted += 1;
+    }
+    for line in &before_lines[before_suffix..context_end] {
+        if emitted >= MAX_MUTATION_DIFF_LINES {
+            output.push_str(" ...\n");
+            return output;
+        }
+        output.push_str(" ");
+        output.push_str(&truncate_chars(line, 240));
+        output.push('\n');
+        emitted += 1;
+    }
+    output
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -965,4 +1925,225 @@ fn push_bounded<T>(results: &mut Vec<T>, value: T, limit: usize, truncated: &mut
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn search_supports_regex_context_globs_hidden_and_gitignore_controls() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::write(root.join(".gitignore"), "ignored.txt\n").expect("gitignore");
+        fs::write(root.join("src/main.rs"), "alpha\nBeta 123\nomega\n").expect("source");
+        fs::write(root.join("ignored.txt"), "Beta 999\n").expect("ignored");
+        fs::write(root.join(".hidden.txt"), "Beta 777\n").expect("hidden");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let output = search_output(runtime.search(AutonomousSearchRequest {
+            query: "beta\\s+\\d+".into(),
+            path: None,
+            regex: true,
+            ignore_case: true,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: vec!["src/*.rs".into()],
+            exclude_globs: Vec::new(),
+            context_lines: Some(1),
+            max_results: None,
+        }));
+
+        assert_eq!(output.matches.len(), 1);
+        assert_eq!(output.matches[0].path, "src/main.rs");
+        assert_eq!(output.matches[0].line, 2);
+        assert_eq!(output.matches[0].context_before[0].text, "alpha");
+        assert_eq!(output.matches[0].context_after[0].text, "omega");
+        assert_eq!(output.matched_files, Some(1));
+        assert_eq!(output.context_lines, 1);
+
+        let output = search_output(runtime.search(AutonomousSearchRequest {
+            query: "Beta".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: true,
+            include_ignored: true,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+        }));
+        let paths = output
+            .matches
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(paths.contains(".hidden.txt"));
+        assert!(paths.contains("ignored.txt"));
+        assert!(paths.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn read_supports_images_binary_metadata_byte_ranges_and_line_hashes() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("log.txt"), "0123456789abcdef\nsecond\n").expect("log");
+        fs::write(root.join("blob.bin"), [0, 159, 146, 150]).expect("blob");
+
+        let image = image::RgbImage::from_pixel(2, 1, image::Rgb([255, 0, 0]));
+        image.save(root.join("pixel.png")).expect("png");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let image_output = read_output(runtime.read(read_request("pixel.png")));
+        assert_eq!(
+            image_output.content_kind,
+            Some(AutonomousReadContentKind::Image)
+        );
+        assert_eq!(image_output.image_width, Some(2));
+        assert_eq!(image_output.image_height, Some(1));
+        assert!(image_output.preview_base64.is_some());
+
+        let binary_output = read_output(runtime.read(read_request("blob.bin")));
+        assert_eq!(
+            binary_output.content_kind,
+            Some(AutonomousReadContentKind::BinaryMetadata)
+        );
+        assert_eq!(binary_output.total_bytes, Some(4));
+        assert!(binary_output.binary_excerpt_base64.is_some());
+
+        let mut range_request = read_request("log.txt");
+        range_request.byte_offset = Some(4);
+        range_request.byte_count = Some(4);
+        range_request.include_line_hashes = true;
+        let range_output = read_output(runtime.read(range_request));
+        assert_eq!(range_output.content, "4567");
+        assert_eq!(range_output.byte_offset, Some(4));
+        assert_eq!(range_output.byte_count, Some(4));
+        assert_eq!(range_output.line_hashes.len(), 1);
+    }
+
+    #[test]
+    fn edit_uses_line_hash_anchors_and_preserves_bom_crlf_with_diff() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("notes.txt");
+        fs::write(&path, b"\xEF\xBB\xBFone\r\ntwo\r\nthree\r\n").expect("notes");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let mut read = read_request("notes.txt");
+        read.line_count = Some(3);
+        read.include_line_hashes = true;
+        let read_output = read_output(runtime.read(read));
+        let line_two_hash = read_output
+            .line_hashes
+            .iter()
+            .find(|entry| entry.line == 2)
+            .expect("line 2 hash")
+            .hash
+            .clone();
+
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "notes.txt".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "two\r\n".into(),
+            replacement: "TWO\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: Some(line_two_hash.clone()),
+            end_line_hash: Some(line_two_hash),
+        }));
+
+        let bytes = fs::read(&path).expect("updated bytes");
+        assert!(bytes.starts_with(b"\xEF\xBB\xBF"));
+        assert!(String::from_utf8(bytes).unwrap().contains("TWO\r\n"));
+        assert_ne!(edit_output.old_hash, edit_output.new_hash);
+        assert_eq!(edit_output.line_ending, Some(AutonomousLineEnding::Crlf));
+        assert!(edit_output.diff.unwrap().contains("+TWO"));
+
+        let err = runtime
+            .edit(AutonomousEditRequest {
+                path: "notes.txt".into(),
+                start_line: 2,
+                end_line: 2,
+                expected: "TWO\r\n".into(),
+                replacement: "two\r\n".into(),
+                expected_hash: None,
+                start_line_hash: Some("0".repeat(64)),
+                end_line_hash: None,
+            })
+            .expect_err("line hash mismatch");
+        assert_eq!(err.code, "autonomous_tool_edit_line_hash_mismatch");
+    }
+
+    #[test]
+    fn system_read_requires_operator_approval() {
+        let repo = tempdir().expect("repo");
+        let outside = tempdir().expect("outside");
+        let outside_file = outside.path().join("outside.txt");
+        fs::write(&outside_file, "outside\n").expect("outside");
+        let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
+
+        let denied = runtime
+            .read(AutonomousReadRequest {
+                path: outside_file.display().to_string(),
+                system_path: true,
+                mode: Some(AutonomousReadMode::Text),
+                start_line: None,
+                line_count: None,
+                byte_offset: None,
+                byte_count: None,
+                include_line_hashes: false,
+            })
+            .expect_err("approval required");
+        assert_eq!(denied.class, CommandErrorClass::PolicyDenied);
+
+        let approved = read_output(runtime.read_with_operator_approval(AutonomousReadRequest {
+            path: outside_file.display().to_string(),
+            system_path: true,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        }));
+        assert_eq!(approved.content, "outside\n");
+    }
+
+    fn read_request(path: &str) -> AutonomousReadRequest {
+        AutonomousReadRequest {
+            path: path.into(),
+            system_path: false,
+            mode: None,
+            start_line: None,
+            line_count: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        }
+    }
+
+    fn read_output(result: CommandResult<AutonomousToolResult>) -> AutonomousReadOutput {
+        match result.expect("read").output {
+            AutonomousToolOutput::Read(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn search_output(result: CommandResult<AutonomousToolResult>) -> AutonomousSearchOutput {
+        match result.expect("search").output {
+            AutonomousToolOutput::Search(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn edit_output(result: CommandResult<AutonomousToolResult>) -> AutonomousEditOutput {
+        match result.expect("edit").output {
+            AutonomousToolOutput::Edit(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
 }

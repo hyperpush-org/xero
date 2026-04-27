@@ -724,6 +724,7 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<AutonomousToolResult> {
         self.check_cancelled()?;
         match request {
+            AutonomousToolRequest::Read(request) => self.read_with_operator_approval(request),
             AutonomousToolRequest::Command(request) => self.command_with_operator_approval(request),
             AutonomousToolRequest::CommandSessionStart(request) => {
                 self.command_session_start_with_operator_approval(request)
@@ -1012,8 +1013,18 @@ pub enum AutonomousToolRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousReadRequest {
     pub path: String,
+    #[serde(default)]
+    pub system_path: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AutonomousReadMode>,
     pub start_line: Option<usize>,
     pub line_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_count: Option<usize>,
+    #[serde(default)]
+    pub include_line_hashes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1021,6 +1032,31 @@ pub struct AutonomousReadRequest {
 pub struct AutonomousSearchRequest {
     pub query: String,
     pub path: Option<String>,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub ignore_case: bool,
+    #[serde(default)]
+    pub include_hidden: bool,
+    #[serde(default)]
+    pub include_ignored: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_lines: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousReadMode {
+    Auto,
+    Text,
+    Image,
+    BinaryMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1067,6 +1103,12 @@ pub struct AutonomousEditRequest {
     pub end_line: usize,
     pub expected: String,
     pub replacement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1524,6 +1566,36 @@ pub struct AutonomousReadOutput {
     pub total_lines: usize,
     pub truncated: bool,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_kind: Option<AutonomousReadContentKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_hashes: Vec<AutonomousReadLineHash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_ending: Option<AutonomousLineEnding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_bom: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_excerpt_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1534,6 +1606,26 @@ pub struct AutonomousSearchOutput {
     pub matches: Vec<AutonomousSearchMatch>,
     pub scanned_files: usize,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_matches: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_files: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub ignore_case: bool,
+    #[serde(default)]
+    pub include_hidden: bool,
+    #[serde(default)]
+    pub include_ignored: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_globs: Vec<String>,
+    #[serde(default)]
+    pub context_lines: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1553,6 +1645,47 @@ pub struct AutonomousSearchMatch {
     pub line: usize,
     pub column: usize,
     pub preview: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_before: Vec<AutonomousSearchContextLine>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_after: Vec<AutonomousSearchContextLine>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousReadContentKind {
+    Text,
+    Image,
+    BinaryMetadata,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousLineEnding {
+    None,
+    Lf,
+    Crlf,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousReadLineHash {
+    pub line: usize,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSearchContextLine {
+    pub line: usize,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1601,6 +1734,16 @@ pub struct AutonomousEditOutput {
     pub start_line: usize,
     pub end_line: usize,
     pub replacement_len: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_ending: Option<AutonomousLineEnding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bom_preserved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1617,6 +1760,16 @@ pub struct AutonomousPatchOutput {
     pub path: String,
     pub replacements: usize,
     pub bytes_written: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_ending: Option<AutonomousLineEnding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bom_preserved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
