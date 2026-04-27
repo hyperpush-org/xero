@@ -43,18 +43,10 @@ pub struct RuntimeStreamFailpoints {
 
 #[derive(Debug, Clone, Default)]
 pub struct DesktopState {
+    /// Phase 2.7: every store now reads through a single global SQLite database, so the
+    /// per-file overrides have collapsed into this one. The legacy `with_*_file_override`
+    /// builders below funnel into this field so historical tests continue to compile.
     global_db_path_override: Option<PathBuf>,
-    registry_file_override: Option<PathBuf>,
-    auth_store_file_override: Option<PathBuf>,
-    notification_credential_store_file_override: Option<PathBuf>,
-    provider_profiles_file_override: Option<PathBuf>,
-    provider_profile_credential_store_file_override: Option<PathBuf>,
-    provider_model_catalog_cache_file_override: Option<PathBuf>,
-    runtime_settings_file_override: Option<PathBuf>,
-    dictation_settings_file_override: Option<PathBuf>,
-    mcp_registry_file_override: Option<PathBuf>,
-    skill_source_settings_file_override: Option<PathBuf>,
-    openrouter_credential_file_override: Option<PathBuf>,
     autonomous_skill_cache_dir_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
     openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
@@ -78,59 +70,59 @@ impl DesktopState {
         self
     }
 
-    pub fn with_registry_file_override(mut self, path: PathBuf) -> Self {
-        self.registry_file_override = Some(path);
+    /// Phase 2.7 compatibility shim: every per-file override funnels into the single
+    /// `global_db_path_override` because every store now reads through `cadence.db`. The
+    /// builder takes the deepest existing override into account so callers that mix
+    /// `with_global_db_path_override(...)` with one of the legacy file overrides keep working.
+    fn override_global_db_from_file(mut self, path: PathBuf) -> Self {
+        if self.global_db_path_override.is_none() {
+            self.global_db_path_override = Some(path);
+        }
         self
     }
 
-    pub fn with_auth_store_file_override(mut self, path: PathBuf) -> Self {
-        self.auth_store_file_override = Some(path);
-        self
+    pub fn with_registry_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_notification_credential_store_file_override(mut self, path: PathBuf) -> Self {
-        self.notification_credential_store_file_override = Some(path);
-        self
+    pub fn with_auth_store_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_provider_profiles_file_override(mut self, path: PathBuf) -> Self {
-        self.provider_profiles_file_override = Some(path);
-        self
+    pub fn with_notification_credential_store_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_provider_profile_credential_store_file_override(mut self, path: PathBuf) -> Self {
-        self.provider_profile_credential_store_file_override = Some(path);
-        self
+    pub fn with_provider_profiles_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_provider_model_catalog_cache_file_override(mut self, path: PathBuf) -> Self {
-        self.provider_model_catalog_cache_file_override = Some(path);
-        self
+    pub fn with_provider_profile_credential_store_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_runtime_settings_file_override(mut self, path: PathBuf) -> Self {
-        self.runtime_settings_file_override = Some(path);
-        self
+    pub fn with_provider_model_catalog_cache_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_dictation_settings_file_override(mut self, path: PathBuf) -> Self {
-        self.dictation_settings_file_override = Some(path);
-        self
+    pub fn with_runtime_settings_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_mcp_registry_file_override(mut self, path: PathBuf) -> Self {
-        self.mcp_registry_file_override = Some(path);
-        self
+    pub fn with_dictation_settings_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_skill_source_settings_file_override(mut self, path: PathBuf) -> Self {
-        self.skill_source_settings_file_override = Some(path);
-        self
+    pub fn with_mcp_registry_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
-    pub fn with_openrouter_credential_file_override(mut self, path: PathBuf) -> Self {
-        self.openrouter_credential_file_override = Some(path);
-        self
+    pub fn with_skill_source_settings_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
+    }
+
+    pub fn with_openrouter_credential_file_override(self, path: PathBuf) -> Self {
+        self.override_global_db_from_file(path)
     }
 
     pub fn with_autonomous_skill_cache_dir_override(mut self, path: PathBuf) -> Self {
@@ -288,12 +280,11 @@ impl DesktopState {
             .join(AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME))
     }
 
-    pub fn registry_file<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.registry_file_override {
-            return Ok(path.clone());
-        }
+    // ----- Phase 2.7: every legacy per-file path resolver now returns the global database
+    // path. The legacy filename constants survive only for the importer in Phase 2.6, which
+    // walks them inside `lib.rs`. Production stores read/write through `global_db_path`.
 
-        // Phase 2.5: project + repository state lives in the global database.
+    pub fn registry_file<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {
         self.global_db_path(app)
     }
 
@@ -301,12 +292,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.notification_credential_store_file_override {
-            return Ok(path.clone());
-        }
-
-        // Phase 2.3: notification credentials live in the global database. Callers that
-        // construct a FileNotificationCredentialStore from this path now operate on cadence.db.
         self.global_db_path(app)
     }
 
@@ -314,10 +299,8 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.runtime_settings_file_override {
-            return Ok(path.clone());
-        }
-
+        // Runtime settings now ride on provider profiles in the global DB; the legacy filename
+        // is preserved here so the importer can locate `runtime-settings.json` once.
         Ok(self.app_data_dir(app)?.join(RUNTIME_SETTINGS_FILE_NAME))
     }
 
@@ -325,11 +308,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.dictation_settings_file_override {
-            return Ok(path.clone());
-        }
-
-        // Phase 2.4: dictation settings live in the global database.
         self.global_db_path(app)
     }
 
@@ -337,11 +315,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.mcp_registry_file_override {
-            return Ok(path.clone());
-        }
-
-        // Phase 2.4: MCP servers live in the global database.
         self.global_db_path(app)
     }
 
@@ -349,11 +322,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.skill_source_settings_file_override {
-            return Ok(path.clone());
-        }
-
-        // Phase 2.4: skill source settings live in the global database.
         self.global_db_path(app)
     }
 
@@ -361,10 +329,7 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.provider_profiles_file_override {
-            return Ok(path.clone());
-        }
-
+        // Legacy JSON path retained for the importer; production reads go through global_db_path.
         Ok(self.app_data_dir(app)?.join(PROVIDER_PROFILES_FILE_NAME))
     }
 
@@ -372,10 +337,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.provider_profile_credential_store_file_override {
-            return Ok(path.clone());
-        }
-
         Ok(self
             .app_data_dir(app)?
             .join(PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME))
@@ -385,11 +346,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.provider_model_catalog_cache_file_override {
-            return Ok(path.clone());
-        }
-
-        // Phase 2.4: provider-model catalog cache lives in the global database.
         self.global_db_path(app)
     }
 
@@ -397,10 +353,6 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        if let Some(path) = &self.openrouter_credential_file_override {
-            return Ok(path.clone());
-        }
-
         let app_data_dir = app.path().app_data_dir().map_err(|error| {
             CommandError::system_fault(
                 "app_data_dir_unavailable",
@@ -416,10 +368,6 @@ impl DesktopState {
         app: &AppHandle<R>,
         _provider: ResolvedRuntimeProvider,
     ) -> Result<PathBuf, AuthFlowError> {
-        if let Some(path) = &self.auth_store_file_override {
-            return Ok(path.clone());
-        }
-
         self.global_db_path(app).map_err(|error| {
             AuthFlowError::terminal(
                 error.code,
