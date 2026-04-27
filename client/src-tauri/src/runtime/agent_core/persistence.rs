@@ -421,7 +421,13 @@ pub(crate) fn record_command_output_event(
                 }),
             )?;
 
-            if !output.spawned && output.action == AutonomousProcessManagerAction::Start {
+            if !output.spawned
+                && matches!(
+                    output.action,
+                    AutonomousProcessManagerAction::Start
+                        | AutonomousProcessManagerAction::AsyncStart
+                )
+            {
                 if let Some(process) = output.processes.first() {
                     let argv = redact_command_argv_for_persistence(&process.command.argv);
                     record_command_action_required(

@@ -148,6 +148,10 @@ pub(crate) fn select_tool_names_for_prompt(
             "process visibility",
             "process kill",
             "interactive session",
+            "async job",
+            "async_start",
+            "restart process",
+            "group kill",
         ],
     ) {
         add_tool_group(&mut names, "process_manager");
@@ -683,7 +687,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
-            "Manage Cadence-owned long-running and interactive processes. Phase 3 adds readiness waits, digest, highlights, and cursor-aware output controls.",
+            "Manage Cadence-owned long-running, interactive, grouped, restartable, and async-job processes. Phase 4 adds restart, group status/kill, async_start, async_await, and async_cancel.",
             process_manager_schema(),
         ),
         descriptor(
@@ -1044,7 +1048,7 @@ fn process_manager_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Process-manager action. Phase 3 supports Cadence-owned start, list, status, output, digest, wait_for_ready, highlights, send, send_and_wait, run, env, and kill.",
+                    "Process-manager action. Phase 4 supports Cadence-owned start, list, status, output, digest, wait_for_ready, highlights, send, send_and_wait, run, env, kill, restart, group_status, group_kill, async_start, async_await, and async_cancel.",
                     &[
                         "start",
                         "list",
@@ -1058,11 +1062,17 @@ fn process_manager_schema() -> JsonValue {
                         "run",
                         "env",
                         "kill",
+                        "restart",
+                        "group_status",
+                        "group_kill",
+                        "async_start",
+                        "async_await",
+                        "async_cancel",
                     ],
                 ),
             ),
             ("processId", string_schema("Managed process id for targeted actions.")),
-            ("group", string_schema("Process group label for grouped status.")),
+            ("group", string_schema("Process group label for grouped status, kill, or async-await filtering.")),
             ("label", string_schema("Human-readable process label.")),
             ("processType", string_schema("Process type, such as dev_server, test_watcher, shell, or job.")),
             (
@@ -1099,7 +1109,7 @@ fn process_manager_schema() -> JsonValue {
             ),
             (
                 "timeoutMs",
-                integer_schema("Optional timeout in milliseconds for startup, readiness, or send_and_wait."),
+                integer_schema("Optional timeout in milliseconds for startup, readiness, send_and_wait, async_start job bound, or async_await wait."),
             ),
             (
                 "afterCursor",
@@ -1119,7 +1129,7 @@ fn process_manager_schema() -> JsonValue {
                 ),
             ),
             ("filter", string_schema("For output, return chunks whose text matches this regex.")),
-            ("input", string_schema("Exact stdin payload for send/send_and_wait, or shell command text for run.")),
+            ("input", string_schema("Exact stdin payload for send/send_and_wait, shell command text for run, or optional restart reason.")),
             (
                 "waitPattern",
                 string_schema("Output regex readiness or send_and_wait pattern."),

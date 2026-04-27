@@ -333,8 +333,8 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
     assert!(process_manager.input_schema["properties"]["action"]["enum"]
         .as_array()
         .expect("process manager action enum")
-        .contains(&json!("send_and_wait")));
-    assert!(process_manager.description.contains("Phase 3"));
+        .contains(&json!("async_start")));
+    assert!(process_manager.description.contains("Phase 4"));
 
     assert!(registry.descriptor("browser").is_some());
     assert!(registry.descriptor("mcp").is_some());

@@ -1178,6 +1178,10 @@ pub enum AutonomousProcessManagerAction {
     Kill,
     Restart,
     GroupStatus,
+    GroupKill,
+    AsyncStart,
+    AsyncAwait,
+    AsyncCancel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -1808,6 +1812,18 @@ pub struct AutonomousProcessMetadata {
     pub status_changes: Vec<String>,
     pub readiness: AutonomousProcessReadinessState,
     pub restart_count: u32,
+    pub last_restart_reason: Option<String>,
+    pub async_job: bool,
+    pub timeout_ms: Option<u64>,
+    pub output_artifact: Option<AutonomousProcessOutputArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessOutputArtifact {
+    pub path: String,
+    pub byte_count: usize,
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

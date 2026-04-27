@@ -135,16 +135,20 @@ pub(super) fn process_manager_policy_trace(
         | AutonomousProcessManagerAction::WaitForReady
         | AutonomousProcessManagerAction::Highlights
         | AutonomousProcessManagerAction::Env
-        | AutonomousProcessManagerAction::GroupStatus => AutonomousProcessActionRiskLevel::Observe,
+        | AutonomousProcessManagerAction::GroupStatus
+        | AutonomousProcessManagerAction::AsyncAwait => AutonomousProcessActionRiskLevel::Observe,
         AutonomousProcessManagerAction::Start if persistent => {
             AutonomousProcessActionRiskLevel::PersistentBackground
         }
         AutonomousProcessManagerAction::Start
+        | AutonomousProcessManagerAction::AsyncStart
         | AutonomousProcessManagerAction::Send
         | AutonomousProcessManagerAction::SendAndWait
         | AutonomousProcessManagerAction::Run => AutonomousProcessActionRiskLevel::RunOwned,
         AutonomousProcessManagerAction::Signal
         | AutonomousProcessManagerAction::Kill
+        | AutonomousProcessManagerAction::GroupKill
+        | AutonomousProcessManagerAction::AsyncCancel
         | AutonomousProcessManagerAction::Restart
             if target_scope == AutonomousProcessOwnershipScope::External =>
         {
@@ -152,6 +156,8 @@ pub(super) fn process_manager_policy_trace(
         }
         AutonomousProcessManagerAction::Signal
         | AutonomousProcessManagerAction::Kill
+        | AutonomousProcessManagerAction::GroupKill
+        | AutonomousProcessManagerAction::AsyncCancel
         | AutonomousProcessManagerAction::Restart => AutonomousProcessActionRiskLevel::SignalOwned,
     };
 

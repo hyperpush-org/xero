@@ -689,7 +689,12 @@ fn command_approval_action_id_for_tool_call(
         AutonomousToolOutput::Command(output) if !output.spawned => output.argv,
         AutonomousToolOutput::CommandSession(output) if !output.spawned => output.argv,
         AutonomousToolOutput::ProcessManager(output)
-            if !output.spawned && output.action == AutonomousProcessManagerAction::Start =>
+            if !output.spawned
+                && matches!(
+                    output.action,
+                    AutonomousProcessManagerAction::Start
+                        | AutonomousProcessManagerAction::AsyncStart
+                ) =>
         {
             let Some(process) = output.processes.first() else {
                 return Ok(None);

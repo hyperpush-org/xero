@@ -1,11 +1,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
+    env, fs,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -24,11 +24,11 @@ use super::{
     AutonomousProcessLifecycleContract, AutonomousProcessManagerAction,
     AutonomousProcessManagerContract, AutonomousProcessManagerOutput,
     AutonomousProcessManagerPolicyTrace, AutonomousProcessManagerRequest,
-    AutonomousProcessMetadata, AutonomousProcessOutputChunk, AutonomousProcessOutputLimits,
-    AutonomousProcessOutputStream, AutonomousProcessOwner, AutonomousProcessOwnershipScope,
-    AutonomousProcessPersistenceContract, AutonomousProcessReadinessDetector,
-    AutonomousProcessReadinessState, AutonomousProcessStatus, AutonomousProcessStdinState,
-    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AutonomousProcessMetadata, AutonomousProcessOutputArtifact, AutonomousProcessOutputChunk,
+    AutonomousProcessOutputLimits, AutonomousProcessOutputStream, AutonomousProcessOwner,
+    AutonomousProcessOwnershipScope, AutonomousProcessPersistenceContract,
+    AutonomousProcessReadinessDetector, AutonomousProcessReadinessState, AutonomousProcessStatus,
+    AutonomousProcessStdinState, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
     AUTONOMOUS_TOOL_PROCESS_MANAGER,
 };
 use crate::{
@@ -47,7 +47,7 @@ use crate::{
     },
 };
 
-const PROCESS_MANAGER_PHASE: &str = "phase_3_readiness_output_intelligence";
+const PROCESS_MANAGER_PHASE: &str = "phase_4_restart_groups_async_jobs";
 const PROCESS_MANAGER_INITIAL_DRAIN: Duration = Duration::from_millis(150);
 const PROCESS_MANAGER_SEND_DRAIN: Duration = Duration::from_millis(50);
 const PROCESS_MANAGER_WAIT_POLL: Duration = Duration::from_millis(25);
@@ -61,6 +61,7 @@ const MAX_PROCESS_OUTPUT_READ_BYTES: usize = 64 * 1024;
 const MAX_PROCESS_OUTPUT_TAIL_LINES: usize = 200;
 const MAX_PROCESS_STDIN_INPUT_BYTES: usize = 64 * 1024;
 const MAX_PROCESS_HIGHLIGHTS: usize = 32;
+const ASYNC_JOB_ARTIFACT_DIR: &str = "cadence-process-artifacts";
 const REDACTED_PROCESS_OUTPUT_SUMMARY: &str =
     "Process output was redacted before durable persistence.";
 const INTERNAL_MARKER_PREFIX: &str = "__CADENCE_";
@@ -155,6 +156,7 @@ struct OwnedProcess {
     process_type: Option<String>,
     group: Option<String>,
     owner: AutonomousProcessOwner,
+    launch_config: OwnedProcessLaunchConfig,
     command: AutonomousProcessCommandMetadata,
     stdin: Mutex<Option<ChildStdin>>,
     stdin_state: Mutex<AutonomousProcessStdinState>,
@@ -166,8 +168,11 @@ struct OwnedProcess {
     exit_code: Mutex<Option<i32>>,
     chunks: Mutex<Vec<AutonomousProcessOutputChunk>>,
     raw_chunks: Mutex<Vec<RawProcessOutputChunk>>,
+    output_artifact: Mutex<Option<AutonomousProcessOutputArtifact>>,
     next_cursor: AtomicU64,
     last_read_cursor: AtomicU64,
+    restart_count: AtomicU32,
+    last_restart_reason: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,25 +183,42 @@ struct RawProcessOutputChunk {
     captured_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct OwnedProcessLaunchConfig {
+    prepared: PreparedCommandRequest,
+    shell_mode: bool,
+    interactive: bool,
+    label: Option<String>,
+    process_type: Option<String>,
+    group: Option<String>,
+    persistent: bool,
+    async_job: bool,
+    timeout_ms: Option<u64>,
+}
+
 impl OwnedProcess {
     #[allow(clippy::too_many_arguments)]
     fn new(
         process_id: String,
-        prepared: &PreparedCommandRequest,
+        launch_config: OwnedProcessLaunchConfig,
         child: Child,
         stdin: Option<ChildStdin>,
-        shell_mode: bool,
-        label: Option<String>,
-        process_type: Option<String>,
-        group: Option<String>,
+        restart_count: u32,
+        last_restart_reason: Option<String>,
     ) -> Self {
         let pid = child.id();
+        let command = AutonomousProcessCommandMetadata {
+            argv: redact_command_argv_for_persistence(&launch_config.prepared.argv),
+            shell_mode: launch_config.shell_mode,
+            cwd: display_relative_or_root(&launch_config.prepared.cwd, &launch_config.prepared.cwd),
+            sanitized_env: sanitized_env_summary(),
+        };
         Self {
             process_id,
             pid,
-            label,
-            process_type,
-            group,
+            label: launch_config.label.clone(),
+            process_type: launch_config.process_type.clone(),
+            group: launch_config.group.clone(),
             owner: AutonomousProcessOwner {
                 thread_id: None,
                 session_id: None,
@@ -204,12 +226,8 @@ impl OwnedProcess {
                 user_id: None,
                 scope: AutonomousProcessOwnershipScope::CadenceOwned,
             },
-            command: AutonomousProcessCommandMetadata {
-                argv: redact_command_argv_for_persistence(&prepared.argv),
-                shell_mode,
-                cwd: display_relative_or_root(&prepared.cwd, &prepared.cwd),
-                sanitized_env: sanitized_env_summary(),
-            },
+            launch_config,
+            command,
             stdin_state: Mutex::new(if stdin.is_some() {
                 AutonomousProcessStdinState::Open
             } else {
@@ -228,8 +246,11 @@ impl OwnedProcess {
             exit_code: Mutex::new(None),
             chunks: Mutex::new(Vec::new()),
             raw_chunks: Mutex::new(Vec::new()),
+            output_artifact: Mutex::new(None),
             next_cursor: AtomicU64::new(1),
             last_read_cursor: AtomicU64::new(0),
+            restart_count: AtomicU32::new(restart_count),
+            last_restart_reason: Mutex::new(last_restart_reason),
         }
     }
 
@@ -342,6 +363,18 @@ impl OwnedProcess {
 
     fn remember_last_read_cursor(&self, cursor: u64) {
         self.last_read_cursor.store(cursor, Ordering::Relaxed);
+    }
+
+    fn launch_config(&self) -> OwnedProcessLaunchConfig {
+        self.launch_config.clone()
+    }
+
+    fn restart_count_value(&self) -> u32 {
+        self.restart_count.load(Ordering::Relaxed)
+    }
+
+    fn is_async_job(&self) -> bool {
+        self.launch_config.async_job
     }
 
     fn mark_ready(
@@ -512,10 +545,87 @@ impl OwnedProcess {
         }
     }
 
+    fn ensure_output_artifact(
+        &self,
+        status: AutonomousProcessStatus,
+    ) -> CommandResult<Option<AutonomousProcessOutputArtifact>> {
+        if !self.launch_config.async_job
+            || !matches!(
+                status,
+                AutonomousProcessStatus::Exited
+                    | AutonomousProcessStatus::Failed
+                    | AutonomousProcessStatus::Killed
+            )
+        {
+            return self
+                .output_artifact
+                .lock()
+                .map_err(process_output_lock_error)
+                .map(|artifact| artifact.clone());
+        }
+
+        let mut artifact = self
+            .output_artifact
+            .lock()
+            .map_err(process_output_lock_error)?;
+        if artifact.is_some() {
+            return Ok(artifact.clone());
+        }
+
+        let chunks = self.chunks.lock().map_err(process_output_lock_error)?;
+        let mut text = String::new();
+        let mut redacted = false;
+        for chunk in chunks.iter().cloned().map(filter_internal_marker_chunk) {
+            redacted |= chunk.redacted;
+            let Some(chunk_text) = chunk.text.as_deref() else {
+                continue;
+            };
+            text.push_str(chunk_text);
+            if !chunk_text.ends_with('\n') {
+                text.push('\n');
+            }
+        }
+        drop(chunks);
+
+        let dir = env::temp_dir().join(ASYNC_JOB_ARTIFACT_DIR);
+        fs::create_dir_all(&dir).map_err(|error| {
+            CommandError::system_fault(
+                "autonomous_tool_process_manager_artifact_failed",
+                format!(
+                    "Cadence could not create async job artifact directory {}: {error}",
+                    dir.display()
+                ),
+            )
+        })?;
+        let path = dir.join(format!("{}.log", marker_safe(&self.process_id)));
+        fs::write(&path, text.as_bytes()).map_err(|error| {
+            CommandError::system_fault(
+                "autonomous_tool_process_manager_artifact_failed",
+                format!(
+                    "Cadence could not write async job artifact {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+
+        *artifact = Some(AutonomousProcessOutputArtifact {
+            path: path.display().to_string(),
+            byte_count: text.len(),
+            redacted,
+        });
+        Ok(artifact.clone())
+    }
+
     fn metadata(&self) -> CommandResult<AutonomousProcessMetadata> {
         let exit_code = *self.exit_code.lock().map_err(process_exit_lock_error)?;
         let status = *self.status.lock().map_err(process_status_lock_error)?;
         let stdin_state = *self.stdin_state.lock().map_err(process_stdin_lock_error)?;
+        let output_artifact = self.ensure_output_artifact(status)?;
+        let last_restart_reason = self
+            .last_restart_reason
+            .lock()
+            .map_err(process_state_lock_error)?
+            .clone();
         let readiness = self
             .readiness
             .lock()
@@ -567,7 +677,11 @@ impl OwnedProcess {
             recent_stack_traces,
             status_changes,
             readiness,
-            restart_count: 0,
+            restart_count: self.restart_count_value(),
+            last_restart_reason,
+            async_job: self.launch_config.async_job,
+            timeout_ms: self.launch_config.timeout_ms,
+            output_artifact,
         })
     }
 
@@ -623,6 +737,42 @@ fn process_stdin_lock_error(_error: std::sync::PoisonError<impl Sized>) -> Comma
     )
 }
 
+struct SpawnOwnedProcessOptions {
+    action: AutonomousProcessManagerAction,
+    process_id: Option<String>,
+    restart_count: u32,
+    last_restart_reason: Option<String>,
+    async_job: bool,
+}
+
+impl SpawnOwnedProcessOptions {
+    fn new(action: AutonomousProcessManagerAction) -> Self {
+        Self {
+            action,
+            process_id: None,
+            restart_count: 0,
+            last_restart_reason: None,
+            async_job: false,
+        }
+    }
+
+    fn with_process_id(mut self, process_id: String) -> Self {
+        self.process_id = Some(process_id);
+        self
+    }
+
+    fn with_restart(mut self, restart_count: u32, reason: Option<String>) -> Self {
+        self.restart_count = restart_count;
+        self.last_restart_reason = reason;
+        self
+    }
+
+    fn with_async_job(mut self, async_job: bool) -> Self {
+        self.async_job = async_job;
+        self
+    }
+}
+
 impl AutonomousToolRuntime {
     pub fn process_manager(
         &self,
@@ -644,11 +794,14 @@ impl AutonomousToolRuntime {
         operator_approved: bool,
     ) -> CommandResult<AutonomousToolResult> {
         validate_process_manager_request(&request)?;
-        validate_phase_3_scope(&request)?;
+        validate_phase_4_scope(&request)?;
 
         match request.action {
             AutonomousProcessManagerAction::Start => {
                 self.process_manager_start(request, operator_approved)
+            }
+            AutonomousProcessManagerAction::AsyncStart => {
+                self.process_manager_async_start(request, operator_approved)
             }
             AutonomousProcessManagerAction::List => self.process_manager_list(request),
             AutonomousProcessManagerAction::Status => self.process_manager_status(request),
@@ -669,7 +822,18 @@ impl AutonomousToolRuntime {
             }
             AutonomousProcessManagerAction::Env => self.process_manager_env(request),
             AutonomousProcessManagerAction::Kill => self.process_manager_kill(request),
-            action => Err(unsupported_phase_3_action(action)),
+            AutonomousProcessManagerAction::Restart => {
+                self.process_manager_restart(request, operator_approved)
+            }
+            AutonomousProcessManagerAction::GroupStatus => {
+                self.process_manager_group_status(request)
+            }
+            AutonomousProcessManagerAction::GroupKill => self.process_manager_group_kill(request),
+            AutonomousProcessManagerAction::AsyncAwait => self.process_manager_async_await(request),
+            AutonomousProcessManagerAction::AsyncCancel => {
+                self.process_manager_async_cancel(request)
+            }
+            action => Err(unsupported_phase_4_action(action)),
         }
     }
 
@@ -677,6 +841,34 @@ impl AutonomousToolRuntime {
         &self,
         request: AutonomousProcessManagerRequest,
         operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.process_manager_start_like(
+            request,
+            operator_approved,
+            AutonomousProcessManagerAction::Start,
+            false,
+        )
+    }
+
+    fn process_manager_async_start(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.process_manager_start_like(
+            request,
+            operator_approved,
+            AutonomousProcessManagerAction::AsyncStart,
+            true,
+        )
+    }
+
+    fn process_manager_start_like(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        operator_approved: bool,
+        action: AutonomousProcessManagerAction,
+        async_job: bool,
     ) -> CommandResult<AutonomousToolResult> {
         let argv = if request.shell_mode && request.argv.is_empty() {
             default_shell_argv()
@@ -696,21 +888,34 @@ impl AutonomousToolRuntime {
                 if request.shell_mode && !operator_approved =>
             {
                 let policy = shell_mode_requires_operator_policy(policy, &prepared.argv);
-                self.unspawned_process_manager_approval_result(request, prepared, policy)
+                self.unspawned_process_manager_approval_result(request, prepared, policy, action)
             }
             CommandPolicyDecision::Allow { prepared, policy } if request.shell_mode => {
                 let policy = operator_approved_shell_policy(policy, &prepared.argv);
-                self.spawn_owned_process(request, prepared, process_policy_from_command(policy))
+                self.spawn_owned_process(
+                    request,
+                    prepared,
+                    process_policy_from_command(policy),
+                    SpawnOwnedProcessOptions::new(action).with_async_job(async_job),
+                )
             }
-            CommandPolicyDecision::Allow { prepared, policy } => {
-                self.spawn_owned_process(request, prepared, process_policy_from_command(policy))
-            }
+            CommandPolicyDecision::Allow { prepared, policy } => self.spawn_owned_process(
+                request,
+                prepared,
+                process_policy_from_command(policy),
+                SpawnOwnedProcessOptions::new(action).with_async_job(async_job),
+            ),
             CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
                 let policy = operator_approved_command_policy(policy, &prepared.argv);
-                self.spawn_owned_process(request, prepared, process_policy_from_command(policy))
+                self.spawn_owned_process(
+                    request,
+                    prepared,
+                    process_policy_from_command(policy),
+                    SpawnOwnedProcessOptions::new(action).with_async_job(async_job),
+                )
             }
             CommandPolicyDecision::Escalate { prepared, policy } => {
-                self.unspawned_process_manager_approval_result(request, prepared, policy)
+                self.unspawned_process_manager_approval_result(request, prepared, policy, action)
             }
         }
     }
@@ -720,12 +925,26 @@ impl AutonomousToolRuntime {
         request: AutonomousProcessManagerRequest,
         prepared: PreparedCommandRequest,
         policy: AutonomousProcessManagerPolicyTrace,
+        options: SpawnOwnedProcessOptions,
     ) -> CommandResult<AutonomousToolResult> {
         self.owned_processes.ensure_capacity()?;
         self.check_cancelled()?;
 
         let mut command = Command::new(&prepared.argv[0]);
-        let wants_stdin = request.interactive || request.shell_mode;
+        let process_type = clean_optional_string(request.process_type.as_deref())
+            .or_else(|| options.async_job.then(|| "async_job".to_owned()));
+        let launch_config = OwnedProcessLaunchConfig {
+            prepared: prepared.clone(),
+            shell_mode: request.shell_mode,
+            interactive: request.interactive,
+            label: clean_optional_string(request.label.as_deref()),
+            process_type,
+            group: clean_optional_string(request.group.as_deref()),
+            persistent: request.persistent,
+            async_job: options.async_job,
+            timeout_ms: options.async_job.then_some(prepared.timeout_ms),
+        };
+        let wants_stdin = launch_config.interactive || launch_config.shell_mode;
         command
             .args(prepared.argv.iter().skip(1))
             .current_dir(&prepared.cwd)
@@ -773,17 +992,18 @@ impl AutonomousToolRuntime {
             )
         })?;
 
-        let process_id = self.owned_processes.next_process_id();
+        let process_id = options
+            .process_id
+            .clone()
+            .unwrap_or_else(|| self.owned_processes.next_process_id());
         let cwd = display_relative_or_root(&self.repo_root, &prepared.cwd);
         let mut owned_process = OwnedProcess::new(
             process_id.clone(),
-            &prepared,
+            launch_config,
             child,
             stdin,
-            request.shell_mode,
-            clean_optional_string(request.label.as_deref()),
-            clean_optional_string(request.process_type.as_deref()),
-            clean_optional_string(request.group.as_deref()),
+            options.restart_count,
+            options.last_restart_reason.clone(),
         );
         owned_process.set_display_cwd(cwd.clone());
         let process = Arc::new(owned_process);
@@ -804,6 +1024,13 @@ impl AutonomousToolRuntime {
             return Err(error);
         }
 
+        if options.async_job {
+            spawn_async_job_timeout_monitor(
+                Arc::clone(&process),
+                Duration::from_millis(prepared.timeout_ms),
+            );
+        }
+
         thread::sleep(PROCESS_MANAGER_INITIAL_DRAIN);
         if self.is_cancelled() {
             let _ = self.owned_processes.remove(&process_id);
@@ -815,20 +1042,49 @@ impl AutonomousToolRuntime {
         let chunks = process.read_chunks_after(0, default_process_output_read_bytes())?;
         let metadata = process.metadata()?;
         let running = exit_code.is_none();
-        let message = if running {
-            format!(
-                "Started owned process `{process_id}` for `{}` in `{cwd}`.",
-                render_command_for_summary(&prepared.argv)
-            )
-        } else {
-            format!(
-                "Owned process `{process_id}` for `{}` exited during startup.",
-                render_command_for_summary(&prepared.argv)
-            )
+        let action_label = process_manager_action_label(options.action);
+        let message = match (options.action, running) {
+            (AutonomousProcessManagerAction::Restart, true) => {
+                format!(
+                    "Restarted owned process `{process_id}` for `{}` in `{cwd}`.",
+                    render_command_for_summary(&prepared.argv)
+                )
+            }
+            (AutonomousProcessManagerAction::Restart, false) => {
+                format!(
+                    "Restarted owned process `{process_id}` for `{}` but it exited during startup.",
+                    render_command_for_summary(&prepared.argv)
+                )
+            }
+            (AutonomousProcessManagerAction::AsyncStart, true) => {
+                format!(
+                    "Started async job `{process_id}` for `{}` in `{cwd}` with timeout {} ms.",
+                    render_command_for_summary(&prepared.argv),
+                    prepared.timeout_ms
+                )
+            }
+            (AutonomousProcessManagerAction::AsyncStart, false) => {
+                format!(
+                    "Async job `{process_id}` for `{}` exited during startup.",
+                    render_command_for_summary(&prepared.argv)
+                )
+            }
+            (_, true) => {
+                format!(
+                    "Started owned process `{process_id}` for `{}` in `{cwd}`.",
+                    render_command_for_summary(&prepared.argv)
+                )
+            }
+            (_, false) => {
+                format!(
+                    "Owned process `{process_id}` for `{}` exited during {action_label}.",
+                    render_command_for_summary(&prepared.argv)
+                )
+            }
         };
 
         Ok(process_manager_result(ProcessManagerResultInput {
-            action: AutonomousProcessManagerAction::Start,
+            action: options.action,
             spawned: true,
             process_id: Some(process_id),
             processes: vec![metadata],
@@ -844,6 +1100,7 @@ impl AutonomousToolRuntime {
         request: AutonomousProcessManagerRequest,
         prepared: PreparedCommandRequest,
         command_policy: AutonomousCommandPolicyTrace,
+        action: AutonomousProcessManagerAction,
     ) -> CommandResult<AutonomousToolResult> {
         let cwd = prepared
             .cwd_relative
@@ -856,7 +1113,7 @@ impl AutonomousToolRuntime {
             render_command_for_summary(&prepared.argv)
         );
         Ok(process_manager_result(ProcessManagerResultInput {
-            action: AutonomousProcessManagerAction::Start,
+            action,
             spawned: false,
             process_id: Some("unstarted".into()),
             processes: vec![unstarted_process_metadata(
@@ -1276,6 +1533,233 @@ impl AutonomousToolRuntime {
         }))
     }
 
+    fn process_manager_restart(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        _operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let process_id = normalized_process_id(&request)?;
+        let process = self.owned_processes.remove(&process_id)?;
+        let launch_config = process.launch_config();
+        let restart_count = process.restart_count_value().saturating_add(1);
+        let reason = clean_optional_string(request.input.as_deref())
+            .or_else(|| Some("operator_requested".to_owned()));
+        let _ = process.kill()?;
+        thread::sleep(PROCESS_MANAGER_INITIAL_DRAIN);
+        let restart_request = process_manager_request_from_launch_config(
+            AutonomousProcessManagerAction::Restart,
+            &launch_config,
+        );
+        let prepared = launch_config.prepared.clone();
+        let async_job = launch_config.async_job;
+
+        self.spawn_owned_process(
+            restart_request,
+            prepared,
+            process_manager_policy_trace(
+                AutonomousProcessManagerAction::Restart,
+                request.target_ownership,
+                false,
+            ),
+            SpawnOwnedProcessOptions::new(AutonomousProcessManagerAction::Restart)
+                .with_process_id(process_id)
+                .with_restart(restart_count, reason)
+                .with_async_job(async_job),
+        )
+    }
+
+    fn process_manager_group_status(
+        &self,
+        request: AutonomousProcessManagerRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let group = normalized_group(&request)?;
+        let metadata = self.process_metadata_for_group(&group)?;
+        let digest = if metadata.is_empty() {
+            format!("No Cadence-owned processes are registered in group `{group}`.")
+        } else {
+            process_digest(&metadata)
+        };
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::GroupStatus,
+            spawned: true,
+            process_id: None,
+            processes: metadata,
+            chunks: Vec::new(),
+            next_cursor: request.after_cursor,
+            policy: process_manager_policy_trace(
+                AutonomousProcessManagerAction::GroupStatus,
+                request.target_ownership,
+                false,
+            ),
+            message: digest,
+        }))
+    }
+
+    fn process_manager_group_kill(
+        &self,
+        request: AutonomousProcessManagerRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let group = normalized_group(&request)?;
+        let processes = self.owned_processes.list()?;
+        let targets = processes
+            .into_iter()
+            .filter(|process| process.group.as_deref() == Some(group.as_str()))
+            .collect::<Vec<_>>();
+        let mut metadata = Vec::with_capacity(targets.len());
+        let mut chunks = Vec::new();
+        for process in targets {
+            let process_id = process.process_id.clone();
+            let _ = self.owned_processes.remove(&process_id)?;
+            let _ = process.kill()?;
+            chunks.extend(process.read_chunks_after(
+                request.after_cursor.unwrap_or(0),
+                MAX_PROCESS_OUTPUT_READ_BYTES,
+            )?);
+            metadata.push(process.metadata()?);
+        }
+        let message = format!(
+            "Killed {} Cadence-owned process(es) in group `{group}`.",
+            metadata.len()
+        );
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::GroupKill,
+            spawned: true,
+            process_id: None,
+            processes: metadata,
+            chunks,
+            next_cursor: None,
+            policy: process_manager_policy_trace(
+                AutonomousProcessManagerAction::GroupKill,
+                request.target_ownership,
+                false,
+            ),
+            message,
+        }))
+    }
+
+    fn process_manager_async_await(
+        &self,
+        request: AutonomousProcessManagerRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let timeout = self.process_wait_timeout(request.timeout_ms)?;
+        let started = Instant::now();
+        let requested_process_id = request
+            .process_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        loop {
+            self.check_cancelled()?;
+            let jobs = self.async_jobs_for_await(&request, requested_process_id.as_deref())?;
+            if jobs.is_empty() {
+                return Ok(process_manager_result(ProcessManagerResultInput {
+                    action: AutonomousProcessManagerAction::AsyncAwait,
+                    spawned: true,
+                    process_id: requested_process_id,
+                    processes: Vec::new(),
+                    chunks: Vec::new(),
+                    next_cursor: request.after_cursor,
+                    policy: process_manager_policy_trace(
+                        AutonomousProcessManagerAction::AsyncAwait,
+                        request.target_ownership,
+                        false,
+                    ),
+                    message: "No Cadence-owned async jobs are registered.".into(),
+                }));
+            }
+
+            for job in &jobs {
+                let exit_code = job.poll_exit()?;
+                let status = *job.status.lock().map_err(process_status_lock_error)?;
+                if exit_code.is_some()
+                    || matches!(
+                        status,
+                        AutonomousProcessStatus::Exited
+                            | AutonomousProcessStatus::Failed
+                            | AutonomousProcessStatus::Killed
+                    )
+                {
+                    let chunks = job.read_chunks_after(
+                        request.after_cursor.unwrap_or(0),
+                        MAX_PROCESS_OUTPUT_READ_BYTES,
+                    )?;
+                    let metadata = job.metadata()?;
+                    let message = format!(
+                        "Async job `{}` completed with status {:?} and exit code {:?}.",
+                        job.process_id, metadata.status, metadata.exit_code
+                    );
+                    return Ok(process_manager_result(ProcessManagerResultInput {
+                        action: AutonomousProcessManagerAction::AsyncAwait,
+                        spawned: true,
+                        process_id: Some(job.process_id.clone()),
+                        processes: vec![metadata],
+                        chunks,
+                        next_cursor: Some(job.next_cursor_value()),
+                        policy: process_manager_policy_trace(
+                            AutonomousProcessManagerAction::AsyncAwait,
+                            request.target_ownership,
+                            false,
+                        ),
+                        message,
+                    }));
+                }
+            }
+
+            if started.elapsed() >= timeout {
+                let metadata = self.process_metadata_for_jobs(jobs)?;
+                return Ok(process_manager_result(ProcessManagerResultInput {
+                    action: AutonomousProcessManagerAction::AsyncAwait,
+                    spawned: true,
+                    process_id: requested_process_id,
+                    processes: metadata,
+                    chunks: Vec::new(),
+                    next_cursor: request.after_cursor,
+                    policy: process_manager_policy_trace(
+                        AutonomousProcessManagerAction::AsyncAwait,
+                        request.target_ownership,
+                        false,
+                    ),
+                    message: "Timed out waiting for Cadence-owned async job completion.".into(),
+                }));
+            }
+
+            thread::sleep(PROCESS_MANAGER_WAIT_POLL);
+        }
+    }
+
+    fn process_manager_async_cancel(
+        &self,
+        request: AutonomousProcessManagerRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let process_id = normalized_process_id(&request)?;
+        let process = self.owned_processes.remove(&process_id)?;
+        ensure_async_job(&process)?;
+        let _ = process.kill()?;
+        thread::sleep(PROCESS_MANAGER_INITIAL_DRAIN);
+        let chunks = process.read_chunks_after(
+            request.after_cursor.unwrap_or(0),
+            MAX_PROCESS_OUTPUT_READ_BYTES,
+        )?;
+        let metadata = process.metadata()?;
+        let message = format!("Cancelled async job `{process_id}`.");
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::AsyncCancel,
+            spawned: true,
+            process_id: Some(process_id),
+            processes: vec![metadata],
+            chunks,
+            next_cursor: Some(process.next_cursor_value()),
+            policy: process_manager_policy_trace(
+                AutonomousProcessManagerAction::AsyncCancel,
+                request.target_ownership,
+                false,
+            ),
+            message,
+        }))
+    }
+
     fn unperformed_process_interaction_result(
         &self,
         request: AutonomousProcessManagerRequest,
@@ -1390,7 +1874,10 @@ struct ProcessManagerResultInput {
 }
 
 fn process_manager_result(input: ProcessManagerResultInput) -> AutonomousToolResult {
-    let digest = if input.action == AutonomousProcessManagerAction::Digest {
+    let digest = if matches!(
+        input.action,
+        AutonomousProcessManagerAction::Digest | AutonomousProcessManagerAction::GroupStatus
+    ) {
         Some(input.message.clone())
     } else {
         None
@@ -1439,6 +1926,56 @@ impl AutonomousToolRuntime {
             metadata.push(process.metadata()?);
         }
         Ok(metadata)
+    }
+
+    fn process_metadata_for_group(
+        &self,
+        group: &str,
+    ) -> CommandResult<Vec<AutonomousProcessMetadata>> {
+        let processes = self.owned_processes.list()?;
+        let targets = processes
+            .into_iter()
+            .filter(|process| process.group.as_deref() == Some(group))
+            .collect::<Vec<_>>();
+        self.process_metadata_for_jobs(targets)
+    }
+
+    fn process_metadata_for_jobs(
+        &self,
+        processes: Vec<Arc<OwnedProcess>>,
+    ) -> CommandResult<Vec<AutonomousProcessMetadata>> {
+        let mut metadata = Vec::with_capacity(processes.len());
+        for process in processes {
+            let _ = process.poll_exit()?;
+            metadata.push(process.metadata()?);
+        }
+        Ok(metadata)
+    }
+
+    fn async_jobs_for_await(
+        &self,
+        request: &AutonomousProcessManagerRequest,
+        process_id: Option<&str>,
+    ) -> CommandResult<Vec<Arc<OwnedProcess>>> {
+        if let Some(process_id) = process_id {
+            let process = self.owned_processes.get(process_id)?;
+            ensure_async_job(&process)?;
+            return Ok(vec![process]);
+        }
+
+        let group = request
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let jobs = self
+            .owned_processes
+            .list()?
+            .into_iter()
+            .filter(|process| process.is_async_job())
+            .filter(|process| group.map_or(true, |group| process.group.as_deref() == Some(group)))
+            .collect::<Vec<_>>();
+        Ok(jobs)
     }
 
     fn wait_for_process_readiness(
@@ -1587,7 +2124,7 @@ fn validate_process_manager_request(
     request: &AutonomousProcessManagerRequest,
 ) -> CommandResult<()> {
     match request.action {
-        AutonomousProcessManagerAction::Start => {
+        AutonomousProcessManagerAction::Start | AutonomousProcessManagerAction::AsyncStart => {
             if !request.shell_mode && (request.argv.is_empty() || request.argv[0].trim().is_empty())
             {
                 return Err(CommandError::user_fixable(
@@ -1605,13 +2142,16 @@ fn validate_process_manager_request(
         | AutonomousProcessManagerAction::Env
         | AutonomousProcessManagerAction::Signal
         | AutonomousProcessManagerAction::Kill
-        | AutonomousProcessManagerAction::Restart => {
+        | AutonomousProcessManagerAction::Restart
+        | AutonomousProcessManagerAction::AsyncCancel => {
             validate_non_empty(
                 request.process_id.as_deref().unwrap_or_default(),
                 "processId",
             )?;
         }
-        AutonomousProcessManagerAction::Digest | AutonomousProcessManagerAction::Highlights => {}
+        AutonomousProcessManagerAction::Digest
+        | AutonomousProcessManagerAction::Highlights
+        | AutonomousProcessManagerAction::AsyncAwait => {}
         AutonomousProcessManagerAction::Send
         | AutonomousProcessManagerAction::SendAndWait
         | AutonomousProcessManagerAction::Run => {
@@ -1621,7 +2161,7 @@ fn validate_process_manager_request(
             )?;
             validate_non_empty(request.input.as_deref().unwrap_or_default(), "input")?;
         }
-        AutonomousProcessManagerAction::GroupStatus => {
+        AutonomousProcessManagerAction::GroupStatus | AutonomousProcessManagerAction::GroupKill => {
             validate_non_empty(request.group.as_deref().unwrap_or_default(), "group")?;
         }
         AutonomousProcessManagerAction::List => {}
@@ -1668,6 +2208,13 @@ fn validate_process_manager_request(
             "Cadence requires send_and_wait requests to include waitPattern.",
         ));
     }
+    if request.action == AutonomousProcessManagerAction::AsyncStart && request.timeout_ms == Some(0)
+    {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_process_manager_timeout_invalid",
+            "Cadence requires async_start timeoutMs to be greater than zero when provided.",
+        ));
+    }
     if let Some(wait_url) = request.wait_url.as_deref() {
         validate_non_empty(wait_url, "waitUrl")?;
     }
@@ -1675,21 +2222,22 @@ fn validate_process_manager_request(
     Ok(())
 }
 
-fn validate_phase_3_scope(request: &AutonomousProcessManagerRequest) -> CommandResult<()> {
+fn validate_phase_4_scope(request: &AutonomousProcessManagerRequest) -> CommandResult<()> {
     if request.target_ownership == Some(AutonomousProcessOwnershipScope::External) {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_external_unsupported",
-            "Cadence phase 3 process_manager only controls Cadence-owned processes.",
+            "Cadence phase 4 process_manager only controls Cadence-owned processes.",
         ));
     }
     if request.persistent {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_persistent_unsupported",
-            "Cadence phase 3 process_manager does not support durable background persistence yet.",
+            "Cadence phase 4 process_manager does not support durable background persistence yet.",
         ));
     }
     match request.action {
         AutonomousProcessManagerAction::Start
+        | AutonomousProcessManagerAction::AsyncStart
         | AutonomousProcessManagerAction::List
         | AutonomousProcessManagerAction::Status
         | AutonomousProcessManagerAction::Output
@@ -1700,8 +2248,13 @@ fn validate_phase_3_scope(request: &AutonomousProcessManagerRequest) -> CommandR
         | AutonomousProcessManagerAction::SendAndWait
         | AutonomousProcessManagerAction::Run
         | AutonomousProcessManagerAction::Env
-        | AutonomousProcessManagerAction::Kill => Ok(()),
-        action => Err(unsupported_phase_3_action(action)),
+        | AutonomousProcessManagerAction::Kill
+        | AutonomousProcessManagerAction::Restart
+        | AutonomousProcessManagerAction::GroupStatus
+        | AutonomousProcessManagerAction::GroupKill
+        | AutonomousProcessManagerAction::AsyncAwait
+        | AutonomousProcessManagerAction::AsyncCancel => Ok(()),
+        action => Err(unsupported_phase_4_action(action)),
     }
 }
 
@@ -1719,11 +2272,11 @@ fn validate_argv_contract(argv: &[String]) -> CommandResult<()> {
     Ok(())
 }
 
-fn unsupported_phase_3_action(action: AutonomousProcessManagerAction) -> CommandError {
+fn unsupported_phase_4_action(action: AutonomousProcessManagerAction) -> CommandError {
     CommandError::user_fixable(
         "autonomous_tool_process_manager_action_unsupported",
         format!(
-            "Cadence phase 3 process_manager supports start, list, status, output, digest, wait_for_ready, highlights, send, send_and_wait, run, env, and kill; `{}` is planned for a later phase.",
+            "Cadence phase 4 process_manager supports start, list, status, output, digest, wait_for_ready, highlights, send, send_and_wait, run, env, kill, restart, group_status, group_kill, async_start, async_await, and async_cancel; `{}` is planned for a later phase.",
             process_manager_action_label(action)
         ),
     )
@@ -1734,6 +2287,7 @@ pub(super) fn process_manager_contract() -> AutonomousProcessManagerContract {
         phase: PROCESS_MANAGER_PHASE.into(),
         supported_actions: vec![
             AutonomousProcessManagerAction::Start,
+            AutonomousProcessManagerAction::AsyncStart,
             AutonomousProcessManagerAction::List,
             AutonomousProcessManagerAction::Status,
             AutonomousProcessManagerAction::Output,
@@ -1745,6 +2299,11 @@ pub(super) fn process_manager_contract() -> AutonomousProcessManagerContract {
             AutonomousProcessManagerAction::Run,
             AutonomousProcessManagerAction::Env,
             AutonomousProcessManagerAction::Kill,
+            AutonomousProcessManagerAction::Restart,
+            AutonomousProcessManagerAction::GroupStatus,
+            AutonomousProcessManagerAction::GroupKill,
+            AutonomousProcessManagerAction::AsyncAwait,
+            AutonomousProcessManagerAction::AsyncCancel,
         ],
         ownership_fields: vec![
             "threadId".into(),
@@ -1774,7 +2333,7 @@ pub(super) fn process_manager_contract() -> AutonomousProcessManagerContract {
             persist_output_chunks: true,
             redact_before_persistence: true,
             persist_policy_trace: true,
-            full_output_artifacts: false,
+            full_output_artifacts: true,
         },
         lifecycle: AutonomousProcessLifecycleContract {
             app_shutdown: "terminate_non_persistent_cadence_owned_process_trees".into(),
@@ -1802,6 +2361,10 @@ fn process_manager_action_label(action: AutonomousProcessManagerAction) -> &'sta
         AutonomousProcessManagerAction::Kill => "kill",
         AutonomousProcessManagerAction::Restart => "restart",
         AutonomousProcessManagerAction::GroupStatus => "group_status",
+        AutonomousProcessManagerAction::GroupKill => "group_kill",
+        AutonomousProcessManagerAction::AsyncStart => "async_start",
+        AutonomousProcessManagerAction::AsyncAwait => "async_await",
+        AutonomousProcessManagerAction::AsyncCancel => "async_cancel",
     }
 }
 
@@ -1809,6 +2372,12 @@ fn normalized_process_id(request: &AutonomousProcessManagerRequest) -> CommandRe
     let process_id = request.process_id.as_deref().unwrap_or_default().trim();
     validate_non_empty(process_id, "processId")?;
     Ok(process_id.to_owned())
+}
+
+fn normalized_group(request: &AutonomousProcessManagerRequest) -> CommandResult<String> {
+    let group = request.group.as_deref().unwrap_or_default().trim();
+    validate_non_empty(group, "group")?;
+    Ok(group.to_owned())
 }
 
 fn normalized_stdin_input(request: &AutonomousProcessManagerRequest) -> CommandResult<&str> {
@@ -1843,6 +2412,55 @@ fn ensure_shell_process(process: &OwnedProcess) -> CommandResult<()> {
             process.process_id
         ),
     ))
+}
+
+fn ensure_async_job(process: &OwnedProcess) -> CommandResult<()> {
+    if process.is_async_job() {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "autonomous_tool_process_manager_async_job_required",
+        format!(
+            "Cadence can only use this action with an async job; `{}` is a managed process.",
+            process.process_id
+        ),
+    ))
+}
+
+fn process_manager_request_from_launch_config(
+    action: AutonomousProcessManagerAction,
+    launch_config: &OwnedProcessLaunchConfig,
+) -> AutonomousProcessManagerRequest {
+    AutonomousProcessManagerRequest {
+        action,
+        process_id: None,
+        group: launch_config.group.clone(),
+        label: launch_config.label.clone(),
+        process_type: launch_config.process_type.clone(),
+        argv: launch_config.prepared.argv.clone(),
+        cwd: launch_config
+            .prepared
+            .cwd_relative
+            .as_ref()
+            .map(|path| path.to_string_lossy().replace('\\', "/")),
+        shell_mode: launch_config.shell_mode,
+        interactive: launch_config.interactive,
+        target_ownership: None,
+        persistent: launch_config.persistent,
+        timeout_ms: launch_config.timeout_ms,
+        after_cursor: None,
+        since_last_read: false,
+        max_bytes: None,
+        tail_lines: None,
+        stream: None,
+        filter: None,
+        input: None,
+        wait_pattern: None,
+        wait_port: None,
+        wait_url: None,
+        signal: None,
+    }
 }
 
 fn read_process_output_for_request(
@@ -2051,6 +2669,8 @@ fn result_highlights(
             | AutonomousProcessManagerAction::Status
             | AutonomousProcessManagerAction::List
             | AutonomousProcessManagerAction::WaitForReady
+            | AutonomousProcessManagerAction::GroupStatus
+            | AutonomousProcessManagerAction::AsyncAwait
     ) {
         for process in processes {
             highlights.extend(metadata_highlights(process));
@@ -2742,6 +3362,10 @@ fn unstarted_process_metadata(
             matched: None,
         },
         restart_count: 0,
+        last_restart_reason: None,
+        async_job: false,
+        timeout_ms: None,
+        output_artifact: None,
     }
 }
 
@@ -2929,6 +3553,33 @@ fn spawn_owned_process_reader(
                     break;
                 }
             }
+        }
+    });
+}
+
+fn spawn_async_job_timeout_monitor(process: Arc<OwnedProcess>, timeout: Duration) {
+    thread::spawn(move || {
+        let started = Instant::now();
+        loop {
+            match process.poll_exit() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => return,
+            }
+            if started.elapsed() >= timeout {
+                let capture = SanitizedProcessOutput {
+                    text: Some(format!(
+                        "Async job timed out after {} ms.",
+                        timeout.as_millis()
+                    )),
+                    truncated: false,
+                    redacted: false,
+                };
+                let _ = process.push_chunk(AutonomousProcessOutputStream::Stderr, capture, None);
+                let _ = process.kill();
+                return;
+            }
+            thread::sleep(PROCESS_MANAGER_WAIT_POLL);
         }
     });
 }
@@ -3382,6 +4033,190 @@ mod tests {
 
         kill_process(&runtime, process_id);
         listener_thread.join().expect("listener thread");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_and_group_actions_control_related_owned_processes() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path());
+
+        let mut first_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'ready-a\\n'; sleep 30".into(),
+        ]);
+        first_request.group = Some("dev".into());
+        first_request.label = Some("server a".into());
+        let first = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(first_request))
+                .expect("start first process"),
+        );
+        let first_id = first.process_id.expect("first process id");
+
+        let mut second_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'ready-b\\n'; sleep 30".into(),
+        ]);
+        second_request.group = Some("dev".into());
+        second_request.label = Some("server b".into());
+        let second = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(second_request))
+                .expect("start second process"),
+        );
+        let second_id = second.process_id.expect("second process id");
+
+        let mut restart_request = base_request(AutonomousProcessManagerAction::Restart);
+        restart_request.process_id = Some(first_id.clone());
+        restart_request.input = Some("refresh after config change".into());
+        let restarted = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(restart_request))
+                .expect("restart first process"),
+        );
+        assert_eq!(restarted.process_id.as_deref(), Some(first_id.as_str()));
+        assert_eq!(restarted.processes[0].restart_count, 1);
+        assert_eq!(
+            restarted.processes[0].last_restart_reason.as_deref(),
+            Some("refresh after config change")
+        );
+        assert_eq!(restarted.processes[0].group.as_deref(), Some("dev"));
+
+        let mut group_status_request = base_request(AutonomousProcessManagerAction::GroupStatus);
+        group_status_request.group = Some("dev".into());
+        let group_status = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(group_status_request))
+                .expect("group status"),
+        );
+        assert_eq!(group_status.processes.len(), 2);
+        assert!(group_status
+            .processes
+            .iter()
+            .any(|process| process.process_id == first_id));
+        assert!(group_status
+            .processes
+            .iter()
+            .any(|process| process.process_id == second_id));
+        assert!(group_status
+            .digest
+            .as_deref()
+            .is_some_and(|digest| digest.contains("server a") && digest.contains("server b")));
+
+        let mut group_kill_request = base_request(AutonomousProcessManagerAction::GroupKill);
+        group_kill_request.group = Some("dev".into());
+        let group_kill = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(group_kill_request))
+                .expect("group kill"),
+        );
+        assert_eq!(group_kill.processes.len(), 2);
+        assert!(group_kill.processes.iter().all(|process| matches!(
+            process.status,
+            AutonomousProcessStatus::Killed | AutonomousProcessStatus::Exited
+        )));
+
+        let list_after_kill = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(base_request(
+                    AutonomousProcessManagerAction::List,
+                )))
+                .expect("list after group kill"),
+        );
+        assert!(list_after_kill
+            .processes
+            .iter()
+            .all(|process| process.group.as_deref() != Some("dev")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_jobs_can_be_awaited_and_cancelled() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path());
+
+        let mut async_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'job done\\n'".into(),
+        ]);
+        async_request.action = AutonomousProcessManagerAction::AsyncStart;
+        async_request.group = Some("jobs".into());
+        async_request.timeout_ms = Some(5_000);
+        let async_start = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(async_request))
+                .expect("start async job"),
+        );
+        assert_eq!(
+            async_start.action,
+            AutonomousProcessManagerAction::AsyncStart
+        );
+        assert!(async_start.processes[0].async_job);
+        assert_eq!(async_start.processes[0].timeout_ms, Some(5_000));
+
+        let mut await_request = base_request(AutonomousProcessManagerAction::AsyncAwait);
+        await_request.group = Some("jobs".into());
+        await_request.timeout_ms = Some(5_000);
+        let awaited = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(await_request))
+                .expect("await any async job"),
+        );
+        assert_eq!(awaited.action, AutonomousProcessManagerAction::AsyncAwait);
+        assert!(output_contains(&awaited, "job done"));
+        let artifact = awaited.processes[0]
+            .output_artifact
+            .as_ref()
+            .expect("async job output artifact");
+        assert!(std::path::Path::new(&artifact.path).is_file());
+        assert!(artifact.byte_count > 0);
+
+        let mut cancellable_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'still running\\n'; sleep 30".into(),
+        ]);
+        cancellable_request.action = AutonomousProcessManagerAction::AsyncStart;
+        cancellable_request.group = Some("jobs".into());
+        cancellable_request.timeout_ms = Some(5_000);
+        let cancellable = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(cancellable_request))
+                .expect("start cancellable async job"),
+        );
+        let cancellable_id = cancellable.process_id.expect("cancellable id");
+
+        let mut cancel_request = base_request(AutonomousProcessManagerAction::AsyncCancel);
+        cancel_request.process_id = Some(cancellable_id.clone());
+        let cancelled = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(cancel_request))
+                .expect("cancel async job"),
+        );
+        assert_eq!(
+            cancelled.process_id.as_deref(),
+            Some(cancellable_id.as_str())
+        );
+        assert!(matches!(
+            cancelled.processes[0].status,
+            AutonomousProcessStatus::Killed | AutonomousProcessStatus::Exited
+        ));
+
+        let list_after_cancel = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(base_request(
+                    AutonomousProcessManagerAction::List,
+                )))
+                .expect("list after async cancel"),
+        );
+        assert!(list_after_cancel
+            .processes
+            .iter()
+            .all(|process| process.process_id != cancellable_id));
     }
 
     fn test_runtime(repo_root: &std::path::Path) -> AutonomousToolRuntime {

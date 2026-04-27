@@ -394,7 +394,7 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
 }
 
 #[test]
-fn tool_runtime_process_manager_phase_three_controls_owned_processes() {
+fn tool_runtime_process_manager_phase_four_controls_owned_processes() {
     let root = tempfile::tempdir().expect("temp dir");
     let runtime = AutonomousToolRuntime::new(root.path())
         .expect("runtime")
@@ -432,7 +432,7 @@ fn tool_runtime_process_manager_phase_three_controls_owned_processes() {
     let process_id = match start.output {
         AutonomousToolOutput::ProcessManager(output) => {
             assert_eq!(output.action, AutonomousProcessManagerAction::Start);
-            assert_eq!(output.phase, "phase_3_readiness_output_intelligence");
+            assert_eq!(output.phase, "phase_4_restart_groups_async_jobs");
             assert!(output.spawned);
             assert_eq!(output.processes.len(), 1);
             assert!(output
