@@ -1,12 +1,13 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    auth::AuthFlowError,
+    auth::{remove_openai_codex_session, sync_openai_profile_link, AuthFlowError},
     commands::{
         get_runtime_settings::runtime_settings_file_from_request, CommandError, CommandResult,
-        ProviderProfileDto, ProviderProfileReadinessDto, ProviderProfileReadinessProofDto,
-        ProviderProfileReadinessStatusDto, ProviderProfilesDto, ProviderProfilesMigrationDto,
-        SetActiveProviderProfileRequestDto, UpsertProviderProfileRequestDto,
+        LogoutProviderProfileRequestDto, ProviderProfileDto, ProviderProfileReadinessDto,
+        ProviderProfileReadinessProofDto, ProviderProfileReadinessStatusDto, ProviderProfilesDto,
+        ProviderProfilesMigrationDto, SetActiveProviderProfileRequestDto,
+        UpsertProviderProfileRequestDto,
     },
     provider_profiles::{
         load_or_migrate_provider_profiles_from_paths, persist_provider_profiles_snapshot,
@@ -15,8 +16,9 @@ use crate::{
         ProviderProfilesSnapshot,
     },
     runtime::{
-        normalize_openai_codex_model_id, resolve_runtime_provider_identity, BEDROCK_PROVIDER_ID,
-        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, VERTEX_PROVIDER_ID,
+        normalize_openai_codex_model_id, openai_codex_provider, resolve_runtime_provider_identity,
+        BEDROCK_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        VERTEX_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -63,6 +65,65 @@ pub fn set_active_provider_profile<R: Runtime>(
         &provider_profile_credentials_path,
         &next,
     )?;
+    Ok(provider_profiles_dto_from_snapshot(&next))
+}
+
+#[tauri::command]
+pub fn logout_provider_profile<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: LogoutProviderProfileRequestDto,
+) -> CommandResult<ProviderProfilesDto> {
+    let profile_id = request.profile_id.trim();
+    if profile_id.is_empty() {
+        return Err(CommandError::invalid_request("profileId"));
+    }
+
+    let current = load_provider_profiles_snapshot(&app, state.inner())?;
+    let profile = current.profile(profile_id).ok_or_else(|| {
+        CommandError::user_fixable(
+            "provider_profile_not_found",
+            format!("Cadence could not find provider profile `{profile_id}`."),
+        )
+    })?;
+
+    if profile.provider_id != OPENAI_CODEX_PROVIDER_ID {
+        return Err(CommandError::user_fixable(
+            "provider_profile_logout_unavailable",
+            format!(
+                "Cadence can only sign out browser-auth provider profiles. Profile `{profile_id}` belongs to provider `{}`.",
+                profile.provider_id
+            ),
+        ));
+    }
+
+    let account_id = match profile.credential_link.as_ref() {
+        Some(ProviderProfileCredentialLink::OpenAiCodex { account_id, .. }) => {
+            Some(account_id.clone())
+        }
+        Some(_) => {
+            return Err(CommandError::user_fixable(
+                "provider_profiles_invalid",
+                format!(
+                    "Cadence rejected provider profile `{profile_id}` because the OpenAI profile uses a non-OpenAI credential link."
+                ),
+            ));
+        }
+        None => None,
+    };
+
+    if let Some(account_id) = account_id.as_deref() {
+        let auth_store_path = state
+            .auth_store_file_for_provider(&app, openai_codex_provider())
+            .map_err(map_auth_store_error_to_command_error)?;
+        remove_openai_codex_session(&auth_store_path, account_id)
+            .map_err(map_auth_store_error_to_command_error)?;
+    }
+
+    sync_openai_profile_link(&app, state.inner(), Some(profile_id), None)
+        .map_err(map_auth_store_error_to_command_error)?;
+
+    let next = load_provider_profiles_snapshot(&app, state.inner())?;
     Ok(provider_profiles_dto_from_snapshot(&next))
 }
 

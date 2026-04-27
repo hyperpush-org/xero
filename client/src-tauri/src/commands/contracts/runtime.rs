@@ -558,6 +558,12 @@ pub struct SetActiveProviderProfileRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogoutProviderProfileRequestDto {
+    pub profile_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetProviderModelCatalogRequestDto {
     pub profile_id: String,
     #[serde(default)]

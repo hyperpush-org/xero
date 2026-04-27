@@ -42,6 +42,7 @@ export function useRuntimeSettingsNotificationMutations({
   | 'refreshProviderProfiles'
   | 'upsertProviderProfile'
   | 'setActiveProviderProfile'
+  | 'logoutProviderProfile'
   | 'refreshRuntimeSettings'
   | 'upsertRuntimeSettings'
   | 'refreshMcpRegistry'
@@ -262,6 +263,41 @@ export function useRuntimeSettingsNotificationMutations({
       } catch (error) {
         setProviderProfilesSaveError(
           getOperatorActionError(error, 'Cadence could not switch the active provider profile.'),
+        )
+
+        try {
+          await refreshProviderProfiles({ force: true })
+        } catch {
+          // Preserve the last truthful profile snapshot when refresh-after-failure also fails.
+        }
+
+        throw error
+      } finally {
+        setProviderProfilesSaveStatus('idle')
+      }
+    },
+    [
+      adapter,
+      applyProviderProfilesSnapshot,
+      refreshProviderProfiles,
+      setProviderProfilesSaveError,
+      setProviderProfilesSaveStatus,
+    ],
+  )
+
+  const logoutProviderProfile = useCallback(
+    async (profileId: string) => {
+      setProviderProfilesSaveStatus('running')
+      setProviderProfilesSaveError(null)
+
+      try {
+        const response = await adapter.logoutProviderProfile(profileId)
+        applyProviderProfilesSnapshot(response)
+        setProviderProfilesSaveError(null)
+        return response
+      } catch (error) {
+        setProviderProfilesSaveError(
+          getOperatorActionError(error, 'Cadence could not sign out of the provider profile.'),
         )
 
         try {
@@ -1153,6 +1189,7 @@ export function useRuntimeSettingsNotificationMutations({
     refreshProviderProfiles,
     upsertProviderProfile,
     setActiveProviderProfile,
+    logoutProviderProfile,
     refreshRuntimeSettings,
     upsertRuntimeSettings,
     refreshMcpRegistry,

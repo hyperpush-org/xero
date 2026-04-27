@@ -831,6 +831,7 @@ function createMockAdapter(options?: {
     upsertRuntimeSettings: vi.fn(async () => runtimeSettings),
     upsertProviderProfile: vi.fn(async () => providerProfiles),
     setActiveProviderProfile: vi.fn(async () => providerProfiles),
+    logoutProviderProfile: vi.fn(async () => providerProfiles),
     startOpenAiLogin: vi.fn(
       async (projectId: string, _options: { selectedProfileId: string; originator?: string | null }) =>
         makeRuntimeSession(projectId),

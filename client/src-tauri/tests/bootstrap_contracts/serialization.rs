@@ -830,6 +830,16 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
         json!({ "profileId": "openrouter-work" })
     );
 
+    let logout_provider_profile_request =
+        serde_json::to_value(LogoutProviderProfileRequestDto {
+            profile_id: "openai_codex-default".into(),
+        })
+        .expect("provider profile logout request should serialize");
+    assert_eq!(
+        logout_provider_profile_request,
+        json!({ "profileId": "openai_codex-default" })
+    );
+
     let provider_profiles_response = serde_json::to_value(ProviderProfilesDto {
         active_profile_id: "openrouter-work".into(),
         profiles: vec![ProviderProfileDto {
@@ -2627,6 +2637,10 @@ pub(crate) fn serialization_stays_camel_case_for_responses_events_and_errors() {
     assert_eq!(
         cadence_desktop_lib::commands::SET_ACTIVE_PROVIDER_PROFILE_COMMAND,
         "set_active_provider_profile"
+    );
+    assert_eq!(
+        cadence_desktop_lib::commands::LOGOUT_PROVIDER_PROFILE_COMMAND,
+        "logout_provider_profile"
     );
     assert_eq!(REFRESH_OPENAI_CODEX_AUTH_COMMAND, "start_runtime_session");
     assert_eq!(START_RUNTIME_RUN_COMMAND, "start_runtime_run");

@@ -338,13 +338,11 @@ pub fn complete_openai_codex_flow<R: Runtime>(
         selected_flow.set_phase(RuntimeAuthPhase::AwaitingManualInput);
         parsed.code
     } else {
-        let error = AuthFlowError::retryable(
+        return Err(AuthFlowError::retryable(
             "authorization_code_pending",
-            RuntimeAuthPhase::AwaitingManualInput,
+            RuntimeAuthPhase::AwaitingBrowserCallback,
             "OpenAI login is still waiting for either the browser callback or a pasted redirect URL.",
-        );
-        selected_flow.record_error(&error);
-        return Err(error);
+        ));
     };
 
     selected_flow.set_phase(RuntimeAuthPhase::ExchangingCode);

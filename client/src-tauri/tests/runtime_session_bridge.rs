@@ -10,21 +10,23 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cadence_desktop_lib::{
     auth::{
-        now_timestamp, persist_openai_codex_session, remove_openai_codex_session,
-        AnthropicAuthConfig, OpenAiCodexAuthConfig, OpenRouterAuthConfig, StoredOpenAiCodexSession,
+        load_openai_codex_session, now_timestamp, persist_openai_codex_session,
+        remove_openai_codex_session, sync_openai_profile_link, AnthropicAuthConfig,
+        OpenAiCodexAuthConfig, OpenRouterAuthConfig, StoredOpenAiCodexSession,
     },
     commands::{
         get_runtime_session::get_runtime_session,
         logout_runtime_session::logout_runtime_session,
         provider_profiles::{
-            list_provider_profiles, set_active_provider_profile, upsert_provider_profile,
+            list_provider_profiles, logout_provider_profile, set_active_provider_profile,
+            upsert_provider_profile,
         },
         start_openai_login::start_openai_login,
         start_runtime_session::start_runtime_session as start_runtime_session_command,
         upsert_runtime_settings::upsert_runtime_settings,
-        CommandResult, ProjectIdRequestDto, RuntimeAuthPhase, RuntimeSessionDto,
-        RuntimeUpdatedPayloadDto, SetActiveProviderProfileRequestDto, StartOpenAiLoginRequestDto,
-        StartRuntimeSessionRequestDto, UpsertProviderProfileRequestDto,
+        CommandResult, LogoutProviderProfileRequestDto, ProjectIdRequestDto, RuntimeAuthPhase,
+        RuntimeSessionDto, RuntimeUpdatedPayloadDto, SetActiveProviderProfileRequestDto,
+        StartOpenAiLoginRequestDto, StartRuntimeSessionRequestDto, UpsertProviderProfileRequestDto,
         UpsertRuntimeSettingsRequestDto, RUNTIME_UPDATED_EVENT,
     },
     configure_builder_with_state,
@@ -489,6 +491,61 @@ fn runtime_session_bridge_profile_commands_expose_redacted_profile_state() {
             .expect("switched profile")
             .active
     );
+}
+
+#[test]
+fn runtime_session_bridge_logout_provider_profile_clears_openai_oauth_link() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let stored_session = StoredOpenAiCodexSession {
+        provider_id: "openai_codex".into(),
+        session_id: "session-1".into(),
+        account_id: "acct-1".into(),
+        access_token: jwt_with_account_id("acct-1"),
+        refresh_token: "refresh-1".into(),
+        expires_at: current_unix_timestamp() + Duration::from_secs(3600).as_secs() as i64,
+        updated_at: "2026-04-26T12:00:00Z".into(),
+    };
+
+    persist_openai_codex_session(&auth_store_path, stored_session.clone())
+        .expect("persist OpenAI auth session");
+    sync_openai_profile_link(
+        &app.handle().clone(),
+        &app.state::<DesktopState>(),
+        Some("openai_codex-default"),
+        Some(&stored_session),
+    )
+    .expect("sync provider profile link");
+
+    let listed = list_provider_profiles(app.handle().clone(), app.state::<DesktopState>())
+        .expect("list linked profile");
+    assert!(listed.profiles[0].readiness.ready);
+
+    let signed_out = logout_provider_profile(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        LogoutProviderProfileRequestDto {
+            profile_id: "openai_codex-default".into(),
+        },
+    )
+    .expect("sign out OpenAI provider profile");
+
+    let profile = signed_out
+        .profiles
+        .iter()
+        .find(|profile| profile.profile_id == "openai_codex-default")
+        .expect("default OpenAI profile");
+    assert!(!profile.readiness.ready);
+    assert_eq!(
+        profile.readiness.status,
+        cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing
+    );
+    assert!(profile.readiness.proof.is_none());
+    assert!(profile.readiness.proof_updated_at.is_none());
+    assert!(load_openai_codex_session(&auth_store_path, "acct-1")
+        .expect("load auth session")
+        .is_none());
 }
 
 #[test]

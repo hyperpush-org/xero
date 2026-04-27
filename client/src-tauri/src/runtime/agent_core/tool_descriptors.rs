@@ -140,6 +140,22 @@ pub(crate) fn select_tool_names_for_prompt(
     if contains_any(
         &lowered,
         &[
+            "process manager",
+            "background shell",
+            "bg_shell",
+            "long-running process",
+            "long running process",
+            "process visibility",
+            "process kill",
+            "interactive session",
+        ],
+    ) {
+        add_tool_group(&mut names, "process_manager");
+    }
+
+    if contains_any(
+        &lowered,
+        &[
             "browser",
             "frontend",
             "ui",
@@ -309,6 +325,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:command_") => {
                 names.insert(AUTONOMOUS_TOOL_COMMAND.into());
             }
+            line if line.starts_with("tool:process_manager ") => {
+                names.insert(AUTONOMOUS_TOOL_PROCESS_MANAGER.into());
+            }
             line if line.starts_with("tool:mcp_") => {
                 names.insert(AUTONOMOUS_TOOL_MCP.into());
             }
@@ -436,7 +455,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Known groups: core, mutation, command, web, emulator, solana, agent_ops, mcp, intelligence, notebook, powershell.",
+                            "description": "Optional tool groups to request. Known groups: core, mutation, command, process_manager, web, emulator, solana, agent_ops, mcp, intelligence, notebook, powershell.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -661,6 +680,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &["sessionId"],
                 &[("sessionId", string_schema("Command session handle."))],
             ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            "Phase-0 contract for the future process_manager tool group. It validates schemas, ownership, risk, persistence, lifecycle, and output-limit invariants but does not start, signal, kill, or persist any process yet.",
+            process_manager_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_MCP,
@@ -1009,6 +1033,83 @@ fn browser_schema() -> JsonValue {
                 "timeoutMs",
                 integer_schema("Optional timeout in milliseconds."),
             ),
+        ],
+    )
+}
+
+fn process_manager_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "Process-manager action. Phase 0 is contract-only and performs no process control.",
+                    &[
+                        "start",
+                        "list",
+                        "status",
+                        "output",
+                        "digest",
+                        "wait_for_ready",
+                        "send",
+                        "send_and_wait",
+                        "signal",
+                        "kill",
+                        "restart",
+                        "group_status",
+                    ],
+                ),
+            ),
+            ("processId", string_schema("Managed process id for targeted actions.")),
+            ("group", string_schema("Process group label for grouped status.")),
+            ("label", string_schema("Human-readable process label.")),
+            ("processType", string_schema("Process type, such as dev_server, test_watcher, shell, or job.")),
+            (
+                "argv",
+                json!({
+                    "type": "array",
+                    "description": "Command argv for start. The first item is the executable.",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                }),
+            ),
+            (
+                "cwd",
+                string_schema("Optional repo-relative working directory for start."),
+            ),
+            (
+                "shellMode",
+                boolean_schema("Whether the future implementation should run through an explicit shell mode."),
+            ),
+            (
+                "targetOwnership",
+                enum_schema(
+                    "Ownership scope for targeted actions.",
+                    &["cadence_owned", "external"],
+                ),
+            ),
+            (
+                "persistent",
+                boolean_schema("Whether a future started process should survive normal run cleanup."),
+            ),
+            (
+                "timeoutMs",
+                integer_schema("Optional timeout in milliseconds for startup, readiness, or send_and_wait."),
+            ),
+            (
+                "afterCursor",
+                integer_schema("Only return output after this monotonic output cursor."),
+            ),
+            ("maxBytes", integer_schema("Maximum output bytes to return.")),
+            ("input", string_schema("Stdin payload for send and send_and_wait.")),
+            (
+                "waitPattern",
+                string_schema("Output regex readiness or send_and_wait pattern."),
+            ),
+            ("waitPort", integer_schema("Local TCP port readiness probe.")),
+            ("waitUrl", string_schema("HTTP URL readiness probe.")),
+            ("signal", string_schema("Signal name for signal actions.")),
         ],
     )
 }

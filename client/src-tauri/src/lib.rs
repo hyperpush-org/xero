@@ -141,6 +141,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::provider_profiles::list_provider_profiles,
             commands::provider_profiles::upsert_provider_profile,
             commands::provider_profiles::set_active_provider_profile,
+            commands::provider_profiles::logout_provider_profile,
             commands::start_openai_login::start_openai_login,
             commands::submit_openai_callback::submit_openai_callback,
             commands::logout_runtime_session::logout_runtime_session,

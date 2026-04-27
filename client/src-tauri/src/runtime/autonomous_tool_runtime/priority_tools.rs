@@ -1066,6 +1066,11 @@ fn priority_tool_catalog(
             "Stop a long-running command session.",
         ),
         (
+            "process_manager",
+            "process_manager",
+            "Inspect the phase-0 process-manager contract for owned processes, risk levels, lifecycle, persistence, and output cursors.",
+        ),
+        (
             "web_search",
             "web",
             "Search the web through configured backend.",

@@ -621,6 +621,12 @@ export const setActiveProviderProfileRequestSchema = z
   })
   .strict()
 
+export const logoutProviderProfileRequestSchema = z
+  .object({
+    profileId: z.string().trim().min(1),
+  })
+  .strict()
+
 export type ProviderProfileReadinessStatusDto = z.infer<typeof providerProfileReadinessStatusSchema>
 export type ProviderProfileReadinessProofDto = z.infer<typeof providerProfileReadinessProofSchema>
 export type ProviderProfileReadinessDto = z.infer<typeof providerProfileReadinessSchema>
@@ -629,6 +635,7 @@ export type ProviderProfilesMigrationDto = z.infer<typeof providerProfilesMigrat
 export type ProviderProfilesDto = z.infer<typeof providerProfilesSchema>
 export type UpsertProviderProfileRequestDto = z.infer<typeof upsertProviderProfileRequestSchema>
 export type SetActiveProviderProfileRequestDto = z.infer<typeof setActiveProviderProfileRequestSchema>
+export type LogoutProviderProfileRequestDto = z.infer<typeof logoutProviderProfileRequestSchema>
 
 export function getActiveProviderProfile(
   providerProfiles: ProviderProfilesDto | null | undefined,

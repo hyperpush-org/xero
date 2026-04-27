@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use super::{
     repo_scope::normalize_relative_path, AutonomousCommandPolicyOutcome,
-    AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousToolRuntime,
-    DEFAULT_COMMAND_TIMEOUT_MS,
+    AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousProcessActionRiskLevel,
+    AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
+    AutonomousProcessOwnershipScope, AutonomousToolRuntime, DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::commands::{
     validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
@@ -117,6 +118,83 @@ impl AutonomousToolRuntime {
         };
 
         Ok(CommandPolicyDecision::Allow { prepared, policy })
+    }
+}
+
+pub(super) fn process_manager_policy_trace(
+    action: AutonomousProcessManagerAction,
+    target_ownership: Option<AutonomousProcessOwnershipScope>,
+    persistent: bool,
+) -> AutonomousProcessManagerPolicyTrace {
+    let target_scope = target_ownership.unwrap_or(AutonomousProcessOwnershipScope::CadenceOwned);
+    let risk_level = match action {
+        AutonomousProcessManagerAction::List
+        | AutonomousProcessManagerAction::Status
+        | AutonomousProcessManagerAction::Output
+        | AutonomousProcessManagerAction::Digest
+        | AutonomousProcessManagerAction::WaitForReady
+        | AutonomousProcessManagerAction::GroupStatus => AutonomousProcessActionRiskLevel::Observe,
+        AutonomousProcessManagerAction::Start if persistent => {
+            AutonomousProcessActionRiskLevel::PersistentBackground
+        }
+        AutonomousProcessManagerAction::Start
+        | AutonomousProcessManagerAction::Send
+        | AutonomousProcessManagerAction::SendAndWait => AutonomousProcessActionRiskLevel::RunOwned,
+        AutonomousProcessManagerAction::Signal
+        | AutonomousProcessManagerAction::Kill
+        | AutonomousProcessManagerAction::Restart
+            if target_scope == AutonomousProcessOwnershipScope::External =>
+        {
+            AutonomousProcessActionRiskLevel::SignalExternal
+        }
+        AutonomousProcessManagerAction::Signal
+        | AutonomousProcessManagerAction::Kill
+        | AutonomousProcessManagerAction::Restart => AutonomousProcessActionRiskLevel::SignalOwned,
+    };
+
+    let (approval_required, code, reason) = match risk_level {
+        AutonomousProcessActionRiskLevel::Observe => (
+            false,
+            "process_policy_observe",
+            "Observing process metadata or bounded output is read-only and does not require operator approval.",
+        ),
+        AutonomousProcessActionRiskLevel::RunOwned => (
+            true,
+            "process_policy_run_owned_requires_command_policy",
+            "Starting or interacting with Cadence-owned processes must pass the existing repo-scoped command approval policy before implementation.",
+        ),
+        AutonomousProcessActionRiskLevel::SignalOwned => (
+            false,
+            "process_policy_signal_owned",
+            "Signaling Cadence-owned processes is allowed after ownership verification and audit logging.",
+        ),
+        AutonomousProcessActionRiskLevel::SignalExternal => (
+            true,
+            "process_policy_signal_external_requires_approval",
+            "Signaling external processes requires explicit operator approval.",
+        ),
+        AutonomousProcessActionRiskLevel::PersistentBackground => (
+            true,
+            "process_policy_persistent_background_requires_approval",
+            "Persistent background processes require explicit operator approval and durable lifecycle metadata.",
+        ),
+        AutonomousProcessActionRiskLevel::SystemRead => (
+            true,
+            "process_policy_system_read_requires_approval",
+            "System reads outside the repository require explicit operator approval.",
+        ),
+        AutonomousProcessActionRiskLevel::OsAutomation => (
+            true,
+            "process_policy_os_automation_requires_approval",
+            "Operating-system automation requires explicit operator approval.",
+        ),
+    };
+
+    AutonomousProcessManagerPolicyTrace {
+        risk_level,
+        approval_required,
+        code: code.into(),
+        reason: reason.into(),
     }
 }
 

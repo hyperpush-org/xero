@@ -1355,6 +1355,25 @@ function createAdapter(options?: {
     rebuildProviderModelCatalogs()
     return currentProviderProfiles
   })
+  const logoutProviderProfile = vi.fn(async (profileId: string) => {
+    currentProviderProfiles = {
+      ...currentProviderProfiles,
+      profiles: currentProviderProfiles.profiles.map((profile) =>
+        profile.profileId === profileId && profile.providerId === 'openai_codex'
+          ? {
+              ...profile,
+              readiness: {
+                ready: false,
+                status: 'missing',
+                proofUpdatedAt: null,
+              },
+            }
+          : profile,
+      ),
+    }
+    rebuildProviderModelCatalogs()
+    return currentProviderProfiles
+  })
 
   const listMcpServers = vi.fn(async () => currentMcpRegistry)
 
@@ -1811,6 +1830,7 @@ function createAdapter(options?: {
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
+    logoutProviderProfile,
     startRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1')
       return currentRuntimeSession
@@ -2032,6 +2052,7 @@ function createAdapter(options?: {
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
+    logoutProviderProfile,
     listMcpServers,
     upsertMcpServer,
     removeMcpServer,
@@ -2859,7 +2880,7 @@ describe('CadenceApp current UI', () => {
     })
 
     await waitFor(() => expect(screen.getByText('Signed in')).toBeVisible())
-    expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeEnabled()
 
     act(() => {
       setup.emitRuntimeUpdatedError(

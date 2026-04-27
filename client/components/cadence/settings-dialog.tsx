@@ -144,6 +144,7 @@ export interface SettingsDialogProps {
   onUpsertProviderProfile?: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
   onStartLogin?: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
+  onLogoutProviderProfile?: (profileId: string) => Promise<ProviderProfilesDto>
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -203,6 +204,7 @@ export function SettingsDialog({
   onUpsertProviderProfile,
   onStartLogin,
   onLogout,
+  onLogoutProviderProfile,
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -347,6 +349,7 @@ export function SettingsDialog({
                   onUpsertProviderProfile={onUpsertProviderProfile}
                   onStartLogin={onStartLogin}
                   onLogout={onLogout}
+                  onLogoutProviderProfile={onLogoutProviderProfile}
                 />
               ) : section === "diagnostics" ? (
                 <DiagnosticsSection

@@ -5,6 +5,7 @@ mod git;
 mod policy;
 mod priority_tools;
 mod process;
+mod process_manager;
 mod repo_scope;
 mod skills;
 pub mod solana;
@@ -93,6 +94,7 @@ pub const AUTONOMOUS_TOOL_COMMAND: &str = "command";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_START: &str = "command_session_start";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_READ: &str = "command_session_read";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_STOP: &str = "command_session_stop";
+pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
 pub const AUTONOMOUS_TOOL_MCP: &str = "mcp";
 pub const AUTONOMOUS_TOOL_SUBAGENT: &str = "subagent";
 pub const AUTONOMOUS_TOOL_TODO: &str = "todo";
@@ -138,6 +140,7 @@ const TOOL_ACCESS_COMMAND_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
     AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
 ];
+const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MANAGER];
 const TOOL_ACCESS_WEB_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_WEB_SEARCH,
     AUTONOMOUS_TOOL_WEB_FETCH,
@@ -186,6 +189,7 @@ pub fn tool_access_group_tools(group: &str) -> Option<&'static [&'static str]> {
         "core" => Some(TOOL_ACCESS_CORE_TOOLS),
         "mutation" => Some(TOOL_ACCESS_MUTATION_TOOLS),
         "command" => Some(TOOL_ACCESS_COMMAND_TOOLS),
+        "process_manager" => Some(TOOL_ACCESS_PROCESS_MANAGER_TOOLS),
         "web" => Some(TOOL_ACCESS_WEB_TOOLS),
         "emulator" => Some(TOOL_ACCESS_EMULATOR_TOOLS),
         "solana" => Some(TOOL_ACCESS_SOLANA_TOOLS),
@@ -204,6 +208,7 @@ pub fn tool_access_all_known_tools() -> std::collections::BTreeSet<&'static str>
         TOOL_ACCESS_CORE_TOOLS,
         TOOL_ACCESS_MUTATION_TOOLS,
         TOOL_ACCESS_COMMAND_TOOLS,
+        TOOL_ACCESS_PROCESS_MANAGER_TOOLS,
         TOOL_ACCESS_WEB_TOOLS,
         TOOL_ACCESS_EMULATOR_TOOLS,
         TOOL_ACCESS_SOLANA_TOOLS,
@@ -224,6 +229,7 @@ pub fn tool_access_group_descriptors() -> Vec<AutonomousToolAccessGroup> {
         ("core", TOOL_ACCESS_CORE_TOOLS),
         ("mutation", TOOL_ACCESS_MUTATION_TOOLS),
         ("command", TOOL_ACCESS_COMMAND_TOOLS),
+        ("process_manager", TOOL_ACCESS_PROCESS_MANAGER_TOOLS),
         ("web", TOOL_ACCESS_WEB_TOOLS),
         ("emulator", TOOL_ACCESS_EMULATOR_TOOLS),
         ("solana", TOOL_ACCESS_SOLANA_TOOLS),
@@ -603,6 +609,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::CommandSessionStop(request) => {
                 self.command_session_stop(request)
             }
+            AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
             AutonomousToolRequest::Mcp(request) => self.mcp(request),
             AutonomousToolRequest::Subagent(request) => self.subagent(request),
             AutonomousToolRequest::Todo(request) => self.todo(request),
@@ -957,6 +964,7 @@ pub enum AutonomousToolRequest {
     CommandSessionStart(AutonomousCommandSessionStartRequest),
     CommandSessionRead(AutonomousCommandSessionReadRequest),
     CommandSessionStop(AutonomousCommandSessionStopRequest),
+    ProcessManager(AutonomousProcessManagerRequest),
     Mcp(AutonomousMcpRequest),
     Subagent(AutonomousSubagentRequest),
     Todo(AutonomousTodoRequest),
@@ -1145,6 +1153,82 @@ pub struct AutonomousCommandSessionReadRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousCommandSessionStopRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessManagerAction {
+    Start,
+    List,
+    Status,
+    Output,
+    Digest,
+    WaitForReady,
+    Send,
+    SendAndWait,
+    Signal,
+    Kill,
+    Restart,
+    GroupStatus,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessOwnershipScope {
+    CadenceOwned,
+    External,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessActionRiskLevel {
+    Observe,
+    RunOwned,
+    SignalOwned,
+    SignalExternal,
+    PersistentBackground,
+    SystemRead,
+    OsAutomation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessManagerRequest {
+    pub action: AutonomousProcessManagerAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub shell_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ownership: Option<AutonomousProcessOwnershipScope>,
+    #[serde(default)]
+    pub persistent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_cursor: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1384,6 +1468,7 @@ pub enum AutonomousToolOutput {
     Hash(AutonomousHashOutput),
     Command(AutonomousCommandOutput),
     CommandSession(AutonomousCommandSessionOutput),
+    ProcessManager(AutonomousProcessManagerOutput),
     Mcp(AutonomousMcpOutput),
     Subagent(AutonomousSubagentOutput),
     Todo(AutonomousTodoOutput),
@@ -1602,6 +1687,163 @@ pub struct AutonomousCommandSessionOutput {
     pub chunks: Vec<AutonomousCommandSessionChunk>,
     pub next_sequence: u64,
     pub policy: Option<AutonomousCommandPolicyTrace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessOwner {
+    pub thread_id: Option<String>,
+    pub session_id: Option<String>,
+    pub repo_id: Option<String>,
+    pub user_id: Option<String>,
+    pub scope: AutonomousProcessOwnershipScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessCommandMetadata {
+    pub argv: Vec<String>,
+    pub shell_mode: bool,
+    pub cwd: String,
+    pub sanitized_env: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessStatus {
+    Starting,
+    Running,
+    Ready,
+    Exited,
+    Failed,
+    Killing,
+    Killed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessReadinessDetector {
+    OutputRegex,
+    PortOpen,
+    HttpUrl,
+    ProcessExit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessReadinessState {
+    pub ready: bool,
+    pub detector: Option<AutonomousProcessReadinessDetector>,
+    pub matched: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessOutputStream {
+    Stdout,
+    Stderr,
+    Combined,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessOutputChunk {
+    pub cursor: u64,
+    pub stream: AutonomousProcessOutputStream,
+    pub text: Option<String>,
+    pub truncated: bool,
+    pub redacted: bool,
+    pub captured_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessMetadata {
+    pub process_id: String,
+    pub pid: Option<u32>,
+    pub process_group_id: Option<i64>,
+    pub label: Option<String>,
+    pub process_type: Option<String>,
+    pub group: Option<String>,
+    pub owner: AutonomousProcessOwner,
+    pub command: AutonomousProcessCommandMetadata,
+    pub status: AutonomousProcessStatus,
+    pub started_at: Option<String>,
+    pub exited_at: Option<String>,
+    pub exit_code: Option<i32>,
+    pub output_cursor: Option<u64>,
+    pub detected_urls: Vec<String>,
+    pub detected_ports: Vec<u16>,
+    pub recent_errors: Vec<String>,
+    pub recent_warnings: Vec<String>,
+    pub readiness: AutonomousProcessReadinessState,
+    pub restart_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessOutputLimits {
+    pub recent_output_ring_bytes: usize,
+    pub recent_output_ring_chunks: usize,
+    pub full_output_artifact_threshold_bytes: usize,
+    pub excerpt_bytes: usize,
+    pub cursor_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessPersistenceContract {
+    pub persist_metadata: bool,
+    pub persist_output_chunks: bool,
+    pub redact_before_persistence: bool,
+    pub persist_policy_trace: bool,
+    pub full_output_artifacts: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessLifecycleContract {
+    pub app_shutdown: String,
+    pub thread_switch: String,
+    pub session_compaction: String,
+    pub crash_recovery: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessManagerContract {
+    pub phase: String,
+    pub supported_actions: Vec<AutonomousProcessManagerAction>,
+    pub ownership_fields: Vec<String>,
+    pub risk_levels: Vec<AutonomousProcessActionRiskLevel>,
+    pub output_limits: AutonomousProcessOutputLimits,
+    pub persistence: AutonomousProcessPersistenceContract,
+    pub lifecycle: AutonomousProcessLifecycleContract,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessManagerPolicyTrace {
+    pub risk_level: AutonomousProcessActionRiskLevel,
+    pub approval_required: bool,
+    pub code: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousProcessManagerOutput {
+    pub action: AutonomousProcessManagerAction,
+    pub phase: String,
+    pub spawned: bool,
+    pub process_id: Option<String>,
+    pub processes: Vec<AutonomousProcessMetadata>,
+    pub chunks: Vec<AutonomousProcessOutputChunk>,
+    pub next_cursor: Option<u64>,
+    pub policy: AutonomousProcessManagerPolicyTrace,
+    pub contract: AutonomousProcessManagerContract,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

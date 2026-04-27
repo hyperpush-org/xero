@@ -9,8 +9,8 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
 
     assert_eq!(
         REGISTERED_COMMAND_NAMES.len(),
-        67,
-        "expected sixty-seven desktop commands"
+        68,
+        "expected sixty-eight desktop commands"
     );
 
     tauri::test::assert_ipc_response(
@@ -387,6 +387,64 @@ pub(crate) fn builder_boots_and_registered_commands_return_expected_contract_sha
                     readiness: cadence_desktop_lib::commands::ProviderProfileReadinessDto {
                         ready: false,
                         status: cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing,
+                        proof: None,
+                        proof_updated_at: None,
+                    },
+                    migrated_from_legacy: false,
+                    migrated_at: None,
+                },
+            ],
+            migration: None,
+        }),
+    );
+
+    tauri::test::assert_ipc_response(
+        &webview,
+        invoke_request(
+            cadence_desktop_lib::commands::LOGOUT_PROVIDER_PROFILE_COMMAND,
+            json!({ "request": { "profileId": "zz-openai-alt" } }),
+        ),
+        Ok(cadence_desktop_lib::commands::ProviderProfilesDto {
+            active_profile_id: "zz-openai-alt".into(),
+            profiles: vec![
+                cadence_desktop_lib::commands::ProviderProfileDto {
+                    profile_id: "openai_codex-default".into(),
+                    provider_id: "openai_codex".into(),
+                    runtime_kind: "openai_codex".into(),
+                    label: "OpenAI Codex".into(),
+                    model_id: "openai_codex".into(),
+                    preset_id: None,
+                    base_url: None,
+                    api_version: None,
+                    region: None,
+                    project_id: None,
+                    active: false,
+                    readiness: cadence_desktop_lib::commands::ProviderProfileReadinessDto {
+                        ready: false,
+                        status:
+                            cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing,
+                        proof: None,
+                        proof_updated_at: None,
+                    },
+                    migrated_from_legacy: false,
+                    migrated_at: None,
+                },
+                cadence_desktop_lib::commands::ProviderProfileDto {
+                    profile_id: "zz-openai-alt".into(),
+                    provider_id: "openai_codex".into(),
+                    runtime_kind: "openai_codex".into(),
+                    label: "OpenAI Alt".into(),
+                    model_id: "openai_codex".into(),
+                    preset_id: None,
+                    base_url: None,
+                    api_version: None,
+                    region: None,
+                    project_id: None,
+                    active: true,
+                    readiness: cadence_desktop_lib::commands::ProviderProfileReadinessDto {
+                        ready: false,
+                        status:
+                            cadence_desktop_lib::commands::ProviderProfileReadinessStatusDto::Missing,
                         proof: None,
                         proof_updated_at: None,
                     },

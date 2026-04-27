@@ -118,6 +118,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     checkProviderProfile,
     runDoctorReport,
     upsertProviderProfile,
+    logoutProviderProfile,
     refreshMcpRegistry,
     upsertMcpServer,
     removeMcpServer,
@@ -643,6 +644,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           onUpsertProviderProfile={(request) => upsertProviderProfile(request)}
           onStartLogin={(options) => startOpenAiLogin(options)}
           onLogout={() => logoutRuntimeSession()}
+          onLogoutProviderProfile={(profileId) => logoutProviderProfile(profileId)}
           onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
           onComplete={() => {
             setOnboardingDismissed(true)
@@ -760,6 +762,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onUpsertProviderProfile={(request) => upsertProviderProfile(request)}
         onStartLogin={(options) => startOpenAiLogin(options)}
         onLogout={() => logoutRuntimeSession()}
+        onLogoutProviderProfile={(profileId) => logoutProviderProfile(profileId)}
         onUpsertNotificationRoute={(request) =>
           upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
         }

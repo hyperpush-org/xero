@@ -1263,6 +1263,25 @@ function createMockAdapter(options?: {
 
     return currentProviderProfiles.value
   })
+  const logoutProviderProfile = vi.fn(async (profileId: string) => {
+    currentProviderProfiles.value = {
+      ...currentProviderProfiles.value,
+      profiles: currentProviderProfiles.value.profiles.map((profile) =>
+        profile.profileId === profileId && profile.providerId === 'openai_codex'
+          ? {
+              ...profile,
+              readiness: {
+                ready: false,
+                status: 'missing',
+                proofUpdatedAt: null,
+              },
+            }
+          : profile,
+      ),
+    }
+
+    return currentProviderProfiles.value
+  })
   const listNotificationDispatches = vi.fn(async (projectId: string) => {
     const error = notificationDispatchErrors[projectId]
     if (error) {
@@ -1658,6 +1677,7 @@ function createMockAdapter(options?: {
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
+    logoutProviderProfile,
     resolveOperatorAction,
     resumeOperatorRun,
     listNotificationRoutes,
@@ -1787,6 +1807,7 @@ function createMockAdapter(options?: {
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
+    logoutProviderProfile,
     listNotificationRoutes,
     listNotificationDispatches,
     syncNotificationAdapters: adapter.syncNotificationAdapters,
@@ -2881,7 +2902,7 @@ describe('useCadenceDesktopState', () => {
     await waitFor(() =>
       expect(setup.startOpenAiLogin).toHaveBeenCalledWith('project-1', {
         selectedProfileId: 'openai_codex-default',
-        originator: 'agent-pane',
+        originator: 'pi',
       }),
     )
     await waitFor(() => expect(screen.getByTestId('auth-phase')).toHaveTextContent('awaiting_browser_callback'))
@@ -2909,6 +2930,64 @@ describe('useCadenceDesktopState', () => {
     )
     await waitFor(() => expect(screen.getByTestId('auth-phase')).toHaveTextContent('authenticated'))
     expect(screen.getByTestId('session-label')).toHaveTextContent('session-1')
+  })
+
+  it('automatically completes OpenAI browser callback flows when the callback code arrives', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Cadence')] },
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          flowId: null,
+          sessionId: null,
+          accountId: null,
+          phase: 'idle',
+          callbackBound: null,
+          authorizationUrl: null,
+          redirectUri: null,
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': null,
+      },
+    })
+    setup.submitOpenAiCallback.mockRejectedValueOnce(
+      new CadenceDesktopError({
+        code: 'authorization_code_pending',
+        errorClass: 'retryable',
+        message: 'OpenAI login is still waiting for the browser callback.',
+        retryable: true,
+      }),
+    )
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Start OpenAI login' }))
+
+    await waitFor(() =>
+      expect(setup.startOpenAiLogin).toHaveBeenCalledWith('project-1', {
+        selectedProfileId: 'openai_codex-default',
+        originator: 'pi',
+      }),
+    )
+    await waitFor(() => expect(screen.getByTestId('auth-phase')).toHaveTextContent('awaiting_browser_callback'))
+
+    await waitFor(() => expect(setup.submitOpenAiCallback).toHaveBeenCalledTimes(1), {
+      timeout: 2_500,
+    })
+    expect(setup.submitOpenAiCallback).toHaveBeenCalledWith('project-1', 'flow-1', {
+      selectedProfileId: 'openai_codex-default',
+      manualInput: null,
+    })
+    expect(screen.getByTestId('auth-phase')).toHaveTextContent('awaiting_browser_callback')
+
+    await waitFor(() => expect(screen.getByTestId('auth-phase')).toHaveTextContent('authenticated'), {
+      timeout: 2_500,
+    })
+    expect(screen.getByTestId('session-label')).toHaveTextContent('session-1')
+    expect(setup.submitOpenAiCallback).toHaveBeenCalledTimes(2)
   })
 
   it('preserves the selected provider-profile snapshot when OpenAI callback completion refreshes a typed profile mismatch error', async () => {

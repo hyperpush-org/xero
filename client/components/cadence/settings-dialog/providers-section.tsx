@@ -37,6 +37,7 @@ export interface ProvidersSectionProps {
   onUpsertProviderProfile?: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
   onStartLogin?: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
+  onLogoutProviderProfile?: (profileId: string) => Promise<ProviderProfilesDto>
 }
 
 export function ProvidersSection({
@@ -55,6 +56,7 @@ export function ProvidersSection({
   onUpsertProviderProfile,
   onStartLogin,
   onLogout,
+  onLogoutProviderProfile,
 }: ProvidersSectionProps) {
   return (
     <div className="flex flex-col gap-6">
@@ -79,6 +81,7 @@ export function ProvidersSection({
         hasSelectedProject={Boolean(agent?.repositoryPath?.trim())}
         onStartLogin={onStartLogin}
         onLogout={onLogout}
+        onLogoutProviderProfile={onLogoutProviderProfile}
       />
     </div>
   )

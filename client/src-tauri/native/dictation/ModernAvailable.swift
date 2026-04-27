@@ -600,19 +600,6 @@ final class CadenceModernDictationEngine {
             _ = await AVCaptureDevice.requestAccess(for: .audio)
         }
 
-        if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
-            try ensurePrivacyPromptCanRun(
-                key: "NSSpeechRecognitionUsageDescription",
-                code: "dictation_speech_permission_prompt_unavailable",
-                label: "speech recognition"
-            )
-            _ = await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { status in
-                    continuation.resume(returning: status)
-                }
-            }
-        }
-
         return (microphonePermissionState(), speechPermissionState())
     }
 
@@ -631,14 +618,6 @@ final class CadenceModernDictationEngine {
             throw CadenceModernDictationError(
                 code: "dictation_microphone_permission_denied",
                 message: "Cadence needs microphone permission before it can start dictation.",
-                retryable: false
-            )
-        }
-
-        guard permissions.speech == "authorized" else {
-            throw CadenceModernDictationError(
-                code: "dictation_speech_permission_denied",
-                message: "Cadence needs speech recognition permission before it can start dictation.",
                 retryable: false
             )
         }

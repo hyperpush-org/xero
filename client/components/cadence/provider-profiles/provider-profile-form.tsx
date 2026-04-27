@@ -8,6 +8,7 @@ import {
   KeyRound,
   LoaderCircle,
   LogIn,
+  LogOut,
   Server,
   Sparkles,
 } from "lucide-react"
@@ -494,6 +495,7 @@ export interface ProviderProfileFormProps {
   hasSelectedProject?: boolean
   onStartLogin?: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
+  onLogoutProviderProfile?: (profileId: string) => Promise<ProviderProfilesDto>
 }
 
 export function ProviderProfileForm({
@@ -511,6 +513,7 @@ export function ProviderProfileForm({
   runtimeSession,
   hasSelectedProject = false,
   onStartLogin,
+  onLogoutProviderProfile,
 }: ProviderProfileFormProps) {
   const [editingCardKey, setEditingCardKey] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, ProviderDraft>>({})
@@ -796,6 +799,47 @@ export function ProviderProfileForm({
     }
   }
 
+  async function handleOpenAiLogout(card: ProviderProfileCard) {
+    if (!onLogoutProviderProfile) return
+
+    const profileId = card.profile?.profileId ?? null
+    if (!profileId) {
+      setAuthError({
+        cardKey: card.key,
+        message:
+          "Cadence could not sign out because the OpenAI provider profile is unavailable. Refresh Settings and retry.",
+      })
+      return
+    }
+
+    setPendingAuth({ cardKey: card.key })
+    setFormError(null)
+    setAuthError(null)
+
+    try {
+      await onLogoutProviderProfile(profileId)
+      setProfileDiagnostics((currentReports) => {
+        const next = { ...currentReports }
+        delete next[profileId]
+        return next
+      })
+      setProfileDiagnosticStatuses((currentStatuses) => {
+        const next = { ...currentStatuses }
+        delete next[profileId]
+        return next
+      })
+      setProfileDiagnosticErrors((currentErrors) => {
+        const next = { ...currentErrors }
+        delete next[profileId]
+        return next
+      })
+    } catch (error) {
+      setAuthError({ cardKey: card.key, message: errMsg(error, "Could not sign out.") })
+    } finally {
+      setPendingAuth(null)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-5">
       {providerProfilesLoadError ? (
@@ -961,6 +1005,7 @@ export function ProviderProfileForm({
           const readinessBadge = getProviderReadinessBadge(card.profile)
           const hasSavedApiKey = hasSavedApiKeyCredential(card)
           const shouldRenderOpenAiAuth = isOpenAi && Boolean(onStartLogin)
+          const shouldRenderOpenAiLogout = isOpenAi && Boolean(onLogoutProviderProfile)
           const isRuntimeProvider = runtimeSession?.providerId === card.preset.providerId
           const selectedRuntimeErrorMessage = runtimeSession?.lastError?.message?.trim() || null
           const isOpenAiSignedIn = Boolean(isOpenAi && card.profile?.readiness.ready)
@@ -1070,11 +1115,30 @@ export function ProviderProfileForm({
                     </Button>
                   )}
 
-                  {shouldRenderOpenAiAuth ? (
+                  {shouldRenderOpenAiAuth || (isOpenAiSignedIn && shouldRenderOpenAiLogout) ? (
                     isOpenAiSignedIn ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-px text-[10.5px] font-medium text-emerald-600 dark:text-emerald-300">
-                        Signed in
-                      </span>
+                      <>
+                        <span className="inline-flex items-center gap-1.5 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-px text-[10.5px] font-medium text-emerald-600 dark:text-emerald-300">
+                          Signed in
+                        </span>
+                        {shouldRenderOpenAiLogout ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 gap-1.5 px-2.5 text-[11.5px]"
+                            disabled={pendingAuth !== null || isSaving}
+                            onClick={() => void handleOpenAiLogout(card)}
+                          >
+                            {pendingAuth?.cardKey === card.key ? (
+                              <LoaderCircle className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <LogOut className="h-3 w-3" />
+                            )}
+                            Sign out
+                          </Button>
+                        ) : null}
+                      </>
                     ) : (
                       <Button
                         size="sm"

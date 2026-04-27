@@ -26,7 +26,9 @@ use cadence_desktop_lib::{
         AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
         AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousLspAction,
         AutonomousLspRequest, AutonomousMcpAction, AutonomousMcpRequest,
-        AutonomousNotebookEditRequest, AutonomousReadRequest, AutonomousSearchRequest,
+        AutonomousNotebookEditRequest, AutonomousProcessActionRiskLevel,
+        AutonomousProcessManagerAction, AutonomousProcessManagerRequest,
+        AutonomousProcessOwnershipScope, AutonomousReadRequest, AutonomousSearchRequest,
         AutonomousSubagentRequest, AutonomousSubagentType, AutonomousTodoAction,
         AutonomousTodoRequest, AutonomousToolAccessAction, AutonomousToolAccessRequest,
         AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime,
@@ -361,6 +363,11 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                 .available_groups
                 .iter()
                 .any(|group| group.name == "emulator"));
+            assert!(output
+                .available_groups
+                .iter()
+                .any(|group| group.name == "process_manager"
+                    && group.tools == vec!["process_manager"]));
         }
         other => panic!("unexpected output: {other:?}"),
     }
@@ -369,7 +376,7 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
         .execute(AutonomousToolRequest::ToolAccess(
             AutonomousToolAccessRequest {
                 action: AutonomousToolAccessAction::Request,
-                groups: vec!["emulator".into()],
+                groups: vec!["emulator".into(), "process_manager".into()],
                 tools: vec!["command".into(), "missing_tool".into()],
                 reason: Some("Need to drive app use and run setup.".into()),
             },
@@ -379,8 +386,105 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
         AutonomousToolOutput::ToolAccess(output) => {
             assert_eq!(output.action, "request");
             assert!(output.granted_tools.contains(&"emulator".into()));
+            assert!(output.granted_tools.contains(&"process_manager".into()));
             assert!(output.granted_tools.contains(&"command".into()));
             assert!(output.denied_tools.contains(&"missing_tool".into()));
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_process_manager_phase_zero_is_contract_only() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(root.path()).expect("runtime");
+
+    let start = runtime
+        .execute(AutonomousToolRequest::ProcessManager(
+            AutonomousProcessManagerRequest {
+                action: AutonomousProcessManagerAction::Start,
+                process_id: None,
+                group: Some("dev".into()),
+                label: Some("test watcher".into()),
+                process_type: Some("test_watcher".into()),
+                argv: vec!["echo".into(), "ready".into()],
+                cwd: None,
+                shell_mode: false,
+                target_ownership: None,
+                persistent: false,
+                timeout_ms: Some(1_000),
+                after_cursor: None,
+                max_bytes: None,
+                input: None,
+                wait_pattern: Some("ready".into()),
+                wait_port: None,
+                wait_url: None,
+                signal: None,
+            },
+        ))
+        .expect("phase-zero process manager contract");
+    match start.output {
+        AutonomousToolOutput::ProcessManager(output) => {
+            assert_eq!(output.action, AutonomousProcessManagerAction::Start);
+            assert_eq!(output.phase, "phase_0_contract");
+            assert!(!output.spawned);
+            assert!(output.processes.is_empty());
+            assert!(output.chunks.is_empty());
+            assert_eq!(
+                output.policy.risk_level,
+                AutonomousProcessActionRiskLevel::RunOwned
+            );
+            assert!(output.policy.approval_required);
+            assert!(output
+                .contract
+                .supported_actions
+                .contains(&AutonomousProcessManagerAction::SendAndWait));
+            assert!(output
+                .contract
+                .risk_levels
+                .contains(&AutonomousProcessActionRiskLevel::SignalExternal));
+            assert!(output.contract.persistence.redact_before_persistence);
+            assert_eq!(
+                output.contract.output_limits.cursor_kind,
+                "monotonic_output_cursor"
+            );
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+
+    let external_kill = runtime
+        .execute(AutonomousToolRequest::ProcessManager(
+            AutonomousProcessManagerRequest {
+                action: AutonomousProcessManagerAction::Kill,
+                process_id: Some("external-1".into()),
+                group: None,
+                label: None,
+                process_type: None,
+                argv: Vec::new(),
+                cwd: None,
+                shell_mode: false,
+                target_ownership: Some(AutonomousProcessOwnershipScope::External),
+                persistent: false,
+                timeout_ms: None,
+                after_cursor: None,
+                max_bytes: None,
+                input: None,
+                wait_pattern: None,
+                wait_port: None,
+                wait_url: None,
+                signal: None,
+            },
+        ))
+        .expect("phase-zero external kill contract");
+    match external_kill.output {
+        AutonomousToolOutput::ProcessManager(output) => {
+            assert!(!output.spawned);
+            assert_eq!(output.process_id.as_deref(), Some("external-1"));
+            assert_eq!(
+                output.policy.risk_level,
+                AutonomousProcessActionRiskLevel::SignalExternal
+            );
+            assert!(output.policy.approval_required);
         }
         other => panic!("unexpected output: {other:?}"),
     }

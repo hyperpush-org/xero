@@ -10,7 +10,7 @@ const DEFAULT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const DEFAULT_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const DEFAULT_SCOPE: &str = "openid profile email offline_access";
-const DEFAULT_ORIGINATOR: &str = "Cadence";
+const DEFAULT_ORIGINATOR: &str = "pi";
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCodexAuthConfig {

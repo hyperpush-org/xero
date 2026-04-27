@@ -108,7 +108,8 @@ pub use project_files::{
 pub use provider_diagnostics::check_provider_profile;
 pub use provider_model_catalog::get_provider_model_catalog;
 pub use provider_profiles::{
-    list_provider_profiles, set_active_provider_profile, upsert_provider_profile,
+    list_provider_profiles, logout_provider_profile, set_active_provider_profile,
+    upsert_provider_profile,
 };
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
 pub use remove_mcp_server::remove_mcp_server;

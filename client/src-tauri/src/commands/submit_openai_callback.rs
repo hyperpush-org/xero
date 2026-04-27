@@ -58,6 +58,10 @@ pub fn submit_openai_callback<R: Runtime>(
             Ok(persisted)
         }
         Err(error) => {
+            if request.manual_input.is_none() && error.code == "authorization_code_pending" {
+                return Err(command_error_from_auth(error));
+            }
+
             let snapshot = state.inner().active_auth_flows().snapshot(&request.flow_id);
             let failed = if let Some(snapshot) = snapshot {
                 let last_error = snapshot

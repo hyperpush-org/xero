@@ -34,7 +34,11 @@ pub(super) fn spawn_callback_listener(listener: TcpListener, flow: ActiveOpenAiC
             }
 
             match listener.accept() {
-                Ok((stream, _)) => handle_callback_connection(stream, &flow),
+                Ok((stream, _)) => {
+                    if handle_callback_connection(stream, &flow) {
+                        break;
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(25));
                 }
@@ -56,7 +60,7 @@ pub(super) fn spawn_callback_listener(listener: TcpListener, flow: ActiveOpenAiC
     });
 }
 
-fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlow) {
+fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlow) -> bool {
     let mut request_line = String::new();
     {
         let mut reader = BufReader::new(&mut stream);
@@ -70,7 +74,7 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
                 },
                 RuntimeAuthPhase::AwaitingBrowserCallback,
             );
-            return;
+            return false;
         }
 
         let mut discard = String::new();
@@ -96,7 +100,7 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
                 },
                 RuntimeAuthPhase::AwaitingBrowserCallback,
             );
-            return;
+            return false;
         }
     };
 
@@ -112,13 +116,13 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
                 },
                 RuntimeAuthPhase::AwaitingBrowserCallback,
             );
-            return;
+            return false;
         }
     };
 
     if url.path() != flow.callback_path() {
         let _ = write_plain_response(&mut stream, 404, "Not found");
-        return;
+        return false;
     }
 
     let returned_state = url
@@ -136,7 +140,7 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
             },
             RuntimeAuthPhase::AwaitingBrowserCallback,
         );
-        return;
+        return false;
     }
 
     let code = url
@@ -152,11 +156,12 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
             },
             RuntimeAuthPhase::AwaitingBrowserCallback,
         );
-        return;
+        return false;
     };
 
     flow.store_callback_code(code);
     let _ = write_html_response(&mut stream, SUCCESS_HTML);
+    true
 }
 
 fn write_html_response(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {

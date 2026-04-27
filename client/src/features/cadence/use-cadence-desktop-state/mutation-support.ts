@@ -79,6 +79,7 @@ export type CadenceDesktopMutationActions = Pick<
   | 'refreshProviderProfiles'
   | 'upsertProviderProfile'
   | 'setActiveProviderProfile'
+  | 'logoutProviderProfile'
   | 'refreshRuntimeSettings'
   | 'upsertRuntimeSettings'
   | 'refreshMcpRegistry'

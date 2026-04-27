@@ -18,7 +18,7 @@ const SUPERVISOR_BINARY_PREFIX: &str = "Cadence-runtime-supervisor";
 const MAX_SUPERVISOR_SIBLINGS_PER_DIRECTORY: usize = 8;
 const MAX_INSPECTED_SUPERVISOR_PATHS_IN_ERROR: usize = 12;
 
-pub const OPENAI_DEFAULT_CALLBACK_HOST: &str = "127.0.0.1";
+pub const OPENAI_DEFAULT_CALLBACK_HOST: &str = "localhost";
 pub const OPENAI_DEFAULT_CALLBACK_PORT: u16 = 1455;
 pub const OPENAI_DEFAULT_CALLBACK_PATH: &str = "/auth/callback";
 

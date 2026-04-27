@@ -489,6 +489,7 @@ export interface UseCadenceDesktopStateResult {
   runDoctorReport: (request?: Partial<RunDoctorReportRequestDto>) => Promise<CadenceDoctorReportDto>
   upsertProviderProfile: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
   setActiveProviderProfile: (profileId: string) => Promise<ProviderProfilesDto>
+  logoutProviderProfile: (profileId: string) => Promise<ProviderProfilesDto>
   refreshRuntimeSettings: (options?: { force?: boolean }) => Promise<RuntimeSettingsDto>
   upsertRuntimeSettings: (request: UpsertRuntimeSettingsRequestDto) => Promise<RuntimeSettingsDto>
   refreshMcpRegistry: (options?: { force?: boolean }) => Promise<McpRegistryDto>

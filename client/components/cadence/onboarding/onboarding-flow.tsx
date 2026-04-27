@@ -145,6 +145,7 @@ export interface OnboardingFlowProps {
   onUpsertProviderProfile: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
   onStartLogin?: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
+  onLogoutProviderProfile?: (profileId: string) => Promise<ProviderProfilesDto>
   onUpsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, "projectId">,
   ) => Promise<unknown>
@@ -175,6 +176,7 @@ export function OnboardingFlow({
   onUpsertProviderProfile,
   onStartLogin,
   onLogout,
+  onLogoutProviderProfile,
   onUpsertNotificationRoute,
   onComplete,
   onDismiss,
@@ -251,6 +253,7 @@ export function OnboardingFlow({
               onUpsertProviderProfile={onUpsertProviderProfile}
               onStartLogin={onStartLogin}
               onLogout={onLogout}
+              onLogoutProviderProfile={onLogoutProviderProfile}
             />
           ) : null}
           {currentStep.id === "project" ? (

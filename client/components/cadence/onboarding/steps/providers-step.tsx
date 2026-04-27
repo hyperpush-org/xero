@@ -30,6 +30,7 @@ interface ProvidersStepProps {
   onUpsertProviderProfile: (request: UpsertProviderProfileRequestDto) => Promise<ProviderProfilesDto>
   onStartLogin?: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
+  onLogoutProviderProfile?: (profileId: string) => Promise<ProviderProfilesDto>
 }
 
 export function ProvidersStep({
@@ -47,6 +48,7 @@ export function ProvidersStep({
   onUpsertProviderProfile,
   onStartLogin,
   onLogout,
+  onLogoutProviderProfile,
 }: ProvidersStepProps) {
   return (
     <div>
@@ -71,6 +73,7 @@ export function ProvidersStep({
           hasSelectedProject={hasSelectedProject}
           onStartLogin={onStartLogin}
           onLogout={onLogout}
+          onLogoutProviderProfile={onLogoutProviderProfile}
         />
       </div>
     </div>

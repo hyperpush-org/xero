@@ -244,6 +244,51 @@ fn create_openrouter_profile(
 }
 
 #[test]
+fn openai_codex_authorize_url_matches_gsd_compatible_oauth_shape_by_default() {
+    let server = TestHttpServer::spawn(|_| TestHttpResponse::plain(200, "unused"));
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let config = OpenAiCodexAuthConfig {
+        token_url: server.url("/oauth/token"),
+        callback_port: 0,
+        timeout: Duration::from_secs(5),
+        ..OpenAiCodexAuthConfig::default()
+    };
+
+    let started = start_openai_codex_flow(
+        &app.state::<DesktopState>(),
+        PROJECT_ID,
+        DEFAULT_OPENAI_PROFILE_ID,
+        config,
+        None,
+    )
+    .expect("start auth flow");
+    let authorization_url =
+        url::Url::parse(&started.authorization_url).expect("authorization url should parse");
+    let query = authorization_url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    assert_eq!(
+        query.get("redirect_uri").map(String::as_str),
+        Some(started.redirect_uri.as_str())
+    );
+    assert!(started.redirect_uri.starts_with("http://localhost:"));
+    assert!(started.redirect_uri.ends_with("/auth/callback"));
+    assert_eq!(query.get("originator").map(String::as_str), Some("pi"));
+    assert_eq!(
+        query.get("codex_cli_simplified_flow").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        query.get("id_token_add_organizations").map(String::as_str),
+        Some("true")
+    );
+}
+
+#[test]
 fn callback_flow_persists_tokens_only_to_app_local_store_and_exposes_redacted_snapshot() {
     let server = TestHttpServer::spawn(|form| {
         let code = form.get("code").cloned().unwrap_or_default();
@@ -373,6 +418,7 @@ fn manual_fallback_is_used_when_callback_port_cannot_bind() {
     let app = build_mock_app(state);
 
     let mut config = auth_config(&server);
+    config.callback_host = "127.0.0.1".into();
     config.callback_port = occupied_port;
     let started = start_openai_codex_flow(
         &app.state::<DesktopState>(),
@@ -963,6 +1009,91 @@ fn submit_openai_callback_rejects_selected_profile_switch_before_completion() {
 }
 
 #[test]
+fn wrapper_submit_pending_browser_callback_keeps_flow_waiting() {
+    let server = TestHttpServer::spawn(|form| {
+        let code = form.get("code").cloned().unwrap_or_default();
+        TestHttpResponse::json(
+            200,
+            json!({
+                "access_token": jwt_with_account_id(&format!("acct-{code}")),
+                "refresh_token": format!("refresh-{code}"),
+                "expires_in": 3600,
+            })
+            .to_string(),
+        )
+    });
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, _registry_path, auth_store_path) = create_project_state(&root);
+    let state = state.with_openai_auth_config_override(auth_config(&server));
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+
+    let started = start_openai_login(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartOpenAiLoginRequestDto {
+            project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
+            originator: Some("Cadence-tests".into()),
+        },
+    )
+    .expect("start wrapper login");
+    let flow_id = started.flow_id.clone().expect("flow id");
+    let redirect_uri = started.redirect_uri.clone().expect("redirect uri");
+
+    let pending = submit_openai_callback(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SubmitOpenAiCallbackRequestDto {
+            project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
+            flow_id: flow_id.clone(),
+            manual_input: None,
+        },
+    )
+    .expect_err("browser callback should still be pending");
+    assert_eq!(pending.code, "authorization_code_pending");
+
+    let runtime = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("runtime session after pending callback probe");
+    assert_eq!(runtime.flow_id.as_deref(), Some(flow_id.as_str()));
+    assert_eq!(runtime.phase, RuntimeAuthPhase::AwaitingBrowserCallback);
+    assert!(runtime.last_error_code.is_none());
+    assert!(runtime.last_error.is_none());
+    assert!(!auth_store_path.exists());
+
+    let expected_state = active_flow_expected_state(&app, &flow_id);
+    send_callback(&redirect_uri, &expected_state, "browser-code");
+
+    let runtime = submit_openai_callback(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SubmitOpenAiCallbackRequestDto {
+            project_id: project_id.clone(),
+            profile_id: DEFAULT_OPENAI_PROFILE_ID.into(),
+            flow_id,
+            manual_input: None,
+        },
+    )
+    .expect("submit callback after browser return");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.account_id.as_deref(), Some("acct-browser-code"));
+    assert!(auth_store_path.exists());
+
+    let request = server.single_request();
+    assert_eq!(
+        request.get("code").map(String::as_str),
+        Some("browser-code")
+    );
+}
+
+#[test]
 fn wrapper_commands_complete_browser_callback_without_repo_secret_leakage() {
     let server = TestHttpServer::spawn(|form| {
         let code = form.get("code").cloned().unwrap_or_default();
@@ -1059,6 +1190,7 @@ fn wrapper_submit_supports_manual_fallback_and_preserves_redaction() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, auth_store_path) = create_project_state(&root);
     let mut config = auth_config(&server);
+    config.callback_host = "127.0.0.1".into();
     config.callback_port = occupied_port;
     let state = state.with_openai_auth_config_override(config);
     let app = build_mock_app(state);

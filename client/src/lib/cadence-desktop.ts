@@ -204,6 +204,7 @@ import {
   type UpsertRuntimeSettingsRequestDto,
 } from '@/src/lib/cadence-model/runtime'
 import {
+  logoutProviderProfileRequestSchema,
   providerProfilesSchema,
   setActiveProviderProfileRequestSchema,
   upsertProviderProfileRequestSchema,
@@ -367,6 +368,7 @@ const COMMANDS = {
   listProviderProfiles: 'list_provider_profiles',
   upsertProviderProfile: 'upsert_provider_profile',
   setActiveProviderProfile: 'set_active_provider_profile',
+  logoutProviderProfile: 'logout_provider_profile',
   startOpenAiLogin: 'start_openai_login',
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
@@ -705,6 +707,7 @@ export interface CadenceDesktopAdapter {
   upsertRuntimeSettings(request: UpsertRuntimeSettingsRequestDto): Promise<RuntimeSettingsDto>
   upsertProviderProfile(request: UpsertProviderProfileRequestDto): Promise<ProviderProfilesDto>
   setActiveProviderProfile(profileId: string): Promise<ProviderProfilesDto>
+  logoutProviderProfile(profileId: string): Promise<ProviderProfilesDto>
   resolveOperatorAction(
     projectId: string,
     actionId: string,
@@ -1862,6 +1865,13 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   setActiveProviderProfile(profileId) {
     const request = setActiveProviderProfileRequestSchema.parse({ profileId })
     return invokeTyped(COMMANDS.setActiveProviderProfile, providerProfilesSchema, {
+      request,
+    })
+  },
+
+  logoutProviderProfile(profileId) {
+    const request = logoutProviderProfileRequestSchema.parse({ profileId })
+    return invokeTyped(COMMANDS.logoutProviderProfile, providerProfilesSchema, {
       request,
     })
   },

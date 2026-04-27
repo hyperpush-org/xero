@@ -864,6 +864,20 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> = {}): 
     onUpsertProviderProfile: vi.fn(async (_request: UpsertProviderProfileRequestDto) => makeProviderProfiles()),
     onStartLogin: vi.fn(async () => makeRuntimeSession()),
     onLogout: vi.fn(async () => makeRuntimeSession({ sessionId: null, accountId: null })),
+    onLogoutProviderProfile: vi.fn(async () =>
+      makeProviderProfiles({
+        profiles: [
+          makeOpenAiProfile({
+            readiness: {
+              ready: false,
+              status: 'missing',
+              proofUpdatedAt: null,
+            },
+          }),
+          makeOpenRouterProfile({ active: false }),
+        ],
+      }),
+    ),
     mcpRegistry: makeMcpRegistry(),
     mcpImportDiagnostics: [],
     mcpRegistryLoadStatus: 'ready',
@@ -2143,6 +2157,54 @@ describe('SettingsDialog', () => {
     ).toBeVisible()
     expect(screen.queryByText('OpenAI Alt')).not.toBeInTheDocument()
     expect(within(openAiCard).queryByText('Active')).not.toBeInTheDocument()
+  })
+
+  it('offers provider-level OpenAI sign out from settings without requiring a selected project', async () => {
+    const onLogoutProviderProfile = vi.fn(async (_profileId: string) =>
+      makeProviderProfiles({
+        profiles: [
+          makeOpenAiProfile({
+            readiness: {
+              ready: false,
+              status: 'missing',
+              proofUpdatedAt: null,
+            },
+          }),
+          makeOpenRouterProfile({ active: false }),
+        ],
+      }),
+    )
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          agent: null,
+          providerProfiles: makeProviderProfiles({
+            profiles: [
+              makeOpenAiProfile({
+                readiness: {
+                  ready: true,
+                  status: 'ready',
+                  proof: 'oauth_session',
+                  proofUpdatedAt: '2026-04-26T12:00:00Z',
+                },
+              }),
+              makeOpenRouterProfile({ active: false }),
+            ],
+          }),
+          onLogoutProviderProfile,
+        })}
+      />,
+    )
+
+    const openAiCard = getProviderCard('OpenAI Codex')
+    expect(within(openAiCard).getByText('Signed in')).toBeVisible()
+    const signOut = within(openAiCard).getByRole('button', { name: 'Sign out' })
+    expect(signOut).toBeEnabled()
+
+    fireEvent.click(signOut)
+
+    await waitFor(() => expect(onLogoutProviderProfile).toHaveBeenCalledWith('openai_codex-default'))
   })
 
   it('manages MCP servers from settings with validation, import, remove, and status refresh actions', async () => {

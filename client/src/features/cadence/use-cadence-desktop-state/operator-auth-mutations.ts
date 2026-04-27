@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import {
   CadenceDesktopError,
@@ -13,6 +13,19 @@ import {
   getActiveProjectId,
   getOperatorActionError,
 } from './mutation-support'
+
+const OPENAI_CALLBACK_INITIAL_POLL_DELAY_MS = 1_500
+const OPENAI_CALLBACK_POLL_INTERVAL_MS = 750
+const OPENAI_CALLBACK_POLL_TIMEOUT_MS = 120_000
+
+type OpenAiCallbackPollTask = {
+  cancelled: boolean
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+function isOpenAiCallbackPending(error: unknown): boolean {
+  return error instanceof CadenceDesktopError && error.code === 'authorization_code_pending'
+}
 
 function getSelectedProfileId(selectedProfileId: string | null | undefined, action: string): string {
   const profileId = selectedProfileId?.trim() ?? ''
@@ -54,6 +67,111 @@ export function useOperatorAuthMutations({
     syncRuntimeSession,
     applyRuntimeSessionUpdate,
   } = operations
+  const openAiCallbackPollsRef = useRef<Map<string, OpenAiCallbackPollTask>>(new Map())
+
+  useEffect(() => {
+    return () => {
+      for (const task of openAiCallbackPollsRef.current.values()) {
+        task.cancelled = true
+        if (task.timer !== null) {
+          clearTimeout(task.timer)
+        }
+      }
+      openAiCallbackPollsRef.current.clear()
+    }
+  }, [])
+
+  const cancelOpenAiCallbackPoll = useCallback((projectId: string, flowId: string) => {
+    const pollKey = `${projectId}:${flowId}`
+    const task = openAiCallbackPollsRef.current.get(pollKey)
+    if (!task) {
+      return
+    }
+
+    task.cancelled = true
+    if (task.timer !== null) {
+      clearTimeout(task.timer)
+    }
+    openAiCallbackPollsRef.current.delete(pollKey)
+  }, [])
+
+  const cancelOpenAiCallbackPollsForProject = useCallback((projectId: string) => {
+    for (const pollKey of Array.from(openAiCallbackPollsRef.current.keys())) {
+      if (pollKey.startsWith(`${projectId}:`)) {
+        const task = openAiCallbackPollsRef.current.get(pollKey)
+        if (task) {
+          task.cancelled = true
+          if (task.timer !== null) {
+            clearTimeout(task.timer)
+          }
+        }
+        openAiCallbackPollsRef.current.delete(pollKey)
+      }
+    }
+  }, [])
+
+  const scheduleOpenAiCallbackCompletion = useCallback(
+    (projectId: string, flowId: string, selectedProfileId: string) => {
+      const pollKey = `${projectId}:${flowId}`
+      if (openAiCallbackPollsRef.current.has(pollKey)) {
+        return
+      }
+
+      const deadline = Date.now() + OPENAI_CALLBACK_POLL_TIMEOUT_MS
+      const task: OpenAiCallbackPollTask = {
+        cancelled: false,
+        timer: null,
+      }
+
+      const finish = () => {
+        task.cancelled = true
+        if (task.timer !== null) {
+          clearTimeout(task.timer)
+          task.timer = null
+        }
+        openAiCallbackPollsRef.current.delete(pollKey)
+      }
+
+      const poll = async () => {
+        task.timer = null
+        if (task.cancelled) {
+          return
+        }
+
+        try {
+          const response = await adapter.submitOpenAiCallback(projectId, flowId, {
+            selectedProfileId,
+            manualInput: null,
+          })
+          if (!task.cancelled) {
+            applyRuntimeSessionUpdate(mapRuntimeSession(response))
+          }
+          finish()
+        } catch (error) {
+          if (task.cancelled) {
+            return
+          }
+
+          if (isOpenAiCallbackPending(error) && Date.now() < deadline) {
+            task.timer = setTimeout(poll, OPENAI_CALLBACK_POLL_INTERVAL_MS)
+            return
+          }
+
+          try {
+            await syncRuntimeSession(projectId)
+          } catch {
+            // Ignore follow-up refresh failures and preserve the last truthful state.
+          } finally {
+            finish()
+          }
+        }
+      }
+
+      openAiCallbackPollsRef.current.set(pollKey, task)
+      task.timer = setTimeout(poll, OPENAI_CALLBACK_INITIAL_POLL_DELAY_MS)
+    },
+    [adapter, applyRuntimeSessionUpdate, syncRuntimeSession],
+  )
 
   const resolveOperatorAction = useCallback(
     async (
@@ -158,9 +276,17 @@ export function useOperatorAuthMutations({
     try {
       const response = await adapter.startOpenAiLogin(projectId, {
         selectedProfileId,
-        originator: 'agent-pane',
+        originator: 'pi',
       })
-      return applyRuntimeSessionUpdate(mapRuntimeSession(response))
+      const runtime = applyRuntimeSessionUpdate(mapRuntimeSession(response))
+      if (
+        runtime.providerId === 'openai_codex' &&
+        runtime.flowId &&
+        runtime.isLoginInProgress
+      ) {
+        scheduleOpenAiCallbackCompletion(projectId, runtime.flowId, selectedProfileId)
+      }
+      return runtime
     } catch (error) {
       try {
         await syncRuntimeSession(projectId)
@@ -170,7 +296,14 @@ export function useOperatorAuthMutations({
 
       throw error
     }
-  }, [activeProjectIdRef, adapter, applyRuntimeSessionUpdate, providerProfilesRef, syncRuntimeSession])
+  }, [
+    activeProjectIdRef,
+    adapter,
+    applyRuntimeSessionUpdate,
+    providerProfilesRef,
+    scheduleOpenAiCallbackCompletion,
+    syncRuntimeSession,
+  ])
 
   const submitOpenAiCallback = useCallback(
     async (flowId: string, options: { manualInput?: string | null } = {}) => {
@@ -182,6 +315,7 @@ export function useOperatorAuthMutations({
         providerProfilesRef.current?.activeProfileId,
         'complete OpenAI login',
       )
+      cancelOpenAiCallbackPoll(projectId, flowId)
 
       try {
         const response = await adapter.submitOpenAiCallback(projectId, flowId, {
@@ -199,7 +333,14 @@ export function useOperatorAuthMutations({
         throw error
       }
     },
-    [activeProjectIdRef, adapter, applyRuntimeSessionUpdate, providerProfilesRef, syncRuntimeSession],
+    [
+      activeProjectIdRef,
+      adapter,
+      applyRuntimeSessionUpdate,
+      cancelOpenAiCallbackPoll,
+      providerProfilesRef,
+      syncRuntimeSession,
+    ],
   )
 
   const startRuntimeSession = useCallback(async (options: { providerProfileId?: string | null } = {}) => {
@@ -226,6 +367,7 @@ export function useOperatorAuthMutations({
 
   const logoutRuntimeSession = useCallback(async () => {
     const projectId = getActiveProjectId(activeProjectIdRef, 'Select an imported project before signing out.')
+    cancelOpenAiCallbackPollsForProject(projectId)
 
     try {
       const response = await adapter.logoutRuntimeSession(projectId)
@@ -239,7 +381,13 @@ export function useOperatorAuthMutations({
 
       throw error
     }
-  }, [activeProjectIdRef, adapter, applyRuntimeSessionUpdate, syncRuntimeSession])
+  }, [
+    activeProjectIdRef,
+    adapter,
+    applyRuntimeSessionUpdate,
+    cancelOpenAiCallbackPollsForProject,
+    syncRuntimeSession,
+  ])
 
   return {
     startOpenAiLogin,

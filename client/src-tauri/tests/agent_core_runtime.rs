@@ -259,6 +259,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "command_session_start",
         "command_session_read",
         "command_session_stop",
+        "process_manager",
         "mcp",
         "subagent",
         "todo",
@@ -318,6 +319,22 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .descriptor("tool_access")
         .expect("tool access descriptor");
     assert_eq!(tool_access.input_schema["required"], json!(["action"]));
+    assert!(
+        tool_access.input_schema["properties"]["groups"]["description"]
+            .as_str()
+            .expect("tool access groups description")
+            .contains("process_manager")
+    );
+
+    let process_manager = registry
+        .descriptor("process_manager")
+        .expect("process manager descriptor");
+    assert_eq!(process_manager.input_schema["required"], json!(["action"]));
+    assert!(process_manager.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("process manager action enum")
+        .contains(&json!("send_and_wait")));
+    assert!(process_manager.description.contains("Phase-0 contract"));
 
     assert!(registry.descriptor("browser").is_some());
     assert!(registry.descriptor("mcp").is_some());
@@ -396,6 +413,15 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     assert!(implementation_names.contains("command"));
     assert!(implementation_names.contains("command_session_start"));
     assert!(!implementation_names.contains("emulator"));
+
+    let process_manager = ToolRegistry::for_prompt(
+        temp.path(),
+        "Design the process manager for long-running process visibility.",
+        &controls,
+    );
+    assert!(process_manager
+        .descriptor_names()
+        .contains("process_manager"));
 
     let audit = ToolRegistry::for_prompt(
         temp.path(),

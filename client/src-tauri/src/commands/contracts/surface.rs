@@ -60,6 +60,7 @@ pub const RUN_DOCTOR_REPORT_COMMAND: &str = "run_doctor_report";
 pub const LIST_PROVIDER_PROFILES_COMMAND: &str = "list_provider_profiles";
 pub const UPSERT_PROVIDER_PROFILE_COMMAND: &str = "upsert_provider_profile";
 pub const SET_ACTIVE_PROVIDER_PROFILE_COMMAND: &str = "set_active_provider_profile";
+pub const LOGOUT_PROVIDER_PROFILE_COMMAND: &str = "logout_provider_profile";
 pub const START_AUTONOMOUS_RUN_COMMAND: &str = "start_autonomous_run";
 pub const START_OPENAI_LOGIN_COMMAND: &str = "start_openai_login";
 pub const SUBMIT_OPENAI_CALLBACK_COMMAND: &str = "submit_openai_callback";
@@ -131,6 +132,7 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     LIST_PROVIDER_PROFILES_COMMAND,
     UPSERT_PROVIDER_PROFILE_COMMAND,
     SET_ACTIVE_PROVIDER_PROFILE_COMMAND,
+    LOGOUT_PROVIDER_PROFILE_COMMAND,
     START_AUTONOMOUS_RUN_COMMAND,
     START_OPENAI_LOGIN_COMMAND,
     SUBMIT_OPENAI_CALLBACK_COMMAND,
