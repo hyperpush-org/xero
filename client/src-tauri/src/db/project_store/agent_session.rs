@@ -7,8 +7,8 @@ use crate::{auth::now_timestamp, commands::CommandError, db::database_path_for_r
 
 use super::{
     agent_lineage::{read_agent_session_lineage_for_child, AgentSessionLineageRecord},
-    decode_optional_non_empty_text, open_runtime_database, read_project_row,
-    require_non_empty_owned, validate_non_empty_text,
+    clear_memory_runs_for_deletion, decode_optional_non_empty_text, open_runtime_database,
+    read_project_row, require_non_empty_owned, validate_non_empty_text,
 };
 
 pub const DEFAULT_AGENT_SESSION_ID: &str = "agent-session-main";
@@ -563,6 +563,12 @@ pub fn delete_agent_session(
         ));
     }
 
+    // Snapshot the run_ids that the SQLite cascade is about to delete so we
+    // can clear matching `source_run_id` references in the Lance dataset
+    // (replacing the legacy `agent_memories_clear_deleted_*` triggers).
+    let cascade_run_ids =
+        read_run_ids_for_session(&connection, &database_path, project_id, agent_session_id)?;
+
     connection
         .execute(
             r#"
@@ -583,7 +589,53 @@ pub fn delete_agent_session(
             )
         })?;
 
+    drop(connection);
+    if !cascade_run_ids.is_empty() {
+        clear_memory_runs_for_deletion(repo_root, project_id, &cascade_run_ids)?;
+    }
+
     Ok(())
+}
+
+fn read_run_ids_for_session(
+    connection: &Connection,
+    database_path: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+) -> Result<Vec<String>, CommandError> {
+    let mut statement = connection
+        .prepare("SELECT run_id FROM agent_runs WHERE project_id = ?1 AND agent_session_id = ?2")
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Cadence could not enumerate agent runs for cascade clearing in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    let rows = statement
+        .query_map(params![project_id, agent_session_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Cadence could not read agent run cascade list in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_persist_failed",
+            format!(
+                "Cadence could not collect agent run cascade list in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })
 }
 
 pub(crate) fn ensure_agent_session_active(

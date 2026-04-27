@@ -50,7 +50,7 @@ emulator-live = ["dep:openh264", "ios-grpc"]
 # resulting gRPC client. Required for real iOS streaming, touch/swipe HID,
 # and accessibility-tree/log RPCs; builds without this feature fall back to
 # a simctl-screenshot poll + AppleScript HID where possible.
-ios-grpc = ["dep:tonic", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:prost", "dep:tokio", "dep:tokio-stream"]
+ios-grpc = ["dep:tonic", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:prost", "dep:tokio-stream"]
 
 [dependencies]
 arc-swap = "1"
@@ -75,6 +75,10 @@ portable-pty = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rusqlite_migration = "2"
+arrow-array = "57"
+arrow-schema = "57"
+futures = "0.3"
+lancedb = { version = "0.27", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -84,7 +88,7 @@ tauri-plugin-opener = "2.5.3"
 tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 tokio-stream = { version = "0.1", optional = true }
 tonic = { version = "0.12", optional = true }
 url = "2"

@@ -3,6 +3,8 @@ use std::sync::LazyLock;
 use rusqlite::Transaction;
 use rusqlite_migration::{HookResult, Migrations, M};
 
+use crate::db::project_store::agent_memory_migration::migrate_agent_memories_to_lance_pending;
+
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
         Migrations::new(vec![
@@ -1845,6 +1847,7 @@ pub fn migrations() -> &'static Migrations<'static> {
                     ON agent_usage(project_id, provider_id, model_id);
                 "#,
             ),
+            M::up_with_hook("", migrate_agent_memories_to_lance_pending),
             M::up(
                 r#"
                 CREATE TABLE IF NOT EXISTS meta (
