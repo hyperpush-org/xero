@@ -689,6 +689,10 @@ function makePluginSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): Ski
     description: 'Opens the Acme plugin panel.',
     entry: 'commands/open-panel.js',
     availability: 'project_open',
+    riskLevel: 'observe',
+    approvalPolicy: 'required',
+    statePolicy: 'ephemeral',
+    redactionRequired: true,
     state: 'enabled',
     trust: 'trusted',
   }

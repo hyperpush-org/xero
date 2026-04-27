@@ -549,7 +549,7 @@ fn runtime_session_bridge_logout_provider_profile_clears_openai_oauth_link() {
 }
 
 #[test]
-fn runtime_session_bridge_signs_out_when_active_openai_profile_changes() {
+fn runtime_session_bridge_reuses_global_openai_auth_when_active_openai_profile_changes() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, auth_store_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -607,11 +607,10 @@ fn runtime_session_bridge_signs_out_when_active_openai_profile_changes() {
         ProjectIdRequestDto { project_id },
     )
     .expect("reconcile runtime after active profile switch");
-    assert_eq!(reconciled.phase, RuntimeAuthPhase::Idle);
-    assert_eq!(
-        reconciled.last_error_code.as_deref(),
-        Some("auth_session_stale")
-    );
+    assert_eq!(reconciled.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(reconciled.account_id.as_deref(), Some("acct-1"));
+    assert_eq!(reconciled.session_id.as_deref(), Some("session-auth"));
+    assert!(reconciled.last_error.is_none());
 }
 
 #[test]
@@ -831,7 +830,7 @@ fn get_runtime_session_returns_idle_when_bound_auth_row_disappears() {
 }
 
 #[test]
-fn get_runtime_session_returns_idle_when_authenticated_row_is_missing_account_id() {
+fn get_runtime_session_repairs_authenticated_row_missing_account_id_from_global_auth() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, auth_store_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -872,16 +871,14 @@ fn get_runtime_session_returns_idle_when_authenticated_row_is_missing_account_id
     )
     .expect("reconcile missing runtime account id");
 
-    assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
-    assert_eq!(
-        runtime.last_error_code.as_deref(),
-        Some("runtime_account_missing")
-    );
-    assert!(runtime.session_id.is_none());
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.account_id.as_deref(), Some("acct-1"));
+    assert_eq!(runtime.session_id.as_deref(), Some("session-auth"));
+    assert!(runtime.last_error.is_none());
 }
 
 #[test]
-fn get_runtime_session_returns_idle_when_authenticated_binding_is_stale() {
+fn get_runtime_session_rebinds_authenticated_binding_to_new_global_session() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _registry_path, auth_store_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -921,12 +918,10 @@ fn get_runtime_session_returns_idle_when_authenticated_binding_is_stale() {
     )
     .expect("reconcile stale runtime binding");
 
-    assert_eq!(runtime.phase, RuntimeAuthPhase::Idle);
-    assert_eq!(
-        runtime.last_error_code.as_deref(),
-        Some("auth_session_stale")
-    );
-    assert!(runtime.session_id.is_none());
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.account_id.as_deref(), Some("acct-1"));
+    assert_eq!(runtime.session_id.as_deref(), Some("session-new"));
+    assert!(runtime.last_error.is_none());
 }
 
 #[test]

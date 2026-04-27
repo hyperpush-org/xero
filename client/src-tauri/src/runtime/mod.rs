@@ -5,12 +5,14 @@ pub mod autonomous_tool_runtime;
 pub mod autonomous_web_runtime;
 pub mod diagnostics;
 pub mod platform_adapter;
+pub mod pricing;
 pub(crate) mod process_tree;
 pub mod protocol;
 pub mod provider;
 pub(crate) mod redaction;
 pub mod stream;
 pub mod supervisor;
+pub mod usage_events;
 
 pub use agent_core::{
     append_user_message, cancel_owned_agent_run, cancelled_error, continue_owned_agent_run,
@@ -48,9 +50,10 @@ pub use autonomous_skill_runtime::{
     AutonomousSkillSourceFileRequest, AutonomousSkillSourceFileResponse,
     AutonomousSkillSourceMetadata, AutonomousSkillSourceTreeEntry,
     AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse, CadenceDiscoveredPlugin,
-    CadenceDiscoveredSkill, CadencePluginCommandAvailability, CadencePluginCommandContribution,
-    CadencePluginDiscovery, CadencePluginDiscoveryDiagnostic, CadencePluginEntryKind,
-    CadencePluginEntryLocation, CadencePluginManifest, CadencePluginRoot,
+    CadenceDiscoveredSkill, CadencePluginCommandApprovalPolicy, CadencePluginCommandAvailability,
+    CadencePluginCommandContribution, CadencePluginCommandRiskLevel,
+    CadencePluginCommandStatePolicy, CadencePluginDiscovery, CadencePluginDiscoveryDiagnostic,
+    CadencePluginEntryKind, CadencePluginEntryLocation, CadencePluginManifest, CadencePluginRoot,
     CadencePluginSkillContribution, CadencePluginTrustDeclaration, CadenceSkillDirectoryDiscovery,
     CadenceSkillDiscoveryDiagnostic, CadenceSkillSourceKind, CadenceSkillSourceLocator,
     CadenceSkillSourceRecord, CadenceSkillSourceScope, CadenceSkillSourceState,

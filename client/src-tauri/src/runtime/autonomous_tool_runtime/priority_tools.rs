@@ -1081,7 +1081,11 @@ fn priority_tool_catalog(
             "Search the web through configured backend.",
         ),
         ("web_fetch", "web", "Fetch HTTP or HTTPS text content."),
-        ("browser", "web", "Drive the in-app browser."),
+        (
+            "browser",
+            "web",
+            "Drive the in-app browser and inspect browser diagnostics.",
+        ),
         ("emulator", "emulator", "Drive mobile emulator automation."),
         (
             "solana_cluster",

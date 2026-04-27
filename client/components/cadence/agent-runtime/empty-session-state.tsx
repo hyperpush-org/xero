@@ -60,11 +60,10 @@ export function EmptySessionState({
         ) : null}
 
         <h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]">
-          What should we build in <span className="text-primary">{projectLabel}</span>?
+          What can we build together in <span className="text-primary">{projectLabel}</span>?
         </h2>
         <p className="mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground">
-          Ask the agent to read code, propose changes, or run a task. Your messages and any actions
-          it takes will appear here.
+          Just ask — I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.
         </p>
 
         {onSelectSuggestion ? (

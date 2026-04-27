@@ -734,6 +734,7 @@ export function buildWorkflowView({
     runtimeSettings,
     runtimeSession,
   )
+  const hasAnyReadyProvider = providerProfiles?.profiles.some((profile) => profile.readiness.ready) ?? false
 
   return {
     project,
@@ -749,6 +750,7 @@ export function buildWorkflowView({
     selectedModelId: selectedProvider.modelId,
     selectedProfileReadiness: selectedProvider.readiness,
     openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
+    hasAnyReadyProvider,
     providerMismatch,
     providerMismatchReason: providerMismatchCopy?.reason ?? null,
     providerMismatchRecoveryCopy: providerMismatchCopy?.sessionRecoveryCopy ?? null,
@@ -903,6 +905,8 @@ export function buildAgentView({
       selectedModelDefaultThinkingEffort: providerModelCatalogProjection.selectedModelDefaultThinkingEffort,
       selectedProfileReadiness: selectedProvider.readiness,
       openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
+      hasAnyReadyProvider:
+        providerProfiles?.profiles.some((profile) => profile.readiness.ready) ?? false,
       providerMismatch,
       providerMismatchReason: providerMismatchCopy?.reason ?? null,
       providerMismatchRecoveryCopy: providerMismatchCopy?.sessionRecoveryCopy ?? null,

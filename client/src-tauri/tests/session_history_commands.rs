@@ -178,6 +178,8 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             input_tokens: 120,
             output_tokens: 40,
             total_tokens: 160,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             estimated_cost_micros: 42,
             updated_at: "2026-04-26T10:05:00Z".into(),
         }),

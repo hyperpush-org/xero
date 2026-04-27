@@ -41,7 +41,12 @@ import type {
   UpsertProviderProfileRequestDto,
 } from "@/src/lib/cadence-model"
 import type { PlatformVariant } from "@/components/cadence/shell"
-import { Activity, Bell, Code2, Globe, KeyRound, Mic, Palette, Plug, PlugZap, WandSparkles } from "lucide-react"
+import type {
+  GitHubAuthError,
+  GitHubAuthStatus,
+  GitHubSessionView,
+} from "@/src/lib/github-auth"
+import { Activity, Bell, Code2, Globe, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -49,6 +54,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
+import { AccountSection } from "@/components/cadence/settings-dialog/account-section"
 import { BrowserSection } from "@/components/cadence/settings-dialog/browser-section"
 import { DevelopmentSection } from "@/components/cadence/settings-dialog/development-section"
 import { DictationSection } from "@/components/cadence/settings-dialog/dictation-section"
@@ -61,6 +67,7 @@ import { SkillsSection } from "@/components/cadence/settings-dialog/skills-secti
 import { ThemesSection } from "@/components/cadence/settings-dialog/themes-section"
 
 export type SettingsSection =
+  | "account"
   | "providers"
   | "diagnostics"
   | "dictation"
@@ -82,6 +89,12 @@ interface NavGroup {
   id: string
   label: string
   items: NavItem[]
+}
+
+const ACCOUNT_GROUP: NavGroup = {
+  id: "account",
+  label: "Account",
+  items: [{ id: "account", label: "Account", icon: UserRound }],
 }
 
 const WORKSPACE_GROUP: NavGroup = {
@@ -112,8 +125,8 @@ const DEVELOPER_GROUP: NavGroup = {
 }
 
 const NAV_GROUPS: NavGroup[] = import.meta.env.DEV
-  ? [WORKSPACE_GROUP, APPEARANCE_GROUP, DEVELOPER_GROUP]
-  : [WORKSPACE_GROUP, APPEARANCE_GROUP]
+  ? [ACCOUNT_GROUP, WORKSPACE_GROUP, APPEARANCE_GROUP, DEVELOPER_GROUP]
+  : [ACCOUNT_GROUP, WORKSPACE_GROUP, APPEARANCE_GROUP]
 
 export interface SettingsDialogProps {
   open: boolean
@@ -179,6 +192,11 @@ export interface SettingsDialogProps {
   platformOverride?: PlatformVariant | null
   onPlatformOverrideChange?: (value: PlatformVariant | null) => void
   onStartOnboarding?: () => void
+  githubSession?: GitHubSessionView | null
+  githubAuthStatus?: GitHubAuthStatus
+  githubAuthError?: GitHubAuthError | null
+  onGithubLogin?: () => void
+  onGithubLogout?: () => void
 }
 
 export function SettingsDialog({
@@ -239,6 +257,11 @@ export function SettingsDialog({
   platformOverride,
   onPlatformOverrideChange,
   onStartOnboarding,
+  githubSession = null,
+  githubAuthStatus = "idle",
+  githubAuthError = null,
+  onGithubLogin,
+  onGithubLogout,
 }: SettingsDialogProps) {
   const [section, setSection] = useState<SettingsSection>("providers")
   const refreshOnOpenCallbacksRef = useRef({
@@ -332,7 +355,15 @@ export function SettingsDialog({
               key={section}
               className="flex flex-1 flex-col gap-5 py-5 pl-6 pr-14 animate-in fade-in-0 motion-enter"
             >
-              {section === "providers" ? (
+              {section === "account" ? (
+                <AccountSection
+                  session={githubSession ?? null}
+                  status={githubAuthStatus ?? "idle"}
+                  error={githubAuthError ?? null}
+                  onLogin={() => onGithubLogin?.()}
+                  onLogout={() => onGithubLogout?.()}
+                />
+              ) : section === "providers" ? (
                 <ProvidersSection
                   active={open && section === "providers"}
                   agent={agent}

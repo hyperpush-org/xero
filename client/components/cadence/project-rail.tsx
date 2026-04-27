@@ -295,7 +295,7 @@ export function ProjectRail({
           </div>
         ) : (
           <motion.ul
-            className={cn('flex flex-col', collapsed ? 'gap-1.5 px-1.5' : 'gap-0.5 px-1.5 py-1.5')}
+            className={cn('flex flex-col', collapsed ? 'gap-1.5 px-1.5' : 'gap-1.5 px-1.5 py-1.5')}
             layout
             transition={railLayoutTransition}
           >

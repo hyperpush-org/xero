@@ -1029,6 +1029,7 @@ function createMockAdapter(options?: {
         return () => undefined
       },
     ),
+    onAgentUsageUpdated: vi.fn(async () => () => undefined),
   } satisfies Partial<CadenceDesktopAdapter>
 
   return {

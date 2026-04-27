@@ -878,6 +878,14 @@ struct OpenAiUsage {
     completion_tokens: u64,
     #[serde(default)]
     total_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiUsagePromptDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsagePromptDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 fn parse_openai_chat_sse(
@@ -913,10 +921,17 @@ fn parse_openai_chat_sse(
             )
         })?;
         if let Some(next_usage) = chunk.usage {
+            let cache_read_tokens = next_usage
+                .prompt_tokens_details
+                .as_ref()
+                .map(|details| details.cached_tokens)
+                .unwrap_or_default();
             let mapped = ProviderUsage {
                 input_tokens: next_usage.prompt_tokens,
                 output_tokens: next_usage.completion_tokens,
                 total_tokens: next_usage.total_tokens,
+                cache_read_tokens,
+                cache_creation_tokens: 0,
             };
             emit(ProviderStreamEvent::Usage(mapped.clone()))?;
             usage = Some(mapped);
@@ -1071,6 +1086,11 @@ fn openai_responses_usage(value: &JsonValue) -> ProviderUsage {
         .get("output_tokens")
         .and_then(JsonValue::as_u64)
         .unwrap_or_default();
+    let cache_read_tokens = value
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_default();
     ProviderUsage {
         input_tokens,
         output_tokens,
@@ -1078,6 +1098,8 @@ fn openai_responses_usage(value: &JsonValue) -> ProviderUsage {
             .get("total_tokens")
             .and_then(JsonValue::as_u64)
             .unwrap_or_else(|| input_tokens.saturating_add(output_tokens)),
+        cache_read_tokens,
+        cache_creation_tokens: 0,
     }
 }
 
@@ -1116,12 +1138,23 @@ fn parse_anthropic_sse(
             .unwrap_or_default()
         {
             "message_start" => {
-                usage.input_tokens = value
+                let usage_node = value
                     .get("message")
-                    .and_then(|message| message.get("usage"))
-                    .and_then(|usage| usage.get("input_tokens"))
-                    .and_then(JsonValue::as_u64)
-                    .unwrap_or_default();
+                    .and_then(|message| message.get("usage"));
+                if let Some(usage_node) = usage_node {
+                    usage.input_tokens = usage_node
+                        .get("input_tokens")
+                        .and_then(JsonValue::as_u64)
+                        .unwrap_or_default();
+                    usage.cache_read_tokens = usage_node
+                        .get("cache_read_input_tokens")
+                        .and_then(JsonValue::as_u64)
+                        .unwrap_or_default();
+                    usage.cache_creation_tokens = usage_node
+                        .get("cache_creation_input_tokens")
+                        .and_then(JsonValue::as_u64)
+                        .unwrap_or_default();
+                }
             }
             "content_block_start" => {
                 let index = value
@@ -1189,17 +1222,34 @@ fn parse_anthropic_sse(
                 }
             }
             "message_delta" => {
-                usage.output_tokens = value
-                    .get("usage")
-                    .and_then(|usage| usage.get("output_tokens"))
-                    .and_then(JsonValue::as_u64)
-                    .unwrap_or(usage.output_tokens);
+                if let Some(usage_node) = value.get("usage") {
+                    usage.output_tokens = usage_node
+                        .get("output_tokens")
+                        .and_then(JsonValue::as_u64)
+                        .unwrap_or(usage.output_tokens);
+                    if let Some(cache_read) = usage_node
+                        .get("cache_read_input_tokens")
+                        .and_then(JsonValue::as_u64)
+                    {
+                        usage.cache_read_tokens = cache_read;
+                    }
+                    if let Some(cache_write) = usage_node
+                        .get("cache_creation_input_tokens")
+                        .and_then(JsonValue::as_u64)
+                    {
+                        usage.cache_creation_tokens = cache_write;
+                    }
+                }
             }
             "message_stop" => {}
             _ => {}
         }
     }
-    usage.total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+    usage.total_tokens = usage
+        .input_tokens
+        .saturating_add(usage.output_tokens)
+        .saturating_add(usage.cache_read_tokens)
+        .saturating_add(usage.cache_creation_tokens);
     let usage = (usage.total_tokens > 0).then_some(usage);
     if let Some(usage) = usage.as_ref() {
         emit(ProviderStreamEvent::Usage(usage.clone()))?;
@@ -1274,10 +1324,23 @@ fn parse_anthropic_json_response(
             .get("output_tokens")
             .and_then(JsonValue::as_u64)
             .unwrap_or_default();
+        let cache_read_tokens = usage
+            .get("cache_read_input_tokens")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or_default();
+        let cache_creation_tokens = usage
+            .get("cache_creation_input_tokens")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or_default();
         ProviderUsage {
             input_tokens,
             output_tokens,
-            total_tokens: input_tokens.saturating_add(output_tokens),
+            total_tokens: input_tokens
+                .saturating_add(output_tokens)
+                .saturating_add(cache_read_tokens)
+                .saturating_add(cache_creation_tokens),
+            cache_read_tokens,
+            cache_creation_tokens,
         }
     });
     if let Some(usage) = usage.as_ref() {

@@ -39,6 +39,48 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::toolchain::configure_tauri_roots(app.handle());
             window_state::configure_main_window(app.handle().clone());
 
+            // Bridge agent-usage updates from the provider loop (which has no
+            // AppHandle in scope) to the frontend. The closure captures a
+            // clone of the AppHandle and forwards each call to tauri::Emitter.
+            {
+                use tauri::Emitter;
+                let app_handle = app.handle().clone();
+                runtime::usage_events::set_usage_event_emitter(move |payload| {
+                    let _ = app_handle.emit(
+                        runtime::usage_events::AGENT_USAGE_UPDATED_EVENT,
+                        &payload,
+                    );
+                });
+            }
+
+            // One-shot backfill: rows written before pricing was wired in (or
+            // after a pricing-table update) need their cost recomputed. We
+            // walk the registry and price every zero-cost row that has tokens.
+            // Best-effort; failures are logged but never block boot.
+            {
+                use std::path::Path;
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                let desktop_state = app_handle.state::<state::DesktopState>();
+                if let Ok(registry_path) = desktop_state.registry_file(&app_handle) {
+                    if let Ok(reg) = registry::read_registry(&registry_path) {
+                        for record in reg.projects {
+                            let root = Path::new(&record.root_path);
+                            if !root.is_dir() {
+                                continue;
+                            }
+                            let updated = runtime::pricing::backfill_agent_usage_costs(root);
+                            if updated > 0 {
+                                eprintln!(
+                                    "[pricing] backfilled cost for {updated} agent_usage row(s) in {}",
+                                    record.root_path
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // Sweep leftover emulator-related processes from a previous
             // crash. Best-effort — we only log the suspects so the user
             // can clean up manually.
@@ -97,6 +139,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::session_history::update_session_memory,
             commands::session_history::delete_session_memory,
             commands::get_project_snapshot::get_project_snapshot,
+            commands::get_project_usage_summary::get_project_usage_summary,
             commands::get_repository_status::get_repository_status,
             commands::get_repository_diff::get_repository_diff,
             commands::git_operations::git_stage_paths,

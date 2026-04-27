@@ -6,7 +6,8 @@ use crate::{
     auth::now_timestamp,
     commands::{
         CommandError, CommandResult, InstalledSkillDiagnosticDto, ListSkillRegistryRequestDto,
-        PluginCommandAvailabilityDto, PluginCommandContributionDto, PluginDiagnosticDto,
+        PluginCommandApprovalPolicyDto, PluginCommandAvailabilityDto, PluginCommandContributionDto,
+        PluginCommandRiskLevelDto, PluginCommandStatePolicyDto, PluginDiagnosticDto,
         PluginRegistryEntryDto, PluginRootDto, PluginSkillContributionDto, RemovePluginRequestDto,
         RemovePluginRootRequestDto, RemoveSkillLocalRootRequestDto, RemoveSkillRequestDto,
         SetPluginEnabledRequestDto, SetSkillEnabledRequestDto, SkillDiscoveryDiagnosticDto,
@@ -724,6 +725,61 @@ fn plugin_command_dto(
                 PluginCommandAvailabilityDto::ProjectOpen
             }
         },
+        risk_level: match &command.risk_level {
+            crate::runtime::CadencePluginCommandRiskLevel::Observe => {
+                PluginCommandRiskLevelDto::Observe
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::ProjectRead => {
+                PluginCommandRiskLevelDto::ProjectRead
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::ProjectWrite => {
+                PluginCommandRiskLevelDto::ProjectWrite
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::RunOwned => {
+                PluginCommandRiskLevelDto::RunOwned
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::Network => {
+                PluginCommandRiskLevelDto::Network
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::SystemRead => {
+                PluginCommandRiskLevelDto::SystemRead
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::OsAutomation => {
+                PluginCommandRiskLevelDto::OsAutomation
+            }
+            crate::runtime::CadencePluginCommandRiskLevel::SignalExternal => {
+                PluginCommandRiskLevelDto::SignalExternal
+            }
+        },
+        approval_policy: match &command.approval_policy {
+            crate::runtime::CadencePluginCommandApprovalPolicy::NeverForObserveOnly => {
+                PluginCommandApprovalPolicyDto::NeverForObserveOnly
+            }
+            crate::runtime::CadencePluginCommandApprovalPolicy::Required => {
+                PluginCommandApprovalPolicyDto::Required
+            }
+            crate::runtime::CadencePluginCommandApprovalPolicy::PerInvocation => {
+                PluginCommandApprovalPolicyDto::PerInvocation
+            }
+            crate::runtime::CadencePluginCommandApprovalPolicy::Blocked => {
+                PluginCommandApprovalPolicyDto::Blocked
+            }
+        },
+        state_policy: match &command.state_policy {
+            crate::runtime::CadencePluginCommandStatePolicy::Ephemeral => {
+                PluginCommandStatePolicyDto::Ephemeral
+            }
+            crate::runtime::CadencePluginCommandStatePolicy::Project => {
+                PluginCommandStatePolicyDto::Project
+            }
+            crate::runtime::CadencePluginCommandStatePolicy::Plugin => {
+                PluginCommandStatePolicyDto::Plugin
+            }
+            crate::runtime::CadencePluginCommandStatePolicy::External => {
+                PluginCommandStatePolicyDto::External
+            }
+        },
+        redaction_required: command.redaction_required,
         state: source_state_dto(command.state),
         trust: trust_state_dto(command.trust),
     })

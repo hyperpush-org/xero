@@ -755,6 +755,37 @@ Why this comes last:
 
 Browser and extension parity are valuable, but they are not the core gap the user called out. Process/session/system control should land first.
 
+### Phase 9: Production Hardening and Regression Closure
+
+Goal: turn the completed harness phases into a production-ready surface by closing the final regressions, tightening edge-case semantics, and making the acceptance gates unambiguous.
+
+This phase should not add broad new capability. It is a stabilization pass over the features already introduced by the earlier phases. The output should be a green verification suite and a harness whose behavior is predictable under reloads, empty states, output truncation, async completion, and browser state restore.
+
+Core work:
+
+- Restore imported-repo runtime session reconciliation so a valid stored provider session starts and reloads as authenticated instead of falling back to idle.
+- Preserve the correct agent runtime empty-state priority: setup-required states and supervised-run no-run states must not be shadowed by global provider readiness.
+- Tighten process output cursor semantics so "since last read" advances only through output actually returned to the caller.
+- Clean up completed async jobs after await, not only after cancellation, and make completed jobs stop counting against process limits.
+- Ensure async job artifacts represent full redacted output, not only the retained in-memory output ring after truncation.
+- Validate and encode browser state restore cookies before writing them, and reject malformed cookie names or values that would inject attributes.
+- Confirm browser state snapshot and restore outputs do not persist or expose secrets beyond the approved redaction boundary.
+- Add regression tests for each fixed behavior before considering the phase closed.
+
+Acceptance checks:
+
+- Imported-repo bridge reload/start-once coverage passes with a seeded authenticated provider session.
+- Agent runtime live-view tests pass for signed-out setup, authenticated no-run, and promptable empty-session states.
+- Process output tests prove capped, filtered, and tail reads do not skip unread chunks on the next since-last-read request.
+- Async job tests prove awaited, cancelled, timed-out, and runtime-shutdown jobs are removed or finalized according to policy.
+- Browser state restore tests reject malformed cookies and preserve valid cookies without attribute injection.
+- Full client and Tauri verification passes: lint, build, frontend tests, Rust formatting, and Rust tests.
+- The production build may keep known bundle-size warnings only if they are documented as non-blocking and unrelated to the harness changes.
+
+Why this phase is required:
+
+The earlier phases prove capability parity. This phase proves operational quality. A harness that can control processes, browser state, and runtime sessions must be boring under reloads and edge cases; otherwise the new power becomes a reliability risk.
+
 ## Recommended First Milestone
 
 The first milestone should be deliberately narrow:

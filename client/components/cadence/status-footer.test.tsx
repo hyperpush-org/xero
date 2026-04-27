@@ -26,10 +26,6 @@ describe('StatusFooter', () => {
             committedAt: '2026-04-22T18:00:16Z',
           },
         }}
-        runtime={{
-          provider: 'OpenAI Codex',
-          state: 'idle',
-        }}
       />,
     )
 

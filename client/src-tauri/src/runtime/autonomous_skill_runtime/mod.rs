@@ -27,9 +27,10 @@ pub use discovery::{
 pub use plugin::{
     discover_plugin_roots, normalize_plugin_contribution_id, normalize_plugin_id,
     parse_plugin_manifest, plugin_command_stable_id, plugin_trust_declaration_to_skill_trust,
-    CadenceDiscoveredPlugin, CadencePluginCommandAvailability, CadencePluginCommandContribution,
-    CadencePluginDiscovery, CadencePluginDiscoveryDiagnostic, CadencePluginEntryKind,
-    CadencePluginEntryLocation, CadencePluginManifest, CadencePluginRoot,
+    CadenceDiscoveredPlugin, CadencePluginCommandApprovalPolicy, CadencePluginCommandAvailability,
+    CadencePluginCommandContribution, CadencePluginCommandRiskLevel,
+    CadencePluginCommandStatePolicy, CadencePluginDiscovery, CadencePluginDiscoveryDiagnostic,
+    CadencePluginEntryKind, CadencePluginEntryLocation, CadencePluginManifest, CadencePluginRoot,
     CadencePluginSkillContribution, CadencePluginTrustDeclaration, CADENCE_PLUGIN_MANIFEST_FILE,
     CADENCE_PLUGIN_MANIFEST_SCHEMA_VERSION, CADENCE_PLUGIN_NESTED_MANIFEST_FILE,
 };

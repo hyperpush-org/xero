@@ -8,13 +8,14 @@ use std::{
 };
 
 use cadence_desktop_lib::{
-    auth::{persist_openai_codex_session, StoredOpenAiCodexSession},
+    auth::{persist_openai_codex_session, sync_openai_profile_link, StoredOpenAiCodexSession},
     commands::{
         cancel_autonomous_run::cancel_autonomous_run, get_autonomous_run::get_autonomous_run,
-        get_runtime_run::get_runtime_run, start_autonomous_run::start_autonomous_run,
-        start_runtime_session::start_runtime_session, AutonomousRunRecoveryStateDto,
-        AutonomousRunStateDto, AutonomousRunStatusDto, CancelAutonomousRunRequestDto,
-        GetAutonomousRunRequestDto, GetRuntimeRunRequestDto, RepositoryDiffScope, RuntimeAuthPhase,
+        get_runtime_run::get_runtime_run, get_runtime_session::get_runtime_session,
+        start_autonomous_run::start_autonomous_run, start_runtime_session::start_runtime_session,
+        AutonomousRunRecoveryStateDto, AutonomousRunStateDto, AutonomousRunStatusDto,
+        CancelAutonomousRunRequestDto, GetAutonomousRunRequestDto, GetRuntimeRunRequestDto,
+        ProjectIdRequestDto, RepositoryDiffScope, RuntimeAuthPhase,
         RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto,
         RuntimeRunDto, RuntimeRunStatusDto, RuntimeRunTransportLivenessDto,
         StartAutonomousRunRequestDto, StartRuntimeSessionRequestDto,
@@ -191,19 +192,8 @@ fn seed_authenticated_runtime(
     auth_store_path: &Path,
     project_id: &str,
 ) {
-    persist_openai_codex_session(
-        auth_store_path,
-        StoredOpenAiCodexSession {
-            provider_id: "openai_codex".into(),
-            session_id: "session-auth".into(),
-            account_id: "acct-1".into(),
-            access_token: "header.payload.signature".into(),
-            refresh_token: "refresh-1".into(),
-            expires_at: current_unix_timestamp() + Duration::from_secs(3600).as_secs() as i64,
-            updated_at: "2026-04-18T19:00:00Z".into(),
-        },
-    )
-    .expect("persist auth session");
+    persist_openai_codex_session(auth_store_path, valid_openai_session())
+        .expect("persist auth session");
 
     let runtime = start_runtime_session(
         app.handle().clone(),
@@ -215,6 +205,18 @@ fn seed_authenticated_runtime(
     )
     .expect("start runtime session");
     assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+}
+
+fn valid_openai_session() -> StoredOpenAiCodexSession {
+    StoredOpenAiCodexSession {
+        provider_id: "openai_codex".into(),
+        session_id: "session-auth".into(),
+        account_id: "acct-1".into(),
+        access_token: "header.payload.signature".into(),
+        refresh_token: "refresh-1".into(),
+        expires_at: current_unix_timestamp() + Duration::from_secs(3600).as_secs() as i64,
+        updated_at: "2026-04-18T19:00:00Z".into(),
+    }
 }
 
 fn wait_for_runtime_run(
@@ -673,6 +675,46 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
         proof_status.contains(Status::WT_NEW) || proof_status.contains(Status::INDEX_NEW),
         "expected notes/proof.txt to show a new-file status, got {proof_status:?}"
     );
+}
+
+#[test]
+fn imported_repo_runtime_session_reconciles_stored_provider_session_on_reload() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (state, auth_store_path) = create_state(&root);
+    let app = build_mock_app(state);
+    let (project_id, _repo_root) = seed_project(&root, &app);
+    let session = valid_openai_session();
+
+    persist_openai_codex_session(&auth_store_path, session.clone()).expect("persist auth session");
+    sync_openai_profile_link(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        None,
+        Some(&session),
+    )
+    .expect("link provider profile to auth session");
+
+    let runtime = get_runtime_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("stored auth should reconcile runtime session");
+    assert_eq!(runtime.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(runtime.session_id.as_deref(), Some("session-auth"));
+
+    let (fresh_state, _fresh_auth_store_path) = create_state(&root);
+    let fresh_app = build_mock_app(fresh_state);
+    let reloaded = get_runtime_session(
+        fresh_app.handle().clone(),
+        fresh_app.state::<DesktopState>(),
+        ProjectIdRequestDto { project_id },
+    )
+    .expect("reloaded app should preserve authenticated runtime session");
+    assert_eq!(reloaded.phase, RuntimeAuthPhase::Authenticated);
+    assert_eq!(reloaded.session_id.as_deref(), Some("session-auth"));
 }
 
 #[test]

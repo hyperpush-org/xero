@@ -5,14 +5,20 @@ import {
   Bell,
   CircleDot,
   Coins,
-  Cpu,
   DollarSign,
   GitBranch,
   GitCommit,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { formatTokenCount, formatMicrosUsd } from "@/src/lib/cadence-model/usage"
 
-export type FooterRuntimeState = "idle" | "running" | "paused"
+export interface FooterSpendData {
+  totalTokens: number
+  /** Cost in micros (1e-6 USD); preferred over totalUsd when both are present. */
+  totalCostMicros?: number
+  /** Backwards-compatible USD figure used when micros are unavailable. */
+  totalUsd?: number
+}
 
 export interface StatusFooterProps {
   git?: {
@@ -29,70 +35,60 @@ export interface StatusFooterProps {
       committedAt?: string | null
     } | null
   } | null
-  runtime?: {
-    provider?: string | null
-    state?: FooterRuntimeState
-  } | null
+  spend?: FooterSpendData | null
+  notifications?: number
+  /** Whether the spend section is currently active (sidebar open). */
+  spendActive?: boolean
+  onSpendClick?: () => void
 }
 
 type FooterGitUpstream = NonNullable<NonNullable<StatusFooterProps["git"]>["upstream"]>
 
 // ---------------------------------------------------------------------------
-// Placeholder data for footer surfaces that do not have backend projections yet.
-// ---------------------------------------------------------------------------
-
-const FOOTER_PLACEHOLDERS = {
-  runtime: {
-    provider: "OpenAI Codex",
-    state: "idle" as FooterRuntimeState,
-  },
-  spend: {
-    totalTokens: 1_284_530,
-    totalUsd: 18.42,
-  },
-  notifications: 3,
-}
-
-// ---------------------------------------------------------------------------
 // Footer
 // ---------------------------------------------------------------------------
 
-export function StatusFooter({ git = null, runtime = null }: StatusFooterProps) {
+export function StatusFooter({
+  git = null,
+  spend = null,
+  notifications = 0,
+  spendActive = false,
+  onSpendClick,
+}: StatusFooterProps) {
   const liveLastCommit = git?.lastCommit
   const liveLastCommitSha = formatShortSha(liveLastCommit?.sha)
   const liveLastCommitMessage = normalizeOptionalFooterText(liveLastCommit?.message)
   const liveLastCommitRelativeTime = formatRelativeCommitTime(liveLastCommit?.committedAt)
   const upstream = normalizeUpstream(git?.upstream)
 
-  const footer = {
-    ...FOOTER_PLACEHOLDERS,
-    branch: normalizeFooterText(git?.branch, "No branch"),
-    workingTree: {
-      dirty: git?.hasChanges ?? false,
-      changedFiles: git?.changedFiles ?? 0,
-    },
-    lastCommit:
-      liveLastCommitSha && liveLastCommitMessage
-        ? {
-            shortSha: liveLastCommitSha,
-            message: liveLastCommitMessage,
-            relativeTime: liveLastCommitRelativeTime ?? "",
-          }
-        : {
-            shortSha: "—",
-            message: "No commits yet",
-            relativeTime: "",
-          },
-    runtime: {
-      provider: normalizeFooterText(runtime?.provider, FOOTER_PLACEHOLDERS.runtime.provider),
-      state: runtime?.state ?? FOOTER_PLACEHOLDERS.runtime.state,
-    },
+  const branch = normalizeFooterText(git?.branch, "No branch")
+  const workingTree = {
+    dirty: git?.hasChanges ?? false,
+    changedFiles: git?.changedFiles ?? 0,
   }
+  const lastCommit =
+    liveLastCommitSha && liveLastCommitMessage
+      ? {
+          shortSha: liveLastCommitSha,
+          message: liveLastCommitMessage,
+          relativeTime: liveLastCommitRelativeTime ?? "",
+        }
+      : {
+          shortSha: "—",
+          message: "No commits yet",
+          relativeTime: "",
+        }
 
-  const { branch, workingTree, lastCommit, runtime: runtimeStatus, spend, notifications } = footer
+  const tokensLabel = formatTokenCount(spend?.totalTokens ?? 0)
+  const costLabel = resolveCostLabel(spend)
+  const hasSpendData = (spend?.totalTokens ?? 0) > 0 || resolveCostMicros(spend) > 0
 
   const truncatedCommit =
     lastCommit.message.length > 46 ? `${lastCommit.message.slice(0, 46)}…` : lastCommit.message
+
+  const spendAriaLabel = hasSpendData
+    ? `Project spend: ${tokensLabel} tokens, ${costLabel}`
+    : "Project spend: no usage recorded yet"
 
   return (
     <footer
@@ -139,28 +135,27 @@ export function StatusFooter({ git = null, runtime = null }: StatusFooterProps) 
         </span>
       </div>
 
-      {/* Right: project · runtime · network · notifications · version ------- */}
+      {/* Right: spend · notifications -------------------------------------- */}
       <div className="flex shrink-0 items-center gap-3">
-        <span className="flex items-center gap-1.5">
-          <Cpu className="h-3 w-3" />
-          <span>{runtimeStatus.provider}</span>
-          <RuntimeStateDot state={runtimeStatus.state} />
-          <span className="capitalize">{runtimeStatus.state}</span>
-        </span>
-
-        <Divider />
-
-        <span
-          className="flex items-center gap-1.5"
-          aria-label={`Project spend: ${formatTokens(spend.totalTokens)} tokens, ${formatUsd(spend.totalUsd)}`}
-          title="Total project spend"
+        <button
+          type="button"
+          onClick={onSpendClick}
+          aria-label={spendAriaLabel}
+          aria-pressed={spendActive}
+          title={hasSpendData ? "View project usage breakdown" : "No usage recorded yet"}
+          className={cn(
+            "flex items-center gap-1.5 rounded px-1.5 py-0.5 -my-0.5 transition-colors",
+            "hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            spendActive && "bg-foreground/10 text-foreground",
+            !onSpendClick && "cursor-default",
+          )}
         >
           <Coins className="h-3 w-3" />
-          <span>{formatTokens(spend.totalTokens)} tok</span>
+          <span>{tokensLabel} tok</span>
           <span className="text-muted-foreground/60">·</span>
           <DollarSign className="h-3 w-3" />
-          <span className="font-medium text-foreground/80">{formatUsd(spend.totalUsd)}</span>
-        </span>
+          <span className="font-medium text-foreground/80">{costLabel}</span>
+        </button>
 
         <Divider />
 
@@ -173,17 +168,15 @@ export function StatusFooter({ git = null, runtime = null }: StatusFooterProps) 
   )
 }
 
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
-  return value.toString()
+function resolveCostMicros(spend: FooterSpendData | null | undefined): number {
+  if (!spend) return 0
+  if (typeof spend.totalCostMicros === "number") return spend.totalCostMicros
+  if (typeof spend.totalUsd === "number") return Math.round(spend.totalUsd * 1_000_000)
+  return 0
 }
 
-function formatUsd(value: number): string {
-  return value.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
+function resolveCostLabel(spend: FooterSpendData | null | undefined): string {
+  return formatMicrosUsd(resolveCostMicros(spend))
 }
 
 function normalizeFooterText(value: string | null | undefined, fallback: string): string {
@@ -242,14 +235,4 @@ function formatRelativeCommitTime(value: string | null | undefined): string | nu
 
 function Divider({ className }: { className?: string }) {
   return <span aria-hidden="true" className={cn("h-3 w-px bg-border", className)} />
-}
-
-function RuntimeStateDot({ state }: { state: FooterRuntimeState }) {
-  const color =
-    state === "running"
-      ? "bg-emerald-500 animate-pulse"
-      : state === "paused"
-        ? "bg-amber-500"
-        : "bg-muted-foreground/50"
-  return <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", color)} />
 }

@@ -6,12 +6,11 @@ use crate::{
         bind_openrouter_runtime_session, load_latest_openai_codex_session,
         load_openai_codex_session_for_profile_link, reconcile_anthropic_runtime_session,
         reconcile_openai_compatible_runtime_session, reconcile_openrouter_runtime_session,
-        refresh_provider_auth_session, remove_openai_codex_session, sync_openai_profile_link,
-        AnthropicBindOutcome, AnthropicReconcileOutcome, AnthropicRuntimeSessionBinding,
-        AuthDiagnostic, AuthFlowError, OpenAiCompatibleBindOutcome,
-        OpenAiCompatibleReconcileOutcome, OpenAiCompatibleRuntimeSessionBinding,
-        OpenRouterBindOutcome, OpenRouterReconcileOutcome, OpenRouterRuntimeSessionBinding,
-        RuntimeAuthSession,
+        refresh_provider_auth_session, sync_openai_profile_link, AnthropicBindOutcome,
+        AnthropicReconcileOutcome, AnthropicRuntimeSessionBinding, AuthDiagnostic, AuthFlowError,
+        OpenAiCompatibleBindOutcome, OpenAiCompatibleReconcileOutcome,
+        OpenAiCompatibleRuntimeSessionBinding, OpenRouterBindOutcome, OpenRouterReconcileOutcome,
+        OpenRouterRuntimeSessionBinding, RuntimeAuthSession,
     },
     commands::{get_runtime_settings::RuntimeSettingsSnapshot, RuntimeAuthPhase},
     provider_profiles::{ProviderProfileCredentialLink, ProviderProfilesSnapshot},
@@ -470,16 +469,15 @@ pub fn logout_provider_runtime_session<R: Runtime>(
     account_id: &str,
 ) -> Result<(), AuthFlowError> {
     let account_id = account_id.trim();
-    if account_id.is_empty() {
+    if account_id.is_empty() && provider.provider != RuntimeProvider::OpenAiCodex {
         return Ok(());
     }
 
     match provider.provider {
         RuntimeProvider::OpenAiCodex => {
             let auth_store_path = state.auth_store_file_for_provider(app, provider)?;
-            remove_openai_codex_session(&auth_store_path, account_id)?;
-            let latest = load_latest_openai_codex_session(&auth_store_path)?;
-            sync_openai_profile_link(app, state, None, latest.as_ref())
+            crate::auth::clear_openai_codex_sessions(&auth_store_path)?;
+            sync_openai_profile_link(app, state, None, None)
         }
         RuntimeProvider::OpenRouter
         | RuntimeProvider::Anthropic
@@ -502,27 +500,21 @@ fn bind_openai_codex_runtime_session<R: Runtime>(
 ) -> Result<RuntimeProviderBindOutcome, AuthFlowError> {
     let profile = active_openai_profile(provider_profiles)?;
     let auth_store_path = state.auth_store_file_for_provider(app, provider)?;
-    let link = profile.credential_link.as_ref().ok_or_else(|| {
-        AuthFlowError::terminal(
-            "auth_session_not_found",
-            RuntimeAuthPhase::Idle,
-            format!(
-                "Cadence does not have an app-local OpenAI auth session linked to active provider profile `{}`.",
-                profile.profile_id
-            ),
-        )
-    })?;
-
-    let Some(stored) = load_openai_codex_session_for_profile_link(&auth_store_path, link)? else {
+    let Some(stored) = load_global_openai_codex_session_for_profile(
+        &auth_store_path,
+        profile.credential_link.as_ref(),
+    )?
+    else {
         return Ok(RuntimeProviderBindOutcome::SignedOut(AuthDiagnostic {
             code: "auth_session_not_found".into(),
             message: format!(
-                "Cadence does not have an app-local OpenAI auth session linked to active provider profile `{}`.",
+                "Cadence does not have a global app-local OpenAI auth session available for active provider profile `{}`.",
                 profile.profile_id
             ),
             retryable: false,
         }));
     };
+    sync_openai_profile_link(app, state, Some(&profile.profile_id), Some(&stored))?;
 
     let binding = binding_from_stored_openai_session(
         provider,
@@ -541,78 +533,29 @@ fn reconcile_openai_codex_runtime_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     provider: ResolvedRuntimeProvider,
-    account_id: Option<&str>,
-    session_id: Option<&str>,
+    _account_id: Option<&str>,
+    _session_id: Option<&str>,
     provider_profiles: Option<&ProviderProfilesSnapshot>,
 ) -> Result<RuntimeProviderReconcileOutcome, AuthFlowError> {
-    let account_id = normalize_input(account_id).ok_or_else(|| {
-        AuthFlowError::terminal(
-            "runtime_account_missing",
-            RuntimeAuthPhase::Failed,
-            "Cadence could not reconcile the authenticated runtime session because the bound account id was missing.",
-        )
-    })?;
-    let session_id = normalize_input(session_id).ok_or_else(|| {
-        AuthFlowError::terminal(
-            "auth_session_stale",
-            RuntimeAuthPhase::Failed,
-            "Cadence could not reconcile the authenticated runtime session because the bound session id was missing.",
-        )
-    })?;
-
     let profile = active_openai_profile(provider_profiles)?;
-    let link = profile.credential_link.as_ref().ok_or_else(|| {
-        AuthFlowError::terminal(
-            "auth_session_stale",
-            RuntimeAuthPhase::Failed,
-            format!(
-                "Cadence rejected the authenticated OpenAI runtime because active provider profile `{}` is no longer linked to an auth session. Rebind the runtime session.",
-                profile.profile_id
-            ),
-        )
-    })?;
-
-    let ProviderProfileCredentialLink::OpenAiCodex {
-        account_id: linked_account_id,
-        session_id: linked_session_id,
-        ..
-    } = link
-    else {
-        return Err(AuthFlowError::terminal(
-            "provider_profiles_invalid",
-            RuntimeAuthPhase::Failed,
-            format!(
-                "Cadence rejected active provider profile `{}` because OpenAI runtime reconciliation requires an OpenAI auth link.",
-                profile.profile_id
-            ),
-        ));
-    };
-
-    if linked_account_id != account_id || linked_session_id != session_id {
-        return Ok(RuntimeProviderReconcileOutcome::SignedOut(AuthDiagnostic {
-            code: "auth_session_stale".into(),
-            message: format!(
-                "Cadence rejected the authenticated OpenAI runtime binding because active provider profile `{}` now points to a different auth session. Rebind the runtime session.",
-                profile.profile_id
-            ),
-            retryable: false,
-        }));
-    }
-
     let auth_store_path = state.auth_store_file_for_provider(app, provider)?;
-    let stored = match load_openai_codex_session_for_profile_link(&auth_store_path, link)? {
+    let stored = match load_global_openai_codex_session_for_profile(
+        &auth_store_path,
+        profile.credential_link.as_ref(),
+    )? {
         Some(stored) => stored,
         None => {
             return Ok(RuntimeProviderReconcileOutcome::SignedOut(AuthDiagnostic {
                 code: "auth_session_not_found".into(),
                 message: format!(
-                    "Cadence no longer has the app-local OpenAI auth session linked to active provider profile `{}`.",
+                    "Cadence no longer has a global app-local OpenAI auth session available for active provider profile `{}`.",
                     profile.profile_id
                 ),
                 retryable: false,
             }))
         }
     };
+    sync_openai_profile_link(app, state, Some(&profile.profile_id), Some(&stored))?;
 
     Ok(RuntimeProviderReconcileOutcome::Authenticated(
         binding_from_stored_openai_session(
@@ -655,6 +598,16 @@ fn active_openai_profile(
     }
 
     Ok(profile)
+}
+
+fn load_global_openai_codex_session_for_profile(
+    auth_store_path: &std::path::Path,
+    link: Option<&ProviderProfileCredentialLink>,
+) -> Result<Option<crate::auth::StoredOpenAiCodexSession>, AuthFlowError> {
+    match link {
+        Some(link) => load_openai_codex_session_for_profile_link(auth_store_path, link),
+        None => load_latest_openai_codex_session(auth_store_path),
+    }
 }
 
 fn binding_from_stored_openai_session(

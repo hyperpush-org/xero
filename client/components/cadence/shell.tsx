@@ -9,6 +9,7 @@ import {
   ChevronDown,
   GitCompareArrows,
   Gamepad2,
+  Github,
   Globe,
   Maximize2,
   Minus,
@@ -53,6 +54,15 @@ interface CadenceShellProps {
   children: React.ReactNode
   projectName?: string
   onOpenSettings?: () => void
+  /** Open the settings dialog focused on the Account section (used when a session exists). */
+  onOpenAccount?: () => void
+  /** Kick off the GitHub OAuth flow directly (used when no session exists). */
+  onAccountLogin?: () => void
+  /** Truthy when a GitHub login is in flight — surfaces a subtle loading state on the avatar button. */
+  accountAuthenticating?: boolean
+  /** When provided, the account button shows the GitHub avatar + signed-in state. */
+  accountAvatarUrl?: string | null
+  accountLogin?: string | null
   onToggleGames?: () => void
   gamesOpen?: boolean
   onToggleBrowser?: () => void
@@ -182,6 +192,11 @@ export function CadenceShell({
   onViewChange,
   children,
   onOpenSettings,
+  onOpenAccount,
+  onAccountLogin,
+  accountAuthenticating = false,
+  accountAvatarUrl = null,
+  accountLogin = null,
   onToggleGames,
   gamesOpen = false,
   onToggleBrowser,
@@ -267,6 +282,55 @@ export function CadenceShell({
         </button>
       ))}
     </nav>
+  )
+
+  const accountSignedIn = Boolean(accountAvatarUrl)
+  const accountAriaLabel = accountSignedIn
+    ? `Account — signed in as ${accountLogin ?? "GitHub user"}`
+    : accountAuthenticating
+      ? "Signing in with GitHub…"
+      : "Sign in with GitHub"
+  const handleAccountClick = () => {
+    if (accountSignedIn) {
+      onOpenAccount?.()
+    } else if (onAccountLogin) {
+      onAccountLogin()
+    } else {
+      onOpenAccount?.()
+    }
+  }
+  const AccountBtn = (
+    <button
+      aria-label={accountAriaLabel}
+      className={cn(
+        "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+        accountSignedIn
+          ? "text-foreground hover:bg-secondary/50"
+          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+        accountAuthenticating && "opacity-70",
+      )}
+      disabled={accountAuthenticating}
+      onClick={handleAccountClick}
+      title={
+        accountSignedIn
+          ? `@${accountLogin ?? ""}`
+          : accountAuthenticating
+            ? "Waiting for GitHub…"
+            : "Sign in with GitHub"
+      }
+      type="button"
+    >
+      {accountSignedIn && accountAvatarUrl ? (
+        <img
+          src={accountAvatarUrl}
+          alt=""
+          referrerPolicy="no-referrer"
+          className="h-4 w-4 rounded-full"
+        />
+      ) : (
+        <Github className="h-4 w-4" />
+      )}
+    </button>
   )
 
   const SettingsBtn = (
@@ -605,6 +669,7 @@ export function CadenceShell({
             {VcsBtn}
             {ToolsMenu}
             {GamesBtn}
+            {AccountBtn}
             {SettingsBtn}
           </div>
         ) : null}
@@ -642,6 +707,7 @@ export function CadenceShell({
               {VcsBtn}
               {ToolsMenu}
               {GamesBtn}
+              {AccountBtn}
               {SettingsBtn}
               <div className="mx-2 h-4 w-px bg-border" />
             </>
@@ -656,7 +722,13 @@ export function CadenceShell({
     <div className="cadence-window-shell flex h-screen flex-col overflow-hidden bg-background text-foreground select-none">
       {titlebar}
       <main className="flex min-h-0 flex-1">{children}</main>
-      <StatusFooter git={footer?.git} runtime={footer?.runtime} />
+      <StatusFooter
+        git={footer?.git}
+        spend={footer?.spend}
+        notifications={footer?.notifications}
+        spendActive={footer?.spendActive}
+        onSpendClick={footer?.onSpendClick}
+      />
     </div>
   )
 }

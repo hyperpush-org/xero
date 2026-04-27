@@ -2,10 +2,18 @@
   "name": "joe-dev-root",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n TAURI,LANDING -c magenta,cyan \"pnpm run dev:tauri\" \"pnpm run dev:landing\"",
+    "dev": "node scripts/dev-preflight.mjs && concurrently -n DB,PHX,TAURI,LANDING -c blue,green,magenta,cyan -k \"pnpm run dev:db:logs\" \"pnpm run dev:server\" \"pnpm run dev:tauri\" \"pnpm run dev:landing\"",
+    "dev:preflight": "node scripts/dev-preflight.mjs",
+    "dev:db": "docker compose -f server/docker-compose.yml up",
+    "dev:db:logs": "docker compose -f server/docker-compose.yml logs -f --tail=20 postgres",
+    "dev:server": "cd server && mix phx.server",
     "dev:tauri": "pnpm --dir ./client run tauri:dev",
     "dev:tauri:ios-grpc": "pnpm --dir ./client run tauri:dev:ios-grpc",
-    "dev:landing": "pnpm --dir ./landing run dev --port 3001"
+    "dev:landing": "pnpm --dir ./landing run dev --port 3001",
+    "db:up": "docker compose -f server/docker-compose.yml up -d",
+    "db:down": "docker compose -f server/docker-compose.yml down",
+    "db:reset": "cd server && mix ecto.reset",
+    "server:setup": "cd server && mix setup"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

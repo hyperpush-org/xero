@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use tauri::{AppHandle, Runtime};
 
-use crate::commands::browser::{provision_browser_tab, StorageArea};
+use crate::commands::browser::{provision_browser_tab, BrowserDiagnosticReadOptions, StorageArea};
 use crate::commands::{CommandError, CommandResult};
+use crate::runtime::redaction::find_prohibited_persistence_content;
 use crate::state::DesktopState;
 
 pub const AUTONOMOUS_TOOL_BROWSER: &str = "browser";
@@ -89,6 +90,43 @@ pub enum AutonomousBrowserAction {
     StorageClear {
         area: StorageArea,
     },
+    ConsoleLogs {
+        #[serde(alias = "tabId")]
+        tab_id: Option<String>,
+        level: Option<String>,
+        limit: Option<usize>,
+        clear: Option<bool>,
+    },
+    NetworkSummary {
+        #[serde(alias = "tabId")]
+        tab_id: Option<String>,
+        limit: Option<usize>,
+        clear: Option<bool>,
+        #[serde(alias = "timeoutMs")]
+        timeout_ms: Option<u64>,
+    },
+    AccessibilityTree {
+        selector: Option<String>,
+        limit: Option<usize>,
+        #[serde(alias = "timeoutMs")]
+        timeout_ms: Option<u64>,
+    },
+    StateSnapshot {
+        #[serde(alias = "includeStorage")]
+        include_storage: Option<bool>,
+        #[serde(alias = "includeCookies")]
+        include_cookies: Option<bool>,
+        #[serde(alias = "timeoutMs")]
+        timeout_ms: Option<u64>,
+    },
+    StateRestore {
+        #[serde(alias = "snapshotJson")]
+        snapshot_json: String,
+        navigate: Option<bool>,
+        #[serde(alias = "timeoutMs")]
+        timeout_ms: Option<u64>,
+    },
+    HarnessExtensionContract,
     TabList,
     TabClose {
         tab_id: String,
@@ -291,6 +329,85 @@ pub fn execute_action_with_app<R: Runtime>(
         AutonomousBrowserAction::StorageClear { area } => {
             browser_actions::storage_clear(app, &tabs, &waiters, map_storage_area(area))?
         }
+        AutonomousBrowserAction::ConsoleLogs {
+            tab_id,
+            level,
+            limit,
+            clear,
+        } => {
+            let entries = browser_state.diagnostics().console_entries(
+                BrowserDiagnosticReadOptions::console(
+                    tab_id.as_deref(),
+                    level.as_deref(),
+                    limit,
+                    clear.unwrap_or(false),
+                ),
+            )?;
+            JsonValue::Array(
+                entries
+                    .into_iter()
+                    .map(console_diagnostic_to_json)
+                    .collect::<Vec<_>>(),
+            )
+        }
+        AutonomousBrowserAction::NetworkSummary {
+            tab_id,
+            limit,
+            clear,
+            timeout_ms,
+        } => {
+            let entries = browser_state.diagnostics().network_entries(
+                BrowserDiagnosticReadOptions::network(
+                    tab_id.as_deref(),
+                    limit,
+                    clear.unwrap_or(false),
+                ),
+            )?;
+            let performance = browser_actions::network_performance_summary(
+                app, &tabs, &waiters, limit, timeout_ms,
+            )?;
+            json!({
+                "events": entries.into_iter().map(network_diagnostic_to_json).collect::<Vec<_>>(),
+                "performance": performance,
+            })
+        }
+        AutonomousBrowserAction::AccessibilityTree {
+            selector,
+            limit,
+            timeout_ms,
+        } => browser_actions::accessibility_tree(
+            app,
+            &tabs,
+            &waiters,
+            selector.as_deref(),
+            limit,
+            timeout_ms,
+        )?,
+        AutonomousBrowserAction::StateSnapshot {
+            include_storage,
+            include_cookies,
+            timeout_ms,
+        } => browser_actions::state_snapshot(
+            app,
+            &tabs,
+            &waiters,
+            include_storage.unwrap_or(false),
+            include_cookies.unwrap_or(false),
+            timeout_ms,
+        )?,
+        AutonomousBrowserAction::StateRestore {
+            snapshot_json,
+            navigate,
+            timeout_ms,
+        } => browser_actions::state_restore(
+            app,
+            &tabs,
+            &waiters,
+            &snapshot_json,
+            navigate.unwrap_or(false),
+            timeout_ms,
+        )?,
+        AutonomousBrowserAction::HarnessExtensionContract => harness_extension_contract_json(),
         AutonomousBrowserAction::TabList => JsonValue::Array(
             tabs.list()?
                 .into_iter()
@@ -316,6 +433,7 @@ pub fn execute_action_with_app<R: Runtime>(
             JsonValue::String(tab_id)
         }
     };
+    let output_value = redact_browser_state_output(&action_name, output_value);
 
     let current_url = tabs
         .optional_active_webview(app)
@@ -354,6 +472,12 @@ fn action_tool_name(action: &AutonomousBrowserAction) -> String {
         AutonomousBrowserAction::StorageRead { .. } => "storage_read",
         AutonomousBrowserAction::StorageWrite { .. } => "storage_write",
         AutonomousBrowserAction::StorageClear { .. } => "storage_clear",
+        AutonomousBrowserAction::ConsoleLogs { .. } => "console_logs",
+        AutonomousBrowserAction::NetworkSummary { .. } => "network_summary",
+        AutonomousBrowserAction::AccessibilityTree { .. } => "accessibility_tree",
+        AutonomousBrowserAction::StateSnapshot { .. } => "state_snapshot",
+        AutonomousBrowserAction::StateRestore { .. } => "state_restore",
+        AutonomousBrowserAction::HarnessExtensionContract => "harness_extension_contract",
         AutonomousBrowserAction::TabList => "tab_list",
         AutonomousBrowserAction::TabClose { .. } => "tab_close",
         AutonomousBrowserAction::TabFocus { .. } => "tab_focus",
@@ -377,6 +501,140 @@ fn map_storage_area(area: StorageArea) -> crate::commands::browser::StorageArea 
 
 fn tab_to_json(tab: crate::commands::browser::BrowserTabMetadata) -> JsonValue {
     serde_json::to_value(tab).unwrap_or(JsonValue::Null)
+}
+
+fn console_diagnostic_to_json(
+    entry: crate::commands::browser::BrowserConsoleDiagnosticEntry,
+) -> JsonValue {
+    json!({
+        "sequence": entry.sequence,
+        "tabId": entry.tab_id,
+        "level": entry.level,
+        "message": redact_browser_diagnostic_text(&entry.message),
+        "capturedAt": entry.captured_at,
+    })
+}
+
+fn network_diagnostic_to_json(
+    entry: crate::commands::browser::BrowserNetworkDiagnosticEntry,
+) -> JsonValue {
+    json!({
+        "sequence": entry.sequence,
+        "tabId": entry.tab_id,
+        "url": redact_browser_diagnostic_text(&entry.url),
+        "method": entry.method,
+        "status": entry.status,
+        "ok": entry.ok,
+        "resourceType": entry.resource_type,
+        "durationMs": entry.duration_ms,
+        "transferSize": entry.transfer_size,
+        "error": entry.error.map(|error| redact_browser_diagnostic_text(&error)),
+        "capturedAt": entry.captured_at,
+    })
+}
+
+fn redact_browser_diagnostic_text(value: &str) -> String {
+    if find_prohibited_persistence_content(value).is_some() {
+        "[redacted browser diagnostic]".into()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn redact_browser_state_output(action_name: &str, value: JsonValue) -> JsonValue {
+    if !matches!(action_name, "state_snapshot" | "state_restore") {
+        return value;
+    }
+
+    redact_browser_state_json(value)
+}
+
+fn redact_browser_state_json(value: JsonValue) -> JsonValue {
+    match value {
+        JsonValue::String(text) if find_prohibited_persistence_content(&text).is_some() => {
+            JsonValue::String("[redacted browser state]".into())
+        }
+        JsonValue::Array(values) => JsonValue::Array(
+            values
+                .into_iter()
+                .map(redact_browser_state_json)
+                .collect::<Vec<_>>(),
+        ),
+        JsonValue::Object(map) => JsonValue::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, redact_browser_state_json(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn harness_extension_contract_json() -> JsonValue {
+    json!({
+        "phase": "phase_8_browser_diagnostics_and_optional_harness_extensions",
+        "schemaVersion": 1,
+        "status": "contract_only",
+        "toolRegistration": {
+            "requiredFields": [
+                "extensionId",
+                "toolId",
+                "description",
+                "inputSchema",
+                "riskLevel",
+                "approvalPolicy",
+                "redactionPolicy",
+                "statePolicy"
+            ],
+            "descriptorPrefix": "extension:<extensionId>:<toolId>",
+            "descriptorRequirement": "Every extension-provided tool descriptor must include source extension id, contribution id, risk level, approval requirement, and state persistence policy."
+        },
+        "riskLevels": [
+            "observe",
+            "project_read",
+            "project_write",
+            "run_owned",
+            "network",
+            "system_read",
+            "os_automation",
+            "signal_external"
+        ],
+        "approvalPolicies": [
+            "never_for_observe_only",
+            "required",
+            "per_invocation",
+            "blocked"
+        ],
+        "policyBoundary": {
+            "filesystem": "Extension tools must call Cadence repo/system file APIs; direct path access is not part of the privileged harness contract.",
+            "process": "Extension tools must call the process_manager or command policy layer for process work.",
+            "network": "Network-capable extension tools must declare network risk and use approved transports.",
+            "redaction": "Extension output marked durable must be redacted before persistence."
+        },
+        "lifecycleHooks": [
+            "onRegister",
+            "beforeInvoke",
+            "afterInvoke",
+            "onSessionResume",
+            "onCompaction",
+            "onShutdown"
+        ],
+        "statePolicy": {
+            "ephemeral": "Dropped when the runtime exits.",
+            "project": "Persisted in approved project-local stores.",
+            "plugin": "Persisted under the extension's approved state namespace.",
+            "external": "Requires explicit approval and audit metadata."
+        },
+        "currentImplementation": {
+            "browserDiagnostics": [
+                "console_logs",
+                "network_summary",
+                "accessibility_tree",
+                "state_snapshot",
+                "state_restore"
+            ],
+            "dynamicPrivilegedExtensionExecution": false
+        }
+    })
 }
 
 /// A no-op executor used when the browser backend is unreachable (e.g. unit tests
@@ -415,5 +673,72 @@ impl<R: Runtime> std::fmt::Debug for TauriBrowserExecutor<R> {
 impl<R: Runtime> BrowserExecutor for TauriBrowserExecutor<R> {
     fn execute(&self, action: AutonomousBrowserAction) -> CommandResult<AutonomousBrowserOutput> {
         execute_action_with_app(&self.app, &self.desktop_state, action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_8_browser_actions_deserialize_camel_case_fields() {
+        let request = serde_json::from_value::<AutonomousBrowserRequest>(json!({
+            "action": "state_restore",
+            "snapshotJson": "{\"url\":\"https://example.com\"}",
+            "navigate": true,
+            "timeoutMs": 5000
+        }))
+        .expect("state restore request");
+
+        match request.action {
+            AutonomousBrowserAction::StateRestore {
+                snapshot_json,
+                navigate,
+                timeout_ms,
+            } => {
+                assert!(snapshot_json.contains("example.com"));
+                assert_eq!(navigate, Some(true));
+                assert_eq!(timeout_ms, Some(5_000));
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn harness_extension_contract_declares_policy_boundary() {
+        let contract = harness_extension_contract_json();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(
+            contract["dynamicPrivilegedExtensionExecution"],
+            JsonValue::Null
+        );
+        assert_eq!(
+            contract["currentImplementation"]["dynamicPrivilegedExtensionExecution"],
+            false
+        );
+        assert!(contract["toolRegistration"]["requiredFields"]
+            .as_array()
+            .expect("required fields")
+            .iter()
+            .any(|value| value == "riskLevel"));
+    }
+
+    #[test]
+    fn browser_state_output_redacts_prohibited_values() {
+        let redacted = redact_browser_state_output(
+            "state_snapshot",
+            json!({
+                "cookies": [{ "name": "session", "value": "sk-proj-secret" }],
+                "localStorage": { "safe": "visible", "token": "Bearer sk-proj-secret" }
+            }),
+        );
+
+        assert_eq!(redacted["cookies"][0]["name"], "session");
+        assert_eq!(redacted["cookies"][0]["value"], "[redacted browser state]");
+        assert_eq!(redacted["localStorage"]["safe"], "visible");
+        assert_eq!(
+            redacted["localStorage"]["token"],
+            "[redacted browser state]"
+        );
     }
 }

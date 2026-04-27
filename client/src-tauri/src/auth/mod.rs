@@ -31,9 +31,10 @@ pub use openrouter::{
     OpenRouterRuntimeSessionBinding,
 };
 pub use store::{
-    ensure_openai_profile_target, load_latest_openai_codex_session, load_openai_codex_session,
-    load_openai_codex_session_for_profile_link, persist_openai_codex_session,
-    remove_openai_codex_session, sync_openai_profile_link, StoredOpenAiCodexSession,
+    clear_openai_codex_sessions, ensure_openai_profile_target, load_latest_openai_codex_session,
+    load_openai_codex_session, load_openai_codex_session_for_profile_link,
+    persist_openai_codex_session, remove_openai_codex_session, sync_openai_profile_link,
+    StoredOpenAiCodexSession,
 };
 
 use std::{

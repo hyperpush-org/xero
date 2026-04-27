@@ -1866,6 +1866,19 @@ pub fn migrations() -> &'static Migrations<'static> {
                 END;
                 "#,
             ),
+            M::up(
+                r#"
+                ALTER TABLE agent_usage
+                    ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0
+                    CHECK (cache_read_tokens >= 0);
+                ALTER TABLE agent_usage
+                    ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0
+                    CHECK (cache_creation_tokens >= 0);
+
+                CREATE INDEX IF NOT EXISTS idx_agent_usage_project_model
+                    ON agent_usage(project_id, provider_id, model_id);
+                "#,
+            ),
         ])
     });
 

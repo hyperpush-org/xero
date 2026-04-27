@@ -15,6 +15,7 @@ import type {
   Phase,
   ProjectDetailView,
   ProjectListItem,
+  ProjectUsageSummaryDto,
   ProviderModelCatalogDto,
   ProviderModelCatalogSourceDto,
   ProviderModelThinkingEffortDto,
@@ -277,6 +278,7 @@ export interface WorkflowPaneView {
   selectedModelId?: string | null
   selectedProfileReadiness?: ProviderProfileReadinessDto | null
   openrouterApiKeyConfigured?: boolean
+  hasAnyReadyProvider?: boolean
   providerMismatch?: boolean
   providerMismatchReason?: string | null
   providerMismatchRecoveryCopy?: string | null
@@ -310,6 +312,7 @@ export interface AgentPaneView {
   selectedModelDefaultThinkingEffort: ProviderModelThinkingEffortDto | null
   selectedProfileReadiness?: ProviderProfileReadinessDto | null
   openrouterApiKeyConfigured?: boolean
+  hasAnyReadyProvider?: boolean
   providerMismatch?: boolean
   providerMismatchReason?: string | null
   providerMismatchRecoveryCopy?: string | null
@@ -522,4 +525,8 @@ export interface UseCadenceDesktopStateResult {
   restoreAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
   deleteAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
   renameAgentSession: (agentSessionId: string, title: string) => Promise<ProjectDetailView | null>
+  usageSummaries: Record<string, ProjectUsageSummaryDto>
+  activeUsageSummary: ProjectUsageSummaryDto | null
+  activeUsageSummaryLoadError: string | null
+  refreshUsageSummary: (projectId: string) => Promise<ProjectUsageSummaryDto | null>
 }

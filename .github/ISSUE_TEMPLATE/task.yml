@@ -1,0 +1,35 @@
+name: Task
+description: Track maintenance, refactors, QA, or product follow-up work.
+title: "task: "
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What needs to be done?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why is this needed now?
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: What must be true before this can be closed?
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation notes
+      description: Add constraints, affected areas, or follow-up ideas.
+    validations:
+      required: false

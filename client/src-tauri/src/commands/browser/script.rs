@@ -129,6 +129,114 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
   };
   ['log', 'info', 'warn', 'error', 'debug'].forEach(forwardConsole);
 
+  const sanitizeNetworkUrl = (value) => {
+    try {
+      const url = new URL(String(value || ''), location.href);
+      url.search = '';
+      url.hash = '';
+      return url.href;
+    } catch (_error) {
+      return String(value || '').slice(0, 2048);
+    }
+  };
+
+  const emitNetwork = (payload) => {
+    try {
+      emit('network', Object.assign({ capturedAt: Date.now() }, payload || {}));
+    } catch (_error) {
+      // swallow
+    }
+  };
+
+  if (typeof window.fetch === 'function' && !window.fetch.__cadence_wrapped__) {
+    const originalFetch = window.fetch;
+    const wrappedFetch = async function () {
+      const started = Date.now();
+      const input = arguments[0];
+      const init = arguments[1] || {};
+      const url =
+        typeof input === 'string'
+          ? input
+          : input && input.url
+            ? input.url
+            : '';
+      const method =
+        (init && init.method) ||
+        (input && input.method) ||
+        'GET';
+      try {
+        const response = await originalFetch.apply(this, arguments);
+        emitNetwork({
+          type: 'fetch',
+          url: sanitizeNetworkUrl(url),
+          method,
+          status: response && response.status,
+          ok: response && response.ok,
+          durationMs: Date.now() - started,
+        });
+        return response;
+      } catch (error) {
+        emitNetwork({
+          type: 'fetch',
+          url: sanitizeNetworkUrl(url),
+          method,
+          error: (error && (error.message || error.stack)) || String(error),
+          durationMs: Date.now() - started,
+        });
+        throw error;
+      }
+    };
+    wrappedFetch.__cadence_wrapped__ = true;
+    window.fetch = wrappedFetch;
+  }
+
+  if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+    const proto = window.XMLHttpRequest.prototype;
+    if (!proto.__cadence_network_wrapped__) {
+      const originalOpen = proto.open;
+      const originalSend = proto.send;
+      proto.open = function (method, url) {
+        this.__cadenceRequestInfo = {
+          method: method || 'GET',
+          url: sanitizeNetworkUrl(url || ''),
+        };
+        return originalOpen.apply(this, arguments);
+      };
+      proto.send = function () {
+        const xhr = this;
+        const started = Date.now();
+        const info = xhr.__cadenceRequestInfo || {};
+        const emitDone = () => {
+          emitNetwork({
+            type: 'xhr',
+            url: info.url || '',
+            method: info.method || 'GET',
+            status: xhr.status || null,
+            ok: xhr.status >= 200 && xhr.status < 400,
+            durationMs: Date.now() - started,
+          });
+        };
+        const emitFailed = () => {
+          emitNetwork({
+            type: 'xhr',
+            url: info.url || '',
+            method: info.method || 'GET',
+            error: 'request failed',
+            durationMs: Date.now() - started,
+          });
+        };
+        try {
+          xhr.addEventListener('loadend', emitDone, { once: true });
+          xhr.addEventListener('error', emitFailed, { once: true });
+        } catch (_error) {
+          // swallow
+        }
+        return originalSend.apply(this, arguments);
+      };
+      proto.__cadence_network_wrapped__ = true;
+    }
+  }
+
   window.addEventListener('error', (event) => {
     emit('error', {
       message: (event && event.message) || 'unknown error',

@@ -82,6 +82,7 @@ impl OwnedProcessRegistry {
     }
 
     fn ensure_capacity(&self) -> CommandResult<()> {
+        self.remove_completed_async_jobs()?;
         let processes = self.processes.lock().map_err(process_registry_lock_error)?;
         if processes.len() >= MAX_OWNED_PROCESSES {
             return Err(CommandError::user_fixable(
@@ -95,6 +96,7 @@ impl OwnedProcessRegistry {
     }
 
     fn insert(&self, process: Arc<OwnedProcess>) -> CommandResult<()> {
+        self.remove_completed_async_jobs()?;
         let mut processes = self.processes.lock().map_err(process_registry_lock_error)?;
         if processes.len() >= MAX_OWNED_PROCESSES {
             return Err(CommandError::user_fixable(
@@ -131,6 +133,26 @@ impl OwnedProcessRegistry {
                 format!("Cadence could not find owned process `{process_id}`."),
             )
         })
+    }
+
+    fn remove_completed_async_jobs(&self) -> CommandResult<()> {
+        let processes = self.list()?;
+        let mut completed = Vec::new();
+        for process in processes {
+            let _ = process.poll_exit()?;
+            if process.is_async_job() && process.is_terminal()? {
+                completed.push(process.process_id.clone());
+            }
+        }
+        if completed.is_empty() {
+            return Ok(());
+        }
+
+        let mut processes = self.processes.lock().map_err(process_registry_lock_error)?;
+        for process_id in completed {
+            processes.remove(&process_id);
+        }
+        Ok(())
     }
 }
 
@@ -171,6 +193,7 @@ struct OwnedProcess {
     exit_code: Mutex<Option<i32>>,
     chunks: Mutex<Vec<AutonomousProcessOutputChunk>>,
     raw_chunks: Mutex<Vec<RawProcessOutputChunk>>,
+    durable_output: Mutex<DurableProcessOutput>,
     output_artifact: Mutex<Option<AutonomousProcessOutputArtifact>>,
     next_cursor: AtomicU64,
     last_read_cursor: AtomicU64,
@@ -184,6 +207,12 @@ struct RawProcessOutputChunk {
     stream: AutonomousProcessOutputStream,
     text: String,
     captured_at: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct DurableProcessOutput {
+    text: String,
+    redacted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +278,7 @@ impl OwnedProcess {
             exit_code: Mutex::new(None),
             chunks: Mutex::new(Vec::new()),
             raw_chunks: Mutex::new(Vec::new()),
+            durable_output: Mutex::new(DurableProcessOutput::default()),
             output_artifact: Mutex::new(None),
             next_cursor: AtomicU64::new(1),
             last_read_cursor: AtomicU64::new(0),
@@ -269,6 +299,9 @@ impl OwnedProcess {
     ) -> CommandResult<()> {
         let cursor = self.next_cursor.fetch_add(1, Ordering::Relaxed);
         let captured_at = Some(now_timestamp());
+        if self.launch_config.async_job {
+            self.append_durable_output(&capture)?;
+        }
         if let Some(text) = raw_text.filter(|text| !text.trim().is_empty()) {
             let mut raw_chunks = self.raw_chunks.lock().map_err(process_output_lock_error)?;
             raw_chunks.push(RawProcessOutputChunk {
@@ -289,6 +322,25 @@ impl OwnedProcess {
             captured_at,
         });
         prune_process_output_chunks(&mut chunks);
+        Ok(())
+    }
+
+    fn append_durable_output(&self, capture: &SanitizedProcessOutput) -> CommandResult<()> {
+        let Some(text) = capture.text.as_deref() else {
+            return Ok(());
+        };
+        let mut durable = self
+            .durable_output
+            .lock()
+            .map_err(process_output_lock_error)?;
+        durable.redacted |= capture.redacted;
+        if !durable.text.is_empty() && !durable.text.ends_with('\n') {
+            durable.text.push('\n');
+        }
+        durable.text.push_str(text);
+        if !text.ends_with('\n') {
+            durable.text.push('\n');
+        }
         Ok(())
     }
 
@@ -378,6 +430,16 @@ impl OwnedProcess {
 
     fn is_async_job(&self) -> bool {
         self.launch_config.async_job
+    }
+
+    fn is_terminal(&self) -> CommandResult<bool> {
+        let status = *self.status.lock().map_err(process_status_lock_error)?;
+        Ok(matches!(
+            status,
+            AutonomousProcessStatus::Exited
+                | AutonomousProcessStatus::Failed
+                | AutonomousProcessStatus::Killed
+        ))
     }
 
     fn mark_ready(
@@ -575,20 +637,13 @@ impl OwnedProcess {
             return Ok(artifact.clone());
         }
 
-        let chunks = self.chunks.lock().map_err(process_output_lock_error)?;
-        let mut text = String::new();
-        let mut redacted = false;
-        for chunk in chunks.iter().cloned().map(filter_internal_marker_chunk) {
-            redacted |= chunk.redacted;
-            let Some(chunk_text) = chunk.text.as_deref() else {
-                continue;
-            };
-            text.push_str(chunk_text);
-            if !chunk_text.ends_with('\n') {
-                text.push('\n');
-            }
-        }
-        drop(chunks);
+        let durable = self
+            .durable_output
+            .lock()
+            .map_err(process_output_lock_error)?
+            .clone();
+        let text = filter_internal_marker_text(&durable.text);
+        let redacted = durable.redacted;
 
         let dir = env::temp_dir().join(ASYNC_JOB_ARTIFACT_DIR);
         fs::create_dir_all(&dir).map_err(|error| {
@@ -1214,19 +1269,21 @@ impl AutonomousToolRuntime {
         let process_id = normalized_process_id(&request)?;
         let process = self.owned_processes.get(&process_id)?;
         let _ = process.poll_exit()?;
-        let chunks = read_process_output_for_request(&process, &request)?;
-        process.remember_last_read_cursor(process.next_cursor_value().saturating_sub(1));
+        let read = read_process_output_for_request(&process, &request)?;
+        if let Some(cursor) = read.advance_cursor {
+            process.remember_last_read_cursor(cursor);
+        }
         let metadata = process.metadata()?;
         let message = format!(
             "Read {} output chunk(s) from owned process `{process_id}`.",
-            chunks.len()
+            read.chunks.len()
         );
         Ok(process_manager_result(ProcessManagerResultInput {
             action: AutonomousProcessManagerAction::Output,
             spawned: true,
             process_id: Some(process_id),
             processes: vec![metadata],
-            chunks,
+            chunks: read.chunks,
             next_cursor: Some(process.next_cursor_value()),
             policy: process_manager_policy_trace(
                 AutonomousProcessManagerAction::Output,
@@ -1705,6 +1762,7 @@ impl AutonomousToolRuntime {
                             | AutonomousProcessStatus::Killed
                     )
                 {
+                    let _ = self.owned_processes.remove(&job.process_id);
                     let chunks = job.read_chunks_after(
                         request.after_cursor.unwrap_or(0),
                         MAX_PROCESS_OUTPUT_READ_BYTES,
@@ -3720,10 +3778,15 @@ fn process_exists(pid: u32) -> bool {
     }
 }
 
+struct ProcessOutputRead {
+    chunks: Vec<AutonomousProcessOutputChunk>,
+    advance_cursor: Option<u64>,
+}
+
 fn read_process_output_for_request(
     process: &OwnedProcess,
     request: &AutonomousProcessManagerRequest,
-) -> CommandResult<Vec<AutonomousProcessOutputChunk>> {
+) -> CommandResult<ProcessOutputRead> {
     let after_cursor = request.after_cursor.unwrap_or_else(|| {
         if request.since_last_read {
             process.last_read_cursor_value()
@@ -3735,7 +3798,8 @@ fn read_process_output_for_request(
         .max_bytes
         .unwrap_or_else(default_process_output_read_bytes)
         .clamp(1, MAX_PROCESS_OUTPUT_READ_BYTES);
-    let mut chunks = process.read_chunks_after(after_cursor, max_bytes)?;
+    let selected_chunks = process.read_chunks_after(after_cursor, max_bytes)?;
+    let mut chunks = selected_chunks.clone();
 
     if let Some(stream) = request.stream {
         if stream != AutonomousProcessOutputStream::Combined {
@@ -3762,7 +3826,46 @@ fn read_process_output_for_request(
         chunks = tail_process_output_chunks(chunks, tail_lines);
     }
 
-    Ok(chunks)
+    let advance_cursor = returned_output_advance_cursor(after_cursor, &selected_chunks, &chunks);
+
+    Ok(ProcessOutputRead {
+        chunks,
+        advance_cursor,
+    })
+}
+
+fn returned_output_advance_cursor(
+    after_cursor: u64,
+    selected_chunks: &[AutonomousProcessOutputChunk],
+    returned_chunks: &[AutonomousProcessOutputChunk],
+) -> Option<u64> {
+    let mut returned = returned_chunks.iter().peekable();
+    let mut advance_cursor = after_cursor;
+
+    for selected in selected_chunks {
+        let Some(candidate) = returned.peek() else {
+            break;
+        };
+        if output_chunks_match(selected, candidate) {
+            advance_cursor = selected.cursor;
+            let _ = returned.next();
+        } else {
+            break;
+        }
+    }
+
+    (advance_cursor > after_cursor).then_some(advance_cursor)
+}
+
+fn output_chunks_match(
+    selected: &AutonomousProcessOutputChunk,
+    returned: &AutonomousProcessOutputChunk,
+) -> bool {
+    selected.cursor == returned.cursor
+        && selected.stream == returned.stream
+        && selected.text == returned.text
+        && selected.truncated == returned.truncated
+        && selected.redacted == returned.redacted
 }
 
 fn tail_process_output_chunks(
@@ -4710,6 +4813,17 @@ fn filter_internal_marker_chunk(
     chunk
 }
 
+fn filter_internal_marker_text(text: &str) -> String {
+    if !text.contains(INTERNAL_MARKER_PREFIX) {
+        return text.to_owned();
+    }
+
+    text.lines()
+        .filter(|line| !line.contains(INTERNAL_MARKER_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[derive(Debug)]
 struct SanitizedProcessOutput {
     text: Option<String>,
@@ -4876,6 +4990,43 @@ mod tests {
         },
         runtime::AutonomousToolRequest,
     };
+
+    #[test]
+    fn returned_output_cursor_advances_only_contiguous_returned_chunks() {
+        let selected = vec![
+            test_chunk(1, AutonomousProcessOutputStream::Stdout, "alpha"),
+            test_chunk(2, AutonomousProcessOutputStream::Stderr, "warning"),
+            test_chunk(3, AutonomousProcessOutputStream::Stdout, "omega"),
+        ];
+
+        assert_eq!(
+            returned_output_advance_cursor(0, &selected, &selected[..1]),
+            Some(1)
+        );
+        assert_eq!(
+            returned_output_advance_cursor(0, &selected, &selected[1..2]),
+            None
+        );
+        assert_eq!(
+            returned_output_advance_cursor(
+                0,
+                &selected,
+                &[selected[0].clone(), selected[2].clone()]
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn returned_output_cursor_does_not_advance_for_tail_synthetic_chunk() {
+        let selected = vec![
+            test_chunk(1, AutonomousProcessOutputStream::Stdout, "alpha"),
+            test_chunk(2, AutonomousProcessOutputStream::Stdout, "beta\ngamma"),
+        ];
+        let tailed = tail_process_output_chunks(selected.clone(), 1);
+
+        assert_eq!(returned_output_advance_cursor(0, &selected, &tailed), None);
+    }
 
     #[test]
     fn owned_process_can_start_output_list_status_and_kill() {
@@ -5438,6 +5589,7 @@ mod tests {
         );
         assert!(async_start.processes[0].async_job);
         assert_eq!(async_start.processes[0].timeout_ms, Some(5_000));
+        let async_job_id = async_start.process_id.clone().expect("async job id");
 
         let mut await_request = base_request(AutonomousProcessManagerAction::AsyncAwait);
         await_request.group = Some("jobs".into());
@@ -5455,6 +5607,24 @@ mod tests {
             .expect("async job output artifact");
         assert!(std::path::Path::new(&artifact.path).is_file());
         assert!(artifact.byte_count > 0);
+        assert!(
+            std::fs::read_to_string(&artifact.path)
+                .expect("read async artifact")
+                .contains("job done"),
+            "async job artifact should contain the completed output"
+        );
+
+        let list_after_await = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(base_request(
+                    AutonomousProcessManagerAction::List,
+                )))
+                .expect("list after async await"),
+        );
+        assert!(list_after_await
+            .processes
+            .iter()
+            .all(|process| process.process_id != async_job_id));
 
         let mut cancellable_request = start_request(vec![
             "sh".into(),
@@ -5498,6 +5668,83 @@ mod tests {
             .processes
             .iter()
             .all(|process| process.process_id != cancellable_id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_jobs_timeout_and_runtime_shutdown_are_finalized() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path());
+
+        let mut timeout_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'timeout job\\n'; sleep 30".into(),
+        ]);
+        timeout_request.action = AutonomousProcessManagerAction::AsyncStart;
+        timeout_request.group = Some("jobs".into());
+        timeout_request.timeout_ms = Some(50);
+        let timeout_start = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(timeout_request))
+                .expect("start timed async job"),
+        );
+        let timeout_job_id = timeout_start.process_id.clone().expect("timeout job id");
+
+        let mut await_request = base_request(AutonomousProcessManagerAction::AsyncAwait);
+        await_request.process_id = Some(timeout_job_id.clone());
+        await_request.timeout_ms = Some(5_000);
+        let awaited = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(await_request))
+                .expect("await timed async job"),
+        );
+        assert_eq!(awaited.process_id.as_deref(), Some(timeout_job_id.as_str()));
+        assert!(matches!(
+            awaited.processes[0].status,
+            AutonomousProcessStatus::Killed | AutonomousProcessStatus::Exited
+        ));
+        assert!(output_contains(&awaited, "Async job timed out"));
+
+        let list_after_timeout = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(base_request(
+                    AutonomousProcessManagerAction::List,
+                )))
+                .expect("list after timed async job"),
+        );
+        assert!(list_after_timeout
+            .processes
+            .iter()
+            .all(|process| process.process_id != timeout_job_id));
+
+        let shutdown_pid = {
+            let runtime = test_runtime(tempdir.path());
+            let mut shutdown_request = start_request(vec![
+                "sh".into(),
+                "-c".into(),
+                "printf 'shutdown job\\n'; sleep 30".into(),
+            ]);
+            shutdown_request.action = AutonomousProcessManagerAction::AsyncStart;
+            shutdown_request.group = Some("shutdown".into());
+            shutdown_request.timeout_ms = Some(5_000);
+            let shutdown_start = process_manager_output(
+                runtime
+                    .execute_approved(AutonomousToolRequest::ProcessManager(shutdown_request))
+                    .expect("start shutdown async job"),
+            );
+            let pid = shutdown_start.processes[0].pid.expect("shutdown job pid") as i32;
+            assert!(unix_process_exists(pid), "shutdown job should be alive");
+            pid
+        };
+
+        for _ in 0..20 {
+            if !unix_process_exists(shutdown_pid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("async job {shutdown_pid} survived runtime shutdown");
     }
 
     #[cfg(unix)]
@@ -5738,6 +5985,21 @@ mod tests {
         match result.output {
             AutonomousToolOutput::ProcessManager(output) => output,
             other => panic!("expected process manager output, got {other:?}"),
+        }
+    }
+
+    fn test_chunk(
+        cursor: u64,
+        stream: AutonomousProcessOutputStream,
+        text: &str,
+    ) -> AutonomousProcessOutputChunk {
+        AutonomousProcessOutputChunk {
+            cursor,
+            stream,
+            text: Some(text.into()),
+            truncated: false,
+            redacted: false,
+            captured_at: None,
         }
     }
 

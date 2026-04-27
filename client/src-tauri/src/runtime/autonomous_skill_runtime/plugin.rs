@@ -43,6 +43,37 @@ pub enum CadencePluginCommandAvailability {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadencePluginCommandRiskLevel {
+    Observe,
+    ProjectRead,
+    ProjectWrite,
+    RunOwned,
+    Network,
+    SystemRead,
+    OsAutomation,
+    SignalExternal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadencePluginCommandApprovalPolicy {
+    NeverForObserveOnly,
+    Required,
+    PerInvocation,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CadencePluginCommandStatePolicy {
+    Ephemeral,
+    Project,
+    Plugin,
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CadencePluginSkillContribution {
     pub id: String,
@@ -57,6 +88,14 @@ pub struct CadencePluginCommandContribution {
     pub description: String,
     pub entry: String,
     pub availability: CadencePluginCommandAvailability,
+    #[serde(default = "default_plugin_command_risk_level")]
+    pub risk_level: CadencePluginCommandRiskLevel,
+    #[serde(default = "default_plugin_command_approval_policy")]
+    pub approval_policy: CadencePluginCommandApprovalPolicy,
+    #[serde(default = "default_plugin_command_state_policy")]
+    pub state_policy: CadencePluginCommandStatePolicy,
+    #[serde(default = "default_plugin_command_redaction_required")]
+    pub redaction_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,12 +205,22 @@ impl CadencePluginManifest {
             let description = normalize_required(command.description, "command.description")?;
             let entry = normalize_plugin_relative_path(&command.entry)?;
             ensure_plugin_path_stays_inside(&plugin_root, &entry, false)?;
+            validate_plugin_command_policy(
+                &id,
+                &command.risk_level,
+                &command.approval_policy,
+                command.redaction_required,
+            )?;
             commands.push(CadencePluginCommandContribution {
                 id,
                 label,
                 description,
                 entry,
                 availability: command.availability,
+                risk_level: command.risk_level,
+                approval_policy: command.approval_policy,
+                state_policy: command.state_policy,
+                redaction_required: command.redaction_required,
             });
         }
 
@@ -588,6 +637,54 @@ fn normalize_plugin_version(value: &str) -> CommandResult<String> {
     Ok(trimmed)
 }
 
+fn validate_plugin_command_policy(
+    command_id: &str,
+    risk_level: &CadencePluginCommandRiskLevel,
+    approval_policy: &CadencePluginCommandApprovalPolicy,
+    redaction_required: bool,
+) -> CommandResult<()> {
+    let observe_only = matches!(risk_level, CadencePluginCommandRiskLevel::Observe);
+    if matches!(
+        approval_policy,
+        CadencePluginCommandApprovalPolicy::NeverForObserveOnly
+    ) && !observe_only
+    {
+        return Err(CommandError::user_fixable(
+            "cadence_plugin_command_policy_invalid",
+            format!(
+                "Cadence rejected plugin command `{command_id}` because only observe-risk commands may use never_for_observe_only approval."
+            ),
+        ));
+    }
+
+    if !redaction_required && !observe_only {
+        return Err(CommandError::user_fixable(
+            "cadence_plugin_command_policy_invalid",
+            format!(
+                "Cadence rejected plugin command `{command_id}` because non-observe extension commands must require output redaction before persistence."
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+const fn default_plugin_command_risk_level() -> CadencePluginCommandRiskLevel {
+    CadencePluginCommandRiskLevel::Observe
+}
+
+const fn default_plugin_command_approval_policy() -> CadencePluginCommandApprovalPolicy {
+    CadencePluginCommandApprovalPolicy::Required
+}
+
+const fn default_plugin_command_state_policy() -> CadencePluginCommandStatePolicy {
+    CadencePluginCommandStatePolicy::Ephemeral
+}
+
+const fn default_plugin_command_redaction_required() -> bool {
+    true
+}
+
 fn relative_path(root: &Path, path: &Path) -> CommandResult<String> {
     let relative = path.strip_prefix(root).map_err(|_| {
         CommandError::user_fixable(
@@ -608,4 +705,89 @@ fn normalize_required(value: String, field: &'static str) -> CommandResult<Strin
 
 const fn plugin_manifest_schema_version() -> u32 {
     CADENCE_PLUGIN_MANIFEST_SCHEMA_VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_command_policy_metadata_survives_manifest_validation() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(tempdir.path().join("commands")).expect("commands dir");
+        fs::write(tempdir.path().join("commands/run.js"), "export default {}")
+            .expect("command file");
+
+        let manifest = parse_plugin_manifest(
+            br#"{
+                "id": "com.acme.tools",
+                "name": "Acme Tools",
+                "version": "1.0.0",
+                "description": "Test plugin.",
+                "trustDeclaration": "trusted",
+                "commands": [
+                    {
+                        "id": "run-task",
+                        "label": "Run Task",
+                        "description": "Runs a task.",
+                        "entry": "commands/run.js",
+                        "availability": "project_open",
+                        "riskLevel": "network",
+                        "approvalPolicy": "per_invocation",
+                        "statePolicy": "plugin",
+                        "redactionRequired": true
+                    }
+                ]
+            }"#,
+            tempdir.path(),
+        )
+        .expect("valid manifest");
+
+        let command = manifest.commands.first().expect("command");
+        assert_eq!(command.risk_level, CadencePluginCommandRiskLevel::Network);
+        assert_eq!(
+            command.approval_policy,
+            CadencePluginCommandApprovalPolicy::PerInvocation
+        );
+        assert_eq!(
+            command.state_policy,
+            CadencePluginCommandStatePolicy::Plugin
+        );
+        assert!(command.redaction_required);
+    }
+
+    #[test]
+    fn plugin_command_policy_rejects_non_observe_without_approval() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(tempdir.path().join("commands")).expect("commands dir");
+        fs::write(tempdir.path().join("commands/run.js"), "export default {}")
+            .expect("command file");
+
+        let error = parse_plugin_manifest(
+            br#"{
+                "id": "com.acme.tools",
+                "name": "Acme Tools",
+                "version": "1.0.0",
+                "description": "Test plugin.",
+                "trustDeclaration": "trusted",
+                "commands": [
+                    {
+                        "id": "run-task",
+                        "label": "Run Task",
+                        "description": "Runs a task.",
+                        "entry": "commands/run.js",
+                        "availability": "project_open",
+                        "riskLevel": "network",
+                        "approvalPolicy": "never_for_observe_only",
+                        "statePolicy": "ephemeral",
+                        "redactionRequired": true
+                    }
+                ]
+            }"#,
+            tempdir.path(),
+        )
+        .expect_err("risky command without approval should fail");
+
+        assert_eq!(error.code, "cadence_plugin_command_policy_invalid");
+    }
 }

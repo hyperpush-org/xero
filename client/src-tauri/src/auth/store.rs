@@ -59,21 +59,22 @@ pub fn load_openai_codex_session_for_profile_link(
         ));
     };
 
-    let Some(stored) = load_openai_codex_session(path, account_id)? else {
-        return Ok(None);
-    };
-
-    if stored.session_id != *session_id {
-        return Err(AuthFlowError::terminal(
-            "auth_session_stale",
-            RuntimeAuthPhase::Failed,
-            format!(
-                "Cadence rejected the linked OpenAI auth session for account `{account_id}` because the saved session id changed. Rebind the runtime session."
-            ),
-        ));
+    let store = load_store(path)?;
+    if let Some(stored) = store.openai_codex_sessions.get(account_id).cloned() {
+        return Ok(Some(stored));
     }
 
-    Ok(Some(stored))
+    Ok(store
+        .openai_codex_sessions
+        .values()
+        .max_by(|left, right| {
+            let left_linked = left.session_id == *session_id;
+            let right_linked = right.session_id == *session_id;
+            left_linked
+                .cmp(&right_linked)
+                .then_with(|| left.updated_at.cmp(&right.updated_at))
+        })
+        .cloned())
 }
 
 pub fn load_latest_openai_codex_session(
@@ -109,6 +110,17 @@ pub fn remove_openai_codex_session(path: &Path, account_id: &str) -> Result<(), 
     write_store(path, &store)
 }
 
+pub fn clear_openai_codex_sessions(path: &Path) -> Result<(), AuthFlowError> {
+    let mut store = load_store(path)?;
+    if store.openai_codex_sessions.is_empty() {
+        return Ok(());
+    }
+
+    store.openai_codex_sessions.clear();
+    store.updated_at = now_timestamp();
+    write_store(path, &store)
+}
+
 pub fn sync_openai_profile_link<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -124,18 +136,25 @@ pub fn sync_openai_profile_link<R: Runtime>(
     let mut snapshot = load_provider_profiles_snapshot(app, state)?;
 
     let next_link = session.map(openai_profile_link_from_session).transpose()?;
-    let target_profile_id =
-        resolve_openai_profile_sync_target(&snapshot, preferred_profile_id, next_link.as_ref())?;
-    let Some(target_profile_id) = target_profile_id else {
+    let target_profile_ids =
+        resolve_openai_profile_sync_targets(&snapshot, preferred_profile_id, next_link.as_ref())?;
+    if target_profile_ids.is_empty() {
         return Ok(());
-    };
+    }
 
     let updated_at = next_link
         .as_ref()
         .map(profile_link_updated_at)
         .unwrap_or_else(now_timestamp);
-    let changed =
-        upsert_openai_profile_link(&mut snapshot, &target_profile_id, next_link, &updated_at)?;
+    let mut changed = false;
+    for target_profile_id in target_profile_ids {
+        changed |= upsert_openai_profile_link(
+            &mut snapshot,
+            &target_profile_id,
+            next_link.clone(),
+            &updated_at,
+        )?;
+    }
     if !changed {
         return Ok(());
     }
@@ -228,11 +247,11 @@ fn validate_target_openai_profile(
     Ok(())
 }
 
-fn resolve_openai_profile_sync_target(
+fn resolve_openai_profile_sync_targets(
     snapshot: &ProviderProfilesSnapshot,
     preferred_profile_id: Option<&str>,
     next_link: Option<&ProviderProfileCredentialLink>,
-) -> Result<Option<String>, AuthFlowError> {
+) -> Result<Vec<String>, AuthFlowError> {
     let preferred_profile_id = preferred_profile_id
         .map(str::trim)
         .filter(|value| !value.is_empty());
@@ -243,11 +262,33 @@ fn resolve_openai_profile_sync_target(
             RuntimeAuthPhase::Failed,
             "sync OpenAI auth onto the selected provider profile",
         )?;
-        return Ok(Some(preferred_profile_id.to_owned()));
     }
 
-    Ok(select_openai_profile_id(snapshot, next_link)
-        .or_else(|| Some(OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned())))
+    let mut profile_ids = snapshot
+        .metadata
+        .profiles
+        .iter()
+        .filter(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
+        .map(|profile| profile.profile_id.clone())
+        .collect::<Vec<_>>();
+
+    if profile_ids.is_empty() {
+        profile_ids.push(
+            preferred_profile_id
+                .map(str::to_owned)
+                .or_else(|| select_openai_profile_id(snapshot, next_link))
+                .unwrap_or_else(|| OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned()),
+        );
+    } else if let Some(preferred_profile_id) = preferred_profile_id {
+        if !profile_ids
+            .iter()
+            .any(|profile_id| profile_id == preferred_profile_id)
+        {
+            profile_ids.push(preferred_profile_id.to_owned());
+        }
+    }
+
+    Ok(profile_ids)
 }
 
 fn load_store(path: &Path) -> Result<AuthStoreFile, AuthFlowError> {

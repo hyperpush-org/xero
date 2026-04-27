@@ -1,0 +1,28 @@
+name: Documentation
+description: Request or track documentation improvements.
+title: "docs: "
+labels:
+  - documentation
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What documentation needs to be added or changed?
+    validations:
+      required: true
+  - type: textarea
+    id: audience
+    attributes:
+      label: Audience
+      description: Who needs this information?
+      placeholder: Contributors, operators, app users, release maintainers, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Include affected files, missing topics, or confusing sections.
+    validations:
+      required: false

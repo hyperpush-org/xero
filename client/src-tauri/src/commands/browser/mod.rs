@@ -1,6 +1,7 @@
 pub mod actions;
 pub(crate) mod bridge;
 pub mod cookie_import;
+mod diagnostics;
 mod events;
 mod screenshot;
 mod script;
@@ -19,6 +20,10 @@ use url::Url;
 use crate::commands::{CommandError, CommandResult};
 
 pub use actions::{StorageArea, TypingMode};
+pub use diagnostics::{
+    BrowserConsoleDiagnosticEntry, BrowserDiagnosticReadOptions, BrowserDiagnostics,
+    BrowserNetworkDiagnosticEntry,
+};
 pub use events::{
     BrowserConsolePayload, BrowserDialogPayload, BrowserDownloadPayload, BrowserLoadStatePayload,
     BrowserTabUpdatedPayload, BrowserUrlChangedPayload, BROWSER_CONSOLE_EVENT,
@@ -60,6 +65,7 @@ pub struct BrowserState {
     creation_lock: Mutex<()>,
     waiters: Arc<BridgeWaiters>,
     tabs: Arc<BrowserTabs>,
+    diagnostics: Arc<BrowserDiagnostics>,
 }
 
 impl Default for BrowserState {
@@ -68,6 +74,7 @@ impl Default for BrowserState {
             creation_lock: Mutex::new(()),
             waiters: Arc::new(BridgeWaiters::new()),
             tabs: Arc::new(BrowserTabs::new()),
+            diagnostics: Arc::new(BrowserDiagnostics::default()),
         }
     }
 }
@@ -79,6 +86,10 @@ impl BrowserState {
 
     pub fn waiters(&self) -> Arc<BridgeWaiters> {
         Arc::clone(&self.waiters)
+    }
+
+    pub fn diagnostics(&self) -> Arc<BrowserDiagnostics> {
+        Arc::clone(&self.diagnostics)
     }
 }
 
@@ -866,6 +877,9 @@ pub fn browser_internal_event<R: Runtime>(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            state
+                .diagnostics()
+                .push_console(&tab_id, &level, &message)?;
             events::emit(
                 &app,
                 BROWSER_CONSOLE_EVENT,
@@ -882,6 +896,9 @@ pub fn browser_internal_event<R: Runtime>(
                 .and_then(|v| v.as_str())
                 .unwrap_or("error")
                 .to_string();
+            state
+                .diagnostics()
+                .push_console(&tab_id, "error", &message)?;
             events::emit(
                 &app,
                 BROWSER_CONSOLE_EVENT,
@@ -891,6 +908,9 @@ pub fn browser_internal_event<R: Runtime>(
                     message,
                 },
             );
+        }
+        "network" => {
+            state.diagnostics().push_network(&tab_id, &parsed)?;
         }
         _ => {}
     }

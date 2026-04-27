@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a new capability or product improvement.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+      placeholder: Describe the workflow, frustration, or opportunity.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Cadence do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches might work, and why are they less ideal?
+    validations:
+      required: false
+  - type: textarea
+    id: success-criteria
+    attributes:
+      label: Success criteria
+      description: How will we know this is done?
+      placeholder: |
+        - Users can ...
+        - The app preserves ...
+        - Tests cover ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent runtime
+        - Project import
+        - Editor
+        - Browser automation
+        - iOS simulator
+        - Android emulator
+        - Solana workbench
+        - Settings/auth
+        - Other
+    validations:
+      required: true

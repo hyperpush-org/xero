@@ -13,8 +13,9 @@ use crate::{
     },
     provider_profiles::ProviderProfilesSnapshot,
     runtime::{
-        reconcile_provider_runtime_session, resolve_runtime_provider_identity,
-        ResolvedRuntimeProvider, RuntimeProviderReconcileOutcome,
+        bind_provider_runtime_session, reconcile_provider_runtime_session,
+        resolve_runtime_provider_identity, ResolvedRuntimeProvider, RuntimeProvider,
+        RuntimeProviderBindOutcome, RuntimeProviderReconcileOutcome,
     },
     state::DesktopState,
 };
@@ -217,6 +218,43 @@ pub(crate) fn reconcile_prepared_runtime_session<R: Runtime>(
     }
 
     if runtime.phase != RuntimeAuthPhase::Authenticated {
+        if !is_transient_phase(&runtime.phase)
+            && selection.provider.provider == RuntimeProvider::OpenAiCodex
+        {
+            match bind_provider_runtime_session(
+                app,
+                state,
+                selection.provider,
+                runtime.account_id.as_deref(),
+                Some(&selection.settings),
+                Some(&selection.provider_profiles),
+            ) {
+                Ok(RuntimeProviderBindOutcome::Ready(binding)) => {
+                    let updated = RuntimeSessionDto {
+                        runtime_kind: binding.provider.runtime_kind.into(),
+                        provider_id: binding.provider.provider_id.into(),
+                        flow_id: None,
+                        session_id: Some(binding.session_id),
+                        account_id: Some(binding.account_id),
+                        phase: RuntimeAuthPhase::Authenticated,
+                        callback_bound: None,
+                        authorization_url: None,
+                        redirect_uri: None,
+                        last_error_code: None,
+                        last_error: None,
+                        updated_at: binding.updated_at,
+                        ..runtime
+                    };
+                    let persisted = persist_runtime_session(repo_root, &updated)?;
+                    emit_runtime_updated(app, &persisted)?;
+                    return Ok(persisted);
+                }
+                Ok(RuntimeProviderBindOutcome::RefreshRequired(_))
+                | Ok(RuntimeProviderBindOutcome::SignedOut(_))
+                | Err(_) => {}
+            }
+        }
+
         if runtime != original {
             let persisted = persist_runtime_session(repo_root, &runtime)?;
             emit_runtime_updated(app, &persisted)?;
@@ -234,13 +272,28 @@ pub(crate) fn reconcile_prepared_runtime_session<R: Runtime>(
         Some(&selection.settings),
         Some(&selection.provider_profiles),
     ) {
-        Ok(RuntimeProviderReconcileOutcome::Authenticated(_binding)) => {
-            if runtime != original {
-                let persisted = persist_runtime_session(repo_root, &runtime)?;
+        Ok(RuntimeProviderReconcileOutcome::Authenticated(binding)) => {
+            let updated = RuntimeSessionDto {
+                runtime_kind: binding.provider.runtime_kind.into(),
+                provider_id: binding.provider.provider_id.into(),
+                flow_id: None,
+                session_id: Some(binding.session_id),
+                account_id: Some(binding.account_id),
+                phase: RuntimeAuthPhase::Authenticated,
+                callback_bound: None,
+                authorization_url: None,
+                redirect_uri: None,
+                last_error_code: None,
+                last_error: None,
+                updated_at: binding.updated_at,
+                ..runtime
+            };
+            if updated != original {
+                let persisted = persist_runtime_session(repo_root, &updated)?;
                 emit_runtime_updated(app, &persisted)?;
                 return Ok(persisted);
             }
-            Ok(runtime)
+            Ok(updated)
         }
         Ok(RuntimeProviderReconcileOutcome::SignedOut(diagnostic)) => {
             let updated = signed_out_runtime(

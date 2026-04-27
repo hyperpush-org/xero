@@ -33,6 +33,26 @@ export const skillTrustStateSchema = z.enum([
 
 export const pluginCommandAvailabilitySchema = z.enum(['always', 'project_open'])
 
+export const pluginCommandRiskLevelSchema = z.enum([
+  'observe',
+  'project_read',
+  'project_write',
+  'run_owned',
+  'network',
+  'system_read',
+  'os_automation',
+  'signal_external',
+])
+
+export const pluginCommandApprovalPolicySchema = z.enum([
+  'never_for_observe_only',
+  'required',
+  'per_invocation',
+  'blocked',
+])
+
+export const pluginCommandStatePolicySchema = z.enum(['ephemeral', 'project', 'plugin', 'external'])
+
 export const skillSourceMetadataSchema = z
   .object({
     label: z.string().trim().min(1),
@@ -131,6 +151,10 @@ export const pluginCommandContributionSchema = z
     description: z.string().trim().min(1),
     entry: z.string().trim().min(1),
     availability: pluginCommandAvailabilitySchema,
+    riskLevel: pluginCommandRiskLevelSchema,
+    approvalPolicy: pluginCommandApprovalPolicySchema,
+    statePolicy: pluginCommandStatePolicySchema,
+    redactionRequired: z.boolean(),
     state: skillSourceStateSchema,
     trust: skillTrustStateSchema,
   })
@@ -309,6 +333,9 @@ export type SkillRegistryEntryDto = z.infer<typeof skillRegistryEntrySchema>
 export type SkillDiscoveryDiagnosticDto = z.infer<typeof skillDiscoveryDiagnosticSchema>
 export type SkillLocalRootDto = z.infer<typeof skillLocalRootSchema>
 export type PluginCommandAvailabilityDto = z.infer<typeof pluginCommandAvailabilitySchema>
+export type PluginCommandRiskLevelDto = z.infer<typeof pluginCommandRiskLevelSchema>
+export type PluginCommandApprovalPolicyDto = z.infer<typeof pluginCommandApprovalPolicySchema>
+export type PluginCommandStatePolicyDto = z.infer<typeof pluginCommandStatePolicySchema>
 export type PluginRootDto = z.infer<typeof pluginRootSchema>
 export type PluginDiagnosticDto = z.infer<typeof pluginDiagnosticSchema>
 export type PluginSkillContributionDto = z.infer<typeof pluginSkillContributionSchema>

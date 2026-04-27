@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible problem in Cadence.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for helping improve Cadence. Please include enough detail for someone else to reproduce the problem."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: Describe the problem in one or two sentences.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the app is affected?
+      options:
+        - Agent runtime
+        - Project import
+        - Editor
+        - Browser automation
+        - iOS simulator
+        - Android emulator
+        - Solana workbench
+        - Settings/auth
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current behavior
+      description: What happens now?
+      placeholder: Include visible symptoms, errors, or degraded behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the shortest reliable path to reproduce the issue.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, app build, relevant tooling, and device/simulator details.
+      placeholder: |
+        - OS:
+        - Cadence build:
+        - Relevant tools/devices:
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or recordings
+      description: Paste logs or attach screenshots/video if they help explain the issue.
+      render: shell
+    validations:
+      required: false

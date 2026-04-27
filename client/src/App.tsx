@@ -12,13 +12,14 @@ import { ProjectLoadErrorState } from '@/components/cadence/project-load-error-s
 import { PhaseView } from '@/components/cadence/phase-view'
 import { ProjectRail } from '@/components/cadence/project-rail'
 import { CadenceShell, type PlatformVariant } from '@/components/cadence/shell'
-import type { FooterRuntimeState, StatusFooterProps } from '@/components/cadence/status-footer'
+import type { StatusFooterProps } from '@/components/cadence/status-footer'
 import { GamesSidebar } from '@/components/cadence/games-sidebar'
 import { BrowserSidebar } from '@/components/cadence/browser-sidebar'
 import { IosEmulatorSidebar } from '@/components/cadence/ios-emulator-sidebar'
 import { AndroidEmulatorSidebar } from '@/components/cadence/android-emulator-sidebar'
 import { SolanaWorkbenchSidebar } from '@/components/cadence/solana-workbench-sidebar'
 import { SettingsDialog, type SettingsSection } from '@/components/cadence/settings-dialog'
+import { UsageStatsSidebar } from '@/components/cadence/usage-stats-sidebar'
 import { VcsSidebar } from '@/components/cadence/vcs-sidebar'
 import { CadenceDesktopAdapter as DefaultCadenceDesktopAdapter, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { mapAgentSession } from '@/src/lib/cadence-model/runtime'
@@ -27,25 +28,11 @@ import type {
 } from '@/src/lib/cadence-model/session-context'
 import { type RepositoryDiffScope } from '@/src/lib/cadence-model/project'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
+import { useGitHubAuth } from '@/src/lib/github-auth'
 import { cn } from '@/lib/utils'
 
 export interface CadenceAppProps {
   adapter?: CadenceDesktopAdapter
-}
-
-function resolveFooterRuntimeState(status: {
-  isActive?: boolean
-  isStale?: boolean
-} | null | undefined): FooterRuntimeState {
-  if (status?.isActive) {
-    return 'running'
-  }
-
-  if (status?.isStale) {
-    return 'paused'
-  }
-
-  return 'idle'
 }
 
 export function CadenceApp({ adapter }: CadenceAppProps) {
@@ -144,7 +131,17 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     restoreAgentSession,
     deleteAgentSession,
     renameAgentSession,
+    activeUsageSummary,
+    refreshUsageSummary,
   } = useCadenceDesktopState({ adapter })
+
+  const {
+    session: githubSession,
+    status: githubAuthStatus,
+    error: githubAuthError,
+    login: loginWithGithub,
+    logout: logoutGithub,
+  } = useGitHubAuth()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('providers')
@@ -157,6 +154,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   const [androidOpen, setAndroidOpen] = useState(false)
   const [solanaOpen, setSolanaOpen] = useState(false)
   const [vcsOpen, setVcsOpen] = useState(false)
+  const [usageOpen, setUsageOpen] = useState(false)
 
   const openSettings = (section: SettingsSection = 'providers') => {
     setSettingsInitialSection(section)
@@ -319,12 +317,16 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
             : null,
         }
       : null,
-    runtime: agentView
+    spend: activeUsageSummary
       ? {
-          provider: agentView.selectedProviderLabel ?? null,
-          state: resolveFooterRuntimeState(agentView.runtimeRun),
+          totalTokens: activeUsageSummary.totals.totalTokens,
+          totalCostMicros: activeUsageSummary.totals.estimatedCostMicros,
         }
       : null,
+    spendActive: usageOpen,
+    onSpendClick: activeProjectId
+      ? () => setUsageOpen((current) => !current)
+      : undefined,
   }
 
   useEffect(() => {
@@ -598,6 +600,13 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onViewChange={setActiveView}
         projectName={activeProject?.name}
         onOpenSettings={() => openSettings('providers')}
+        onOpenAccount={() => openSettings('account')}
+        onAccountLogin={() => {
+          void loginWithGithub()
+        }}
+        accountAuthenticating={githubAuthStatus === 'authenticating'}
+        accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
+        accountLogin={githubSession?.user.login ?? null}
         onToggleGames={toggleGames}
         gamesOpen={gamesOpen}
         onToggleBrowser={toggleBrowser}
@@ -665,6 +674,13 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       onViewChange={setActiveView}
       projectName={activeProject?.name}
       onOpenSettings={() => openSettings('providers')}
+      onOpenAccount={() => openSettings('account')}
+      onAccountLogin={() => {
+        void loginWithGithub()
+      }}
+      accountAuthenticating={githubAuthStatus === 'authenticating'}
+      accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
+      accountLogin={githubSession?.user.login ?? null}
       onToggleGames={toggleGames}
       gamesOpen={gamesOpen}
       onToggleBrowser={toggleBrowser}
@@ -711,6 +727,14 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
       {renderBody()}
       <GamesSidebar open={gamesOpen} />
       <BrowserSidebar open={browserOpen} />
+      <UsageStatsSidebar
+        open={usageOpen}
+        projectId={activeProjectId}
+        projectName={activeProject?.name ?? null}
+        summary={activeUsageSummary}
+        onClose={() => setUsageOpen(false)}
+        onRefresh={refreshUsageSummary}
+      />
       <IosEmulatorSidebar open={iosOpen} />
       <AndroidEmulatorSidebar open={androidOpen} />
       <SolanaWorkbenchSidebar open={solanaOpen} />
@@ -803,6 +827,11 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           setOnboardingDismissed(false)
           setOnboardingOpen(true)
         }}
+        githubSession={githubSession}
+        githubAuthStatus={githubAuthStatus}
+        githubAuthError={githubAuthError}
+        onGithubLogin={() => void loginWithGithub()}
+        onGithubLogout={() => void logoutGithub()}
       />
     </CadenceShell>
   )

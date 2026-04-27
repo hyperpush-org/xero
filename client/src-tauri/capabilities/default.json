@@ -15,7 +15,10 @@
     "dialog:default",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://auth.openai.com/*" }]
+      "allow": [
+        { "url": "https://auth.openai.com/*" },
+        { "url": "https://github.com/login/oauth/authorize*" }
+      ]
     }
   ]
 }

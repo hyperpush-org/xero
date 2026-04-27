@@ -261,16 +261,16 @@ export function AgentRuntime({
   )
   const promptInputLabel = controller.promptInputAvailable ? 'Agent input' : 'Agent input unavailable'
   const sendButtonLabel = controller.promptInputAvailable ? 'Send message' : 'Send message unavailable'
-  const selectedAgentSession = useMemo(() => {
-    const targetSessionId = agent.project.selectedAgentSessionId
-    return agent.project.agentSessions.find((session) => session.agentSessionId === targetSessionId) ?? null
-  }, [agent.project.agentSessions, agent.project.selectedAgentSessionId])
+  const isProviderLoggedIn = Boolean(
+    selectedProviderReadyForSession ||
+      runtimeSession?.isAuthenticated,
+  )
   const showEmptySessionState = Boolean(
     !showAgentSetupEmptyState &&
+      !runtimeSession?.isAuthenticated &&
       !providerMismatch &&
-      (selectedProviderReadyForSession || runtimeSession?.isAuthenticated) &&
-      !hasSessionActivity &&
-      !selectedAgentSession?.lastRunId,
+      isProviderLoggedIn &&
+      !hasSessionActivity,
   )
   const projectLabel =
     agent.project.repository?.displayName ?? agent.project.name ?? 'this project'

@@ -337,6 +337,10 @@ pub struct ProviderUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,6 +527,8 @@ impl ProviderAdapter for FakeProviderAdapter {
                     .max_summary_tokens
                     .min(estimate_tokens(&request.transcript))
                     .saturating_add(estimate_tokens(&sanitized)),
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }),
         })
     }

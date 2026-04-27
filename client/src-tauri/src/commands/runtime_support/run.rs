@@ -6,7 +6,8 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::{
     auth::{
         anthropic::{resolve_anthropic_family_launch_env, AnthropicFamilyProfileInput},
-        load_openai_codex_session_for_profile_link, now_timestamp,
+        load_latest_openai_codex_session, load_openai_codex_session_for_profile_link,
+        now_timestamp,
         openai_compatible::{
             resolve_openai_compatible_endpoint_for_profile, resolve_openai_compatible_launch_env,
         },
@@ -613,25 +614,20 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
 
     match active_profile.provider_id.as_str() {
         OPENAI_CODEX_PROVIDER_ID => {
-            let link = active_profile.credential_link.as_ref().ok_or_else(|| {
-                CommandError::user_fixable(
-                    "openai_codex_auth_missing",
-                    format!(
-                        "Cadence cannot start the owned OpenAI Codex adapter because provider profile `{}` is not linked to an OpenAI auth session.",
-                        active_profile.profile_id
-                    ),
-                )
-            })?;
             let auth_store_path = state
                 .auth_store_file_for_provider(app, openai_codex_provider())
                 .map_err(command_error_from_auth)?;
-            let session = load_openai_codex_session_for_profile_link(&auth_store_path, link)
-                .map_err(command_error_from_auth)?
+            let session = match active_profile.credential_link.as_ref() {
+                Some(link) => load_openai_codex_session_for_profile_link(&auth_store_path, link)
+                    .map_err(command_error_from_auth)?,
+                None => load_latest_openai_codex_session(&auth_store_path)
+                    .map_err(command_error_from_auth)?,
+            }
                 .ok_or_else(|| {
                     CommandError::user_fixable(
                         "openai_codex_auth_missing",
                         format!(
-                            "Cadence cannot start the owned OpenAI Codex adapter because provider profile `{}` has no matching app-local auth session.",
+                            "Cadence cannot start the owned OpenAI Codex adapter because no global app-local auth session is available for provider profile `{}`.",
                             active_profile.profile_id
                         ),
                     )
@@ -1060,8 +1056,29 @@ fn load_provider_profile_selection<R: Runtime>(
         })?,
     };
 
-    let readiness = active_profile.readiness(&provider_profiles.credentials);
-    if !readiness.ready {
+    if active_profile.provider_id == OPENAI_CODEX_PROVIDER_ID {
+        let auth_store_path = state
+            .auth_store_file_for_provider(app, openai_codex_provider())
+            .map_err(command_error_from_auth)?;
+        let session = match active_profile.credential_link.as_ref() {
+            Some(link) => load_openai_codex_session_for_profile_link(&auth_store_path, link)
+                .map_err(command_error_from_auth)?,
+            None => load_latest_openai_codex_session(&auth_store_path)
+                .map_err(command_error_from_auth)?,
+        };
+        if session.is_none() {
+            return Err(CommandError::user_fixable(
+                "provider_profile_not_ready",
+                format!(
+                    "Cadence cannot launch a runtime run with provider profile `{}` because global OpenAI auth is not ready.",
+                    active_profile.profile_id
+                ),
+            ));
+        }
+    } else if !active_profile
+        .readiness(&provider_profiles.credentials)
+        .ready
+    {
         return Err(CommandError::user_fixable(
             "provider_profile_not_ready",
             format!(

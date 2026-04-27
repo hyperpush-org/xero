@@ -649,7 +649,8 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('heading', { name: /What should we build in Cadence/ })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: /What can we build together in Cadence/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Runtime' })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Pipeline' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Cadence Desktop' })).not.toBeInTheDocument()

@@ -15,6 +15,8 @@ use super::{
 pub const MAX_SELECTOR_LEN: usize = 1_024;
 pub const MAX_TEXT_INPUT_LEN: usize = 16_384;
 pub const MAX_QUERY_LIMIT: usize = 100;
+pub const MAX_BROWSER_DIAGNOSTIC_LIMIT: usize = 200;
+pub const MAX_STATE_SNAPSHOT_JSON_LEN: usize = 256 * 1024;
 
 pub fn parse_url(input: &str) -> CommandResult<Url> {
     let trimmed = input.trim();
@@ -452,6 +454,261 @@ pub fn storage_clear<R: Runtime>(
     run_script(app, tabs, waiters, &body, 2_000)
 }
 
+pub fn network_performance_summary<R: Runtime>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    waiters: &Arc<BridgeWaiters>,
+    limit: Option<usize>,
+    timeout_ms: Option<u64>,
+) -> CommandResult<JsonValue> {
+    let limit = limit.unwrap_or(100).clamp(1, MAX_BROWSER_DIAGNOSTIC_LIMIT);
+    let body = format!(
+        "const limit = {limit};\
+         const sanitize = (value) => {{\
+           try {{ const url = new URL(String(value || ''), location.href); url.search = ''; url.hash = ''; return url.href; }}\
+           catch (_error) {{ return String(value || '').slice(0, 2048); }}\
+         }};\
+         const number = (value) => Number.isFinite(value) ? Math.round(value) : null;\
+         const resourceEntries = (performance.getEntriesByType && performance.getEntriesByType('resource')) || [];\
+         const navigationEntries = (performance.getEntriesByType && performance.getEntriesByType('navigation')) || [];\
+         const entries = Array.from(navigationEntries).concat(Array.from(resourceEntries));\
+         entries.sort((left, right) => (left.startTime || 0) - (right.startTime || 0));\
+         const selected = entries.slice(-limit).map((entry) => ({{\
+           url: sanitize(entry.name),\
+           initiatorType: entry.initiatorType || entry.entryType || null,\
+           startTimeMs: number(entry.startTime),\
+           durationMs: number(entry.duration),\
+           transferSize: Number.isFinite(entry.transferSize) ? Math.round(entry.transferSize) : null,\
+           encodedBodySize: Number.isFinite(entry.encodedBodySize) ? Math.round(entry.encodedBodySize) : null,\
+           decodedBodySize: Number.isFinite(entry.decodedBodySize) ? Math.round(entry.decodedBodySize) : null,\
+           nextHopProtocol: entry.nextHopProtocol || null,\
+           responseStatus: Number.isFinite(entry.responseStatus) ? Math.round(entry.responseStatus) : null,\
+         }}));\
+         return {{ entries: selected, total: entries.length, truncated: entries.length > selected.length }};",
+        limit = limit,
+    );
+    run_script(app, tabs, waiters, &body, resolve_timeout(timeout_ms))
+}
+
+pub fn accessibility_tree<R: Runtime>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    waiters: &Arc<BridgeWaiters>,
+    selector: Option<&str>,
+    limit: Option<usize>,
+    timeout_ms: Option<u64>,
+) -> CommandResult<JsonValue> {
+    let selector_json = match selector {
+        Some(selector) => {
+            let selector = validate_selector(selector)?;
+            serde_json::to_string(&selector).map_err(encode_err)?
+        }
+        None => "null".into(),
+    };
+    let limit = limit.unwrap_or(100).clamp(1, MAX_BROWSER_DIAGNOSTIC_LIMIT);
+    let body = format!(
+        "const selector = {selector_json};\
+         const root = selector ? document.querySelector(selector) : document.body;\
+         if (!root) throw new Error('element not found: ' + selector);\
+         const limit = {limit};\
+         const implicitRole = (el) => {{\
+           const tag = (el.tagName || '').toLowerCase();\
+           if (tag === 'a' && el.hasAttribute('href')) return 'link';\
+           if (tag === 'button') return 'button';\
+           if (tag === 'img') return 'img';\
+           if (tag === 'input') return el.type === 'checkbox' ? 'checkbox' : 'textbox';\
+           if (tag === 'textarea') return 'textbox';\
+           if (tag === 'select') return 'combobox';\
+           if (/^h[1-6]$/.test(tag)) return 'heading';\
+           if (tag === 'nav') return 'navigation';\
+           if (tag === 'main') return 'main';\
+           if (tag === 'form') return 'form';\
+           return null;\
+         }};\
+         const isVisible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || (el.getClientRects && el.getClientRects().length)));\
+         const textOf = (el) => ((el.innerText || el.textContent || '').trim()).replace(/\\s+/g, ' ').slice(0, 200);\
+         const nameOf = (el) => (el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') || textOf(el)).slice(0, 200);\
+         const nodes = [];\
+         const queue = [root];\
+         while (queue.length && nodes.length < limit) {{\
+           const el = queue.shift();\
+           if (!el || el.nodeType !== 1) continue;\
+           const role = el.getAttribute('role') || implicitRole(el);\
+           const name = nameOf(el);\
+           const tag = (el.tagName || '').toLowerCase();\
+           const visible = isVisible(el);\
+           if (role || name || visible) {{\
+             nodes.push({{\
+               tag,\
+               id: el.id || null,\
+               role,\
+               name: name || null,\
+               text: textOf(el) || null,\
+               visible,\
+               disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),\
+               href: el.getAttribute('href') || null,\
+             }});\
+           }}\
+           Array.prototype.forEach.call(el.children || [], (child) => queue.push(child));\
+         }}\
+         return {{ root: selector || 'body', nodes, truncated: queue.length > 0 }};",
+        selector_json = selector_json,
+        limit = limit,
+    );
+    run_script(app, tabs, waiters, &body, resolve_timeout(timeout_ms))
+}
+
+pub fn state_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    waiters: &Arc<BridgeWaiters>,
+    include_storage: bool,
+    include_cookies: bool,
+    timeout_ms: Option<u64>,
+) -> CommandResult<JsonValue> {
+    let body = format!(
+        "const copyStorage = (store) => {{ const out = {{}}; for (let i = 0; i < store.length; i++) {{ const key = store.key(i); if (key !== null) out[key] = store.getItem(key); }} return out; }};\
+         const cookies = {include_cookies} && document.cookie ? document.cookie.split(';').map((cookie) => {{ const idx = cookie.indexOf('='); return idx === -1 ? {{ name: cookie.trim(), value: '' }} : {{ name: cookie.slice(0, idx).trim(), value: cookie.slice(idx + 1) }}; }}) : [];\
+         return {{\
+           url: location.href,\
+           title: document.title,\
+           readyState: document.readyState,\
+           cookies,\
+           localStorage: {include_storage} ? copyStorage(localStorage) : null,\
+           sessionStorage: {include_storage} ? copyStorage(sessionStorage) : null,\
+         }};",
+        include_storage = include_storage,
+        include_cookies = include_cookies,
+    );
+    run_script(app, tabs, waiters, &body, resolve_timeout(timeout_ms))
+}
+
+pub fn state_restore<R: Runtime>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    waiters: &Arc<BridgeWaiters>,
+    snapshot_json: &str,
+    navigate: bool,
+    timeout_ms: Option<u64>,
+) -> CommandResult<JsonValue> {
+    if snapshot_json.len() > MAX_STATE_SNAPSHOT_JSON_LEN {
+        return Err(CommandError::user_fixable(
+            "browser_state_snapshot_too_large",
+            format!("Browser state snapshots are limited to {MAX_STATE_SNAPSHOT_JSON_LEN} bytes."),
+        ));
+    }
+    let snapshot = serde_json::from_str::<JsonValue>(snapshot_json).map_err(|error| {
+        CommandError::user_fixable(
+            "browser_state_snapshot_invalid",
+            format!("Cadence could not parse browser state snapshot JSON: {error}"),
+        )
+    })?;
+    let snapshot = validate_state_restore_snapshot(snapshot)?;
+    let snapshot_json = serde_json::to_string(&snapshot).map_err(encode_err)?;
+    let body = format!(
+        "const snapshot = {snapshot_json};\
+         const setStorage = (store, values) => {{\
+           if (!values || typeof values !== 'object') return 0;\
+           let count = 0;\
+           Object.entries(values).forEach(([key, value]) => {{ store.setItem(key, value == null ? '' : String(value)); count += 1; }});\
+           return count;\
+         }};\
+         const localCount = setStorage(localStorage, snapshot.localStorage);\
+         const sessionCount = setStorage(sessionStorage, snapshot.sessionStorage);\
+         let cookieCount = 0;\
+         if (Array.isArray(snapshot.cookies)) {{\
+           snapshot.cookies.forEach((cookie) => {{\
+             if (cookie && cookie.name) {{ document.cookie = String(cookie.name) + '=' + encodeURIComponent(String(cookie.value || '')) + '; path=/'; cookieCount += 1; }}\
+           }});\
+         }}\
+         const targetUrl = snapshot.url ? String(snapshot.url) : null;\
+         const shouldNavigate = {navigate} && targetUrl && targetUrl !== location.href;\
+         if (shouldNavigate) location.href = targetUrl;\
+         return {{ restoredLocalStorage: localCount, restoredSessionStorage: sessionCount, restoredCookies: cookieCount, navigated: !!shouldNavigate }};",
+        snapshot_json = snapshot_json,
+        navigate = navigate,
+    );
+    run_script(app, tabs, waiters, &body, resolve_timeout(timeout_ms))
+}
+
+fn validate_state_restore_snapshot(mut snapshot: JsonValue) -> CommandResult<JsonValue> {
+    if !snapshot.is_object() {
+        return Err(CommandError::user_fixable(
+            "browser_state_snapshot_invalid",
+            "Cadence requires browser state restore snapshots to be JSON objects.",
+        ));
+    }
+
+    if let Some(cookies) = snapshot.get_mut("cookies") {
+        if cookies.is_null() {
+            return Ok(snapshot);
+        }
+        let cookies_array = cookies.as_array_mut().ok_or_else(|| {
+            CommandError::user_fixable(
+                "browser_state_snapshot_invalid",
+                "Cadence requires browser state restore cookies to be an array.",
+            )
+        })?;
+
+        for cookie in cookies_array {
+            validate_state_restore_cookie(cookie)?;
+        }
+    }
+
+    Ok(snapshot)
+}
+
+fn validate_state_restore_cookie(cookie: &mut JsonValue) -> CommandResult<()> {
+    let object = cookie.as_object_mut().ok_or_else(|| {
+        CommandError::user_fixable(
+            "browser_state_cookie_invalid",
+            "Cadence requires each browser state restore cookie to be an object.",
+        )
+    })?;
+    let name = object
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "browser_state_cookie_invalid",
+                "Cadence requires each browser state restore cookie to include a string name.",
+            )
+        })?;
+    let value = object
+        .get("value")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+
+    if !is_valid_cookie_name(name) {
+        return Err(CommandError::user_fixable(
+            "browser_state_cookie_invalid",
+            "Cadence refused a browser state restore cookie with a malformed name.",
+        ));
+    }
+    if !is_valid_cookie_value(value) {
+        return Err(CommandError::user_fixable(
+            "browser_state_cookie_invalid",
+            "Cadence refused a browser state restore cookie with a value that could inject cookie attributes.",
+        ));
+    }
+
+    object.retain(|key, _| matches!(key.as_str(), "name" | "value"));
+    Ok(())
+}
+
+fn is_valid_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|byte| {
+            matches!(byte, 0x21 | 0x23..=0x27 | 0x2a..=0x2b | 0x2d..=0x2e | 0x30..=0x39 | 0x41..=0x5a | 0x5e..=0x7a | 0x7c | 0x7e)
+        })
+}
+
+fn is_valid_cookie_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| matches!(byte, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageArea {
@@ -513,5 +770,44 @@ mod tests {
             BRIDGE_MAX_TIMEOUT_MS
         );
         assert_eq!(resolve_timeout(Some(5_000)), 5_000);
+    }
+
+    #[test]
+    fn state_restore_snapshot_rejects_cookie_attribute_injection() {
+        let snapshot = serde_json::json!({
+            "url": "https://example.com",
+            "cookies": [
+                { "name": "session; SameSite=None", "value": "abc" }
+            ]
+        });
+
+        let error = validate_state_restore_snapshot(snapshot)
+            .expect_err("malformed cookie names should fail closed");
+        assert_eq!(error.code, "browser_state_cookie_invalid");
+
+        let snapshot = serde_json::json!({
+            "url": "https://example.com",
+            "cookies": [
+                { "name": "session", "value": "abc; Secure" }
+            ]
+        });
+        let error = validate_state_restore_snapshot(snapshot)
+            .expect_err("malformed cookie values should fail closed");
+        assert_eq!(error.code, "browser_state_cookie_invalid");
+    }
+
+    #[test]
+    fn state_restore_snapshot_preserves_valid_cookies_without_extra_attributes() {
+        let snapshot = serde_json::json!({
+            "url": "https://example.com",
+            "cookies": [
+                { "name": "session_id", "value": "abc-123", "sameSite": "None" }
+            ]
+        });
+
+        let sanitized = validate_state_restore_snapshot(snapshot).expect("valid cookie snapshot");
+        assert_eq!(sanitized["cookies"][0]["name"], "session_id");
+        assert_eq!(sanitized["cookies"][0]["value"], "abc-123");
+        assert!(sanitized["cookies"][0].get("sameSite").is_none());
     }
 }

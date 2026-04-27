@@ -64,6 +64,37 @@ pub enum PluginCommandAvailabilityDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginCommandRiskLevelDto {
+    Observe,
+    ProjectRead,
+    ProjectWrite,
+    RunOwned,
+    Network,
+    SystemRead,
+    OsAutomation,
+    SignalExternal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginCommandApprovalPolicyDto {
+    NeverForObserveOnly,
+    Required,
+    PerInvocation,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginCommandStatePolicyDto {
+    Ephemeral,
+    Project,
+    Plugin,
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PluginRootDto {
     pub root_id: String,
@@ -100,6 +131,10 @@ pub struct PluginCommandContributionDto {
     pub description: String,
     pub entry: String,
     pub availability: PluginCommandAvailabilityDto,
+    pub risk_level: PluginCommandRiskLevelDto,
+    pub approval_policy: PluginCommandApprovalPolicyDto,
+    pub state_policy: PluginCommandStatePolicyDto,
+    pub redaction_required: bool,
     pub state: SkillSourceStateDto,
     pub trust: SkillTrustStateDto,
 }

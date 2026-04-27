@@ -292,12 +292,19 @@ import {
   updateSessionMemoryRequestSchema,
 } from '@/src/lib/cadence-model/session-context'
 import { projectSnapshotResponseSchema, type ProjectSnapshotResponseDto } from '@/src/lib/cadence-model'
+import {
+  agentUsageUpdatedPayloadSchema,
+  projectUsageSummarySchema,
+  type AgentUsageUpdatedPayloadDto,
+  type ProjectUsageSummaryDto,
+} from '@/src/lib/cadence-model/usage'
 
 const COMMANDS = {
   importRepository: 'import_repository',
   listProjects: 'list_projects',
   removeProject: 'remove_project',
   getProjectSnapshot: 'get_project_snapshot',
+  getProjectUsageSummary: 'get_project_usage_summary',
   getRepositoryStatus: 'get_repository_status',
   getRepositoryDiff: 'get_repository_diff',
   gitStagePaths: 'git_stage_paths',
@@ -434,6 +441,7 @@ const EVENTS = {
   browserLoadState: 'browser:load_state',
   browserConsole: 'browser:console',
   browserTabUpdated: 'browser:tab_updated',
+  agentUsageUpdated: 'agent_usage_updated',
 } as const
 
 const commandErrorSchema = z.object({
@@ -585,6 +593,7 @@ export interface CadenceDesktopAdapter {
   listProjects(): Promise<ListProjectsResponseDto>
   removeProject(projectId: string): Promise<ListProjectsResponseDto>
   getProjectSnapshot(projectId: string): Promise<ProjectSnapshotResponseDto>
+  getProjectUsageSummary(projectId: string): Promise<ProjectUsageSummaryDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
   gitStagePaths(projectId: string, paths: string[]): Promise<void>
@@ -832,6 +841,10 @@ export interface CadenceDesktopAdapter {
   ): Promise<UnlistenFn>
   onRuntimeRunUpdated(
     handler: (payload: RuntimeRunUpdatedPayloadDto) => void,
+    onError?: (error: CadenceDesktopError) => void,
+  ): Promise<UnlistenFn>
+  onAgentUsageUpdated(
+    handler: (payload: AgentUsageUpdatedPayloadDto) => void,
     onError?: (error: CadenceDesktopError) => void,
   ): Promise<UnlistenFn>
 }
@@ -1245,6 +1258,12 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   getProjectSnapshot(projectId) {
     return invokeTyped(COMMANDS.getProjectSnapshot, projectSnapshotResponseSchema, {
+      request: { projectId },
+    })
+  },
+
+  getProjectUsageSummary(projectId) {
+    return invokeTyped(COMMANDS.getProjectUsageSummary, projectUsageSummarySchema, {
       request: { projectId },
     })
   },
@@ -2179,6 +2198,10 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   onRuntimeRunUpdated(handler, onError) {
     return listenTyped(EVENTS.runtimeRunUpdated, runtimeRunUpdatedPayloadSchema, handler, onError)
+  },
+
+  onAgentUsageUpdated(handler, onError) {
+    return listenTyped(EVENTS.agentUsageUpdated, agentUsageUpdatedPayloadSchema, handler, onError)
   },
 }
 

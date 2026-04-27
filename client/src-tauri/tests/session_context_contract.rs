@@ -43,6 +43,8 @@ fn owned_agent_transcript_maps_records_in_stable_order_and_redacts_secrets() {
         input_tokens: 1200,
         output_tokens: 400,
         total_tokens: 1600,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         estimated_cost_micros: 123,
         updated_at: "2026-04-26T10:01:00Z".into(),
     };

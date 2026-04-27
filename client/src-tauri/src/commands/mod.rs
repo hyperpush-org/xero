@@ -7,6 +7,7 @@ pub mod doctor_report;
 pub mod emulator;
 pub mod get_autonomous_run;
 pub mod get_project_snapshot;
+pub mod get_project_usage_summary;
 pub mod get_repository_diff;
 pub mod get_repository_status;
 pub mod get_runtime_run;
@@ -165,7 +166,7 @@ pub use upsert_runtime_settings::upsert_runtime_settings;
 
 pub use contracts::{
     agent::*, autonomous::*, dictation::*, error::*, mcp::*, notifications::*, runtime::*,
-    session_context::*, skills::*, surface::*, workflow::*,
+    session_context::*, skills::*, surface::*, usage::*, workflow::*,
 };
 
 pub(crate) use contracts::{

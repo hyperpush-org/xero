@@ -312,6 +312,7 @@ export function AgentSessionsSidebar({
   }, [onRenameSession, renameSession, renameTitle])
 
   const isFirstSyncRef = useRef(true)
+  const lastProjectIdRef = useRef(projectId)
   const [entries, setEntries] = useState<SessionEntry[]>(() =>
     activeSessions.map((session) => ({ session, state: 'visible' as const })),
   )
@@ -319,6 +320,15 @@ export function AgentSessionsSidebar({
   useEffect(() => {
     const isFirst = isFirstSyncRef.current
     isFirstSyncRef.current = false
+    const isProjectChange = lastProjectIdRef.current !== projectId
+    lastProjectIdRef.current = projectId
+
+    if (isProjectChange) {
+      setEntries(
+        activeSessions.map((session) => ({ session, state: 'visible' as const })),
+      )
+      return
+    }
 
     setEntries((prevEntries) => {
       const activeBySessionId = new Map(
@@ -347,7 +357,7 @@ export function AgentSessionsSidebar({
 
       return next
     })
-  }, [activeSessions])
+  }, [activeSessions, projectId])
 
   const handleEnterAnimationEnd = useCallback((agentSessionId: string) => {
     setEntries((prev) =>

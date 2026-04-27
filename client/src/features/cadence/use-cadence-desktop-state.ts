@@ -33,6 +33,7 @@ import {
   type Phase,
   type ProjectDetailView,
   type ProjectListItem,
+  type ProjectUsageSummaryDto,
   type ProviderModelCatalogDto,
   type ProviderProfileDiagnosticsDto,
   type ProviderProfilesDto,
@@ -399,6 +400,10 @@ export function useCadenceDesktopState(
   const [pendingSkillSourceId, setPendingSkillSourceId] = useState<string | null>(null)
   const [skillRegistryMutationError, setSkillRegistryMutationError] =
     useState<OperatorActionErrorView | null>(null)
+  const [usageSummaries, setUsageSummaries] =
+    useState<Record<string, ProjectUsageSummaryDto>>({})
+  const [usageSummaryLoadErrors, setUsageSummaryLoadErrors] =
+    useState<Record<string, string | null>>({})
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
@@ -560,6 +565,30 @@ export function useCadenceDesktopState(
   const handleAdapterEventError = useCallback((error: CadenceDesktopError) => {
     setErrorMessage(getDesktopErrorMessage(error))
   }, [])
+
+  const refreshUsageSummary = useCallback(
+    async (projectId: string): Promise<ProjectUsageSummaryDto | null> => {
+      try {
+        const summary = await adapter.getProjectUsageSummary(projectId)
+        setUsageSummaries((current) => ({
+          ...current,
+          [projectId]: summary,
+        }))
+        setUsageSummaryLoadErrors((current) => ({
+          ...current,
+          [projectId]: null,
+        }))
+        return summary
+      } catch (error) {
+        setUsageSummaryLoadErrors((current) => ({
+          ...current,
+          [projectId]: getDesktopErrorMessage(error),
+        }))
+        return null
+      }
+    },
+    [adapter],
+  )
 
   const syncRepositoryStatus = useCallback(async () => {
     const projectId = activeProjectIdRef.current
@@ -1130,6 +1159,44 @@ export function useCadenceDesktopState(
       document.removeEventListener('visibilitychange', refreshIfVisible)
     }
   }, [activeProjectId, syncRepositoryStatus])
+
+  // Fetch the active project's usage summary on mount and whenever the
+  // selected project changes. Runs even on the first render so the footer
+  // populates without waiting for an agent run to complete.
+  useEffect(() => {
+    if (!activeProjectId) {
+      return
+    }
+    void refreshUsageSummary(activeProjectId)
+  }, [activeProjectId, refreshUsageSummary])
+
+  // Live-refresh totals when the provider loop persists a usage row. We only
+  // trigger a re-fetch for the project that emitted (no-op for others).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+
+    void adapter
+      .onAgentUsageUpdated(
+        (payload) => {
+          void refreshUsageSummary(payload.projectId)
+        },
+        handleAdapterEventError,
+      )
+      .then((dispose) => {
+        if (cancelled) {
+          dispose()
+          return
+        }
+        unlisten = dispose
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [adapter, handleAdapterEventError, refreshUsageSummary])
 
   const showRepositoryDiff = useCallback(
     async (scope: RepositoryDiffScope, options: { force?: boolean } = {}) => {
@@ -1838,5 +1905,11 @@ export function useCadenceDesktopState(
     restoreAgentSession,
     deleteAgentSession,
     renameAgentSession,
+    usageSummaries,
+    activeUsageSummary: activeProjectId ? (usageSummaries[activeProjectId] ?? null) : null,
+    activeUsageSummaryLoadError: activeProjectId
+      ? (usageSummaryLoadErrors[activeProjectId] ?? null)
+      : null,
+    refreshUsageSummary,
   }
 }

@@ -436,6 +436,10 @@ function makePluginSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): Ski
     description: 'Opens the Acme plugin panel.',
     entry: 'commands/open-panel.js',
     availability: 'project_open',
+    riskLevel: 'observe',
+    approvalPolicy: 'required',
+    statePolicy: 'ephemeral',
+    redactionRequired: true,
     state: 'enabled',
     trust: 'trusted',
   }
@@ -755,6 +759,19 @@ function createMockAdapter(options?: {
     return { projects: listedProjects }
   })
   const getProjectSnapshot = vi.fn(async (projectId: string) => snapshots[projectId])
+  const getProjectUsageSummary = vi.fn(async (projectId: string) => ({
+    projectId,
+    totals: {
+      runCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      estimatedCostMicros: 0,
+    },
+    byModel: [],
+  }))
   const listAgentSessions = vi.fn(async (request: { projectId: string }) => ({
     sessions: snapshots[request.projectId]?.agentSessions ?? [makeAgentSession(request.projectId)],
   }))
@@ -1605,6 +1622,7 @@ function createMockAdapter(options?: {
     listProjects,
     removeProject,
     getProjectSnapshot,
+    getProjectUsageSummary,
     getRepositoryStatus,
     getRepositoryDiff,
     gitStagePaths: async () => undefined,
@@ -1762,6 +1780,7 @@ function createMockAdapter(options?: {
     onRepositoryStatusChanged,
     onRuntimeUpdated,
     onRuntimeRunUpdated,
+    onAgentUsageUpdated: vi.fn(async () => () => undefined),
   }
 
   return {
@@ -1771,6 +1790,7 @@ function createMockAdapter(options?: {
     listProjects,
     removeProject,
     getProjectSnapshot,
+    getProjectUsageSummary,
     getRepositoryStatus,
     getRepositoryDiff,
     getRuntimeRun,

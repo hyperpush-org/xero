@@ -1,12 +1,26 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const { openUrlMock } = vi.hoisted(() => ({
+const { githubLoginMock, githubLogoutMock, githubRefreshMock, openUrlMock } = vi.hoisted(() => ({
+  githubLoginMock: vi.fn(async () => undefined),
+  githubLogoutMock: vi.fn(async () => undefined),
+  githubRefreshMock: vi.fn(async () => undefined),
   openUrlMock: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: openUrlMock,
+}))
+
+vi.mock('@/src/lib/github-auth', () => ({
+  useGitHubAuth: () => ({
+    session: null,
+    status: 'idle',
+    error: null,
+    login: githubLoginMock,
+    logout: githubLogoutMock,
+    refresh: githubRefreshMock,
+  }),
 }))
 
 vi.mock('../components/cadence/code-editor', () => ({
@@ -28,6 +42,9 @@ vi.mock('../components/cadence/code-editor', () => ({
 }))
 
 afterEach(() => {
+  githubLoginMock.mockClear()
+  githubLogoutMock.mockClear()
+  githubRefreshMock.mockClear()
   openUrlMock.mockReset()
   if (typeof window.localStorage?.clear === 'function') {
     window.localStorage.clear()
@@ -1584,6 +1601,19 @@ function createAdapter(options?: {
       return { projects: currentProjects }
     },
     getProjectSnapshot: async () => currentSnapshot,
+    getProjectUsageSummary: async (projectId: string) => ({
+      projectId,
+      totals: {
+        runCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        estimatedCostMicros: 0,
+      },
+      byModel: [],
+    }),
     getRepositoryStatus: async () => currentStatus,
     getRepositoryDiff: async (_projectId, scope) => ({ ...currentDiff, scope }),
     gitStagePaths: async () => undefined,
@@ -2043,6 +2073,7 @@ function createAdapter(options?: {
     onRepositoryStatusChanged: async (_handler: (payload: RepositoryStatusChangedPayloadDto) => void) => () => {},
     onRuntimeUpdated,
     onRuntimeRunUpdated,
+    onAgentUsageUpdated: async () => () => {},
   }
 
   return {
@@ -2675,6 +2706,22 @@ describe('CadenceApp current UI', () => {
     expect(within(breadcrumb).getByText('Personas')).toBeVisible()
   })
 
+  it('starts GitHub auth from the titlebar without opening Account settings', async () => {
+    const { adapter } = createAdapter()
+
+    render(<CadenceApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with GitHub' }))
+
+    await waitFor(() => expect(githubLoginMock).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('heading', { name: 'Account' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Connect your GitHub account to identify this install.')).not.toBeInTheDocument()
+  })
+
   it('auto-collapses the project rail in Editor and restores it when leaving if it started expanded', async () => {
     const { adapter } = createAdapter()
 
@@ -2728,7 +2775,7 @@ describe('CadenceApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
 
-    expect(await screen.findByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Start run' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     expect(screen.queryByRole('heading', { name: 'Autonomous run truth' })).not.toBeInTheDocument()
@@ -2917,7 +2964,7 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     await waitFor(() => expect(setup.onRuntimeRunUpdated).toHaveBeenCalledTimes(1))
 
     act(() => {
@@ -3052,7 +3099,7 @@ describe('CadenceApp current UI', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible())
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible())
 
     act(() => {
       setup.emitRuntimeRunUpdated({
@@ -3333,7 +3380,7 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('gpt-4.1-mini')
 
     fireEvent.change(screen.getByLabelText('Agent input'), {
@@ -3404,7 +3451,7 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('openai/gpt-4.1')
 
     fireEvent.change(screen.getByLabelText('Agent input'), {
@@ -3476,7 +3523,7 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('llama3.2')
     expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Thinking unavailable')
 
@@ -3721,7 +3768,7 @@ describe('CadenceApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-    expect(await screen.findByRole('heading', { name: 'What should we build in Cadence?' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'No supervised run attached yet' })).toBeVisible()
 
     fireEvent.change(screen.getByLabelText('Agent input'), {
       target: { value: 'Start before changing approval.' },

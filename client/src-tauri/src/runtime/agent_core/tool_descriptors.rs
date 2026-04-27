@@ -1008,7 +1008,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_BROWSER,
-            "Drive the in-app browser automation surface.",
+            "Drive the in-app browser automation and diagnostics surface, including console logs, network summaries, accessibility tree snapshots, and browser state save/restore.",
             browser_schema(),
         ),
         descriptor(
@@ -1106,6 +1106,12 @@ fn browser_schema() -> JsonValue {
                         "storage_read",
                         "storage_write",
                         "storage_clear",
+                        "console_logs",
+                        "network_summary",
+                        "accessibility_tree",
+                        "state_snapshot",
+                        "state_restore",
+                        "harness_extension_contract",
                         "tab_list",
                         "tab_close",
                         "tab_focus",
@@ -1133,6 +1139,33 @@ fn browser_schema() -> JsonValue {
             ("cookie", string_schema("Cookie string for cookies_set.")),
             ("area", enum_schema("Storage area.", &["local", "session"])),
             ("value", string_schema("Storage value for storage_write.")),
+            (
+                "level",
+                enum_schema(
+                    "Console level filter for console_logs.",
+                    &["log", "info", "warn", "error", "debug"],
+                ),
+            ),
+            (
+                "clear",
+                boolean_schema("Clear returned diagnostic entries after reading."),
+            ),
+            (
+                "includeStorage",
+                boolean_schema("Opt into localStorage and sessionStorage in state_snapshot."),
+            ),
+            (
+                "includeCookies",
+                boolean_schema("Opt into document cookies in state_snapshot."),
+            ),
+            (
+                "snapshotJson",
+                string_schema("Snapshot JSON returned by state_snapshot for state_restore."),
+            ),
+            (
+                "navigate",
+                boolean_schema("Navigate to the snapshot URL during state_restore."),
+            ),
             ("tabId", string_schema("Browser tab id.")),
             (
                 "timeoutMs",

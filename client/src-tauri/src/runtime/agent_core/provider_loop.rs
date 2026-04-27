@@ -548,6 +548,12 @@ fn merge_provider_usage(total: &mut ProviderUsage, usage: Option<ProviderUsage>)
     total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
     total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
     total.total_tokens = total.total_tokens.saturating_add(usage.total_tokens);
+    total.cache_read_tokens = total
+        .cache_read_tokens
+        .saturating_add(usage.cache_read_tokens);
+    total.cache_creation_tokens = total
+        .cache_creation_tokens
+        .saturating_add(usage.cache_creation_tokens);
 }
 
 fn persist_provider_usage(
@@ -558,6 +564,16 @@ fn persist_provider_usage(
     model_id: &str,
     usage: &ProviderUsage,
 ) -> CommandResult<()> {
+    let estimated_cost_micros = crate::runtime::pricing::estimate_cost_micros(
+        provider_id,
+        model_id,
+        crate::runtime::pricing::UsageForPricing {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+        },
+    );
     project_store::upsert_agent_usage(
         repo_root,
         &project_store::AgentUsageRecord {
@@ -568,8 +584,12 @@ fn persist_provider_usage(
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             total_tokens: usage.total_tokens,
-            estimated_cost_micros: 0,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            estimated_cost_micros,
             updated_at: now_timestamp(),
         },
-    )
+    )?;
+    crate::runtime::usage_events::emit_agent_usage_updated(project_id, run_id);
+    Ok(())
 }

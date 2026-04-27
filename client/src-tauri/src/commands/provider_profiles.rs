@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    auth::{remove_openai_codex_session, sync_openai_profile_link, AuthFlowError},
+    auth::{clear_openai_codex_sessions, sync_openai_profile_link, AuthFlowError},
     commands::{
         get_runtime_settings::runtime_settings_file_from_request, CommandError, CommandResult,
         LogoutProviderProfileRequestDto, ProviderProfileDto, ProviderProfileReadinessDto,
@@ -97,11 +97,8 @@ pub fn logout_provider_profile<R: Runtime>(
         ));
     }
 
-    let account_id = match profile.credential_link.as_ref() {
-        Some(ProviderProfileCredentialLink::OpenAiCodex { account_id, .. }) => {
-            Some(account_id.clone())
-        }
-        Some(_) => {
+    if let Some(link) = profile.credential_link.as_ref() {
+        if !matches!(link, ProviderProfileCredentialLink::OpenAiCodex { .. }) {
             return Err(CommandError::user_fixable(
                 "provider_profiles_invalid",
                 format!(
@@ -109,17 +106,12 @@ pub fn logout_provider_profile<R: Runtime>(
                 ),
             ));
         }
-        None => None,
-    };
-
-    if let Some(account_id) = account_id.as_deref() {
-        let auth_store_path = state
-            .auth_store_file_for_provider(&app, openai_codex_provider())
-            .map_err(map_auth_store_error_to_command_error)?;
-        remove_openai_codex_session(&auth_store_path, account_id)
-            .map_err(map_auth_store_error_to_command_error)?;
     }
 
+    let auth_store_path = state
+        .auth_store_file_for_provider(&app, openai_codex_provider())
+        .map_err(map_auth_store_error_to_command_error)?;
+    clear_openai_codex_sessions(&auth_store_path).map_err(map_auth_store_error_to_command_error)?;
     sync_openai_profile_link(&app, state.inner(), Some(profile_id), None)
         .map_err(map_auth_store_error_to_command_error)?;
 
@@ -295,6 +287,17 @@ fn apply_provider_profile_upsert(
     let now = crate::auth::now_timestamp();
     let current_profile = current.profile(profile_id).cloned();
     let current_api_key_secret = current.api_key_credential(profile_id).cloned();
+    let current_openai_auth_link =
+        current.metadata.profiles.iter().find_map(|profile| {
+            match profile.credential_link.as_ref() {
+                Some(ProviderProfileCredentialLink::OpenAiCodex { .. })
+                    if profile.provider_id == OPENAI_CODEX_PROVIDER_ID =>
+                {
+                    profile.credential_link.clone()
+                }
+                _ => None,
+            }
+        });
     let requested_api_key = request
         .api_key
         .as_deref()
@@ -337,6 +340,7 @@ fn apply_provider_profile_upsert(
         current_profile.as_ref(),
         next_api_key_secret.as_ref(),
         request.base_url.as_deref(),
+        current_openai_auth_link.as_ref(),
     );
 
     let mut next = current.clone();
@@ -376,6 +380,7 @@ fn apply_provider_profile_upsert(
                             current_profile.as_ref(),
                             next_api_key_secret.as_ref(),
                             request.base_url.as_deref(),
+                            current_openai_auth_link.as_ref(),
                         )
             })
             .map(|profile| profile.updated_at.clone())
@@ -440,14 +445,17 @@ fn next_provider_profile_credential_link(
     current_profile: Option<&ProviderProfileRecord>,
     next_api_key_secret: Option<&ProviderApiKeyCredentialEntry>,
     base_url: Option<&str>,
+    current_openai_auth_link: Option<&ProviderProfileCredentialLink>,
 ) -> Option<ProviderProfileCredentialLink> {
     if provider_id == OPENAI_CODEX_PROVIDER_ID {
-        return current_profile.and_then(|profile| match profile.credential_link.as_ref() {
-            Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
-                profile.credential_link.clone()
-            }
-            _ => None,
-        });
+        return current_profile
+            .and_then(|profile| match profile.credential_link.as_ref() {
+                Some(ProviderProfileCredentialLink::OpenAiCodex { .. }) => {
+                    profile.credential_link.clone()
+                }
+                _ => None,
+            })
+            .or_else(|| current_openai_auth_link.cloned());
     }
 
     if provider_uses_local_readiness(provider_id, base_url) && next_api_key_secret.is_none() {

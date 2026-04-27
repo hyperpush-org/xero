@@ -629,15 +629,50 @@ describe('live views', () => {
   })
 
   it('renders the current signed-out agent shell truthfully', () => {
-    render(<AgentRuntime agent={makeAgent()} />)
+    render(<AgentRuntime agent={makeAgent(makeProject(), { hasAnyReadyProvider: true })} />)
 
     expect(screen.getByText('Configure agent runtime')).toBeVisible()
     expect(
-      screen.getByText('Open Settings to choose a provider and model before using the agent tab for this imported project.'),
+      screen.getByText('Connect a provider in Settings to start chatting with the agent.'),
     ).toBeVisible()
     expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute('placeholder', 'Connect a provider to start.')
     expect(screen.queryByText('Context')).not.toBeInTheDocument()
     expect(screen.queryByText('Signed out')).not.toBeInTheDocument()
+  })
+
+  it('renders the promptable empty-session state when the selected provider is ready', () => {
+    const onStartRuntimeSession = vi.fn(async () =>
+      makeRuntimeSession({
+        phase: 'authenticated',
+        phaseLabel: 'Authenticated',
+        sessionId: 'session-1',
+        isAuthenticated: true,
+        isSignedOut: false,
+      }),
+    )
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent(makeProject(), {
+          runtimeSession: null,
+          runtimeRun: null,
+          selectedProfileReadiness: {
+            ready: true,
+            status: 'ready',
+            proof: 'oauth_session',
+            proofUpdatedAt: '2026-04-20T12:00:00Z',
+          },
+        })}
+        onStartRuntimeSession={onStartRuntimeSession}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.queryByText('Configure agent runtime')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /What can we build together in Cadence/ })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Explore the codebase' })).toBeVisible()
+    expect(screen.getByLabelText('Agent input')).toHaveAttribute('placeholder', 'Send a message to start with OpenAI Codex.')
   })
 
   it('renders the authenticated no-run agent state and can start a run', async () => {

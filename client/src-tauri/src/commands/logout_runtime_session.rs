@@ -36,10 +36,13 @@ pub fn logout_runtime_session<R: Runtime>(
             }
         };
 
-    if let Some(account_id) = current
+    let account_id = current
         .account_id
         .as_deref()
         .filter(|value| !value.trim().is_empty())
+        .unwrap_or("");
+    if !account_id.is_empty()
+        || selection.provider.provider == crate::runtime::RuntimeProvider::OpenAiCodex
     {
         if let Err(error) =
             logout_provider_runtime_session(&app, state.inner(), selection.provider, account_id)

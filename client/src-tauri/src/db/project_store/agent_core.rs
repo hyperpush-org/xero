@@ -157,6 +157,8 @@ pub struct AgentUsageRecord {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub estimated_cost_micros: u64,
     pub updated_at: String,
 }
@@ -718,16 +720,20 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
                 estimated_cost_micros,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(project_id, run_id) DO UPDATE SET
                 provider_id = excluded.provider_id,
                 model_id = excluded.model_id,
                 input_tokens = excluded.input_tokens,
                 output_tokens = excluded.output_tokens,
                 total_tokens = excluded.total_tokens,
+                cache_read_tokens = excluded.cache_read_tokens,
+                cache_creation_tokens = excluded.cache_creation_tokens,
                 estimated_cost_micros = excluded.estimated_cost_micros,
                 updated_at = excluded.updated_at
             "#,
@@ -739,6 +745,8 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
                 record.input_tokens,
                 record.output_tokens,
                 record.total_tokens,
+                record.cache_read_tokens,
+                record.cache_creation_tokens,
                 record.estimated_cost_micros,
                 record.updated_at,
             ],
@@ -897,6 +905,8 @@ pub fn load_agent_usage(
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
                 estimated_cost_micros,
                 updated_at
             FROM agent_usage
@@ -908,6 +918,226 @@ pub fn load_agent_usage(
         )
         .optional()
         .map_err(|error| map_agent_store_query_error(repo_root, "agent_usage_read_failed", error))
+}
+
+/// Aggregate token + cost totals across every agent run for one project.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectUsageTotalsRecord {
+    pub run_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub estimated_cost_micros: u64,
+    pub last_updated_at: Option<String>,
+}
+
+/// One row of the per-(provider, model) breakdown for a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectUsageModelBreakdownRecord {
+    pub provider_id: String,
+    pub model_id: String,
+    pub run_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub estimated_cost_micros: u64,
+    pub last_updated_at: Option<String>,
+}
+
+/// Sum every run for a project into a single totals row. Returns zeroed
+/// totals when no runs exist yet.
+pub fn project_usage_totals(
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<ProjectUsageTotalsRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .query_row(
+            r#"
+            SELECT
+                COUNT(*) AS run_count,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                COALESCE(SUM(estimated_cost_micros), 0) AS estimated_cost_micros,
+                MAX(updated_at) AS last_updated_at
+            FROM agent_usage
+            WHERE project_id = ?1
+            "#,
+            params![project_id],
+            |row| {
+                Ok(ProjectUsageTotalsRecord {
+                    run_count: read_nonnegative_u64(row, 0)?,
+                    input_tokens: read_nonnegative_u64(row, 1)?,
+                    output_tokens: read_nonnegative_u64(row, 2)?,
+                    total_tokens: read_nonnegative_u64(row, 3)?,
+                    cache_read_tokens: read_nonnegative_u64(row, 4)?,
+                    cache_creation_tokens: read_nonnegative_u64(row, 5)?,
+                    estimated_cost_micros: read_nonnegative_u64(row, 6)?,
+                    last_updated_at: row.get::<_, Option<String>>(7)?,
+                })
+            },
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_totals_read_failed", error)
+        })
+}
+
+/// One row for cost backfill: identity + token counts so a caller (the
+/// runtime pricing module) can compute and write back `estimated_cost_micros`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentUsageCostBackfillRow {
+    pub project_id: String,
+    pub run_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
+/// List rows that need a cost recompute — rows priced at 0 but with non-zero
+/// token activity. Existed pre-Phase-3 (or were written by ollama / unknown
+/// models that legitimately price at 0; those will still resolve to 0 and
+/// won't trigger a write).
+pub fn list_unpriced_agent_usage_rows(
+    repo_root: &Path,
+) -> Result<Vec<AgentUsageCostBackfillRow>, CommandError> {
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                project_id,
+                run_id,
+                provider_id,
+                model_id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens
+            FROM agent_usage
+            WHERE estimated_cost_micros = 0
+              AND total_tokens > 0
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_backfill_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(AgentUsageCostBackfillRow {
+                project_id: row.get(0)?,
+                run_id: row.get(1)?,
+                provider_id: row.get(2)?,
+                model_id: row.get(3)?,
+                input_tokens: read_nonnegative_u64(row, 4)?,
+                output_tokens: read_nonnegative_u64(row, 5)?,
+                cache_read_tokens: read_nonnegative_u64(row, 6)?,
+                cache_creation_tokens: read_nonnegative_u64(row, 7)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_backfill_query_failed", error)
+        })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_backfill_decode_failed", error)
+        })?);
+    }
+    Ok(out)
+}
+
+/// Update only `estimated_cost_micros` for one row.
+pub fn update_agent_usage_cost(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    estimated_cost_micros: u64,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .execute(
+            r#"
+            UPDATE agent_usage
+            SET estimated_cost_micros = ?3
+            WHERE project_id = ?1
+              AND run_id = ?2
+            "#,
+            params![project_id, run_id, estimated_cost_micros],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_usage_cost_update_failed", error)
+        })?;
+    Ok(())
+}
+
+/// Per-(provider, model) breakdown for a project, sorted by spend descending.
+pub fn project_usage_breakdown(
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<Vec<ProjectUsageModelBreakdownRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                provider_id,
+                model_id,
+                COUNT(*) AS run_count,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+                COALESCE(SUM(estimated_cost_micros), 0) AS estimated_cost_micros,
+                MAX(updated_at) AS last_updated_at
+            FROM agent_usage
+            WHERE project_id = ?1
+            GROUP BY provider_id, model_id
+            ORDER BY estimated_cost_micros DESC, total_tokens DESC, provider_id ASC, model_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_breakdown_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok(ProjectUsageModelBreakdownRecord {
+                provider_id: row.get(0)?,
+                model_id: row.get(1)?,
+                run_count: read_nonnegative_u64(row, 2)?,
+                input_tokens: read_nonnegative_u64(row, 3)?,
+                output_tokens: read_nonnegative_u64(row, 4)?,
+                total_tokens: read_nonnegative_u64(row, 5)?,
+                cache_read_tokens: read_nonnegative_u64(row, 6)?,
+                cache_creation_tokens: read_nonnegative_u64(row, 7)?,
+                estimated_cost_micros: read_nonnegative_u64(row, 8)?,
+                last_updated_at: row.get::<_, Option<String>>(9)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_breakdown_query_failed", error)
+        })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_usage_breakdown_decode_failed", error)
+        })?);
+    }
+    Ok(out)
 }
 
 pub fn load_agent_session_run_snapshots(
@@ -1360,8 +1590,10 @@ fn read_agent_usage_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentUsageR
         input_tokens: read_nonnegative_u64(row, 4)?,
         output_tokens: read_nonnegative_u64(row, 5)?,
         total_tokens: read_nonnegative_u64(row, 6)?,
-        estimated_cost_micros: read_nonnegative_u64(row, 7)?,
-        updated_at: row.get(8)?,
+        cache_read_tokens: read_nonnegative_u64(row, 7)?,
+        cache_creation_tokens: read_nonnegative_u64(row, 8)?,
+        estimated_cost_micros: read_nonnegative_u64(row, 9)?,
+        updated_at: row.get(10)?,
     })
 }
 
