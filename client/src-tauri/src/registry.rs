@@ -1,10 +1,9 @@
-use std::{fs, io::Write, path::Path};
+use std::path::Path;
 
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tempfile::NamedTempFile;
 
-use crate::{commands::CommandError, state::ImportFailpoints};
+use crate::{commands::CommandError, global_db::open_global_database, state::ImportFailpoints};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -30,25 +29,53 @@ impl Default for ProjectRegistry {
     }
 }
 
+const REGISTRY_VERSION: u32 = 1;
+
 pub fn read_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
-    if !path.exists() {
-        return Ok(ProjectRegistry::default());
-    }
+    let connection = open_global_database(path)?;
 
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CommandError::retryable(
-            "registry_read_failed",
-            format!(
-                "Cadence could not read the desktop project registry at {}: {error}",
-                path.display()
-            ),
+    let mut stmt = connection
+        .prepare(
+            "SELECT repositories.id, repositories.project_id, repositories.root_path \
+             FROM repositories JOIN projects ON projects.id = repositories.project_id \
+             ORDER BY repositories.root_path",
         )
-    })?;
+        .map_err(|error| {
+            CommandError::retryable(
+                "registry_read_failed",
+                format!("Cadence could not prepare the desktop registry read: {error}"),
+            )
+        })?;
 
-    match serde_json::from_str::<Value>(&contents) {
-        Ok(value) => parse_registry_value(path, value),
-        Err(_) => recover_malformed_registry(path),
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RegistryProjectRecord {
+                repository_id: row.get(0)?,
+                project_id: row.get(1)?,
+                root_path: row.get(2)?,
+            })
+        })
+        .map_err(|error| {
+            CommandError::retryable(
+                "registry_read_failed",
+                format!("Cadence could not read the desktop project registry: {error}"),
+            )
+        })?;
+
+    let mut projects = Vec::new();
+    for row in rows {
+        projects.push(row.map_err(|error| {
+            CommandError::retryable(
+                "registry_read_failed",
+                format!("Cadence could not decode a desktop project registry row: {error}"),
+            )
+        })?);
     }
+
+    Ok(ProjectRegistry {
+        version: REGISTRY_VERSION,
+        projects,
+    })
 }
 
 pub fn upsert_project(
@@ -63,144 +90,192 @@ pub fn upsert_project(
         ));
     }
 
-    let mut registry = read_registry(path)?;
-    registry.projects.retain(|project| {
-        project.project_id != entry.project_id && project.root_path != entry.root_path
-    });
-    registry.projects.push(entry);
-    normalize_projects(&mut registry.projects);
+    let mut connection = open_global_database(path)?;
+    let tx = connection.transaction().map_err(|error| {
+        CommandError::retryable(
+            "registry_write_failed",
+            format!("Cadence could not begin the registry transaction: {error}"),
+        )
+    })?;
 
-    write_registry(path, &registry)?;
-    Ok(registry)
+    let display_name = derive_display_name(&entry.root_path);
+
+    tx.execute(
+        "INSERT INTO projects (id, name) VALUES (?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        params![entry.project_id, display_name],
+    )
+    .map_err(map_write_error)?;
+
+    // Drop any other repository row pinned to this canonical path so the new entry wins, then
+    // upsert the repository associated with this project.
+    tx.execute(
+        "DELETE FROM repositories WHERE root_path = ?1 AND id != ?2",
+        params![entry.root_path, entry.repository_id],
+    )
+    .map_err(map_write_error)?;
+    tx.execute(
+        "INSERT INTO repositories (id, project_id, root_path, display_name)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+            project_id = excluded.project_id,
+            root_path = excluded.root_path,
+            display_name = excluded.display_name,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        params![
+            entry.repository_id,
+            entry.project_id,
+            entry.root_path,
+            display_name,
+        ],
+    )
+    .map_err(map_write_error)?;
+
+    tx.commit().map_err(|error| {
+        CommandError::retryable(
+            "registry_write_failed",
+            format!("Cadence could not commit the desktop registry update: {error}"),
+        )
+    })?;
+
+    drop(connection);
+    read_registry(path)
 }
 
 pub fn replace_projects(
     path: &Path,
     projects: Vec<RegistryProjectRecord>,
 ) -> Result<ProjectRegistry, CommandError> {
-    let mut registry = ProjectRegistry {
-        version: 1,
-        projects,
-    };
-    normalize_projects(&mut registry.projects);
-    write_registry(path, &registry)?;
-    Ok(registry)
-}
-
-fn parse_registry_value(path: &Path, value: Value) -> Result<ProjectRegistry, CommandError> {
-    let Some(object) = value.as_object() else {
-        return recover_malformed_registry(path);
-    };
-
-    let version = object
-        .get("version")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(1);
-
-    let Some(project_values) = object.get("projects").and_then(Value::as_array) else {
-        return recover_malformed_registry(path);
-    };
-
-    let mut projects = project_values
-        .iter()
-        .filter_map(|value| serde_json::from_value::<RegistryProjectRecord>(value.clone()).ok())
-        .collect::<Vec<_>>();
-    normalize_projects(&mut projects);
-
-    Ok(ProjectRegistry { version, projects })
-}
-
-fn write_registry(path: &Path, registry: &ProjectRegistry) -> Result<(), CommandError> {
-    let parent = path.parent().ok_or_else(|| {
-        CommandError::system_fault(
-            "registry_parent_missing",
-            format!(
-                "Cadence could not determine the registry directory for {}.",
-                path.display()
-            ),
-        )
-    })?;
-
-    fs::create_dir_all(parent).map_err(|error| {
-        CommandError::retryable(
-            "registry_directory_unavailable",
-            format!(
-                "Cadence could not prepare the desktop registry directory at {}: {error}",
-                parent.display()
-            ),
-        )
-    })?;
-
-    let json = serde_json::to_vec_pretty(registry).map_err(|error| {
-        CommandError::system_fault(
-            "registry_serialize_failed",
-            format!("Cadence could not serialize the desktop registry: {error}"),
-        )
-    })?;
-
-    let mut temp_file = NamedTempFile::new_in(parent).map_err(|error| {
-        CommandError::retryable(
-            "registry_tempfile_failed",
-            format!("Cadence could not stage the desktop registry update: {error}"),
-        )
-    })?;
-
-    temp_file.write_all(&json).map_err(|error| {
+    let mut connection = open_global_database(path)?;
+    let tx = connection.transaction().map_err(|error| {
         CommandError::retryable(
             "registry_write_failed",
-            format!("Cadence could not write the desktop registry update: {error}"),
-        )
-    })?;
-    temp_file.flush().map_err(|error| {
-        CommandError::retryable(
-            "registry_write_failed",
-            format!("Cadence could not flush the desktop registry update: {error}"),
+            format!("Cadence could not begin the registry transaction: {error}"),
         )
     })?;
 
-    temp_file.persist(path).map_err(|error| {
-        CommandError::retryable(
-            "registry_write_failed",
-            format!(
-                "Cadence could not atomically persist the desktop registry at {}: {}",
-                path.display(),
-                error.error
-            ),
+    tx.execute("DELETE FROM repositories", [])
+        .map_err(map_write_error)?;
+    tx.execute("DELETE FROM projects", [])
+        .map_err(map_write_error)?;
+
+    for entry in &projects {
+        let display_name = derive_display_name(&entry.root_path);
+        tx.execute(
+            "INSERT INTO projects (id, name) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![entry.project_id, display_name],
         )
-    })?;
-
-    Ok(())
-}
-
-fn normalize_projects(projects: &mut [RegistryProjectRecord]) {
-    projects.sort_by(|left, right| left.root_path.cmp(&right.root_path));
-}
-
-fn recover_malformed_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
-    let backup_path = path.with_extension("json.corrupt");
-
-    if backup_path.exists() {
-        fs::remove_file(&backup_path).map_err(|error| {
-            CommandError::retryable(
-                "registry_recovery_failed",
-                format!(
-                    "Cadence could not clear the previous corrupt-registry backup at {}: {error}",
-                    backup_path.display()
-                ),
-            )
-        })?;
+        .map_err(map_write_error)?;
+        tx.execute(
+            "INSERT INTO repositories (id, project_id, root_path, display_name)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                entry.repository_id,
+                entry.project_id,
+                entry.root_path,
+                display_name,
+            ],
+        )
+        .map_err(map_write_error)?;
     }
 
-    fs::rename(path, &backup_path).map_err(|error| {
+    tx.commit().map_err(|error| {
         CommandError::retryable(
-            "registry_recovery_failed",
+            "registry_write_failed",
+            format!("Cadence could not commit the desktop registry update: {error}"),
+        )
+    })?;
+
+    drop(connection);
+    read_registry(path)
+}
+
+fn derive_display_name(root_path: &str) -> String {
+    Path::new(root_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| root_path.to_owned())
+}
+
+fn map_write_error(error: rusqlite::Error) -> CommandError {
+    CommandError::retryable(
+        "registry_write_failed",
+        format!("Cadence could not write the desktop registry: {error}"),
+    )
+}
+
+/// Imports a legacy `project-registry.json` into the global `projects`/`repositories` tables.
+/// Idempotent: the importer only runs when the destination tables are empty AND the JSON exists.
+pub fn import_legacy_project_registry(
+    db_path: &Path,
+    legacy_path: &Path,
+) -> Result<(), CommandError> {
+    {
+        let connection = open_global_database(db_path)?;
+        let project_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+            .map_err(|error| {
+                CommandError::retryable(
+                    "registry_read_failed",
+                    format!("Cadence could not probe `projects` before importing: {error}"),
+                )
+            })?;
+        if project_count > 0 {
+            return Ok(());
+        }
+    }
+
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+
+    let contents = std::fs::read_to_string(legacy_path).map_err(|error| {
+        CommandError::retryable(
+            "registry_read_failed",
             format!(
-                "Cadence could not quarantine the malformed desktop registry at {}: {error}",
-                path.display()
+                "Cadence could not read the legacy desktop registry at {}: {error}",
+                legacy_path.display()
+            ),
+        )
+    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&contents).map_err(|error| {
+        CommandError::user_fixable(
+            "registry_decode_failed",
+            format!(
+                "Cadence could not decode the legacy desktop registry at {}: {error}",
+                legacy_path.display()
             ),
         )
     })?;
 
-    Ok(ProjectRegistry::default())
+    let projects: Vec<RegistryProjectRecord> = parsed
+        .get("projects")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| {
+                    serde_json::from_value::<RegistryProjectRecord>(value.clone()).ok()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !projects.is_empty() {
+        replace_projects(db_path, projects)?;
+    }
+
+    std::fs::remove_file(legacy_path).map_err(|error| {
+        CommandError::retryable(
+            "registry_legacy_cleanup_failed",
+            format!(
+                "Cadence imported {} into the global database but could not delete the legacy file: {error}",
+                legacy_path.display()
+            ),
+        )
+    })
 }

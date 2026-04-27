@@ -293,14 +293,8 @@ impl DesktopState {
             return Ok(path.clone());
         }
 
-        let app_data_dir = app.path().app_data_dir().map_err(|error| {
-            CommandError::system_fault(
-                "app_data_dir_unavailable",
-                format!("Cadence could not resolve the app-data directory: {error}"),
-            )
-        })?;
-
-        Ok(app_data_dir.join(REGISTRY_FILE_NAME))
+        // Phase 2.5: project + repository state lives in the global database.
+        self.global_db_path(app)
     }
 
     pub fn notification_credential_store_file<R: Runtime>(
