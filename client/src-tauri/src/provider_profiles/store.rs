@@ -17,8 +17,11 @@ use crate::{
     },
 };
 
-pub const PROVIDER_PROFILES_FILE_NAME: &str = "provider-profiles.json";
-pub const PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME: &str = "provider-profile-credentials.json";
+// Phase 6: error-message labels for `validate_provider_profiles_contract` when called from
+// in-memory normalization (no actual file path is involved). The legacy filenames live in
+// `crate::global_db` and are only stamped into paths by `LegacyJsonImportPaths::resolve`.
+const PROVIDER_PROFILES_LABEL: &str = "provider-profiles";
+const PROVIDER_PROFILE_CREDENTIALS_LABEL: &str = "provider-profile-credentials";
 pub const OPENAI_CODEX_DEFAULT_PROFILE_ID: &str = "openai_codex-default";
 pub const OPENROUTER_DEFAULT_PROFILE_ID: &str = "openrouter-default";
 pub const ANTHROPIC_DEFAULT_PROFILE_ID: &str = "anthropic-default";
@@ -1316,8 +1319,8 @@ pub(crate) fn normalize_snapshot_for_persist(
     let mut validated = validate_provider_profiles_contract(
         snapshot.metadata,
         snapshot.credentials,
-        Path::new(PROVIDER_PROFILES_FILE_NAME),
-        Path::new(PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME),
+        Path::new(PROVIDER_PROFILES_LABEL),
+        Path::new(PROVIDER_PROFILE_CREDENTIALS_LABEL),
     )?;
 
     validated

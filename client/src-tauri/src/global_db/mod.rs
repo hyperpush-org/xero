@@ -8,12 +8,31 @@ use rusqlite::Connection;
 use crate::commands::CommandError;
 
 pub mod importer;
+pub(crate) mod legacy_runtime_settings;
 pub mod migrations;
+pub mod permissions;
 
 pub use importer::{
     import_legacy_dictation_settings, import_legacy_mcp_registry,
     import_legacy_provider_model_catalog_cache, import_legacy_skill_sources,
 };
+
+// Legacy JSON filenames. Phase 6 collapses every per-module `*_FILE_NAME` constant into
+// this single source of truth so production modules no longer carry import-time strings.
+pub(crate) const LEGACY_PROVIDER_PROFILES_FILE_NAME: &str = "provider-profiles.json";
+pub(crate) const LEGACY_PROVIDER_PROFILE_CREDENTIALS_FILE_NAME: &str =
+    "provider-profile-credentials.json";
+pub(crate) const LEGACY_RUNTIME_SETTINGS_FILE_NAME: &str = "runtime-settings.json";
+pub(crate) const LEGACY_OPENROUTER_CREDENTIAL_FILE_NAME: &str = "openrouter-credentials.json";
+pub(crate) const LEGACY_OPENAI_CODEX_AUTH_STORE_FILE_NAME: &str = "openai-auth.json";
+pub(crate) const LEGACY_NOTIFICATION_CREDENTIAL_STORE_FILE_NAME: &str =
+    "notification-credentials.json";
+pub(crate) const LEGACY_DICTATION_SETTINGS_FILE_NAME: &str = "dictation-settings.json";
+pub(crate) const LEGACY_SKILL_SOURCE_SETTINGS_FILE_NAME: &str = "skill-sources.json";
+pub(crate) const LEGACY_MCP_REGISTRY_FILE_NAME: &str = "mcp-registry.json";
+pub(crate) const LEGACY_PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME: &str =
+    "provider-model-catalogs.json";
+pub(crate) const LEGACY_PROJECT_REGISTRY_FILE_NAME: &str = "project-registry.json";
 
 /// Locations of the legacy JSON files this orchestrator may consume on first boot.
 /// Every field is required; missing files are skipped silently.
@@ -30,6 +49,32 @@ pub struct LegacyJsonImportPaths {
     pub mcp_registry: PathBuf,
     pub provider_model_catalog_cache: PathBuf,
     pub project_registry: PathBuf,
+}
+
+impl LegacyJsonImportPaths {
+    /// Build the legacy import paths from a single app-data directory. This is the
+    /// only construction site outside of tests; production callers in `lib.rs`
+    /// invoke this so the legacy filename strings live in exactly one module.
+    pub fn resolve(app_data_dir: &Path) -> Self {
+        Self {
+            global_db: global_database_path(app_data_dir),
+            provider_profiles: app_data_dir.join(LEGACY_PROVIDER_PROFILES_FILE_NAME),
+            provider_profile_credentials: app_data_dir
+                .join(LEGACY_PROVIDER_PROFILE_CREDENTIALS_FILE_NAME),
+            legacy_runtime_settings: app_data_dir.join(LEGACY_RUNTIME_SETTINGS_FILE_NAME),
+            legacy_openrouter_credentials: app_data_dir
+                .join(LEGACY_OPENROUTER_CREDENTIAL_FILE_NAME),
+            openai_codex_auth: app_data_dir.join(LEGACY_OPENAI_CODEX_AUTH_STORE_FILE_NAME),
+            notification_credentials: app_data_dir
+                .join(LEGACY_NOTIFICATION_CREDENTIAL_STORE_FILE_NAME),
+            dictation_settings: app_data_dir.join(LEGACY_DICTATION_SETTINGS_FILE_NAME),
+            skill_sources: app_data_dir.join(LEGACY_SKILL_SOURCE_SETTINGS_FILE_NAME),
+            mcp_registry: app_data_dir.join(LEGACY_MCP_REGISTRY_FILE_NAME),
+            provider_model_catalog_cache: app_data_dir
+                .join(LEGACY_PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME),
+            project_registry: app_data_dir.join(LEGACY_PROJECT_REGISTRY_FILE_NAME),
+        }
+    }
 }
 
 /// Runs every legacy-JSON importer once at app startup. Each importer is idempotent: it short-
@@ -302,6 +347,55 @@ mod tests {
         assert_eq!(
             remaining, 0,
             "repositories should cascade with project delete"
+        );
+    }
+
+    #[test]
+    fn legacy_json_import_paths_resolve_uses_canonical_filenames() {
+        let app_data_dir = Path::new("/var/lib/cadence");
+        let paths = LegacyJsonImportPaths::resolve(app_data_dir);
+
+        assert_eq!(paths.global_db, app_data_dir.join("cadence.db"));
+        assert_eq!(
+            paths.provider_profiles,
+            app_data_dir.join("provider-profiles.json")
+        );
+        assert_eq!(
+            paths.provider_profile_credentials,
+            app_data_dir.join("provider-profile-credentials.json")
+        );
+        assert_eq!(
+            paths.legacy_runtime_settings,
+            app_data_dir.join("runtime-settings.json")
+        );
+        assert_eq!(
+            paths.legacy_openrouter_credentials,
+            app_data_dir.join("openrouter-credentials.json")
+        );
+        assert_eq!(
+            paths.openai_codex_auth,
+            app_data_dir.join("openai-auth.json")
+        );
+        assert_eq!(
+            paths.notification_credentials,
+            app_data_dir.join("notification-credentials.json")
+        );
+        assert_eq!(
+            paths.dictation_settings,
+            app_data_dir.join("dictation-settings.json")
+        );
+        assert_eq!(
+            paths.skill_sources,
+            app_data_dir.join("skill-sources.json")
+        );
+        assert_eq!(paths.mcp_registry, app_data_dir.join("mcp-registry.json"));
+        assert_eq!(
+            paths.provider_model_catalog_cache,
+            app_data_dir.join("provider-model-catalogs.json")
+        );
+        assert_eq!(
+            paths.project_registry,
+            app_data_dir.join("project-registry.json")
         );
     }
 }

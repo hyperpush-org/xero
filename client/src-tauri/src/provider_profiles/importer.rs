@@ -5,12 +5,8 @@ use serde::Deserialize;
 
 use crate::{
     auth::StoredOpenAiCodexSession,
-    commands::{
-        get_runtime_settings::{
-            load_runtime_settings_snapshot_from_paths, RuntimeSettingsSnapshot,
-        },
-        CommandError, CommandResult,
-    },
+    commands::{get_runtime_settings::RuntimeSettingsSnapshot, CommandError, CommandResult},
+    global_db::legacy_runtime_settings::load_legacy_runtime_settings_snapshot_from_paths,
     runtime::{OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID},
 };
 
@@ -225,7 +221,7 @@ fn build_legacy_provider_profiles_snapshot(
     }
 
     let runtime_settings = if settings_exists {
-        Some(load_runtime_settings_snapshot_from_paths(
+        Some(load_legacy_runtime_settings_snapshot_from_paths(
             legacy_settings_path,
             legacy_openrouter_credentials_path,
         )?)

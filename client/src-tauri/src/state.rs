@@ -10,19 +10,12 @@ use crate::{
     commands::CommandError,
     global_db::global_database_path,
     provider_models::ProviderModelCatalogRefreshRegistry,
-    provider_profiles::{PROVIDER_PROFILES_FILE_NAME, PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME},
     runtime::{
         openai_codex_provider, AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig,
         ResolvedRuntimeProvider, RuntimeStreamController, RuntimeSupervisorController,
     },
 };
 
-pub const REGISTRY_FILE_NAME: &str = "project-registry.json";
-pub const RUNTIME_SETTINGS_FILE_NAME: &str = "runtime-settings.json";
-pub const DICTATION_SETTINGS_FILE_NAME: &str = "dictation-settings.json";
-pub const MCP_REGISTRY_FILE_NAME: &str = "mcp-registry.json";
-pub const SKILL_SOURCE_SETTINGS_FILE_NAME: &str = "skill-sources.json";
-pub const OPENROUTER_CREDENTIAL_FILE_NAME: &str = "openrouter-credentials.json";
 pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
 
 #[derive(Debug, Clone, Default)]
@@ -275,9 +268,9 @@ impl DesktopState {
             .join(AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME))
     }
 
-    // ----- Phase 2.7: every legacy per-file path resolver now returns the global database
-    // path. The legacy filename constants survive only for the importer in Phase 2.6, which
-    // walks them inside `lib.rs`. Production stores read/write through `global_db_path`.
+    // Phase 6: every per-file path resolver returns the global database path. The legacy
+    // JSON filenames now live exclusively inside `global_db::LegacyJsonImportPaths::resolve`,
+    // which is the only construction site that turns them into actual paths on disk.
 
     pub fn registry_file<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {
         self.global_db_path(app)
@@ -294,9 +287,7 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        // Runtime settings now ride on provider profiles in the global DB; the legacy filename
-        // is preserved here so the importer can locate `runtime-settings.json` once.
-        Ok(self.app_data_dir(app)?.join(RUNTIME_SETTINGS_FILE_NAME))
+        self.global_db_path(app)
     }
 
     pub fn dictation_settings_file<R: Runtime>(
@@ -324,17 +315,14 @@ impl DesktopState {
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        // Legacy JSON path retained for the importer; production reads go through global_db_path.
-        Ok(self.app_data_dir(app)?.join(PROVIDER_PROFILES_FILE_NAME))
+        self.global_db_path(app)
     }
 
     pub fn provider_profile_credential_store_file<R: Runtime>(
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
-        Ok(self
-            .app_data_dir(app)?
-            .join(PROVIDER_PROFILE_CREDENTIAL_STORE_FILE_NAME))
+        self.global_db_path(app)
     }
 
     pub fn provider_model_catalog_cache_file<R: Runtime>(
@@ -342,20 +330,6 @@ impl DesktopState {
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {
         self.global_db_path(app)
-    }
-
-    pub fn openrouter_credential_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        let app_data_dir = app.path().app_data_dir().map_err(|error| {
-            CommandError::system_fault(
-                "app_data_dir_unavailable",
-                format!("Cadence could not resolve the app-data directory: {error}"),
-            )
-        })?;
-
-        Ok(app_data_dir.join(OPENROUTER_CREDENTIAL_FILE_NAME))
     }
 
     pub fn auth_store_file_for_provider<R: Runtime>(

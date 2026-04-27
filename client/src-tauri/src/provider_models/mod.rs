@@ -35,8 +35,6 @@ use crate::{
     state::DesktopState,
 };
 
-pub const PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME: &str = "provider-model-catalogs.json";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderModelCatalogSource {

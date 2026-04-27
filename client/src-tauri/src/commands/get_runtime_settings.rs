@@ -12,13 +12,10 @@ use crate::{
     provider_profiles::{ProviderProfileRecord, ProviderProfilesSnapshot},
     runtime::{
         normalize_openai_codex_model_id, resolve_runtime_provider_identity, ANTHROPIC_PROVIDER_ID,
-        OPENAI_CODEX_DEFAULT_MODEL_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
     },
     state::DesktopState,
 };
-
-const DEFAULT_RUNTIME_PROVIDER_ID: &str = OPENAI_CODEX_PROVIDER_ID;
-const DEFAULT_RUNTIME_MODEL_ID: &str = OPENAI_CODEX_DEFAULT_MODEL_ID;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,13 +23,6 @@ pub(crate) struct RuntimeSettingsFile {
     pub provider_id: String,
     pub model_id: String,
     pub openrouter_api_key_configured: bool,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct OpenRouterCredentialFile {
-    pub api_key: String,
     pub updated_at: String,
 }
 
@@ -78,153 +68,6 @@ pub(crate) fn load_runtime_settings_snapshot<R: Runtime>(
 ) -> CommandResult<RuntimeSettingsSnapshot> {
     let provider_profiles = load_provider_profiles_snapshot(app, state)?;
     runtime_settings_snapshot_from_provider_profiles(&provider_profiles)
-}
-
-pub(crate) fn load_runtime_settings_snapshot_from_paths(
-    settings_path: &Path,
-    credentials_path: &Path,
-) -> CommandResult<RuntimeSettingsSnapshot> {
-    let settings = read_runtime_settings_file(settings_path)?;
-    let credentials = read_openrouter_credentials_file(credentials_path)?;
-
-    match (settings, credentials) {
-        (None, None) => Ok(default_runtime_settings_snapshot()),
-        (None, Some(_)) => Err(CommandError::user_fixable(
-            "runtime_settings_contract_failed",
-            format!(
-                "Cadence found OpenRouter credentials at {} without the matching runtime settings file at {}.",
-                credentials_path.display(),
-                settings_path.display()
-            ),
-        )),
-        (Some(settings), credentials) => {
-            validate_runtime_settings_contract(settings_path, credentials_path, &settings, credentials)
-        }
-    }
-}
-
-pub(crate) fn read_runtime_settings_file(
-    path: &Path,
-) -> CommandResult<Option<RuntimeSettingsFile>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CommandError::retryable(
-            "runtime_settings_read_failed",
-            format!(
-                "Cadence could not read the app-local runtime settings file at {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-
-    let parsed = serde_json::from_str::<RuntimeSettingsFile>(&contents).map_err(|error| {
-        CommandError::user_fixable(
-            "runtime_settings_decode_failed",
-            format!(
-                "Cadence could not decode the app-local runtime settings file at {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-
-    Ok(Some(validate_runtime_settings_file(
-        parsed,
-        "runtime_settings_decode_failed",
-    )?))
-}
-
-pub(crate) fn read_openrouter_credentials_file(
-    path: &Path,
-) -> CommandResult<Option<OpenRouterCredentialFile>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CommandError::retryable(
-            "openrouter_credentials_read_failed",
-            format!(
-                "Cadence could not read the app-local OpenRouter credential file at {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-
-    let parsed = serde_json::from_str::<OpenRouterCredentialFile>(&contents).map_err(|error| {
-        CommandError::user_fixable(
-            "openrouter_credentials_decode_failed",
-            format!(
-                "Cadence could not decode the app-local OpenRouter credential file at {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-
-    let api_key = parsed.api_key.trim();
-    if api_key.is_empty() {
-        return Err(CommandError::user_fixable(
-            "openrouter_credentials_invalid",
-            format!(
-                "Cadence rejected the app-local OpenRouter credential file at {} because apiKey was blank.",
-                path.display()
-            ),
-        ));
-    }
-
-    Ok(Some(OpenRouterCredentialFile {
-        api_key: api_key.to_owned(),
-        updated_at: normalize_updated_at(parsed.updated_at),
-    }))
-}
-
-pub(crate) fn validate_runtime_settings_file(
-    file: RuntimeSettingsFile,
-    error_code: &'static str,
-) -> CommandResult<RuntimeSettingsFile> {
-    let provider_id = file.provider_id.trim();
-    if provider_id.is_empty() {
-        return Err(CommandError::user_fixable(
-            error_code,
-            "Cadence rejected the app-local runtime settings because providerId was blank.",
-        ));
-    }
-
-    let model_id = file.model_id.trim();
-    if model_id.is_empty() {
-        return Err(CommandError::user_fixable(
-            error_code,
-            "Cadence rejected the app-local runtime settings because modelId was blank.",
-        ));
-    }
-
-    let provider = resolve_runtime_provider_identity(Some(provider_id), Some(provider_id))
-        .map_err(|diagnostic| CommandError::user_fixable(error_code, diagnostic.message))?;
-
-    if !supports_runtime_settings_compatibility_provider(provider.provider_id) {
-        return Err(CommandError::user_fixable(
-            error_code,
-            format!(
-                "Cadence only supports legacy runtime-settings compatibility files for `openai_codex`, `openrouter`, or `anthropic`, not `{}`.",
-                provider.provider_id
-            ),
-        ));
-    }
-
-    let model_id = if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
-        normalize_openai_codex_model_id(model_id)
-    } else {
-        model_id.to_owned()
-    };
-
-    Ok(RuntimeSettingsFile {
-        provider_id: provider.provider_id.to_owned(),
-        model_id,
-        openrouter_api_key_configured: file.openrouter_api_key_configured,
-        updated_at: normalize_updated_at(file.updated_at),
-    })
 }
 
 pub(crate) fn runtime_settings_file_from_request(
@@ -330,92 +173,6 @@ pub(crate) fn write_json_file_atomically(
     Ok(())
 }
 
-pub(crate) fn default_runtime_settings_snapshot() -> RuntimeSettingsSnapshot {
-    RuntimeSettingsSnapshot {
-        settings: RuntimeSettingsFile {
-            provider_id: DEFAULT_RUNTIME_PROVIDER_ID.into(),
-            model_id: DEFAULT_RUNTIME_MODEL_ID.into(),
-            openrouter_api_key_configured: false,
-            updated_at: crate::auth::now_timestamp(),
-        },
-        runtime_kind: DEFAULT_RUNTIME_PROVIDER_ID.into(),
-        provider_api_key: None,
-        provider_api_key_updated_at: None,
-        preset_id: None,
-        base_url: None,
-        api_version: None,
-        region: None,
-        project_id: None,
-        openrouter_api_key: None,
-        openrouter_credentials_updated_at: None,
-        anthropic_api_key: None,
-        anthropic_credentials_updated_at: None,
-    }
-}
-
-fn validate_runtime_settings_contract(
-    settings_path: &Path,
-    credentials_path: &Path,
-    settings: &RuntimeSettingsFile,
-    credentials: Option<OpenRouterCredentialFile>,
-) -> CommandResult<RuntimeSettingsSnapshot> {
-    let key_present = credentials.is_some();
-    if settings.openrouter_api_key_configured != key_present {
-        return Err(CommandError::user_fixable(
-            "runtime_settings_contract_failed",
-            format!(
-                "Cadence found mismatched runtime settings at {} and OpenRouter credentials at {}. The redacted key-configured flag no longer matches the credential file state.",
-                settings_path.display(),
-                credentials_path.display()
-            ),
-        ));
-    }
-
-    if settings.provider_id == OPENROUTER_PROVIDER_ID
-        && settings.openrouter_api_key_configured
-        && credentials.is_none()
-    {
-        return Err(CommandError::user_fixable(
-            "runtime_settings_contract_failed",
-            format!(
-                "Cadence could not load the selected OpenRouter provider because the credential file at {} is missing.",
-                credentials_path.display()
-            ),
-        ));
-    }
-
-    let openrouter_api_key = credentials
-        .as_ref()
-        .map(|credentials| credentials.api_key.clone());
-    let openrouter_updated_at = credentials
-        .as_ref()
-        .map(|credentials| credentials.updated_at.clone());
-
-    Ok(RuntimeSettingsSnapshot {
-        settings: settings.clone(),
-        runtime_kind: settings.provider_id.clone(),
-        provider_api_key: if settings.provider_id == OPENROUTER_PROVIDER_ID {
-            openrouter_api_key.clone()
-        } else {
-            None
-        },
-        provider_api_key_updated_at: if settings.provider_id == OPENROUTER_PROVIDER_ID {
-            openrouter_updated_at.clone()
-        } else {
-            None
-        },
-        preset_id: None,
-        base_url: None,
-        api_version: None,
-        region: None,
-        project_id: None,
-        openrouter_api_key,
-        openrouter_credentials_updated_at: openrouter_updated_at,
-        anthropic_api_key: None,
-        anthropic_credentials_updated_at: None,
-    })
-}
-
 pub(crate) fn runtime_settings_snapshot_from_provider_profiles(
     provider_profiles: &ProviderProfilesSnapshot,
 ) -> CommandResult<RuntimeSettingsSnapshot> {
@@ -461,15 +218,6 @@ pub(crate) fn runtime_settings_snapshot_for_provider_profile(
         anthropic_credentials_updated_at: preferred_anthropic_credential
             .map(|entry| entry.updated_at.clone()),
     })
-}
-
-fn normalize_updated_at(value: String) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        crate::auth::now_timestamp()
-    } else {
-        trimmed.to_owned()
-    }
 }
 
 fn supports_runtime_settings_compatibility_provider(provider_id: &str) -> bool {

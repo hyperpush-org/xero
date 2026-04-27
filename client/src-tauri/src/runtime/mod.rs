@@ -158,13 +158,12 @@ pub use provider::{
     normalize_openai_codex_model_id, ollama_provider, openai_api_provider, openai_codex_provider,
     openrouter_provider, refresh_provider_runtime_session, resolve_runtime_provider_identity,
     vertex_provider, ResolvedRuntimeProvider, RuntimeProvider, RuntimeProviderBindOutcome,
-    RuntimeProviderReconcileOutcome, RuntimeProviderSessionBinding, ANTHROPIC_AUTH_STORE_FILE_NAME,
-    ANTHROPIC_PROVIDER_ID, ANTHROPIC_RUNTIME_KIND, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+    RuntimeProviderReconcileOutcome, RuntimeProviderSessionBinding, ANTHROPIC_PROVIDER_ID,
+    ANTHROPIC_RUNTIME_KIND, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
     GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID,
-    OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_AUTH_STORE_FILE_NAME,
-    OPENAI_CODEX_DEFAULT_MODEL_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
-    OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_AUTH_STORE_FILE_NAME, OPENROUTER_PROVIDER_ID,
-    VERTEX_PROVIDER_ID,
+    OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_DEFAULT_MODEL_ID,
+    OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS, OPENAI_COMPATIBLE_RUNTIME_KIND,
+    OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
 };
 pub(crate) use provider::{bind_provider_runtime_session, reconcile_provider_runtime_session};
 pub use stream::{start_runtime_stream, RuntimeStreamController, RuntimeStreamRequest};

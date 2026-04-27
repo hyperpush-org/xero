@@ -13,7 +13,6 @@ use crate::{
     commands::{CommandError, CommandResult},
 };
 
-pub const MCP_REGISTRY_FILE_NAME: &str = "mcp-registry.json";
 const MCP_REGISTRY_SCHEMA_VERSION: u32 = 1;
 const MAX_IMPORT_DIAGNOSTICS: usize = 64;
 const MCP_IMPORT_DIAGNOSTIC_CODE: &str = "mcp_registry_import_invalid";

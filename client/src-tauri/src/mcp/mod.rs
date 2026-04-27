@@ -11,7 +11,6 @@ pub use registry::{
     parse_mcp_registry_import_file, persist_mcp_registry, McpConnectionDiagnostic,
     McpConnectionState, McpConnectionStatus, McpEnvironmentReference, McpRegistry,
     McpRegistryImportDiagnostic, McpRegistryImportResult, McpServerRecord, McpTransport,
-    MCP_REGISTRY_FILE_NAME,
 };
 pub use runtime_projection::{
     load_runtime_mcp_projection_contract, materialize_runtime_mcp_projection_for_run,

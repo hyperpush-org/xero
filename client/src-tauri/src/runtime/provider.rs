@@ -30,9 +30,6 @@ pub const VERTEX_PROVIDER_ID: &str = "vertex";
 pub const OPENAI_COMPATIBLE_RUNTIME_KIND: &str = "openai_compatible";
 pub const GEMINI_RUNTIME_KIND: &str = "gemini";
 pub const ANTHROPIC_RUNTIME_KIND: &str = ANTHROPIC_PROVIDER_ID;
-pub const OPENAI_CODEX_AUTH_STORE_FILE_NAME: &str = "openai-auth.json";
-pub const OPENROUTER_AUTH_STORE_FILE_NAME: &str = "openrouter-credentials.json";
-pub const ANTHROPIC_AUTH_STORE_FILE_NAME: &str = "provider-profile-credentials.json";
 pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.4";
 pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] =
     &["gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4"];
@@ -90,70 +87,60 @@ impl RuntimeProvider {
                 family: RuntimeProviderFamily::OpenAiCodex,
                 provider_id: OPENAI_CODEX_PROVIDER_ID,
                 runtime_kind: OPENAI_CODEX_PROVIDER_ID,
-                auth_store_file_name: OPENAI_CODEX_AUTH_STORE_FILE_NAME,
             },
             Self::OpenRouter => ResolvedRuntimeProvider {
                 provider: Self::OpenRouter,
                 family: RuntimeProviderFamily::OpenRouter,
                 provider_id: OPENROUTER_PROVIDER_ID,
                 runtime_kind: OPENROUTER_PROVIDER_ID,
-                auth_store_file_name: OPENROUTER_AUTH_STORE_FILE_NAME,
             },
             Self::Anthropic => ResolvedRuntimeProvider {
                 provider: Self::Anthropic,
                 family: RuntimeProviderFamily::Anthropic,
                 provider_id: ANTHROPIC_PROVIDER_ID,
                 runtime_kind: ANTHROPIC_PROVIDER_ID,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::GitHubModels => ResolvedRuntimeProvider {
                 provider: Self::GitHubModels,
                 family: RuntimeProviderFamily::OpenAiCompatible,
                 provider_id: GITHUB_MODELS_PROVIDER_ID,
                 runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::OpenAiApi => ResolvedRuntimeProvider {
                 provider: Self::OpenAiApi,
                 family: RuntimeProviderFamily::OpenAiCompatible,
                 provider_id: OPENAI_API_PROVIDER_ID,
                 runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::Ollama => ResolvedRuntimeProvider {
                 provider: Self::Ollama,
                 family: RuntimeProviderFamily::OpenAiCompatible,
                 provider_id: OLLAMA_PROVIDER_ID,
                 runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::AzureOpenAi => ResolvedRuntimeProvider {
                 provider: Self::AzureOpenAi,
                 family: RuntimeProviderFamily::OpenAiCompatible,
                 provider_id: AZURE_OPENAI_PROVIDER_ID,
                 runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::GeminiAiStudio => ResolvedRuntimeProvider {
                 provider: Self::GeminiAiStudio,
                 family: RuntimeProviderFamily::Gemini,
                 provider_id: GEMINI_AI_STUDIO_PROVIDER_ID,
                 runtime_kind: GEMINI_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::Bedrock => ResolvedRuntimeProvider {
                 provider: Self::Bedrock,
                 family: RuntimeProviderFamily::Anthropic,
                 provider_id: BEDROCK_PROVIDER_ID,
                 runtime_kind: ANTHROPIC_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
             Self::Vertex => ResolvedRuntimeProvider {
                 provider: Self::Vertex,
                 family: RuntimeProviderFamily::Anthropic,
                 provider_id: VERTEX_PROVIDER_ID,
                 runtime_kind: ANTHROPIC_RUNTIME_KIND,
-                auth_store_file_name: ANTHROPIC_AUTH_STORE_FILE_NAME,
             },
         }
     }
@@ -165,7 +152,6 @@ pub struct ResolvedRuntimeProvider {
     pub family: RuntimeProviderFamily,
     pub provider_id: &'static str,
     pub runtime_kind: &'static str,
-    pub auth_store_file_name: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

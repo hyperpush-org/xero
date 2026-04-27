@@ -227,14 +227,15 @@ export function OnboardingFlow({
         </Button>
       </header>
 
-      <main className="relative z-10 flex flex-1 items-center justify-center overflow-y-auto px-8 py-10">
-        <div
-          key={currentStep.id}
-          className={`w-full max-w-md animate-in fade-in-0 motion-enter ${
-            directionRef.current === 1 ? "slide-in-from-right-4" : "slide-in-from-left-4"
-          }`}
-        >
-          {currentStep.id === "welcome" ? (
+      <main className="relative z-10 flex-1 overflow-y-auto">
+        <div className="flex min-h-full items-center justify-center px-8 py-10">
+          <div
+            key={currentStep.id}
+            className={`w-full ${currentStep.id === "providers" ? "max-w-xl" : "max-w-md"} animate-in fade-in-0 motion-enter ${
+              directionRef.current === 1 ? "slide-in-from-right-4" : "slide-in-from-left-4"
+            }`}
+          >
+            {currentStep.id === "welcome" ? (
             <WelcomeStep onContinue={next} onSkipAll={onDismiss} />
           ) : null}
           {currentStep.id === "providers" ? (
@@ -282,12 +283,17 @@ export function OnboardingFlow({
               notifications={notificationRoutes}
             />
           ) : null}
+          </div>
         </div>
       </main>
 
       {showFooter ? (
         <footer className="relative z-10 shrink-0">
-          <div className="mx-auto flex w-full max-w-md items-center justify-between gap-2 px-8 pb-6">
+          <div
+            className={`mx-auto flex w-full ${
+              currentStep.id === "providers" ? "max-w-xl" : "max-w-md"
+            } items-center justify-between gap-2 px-8 pb-6`}
+          >
             <Button
               variant="ghost"
               size="sm"

@@ -8,7 +8,7 @@ mod validation;
 pub use file_store::{
     FileNotificationCredentialStore, NotificationCredentialStoreEntry,
     NotificationCredentialStoreFile, NotificationCredentialUpsertReceipt,
-    NotificationInboundCursorEntry, NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
+    NotificationInboundCursorEntry,
 };
 pub use importer::import_legacy_notification_credentials;
 pub use readiness::{

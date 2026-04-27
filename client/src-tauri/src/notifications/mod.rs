@@ -10,7 +10,7 @@ pub use credential_store::{
     NotificationCredentialReadinessProjector, NotificationCredentialReadinessStatus,
     NotificationCredentialStoreEntry, NotificationCredentialStoreFile,
     NotificationCredentialUpsertInput, NotificationCredentialUpsertReceipt,
-    NotificationInboundCursorEntry, NOTIFICATION_CREDENTIAL_STORE_FILE_NAME,
+    NotificationInboundCursorEntry,
 };
 pub use discord::ReqwestDiscordTransport;
 pub use route_target::{

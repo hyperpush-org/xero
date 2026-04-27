@@ -12,8 +12,6 @@ use super::{
     },
 };
 
-pub const NOTIFICATION_CREDENTIAL_STORE_FILE_NAME: &str = "notification-credentials.json";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationCredentialUpsertReceipt {
     pub project_id: String,
