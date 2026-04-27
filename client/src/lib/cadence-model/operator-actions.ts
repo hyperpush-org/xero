@@ -10,7 +10,7 @@ export const operatorApprovalStatusSchema = z.enum(['pending', 'approved', 'reje
 export const verificationRecordStatusSchema = z.enum(['pending', 'passed', 'failed'])
 export const resumeHistoryStatusSchema = z.enum(['started', 'failed'])
 
-export type OperatorApprovalAnswerRequirementReason = 'optional' | 'gate_linked' | 'runtime_resumable'
+export type OperatorApprovalAnswerRequirementReason = 'optional' | 'runtime_resumable'
 export type OperatorApprovalAnswerShapeKind = 'plain_text' | 'terminal_input'
 type OperatorRuntimeResumableClassification = 'not_runtime_scoped' | 'runtime_resumable' | 'runtime_malformed'
 
@@ -26,12 +26,9 @@ interface OperatorApprovalAnswerPolicyInput {
   sessionId?: string | null
   flowId?: string | null
   actionType: string
-  gateNodeId?: string | null
-  gateKey?: string | null
 }
 
 interface OperatorApprovalAnswerPolicy {
-  isGateLinked: boolean
   isRuntimeResumable: boolean
   requiresAnswer: boolean
   requirementReason: OperatorApprovalAnswerRequirementReason
@@ -180,8 +177,6 @@ export function deriveOperatorAnswerShapeMetadata(
 
 function getOperatorAnswerRequirementLabel(reason: OperatorApprovalAnswerRequirementReason): string {
   switch (reason) {
-    case 'gate_linked':
-      return 'Required — gate-linked approvals need a non-empty user answer before approval.'
     case 'runtime_resumable':
       return 'Required — runtime-resumable approvals need a non-empty user answer before approval.'
     case 'optional':
@@ -192,23 +187,14 @@ function getOperatorAnswerRequirementLabel(reason: OperatorApprovalAnswerRequire
 export function deriveOperatorApprovalAnswerPolicy(
   input: OperatorApprovalAnswerPolicyInput,
 ): OperatorApprovalAnswerPolicy {
-  const gateNodeId = normalizeApprovalPolicyText(input.gateNodeId)
-  const gateKey = normalizeApprovalPolicyText(input.gateKey)
-  const isGateLinked = Boolean(gateNodeId && gateKey)
-
-  const runtimeScopeClassification = isGateLinked
-    ? 'not_runtime_scoped'
-    : classifyRuntimeResumableOperatorAction(input)
+  const runtimeScopeClassification = classifyRuntimeResumableOperatorAction(input)
   const isRuntimeResumable = runtimeScopeClassification === 'runtime_resumable'
 
-  const requirementReason: OperatorApprovalAnswerRequirementReason = isGateLinked
-    ? 'gate_linked'
-    : isRuntimeResumable
-      ? 'runtime_resumable'
-      : 'optional'
+  const requirementReason: OperatorApprovalAnswerRequirementReason = isRuntimeResumable
+    ? 'runtime_resumable'
+    : 'optional'
 
   return {
-    isGateLinked,
     isRuntimeResumable,
     requiresAnswer: requirementReason !== 'optional',
     requirementReason,
@@ -226,11 +212,6 @@ export const operatorApprovalSchema = z
     actionType: z.string().trim().min(1),
     title: z.string().trim().min(1),
     detail: z.string().trim().min(1),
-    gateNodeId: nonEmptyOptionalTextSchema,
-    gateKey: nonEmptyOptionalTextSchema,
-    transitionFromNodeId: nonEmptyOptionalTextSchema,
-    transitionToNodeId: nonEmptyOptionalTextSchema,
-    transitionKind: nonEmptyOptionalTextSchema,
     userAnswer: nonEmptyOptionalTextSchema,
     status: operatorApprovalStatusSchema,
     decisionNote: nonEmptyOptionalTextSchema,
@@ -240,33 +221,8 @@ export const operatorApprovalSchema = z
   })
   .strict()
   .superRefine((approval, ctx) => {
-    const gateNodeId = approval.gateNodeId ?? null
-    const gateKey = approval.gateKey ?? null
-    const transitionFromNodeId = approval.transitionFromNodeId ?? null
-    const transitionToNodeId = approval.transitionToNodeId ?? null
-    const transitionKind = approval.transitionKind ?? null
     const userAnswer = approval.userAnswer ?? null
     const decisionNote = approval.decisionNote ?? null
-
-    const gateFieldsPopulated = gateNodeId !== null || gateKey !== null
-    if (gateFieldsPopulated && (!gateNodeId || !gateKey)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['gateNodeId'],
-        message: 'Gate-linked approvals must include both `gateNodeId` and `gateKey`.',
-      })
-    }
-
-    const continuationFieldsPopulated =
-      transitionFromNodeId !== null || transitionToNodeId !== null || transitionKind !== null
-    if (continuationFieldsPopulated && (!transitionFromNodeId || !transitionToNodeId || !transitionKind)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['transitionFromNodeId'],
-        message:
-          'Gate-linked approvals must include full transition continuation metadata (`transitionFromNodeId`, `transitionToNodeId`, `transitionKind`).',
-      })
-    }
 
     const answerPolicy = deriveOperatorApprovalAnswerPolicy(approval)
 
@@ -291,17 +247,10 @@ export const operatorApprovalSchema = z
     }
 
     if (approval.status === 'approved' && answerPolicy.requiresAnswer && !userAnswer) {
-      const missingAnswerMessage =
-        answerPolicy.requirementReason === 'gate_linked'
-          ? 'Approved gate-linked approvals must include a non-empty `userAnswer`.'
-          : answerPolicy.requirementReason === 'runtime_resumable'
-            ? 'Approved runtime-resumable approvals must include a non-empty `userAnswer`.'
-            : 'Approved required-input approvals must include a non-empty `userAnswer`.'
-
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['userAnswer'],
-        message: missingAnswerMessage,
+        message: 'Approved runtime-resumable approvals must include a non-empty `userAnswer`.',
       })
     }
   })
@@ -369,11 +318,6 @@ export interface OperatorApprovalView {
   actionType: string
   title: string
   detail: string
-  gateNodeId: string | null
-  gateKey: string | null
-  transitionFromNodeId: string | null
-  transitionToNodeId: string | null
-  transitionKind: string | null
   userAnswer: string | null
   status: OperatorApprovalStatusDto
   statusLabel: string
@@ -384,7 +328,6 @@ export interface OperatorApprovalView {
   isPending: boolean
   isResolved: boolean
   canResume: boolean
-  isGateLinked: boolean
   isRuntimeResumable: boolean
   requiresUserAnswer: boolean
   answerRequirementReason: OperatorApprovalAnswerRequirementReason
@@ -420,8 +363,6 @@ export interface OperatorDecisionOutcomeView {
   title: string
   status: Extract<OperatorApprovalStatusDto, 'approved' | 'rejected'>
   statusLabel: string
-  gateNodeId: string | null
-  gateKey: string | null
   userAnswer: string | null
   decisionNote: string | null
   resolvedAt: string
@@ -464,19 +405,12 @@ export function mapOperatorApproval(approval: OperatorApprovalDto): OperatorAppr
   const sessionId = normalizeOptionalText(approval.sessionId)
   const flowId = normalizeOptionalText(approval.flowId)
   const actionType = normalizeText(approval.actionType, 'manual_review')
-  const gateNodeId = normalizeOptionalText(approval.gateNodeId)
-  const gateKey = normalizeOptionalText(approval.gateKey)
-  const transitionFromNodeId = normalizeOptionalText(approval.transitionFromNodeId)
-  const transitionToNodeId = normalizeOptionalText(approval.transitionToNodeId)
-  const transitionKind = normalizeOptionalText(approval.transitionKind)
   const userAnswer = normalizeOptionalText(approval.userAnswer)
   const answerPolicy = deriveOperatorApprovalAnswerPolicy({
     actionId: approval.actionId,
     sessionId,
     flowId,
     actionType,
-    gateNodeId,
-    gateKey,
   })
 
   return {
@@ -486,11 +420,6 @@ export function mapOperatorApproval(approval: OperatorApprovalDto): OperatorAppr
     actionType,
     title: normalizeText(approval.title, 'Action required'),
     detail: normalizeText(approval.detail, 'Review the operator action before continuing.'),
-    gateNodeId,
-    gateKey,
-    transitionFromNodeId,
-    transitionToNodeId,
-    transitionKind,
     userAnswer,
     status: approval.status,
     statusLabel: getOperatorApprovalStatusLabel(approval.status),
@@ -501,7 +430,6 @@ export function mapOperatorApproval(approval: OperatorApprovalDto): OperatorAppr
     isPending: approval.status === 'pending',
     isResolved: approval.status !== 'pending',
     canResume: approval.status === 'approved',
-    isGateLinked: answerPolicy.isGateLinked,
     isRuntimeResumable: answerPolicy.isRuntimeResumable,
     requiresUserAnswer: answerPolicy.requiresAnswer,
     answerRequirementReason: answerPolicy.requirementReason,
@@ -550,8 +478,6 @@ export function getLatestDecisionOutcome(
     title: latestResolvedApproval.title,
     status: latestResolvedApproval.status,
     statusLabel: latestResolvedApproval.statusLabel,
-    gateNodeId: latestResolvedApproval.gateNodeId,
-    gateKey: latestResolvedApproval.gateKey,
     userAnswer: latestResolvedApproval.userAnswer,
     decisionNote: latestResolvedApproval.decisionNote,
     resolvedAt: latestResolvedApproval.resolvedAt,

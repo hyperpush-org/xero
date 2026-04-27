@@ -67,7 +67,6 @@ export interface CheckpointControlLoopCardView {
   boundaryId: string | null
   title: string
   detail: string
-  gateLinkageLabel: string | null
   truthSource: CheckpointControlLoopTruthSource
   truthSourceLabel: string
   truthSourceDetail: string
@@ -162,21 +161,6 @@ function extractRuntimeBoundaryIdFromActionId(actionId: string, actionType: stri
 
   const boundaryId = boundaryAndAction.slice(0, -actionSuffix.length).trim()
   return boundaryId.length > 0 ? boundaryId : null
-}
-
-function formatCheckpointGateLinkage(approval: OperatorApprovalView | null): string | null {
-  if (!approval?.gateNodeId || !approval.gateKey) {
-    return null
-  }
-
-  const transition =
-    approval.transitionFromNodeId && approval.transitionToNodeId && approval.transitionKind
-      ? `${approval.transitionFromNodeId} → ${approval.transitionToNodeId} (${approval.transitionKind})`
-      : null
-
-  return transition
-    ? `${approval.gateNodeId} · ${approval.gateKey} · ${transition}`
-    : `${approval.gateNodeId} · ${approval.gateKey}`
 }
 
 function getSingleCardForAction(options: {
@@ -826,7 +810,6 @@ export function projectCheckpointControlLoops(options: {
         boundaryId: card.boundaryId,
         title: getCheckpointControlLoopTitle(card),
         detail: getCheckpointControlLoopDetail(card),
-        gateLinkageLabel: formatCheckpointGateLinkage(card.approval),
         truthSource: truthSource.truthSource,
         truthSourceLabel: truthSource.truthSourceLabel,
         truthSourceDetail: truthSource.truthSourceDetail,

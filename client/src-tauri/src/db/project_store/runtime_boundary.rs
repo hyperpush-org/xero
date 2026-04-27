@@ -16,9 +16,14 @@ use super::{
     read_resume_history_entry_by_id, read_runtime_run_row, read_runtime_run_snapshot,
     runtime_run_checkpoint_kind_sql_value, validate_non_empty_text,
     validate_runtime_action_required_payload, NotificationDispatchEnqueueRecord,
-    ResolveOperatorAnswerRequirement, RuntimeActionRequiredPersistedRecord,
-    RuntimeActionRequiredUpsertRecord, RuntimeOperatorResumeTarget, RuntimeRunCheckpointKind,
+    RuntimeActionRequiredPersistedRecord, RuntimeActionRequiredUpsertRecord, RuntimeRunCheckpointKind,
 };
+
+#[derive(Debug, Clone)]
+struct RuntimeOperatorResumeTarget {
+    run_id: String,
+    boundary_id: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeOperatorRunRecord {
@@ -110,11 +115,6 @@ pub fn upsert_runtime_action_required(
                         action_type,
                         title,
                         detail,
-                        gate_node_id,
-                        gate_key,
-                        transition_from_node_id,
-                        transition_to_node_id,
-                        transition_kind,
                         user_answer,
                         status,
                         decision_note,
@@ -130,11 +130,6 @@ pub fn upsert_runtime_action_required(
                         ?5,
                         ?6,
                         ?7,
-                        NULL,
-                        NULL,
-                        NULL,
-                        NULL,
-                        NULL,
                         NULL,
                         'pending',
                         NULL,
@@ -318,14 +313,10 @@ pub fn upsert_runtime_action_required(
 
 pub(crate) fn classify_operator_answer_requirement(
     approval_request: &OperatorApprovalDto,
-) -> Result<Option<ResolveOperatorAnswerRequirement>, CommandError> {
-    if approval_request.gate_node_id.is_some() {
-        return Ok(Some(ResolveOperatorAnswerRequirement::GateLinked));
-    }
-
+) -> Result<bool, CommandError> {
     match decode_runtime_operator_resume_target(approval_request) {
-        Ok(Some(_)) => Ok(Some(ResolveOperatorAnswerRequirement::RuntimeResumable)),
-        Ok(None) => Ok(None),
+        Ok(Some(_)) => Ok(true),
+        Ok(None) => Ok(false),
         Err(error) if error.code == "operator_resume_runtime_action_invalid" => {
             Err(CommandError::retryable(
                 "operator_action_runtime_identity_invalid",
@@ -646,7 +637,7 @@ pub fn resume_operator_run_with_user_answer(
     })
 }
 
-pub(crate) fn decode_runtime_operator_resume_target(
+fn decode_runtime_operator_resume_target(
     approval_request: &OperatorApprovalDto,
 ) -> Result<Option<RuntimeOperatorResumeTarget>, CommandError> {
     let action_id = approval_request.action_id.as_str();

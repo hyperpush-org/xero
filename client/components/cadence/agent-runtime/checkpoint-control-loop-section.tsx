@@ -231,7 +231,6 @@ function CheckpointControlLoopCardView({
           <p className="mt-2 text-[11px] text-muted-foreground">
             Action {card.actionId} · Boundary {displayValue(card.boundaryId, 'Pending durable linkage')}
           </p>
-          {card.gateLinkageLabel ? <p className="mt-2 text-[11px] text-muted-foreground">{card.gateLinkageLabel}</p> : null}
           <p className="mt-2 text-[11px] text-muted-foreground">{card.truthSourceDetail}</p>
           <p className="mt-2 text-[11px] text-muted-foreground">
             Failure class {displayValue(card.advancedFailureClassLabel, 'Not classified')}

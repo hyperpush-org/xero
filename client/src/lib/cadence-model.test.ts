@@ -495,19 +495,14 @@ describe('cadence-model', () => {
       }),
     ).toThrow(/Correlation keys must match `nfy:<32 lowercase hex>`/)
 
-    const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
+    const actionId = 'flow:flow-1:run:run-7:boundary:boundary-2:terminal_input_required'
     const approvalRequest = {
       actionId,
       sessionId: 'session-1',
       flowId: 'flow-1',
-      actionType: 'review_worktree',
-      title: 'Review worktree changes',
+      actionType: 'terminal_input_required',
+      title: 'Terminal input required',
       detail: 'Inspect the pending repository diff before continuing.',
-      gateNodeId: 'workflow-research',
-      gateKey: 'requires_user_input',
-      transitionFromNodeId: 'workflow-discussion',
-      transitionToNodeId: 'workflow-research',
-      transitionKind: 'advance',
       userAnswer: 'Proceed after validating repo changes.',
       status: 'approved' as const,
       decisionNote: 'Approved via correlated broker reply.',
@@ -958,21 +953,17 @@ describe('cadence-model', () => {
   })
 
   it('maps durable operator approvals, verification records, and resume history from the snapshot contract', () => {
+    const runtimeActionId = 'flow:flow-1:run:run-7:boundary:boundary-2:terminal_input_required'
     const project = mapProjectSnapshot(
       makeSnapshot({
         approvalRequests: [
           {
-            actionId: 'flow-1:review_worktree',
+            actionId: runtimeActionId,
             sessionId: 'session-1',
             flowId: 'flow-1',
-            actionType: 'review_worktree',
-            title: 'Review worktree changes',
-            detail: 'Inspect the pending repository diff before continuing.',
-            gateNodeId: 'workflow-research',
-            gateKey: 'requires_user_input',
-            transitionFromNodeId: 'workflow-discussion',
-            transitionToNodeId: 'workflow-research',
-            transitionKind: 'advance',
+            actionType: 'terminal_input_required',
+            title: 'Terminal input required',
+            detail: 'Provide terminal input so the runtime can continue.',
             userAnswer: 'Proceed after validating repo changes.',
             status: 'approved',
             decisionNote: 'Looks safe to continue.',
@@ -987,11 +978,6 @@ describe('cadence-model', () => {
             actionType: 'confirm_resume',
             title: 'Resume the runtime loop',
             detail: 'Approve the next execution pass.',
-            gateNodeId: null,
-            gateKey: null,
-            transitionFromNodeId: null,
-            transitionToNodeId: null,
-            transitionKind: null,
             userAnswer: null,
             status: 'pending',
             decisionNote: null,
@@ -1003,9 +989,9 @@ describe('cadence-model', () => {
         verificationRecords: [
           {
             id: 7,
-            sourceActionId: 'flow-1:review_worktree',
+            sourceActionId: runtimeActionId,
             status: 'passed',
-            summary: 'Approved operator action: Review worktree changes.',
+            summary: 'Approved operator action: Terminal input required.',
             detail: 'Approval decision persisted to the selected project store.',
             recordedAt: '2026-04-13T20:02:01Z',
           },
@@ -1013,7 +999,7 @@ describe('cadence-model', () => {
         resumeHistory: [
           {
             id: 3,
-            sourceActionId: 'flow-1:review_worktree',
+            sourceActionId: runtimeActionId,
             sessionId: 'session-1',
             status: 'started',
             summary: 'Operator resumed the selected project runtime session.',
@@ -1025,24 +1011,19 @@ describe('cadence-model', () => {
 
     expect(project.pendingApprovalCount).toBe(1)
     expect(project.approvalRequests[0]).toMatchObject({
-      actionId: 'flow-1:review_worktree',
+      actionId: runtimeActionId,
       status: 'approved',
       statusLabel: 'Approved',
-      gateNodeId: 'workflow-research',
-      gateKey: 'requires_user_input',
       userAnswer: 'Proceed after validating repo changes.',
-      isGateLinked: true,
-      isRuntimeResumable: false,
+      isRuntimeResumable: true,
       requiresUserAnswer: true,
-      answerRequirementReason: 'gate_linked',
-      answerShapeKind: 'plain_text',
-      answerShapeLabel: 'Worktree review rationale',
+      answerRequirementReason: 'runtime_resumable',
+      answerShapeKind: 'terminal_input',
       canResume: true,
     })
     expect(project.approvalRequests[1]).toMatchObject({
       actionId: 'flow-2:confirm_resume',
       status: 'pending',
-      isGateLinked: false,
       isRuntimeResumable: false,
       requiresUserAnswer: false,
       answerRequirementReason: 'optional',
@@ -1050,11 +1031,9 @@ describe('cadence-model', () => {
       answerShapeLabel: 'Resume confirmation note',
     })
     expect(project.latestDecisionOutcome).toMatchObject({
-      actionId: 'flow-1:review_worktree',
+      actionId: runtimeActionId,
       status: 'approved',
       statusLabel: 'Approved',
-      gateNodeId: 'workflow-research',
-      gateKey: 'requires_user_input',
       userAnswer: 'Proceed after validating repo changes.',
     })
     expect(project.verificationRecords[0]).toMatchObject({
@@ -1080,11 +1059,6 @@ describe('cadence-model', () => {
             actionType: 'terminal_input_required',
             title: 'Provide terminal input',
             detail: 'Supply terminal input text so the runtime can resume.',
-            gateNodeId: null,
-            gateKey: null,
-            transitionFromNodeId: null,
-            transitionToNodeId: null,
-            transitionKind: null,
             userAnswer: null,
             status: 'pending',
             decisionNote: null,
@@ -1099,11 +1073,6 @@ describe('cadence-model', () => {
             actionType: 'custom_followup',
             title: 'Custom follow-up action',
             detail: 'Review custom follow-up notes.',
-            gateNodeId: null,
-            gateKey: null,
-            transitionFromNodeId: null,
-            transitionToNodeId: null,
-            transitionKind: null,
             userAnswer: null,
             status: 'pending',
             decisionNote: null,
@@ -1136,7 +1105,7 @@ describe('cadence-model', () => {
     expect(project.approvalRequests[1]?.answerShapeLabel).toContain('Plain-text response (Custom Followup)')
   })
 
-  it('rejects malformed gate-linked and runtime-resumable approval payloads at the schema boundary', () => {
+  it('rejects malformed runtime-resumable approval payloads at the schema boundary', () => {
     expect(() =>
       projectSnapshotResponseSchema.parse(
         makeSnapshot({
@@ -1148,95 +1117,6 @@ describe('cadence-model', () => {
               actionType: 'review_worktree',
               title: 'Review worktree changes',
               detail: 'Inspect the pending repository diff before continuing.',
-              gateNodeId: 'workflow-research',
-              gateKey: null,
-              transitionFromNodeId: null,
-              transitionToNodeId: null,
-              transitionKind: null,
-              userAnswer: null,
-              status: 'pending',
-              decisionNote: null,
-              createdAt: '2026-04-13T20:03:00Z',
-              updatedAt: '2026-04-13T20:03:00Z',
-              resolvedAt: null,
-            },
-          ],
-        }),
-      ),
-    ).toThrow(/Gate-linked approvals must include both `gateNodeId` and `gateKey`/)
-
-    expect(() =>
-      projectSnapshotResponseSchema.parse(
-        makeSnapshot({
-          approvalRequests: [
-            {
-              actionId: 'flow-1:review_worktree',
-              sessionId: 'session-1',
-              flowId: 'flow-1',
-              actionType: 'review_worktree',
-              title: 'Review worktree changes',
-              detail: 'Inspect the pending repository diff before continuing.',
-              gateNodeId: 'workflow-research',
-              gateKey: 'requires_user_input',
-              transitionFromNodeId: 'workflow-discussion',
-              transitionToNodeId: 'workflow-research',
-              transitionKind: null,
-              userAnswer: null,
-              status: 'pending',
-              decisionNote: null,
-              createdAt: '2026-04-13T20:03:00Z',
-              updatedAt: '2026-04-13T20:03:00Z',
-              resolvedAt: null,
-            },
-          ],
-        }),
-      ),
-    ).toThrow(/full transition continuation metadata/)
-
-    expect(() =>
-      projectSnapshotResponseSchema.parse(
-        makeSnapshot({
-          approvalRequests: [
-            {
-              actionId: 'flow-1:review_worktree',
-              sessionId: 'session-1',
-              flowId: 'flow-1',
-              actionType: 'review_worktree',
-              title: 'Review worktree changes',
-              detail: 'Inspect the pending repository diff before continuing.',
-              gateNodeId: 'workflow-research',
-              gateKey: 'requires_user_input',
-              transitionFromNodeId: 'workflow-discussion',
-              transitionToNodeId: 'workflow-research',
-              transitionKind: 'advance',
-              userAnswer: null,
-              status: 'approved',
-              decisionNote: 'Looks safe to continue.',
-              createdAt: '2026-04-13T20:01:00Z',
-              updatedAt: '2026-04-13T20:02:00Z',
-              resolvedAt: '2026-04-13T20:02:00Z',
-            },
-          ],
-        }),
-      ),
-    ).toThrow(/Approved gate-linked approvals must include a non-empty `userAnswer`/)
-
-    expect(() =>
-      projectSnapshotResponseSchema.parse(
-        makeSnapshot({
-          approvalRequests: [
-            {
-              actionId: 'flow-1:review_worktree',
-              sessionId: 'session-1',
-              flowId: 'flow-1',
-              actionType: 'review_worktree',
-              title: 'Review worktree changes',
-              detail: 'Inspect the pending repository diff before continuing.',
-              gateNodeId: null,
-              gateKey: null,
-              transitionFromNodeId: null,
-              transitionToNodeId: null,
-              transitionKind: null,
               userAnswer: 'accidental value',
               status: 'pending',
               decisionNote: null,
@@ -1260,11 +1140,6 @@ describe('cadence-model', () => {
               actionType: 'terminal_input_required',
               title: 'Provide terminal input',
               detail: 'Supply terminal input text so the runtime can resume.',
-              gateNodeId: null,
-              gateKey: null,
-              transitionFromNodeId: null,
-              transitionToNodeId: null,
-              transitionKind: null,
               userAnswer: null,
               status: 'approved',
               decisionNote: 'Attempted approval without answer.',
@@ -1288,11 +1163,6 @@ describe('cadence-model', () => {
               actionType: 'terminal_input_required',
               title: 'Provide terminal input',
               detail: 'Supply terminal input text so the runtime can resume.',
-              gateNodeId: null,
-              gateKey: null,
-              transitionFromNodeId: null,
-              transitionToNodeId: null,
-              transitionKind: null,
               userAnswer: null,
               status: 'pending',
               decisionNote: null,

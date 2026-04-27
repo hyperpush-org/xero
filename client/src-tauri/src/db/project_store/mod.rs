@@ -14,7 +14,6 @@ mod project_snapshot;
 mod runtime;
 mod runtime_boundary;
 mod skills;
-pub(crate) mod workflow;
 
 pub use agent_context::*;
 pub use agent_core::*;
@@ -34,10 +33,12 @@ pub(crate) use operator::{
     map_operator_loop_transaction_error, map_operator_loop_write_error, map_project_query_error,
     map_snapshot_decode_error, operator_approval_status_label, read_operator_approval_by_action_id,
     read_operator_approvals, read_resume_history, read_resume_history_entry_by_id,
-    read_verification_records, require_non_empty_owned, sqlite_path_suffix, ProjectSummaryRow,
+    read_verification_records, require_non_empty_owned, sqlite_path_suffix, validate_non_empty_text,
+    ProjectSummaryRow,
 };
 pub use plugins::*;
 pub use project_snapshot::{load_project_snapshot, load_project_summary, ProjectSnapshotRecord};
+pub(crate) use project_snapshot::read_project_row;
 pub use runtime::*;
 pub(crate) use runtime::{
     find_prohibited_runtime_persistence_content, find_prohibited_transition_diagnostic_content,
@@ -48,8 +49,3 @@ pub(crate) use runtime::{
 pub(crate) use runtime_boundary::classify_operator_answer_requirement;
 pub use runtime_boundary::*;
 pub use skills::*;
-pub use workflow::*;
-pub(crate) use workflow::{
-    read_project_row, resolve_operator_approval_gate_link, validate_non_empty_text,
-    OperatorApprovalGateLink, ResolveOperatorAnswerRequirement, RuntimeOperatorResumeTarget,
-};

@@ -15,10 +15,16 @@ use super::{
     enqueue_notification_dispatches_best_effort_with_connection,
     find_prohibited_runtime_persistence_content, find_prohibited_transition_diagnostic_content,
     normalize_runtime_checkpoint_summary, open_project_database, read_project_row,
-    resolve_operator_approval_gate_link, NotificationDispatchEnqueueRecord,
-    OperatorApprovalGateLink, OperatorApprovalGateLinkInput, PreparedRuntimeOperatorResume,
-    ResumeOperatorRunRecord,
+    NotificationDispatchEnqueueRecord, PreparedRuntimeOperatorResume, ResumeOperatorRunRecord,
 };
+
+// The `operator_approvals`, `operator_verification_records`, and
+// `operator_resume_history` tables are the live human-in-the-loop approval gate
+// for the autonomous tool runtime (see `*_with_operator_approval` paths in
+// `runtime/autonomous_tool_runtime/`). They were decoupled from the deprecated
+// workflow state machine in Phase 5 of the storage refactor — the previous
+// `gate_*` / `transition_*` columns and indexes were dropped, and the SQL/DTO
+// surface no longer references workflow concepts despite the table names.
 
 const MAX_APPROVAL_REQUEST_ROWS: i64 = 50;
 const MAX_VERIFICATION_RECORD_ROWS: i64 = 100;
@@ -54,11 +60,6 @@ struct RawOperatorApprovalRow {
     action_type: String,
     title: String,
     detail: String,
-    gate_node_id: Option<String>,
-    gate_key: Option<String>,
-    transition_from_node_id: Option<String>,
-    transition_to_node_id: Option<String>,
-    transition_kind: Option<String>,
     user_answer: Option<String>,
     status: String,
     decision_note: Option<String>,
@@ -98,31 +99,6 @@ pub fn upsert_pending_operator_approval(
     detail: &str,
     created_at: &str,
 ) -> Result<OperatorApprovalDto, CommandError> {
-    upsert_pending_operator_approval_with_gate_link(
-        repo_root,
-        project_id,
-        session_id,
-        flow_id,
-        action_type,
-        title,
-        detail,
-        created_at,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn upsert_pending_operator_approval_with_gate_link(
-    repo_root: &Path,
-    project_id: &str,
-    session_id: &str,
-    flow_id: Option<&str>,
-    action_type: &str,
-    title: &str,
-    detail: &str,
-    created_at: &str,
-    gate_link: Option<&OperatorApprovalGateLinkInput>,
-) -> Result<OperatorApprovalDto, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_project_database(repo_root, &database_path)?;
     read_project_row(&connection, &database_path, repo_root, project_id)?;
@@ -136,22 +112,7 @@ pub fn upsert_pending_operator_approval_with_gate_link(
         )
     })?;
 
-    let gate_link = match gate_link {
-        Some(gate_link) => Some(validate_operator_approval_gate_link_input(
-            gate_link,
-            action_type,
-        )?),
-        None => resolve_operator_approval_gate_link(
-            &transaction,
-            &database_path,
-            project_id,
-            action_type,
-            title,
-            detail,
-        )?,
-    };
-    let action_id =
-        derive_operator_action_id(session_id, flow_id, action_type, gate_link.as_ref())?;
+    let action_id = derive_operator_action_id(session_id, flow_id, action_type)?;
 
     let existing =
         read_operator_approval_by_action_id(&transaction, &database_path, project_id, &action_id)?;
@@ -168,11 +129,6 @@ pub fn upsert_pending_operator_approval_with_gate_link(
                         action_type,
                         title,
                         detail,
-                        gate_node_id,
-                        gate_key,
-                        transition_from_node_id,
-                        transition_to_node_id,
-                        transition_kind,
                         user_answer,
                         status,
                         decision_note,
@@ -188,16 +144,11 @@ pub fn upsert_pending_operator_approval_with_gate_link(
                         ?5,
                         ?6,
                         ?7,
-                        ?8,
-                        ?9,
-                        ?10,
-                        ?11,
-                        ?12,
                         NULL,
                         'pending',
                         NULL,
-                        ?13,
-                        ?13,
+                        ?8,
+                        ?8,
                         NULL
                     )
                     "#,
@@ -209,15 +160,6 @@ pub fn upsert_pending_operator_approval_with_gate_link(
                         action_type,
                         title,
                         detail,
-                        gate_link.as_ref().map(|link| link.gate_node_id.as_str()),
-                        gate_link.as_ref().map(|link| link.gate_key.as_str()),
-                        gate_link
-                            .as_ref()
-                            .map(|link| link.transition_from_node_id.as_str()),
-                        gate_link
-                            .as_ref()
-                            .map(|link| link.transition_to_node_id.as_str()),
-                        gate_link.as_ref().map(|link| link.transition_kind.as_str()),
                         created_at,
                     ],
                 )
@@ -240,12 +182,7 @@ pub fn upsert_pending_operator_approval_with_gate_link(
                             flow_id = ?4,
                             title = ?5,
                             detail = ?6,
-                            gate_node_id = ?7,
-                            gate_key = ?8,
-                            transition_from_node_id = ?9,
-                            transition_to_node_id = ?10,
-                            transition_kind = ?11,
-                            updated_at = ?12
+                            updated_at = ?7
                         WHERE project_id = ?1
                           AND action_id = ?2
                           AND status = 'pending'
@@ -257,15 +194,6 @@ pub fn upsert_pending_operator_approval_with_gate_link(
                             flow_id,
                             title,
                             detail,
-                            gate_link.as_ref().map(|link| link.gate_node_id.as_str()),
-                            gate_link.as_ref().map(|link| link.gate_key.as_str()),
-                            gate_link
-                                .as_ref()
-                                .map(|link| link.transition_from_node_id.as_str()),
-                            gate_link
-                                .as_ref()
-                                .map(|link| link.transition_to_node_id.as_str()),
-                            gate_link.as_ref().map(|link| link.transition_kind.as_str()),
                             created_at,
                         ],
                     )
@@ -372,13 +300,10 @@ pub fn resolve_operator_action(
         ));
     }
 
-    let answer_requirement = if matches!(decision, OperatorApprovalDecision::Approved) {
-        classify_operator_answer_requirement(&existing)?
-    } else {
-        None
-    };
+    let answer_required = matches!(decision, OperatorApprovalDecision::Approved)
+        && classify_operator_answer_requirement(&existing)?;
 
-    if answer_requirement.is_some() && decision_note.is_none() {
+    if answer_required && decision_note.is_none() {
         return Err(CommandError::user_fixable(
             "operator_action_answer_required",
             format!(
@@ -636,11 +561,6 @@ pub(crate) fn read_operator_approvals(
                 action_type,
                 title,
                 detail,
-                gate_node_id,
-                gate_key,
-                transition_from_node_id,
-                transition_to_node_id,
-                transition_kind,
                 user_answer,
                 status,
                 decision_note,
@@ -677,17 +597,12 @@ pub(crate) fn read_operator_approvals(
                     action_type: row.get(3)?,
                     title: row.get(4)?,
                     detail: row.get(5)?,
-                    gate_node_id: row.get(6)?,
-                    gate_key: row.get(7)?,
-                    transition_from_node_id: row.get(8)?,
-                    transition_to_node_id: row.get(9)?,
-                    transition_kind: row.get(10)?,
-                    user_answer: row.get(11)?,
-                    status: row.get(12)?,
-                    decision_note: row.get(13)?,
-                    created_at: row.get(14)?,
-                    updated_at: row.get(15)?,
-                    resolved_at: row.get(16)?,
+                    user_answer: row.get(6)?,
+                    status: row.get(7)?,
+                    decision_note: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                    resolved_at: row.get(11)?,
                 })
             },
         )
@@ -878,11 +793,6 @@ pub(crate) fn read_operator_approval_by_action_id(
                 action_type,
                 title,
                 detail,
-                gate_node_id,
-                gate_key,
-                transition_from_node_id,
-                transition_to_node_id,
-                transition_kind,
                 user_answer,
                 status,
                 decision_note,
@@ -930,161 +840,43 @@ pub(crate) fn read_operator_approval_by_action_id(
         return Ok(None);
     };
 
+    let decode_field = |index: usize| -> Result<String, CommandError> {
+        row.get::<_, String>(index).map_err(|error| {
+            CommandError::system_fault(
+                "operator_approval_decode_failed",
+                format!(
+                    "Cadence could not decode operator-approval lookup rows from {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })
+    };
+    let decode_optional_field = |index: usize| -> Result<Option<String>, CommandError> {
+        row.get::<_, Option<String>>(index).map_err(|error| {
+            CommandError::system_fault(
+                "operator_approval_decode_failed",
+                format!(
+                    "Cadence could not decode operator-approval lookup rows from {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })
+    };
+
     decode_operator_approval_row(
         RawOperatorApprovalRow {
-            action_id: row.get(0).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            session_id: row.get(1).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            flow_id: row.get(2).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            action_type: row.get(3).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            title: row.get(4).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            detail: row.get(5).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            gate_node_id: row.get(6).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            gate_key: row.get(7).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            transition_from_node_id: row.get(8).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            transition_to_node_id: row.get(9).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            transition_kind: row.get(10).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            user_answer: row.get(11).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            status: row.get(12).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            decision_note: row.get(13).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            created_at: row.get(14).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            updated_at: row.get(15).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
-            resolved_at: row.get(16).map_err(|error| {
-                CommandError::system_fault(
-                    "operator_approval_decode_failed",
-                    format!(
-                        "Cadence could not decode operator-approval lookup rows from {}: {error}",
-                        database_path.display()
-                    ),
-                )
-            })?,
+            action_id: decode_field(0)?,
+            session_id: decode_optional_field(1)?,
+            flow_id: decode_optional_field(2)?,
+            action_type: decode_field(3)?,
+            title: decode_field(4)?,
+            detail: decode_field(5)?,
+            user_answer: decode_optional_field(6)?,
+            status: decode_field(7)?,
+            decision_note: decode_optional_field(8)?,
+            created_at: decode_field(9)?,
+            updated_at: decode_field(10)?,
+            resolved_at: decode_optional_field(11)?,
         },
         database_path,
     )
@@ -1365,36 +1157,6 @@ fn decode_operator_approval_row(
         database_path,
         "operator_approval_decode_failed",
     )?;
-    let gate_node_id = decode_optional_non_empty_text(
-        raw_row.gate_node_id,
-        "gate_node_id",
-        database_path,
-        "operator_approval_decode_failed",
-    )?;
-    let gate_key = decode_optional_non_empty_text(
-        raw_row.gate_key,
-        "gate_key",
-        database_path,
-        "operator_approval_decode_failed",
-    )?;
-    let transition_from_node_id = decode_optional_non_empty_text(
-        raw_row.transition_from_node_id,
-        "transition_from_node_id",
-        database_path,
-        "operator_approval_decode_failed",
-    )?;
-    let transition_to_node_id = decode_optional_non_empty_text(
-        raw_row.transition_to_node_id,
-        "transition_to_node_id",
-        database_path,
-        "operator_approval_decode_failed",
-    )?;
-    let transition_kind = decode_optional_non_empty_text(
-        raw_row.transition_kind,
-        "transition_kind",
-        database_path,
-        "operator_approval_decode_failed",
-    )?;
     let user_answer = decode_optional_non_empty_text(
         raw_row.user_answer,
         "user_answer",
@@ -1430,58 +1192,6 @@ fn decode_operator_approval_row(
         map_snapshot_decode_error("operator_approval_decode_failed", database_path, details)
     })?;
 
-    let gate_fields_populated = gate_node_id.is_some() || gate_key.is_some();
-    if gate_fields_populated && (gate_node_id.is_none() || gate_key.is_none()) {
-        return Err(map_snapshot_decode_error(
-            "operator_approval_decode_failed",
-            database_path,
-            "Gate-linked approval rows must include both `gate_node_id` and `gate_key`.".into(),
-        ));
-    }
-
-    let continuation_fields_populated = transition_from_node_id.is_some()
-        || transition_to_node_id.is_some()
-        || transition_kind.is_some();
-    if continuation_fields_populated
-        && (transition_from_node_id.is_none()
-            || transition_to_node_id.is_none()
-            || transition_kind.is_none())
-    {
-        return Err(map_snapshot_decode_error(
-            "operator_approval_decode_failed",
-            database_path,
-            "Gate-linked approval rows must include full transition continuation metadata (`transition_from_node_id`, `transition_to_node_id`, `transition_kind`).".into(),
-        ));
-    }
-
-    if gate_fields_populated && !continuation_fields_populated {
-        return Err(map_snapshot_decode_error(
-            "operator_approval_decode_failed",
-            database_path,
-            "Gate-linked approval rows must include continuation metadata for deterministic resume.".into(),
-        ));
-    }
-
-    if continuation_fields_populated && !gate_fields_populated {
-        return Err(map_snapshot_decode_error(
-            "operator_approval_decode_failed",
-            database_path,
-            "Transition continuation metadata requires matching gate identity fields.".into(),
-        ));
-    }
-
-    if let (Some(gate_node_id), Some(transition_to_node_id)) =
-        (gate_node_id.as_deref(), transition_to_node_id.as_deref())
-    {
-        if gate_node_id != transition_to_node_id {
-            return Err(map_snapshot_decode_error(
-                "operator_approval_decode_failed",
-                database_path,
-                "Gate-linked approval rows must target the same `transition_to_node_id` as `gate_node_id`.".into(),
-            ));
-        }
-    }
-
     match status {
         OperatorApprovalStatus::Pending => {
             if decision_note.is_some() || resolved_at.is_some() || user_answer.is_some() {
@@ -1511,11 +1221,6 @@ fn decode_operator_approval_row(
         action_type,
         title,
         detail,
-        gate_node_id,
-        gate_key,
-        transition_from_node_id,
-        transition_to_node_id,
-        transition_kind,
         user_answer,
         status,
         decision_note,
@@ -1674,69 +1379,6 @@ fn parse_resume_history_status(value: &str) -> Result<ResumeHistoryStatus, Strin
     }
 }
 
-fn validate_operator_approval_gate_link_input(
-    gate_link: &OperatorApprovalGateLinkInput,
-    action_type: &str,
-) -> Result<OperatorApprovalGateLink, CommandError> {
-    let gate_node_id = normalize_operator_gate_link_field(
-        gate_link.gate_node_id.as_str(),
-        "gateNodeId",
-        action_type,
-    )?;
-    let gate_key =
-        normalize_operator_gate_link_field(gate_link.gate_key.as_str(), "gateKey", action_type)?;
-    let transition_from_node_id = normalize_operator_gate_link_field(
-        gate_link.transition_from_node_id.as_str(),
-        "transitionFromNodeId",
-        action_type,
-    )?;
-    let transition_to_node_id = normalize_operator_gate_link_field(
-        gate_link.transition_to_node_id.as_str(),
-        "transitionToNodeId",
-        action_type,
-    )?;
-    let transition_kind = normalize_operator_gate_link_field(
-        gate_link.transition_kind.as_str(),
-        "transitionKind",
-        action_type,
-    )?;
-
-    if gate_node_id != transition_to_node_id {
-        return Err(CommandError::system_fault(
-            "runtime_action_request_invalid",
-            format!(
-                "Cadence could not persist gate-linked runtime action `{action_type}` because gate node `{gate_node_id}` does not match transition target `{transition_to_node_id}`."
-            ),
-        ));
-    }
-
-    Ok(OperatorApprovalGateLink {
-        gate_node_id,
-        gate_key,
-        transition_from_node_id,
-        transition_to_node_id,
-        transition_kind,
-    })
-}
-
-fn normalize_operator_gate_link_field(
-    value: &str,
-    field: &str,
-    action_type: &str,
-) -> Result<String, CommandError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(CommandError::system_fault(
-            "runtime_action_request_invalid",
-            format!(
-                "Cadence could not persist gate-linked runtime action `{action_type}` because `{field}` was empty."
-            ),
-        ));
-    }
-
-    Ok(value.to_string())
-}
-
 pub(crate) fn derive_operator_scope_prefix(
     session_id: &str,
     flow_id: Option<&str>,
@@ -1761,7 +1403,6 @@ pub(crate) fn derive_operator_action_id(
     session_id: &str,
     flow_id: Option<&str>,
     action_type: &str,
-    gate_link: Option<&OperatorApprovalGateLink>,
 ) -> Result<String, CommandError> {
     let action_type = action_type.trim();
     if action_type.is_empty() {
@@ -1773,14 +1414,22 @@ pub(crate) fn derive_operator_action_id(
 
     let stable_scope = derive_operator_scope_prefix(session_id, flow_id)?;
 
-    if let Some(gate_link) = gate_link {
-        return Ok(format!(
-            "{stable_scope}:gate:{}:{}:{action_type}",
-            gate_link.gate_node_id, gate_link.gate_key
+    Ok(format!("{stable_scope}:{action_type}"))
+}
+
+pub(crate) fn validate_non_empty_text(
+    value: &str,
+    field: &str,
+    code: &str,
+) -> Result<(), CommandError> {
+    if value.trim().is_empty() {
+        return Err(CommandError::user_fixable(
+            code,
+            format!("Field `{field}` must be a non-empty string."),
         ));
     }
 
-    Ok(format!("{stable_scope}:{action_type}"))
+    Ok(())
 }
 
 pub(crate) fn operator_approval_status_label(status: &OperatorApprovalStatus) -> &'static str {

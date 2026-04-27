@@ -90,21 +90,6 @@ function makeSnapshot(id: string, name: string): ProjectSnapshotResponseDto {
   }
 }
 
-function makeHandoffPackage(projectId: string, transitionId = 'auto:transition-1') {
-  return {
-    id: 11,
-    projectId,
-    handoffTransitionId: transitionId,
-    causalTransitionId: 'txn-001',
-    fromNodeId: 'workflow-discussion',
-    toNodeId: 'workflow-research',
-    transitionKind: 'advance',
-    packagePayload: '{"schemaVersion":1}',
-    packageHash: 'd41d8cd98f00b204e9800998ecf8427e',
-    createdAt: '2026-04-16T14:00:01Z',
-  }
-}
-
 function makeNotificationDispatch(options: {
   id: number
   projectId: string
@@ -200,11 +185,6 @@ function makeGateLinkedPendingApproval(actionId = 'scope:auto-dispatch:workflow-
     actionType: 'review_worktree',
     title: 'Review worktree changes',
     detail: 'Inspect the pending repository diff before continuing.',
-    gateNodeId: 'workflow-research',
-    gateKey: 'requires_user_input',
-    transitionFromNodeId: 'workflow-discussion',
-    transitionToNodeId: 'workflow-research',
-    transitionKind: 'advance',
     userAnswer: null,
     status: 'pending' as const,
     decisionNote: null,
@@ -222,11 +202,6 @@ function makeGateLinkedApprovedApproval(actionId = 'scope:auto-dispatch:workflow
     actionType: 'review_worktree',
     title: 'Review worktree changes',
     detail: 'Inspect the pending repository diff before continuing.',
-    gateNodeId: 'workflow-research',
-    gateKey: 'requires_user_input',
-    transitionFromNodeId: 'workflow-discussion',
-    transitionToNodeId: 'workflow-research',
-    transitionKind: 'advance',
     userAnswer: 'Proceed after validating repo changes.',
     status: 'approved' as const,
     decisionNote: 'Looks good to resume.',
@@ -2905,11 +2880,6 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               actionType: 'terminal_input_required',
               title: 'Terminal input required',
               detail: 'Provide terminal input to continue this run.',
-              gateNodeId: null,
-              gateKey: null,
-              transitionFromNodeId: null,
-              transitionToNodeId: null,
-              transitionKind: null,
               userAnswer: null,
               status: 'pending',
               decisionNote: null,
@@ -3101,11 +3071,6 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
               actionType: 'terminal_input_required',
               title: 'Terminal input required',
               detail: 'Provide terminal input to continue this run.',
-              gateNodeId: null,
-              gateKey: null,
-              transitionFromNodeId: null,
-              transitionToNodeId: null,
-              transitionKind: null,
               userAnswer: null,
               status: 'pending',
               decisionNote: null,

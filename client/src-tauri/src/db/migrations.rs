@@ -1848,6 +1848,7 @@ pub fn migrations() -> &'static Migrations<'static> {
                 "#,
             ),
             M::up_with_hook("", migrate_agent_memories_to_lance_pending),
+            M::up_with_hook("", drop_workflow_columns_from_operator_approvals),
             M::up(
                 r#"
                 CREATE TABLE IF NOT EXISTS meta (
@@ -1945,6 +1946,41 @@ fn add_column_if_missing(
     ))
 }
 
+fn drop_column_if_present(
+    transaction: &Transaction<'_>,
+    table_name: &str,
+    column_name: &str,
+) -> rusqlite::Result<()> {
+    if !table_has_column(transaction, table_name, column_name)? {
+        return Ok(());
+    }
+
+    transaction.execute_batch(&format!(
+        "ALTER TABLE {table_name} DROP COLUMN {column_name};"
+    ))
+}
+
+fn drop_workflow_columns_from_operator_approvals(transaction: &Transaction<'_>) -> HookResult {
+    transaction.execute_batch(
+        r#"
+        DROP INDEX IF EXISTS idx_operator_approvals_project_gate_status_updated;
+        DROP INDEX IF EXISTS idx_operator_approvals_project_transition_target;
+        "#,
+    )?;
+
+    for column_name in [
+        "gate_node_id",
+        "gate_key",
+        "transition_from_node_id",
+        "transition_to_node_id",
+        "transition_kind",
+    ] {
+        drop_column_if_present(transaction, "operator_approvals", column_name)?;
+    }
+
+    Ok(())
+}
+
 fn table_has_column(
     transaction: &Transaction<'_>,
     table_name: &str,
@@ -1959,4 +1995,167 @@ fn table_has_column(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn migrate_to_latest_in_memory() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;\nPRAGMA journal_mode = MEMORY;\nPRAGMA synchronous = NORMAL;",
+            )
+            .expect("apply pragmas");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate to latest schema");
+        connection
+    }
+
+    fn collect_strings(connection: &Connection, sql: &str) -> Vec<String> {
+        let mut statement = connection.prepare(sql).expect("prepare schema query");
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query schema names");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect schema names")
+    }
+
+    fn table_columns(connection: &Connection, table: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare PRAGMA table_info");
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query PRAGMA table_info");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect column names")
+    }
+
+    #[test]
+    fn migrations_run_to_latest_on_a_fresh_in_memory_connection() {
+        let _connection = migrate_to_latest_in_memory();
+    }
+
+    #[test]
+    fn deprecated_workflow_tables_are_absent_after_migrations() {
+        let connection = migrate_to_latest_in_memory();
+        let tables = collect_strings(
+            &connection,
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN (
+                'workflow_phases',
+                'workflow_graph_nodes',
+                'workflow_graph_edges',
+                'workflow_gate_metadata',
+                'workflow_transition_events',
+                'workflow_handoff_packages'
+              )
+            "#,
+        );
+        assert!(
+            tables.is_empty(),
+            "deprecated workflow tables should be dropped after migrations: {tables:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_coupled_columns_are_dropped_from_operator_approvals() {
+        let connection = migrate_to_latest_in_memory();
+        let columns = table_columns(&connection, "operator_approvals");
+        for absent in [
+            "gate_node_id",
+            "gate_key",
+            "transition_from_node_id",
+            "transition_to_node_id",
+            "transition_kind",
+        ] {
+            assert!(
+                !columns.iter().any(|column| column == absent),
+                "operator_approvals.{absent} should be dropped after migrations; columns are {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_coupled_indexes_are_dropped_from_operator_approvals() {
+        let connection = migrate_to_latest_in_memory();
+        let indexes = collect_strings(
+            &connection,
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND tbl_name = 'operator_approvals'
+              AND name IN (
+                'idx_operator_approvals_project_gate_status_updated',
+                'idx_operator_approvals_project_transition_target'
+              )
+            "#,
+        );
+        assert!(
+            indexes.is_empty(),
+            "workflow-era indexes should be dropped from operator_approvals: {indexes:?}"
+        );
+    }
+
+    #[test]
+    fn operator_approvals_table_keeps_live_human_in_the_loop_columns_after_migrations() {
+        let connection = migrate_to_latest_in_memory();
+        let columns = table_columns(&connection, "operator_approvals");
+        for required in [
+            "project_id",
+            "action_id",
+            "session_id",
+            "flow_id",
+            "action_type",
+            "title",
+            "detail",
+            "user_answer",
+            "status",
+            "decision_note",
+            "created_at",
+            "updated_at",
+            "resolved_at",
+        ] {
+            assert!(
+                columns.iter().any(|column| column == required),
+                "operator_approvals.{required} should remain after migrations; columns are {columns:?}"
+            );
+        }
+
+        let baseline_index = collect_strings(
+            &connection,
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name = 'idx_operator_approvals_project_status_updated'
+            "#,
+        );
+        assert_eq!(
+            baseline_index,
+            vec!["idx_operator_approvals_project_status_updated".to_string()],
+            "the non-workflow operator approvals index should remain after migrations"
+        );
+    }
+
+    #[test]
+    fn drop_workflow_columns_migration_is_idempotent() {
+        let connection = migrate_to_latest_in_memory();
+        let transaction = connection
+            .unchecked_transaction()
+            .expect("start replay transaction");
+        drop_workflow_columns_from_operator_approvals(&transaction)
+            .expect("re-running the workflow drop migration on an already-cleaned schema is a no-op");
+        transaction
+            .commit()
+            .expect("commit replay transaction without error");
+    }
 }
