@@ -335,7 +335,8 @@ impl DesktopState {
             return Ok(path.clone());
         }
 
-        Ok(self.app_data_dir(app)?.join(DICTATION_SETTINGS_FILE_NAME))
+        // Phase 2.4: dictation settings live in the global database.
+        self.global_db_path(app)
     }
 
     pub fn mcp_registry_file<R: Runtime>(
@@ -346,7 +347,8 @@ impl DesktopState {
             return Ok(path.clone());
         }
 
-        Ok(self.app_data_dir(app)?.join(MCP_REGISTRY_FILE_NAME))
+        // Phase 2.4: MCP servers live in the global database.
+        self.global_db_path(app)
     }
 
     pub fn skill_source_settings_file<R: Runtime>(
@@ -357,9 +359,8 @@ impl DesktopState {
             return Ok(path.clone());
         }
 
-        Ok(self
-            .app_data_dir(app)?
-            .join(SKILL_SOURCE_SETTINGS_FILE_NAME))
+        // Phase 2.4: skill source settings live in the global database.
+        self.global_db_path(app)
     }
 
     pub fn provider_profiles_file<R: Runtime>(
@@ -394,9 +395,8 @@ impl DesktopState {
             return Ok(path.clone());
         }
 
-        Ok(self
-            .app_data_dir(app)?
-            .join(PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME))
+        // Phase 2.4: provider-model catalog cache lives in the global database.
+        self.global_db_path(app)
     }
 
     pub fn openrouter_credential_file<R: Runtime>(

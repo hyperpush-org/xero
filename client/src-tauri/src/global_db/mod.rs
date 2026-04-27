@@ -7,7 +7,13 @@ use rusqlite::Connection;
 
 use crate::commands::CommandError;
 
+pub mod importer;
 pub mod migrations;
+
+pub use importer::{
+    import_legacy_dictation_settings, import_legacy_mcp_registry,
+    import_legacy_provider_model_catalog_cache, import_legacy_skill_sources,
+};
 
 pub const GLOBAL_DATABASE_FILE_NAME: &str = "cadence.db";
 

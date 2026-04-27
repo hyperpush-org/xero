@@ -354,25 +354,25 @@ impl SkillSourceSettings {
 }
 
 pub fn load_skill_source_settings_from_path(path: &Path) -> CommandResult<SkillSourceSettings> {
-    if !path.exists() {
-        return Ok(SkillSourceSettings::default());
-    }
+    let connection = crate::global_db::open_global_database(path)?;
 
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CommandError::retryable(
-            "skill_source_settings_read_failed",
-            format!(
-                "Cadence could not read the app-local skill source settings file at {}: {error}",
-                path.display()
-            ),
+    let payload: Option<String> = connection
+        .query_row(
+            "SELECT payload FROM skill_sources WHERE id = 1",
+            [],
+            |row| row.get(0),
         )
-    })?;
-    let parsed = serde_json::from_str::<SkillSourceSettings>(&contents).map_err(|error| {
+        .ok();
+
+    let Some(payload) = payload else {
+        return Ok(SkillSourceSettings::default());
+    };
+
+    let parsed = serde_json::from_str::<SkillSourceSettings>(&payload).map_err(|error| {
         CommandError::user_fixable(
             "skill_source_settings_decode_failed",
             format!(
-                "Cadence could not decode the app-local skill source settings file at {}: {error}",
-                path.display()
+                "Cadence could not decode skill source settings stored in the global database: {error}"
             ),
         )
     })?;
@@ -384,32 +384,30 @@ pub fn persist_skill_source_settings(
     settings: SkillSourceSettings,
 ) -> CommandResult<SkillSourceSettings> {
     let normalized = settings.validate()?;
-    let previous_snapshot = snapshot_existing_file(path)?;
-    let json = serde_json::to_vec_pretty(&normalized).map_err(|error| {
+    let payload = serde_json::to_string(&normalized).map_err(|error| {
         CommandError::system_fault(
             "skill_source_settings_serialize_failed",
             format!("Cadence could not serialize the skill source settings update: {error}"),
         )
     })?;
 
-    write_json_file_atomically(path, &json, "skill_source_settings")?;
+    let connection = crate::global_db::open_global_database(path)?;
+    connection
+        .execute(
+            "INSERT INTO skill_sources (id, payload, updated_at) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at",
+            rusqlite::params![payload, normalized.updated_at],
+        )
+        .map_err(|error| {
+            CommandError::retryable(
+                "skill_source_settings_write_failed",
+                format!("Cadence could not persist skill source settings: {error}"),
+            )
+        })?;
 
-    match load_skill_source_settings_from_path(path) {
-        Ok(loaded) => Ok(loaded),
-        Err(error) => {
-            let rollback = restore_file_snapshot(path, previous_snapshot.as_deref());
-            if let Err(rollback_error) = rollback {
-                return Err(CommandError::retryable(
-                    "skill_source_settings_rollback_failed",
-                    format!(
-                        "Cadence rejected the persisted skill source settings at {} and could not restore the previous snapshot: {}. Validation error: {}",
-                        path.display(), rollback_error.message, error.message
-                    ),
-                ));
-            }
-            Err(error)
-        }
-    }
+    Ok(normalized)
 }
 
 fn default_local_root_settings() -> Vec<SkillLocalRootSetting> {

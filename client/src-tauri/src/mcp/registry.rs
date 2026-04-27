@@ -128,62 +128,132 @@ pub fn default_mcp_registry() -> McpRegistry {
 }
 
 pub fn load_mcp_registry_from_path(path: &Path) -> CommandResult<McpRegistry> {
-    if !path.exists() {
+    let connection = crate::global_db::open_global_database(path)?;
+
+    let mut stmt = connection
+        .prepare("SELECT payload, updated_at FROM mcp_registry ORDER BY server_id")
+        .map_err(|error| {
+            CommandError::retryable(
+                "mcp_registry_read_failed",
+                format!("Cadence could not prepare MCP registry read: {error}"),
+            )
+        })?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| {
+            CommandError::retryable(
+                "mcp_registry_read_failed",
+                format!("Cadence could not query MCP registry rows: {error}"),
+            )
+        })?;
+
+    let mut servers = Vec::new();
+    let mut latest_updated_at: Option<String> = None;
+    for row in rows {
+        let (payload, updated_at) = row.map_err(|error| {
+            CommandError::retryable(
+                "mcp_registry_read_failed",
+                format!("Cadence could not decode MCP registry row: {error}"),
+            )
+        })?;
+        let server: McpServerRecord = serde_json::from_str(&payload).map_err(|error| {
+            CommandError::user_fixable(
+                "mcp_registry_decode_failed",
+                format!("Cadence could not decode MCP registry payload: {error}"),
+            )
+        })?;
+        servers.push(server);
+        latest_updated_at = match latest_updated_at {
+            Some(existing) if existing >= updated_at => Some(existing),
+            _ => Some(updated_at),
+        };
+    }
+
+    if servers.is_empty() {
         return Ok(default_mcp_registry());
     }
 
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CommandError::retryable(
-            "mcp_registry_read_failed",
-            format!(
-                "Cadence could not read the app-local MCP registry file at {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
+    let registry = McpRegistry {
+        version: MCP_REGISTRY_SCHEMA_VERSION,
+        servers,
+        updated_at: latest_updated_at.unwrap_or_else(now_timestamp),
+    };
 
-    let parsed = serde_json::from_str::<McpRegistry>(&contents).map_err(|error| {
-        CommandError::user_fixable(
-            "mcp_registry_decode_failed",
-            format!(
-                "Cadence could not decode the app-local MCP registry file at {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-
-    validate_registry(parsed, &format!("{}", path.display()))
+    validate_registry(registry, "global MCP registry")
 }
 
 pub fn persist_mcp_registry(path: &Path, next: &McpRegistry) -> CommandResult<McpRegistry> {
     let normalized = validate_registry(next.clone(), "requested MCP registry update")?;
-    let previous_snapshot = snapshot_existing_file(path)?;
 
-    let json = serde_json::to_vec_pretty(&normalized).map_err(|error| {
-        CommandError::system_fault(
-            "mcp_registry_serialize_failed",
-            format!("Cadence could not serialize the MCP registry update: {error}"),
+    let mut connection = crate::global_db::open_global_database(path)?;
+    let tx = connection.transaction().map_err(|error| {
+        CommandError::retryable(
+            "mcp_registry_write_failed",
+            format!("Cadence could not begin MCP registry transaction: {error}"),
         )
     })?;
 
-    write_json_file_atomically(path, &json, "mcp_registry")?;
+    let surviving_ids: Vec<String> = normalized
+        .servers
+        .iter()
+        .map(|server| server.id.clone())
+        .collect();
 
-    match load_mcp_registry_from_path(path) {
-        Ok(loaded) => Ok(loaded),
-        Err(error) => {
-            let rollback = restore_file_snapshot(path, previous_snapshot.as_deref());
-            if let Err(rollback_error) = rollback {
-                return Err(CommandError::retryable(
-                    "mcp_registry_rollback_failed",
-                    format!(
-                        "Cadence rejected the persisted MCP registry at {} and could not restore the previous snapshot: {}. Validation error: {}",
-                        path.display(), rollback_error.message, error.message
-                    ),
-                ));
-            }
-            Err(error)
-        }
+    if surviving_ids.is_empty() {
+        tx.execute("DELETE FROM mcp_registry", [])
+            .map_err(map_mcp_registry_write_error)?;
+    } else {
+        let placeholders = surviving_ids
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!("?{}", index + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        tx.execute(
+            format!(
+                "DELETE FROM mcp_registry WHERE server_id NOT IN ({placeholders})"
+            )
+            .as_str(),
+            rusqlite::params_from_iter(surviving_ids.iter()),
+        )
+        .map_err(map_mcp_registry_write_error)?;
     }
+
+    for server in &normalized.servers {
+        let payload = serde_json::to_string(server).map_err(|error| {
+            CommandError::system_fault(
+                "mcp_registry_serialize_failed",
+                format!("Cadence could not serialize MCP server `{}`: {error}", server.id),
+            )
+        })?;
+        tx.execute(
+            "INSERT INTO mcp_registry (server_id, payload, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(server_id) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at",
+            rusqlite::params![server.id, payload, normalized.updated_at],
+        )
+        .map_err(map_mcp_registry_write_error)?;
+    }
+
+    tx.commit().map_err(|error| {
+        CommandError::retryable(
+            "mcp_registry_write_failed",
+            format!("Cadence could not commit MCP registry transaction: {error}"),
+        )
+    })?;
+
+    Ok(normalized)
+}
+
+fn map_mcp_registry_write_error(error: rusqlite::Error) -> CommandError {
+    CommandError::retryable(
+        "mcp_registry_write_failed",
+        format!("Cadence could not write MCP registry: {error}"),
+    )
 }
 
 pub fn parse_mcp_registry_import_file(path: &Path) -> CommandResult<Vec<Value>> {

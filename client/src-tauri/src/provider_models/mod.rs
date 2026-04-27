@@ -814,18 +814,11 @@ fn materially_changed(
 
 fn persist_provider_model_catalog_cache(
     path: &Path,
-    current: &BTreeMap<String, CachedProviderModelCatalogRow>,
+    _current: &BTreeMap<String, CachedProviderModelCatalogRow>,
     profile_id: &str,
     next: &CachedProviderModelCatalogRow,
 ) -> CommandResult<()> {
-    let mut catalogs = current.clone();
-    catalogs.insert(profile_id.to_owned(), next.clone());
-
-    let payload = ProviderModelCatalogCacheFile {
-        version: PROVIDER_MODEL_CATALOG_CACHE_SCHEMA_VERSION,
-        catalogs,
-    };
-    let json = serde_json::to_vec_pretty(&payload).map_err(|error| {
+    let payload = serde_json::to_string(next).map_err(|error| {
         CommandError::system_fault(
             "provider_model_catalog_cache_serialize_failed",
             format!(
@@ -834,7 +827,24 @@ fn persist_provider_model_catalog_cache(
         )
     })?;
 
-    write_json_file_atomically(path, &json, PROVIDER_MODEL_CACHE_OPERATION)
+    let connection = crate::global_db::open_global_database(path)?;
+    connection
+        .execute(
+            "INSERT INTO provider_model_catalog_cache (profile_id, payload, fetched_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(profile_id) DO UPDATE SET
+                payload = excluded.payload,
+                fetched_at = excluded.fetched_at",
+            rusqlite::params![profile_id, payload, next.fetched_at],
+        )
+        .map_err(|error| {
+            CommandError::retryable(
+                "provider_model_catalog_cache_write_failed",
+                format!("Cadence could not write provider model catalog cache row: {error}"),
+            )
+        })?;
+
+    Ok(())
 }
 
 fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLoad {
@@ -843,19 +853,33 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
         ..ProviderModelCatalogCacheLoad::default()
     };
 
-    if !path.exists() {
-        return load;
-    }
-
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
+    let connection = match crate::global_db::open_global_database(path) {
+        Ok(connection) => connection,
         Err(error) => {
             load.write_allowed = false;
             load.file_error = Some(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_read_failed".into(),
                 message: format!(
-                    "Cadence could not read the app-local provider-model catalog cache at {}: {error}",
-                    path.display()
+                    "Cadence could not open the global database for the provider-model catalog cache at {}: {}",
+                    path.display(),
+                    error.message
+                ),
+                retryable: error.retryable,
+            });
+            return load;
+        }
+    };
+
+    let mut stmt = match connection
+        .prepare("SELECT profile_id, payload FROM provider_model_catalog_cache ORDER BY profile_id")
+    {
+        Ok(stmt) => stmt,
+        Err(error) => {
+            load.write_allowed = false;
+            load.file_error = Some(ProviderModelCatalogDiagnostic {
+                code: "provider_model_catalog_cache_read_failed".into(),
+                message: format!(
+                    "Cadence could not prepare provider-model catalog cache read: {error}"
                 ),
                 retryable: true,
             });
@@ -863,86 +887,56 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
         }
     };
 
-    let parsed = match serde_json::from_str::<serde_json::Value>(&contents) {
-        Ok(parsed) => parsed,
+    let rows = match stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        Ok(rows) => rows,
         Err(error) => {
             load.write_allowed = false;
             load.file_error = Some(ProviderModelCatalogDiagnostic {
-                code: "provider_model_catalog_cache_decode_failed".into(),
-                message: format!(
-                    "Cadence could not decode the app-local provider-model catalog cache at {}: {error}",
-                    path.display()
-                ),
-                retryable: false,
+                code: "provider_model_catalog_cache_read_failed".into(),
+                message: format!("Cadence could not read provider-model catalog cache rows: {error}"),
+                retryable: true,
             });
             return load;
         }
     };
 
-    let Some(root) = parsed.as_object() else {
-        load.write_allowed = false;
-        load.file_error = Some(ProviderModelCatalogDiagnostic {
-            code: "provider_model_catalog_cache_invalid".into(),
-            message: format!(
-                "Cadence rejected the app-local provider-model catalog cache at {} because the top-level value was not an object.",
-                path.display()
-            ),
-            retryable: false,
-        });
-        return load;
-    };
-
-    let version = root.get("version").and_then(serde_json::Value::as_u64);
-    if version != Some(PROVIDER_MODEL_CATALOG_CACHE_SCHEMA_VERSION as u64) {
-        load.write_allowed = false;
-        load.file_error = Some(ProviderModelCatalogDiagnostic {
-            code: "provider_model_catalog_cache_invalid".into(),
-            message: format!(
-                "Cadence rejected the app-local provider-model catalog cache at {} because schema version {:?} is unsupported.",
-                path.display(),
-                version
-            ),
-            retryable: false,
-        });
-        return load;
-    }
-
-    let Some(catalogs) = root.get("catalogs").and_then(serde_json::Value::as_object) else {
-        load.write_allowed = false;
-        load.file_error = Some(ProviderModelCatalogDiagnostic {
-            code: "provider_model_catalog_cache_invalid".into(),
-            message: format!(
-                "Cadence rejected the app-local provider-model catalog cache at {} because `catalogs` was missing or not an object.",
-                path.display()
-            ),
-            retryable: false,
-        });
-        return load;
-    };
-
-    for (profile_id, row) in catalogs {
-        match serde_json::from_value::<CachedProviderModelCatalogRow>(row.clone()) {
-            Ok(row) => {
-                if let Err(error) = validate_cached_catalog_row(path, profile_id, &row) {
-                    load.write_allowed = false;
-                    load.row_errors.insert(profile_id.clone(), error);
-                } else {
-                    load.catalogs.insert(profile_id.clone(), row);
+    for row in rows {
+        match row {
+            Ok((profile_id, payload)) => {
+                match serde_json::from_str::<CachedProviderModelCatalogRow>(&payload) {
+                    Ok(parsed) => {
+                        if let Err(error) = validate_cached_catalog_row(path, &profile_id, &parsed) {
+                            load.write_allowed = false;
+                            load.row_errors.insert(profile_id, error);
+                        } else {
+                            load.catalogs.insert(profile_id, parsed);
+                        }
+                    }
+                    Err(error) => {
+                        load.write_allowed = false;
+                        load.row_errors.insert(
+                            profile_id.clone(),
+                            ProviderModelCatalogDiagnostic {
+                                code: "provider_model_catalog_cache_decode_failed".into(),
+                                message: format!(
+                                    "Cadence could not decode the cached provider-model catalog row for profile `{profile_id}`: {error}"
+                                ),
+                                retryable: false,
+                            },
+                        );
+                    }
                 }
             }
             Err(error) => {
                 load.write_allowed = false;
-                load.row_errors.insert(
-                    profile_id.clone(),
-                    ProviderModelCatalogDiagnostic {
-                        code: "provider_model_catalog_cache_decode_failed".into(),
-                        message: format!(
-                            "Cadence could not decode the cached provider-model catalog row for profile `{profile_id}` at {}: {error}",
-                            path.display()
-                        ),
-                        retryable: false,
-                    },
-                );
+                load.file_error = Some(ProviderModelCatalogDiagnostic {
+                    code: "provider_model_catalog_cache_read_failed".into(),
+                    message: format!("Cadence could not decode provider-model catalog cache row: {error}"),
+                    retryable: true,
+                });
+                return load;
             }
         }
     }

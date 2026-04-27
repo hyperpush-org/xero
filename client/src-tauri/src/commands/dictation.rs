@@ -419,26 +419,25 @@ pub(crate) fn load_dictation_settings<R: Runtime>(
 }
 
 fn load_dictation_settings_from_path(path: &Path) -> CommandResult<DictationSettingsDto> {
-    if !path.exists() {
-        return Ok(default_dictation_settings());
-    }
+    let connection = crate::global_db::open_global_database(path)?;
 
-    let contents = fs::read_to_string(path).map_err(|error| {
-        CommandError::retryable(
-            "dictation_settings_read_failed",
-            format!(
-                "Cadence could not read the app-local dictation settings file at {}: {error}",
-                path.display()
-            ),
+    let payload: Option<String> = connection
+        .query_row(
+            "SELECT payload FROM dictation_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
         )
-    })?;
+        .ok();
 
-    let parsed = serde_json::from_str::<DictationSettingsFile>(&contents).map_err(|error| {
+    let Some(payload) = payload else {
+        return Ok(default_dictation_settings());
+    };
+
+    let parsed = serde_json::from_str::<DictationSettingsFile>(&payload).map_err(|error| {
         CommandError::user_fixable(
             "dictation_settings_decode_failed",
             format!(
-                "Cadence could not decode the app-local dictation settings file at {}: {error}",
-                path.display()
+                "Cadence could not decode dictation settings stored in the global database: {error}"
             ),
         )
     })?;
@@ -451,18 +450,29 @@ fn persist_dictation_settings_file(
     path: &Path,
     settings: &DictationSettingsFile,
 ) -> CommandResult<()> {
-    let json = serde_json::to_vec_pretty(settings).map_err(|error| {
+    let payload = serde_json::to_string(settings).map_err(|error| {
         CommandError::system_fault(
             "dictation_settings_serialize_failed",
             format!("Cadence could not serialize dictation settings: {error}"),
         )
     })?;
 
-    crate::commands::get_runtime_settings::write_json_file_atomically(
-        path,
-        &json,
-        "dictation_settings",
-    )
+    let connection = crate::global_db::open_global_database(path)?;
+    connection
+        .execute(
+            "INSERT INTO dictation_settings (id, payload, updated_at) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at",
+            rusqlite::params![payload, settings.updated_at],
+        )
+        .map_err(|error| {
+            CommandError::retryable(
+                "dictation_settings_write_failed",
+                format!("Cadence could not persist dictation settings: {error}"),
+            )
+        })?;
+    Ok(())
 }
 
 fn dictation_settings_file_from_request(
