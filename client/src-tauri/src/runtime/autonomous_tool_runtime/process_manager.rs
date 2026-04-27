@@ -1,15 +1,17 @@
 use std::{
     collections::BTreeMap,
     env,
-    io::Read,
-    process::{Child, Command, Stdio},
+    io::{Read, Write},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+use regex::Regex;
 
 use super::{
     policy::{process_manager_policy_trace, CommandPolicyDecision, PreparedCommandRequest},
@@ -22,8 +24,9 @@ use super::{
     AutonomousProcessManagerRequest, AutonomousProcessMetadata, AutonomousProcessOutputChunk,
     AutonomousProcessOutputLimits, AutonomousProcessOutputStream, AutonomousProcessOwner,
     AutonomousProcessOwnershipScope, AutonomousProcessPersistenceContract,
-    AutonomousProcessReadinessState, AutonomousProcessStatus, AutonomousToolOutput,
-    AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_PROCESS_MANAGER,
+    AutonomousProcessReadinessState, AutonomousProcessStatus, AutonomousProcessStdinState,
+    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AUTONOMOUS_TOOL_PROCESS_MANAGER,
 };
 use crate::{
     auth::now_timestamp,
@@ -41,16 +44,20 @@ use crate::{
     },
 };
 
-const PROCESS_MANAGER_PHASE: &str = "phase_1_owned_mvp";
+const PROCESS_MANAGER_PHASE: &str = "phase_2_interactive_sessions";
 const PROCESS_MANAGER_INITIAL_DRAIN: Duration = Duration::from_millis(150);
+const PROCESS_MANAGER_SEND_DRAIN: Duration = Duration::from_millis(50);
+const PROCESS_MANAGER_WAIT_POLL: Duration = Duration::from_millis(25);
 const MAX_OWNED_PROCESSES: usize = 8;
 const RECENT_OUTPUT_RING_BYTES: usize = 1024 * 1024;
 const RECENT_OUTPUT_RING_CHUNKS: usize = 512;
 const FULL_OUTPUT_ARTIFACT_THRESHOLD_BYTES: usize = 1024 * 1024;
 const PROCESS_OUTPUT_EXCERPT_BYTES: usize = 16 * 1024;
 const MAX_PROCESS_OUTPUT_READ_BYTES: usize = 64 * 1024;
+const MAX_PROCESS_STDIN_INPUT_BYTES: usize = 64 * 1024;
 const REDACTED_PROCESS_OUTPUT_SUMMARY: &str =
     "Process output was redacted before durable persistence.";
+const INTERNAL_MARKER_PREFIX: &str = "__CADENCE_";
 
 #[derive(Debug, Default)]
 pub(super) struct OwnedProcessRegistry {
@@ -143,6 +150,8 @@ struct OwnedProcess {
     group: Option<String>,
     owner: AutonomousProcessOwner,
     command: AutonomousProcessCommandMetadata,
+    stdin: Mutex<Option<ChildStdin>>,
+    stdin_state: Mutex<AutonomousProcessStdinState>,
     child: Mutex<Option<Child>>,
     status: Mutex<AutonomousProcessStatus>,
     started_at: String,
@@ -158,6 +167,8 @@ impl OwnedProcess {
         process_id: String,
         prepared: &PreparedCommandRequest,
         child: Child,
+        stdin: Option<ChildStdin>,
+        shell_mode: bool,
         label: Option<String>,
         process_type: Option<String>,
         group: Option<String>,
@@ -178,10 +189,16 @@ impl OwnedProcess {
             },
             command: AutonomousProcessCommandMetadata {
                 argv: redact_command_argv_for_persistence(&prepared.argv),
-                shell_mode: false,
+                shell_mode,
                 cwd: display_relative_or_root(&prepared.cwd, &prepared.cwd),
                 sanitized_env: sanitized_env_summary(),
             },
+            stdin_state: Mutex::new(if stdin.is_some() {
+                AutonomousProcessStdinState::Open
+            } else {
+                AutonomousProcessStdinState::Unavailable
+            }),
+            stdin: Mutex::new(stdin),
             child: Mutex::new(Some(child)),
             status: Mutex::new(AutonomousProcessStatus::Running),
             started_at: now_timestamp(),
@@ -220,6 +237,18 @@ impl OwnedProcess {
         after_cursor: u64,
         max_bytes: usize,
     ) -> CommandResult<Vec<AutonomousProcessOutputChunk>> {
+        Ok(self
+            .read_chunks_after_raw(after_cursor, max_bytes)?
+            .into_iter()
+            .map(filter_internal_marker_chunk)
+            .collect())
+    }
+
+    fn read_chunks_after_raw(
+        &self,
+        after_cursor: u64,
+        max_bytes: usize,
+    ) -> CommandResult<Vec<AutonomousProcessOutputChunk>> {
         let chunks = self.chunks.lock().map_err(process_output_lock_error)?;
         let mut selected = Vec::new();
         let mut bytes = 0_usize;
@@ -245,6 +274,60 @@ impl OwnedProcess {
         self.next_cursor.load(Ordering::Relaxed)
     }
 
+    fn close_stdin(&self) -> CommandResult<()> {
+        let mut stdin = self.stdin.lock().map_err(process_stdin_lock_error)?;
+        if stdin.take().is_some() {
+            *self.stdin_state.lock().map_err(process_stdin_lock_error)? =
+                AutonomousProcessStdinState::Closed;
+        }
+        Ok(())
+    }
+
+    fn send_input(&self, input: &str) -> CommandResult<()> {
+        if self.poll_exit()?.is_some() {
+            let _ = self.close_stdin();
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_process_manager_stdin_closed",
+                format!(
+                    "Cadence cannot send stdin to owned process `{}` because it has exited.",
+                    self.process_id
+                ),
+            ));
+        }
+
+        let mut stdin = self.stdin.lock().map_err(process_stdin_lock_error)?;
+        let Some(stdin_ref) = stdin.as_mut() else {
+            let state = *self.stdin_state.lock().map_err(process_stdin_lock_error)?;
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_process_manager_stdin_unavailable",
+                format!(
+                    "Cadence cannot send stdin to owned process `{}` because stdin is {state:?}. Start the process with interactive=true or shellMode=true.",
+                    self.process_id
+                ),
+            ));
+        };
+
+        stdin_ref.write_all(input.as_bytes()).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_process_manager_stdin_write_failed",
+                format!(
+                    "Cadence could not write stdin to owned process `{}`: {error}",
+                    self.process_id
+                ),
+            )
+        })?;
+        stdin_ref.flush().map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_process_manager_stdin_flush_failed",
+                format!(
+                    "Cadence could not flush stdin for owned process `{}`: {error}",
+                    self.process_id
+                ),
+            )
+        })?;
+        Ok(())
+    }
+
     fn poll_exit(&self) -> CommandResult<Option<i32>> {
         if let Some(exit_code) = *self.exit_code.lock().map_err(process_exit_lock_error)? {
             return Ok(Some(exit_code));
@@ -263,6 +346,7 @@ impl OwnedProcess {
                 *self.exited_at.lock().map_err(process_exit_lock_error)? = Some(now_timestamp());
                 *self.status.lock().map_err(process_status_lock_error)? =
                     AutonomousProcessStatus::Exited;
+                let _ = self.close_stdin();
                 *child = None;
                 Ok(exit_code)
             }
@@ -295,12 +379,14 @@ impl OwnedProcess {
                 *self.exited_at.lock().map_err(process_exit_lock_error)? = Some(now_timestamp());
                 *self.status.lock().map_err(process_status_lock_error)? =
                     AutonomousProcessStatus::Exited;
+                let _ = self.close_stdin();
                 *child = None;
                 Ok(exit_code)
             }
             Ok(None) => {
                 *self.status.lock().map_err(process_status_lock_error)? =
                     AutonomousProcessStatus::Killing;
+                let _ = self.close_stdin();
                 let status = terminate_process_tree(child_ref).map_err(|error| {
                     CommandError::retryable(
                         "autonomous_tool_process_manager_kill_failed",
@@ -331,6 +417,7 @@ impl OwnedProcess {
     fn metadata(&self) -> CommandResult<AutonomousProcessMetadata> {
         let exit_code = *self.exit_code.lock().map_err(process_exit_lock_error)?;
         let status = *self.status.lock().map_err(process_status_lock_error)?;
+        let stdin_state = *self.stdin_state.lock().map_err(process_stdin_lock_error)?;
         let exited_at = self
             .exited_at
             .lock()
@@ -345,6 +432,7 @@ impl OwnedProcess {
             group: self.group.clone(),
             owner: self.owner.clone(),
             command: self.command.clone(),
+            stdin_state,
             status,
             started_at: Some(self.started_at.clone()),
             exited_at,
@@ -392,6 +480,13 @@ fn process_output_lock_error(_error: std::sync::PoisonError<impl Sized>) -> Comm
     )
 }
 
+fn process_stdin_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
+    CommandError::system_fault(
+        "autonomous_tool_process_manager_lock_failed",
+        "Cadence could not lock owned process stdin.",
+    )
+}
+
 impl AutonomousToolRuntime {
     pub fn process_manager(
         &self,
@@ -413,7 +508,7 @@ impl AutonomousToolRuntime {
         operator_approved: bool,
     ) -> CommandResult<AutonomousToolResult> {
         validate_process_manager_request(&request)?;
-        validate_phase_1_scope(&request)?;
+        validate_phase_2_scope(&request)?;
 
         match request.action {
             AutonomousProcessManagerAction::Start => {
@@ -422,8 +517,18 @@ impl AutonomousToolRuntime {
             AutonomousProcessManagerAction::List => self.process_manager_list(request),
             AutonomousProcessManagerAction::Status => self.process_manager_status(request),
             AutonomousProcessManagerAction::Output => self.process_manager_output(request),
+            AutonomousProcessManagerAction::Send => {
+                self.process_manager_send(request, operator_approved)
+            }
+            AutonomousProcessManagerAction::SendAndWait => {
+                self.process_manager_send_and_wait(request, operator_approved)
+            }
+            AutonomousProcessManagerAction::Run => {
+                self.process_manager_run(request, operator_approved)
+            }
+            AutonomousProcessManagerAction::Env => self.process_manager_env(request),
             AutonomousProcessManagerAction::Kill => self.process_manager_kill(request),
-            action => Err(unsupported_phase_1_action(action)),
+            action => Err(unsupported_phase_2_action(action)),
         }
     }
 
@@ -432,8 +537,13 @@ impl AutonomousToolRuntime {
         request: AutonomousProcessManagerRequest,
         operator_approved: bool,
     ) -> CommandResult<AutonomousToolResult> {
+        let argv = if request.shell_mode && request.argv.is_empty() {
+            default_shell_argv()
+        } else {
+            request.argv.clone()
+        };
         let prepared_request = super::AutonomousCommandRequest {
-            argv: request.argv.clone(),
+            argv,
             cwd: request.cwd.clone(),
             timeout_ms: request.timeout_ms,
         };
@@ -441,6 +551,16 @@ impl AutonomousToolRuntime {
             self.evaluate_command_policy(self.prepare_command_request(prepared_request)?)?;
 
         match decision {
+            CommandPolicyDecision::Allow { prepared, policy }
+                if request.shell_mode && !operator_approved =>
+            {
+                let policy = shell_mode_requires_operator_policy(policy, &prepared.argv);
+                self.unspawned_process_manager_approval_result(request, prepared, policy)
+            }
+            CommandPolicyDecision::Allow { prepared, policy } if request.shell_mode => {
+                let policy = operator_approved_shell_policy(policy, &prepared.argv);
+                self.spawn_owned_process(request, prepared, process_policy_from_command(policy))
+            }
             CommandPolicyDecision::Allow { prepared, policy } => {
                 self.spawn_owned_process(request, prepared, process_policy_from_command(policy))
             }
@@ -464,10 +584,15 @@ impl AutonomousToolRuntime {
         self.check_cancelled()?;
 
         let mut command = Command::new(&prepared.argv[0]);
+        let wants_stdin = request.interactive || request.shell_mode;
         command
             .args(prepared.argv.iter().skip(1))
             .current_dir(&prepared.cwd)
-            .stdin(Stdio::null())
+            .stdin(if wants_stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         configure_process_tree_root(&mut command);
@@ -487,6 +612,11 @@ impl AutonomousToolRuntime {
             ),
         })?;
 
+        let stdin = if wants_stdin {
+            child.stdin.take()
+        } else {
+            None
+        };
         let stdout = child.stdout.take().ok_or_else(|| {
             let _ = terminate_process_tree(&mut child);
             CommandError::system_fault(
@@ -508,6 +638,8 @@ impl AutonomousToolRuntime {
             process_id.clone(),
             &prepared,
             child,
+            stdin,
+            request.shell_mode,
             clean_optional_string(request.label.as_deref()),
             clean_optional_string(request.process_type.as_deref()),
             clean_optional_string(request.group.as_deref()),
@@ -589,6 +721,7 @@ impl AutonomousToolRuntime {
             processes: vec![unstarted_process_metadata(
                 &prepared.argv,
                 cwd,
+                request.shell_mode,
                 request.label,
                 request.process_type,
                 request.group,
@@ -685,6 +818,198 @@ impl AutonomousToolRuntime {
         }))
     }
 
+    fn process_manager_send(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let process_id = normalized_process_id(&request)?;
+        let process = self.owned_processes.get(&process_id)?;
+        let input = normalized_stdin_input(&request)?.to_owned();
+        if let Some(policy) =
+            self.process_shell_input_requires_approval(&process, &input, operator_approved)?
+        {
+            return self.unperformed_process_interaction_result(
+                request,
+                process,
+                AutonomousProcessManagerAction::Send,
+                policy,
+                format!("Stdin for owned shell process `{process_id}` requires operator review."),
+            );
+        }
+
+        let after_cursor = request
+            .after_cursor
+            .unwrap_or_else(|| process.next_cursor_value().saturating_sub(1));
+        process.send_input(&input)?;
+        thread::sleep(PROCESS_MANAGER_SEND_DRAIN);
+        let _ = process.poll_exit()?;
+        let chunks =
+            process.read_chunks_after(after_cursor, default_process_output_read_bytes())?;
+        let metadata = process.metadata()?;
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::Send,
+            spawned: true,
+            process_id: Some(process_id.clone()),
+            processes: vec![metadata],
+            chunks,
+            next_cursor: Some(process.next_cursor_value()),
+            policy: process_interaction_policy_allowed(
+                AutonomousProcessManagerAction::Send,
+                request.target_ownership,
+            ),
+            message: format!("Wrote stdin to owned process `{process_id}`."),
+        }))
+    }
+
+    fn process_manager_send_and_wait(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let process_id = normalized_process_id(&request)?;
+        let process = self.owned_processes.get(&process_id)?;
+        let input = normalized_stdin_input(&request)?.to_owned();
+        if let Some(policy) =
+            self.process_shell_input_requires_approval(&process, &input, operator_approved)?
+        {
+            return self.unperformed_process_interaction_result(
+                request,
+                process,
+                AutonomousProcessManagerAction::SendAndWait,
+                policy,
+                format!("Stdin for owned shell process `{process_id}` requires operator review."),
+            );
+        }
+
+        let wait_pattern = request.wait_pattern.as_deref().unwrap_or_default();
+        let timeout = self.process_wait_timeout(request.timeout_ms)?;
+        let after_cursor = request
+            .after_cursor
+            .unwrap_or_else(|| process.next_cursor_value().saturating_sub(1));
+        process.send_input(&input)?;
+        let (chunks, matched) =
+            wait_for_output_match(&process, after_cursor, wait_pattern, timeout)?;
+        let metadata = process.metadata()?;
+        let message = match matched {
+            Some(matched) => format!(
+                "Wrote stdin to owned process `{process_id}` and observed `{}`.",
+                truncate_chars(&matched, 120)
+            ),
+            None => format!(
+                "Wrote stdin to owned process `{process_id}` but timed out waiting for `{wait_pattern}`."
+            ),
+        };
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::SendAndWait,
+            spawned: true,
+            process_id: Some(process_id),
+            processes: vec![metadata],
+            chunks,
+            next_cursor: Some(process.next_cursor_value()),
+            policy: process_interaction_policy_allowed(
+                AutonomousProcessManagerAction::SendAndWait,
+                request.target_ownership,
+            ),
+            message,
+        }))
+    }
+
+    fn process_manager_run(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let process_id = normalized_process_id(&request)?;
+        let process = self.owned_processes.get(&process_id)?;
+        ensure_shell_process(&process)?;
+        let input = normalized_stdin_input(&request)?.to_owned();
+        if let Some(policy) =
+            self.process_shell_input_requires_approval(&process, &input, operator_approved)?
+        {
+            return self.unperformed_process_interaction_result(
+                request,
+                process,
+                AutonomousProcessManagerAction::Run,
+                policy,
+                format!("Shell command for owned process `{process_id}` requires operator review."),
+            );
+        }
+
+        let timeout = self.process_wait_timeout(request.timeout_ms)?;
+        let after_cursor = request
+            .after_cursor
+            .unwrap_or_else(|| process.next_cursor_value().saturating_sub(1));
+        let marker = process_run_marker(&process_id, process.next_cursor_value());
+        let payload = shell_run_payload(&input, &marker);
+        process.send_input(&payload)?;
+        let wait_pattern = format!("{}:-?[0-9]+", regex::escape(&marker));
+        let (chunks, matched) =
+            wait_for_output_match(&process, after_cursor, &wait_pattern, timeout)?;
+        let metadata = process.metadata()?;
+        let message = if matched.is_some() {
+            format!("Ran a command in owned shell process `{process_id}`.")
+        } else {
+            format!(
+                "Timed out waiting for owned shell process `{process_id}` to finish the command."
+            )
+        };
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::Run,
+            spawned: true,
+            process_id: Some(process_id),
+            processes: vec![metadata],
+            chunks,
+            next_cursor: Some(process.next_cursor_value()),
+            policy: process_interaction_policy_allowed(
+                AutonomousProcessManagerAction::Run,
+                request.target_ownership,
+            ),
+            message,
+        }))
+    }
+
+    fn process_manager_env(
+        &self,
+        request: AutonomousProcessManagerRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        let process_id = normalized_process_id(&request)?;
+        let process = self.owned_processes.get(&process_id)?;
+        ensure_shell_process(&process)?;
+        let timeout = self.process_wait_timeout(request.timeout_ms)?;
+        let after_cursor = request
+            .after_cursor
+            .unwrap_or_else(|| process.next_cursor_value().saturating_sub(1));
+        let marker = process_env_marker(&process_id, process.next_cursor_value());
+        let payload = shell_env_payload(&marker);
+        process.send_input(&payload)?;
+        let wait_pattern = regex::escape(&marker);
+        let (chunks, matched) =
+            wait_for_output_match(&process, after_cursor, &wait_pattern, timeout)?;
+        let metadata = process.metadata()?;
+        let message = if matched.is_some() {
+            format!("Read environment details from owned shell process `{process_id}`.")
+        } else {
+            format!(
+                "Timed out waiting for environment details from owned shell process `{process_id}`."
+            )
+        };
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action: AutonomousProcessManagerAction::Env,
+            spawned: true,
+            process_id: Some(process_id),
+            processes: vec![metadata],
+            chunks,
+            next_cursor: Some(process.next_cursor_value()),
+            policy: process_manager_policy_trace(
+                AutonomousProcessManagerAction::Env,
+                request.target_ownership,
+                false,
+            ),
+            message,
+        }))
+    }
+
     fn process_manager_kill(
         &self,
         request: AutonomousProcessManagerRequest,
@@ -713,6 +1038,74 @@ impl AutonomousToolRuntime {
             ),
             message,
         }))
+    }
+
+    fn unperformed_process_interaction_result(
+        &self,
+        request: AutonomousProcessManagerRequest,
+        process: Arc<OwnedProcess>,
+        action: AutonomousProcessManagerAction,
+        policy: AutonomousProcessManagerPolicyTrace,
+        message: String,
+    ) -> CommandResult<AutonomousToolResult> {
+        let _ = process.poll_exit()?;
+        let metadata = process.metadata()?;
+        Ok(process_manager_result(ProcessManagerResultInput {
+            action,
+            spawned: false,
+            process_id: Some(process.process_id.clone()),
+            processes: vec![metadata],
+            chunks: Vec::new(),
+            next_cursor: Some(process.next_cursor_value()),
+            policy,
+            message: if request.input.is_some() {
+                message
+            } else {
+                format!("{message} No stdin payload was written.")
+            },
+        }))
+    }
+
+    fn process_shell_input_requires_approval(
+        &self,
+        process: &OwnedProcess,
+        input: &str,
+        operator_approved: bool,
+    ) -> CommandResult<Option<AutonomousProcessManagerPolicyTrace>> {
+        if !process.command.shell_mode {
+            return Ok(None);
+        }
+
+        let request = super::AutonomousCommandRequest {
+            argv: shell_policy_argv(input),
+            cwd: None,
+            timeout_ms: None,
+        };
+        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+        match decision {
+            CommandPolicyDecision::Allow { .. } => Ok(None),
+            CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
+                let _ = operator_approved_command_policy(policy, &prepared.argv);
+                Ok(None)
+            }
+            CommandPolicyDecision::Escalate { policy, .. } => {
+                Ok(Some(process_policy_requiring_command_approval(policy)))
+            }
+        }
+    }
+
+    fn process_wait_timeout(&self, timeout_ms: Option<u64>) -> CommandResult<Duration> {
+        let timeout = timeout_ms.unwrap_or(self.limits.default_command_timeout_ms);
+        if timeout == 0 || timeout > self.limits.max_command_timeout_ms {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_process_manager_timeout_invalid",
+                format!(
+                    "Cadence requires process_manager timeoutMs to be between 1 and {}.",
+                    self.limits.max_command_timeout_ms
+                ),
+            ));
+        }
+        Ok(Duration::from_millis(timeout))
     }
 }
 
@@ -752,18 +1145,22 @@ fn validate_process_manager_request(
 ) -> CommandResult<()> {
     match request.action {
         AutonomousProcessManagerAction::Start => {
-            if request.argv.is_empty() || request.argv[0].trim().is_empty() {
+            if !request.shell_mode && (request.argv.is_empty() || request.argv[0].trim().is_empty())
+            {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_process_manager_start_invalid",
                     "Cadence requires process_manager start requests to include a non-empty argv[0].",
                 ));
             }
-            validate_argv_contract(&request.argv)?;
+            if !request.argv.is_empty() {
+                validate_argv_contract(&request.argv)?;
+            }
         }
         AutonomousProcessManagerAction::Status
         | AutonomousProcessManagerAction::Output
         | AutonomousProcessManagerAction::Digest
         | AutonomousProcessManagerAction::WaitForReady
+        | AutonomousProcessManagerAction::Env
         | AutonomousProcessManagerAction::Signal
         | AutonomousProcessManagerAction::Kill
         | AutonomousProcessManagerAction::Restart => {
@@ -772,7 +1169,9 @@ fn validate_process_manager_request(
                 "processId",
             )?;
         }
-        AutonomousProcessManagerAction::Send | AutonomousProcessManagerAction::SendAndWait => {
+        AutonomousProcessManagerAction::Send
+        | AutonomousProcessManagerAction::SendAndWait
+        | AutonomousProcessManagerAction::Run => {
             validate_non_empty(
                 request.process_id.as_deref().unwrap_or_default(),
                 "processId",
@@ -800,6 +1199,19 @@ fn validate_process_manager_request(
     if let Some(wait_pattern) = request.wait_pattern.as_deref() {
         validate_non_empty(wait_pattern, "waitPattern")?;
     }
+    if request.action == AutonomousProcessManagerAction::SendAndWait
+        && request
+            .wait_pattern
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_process_manager_wait_pattern_required",
+            "Cadence requires send_and_wait requests to include waitPattern.",
+        ));
+    }
     if let Some(wait_url) = request.wait_url.as_deref() {
         validate_non_empty(wait_url, "waitUrl")?;
     }
@@ -807,23 +1219,17 @@ fn validate_process_manager_request(
     Ok(())
 }
 
-fn validate_phase_1_scope(request: &AutonomousProcessManagerRequest) -> CommandResult<()> {
+fn validate_phase_2_scope(request: &AutonomousProcessManagerRequest) -> CommandResult<()> {
     if request.target_ownership == Some(AutonomousProcessOwnershipScope::External) {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_external_unsupported",
-            "Cadence phase 1 process_manager only controls Cadence-owned processes.",
-        ));
-    }
-    if request.shell_mode {
-        return Err(CommandError::user_fixable(
-            "autonomous_tool_process_manager_shell_mode_unsupported",
-            "Cadence phase 1 process_manager starts explicit argv commands only; shellMode is not supported yet.",
+            "Cadence phase 2 process_manager only controls Cadence-owned processes.",
         ));
     }
     if request.persistent {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_persistent_unsupported",
-            "Cadence phase 1 process_manager does not support persistent background processes yet.",
+            "Cadence phase 2 process_manager does not support durable background persistence yet.",
         ));
     }
     match request.action {
@@ -831,8 +1237,12 @@ fn validate_phase_1_scope(request: &AutonomousProcessManagerRequest) -> CommandR
         | AutonomousProcessManagerAction::List
         | AutonomousProcessManagerAction::Status
         | AutonomousProcessManagerAction::Output
+        | AutonomousProcessManagerAction::Send
+        | AutonomousProcessManagerAction::SendAndWait
+        | AutonomousProcessManagerAction::Run
+        | AutonomousProcessManagerAction::Env
         | AutonomousProcessManagerAction::Kill => Ok(()),
-        action => Err(unsupported_phase_1_action(action)),
+        action => Err(unsupported_phase_2_action(action)),
     }
 }
 
@@ -850,11 +1260,11 @@ fn validate_argv_contract(argv: &[String]) -> CommandResult<()> {
     Ok(())
 }
 
-fn unsupported_phase_1_action(action: AutonomousProcessManagerAction) -> CommandError {
+fn unsupported_phase_2_action(action: AutonomousProcessManagerAction) -> CommandError {
     CommandError::user_fixable(
         "autonomous_tool_process_manager_action_unsupported",
         format!(
-            "Cadence phase 1 process_manager supports start, list, status, output, and kill; `{}` is planned for a later phase.",
+            "Cadence phase 2 process_manager supports start, list, status, output, send, send_and_wait, run, env, and kill; `{}` is planned for a later phase.",
             process_manager_action_label(action)
         ),
     )
@@ -868,6 +1278,10 @@ pub(super) fn process_manager_contract() -> AutonomousProcessManagerContract {
             AutonomousProcessManagerAction::List,
             AutonomousProcessManagerAction::Status,
             AutonomousProcessManagerAction::Output,
+            AutonomousProcessManagerAction::Send,
+            AutonomousProcessManagerAction::SendAndWait,
+            AutonomousProcessManagerAction::Run,
+            AutonomousProcessManagerAction::Env,
             AutonomousProcessManagerAction::Kill,
         ],
         ownership_fields: vec![
@@ -919,6 +1333,8 @@ fn process_manager_action_label(action: AutonomousProcessManagerAction) -> &'sta
         AutonomousProcessManagerAction::WaitForReady => "wait_for_ready",
         AutonomousProcessManagerAction::Send => "send",
         AutonomousProcessManagerAction::SendAndWait => "send_and_wait",
+        AutonomousProcessManagerAction::Run => "run",
+        AutonomousProcessManagerAction::Env => "env",
         AutonomousProcessManagerAction::Signal => "signal",
         AutonomousProcessManagerAction::Kill => "kill",
         AutonomousProcessManagerAction::Restart => "restart",
@@ -930,6 +1346,162 @@ fn normalized_process_id(request: &AutonomousProcessManagerRequest) -> CommandRe
     let process_id = request.process_id.as_deref().unwrap_or_default().trim();
     validate_non_empty(process_id, "processId")?;
     Ok(process_id.to_owned())
+}
+
+fn normalized_stdin_input(request: &AutonomousProcessManagerRequest) -> CommandResult<&str> {
+    let input = request.input.as_deref().unwrap_or_default();
+    validate_non_empty(input, "input")?;
+    if input.contains('\0') {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_process_manager_input_invalid",
+            "Cadence refused a process_manager stdin payload that contained a NUL byte.",
+        ));
+    }
+    if input.len() > MAX_PROCESS_STDIN_INPUT_BYTES {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_process_manager_input_too_large",
+            format!(
+                "Cadence limits process_manager stdin payloads to {MAX_PROCESS_STDIN_INPUT_BYTES} bytes."
+            ),
+        ));
+    }
+    Ok(input)
+}
+
+fn ensure_shell_process(process: &OwnedProcess) -> CommandResult<()> {
+    if process.command.shell_mode {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "autonomous_tool_process_manager_shell_required",
+        format!(
+            "Cadence can only use this action with a shell-mode owned process; `{}` was started as argv mode.",
+            process.process_id
+        ),
+    ))
+}
+
+fn wait_for_output_match(
+    process: &OwnedProcess,
+    after_cursor: u64,
+    wait_pattern: &str,
+    timeout: Duration,
+) -> CommandResult<(Vec<AutonomousProcessOutputChunk>, Option<String>)> {
+    let regex = Regex::new(wait_pattern).map_err(|error| {
+        CommandError::user_fixable(
+            "autonomous_tool_process_manager_wait_pattern_invalid",
+            format!("Cadence could not compile process_manager waitPattern regex: {error}"),
+        )
+    })?;
+    let started = Instant::now();
+
+    loop {
+        let _ = process.poll_exit()?;
+        let chunks = process.read_chunks_after_raw(after_cursor, MAX_PROCESS_OUTPUT_READ_BYTES)?;
+        let combined = combine_chunk_text(&chunks);
+        if let Some(found) = regex.find(&combined) {
+            let chunks = chunks
+                .into_iter()
+                .map(filter_internal_marker_chunk)
+                .collect();
+            return Ok((chunks, Some(found.as_str().to_owned())));
+        }
+
+        if started.elapsed() >= timeout {
+            let chunks = chunks
+                .into_iter()
+                .map(filter_internal_marker_chunk)
+                .collect();
+            return Ok((chunks, None));
+        }
+
+        thread::sleep(PROCESS_MANAGER_WAIT_POLL);
+    }
+}
+
+fn combine_chunk_text(chunks: &[AutonomousProcessOutputChunk]) -> String {
+    chunks
+        .iter()
+        .filter_map(|chunk| chunk.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn process_run_marker(process_id: &str, cursor: u64) -> String {
+    format!(
+        "{INTERNAL_MARKER_PREFIX}RUN_DONE_{}_{}__",
+        marker_safe(process_id),
+        cursor
+    )
+}
+
+fn process_env_marker(process_id: &str, cursor: u64) -> String {
+    format!(
+        "{INTERNAL_MARKER_PREFIX}ENV_DONE_{}_{}__",
+        marker_safe(process_id),
+        cursor
+    )
+}
+
+fn marker_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn shell_run_payload(input: &str, marker: &str) -> String {
+    format!(
+        "{}\n__cadence_status=$?\nprintf '\\n{}:%s\\n' \"$__cadence_status\"\n",
+        input.trim_end_matches('\n'),
+        marker
+    )
+}
+
+fn shell_env_payload(marker: &str) -> String {
+    format!(
+        "printf 'cwd:%s\\n' \"$PWD\"\nprintf 'shell:%s\\n' \"${{SHELL:-}}\"\nprintf 'path:%s\\n' \"$PATH\"\nprintf '{}\\n'\n",
+        marker
+    )
+}
+
+fn shell_policy_argv(input: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec!["cmd".into(), "/C".into(), input.into()]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["sh".into(), "-c".into(), input.into()]
+    }
+}
+
+fn default_shell_argv() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())]
+    }
+    #[cfg(not(windows))]
+    {
+        vec![env::var("SHELL")
+            .ok()
+            .filter(|shell| {
+                let name = std::path::Path::new(shell)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(shell)
+                    .to_ascii_lowercase();
+                matches!(name.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh")
+            })
+            .unwrap_or_else(|| "/bin/sh".into())]
+    }
 }
 
 fn clean_optional_string(value: Option<&str>) -> Option<String> {
@@ -980,6 +1552,18 @@ fn process_policy_requiring_command_approval(
     }
 }
 
+fn process_interaction_policy_allowed(
+    action: AutonomousProcessManagerAction,
+    target_ownership: Option<AutonomousProcessOwnershipScope>,
+) -> AutonomousProcessManagerPolicyTrace {
+    let mut policy = process_manager_policy_trace(action, target_ownership, false);
+    policy.approval_required = false;
+    policy.code = "process_policy_owned_interaction_allowed".into();
+    policy.reason =
+        "Interacting with a Cadence-owned process is allowed after ownership verification and shell-input policy checks.".into();
+    policy
+}
+
 fn operator_approved_command_policy(
     mut policy: AutonomousCommandPolicyTrace,
     argv: &[String],
@@ -993,6 +1577,32 @@ fn operator_approved_command_policy(
     policy
 }
 
+fn operator_approved_shell_policy(
+    mut policy: AutonomousCommandPolicyTrace,
+    argv: &[String],
+) -> AutonomousCommandPolicyTrace {
+    policy.outcome = AutonomousCommandPolicyOutcome::Allowed;
+    policy.code = "policy_allowed_shell_after_operator_approval".into();
+    policy.reason = format!(
+        "Operator approval allowed interactive shell process `{}` to start.",
+        render_command_for_summary(argv)
+    );
+    policy
+}
+
+fn shell_mode_requires_operator_policy(
+    mut policy: AutonomousCommandPolicyTrace,
+    argv: &[String],
+) -> AutonomousCommandPolicyTrace {
+    policy.outcome = AutonomousCommandPolicyOutcome::Escalated;
+    policy.code = "policy_escalated_interactive_shell".into();
+    policy.reason = format!(
+        "Cadence requires operator review before starting interactive shell process `{}`.",
+        render_command_for_summary(argv)
+    );
+    policy
+}
+
 fn render_command_for_summary(argv: &[String]) -> String {
     render_command_for_persistence(argv)
 }
@@ -1000,6 +1610,7 @@ fn render_command_for_summary(argv: &[String]) -> String {
 fn unstarted_process_metadata(
     argv: &[String],
     cwd: String,
+    shell_mode: bool,
     label: Option<String>,
     process_type: Option<String>,
     group: Option<String>,
@@ -1020,10 +1631,11 @@ fn unstarted_process_metadata(
         },
         command: AutonomousProcessCommandMetadata {
             argv: redact_command_argv_for_persistence(argv),
-            shell_mode: false,
+            shell_mode,
             cwd,
             sanitized_env: sanitized_env_summary(),
         },
+        stdin_state: AutonomousProcessStdinState::Unavailable,
         status: AutonomousProcessStatus::Starting,
         started_at: None,
         exited_at: None,
@@ -1062,6 +1674,29 @@ fn prune_process_output_chunks(chunks: &mut Vec<AutonomousProcessOutputChunk>) {
 
 fn process_output_chunk_bytes(chunk: &AutonomousProcessOutputChunk) -> usize {
     chunk.text.as_deref().map(str::len).unwrap_or_default()
+}
+
+fn filter_internal_marker_chunk(
+    mut chunk: AutonomousProcessOutputChunk,
+) -> AutonomousProcessOutputChunk {
+    let Some(text) = chunk.text.as_deref() else {
+        return chunk;
+    };
+    if !text.contains(INTERNAL_MARKER_PREFIX) {
+        return chunk;
+    }
+
+    let filtered = text
+        .lines()
+        .filter(|line| !line.contains(INTERNAL_MARKER_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n");
+    chunk.text = if filtered.trim().is_empty() {
+        None
+    } else {
+        Some(filtered)
+    };
+    chunk
 }
 
 #[derive(Debug)]
@@ -1279,6 +1914,185 @@ mod tests {
         panic!("child process {child_pid} survived process-manager kill");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn interactive_owned_process_can_answer_prompt() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path());
+        let mut start_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'name? '; read name; printf 'hello %s\\n' \"$name\"; sleep 30".into(),
+        ]);
+        start_request.interactive = true;
+
+        let start = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(start_request))
+                .expect("start interactive process"),
+        );
+        let process_id = start.process_id.expect("process id");
+        let prompt = wait_for_process_output(&runtime, &process_id, "name?");
+        assert_eq!(
+            prompt.processes[0].stdin_state,
+            AutonomousProcessStdinState::Open
+        );
+
+        let mut send_request = base_request(AutonomousProcessManagerAction::SendAndWait);
+        send_request.process_id = Some(process_id.clone());
+        send_request.input = Some("Ada\n".into());
+        send_request.wait_pattern = Some("hello Ada".into());
+        let send = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(send_request))
+                .expect("send prompt answer"),
+        );
+        assert!(
+            output_contains(&send, "hello Ada"),
+            "expected prompt response in output chunks"
+        );
+
+        kill_process(&runtime, process_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_and_wait_timeout_leaves_process_running() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path());
+        let mut start_request = start_request(vec![
+            "sh".into(),
+            "-c".into(),
+            "while read line; do printf 'got:%s\\n' \"$line\"; done".into(),
+        ]);
+        start_request.interactive = true;
+
+        let start = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(start_request))
+                .expect("start interactive process"),
+        );
+        let process_id = start.process_id.expect("process id");
+
+        let mut send_request = base_request(AutonomousProcessManagerAction::SendAndWait);
+        send_request.process_id = Some(process_id.clone());
+        send_request.input = Some("ping\n".into());
+        send_request.wait_pattern = Some("never-matches".into());
+        send_request.timeout_ms = Some(100);
+        let send = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(send_request))
+                .expect("send with timeout"),
+        );
+        assert!(
+            send.message.contains("timed out"),
+            "timeout should be reported without failing the tool"
+        );
+
+        let mut status_request = base_request(AutonomousProcessManagerAction::Status);
+        status_request.process_id = Some(process_id.clone());
+        let status = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(status_request))
+                .expect("status after send timeout"),
+        );
+        assert_eq!(status.processes[0].status, AutonomousProcessStatus::Running);
+
+        kill_process(&runtime, process_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_run_preserves_cwd_and_env_reports_it() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tempdir.path().join("nested")).expect("create nested dir");
+        let runtime = test_runtime(tempdir.path());
+        let mut start_request = base_request(AutonomousProcessManagerAction::Start);
+        start_request.shell_mode = true;
+        start_request.argv = vec!["sh".into()];
+
+        let start = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(start_request))
+                .expect("start shell process"),
+        );
+        let process_id = start.process_id.expect("process id");
+
+        let mut cd_request = base_request(AutonomousProcessManagerAction::Run);
+        cd_request.process_id = Some(process_id.clone());
+        cd_request.input = Some("cd nested".into());
+        let cd = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(cd_request))
+                .expect("run cd"),
+        );
+        assert!(cd.spawned);
+
+        let mut pwd_request = base_request(AutonomousProcessManagerAction::Run);
+        pwd_request.process_id = Some(process_id.clone());
+        pwd_request.input = Some("pwd".into());
+        let pwd = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(pwd_request))
+                .expect("run pwd"),
+        );
+        assert!(
+            output_contains(&pwd, "nested"),
+            "shell cwd should persist between run calls"
+        );
+
+        let mut env_request = base_request(AutonomousProcessManagerAction::Env);
+        env_request.process_id = Some(process_id.clone());
+        let env = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(env_request))
+                .expect("read shell env"),
+        );
+        assert!(output_contains(&env, "cwd:"));
+        assert!(output_contains(&env, "nested"));
+
+        kill_process(&runtime, process_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_run_destructive_input_requires_approval_without_writing() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path());
+        let mut start_request = base_request(AutonomousProcessManagerAction::Start);
+        start_request.shell_mode = true;
+        start_request.argv = vec!["sh".into()];
+
+        let start = process_manager_output(
+            runtime
+                .execute_approved(AutonomousToolRequest::ProcessManager(start_request))
+                .expect("start shell process"),
+        );
+        let process_id = start.process_id.expect("process id");
+
+        let mut run_request = base_request(AutonomousProcessManagerAction::Run);
+        run_request.process_id = Some(process_id.clone());
+        run_request.input = Some("rm -rf .".into());
+        let run = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(run_request))
+                .expect("destructive shell input should become action-required output"),
+        );
+        assert!(!run.spawned);
+        assert!(run.policy.approval_required);
+
+        let mut status_request = base_request(AutonomousProcessManagerAction::Status);
+        status_request.process_id = Some(process_id.clone());
+        let status = process_manager_output(
+            runtime
+                .execute(AutonomousToolRequest::ProcessManager(status_request))
+                .expect("status after blocked run"),
+        );
+        assert_eq!(status.processes[0].status, AutonomousProcessStatus::Running);
+
+        kill_process(&runtime, process_id);
+    }
+
     fn test_runtime(repo_root: &std::path::Path) -> AutonomousToolRuntime {
         AutonomousToolRuntime::new(repo_root)
             .expect("runtime")
@@ -1331,6 +2145,7 @@ mod tests {
             argv: Vec::new(),
             cwd: None,
             shell_mode: false,
+            interactive: false,
             target_ownership: None,
             persistent: false,
             timeout_ms: None,
@@ -1342,6 +2157,22 @@ mod tests {
             wait_url: None,
             signal: None,
         }
+    }
+
+    fn output_contains(output: &AutonomousProcessManagerOutput, needle: &str) -> bool {
+        output
+            .chunks
+            .iter()
+            .filter_map(|chunk| chunk.text.as_deref())
+            .any(|text| text.contains(needle))
+    }
+
+    fn kill_process(runtime: &AutonomousToolRuntime, process_id: String) {
+        let mut kill_request = base_request(AutonomousProcessManagerAction::Kill);
+        kill_request.process_id = Some(process_id);
+        let _ = runtime
+            .execute(AutonomousToolRequest::ProcessManager(kill_request))
+            .expect("kill process");
     }
 
     fn wait_for_process_output(

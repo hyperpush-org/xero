@@ -1068,7 +1068,7 @@ fn priority_tool_catalog(
         (
             "process_manager",
             "process_manager",
-            "Start, list, inspect, read output from, and kill Cadence-owned long-running processes.",
+            "Start, interact with, inspect, read output from, and kill Cadence-owned long-running processes.",
         ),
         (
             "web_search",

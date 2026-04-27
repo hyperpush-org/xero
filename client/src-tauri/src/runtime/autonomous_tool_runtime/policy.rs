@@ -133,13 +133,15 @@ pub(super) fn process_manager_policy_trace(
         | AutonomousProcessManagerAction::Output
         | AutonomousProcessManagerAction::Digest
         | AutonomousProcessManagerAction::WaitForReady
+        | AutonomousProcessManagerAction::Env
         | AutonomousProcessManagerAction::GroupStatus => AutonomousProcessActionRiskLevel::Observe,
         AutonomousProcessManagerAction::Start if persistent => {
             AutonomousProcessActionRiskLevel::PersistentBackground
         }
         AutonomousProcessManagerAction::Start
         | AutonomousProcessManagerAction::Send
-        | AutonomousProcessManagerAction::SendAndWait => AutonomousProcessActionRiskLevel::RunOwned,
+        | AutonomousProcessManagerAction::SendAndWait
+        | AutonomousProcessManagerAction::Run => AutonomousProcessActionRiskLevel::RunOwned,
         AutonomousProcessManagerAction::Signal
         | AutonomousProcessManagerAction::Kill
         | AutonomousProcessManagerAction::Restart

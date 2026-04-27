@@ -683,7 +683,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
-            "Manage Cadence-owned long-running processes. Phase 1 supports start, list, status, output, and kill for processes Cadence starts itself.",
+            "Manage Cadence-owned long-running and interactive processes. Phase 2 adds stdin, send_and_wait, and stateful shell run/env actions.",
             process_manager_schema(),
         ),
         descriptor(
@@ -1044,12 +1044,16 @@ fn process_manager_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Process-manager action. Phase 1 supports start, list, status, output, and kill.",
+                    "Process-manager action. Phase 2 supports Cadence-owned start, list, status, output, send, send_and_wait, run, env, and kill.",
                     &[
                         "start",
                         "list",
                         "status",
                         "output",
+                        "send",
+                        "send_and_wait",
+                        "run",
+                        "env",
                         "kill",
                     ],
                 ),
@@ -1073,7 +1077,11 @@ fn process_manager_schema() -> JsonValue {
             ),
             (
                 "shellMode",
-                boolean_schema("Whether the future implementation should run through an explicit shell mode."),
+                boolean_schema("Start a managed interactive shell instead of a normal argv process. Requires operator approval."),
+            ),
+            (
+                "interactive",
+                boolean_schema("Pipe stdin for an argv process so send and send_and_wait can answer prompts."),
             ),
             (
                 "targetOwnership",
@@ -1095,7 +1103,7 @@ fn process_manager_schema() -> JsonValue {
                 integer_schema("Only return output after this monotonic output cursor."),
             ),
             ("maxBytes", integer_schema("Maximum output bytes to return.")),
-            ("input", string_schema("Stdin payload for send and send_and_wait.")),
+            ("input", string_schema("Exact stdin payload for send/send_and_wait, or shell command text for run.")),
             (
                 "waitPattern",
                 string_schema("Output regex readiness or send_and_wait pattern."),

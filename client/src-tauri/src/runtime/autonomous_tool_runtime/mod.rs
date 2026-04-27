@@ -1171,6 +1171,8 @@ pub enum AutonomousProcessManagerAction {
     WaitForReady,
     Send,
     SendAndWait,
+    Run,
+    Env,
     Signal,
     Kill,
     Restart,
@@ -1214,6 +1216,8 @@ pub struct AutonomousProcessManagerRequest {
     pub cwd: Option<String>,
     #[serde(default)]
     pub shell_mode: bool,
+    #[serde(default)]
+    pub interactive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_ownership: Option<AutonomousProcessOwnershipScope>,
     #[serde(default)]
@@ -1715,6 +1719,14 @@ pub struct AutonomousProcessCommandMetadata {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AutonomousProcessStdinState {
+    Unavailable,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum AutonomousProcessStatus {
     Starting,
     Running,
@@ -1773,6 +1785,7 @@ pub struct AutonomousProcessMetadata {
     pub group: Option<String>,
     pub owner: AutonomousProcessOwner,
     pub command: AutonomousProcessCommandMetadata,
+    pub stdin_state: AutonomousProcessStdinState,
     pub status: AutonomousProcessStatus,
     pub started_at: Option<String>,
     pub exited_at: Option<String>,
