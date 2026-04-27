@@ -295,7 +295,7 @@ export function ProjectRail({
           </div>
         ) : (
           <motion.ul
-            className={cn('flex flex-col', collapsed ? 'gap-1.5 px-1.5' : '')}
+            className={cn('flex flex-col', collapsed ? 'gap-1.5 px-1.5' : 'gap-0.5 px-1.5 py-1.5')}
             layout
             transition={railLayoutTransition}
           >
@@ -402,7 +402,7 @@ function ProjectRailItem({
                   !isActive && 'hover:bg-secondary/60',
                 )
               : cn(
-                  'flex items-center gap-2.5 px-3 py-3 text-left',
+                  'flex items-center gap-2.5 rounded-md border border-border/40 px-2 py-2 text-left',
                   isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
                 ),
           )}

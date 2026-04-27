@@ -25,14 +25,15 @@ use cadence_desktop_lib::{
         AutonomousCodeIntelAction, AutonomousCodeIntelRequest, AutonomousCommandPolicyOutcome,
         AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
         AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousLspAction,
-        AutonomousLspRequest, AutonomousMcpAction, AutonomousMcpRequest,
-        AutonomousNotebookEditRequest, AutonomousProcessManagerAction,
-        AutonomousProcessManagerRequest, AutonomousProcessOwnershipScope, AutonomousReadRequest,
-        AutonomousSearchRequest, AutonomousSubagentRequest, AutonomousSubagentType,
-        AutonomousTodoAction, AutonomousTodoRequest, AutonomousToolAccessAction,
-        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
-        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousToolSearchRequest,
-        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousLspRequest, AutonomousMacosAutomationAction, AutonomousMacosAutomationRequest,
+        AutonomousMcpAction, AutonomousMcpRequest, AutonomousNotebookEditRequest,
+        AutonomousProcessManagerAction, AutonomousProcessManagerRequest,
+        AutonomousProcessOwnershipScope, AutonomousReadRequest, AutonomousSearchRequest,
+        AutonomousSubagentRequest, AutonomousSubagentType, AutonomousTodoAction,
+        AutonomousTodoRequest, AutonomousToolAccessAction, AutonomousToolAccessRequest,
+        AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime,
+        AutonomousToolRuntimeLimits, AutonomousToolSearchRequest, AutonomousWebConfig,
+        AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
         AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
@@ -222,6 +223,21 @@ fn shell_argv(script: impl Into<String>) -> Vec<String> {
     std::iter::once(shell.program).chain(shell.args).collect()
 }
 
+fn search_request(query: impl Into<String>, path: Option<&str>) -> AutonomousSearchRequest {
+    AutonomousSearchRequest {
+        query: query.into(),
+        path: path.map(str::to_owned),
+        regex: false,
+        ignore_case: false,
+        include_hidden: false,
+        include_ignored: false,
+        include_globs: Vec::new(),
+        exclude_globs: Vec::new(),
+        context_lines: None,
+        max_results: None,
+    }
+}
+
 fn spawn_static_http_server(status: u16, content_type: &str, body: &str) -> String {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test http server");
     let address = listener.local_addr().expect("test http server addr");
@@ -367,6 +383,10 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                 .iter()
                 .any(|group| group.name == "process_manager"
                     && group.tools == vec!["process_manager"]));
+            assert!(output
+                .available_groups
+                .iter()
+                .any(|group| group.name == "macos" && group.tools == vec!["macos_automation"]));
         }
         other => panic!("unexpected output: {other:?}"),
     }
@@ -375,7 +395,7 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
         .execute(AutonomousToolRequest::ToolAccess(
             AutonomousToolAccessRequest {
                 action: AutonomousToolAccessAction::Request,
-                groups: vec!["emulator".into(), "process_manager".into()],
+                groups: vec!["emulator".into(), "process_manager".into(), "macos".into()],
                 tools: vec!["command".into(), "missing_tool".into()],
                 reason: Some("Need to drive app use and run setup.".into()),
             },
@@ -386,8 +406,93 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
             assert_eq!(output.action, "request");
             assert!(output.granted_tools.contains(&"emulator".into()));
             assert!(output.granted_tools.contains(&"process_manager".into()));
+            assert!(output.granted_tools.contains(&"macos_automation".into()));
             assert!(output.granted_tools.contains(&"command".into()));
             assert!(output.denied_tools.contains(&"missing_tool".into()));
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_macos_automation_checks_permissions_and_gates_control() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(root.path()).expect("runtime");
+
+    let permissions = runtime
+        .execute(AutonomousToolRequest::MacosAutomation(
+            AutonomousMacosAutomationRequest {
+                action: AutonomousMacosAutomationAction::MacPermissions,
+                app_name: None,
+                bundle_id: None,
+                pid: None,
+                window_id: None,
+                monitor_id: None,
+                screenshot_target: None,
+            },
+        ))
+        .expect("macOS permissions check should succeed");
+    match permissions.output {
+        AutonomousToolOutput::MacosAutomation(output) => {
+            assert_eq!(
+                output.action,
+                AutonomousMacosAutomationAction::MacPermissions
+            );
+            if output.platform_supported {
+                assert!(output.performed);
+            }
+            assert!(!output.policy.approval_required);
+            assert!(!output.permissions.is_empty());
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+
+    let blocked_activate = runtime
+        .execute(AutonomousToolRequest::MacosAutomation(
+            AutonomousMacosAutomationRequest {
+                action: AutonomousMacosAutomationAction::MacAppActivate,
+                app_name: Some("Finder".into()),
+                bundle_id: None,
+                pid: None,
+                window_id: None,
+                monitor_id: None,
+                screenshot_target: None,
+            },
+        ))
+        .expect("macOS app activation should return approval boundary");
+    match blocked_activate.output {
+        AutonomousToolOutput::MacosAutomation(output) => {
+            assert_eq!(
+                output.action,
+                AutonomousMacosAutomationAction::MacAppActivate
+            );
+            assert!(!output.performed);
+            assert!(output.policy.approval_required);
+        }
+        other => panic!("unexpected output: {other:?}"),
+    }
+
+    let blocked_screenshot = runtime
+        .execute(AutonomousToolRequest::MacosAutomation(
+            AutonomousMacosAutomationRequest {
+                action: AutonomousMacosAutomationAction::MacScreenshot,
+                app_name: None,
+                bundle_id: None,
+                pid: None,
+                window_id: None,
+                monitor_id: None,
+                screenshot_target: None,
+            },
+        ))
+        .expect("macOS screenshot should return approval boundary");
+    match blocked_screenshot.output {
+        AutonomousToolOutput::MacosAutomation(output) => {
+            assert_eq!(
+                output.action,
+                AutonomousMacosAutomationAction::MacScreenshot
+            );
+            assert!(!output.performed);
+            assert!(output.policy.approval_required);
         }
         other => panic!("unexpected output: {other:?}"),
     }
@@ -405,6 +510,9 @@ fn tool_runtime_process_manager_phase_four_controls_owned_processes() {
             AutonomousProcessManagerRequest {
                 action: AutonomousProcessManagerAction::Start,
                 process_id: None,
+                pid: None,
+                parent_pid: None,
+                port: None,
                 group: Some("dev".into()),
                 label: Some("test watcher".into()),
                 process_type: Some("test_watcher".into()),
@@ -456,6 +564,9 @@ fn tool_runtime_process_manager_phase_four_controls_owned_processes() {
                 AutonomousProcessManagerRequest {
                     action: AutonomousProcessManagerAction::Output,
                     process_id: Some(process_id.clone()),
+                    pid: None,
+                    parent_pid: None,
+                    port: None,
                     group: None,
                     label: None,
                     process_type: None,
@@ -502,6 +613,9 @@ fn tool_runtime_process_manager_phase_four_controls_owned_processes() {
             AutonomousProcessManagerRequest {
                 action: AutonomousProcessManagerAction::Kill,
                 process_id: Some(process_id.clone()),
+                pid: None,
+                parent_pid: None,
+                port: None,
                 group: None,
                 label: None,
                 process_type: None,
@@ -539,6 +653,9 @@ fn tool_runtime_process_manager_phase_four_controls_owned_processes() {
             AutonomousProcessManagerRequest {
                 action: AutonomousProcessManagerAction::Kill,
                 process_id: Some("external-1".into()),
+                pid: None,
+                parent_pid: None,
+                port: None,
                 group: None,
                 label: None,
                 process_type: None,
@@ -1104,8 +1221,13 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     let read = runtime
         .read(AutonomousReadRequest {
             path: "src/app.txt".into(),
+            system_path: false,
+            mode: None,
             start_line: Some(2),
             line_count: Some(2),
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
         })
         .expect("read file inside repo");
     assert_eq!(read.tool_name, "read");
@@ -1122,10 +1244,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     }
 
     let search = runtime
-        .search(AutonomousSearchRequest {
-            query: "beta".into(),
-            path: Some("src".into()),
-        })
+        .search(search_request("beta", Some("src")))
         .expect("search repo text");
     assert_eq!(search.tool_name, "search");
     match search.output {
@@ -1188,6 +1307,9 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             end_line: 2,
             expected: "beta\n".into(),
             replacement: "delta\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
         })
         .expect("edit file inside repo");
     assert_eq!(edited.tool_name, "edit");
@@ -1611,26 +1733,25 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
     let invalid_read = runtime
         .read(AutonomousReadRequest {
             path: "binary.bin".into(),
+            system_path: false,
+            mode: None,
             start_line: None,
             line_count: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
         })
         .expect_err("binary reads should be rejected");
     assert_eq!(invalid_read.code, "autonomous_tool_file_not_text");
 
     let oversized_query = "x".repeat(257);
     let search_error = runtime
-        .search(AutonomousSearchRequest {
-            query: oversized_query,
-            path: None,
-        })
+        .search(search_request(oversized_query, None))
         .expect_err("oversized search query should be rejected");
     assert_eq!(search_error.code, "autonomous_tool_search_query_too_large");
 
     let empty_search = runtime
-        .search(AutonomousSearchRequest {
-            query: "missing".into(),
-            path: Some("src".into()),
-        })
+        .search(search_request("missing", Some("src")))
         .expect("zero-match search should still succeed");
     match empty_search.output {
         AutonomousToolOutput::Search(output) => assert!(output.matches.is_empty()),
@@ -1638,10 +1759,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
     }
 
     let search_with_binary_and_large_files = runtime
-        .search(AutonomousSearchRequest {
-            query: "gamma".into(),
-            path: None,
-        })
+        .search(search_request("gamma", None))
         .expect("search should skip binary and oversized files");
     match search_with_binary_and_large_files.output {
         AutonomousToolOutput::Search(output) => {
@@ -1700,6 +1818,9 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             end_line: 5,
             expected: "placeholder\n".into(),
             replacement: "noop\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
         })
         .expect_err("out-of-range edit should be rejected");
     assert_eq!(invalid_range.code, "autonomous_tool_edit_range_invalid");
@@ -1711,6 +1832,9 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             end_line: 2,
             expected: "beta\n".into(),
             replacement: "delta\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
         })
         .expect("first deterministic edit succeeds");
     let deterministic_mismatch = runtime
@@ -1720,6 +1844,9 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             end_line: 2,
             expected: "beta\n".into(),
             replacement: "delta\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
         })
         .expect_err("repeating stale edit should fail deterministically");
     assert_eq!(
@@ -2061,10 +2188,7 @@ fn tool_runtime_reports_truncation_for_bounded_search_and_find_results() {
     .expect("build bounded autonomous tool runtime");
 
     let search = runtime
-        .search(AutonomousSearchRequest {
-            query: "needle".into(),
-            path: Some("fixtures".into()),
-        })
+        .search(search_request("needle", Some("fixtures")))
         .expect("bounded search succeeds");
     match search.output {
         AutonomousToolOutput::Search(output) => {
@@ -2109,8 +2233,13 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
     let read_error = runtime
         .read(AutonomousReadRequest {
             path: "../outside.txt".into(),
+            system_path: false,
+            mode: None,
             start_line: None,
             line_count: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
         })
         .expect_err("path traversal should be denied");
     assert_eq!(read_error.code, "autonomous_tool_path_denied");
@@ -2166,10 +2295,7 @@ fn tool_runtime_search_and_find_skip_symlink_escapes() {
     .expect("build autonomous tool runtime");
 
     let search = runtime
-        .search(AutonomousSearchRequest {
-            query: "needle".into(),
-            path: None,
-        })
+        .search(search_request("needle", None))
         .expect("search should skip symlink escapes");
     match search.output {
         AutonomousToolOutput::Search(output) => {
@@ -2224,10 +2350,7 @@ fn tool_runtime_search_reports_unreadable_directories() {
     fs::set_permissions(&blocked_dir, permissions).expect("lock blocked dir");
 
     let error = runtime
-        .search(AutonomousSearchRequest {
-            query: "needle".into(),
-            path: None,
-        })
+        .search(search_request("needle", None))
         .expect_err("unreadable directories should fail deterministically");
 
     let mut restore = fs::metadata(&blocked_dir)
@@ -2276,8 +2399,13 @@ fn tool_runtime_denies_symlink_escapes() {
     let error = runtime
         .read(AutonomousReadRequest {
             path: "linked.txt".into(),
+            system_path: false,
+            mode: None,
             start_line: None,
             line_count: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
         })
         .expect_err("symlink escape should be denied");
     assert_eq!(error.code, "autonomous_tool_path_denied");

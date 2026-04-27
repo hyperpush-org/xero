@@ -2,6 +2,7 @@ pub mod browser;
 pub mod emulator;
 mod filesystem;
 mod git;
+mod macos_automation;
 mod policy;
 mod priority_tools;
 mod process;
@@ -95,6 +96,7 @@ pub const AUTONOMOUS_TOOL_COMMAND_SESSION_START: &str = "command_session_start";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_READ: &str = "command_session_read";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_STOP: &str = "command_session_stop";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
+pub const AUTONOMOUS_TOOL_MACOS_AUTOMATION: &str = "macos_automation";
 pub const AUTONOMOUS_TOOL_MCP: &str = "mcp";
 pub const AUTONOMOUS_TOOL_SUBAGENT: &str = "subagent";
 pub const AUTONOMOUS_TOOL_TODO: &str = "todo";
@@ -141,6 +143,7 @@ const TOOL_ACCESS_COMMAND_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
 ];
 const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MANAGER];
+const TOOL_ACCESS_MACOS_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MACOS_AUTOMATION];
 const TOOL_ACCESS_WEB_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_WEB_SEARCH,
     AUTONOMOUS_TOOL_WEB_FETCH,
@@ -190,6 +193,7 @@ pub fn tool_access_group_tools(group: &str) -> Option<&'static [&'static str]> {
         "mutation" => Some(TOOL_ACCESS_MUTATION_TOOLS),
         "command" => Some(TOOL_ACCESS_COMMAND_TOOLS),
         "process_manager" => Some(TOOL_ACCESS_PROCESS_MANAGER_TOOLS),
+        "macos" => Some(TOOL_ACCESS_MACOS_TOOLS),
         "web" => Some(TOOL_ACCESS_WEB_TOOLS),
         "emulator" => Some(TOOL_ACCESS_EMULATOR_TOOLS),
         "solana" => Some(TOOL_ACCESS_SOLANA_TOOLS),
@@ -209,6 +213,7 @@ pub fn tool_access_all_known_tools() -> std::collections::BTreeSet<&'static str>
         TOOL_ACCESS_MUTATION_TOOLS,
         TOOL_ACCESS_COMMAND_TOOLS,
         TOOL_ACCESS_PROCESS_MANAGER_TOOLS,
+        TOOL_ACCESS_MACOS_TOOLS,
         TOOL_ACCESS_WEB_TOOLS,
         TOOL_ACCESS_EMULATOR_TOOLS,
         TOOL_ACCESS_SOLANA_TOOLS,
@@ -230,6 +235,7 @@ pub fn tool_access_group_descriptors() -> Vec<AutonomousToolAccessGroup> {
         ("mutation", TOOL_ACCESS_MUTATION_TOOLS),
         ("command", TOOL_ACCESS_COMMAND_TOOLS),
         ("process_manager", TOOL_ACCESS_PROCESS_MANAGER_TOOLS),
+        ("macos", TOOL_ACCESS_MACOS_TOOLS),
         ("web", TOOL_ACCESS_WEB_TOOLS),
         ("emulator", TOOL_ACCESS_EMULATOR_TOOLS),
         ("solana", TOOL_ACCESS_SOLANA_TOOLS),
@@ -612,6 +618,7 @@ impl AutonomousToolRuntime {
                 self.command_session_stop(request)
             }
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
+            AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
             AutonomousToolRequest::Mcp(request) => self.mcp(request),
             AutonomousToolRequest::Subagent(request) => self.subagent(request),
             AutonomousToolRequest::Todo(request) => self.todo(request),
@@ -734,6 +741,9 @@ impl AutonomousToolRuntime {
             }
             AutonomousToolRequest::ProcessManager(request) => {
                 self.process_manager_with_operator_approval(request)
+            }
+            AutonomousToolRequest::MacosAutomation(request) => {
+                self.macos_automation_with_operator_approval(request)
             }
             request => self.execute(request),
         }
@@ -971,6 +981,7 @@ pub enum AutonomousToolRequest {
     CommandSessionRead(AutonomousCommandSessionReadRequest),
     CommandSessionStop(AutonomousCommandSessionStopRequest),
     ProcessManager(AutonomousProcessManagerRequest),
+    MacosAutomation(AutonomousMacosAutomationRequest),
     Mcp(AutonomousMcpRequest),
     Subagent(AutonomousSubagentRequest),
     Todo(AutonomousTodoRequest),
@@ -1306,6 +1317,44 @@ pub struct AutonomousProcessManagerRequest {
     pub signal: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousMacosAutomationAction {
+    MacPermissions,
+    MacAppList,
+    MacAppLaunch,
+    MacAppActivate,
+    MacAppQuit,
+    MacWindowList,
+    MacWindowFocus,
+    MacScreenshot,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousMacosScreenshotTarget {
+    Screen,
+    Window,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosAutomationRequest {
+    pub action: AutonomousMacosAutomationAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot_target: Option<AutonomousMacosScreenshotTarget>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomousMcpAction {
@@ -1544,6 +1593,7 @@ pub enum AutonomousToolOutput {
     Command(AutonomousCommandOutput),
     CommandSession(AutonomousCommandSessionOutput),
     ProcessManager(AutonomousProcessManagerOutput),
+    MacosAutomation(AutonomousMacosAutomationOutput),
     Mcp(AutonomousMcpOutput),
     Subagent(AutonomousSubagentOutput),
     Todo(AutonomousTodoOutput),
@@ -2092,6 +2142,94 @@ pub struct AutonomousProcessManagerOutput {
     pub highlights: Vec<AutonomousProcessHighlight>,
     pub policy: AutonomousProcessManagerPolicyTrace,
     pub contract: AutonomousProcessManagerContract,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousMacosPermissionStatus {
+    Granted,
+    Denied,
+    Unknown,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosPermission {
+    pub name: String,
+    pub status: AutonomousMacosPermissionStatus,
+    pub required_for: Vec<AutonomousMacosAutomationAction>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosApp {
+    pub name: String,
+    pub bundle_id: Option<String>,
+    pub pid: Option<u32>,
+    pub active: bool,
+    pub hidden: bool,
+    pub terminated: bool,
+    pub bundle_path: Option<String>,
+    pub executable_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosWindowBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosWindow {
+    pub window_id: u32,
+    pub pid: Option<u32>,
+    pub app_name: String,
+    pub title: String,
+    pub active: bool,
+    pub minimized: bool,
+    pub bounds: AutonomousMacosWindowBounds,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosScreenshot {
+    pub path: String,
+    pub target: AutonomousMacosScreenshotTarget,
+    pub width: u32,
+    pub height: u32,
+    pub byte_count: usize,
+    pub window_id: Option<u32>,
+    pub monitor_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosAutomationPolicyTrace {
+    pub risk_level: AutonomousProcessActionRiskLevel,
+    pub approval_required: bool,
+    pub code: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMacosAutomationOutput {
+    pub action: AutonomousMacosAutomationAction,
+    pub phase: String,
+    pub platform_supported: bool,
+    pub performed: bool,
+    pub apps: Vec<AutonomousMacosApp>,
+    pub windows: Vec<AutonomousMacosWindow>,
+    pub permissions: Vec<AutonomousMacosPermission>,
+    pub screenshot: Option<AutonomousMacosScreenshot>,
+    pub policy: AutonomousMacosAutomationPolicyTrace,
     pub message: String,
 }
 

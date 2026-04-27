@@ -260,6 +260,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "command_session_read",
         "command_session_stop",
         "process_manager",
+        "macos_automation",
         "mcp",
         "subagent",
         "todo",
@@ -334,7 +335,20 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .as_array()
         .expect("process manager action enum")
         .contains(&json!("async_start")));
-    assert!(process_manager.description.contains("Phase 4"));
+    assert!(process_manager.description.contains("phase 5"));
+
+    let macos = registry
+        .descriptor("macos_automation")
+        .expect("macos automation descriptor");
+    assert_eq!(macos.input_schema["required"], json!(["action"]));
+    assert!(macos.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("macos action enum")
+        .contains(&json!("mac_permissions")));
+    assert!(macos.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("macos action enum")
+        .contains(&json!("mac_screenshot")));
 
     assert!(registry.descriptor("browser").is_some());
     assert!(registry.descriptor("mcp").is_some());
@@ -422,6 +436,13 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     assert!(process_manager
         .descriptor_names()
         .contains("process_manager"));
+
+    let macos = ToolRegistry::for_prompt(
+        temp.path(),
+        "Implement phase 7 macOS app/system automation with app list and screenshots.",
+        &controls,
+    );
+    assert!(macos.descriptor_names().contains("macos_automation"));
 
     let audit = ToolRegistry::for_prompt(
         temp.path(),

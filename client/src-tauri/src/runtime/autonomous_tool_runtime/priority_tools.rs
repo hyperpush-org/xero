@@ -1071,6 +1071,11 @@ fn priority_tool_catalog(
             "Start, interact with, inspect, read output from, and kill Cadence-owned long-running processes.",
         ),
         (
+            "macos_automation",
+            "macos",
+            "Check macOS permissions, inspect apps/windows, and run approval-gated desktop automation.",
+        ),
+        (
             "web_search",
             "web",
             "Search the web through configured backend.",

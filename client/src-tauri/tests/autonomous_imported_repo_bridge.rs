@@ -480,8 +480,13 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
     let read = runtime
         .read(AutonomousReadRequest {
             path: "README.md".into(),
+            system_path: false,
+            mode: None,
             start_line: Some(1),
             line_count: Some(2),
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
         })
         .expect("read imported repo file");
     match read.output {
@@ -530,6 +535,9 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
             end_line: 2,
             expected: "beta\n".into(),
             replacement: "delta\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
         })
         .expect("edit imported repo readme");
     match edited.output {

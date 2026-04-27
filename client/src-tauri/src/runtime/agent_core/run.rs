@@ -681,6 +681,14 @@ fn answered_tool_replay_kind(
         return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
     }
 
+    if tool_call.state == AgentToolCallState::Succeeded
+        && macos_approval_action_id_for_tool_call(tool_call)?
+            .as_deref()
+            .is_some_and(|action_id| answered_tool_action_ids.contains(action_id))
+    {
+        return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
+    }
+
     Ok(None)
 }
 
@@ -722,6 +730,31 @@ fn command_approval_action_id_for_tool_call(
         "command-{}",
         argv.join("-")
     ))))
+}
+
+fn macos_approval_action_id_for_tool_call(
+    tool_call: &project_store::AgentToolCallRecord,
+) -> CommandResult<Option<String>> {
+    let Some(result_json) = tool_call.result_json.as_deref() else {
+        return Ok(None);
+    };
+    let result = serde_json::from_str::<AutonomousToolResult>(result_json).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_replay_result_decode_failed",
+            format!(
+                "Cadence could not decode tool call `{}` while checking macOS approval replay state: {error}",
+                tool_call.tool_call_id
+            ),
+        )
+    })?;
+
+    let AutonomousToolOutput::MacosAutomation(output) = result.output else {
+        return Ok(None);
+    };
+    if output.performed || !output.policy.approval_required {
+        return Ok(None);
+    }
+    Ok(Some(sanitize_action_id(&macos_action_approval_id(&output))))
 }
 
 fn mark_interrupted_tool_calls_before_continuation(

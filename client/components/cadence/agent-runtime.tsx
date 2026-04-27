@@ -268,7 +268,7 @@ export function AgentRuntime({
   const showEmptySessionState = Boolean(
     !showAgentSetupEmptyState &&
       !providerMismatch &&
-      runtimeSession?.isAuthenticated &&
+      (selectedProviderReadyForSession || runtimeSession?.isAuthenticated) &&
       !hasSessionActivity &&
       !selectedAgentSession?.lastRunId,
   )

@@ -160,6 +160,31 @@ pub(crate) fn select_tool_names_for_prompt(
     if contains_any(
         &lowered,
         &[
+            "macos",
+            "mac os",
+            "desktop automation",
+            "system automation",
+            "app list",
+            "running apps",
+            "activate app",
+            "quit app",
+            "launch app",
+            "focus window",
+            "window list",
+            "screen recording",
+            "accessibility permission",
+            "mac_permissions",
+            "mac_app",
+            "mac_window",
+            "mac_screenshot",
+        ],
+    ) {
+        add_tool_group(&mut names, "macos");
+    }
+
+    if contains_any(
+        &lowered,
+        &[
             "browser",
             "frontend",
             "ui",
@@ -331,6 +356,14 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             }
             line if line.starts_with("tool:process_manager ") => {
                 names.insert(AUTONOMOUS_TOOL_PROCESS_MANAGER.into());
+            }
+            line if line.starts_with("tool:macos_automation ")
+                || line.starts_with("tool:mac_permissions")
+                || line.starts_with("tool:mac_app_")
+                || line.starts_with("tool:mac_window_")
+                || line.starts_with("tool:mac_screenshot") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_MACOS_AUTOMATION.into());
             }
             line if line.starts_with("tool:mcp_") => {
                 names.insert(AUTONOMOUS_TOOL_MCP.into());
@@ -510,7 +543,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Known groups: core, mutation, command, process_manager, web, emulator, solana, agent_ops, mcp, intelligence, notebook, powershell.",
+                            "description": "Optional tool groups to request. Known groups: core, mutation, command, process_manager, macos, web, emulator, solana, agent_ops, mcp, intelligence, notebook, powershell.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -752,6 +785,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
             "Manage Cadence-owned long-running, interactive, grouped, restartable, and async-job processes, plus phase 5 system process visibility and approval-gated external signaling.",
             process_manager_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            "Phase 7 macOS app/system automation: check permissions, list/launch/activate/quit apps, list/focus windows, and capture approval-gated screenshots.",
+            macos_automation_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_MCP,
@@ -1208,6 +1246,39 @@ fn process_manager_schema() -> JsonValue {
             ("waitPort", integer_schema("Local TCP port readiness probe.")),
             ("waitUrl", string_schema("HTTP URL readiness probe.")),
             ("signal", string_schema("Signal name for signal actions.")),
+        ],
+    )
+}
+
+fn macos_automation_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "macOS automation action. Control actions and screenshots require operator approval.",
+                    &[
+                        "mac_permissions",
+                        "mac_app_list",
+                        "mac_app_launch",
+                        "mac_app_activate",
+                        "mac_app_quit",
+                        "mac_window_list",
+                        "mac_window_focus",
+                        "mac_screenshot",
+                    ],
+                ),
+            ),
+            ("appName", string_schema("Target app display name, such as Finder or Simulator.")),
+            ("bundleId", string_schema("Target app bundle identifier, such as com.apple.finder.")),
+            ("pid", integer_schema("Target app process id.")),
+            ("windowId", integer_schema("Target window id from mac_window_list.")),
+            ("monitorId", integer_schema("Target monitor id for mac_screenshot.")),
+            (
+                "screenshotTarget",
+                enum_schema("Screenshot target kind.", &["screen", "window"]),
+            ),
         ],
     )
 }

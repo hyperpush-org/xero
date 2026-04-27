@@ -445,10 +445,83 @@ pub(crate) fn record_command_output_event(
                 }
             }
         }
+        AutonomousToolOutput::MacosAutomation(output) => {
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::CommandOutput,
+                json!({
+                    "operation": output.action.clone(),
+                    "performed": output.performed,
+                    "platformSupported": output.platform_supported,
+                    "apps": output.apps.clone(),
+                    "windows": output.windows.clone(),
+                    "permissions": output.permissions.clone(),
+                    "screenshot": output.screenshot.clone(),
+                    "policy": output.policy.clone(),
+                }),
+            )?;
+
+            if !output.performed && output.policy.approval_required {
+                record_macos_action_required(repo_root, project_id, run_id, output)?;
+            }
+        }
         _ => {}
     }
 
     Ok(())
+}
+
+fn record_macos_action_required(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    output: &AutonomousMacosAutomationOutput,
+) -> CommandResult<()> {
+    let action_id = macos_action_approval_id(output);
+    record_action_request(
+        repo_root,
+        project_id,
+        run_id,
+        &action_id,
+        "os_automation_approval",
+        "macOS automation requires review",
+        &output.policy.reason,
+    )?;
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ActionRequired,
+        json!({
+            "actionId": sanitize_action_id(&action_id),
+            "actionType": "os_automation_approval",
+            "title": "macOS automation requires review",
+            "reason": output.policy.reason,
+            "code": output.policy.code,
+            "toolName": "macos_automation",
+            "operation": output.action,
+        }),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn macos_action_approval_id(output: &AutonomousMacosAutomationOutput) -> String {
+    format!("macos-{}", macos_action_label(output.action))
+}
+
+fn macos_action_label(action: AutonomousMacosAutomationAction) -> &'static str {
+    match action {
+        AutonomousMacosAutomationAction::MacPermissions => "mac_permissions",
+        AutonomousMacosAutomationAction::MacAppList => "mac_app_list",
+        AutonomousMacosAutomationAction::MacAppLaunch => "mac_app_launch",
+        AutonomousMacosAutomationAction::MacAppActivate => "mac_app_activate",
+        AutonomousMacosAutomationAction::MacAppQuit => "mac_app_quit",
+        AutonomousMacosAutomationAction::MacWindowList => "mac_window_list",
+        AutonomousMacosAutomationAction::MacWindowFocus => "mac_window_focus",
+        AutonomousMacosAutomationAction::MacScreenshot => "mac_screenshot",
+    }
 }
 
 fn record_command_action_required(
