@@ -4,13 +4,13 @@ import type {
   Phase,
   ProjectDetailView,
   ProviderModelCatalogDto,
-  ProviderProfilesDto,
   RepositoryStatusView,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeSettingsDto,
   RuntimeStreamView,
 } from '@/src/lib/cadence-model'
+import type { ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import type { BlockedNotificationSyncPollTarget } from './notification-health'
 import {
   buildAgentView,

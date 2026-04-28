@@ -58,12 +58,18 @@ import { CadenceApp } from './App'
 import { CadenceDesktopError, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import {
   createCadenceDoctorReport,
-  projectRuntimeSettingsFromProviderProfiles,
   providerModelCatalogSchema,
+} from '@/src/lib/cadence-model'
+import {
+  projectRuntimeSettingsFromProviderProfiles,
   providerProfileSchema,
   providerProfilesSchema,
   upsertProviderProfileRequestSchema,
-} from '@/src/lib/cadence-model'
+  type ProviderProfileDto,
+  type ProviderProfileReadinessDto,
+  type ProviderProfilesDto,
+  type UpsertProviderProfileRequestDto,
+} from '@/src/test/legacy-provider-profiles'
 import type {
   AutonomousRunStateDto,
   ImportMcpServersResponseDto,
@@ -78,9 +84,6 @@ import type {
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
   ProviderModelCatalogDto,
-  ProviderProfileDto,
-  ProviderProfileReadinessDto,
-  ProviderProfilesDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
@@ -97,7 +100,6 @@ import type {
   SyncNotificationAdaptersResponseDto,
   UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
-  UpsertProviderProfileRequestDto,
   UpsertRuntimeSettingsRequestDto,
 } from '@/src/lib/cadence-model'
 import {

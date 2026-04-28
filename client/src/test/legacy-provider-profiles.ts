@@ -1,14 +1,11 @@
-// Phase 4: legacy provider-profile types are retained as opaque shapes so
-// the still-skipped legacy tests stay typeable. The Zod schemas, helpers
-// (`getActiveProviderProfile`, `projectRuntimeSettingsFromProviderProfiles`),
-// and runtime use of these types is gone — anything reaching for these
-// types now is by definition exercising a deleted code path.
-//
-// Once the skipped tests are rewritten or deleted, this file can be removed
-// entirely and the cadence-model barrel pruned.
+// Legacy provider-profile types kept around so the still-skipped legacy
+// fixtures and `*.test.tsx` builders stay typeable. Production code does
+// not use these — the runtime is now driven by the flat
+// `provider_credentials` slice. Once the skipped tests are rewritten or
+// deleted, this file can be removed.
 
 import { z } from 'zod'
-import type { RuntimeProviderIdDto } from './runtime'
+import type { RuntimeProviderIdDto } from '@/src/lib/cadence-model'
 
 export type ProviderProfileReadinessStatusDto = 'ready' | 'missing' | 'malformed'
 export type ProviderProfileReadinessProofDto =
@@ -81,10 +78,6 @@ export interface UpsertProviderProfileRequestDto {
   activate?: boolean
 }
 
-// Tests sometimes call these schemas to construct fixtures or assert
-// validation. We keep loose schemas that just `passthrough` so they remain
-// callable but do not enforce the legacy contract. They are unused by
-// production code.
 export const providerProfileReadinessSchema = z.unknown() as unknown as z.ZodType<
   ProviderProfileReadinessDto
 >
@@ -116,6 +109,5 @@ export function getActiveProviderProfile(
 export function projectRuntimeSettingsFromProviderProfiles(
   _providerProfiles: ProviderProfilesDto | null | undefined,
 ): null {
-  // Legacy projection — the runtime-settings slice is gone.
   return null
 }

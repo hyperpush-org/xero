@@ -41,8 +41,8 @@ import type {
   RuntimeRunControlInputDto,
   RuntimeRunPendingControlSnapshotView,
   RuntimeRunView,
+  RuntimeProviderIdDto,
   RuntimeSessionView,
-  RuntimeSettingsDto,
   RunDoctorReportRequestDto,
   RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
@@ -277,7 +277,7 @@ export interface WorkflowPaneView {
   runtimeSession?: RuntimeSessionView | null
   selectedProfileId?: string | null
   selectedProfileLabel?: string | null
-  selectedProviderId?: RuntimeSettingsDto['providerId'] | null
+  selectedProviderId?: RuntimeProviderIdDto | null
   selectedProviderLabel?: string
   selectedProviderSource?: SelectedRuntimeProviderSource | null
   selectedModelId?: string | null
@@ -299,7 +299,7 @@ export interface AgentPaneView {
   runtimeSession?: RuntimeSessionView | null
   selectedProfileId?: string | null
   selectedProfileLabel?: string | null
-  selectedProviderId?: RuntimeSettingsDto['providerId'] | null
+  selectedProviderId?: RuntimeProviderIdDto | null
   selectedProviderLabel?: string
   selectedProviderSource?: SelectedRuntimeProviderSource | null
   controlTruthSource: AgentRunControlTruthSource

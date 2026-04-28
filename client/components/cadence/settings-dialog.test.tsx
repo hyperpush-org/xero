@@ -20,12 +20,14 @@ import type {
   DictationStatusDto,
   ProviderProfileDiagnosticsDto,
   ProviderModelCatalogDto,
-  ProviderProfileDto,
-  ProviderProfilesDto,
   RuntimeSessionView,
   SkillRegistryDto,
-  UpsertProviderProfileRequestDto,
 } from '@/src/lib/cadence-model'
+import type {
+  ProviderProfileDto,
+  ProviderProfilesDto,
+  UpsertProviderProfileRequestDto,
+} from '@/src/test/legacy-provider-profiles'
 
 type NotificationRouteRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertNotificationRoute']>>[0]
 type McpUpsertRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertMcpServer']>>[0]

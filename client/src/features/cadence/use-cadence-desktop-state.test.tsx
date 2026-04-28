@@ -11,7 +11,6 @@ import {
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
   type ProviderModelCatalogDto,
-  type ProviderProfilesDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
@@ -28,6 +27,7 @@ import {
   type RuntimeUpdatedPayloadDto,
   type SkillRegistryDto,
 } from '@/src/lib/cadence-model'
+import { type ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import { CadenceDesktopError, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
 

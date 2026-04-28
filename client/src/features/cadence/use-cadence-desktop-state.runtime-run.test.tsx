@@ -9,7 +9,6 @@ import type {
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
   ProviderModelCatalogDto,
-  ProviderProfilesDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
@@ -26,6 +25,7 @@ import type {
   UpsertNotificationRouteCredentialsRequestDto,
   UpsertNotificationRouteCredentialsResponseDto,
 } from '@/src/lib/cadence-model'
+import type { ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import { useCadenceDesktopState, BLOCKED_NOTIFICATION_SYNC_POLL_MS } from '@/src/features/cadence/use-cadence-desktop-state'
 
 function makeProjectSummary(id: string, name: string) {
