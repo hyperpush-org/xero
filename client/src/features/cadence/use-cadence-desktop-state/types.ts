@@ -77,7 +77,11 @@ import type {
 import type {
   CheckpointControlLoopProjectionView,
 } from '../agent-runtime-projections'
-import type { SelectedRuntimeProviderSource } from './runtime-provider'
+import type {
+  ComposerModelOptionView,
+  SelectedModelView,
+  SelectedRuntimeProviderSource,
+} from './runtime-provider'
 
 export type RefreshSource =
   | 'startup'
@@ -321,6 +325,9 @@ export interface AgentPaneView {
   providerMismatch?: boolean
   providerMismatchReason?: string | null
   providerMismatchRecoveryCopy?: string | null
+  selectedModel?: SelectedModelView
+  agentRuntimeBlocked?: boolean
+  composerModelOptions?: ComposerModelOptionView[]
   runtimeRun?: RuntimeRunView | null
   autonomousRun?: ProjectDetailView['autonomousRun']
   checkpointControlLoop?: CheckpointControlLoopProjectionView

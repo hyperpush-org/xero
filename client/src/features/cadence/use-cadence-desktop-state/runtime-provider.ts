@@ -1,12 +1,19 @@
 import type {
+  ProviderCredentialDto,
+  ProviderCredentialsSnapshotDto,
+  ProviderModelCatalogDto,
+  ProviderModelDto,
+  ProviderModelThinkingEffortDto,
   ProviderProfileReadinessDto,
   ProviderProfilesDto,
+  RuntimeRunControlSelectionView,
   RuntimeRunView,
   RuntimeSessionView,
   RuntimeSettingsDto,
   RuntimeStreamView,
 } from '@/src/lib/cadence-model'
 import { getActiveProviderProfile } from '@/src/lib/cadence-model'
+import { findProviderCredential } from '@/src/lib/cadence-model/provider-credentials'
 import {
   getCloudProviderAuthMode,
   getCloudProviderDefaultModelId,
@@ -662,4 +669,219 @@ export function getAgentMessagesUnavailableReason(
   }
 
   return `Live runtime activity is streaming for this project (${runtimeStream.items.length} item${runtimeStream.items.length === 1 ? '' : 's'} captured).`
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3.3 — credentials-driven model selection.
+// Below replaces the legacy `resolveSelectedRuntimeProvider` machinery with a
+// pure projection from "what model did the user pick" + the credentials
+// snapshot + the catalog union. There is no provider-mismatch state because
+// the chosen model fully determines the provider.
+// ---------------------------------------------------------------------------
+
+export type SelectedModelSource = 'runtime_run' | 'credential_default' | 'fallback'
+
+export interface SelectedModelView {
+  providerId: ProviderCredentialDto['providerId'] | null
+  providerLabel: string
+  modelId: string | null
+  hasCredential: boolean
+  credentialKind: ProviderCredentialDto['kind'] | null
+  source: SelectedModelSource
+}
+
+export interface ComposerModelOptionView {
+  selectionKey: string
+  providerId: ProviderCredentialDto['providerId']
+  providerLabel: string
+  modelId: string
+  displayName: string
+  thinking: ProviderModelDto['thinking']
+  thinkingEffortOptions: ProviderModelThinkingEffortDto[]
+  defaultThinkingEffort: ProviderModelThinkingEffortDto | null
+}
+
+export function buildComposerModelSelectionKey(
+  providerId: ProviderCredentialDto['providerId'],
+  modelId: string,
+): string {
+  return `${providerId}:${modelId}`
+}
+
+export function parseComposerModelSelectionKey(
+  key: string,
+): { providerId: string; modelId: string } | null {
+  const idx = key.indexOf(':')
+  if (idx <= 0 || idx === key.length - 1) {
+    return null
+  }
+  return {
+    providerId: key.slice(0, idx),
+    modelId: key.slice(idx + 1),
+  }
+}
+
+function thinkingEffortListFor(model: ProviderModelDto): ProviderModelThinkingEffortDto[] {
+  if (!model.thinking.supported) {
+    return []
+  }
+  const out: ProviderModelThinkingEffortDto[] = []
+  for (const effort of model.thinking.effortOptions) {
+    if (!out.includes(effort)) {
+      out.push(effort)
+    }
+  }
+  return out
+}
+
+function defaultThinkingEffortFor(
+  model: ProviderModelDto,
+  options: ProviderModelThinkingEffortDto[],
+): ProviderModelThinkingEffortDto | null {
+  if (!model.thinking.supported) {
+    return null
+  }
+  if (model.thinking.defaultEffort && options.includes(model.thinking.defaultEffort)) {
+    return model.thinking.defaultEffort
+  }
+  return options[0] ?? null
+}
+
+/**
+ * Builds the composer model picker option list as the union of every
+ * credentialed provider's catalog. Models are sorted by provider label, then
+ * by display name. Local-only providers (Ollama) only appear when their
+ * credential row exists.
+ */
+export function buildComposerModelOptions(
+  credentials: ProviderCredentialsSnapshotDto | null,
+  catalogs: Record<string, ProviderModelCatalogDto> | null | undefined,
+): ComposerModelOptionView[] {
+  const list = credentials?.credentials ?? []
+  if (list.length === 0) {
+    return []
+  }
+
+  const options: ComposerModelOptionView[] = []
+  for (const credential of list) {
+    const catalog = catalogs?.[credential.providerId]
+    if (!catalog) continue
+    const providerLabel = getRuntimeProviderLabel(credential.providerId)
+    for (const model of catalog.models) {
+      const modelId = model.modelId.trim()
+      if (modelId.length === 0) continue
+      const thinkingEffortOptions = thinkingEffortListFor(model)
+      options.push({
+        selectionKey: buildComposerModelSelectionKey(credential.providerId, modelId),
+        providerId: credential.providerId,
+        providerLabel,
+        modelId,
+        displayName: model.displayName.trim() || modelId,
+        thinking: model.thinking,
+        thinkingEffortOptions,
+        defaultThinkingEffort: defaultThinkingEffortFor(model, thinkingEffortOptions),
+      })
+    }
+  }
+
+  options.sort((left, right) => {
+    if (left.providerLabel !== right.providerLabel) {
+      return left.providerLabel.localeCompare(right.providerLabel)
+    }
+    return left.displayName.localeCompare(right.displayName)
+  })
+
+  return options
+}
+
+/**
+ * Resolves which model the agent pane is currently bound to by looking at
+ * (1) the active runtime-run's selected controls, (2) the user's last-picked
+ * model for that provider (`default_model_id` on the credential row), and
+ * finally (3) a fallback chosen by credential-presence order.
+ *
+ * The chosen model fully determines the provider — there is no separate
+ * provider selection state and no mismatch is possible.
+ */
+export function resolveSelectedModel(
+  credentials: ProviderCredentialsSnapshotDto | null,
+  selectedRunControls: RuntimeRunControlSelectionView | null,
+  options: { runtimeRun?: RuntimeRunView | null } = {},
+): SelectedModelView {
+  const list = credentials?.credentials ?? []
+
+  // 1. Runtime-run truth: selected controls carry the (provider, model) pair.
+  if (selectedRunControls) {
+    const runProviderId = options.runtimeRun?.providerId?.trim() ?? ''
+    if (runProviderId.length > 0 && isKnownRuntimeProviderId(runProviderId)) {
+      const credential = findProviderCredential(credentials, runProviderId)
+      return {
+        providerId: runProviderId,
+        providerLabel: getRuntimeProviderLabel(runProviderId),
+        modelId: selectedRunControls.modelId || null,
+        hasCredential: credential !== null,
+        credentialKind: credential?.kind ?? null,
+        source: 'runtime_run',
+      }
+    }
+  }
+
+  // 2. Per-credential `default_model_id`: prefer a credential that has one set.
+  const credentialWithDefault = list.find((credential) =>
+    typeof credential.defaultModelId === 'string' && credential.defaultModelId.trim().length > 0,
+  )
+  if (credentialWithDefault) {
+    return {
+      providerId: credentialWithDefault.providerId,
+      providerLabel: getRuntimeProviderLabel(credentialWithDefault.providerId),
+      modelId: credentialWithDefault.defaultModelId ?? null,
+      hasCredential: true,
+      credentialKind: credentialWithDefault.kind,
+      source: 'credential_default',
+    }
+  }
+
+  // 3. Fallback: any credentialed provider, no model bound.
+  if (list.length > 0) {
+    const first = list[0]
+    return {
+      providerId: first.providerId,
+      providerLabel: getRuntimeProviderLabel(first.providerId),
+      modelId: null,
+      hasCredential: true,
+      credentialKind: first.kind,
+      source: 'fallback',
+    }
+  }
+
+  return {
+    providerId: null,
+    providerLabel: 'Runtime provider',
+    modelId: null,
+    hasCredential: false,
+    credentialKind: null,
+    source: 'fallback',
+  }
+}
+
+/**
+ * Returns true when the agent pane should refuse to launch a run because
+ * either no provider is credentialed or the chosen model's provider has no
+ * credential. This replaces the legacy `providerMismatch` boolean — there is
+ * only one reason to block now: missing credentials.
+ */
+export function isAgentRuntimeBlocked(
+  credentials: ProviderCredentialsSnapshotDto | null,
+  selectedModel: SelectedModelView,
+): boolean {
+  const list = credentials?.credentials ?? []
+  if (list.length === 0) {
+    return true
+  }
+
+  if (!selectedModel.providerId) {
+    return true
+  }
+
+  return !selectedModel.hasCredential
 }

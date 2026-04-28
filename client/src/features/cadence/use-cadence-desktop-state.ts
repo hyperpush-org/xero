@@ -1730,10 +1730,18 @@ export function useCadenceDesktopState(
         project: activeProject,
         activePhase,
         providerProfiles,
+        providerCredentials,
         runtimeSession: activeRuntimeSession,
         runtimeSettings,
       }),
-    [activePhase, activeProject, activeRuntimeSession, providerProfiles, runtimeSettings],
+    [
+      activePhase,
+      activeProject,
+      activeRuntimeSession,
+      providerCredentials,
+      providerProfiles,
+      runtimeSettings,
+    ],
   )
 
   const agentViewProjection = useMemo(
@@ -1743,6 +1751,7 @@ export function useCadenceDesktopState(
         activePhase,
         repositoryStatus,
         providerProfiles,
+        providerCredentials,
         runtimeSession: activeRuntimeSession,
         runtimeSettings,
         providerModelCatalogs,
@@ -1812,6 +1821,7 @@ export function useCadenceDesktopState(
       autonomousRunActionStatus,
       runtimeRunActionError,
       runtimeRunActionStatus,
+      providerCredentials,
       providerProfiles,
       runtimeSettings,
     ],

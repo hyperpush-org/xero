@@ -25,6 +25,7 @@ import {
 import {
   type Phase,
   type ProjectDetailView,
+  type ProviderCredentialsSnapshotDto,
   type ProviderProfileDto,
   type ProviderProfilesDto,
 } from '@/src/lib/cadence-model'
@@ -37,14 +38,19 @@ import {
   type BlockedNotificationSyncPollTarget,
 } from './notification-health'
 import {
+  buildComposerModelOptions,
   getAgentMessagesUnavailableReason,
   getAgentRuntimeRunUnavailableReason,
   getAgentSessionUnavailableReason,
   getProviderMismatchCopy,
   getRuntimeProviderLabel,
   hasProviderMismatch,
+  isAgentRuntimeBlocked,
   isKnownRuntimeProviderId,
+  resolveSelectedModel,
   resolveSelectedRuntimeProvider,
+  type ComposerModelOptionView,
+  type SelectedModelView,
 } from './runtime-provider'
 import type {
   AgentPaneView,
@@ -98,6 +104,7 @@ export interface BuildWorkflowViewDependencies {
   project: ProjectDetailView | null
   activePhase: Phase | null
   providerProfiles: ProviderProfilesDto | null
+  providerCredentials?: ProviderCredentialsSnapshotDto | null
   runtimeSession: RuntimeSessionView | null
   runtimeSettings: RuntimeSettingsDto | null
 }
@@ -107,6 +114,7 @@ export interface BuildAgentViewDependencies {
   activePhase: Phase | null
   repositoryStatus: RepositoryStatusView | null
   providerProfiles: ProviderProfilesDto | null
+  providerCredentials?: ProviderCredentialsSnapshotDto | null
   runtimeSession: RuntimeSessionView | null
   runtimeSettings: RuntimeSettingsDto | null
   providerModelCatalogs?: Record<string, ProviderModelCatalogDto>
@@ -762,6 +770,7 @@ export function buildAgentView({
   activePhase,
   repositoryStatus,
   providerProfiles,
+  providerCredentials = null,
   runtimeSession,
   runtimeSettings,
   providerModelCatalogs,
@@ -875,6 +884,20 @@ export function buildAgentView({
       : providerModelCatalogProjection.selectedModelDefaultThinkingEffort
   const selectedApprovalMode = controlProjection.selectedApprovalMode
 
+  // Phase 3.4: credentials-driven projections that will eventually replace
+  // the legacy `selectedProvider` + `providerMismatch` fields above.
+  const selectedRunControls = runtimeRun?.controls.selected ?? null
+  const selectedModel: SelectedModelView = resolveSelectedModel(
+    providerCredentials,
+    selectedRunControls,
+    { runtimeRun },
+  )
+  const composerModelOptions: ComposerModelOptionView[] = buildComposerModelOptions(
+    providerCredentials,
+    providerModelCatalogs,
+  )
+  const agentRuntimeBlocked = isAgentRuntimeBlocked(providerCredentials, selectedModel)
+
   return {
     trustSnapshot,
     view: {
@@ -910,6 +933,9 @@ export function buildAgentView({
       providerMismatch,
       providerMismatchReason: providerMismatchCopy?.reason ?? null,
       providerMismatchRecoveryCopy: providerMismatchCopy?.sessionRecoveryCopy ?? null,
+      selectedModel,
+      agentRuntimeBlocked,
+      composerModelOptions,
       runtimeRun,
       autonomousRun,
       checkpointControlLoop,
