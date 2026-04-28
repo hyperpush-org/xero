@@ -64,6 +64,11 @@ pub const LOGOUT_PROVIDER_PROFILE_COMMAND: &str = "logout_provider_profile";
 pub const START_AUTONOMOUS_RUN_COMMAND: &str = "start_autonomous_run";
 pub const START_OPENAI_LOGIN_COMMAND: &str = "start_openai_login";
 pub const SUBMIT_OPENAI_CALLBACK_COMMAND: &str = "submit_openai_callback";
+pub const START_OAUTH_LOGIN_COMMAND: &str = "start_oauth_login";
+pub const COMPLETE_OAUTH_CALLBACK_COMMAND: &str = "complete_oauth_callback";
+pub const LIST_PROVIDER_CREDENTIALS_COMMAND: &str = "list_provider_credentials";
+pub const UPSERT_PROVIDER_CREDENTIAL_COMMAND: &str = "upsert_provider_credential";
+pub const DELETE_PROVIDER_CREDENTIAL_COMMAND: &str = "delete_provider_credential";
 pub const LOGOUT_RUNTIME_SESSION_COMMAND: &str = "logout_runtime_session";
 pub const START_RUNTIME_RUN_COMMAND: &str = "start_runtime_run";
 pub const UPDATE_RUNTIME_RUN_CONTROLS_COMMAND: &str = "update_runtime_run_controls";
@@ -136,6 +141,11 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     START_AUTONOMOUS_RUN_COMMAND,
     START_OPENAI_LOGIN_COMMAND,
     SUBMIT_OPENAI_CALLBACK_COMMAND,
+    START_OAUTH_LOGIN_COMMAND,
+    COMPLETE_OAUTH_CALLBACK_COMMAND,
+    LIST_PROVIDER_CREDENTIALS_COMMAND,
+    UPSERT_PROVIDER_CREDENTIAL_COMMAND,
+    DELETE_PROVIDER_CREDENTIAL_COMMAND,
     LOGOUT_RUNTIME_SESSION_COMMAND,
     START_RUNTIME_RUN_COMMAND,
     UPDATE_RUNTIME_RUN_CONTROLS_COMMAND,

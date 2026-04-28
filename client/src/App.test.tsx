@@ -1861,6 +1861,17 @@ function createAdapter(options?: {
     upsertProviderProfile,
     setActiveProviderProfile,
     logoutProviderProfile,
+    listProviderCredentials: vi.fn(async () => ({ credentials: [] })),
+    upsertProviderCredential: vi.fn(async () => ({ credentials: [] })),
+    deleteProviderCredential: vi.fn(async () => ({ credentials: [] })),
+    startOAuthLogin: async () => {
+      currentRuntimeSession = makeRuntimeSession('project-1')
+      return currentRuntimeSession
+    },
+    completeOAuthCallback: async () => {
+      currentRuntimeSession = makeRuntimeSession('project-1')
+      return currentRuntimeSession
+    },
     startRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1')
       return currentRuntimeSession

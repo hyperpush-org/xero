@@ -212,6 +212,17 @@ import {
   type UpsertProviderProfileRequestDto,
 } from '@/src/lib/cadence-model/provider-profiles'
 import {
+  completeOAuthCallbackRequestSchema,
+  deleteProviderCredentialRequestSchema,
+  providerCredentialsSnapshotSchema,
+  startOAuthLoginRequestSchema,
+  upsertProviderCredentialRequestSchema,
+  type CompleteOAuthCallbackRequestDto,
+  type ProviderCredentialsSnapshotDto,
+  type StartOAuthLoginRequestDto,
+  type UpsertProviderCredentialRequestDto,
+} from '@/src/lib/cadence-model/provider-credentials'
+import {
   createProviderModelCatalogRequest,
   providerModelCatalogSchema,
   type ProviderModelCatalogDto,
@@ -376,6 +387,11 @@ const COMMANDS = {
   upsertProviderProfile: 'upsert_provider_profile',
   setActiveProviderProfile: 'set_active_provider_profile',
   logoutProviderProfile: 'logout_provider_profile',
+  listProviderCredentials: 'list_provider_credentials',
+  upsertProviderCredential: 'upsert_provider_credential',
+  deleteProviderCredential: 'delete_provider_credential',
+  startOAuthLogin: 'start_oauth_login',
+  completeOAuthCallback: 'complete_oauth_callback',
   startOpenAiLogin: 'start_openai_login',
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
@@ -717,6 +733,13 @@ export interface CadenceDesktopAdapter {
   upsertProviderProfile(request: UpsertProviderProfileRequestDto): Promise<ProviderProfilesDto>
   setActiveProviderProfile(profileId: string): Promise<ProviderProfilesDto>
   logoutProviderProfile(profileId: string): Promise<ProviderProfilesDto>
+  listProviderCredentials(): Promise<ProviderCredentialsSnapshotDto>
+  upsertProviderCredential(
+    request: UpsertProviderCredentialRequestDto,
+  ): Promise<ProviderCredentialsSnapshotDto>
+  deleteProviderCredential(providerId: string): Promise<ProviderCredentialsSnapshotDto>
+  startOAuthLogin(request: StartOAuthLoginRequestDto): Promise<RuntimeSessionDto>
+  completeOAuthCallback(request: CompleteOAuthCallbackRequestDto): Promise<RuntimeSessionDto>
   resolveOperatorAction(
     projectId: string,
     actionId: string,
@@ -1892,6 +1915,38 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     const request = logoutProviderProfileRequestSchema.parse({ profileId })
     return invokeTyped(COMMANDS.logoutProviderProfile, providerProfilesSchema, {
       request,
+    })
+  },
+
+  listProviderCredentials() {
+    return invokeTyped(COMMANDS.listProviderCredentials, providerCredentialsSnapshotSchema)
+  },
+
+  upsertProviderCredential(request) {
+    const parsedRequest = upsertProviderCredentialRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.upsertProviderCredential, providerCredentialsSnapshotSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  deleteProviderCredential(providerId) {
+    const request = deleteProviderCredentialRequestSchema.parse({ providerId })
+    return invokeTyped(COMMANDS.deleteProviderCredential, providerCredentialsSnapshotSchema, {
+      request,
+    })
+  },
+
+  startOAuthLogin(request) {
+    const parsed = startOAuthLoginRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.startOAuthLogin, runtimeSessionSchema, {
+      request: parsed,
+    })
+  },
+
+  completeOAuthCallback(request) {
+    const parsed = completeOAuthCallbackRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.completeOAuthCallback, runtimeSessionSchema, {
+      request: parsed,
     })
   },
 

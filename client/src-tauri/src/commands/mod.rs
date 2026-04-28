@@ -2,6 +2,7 @@ pub mod agent_session;
 pub mod agent_task;
 pub mod browser;
 pub mod cancel_autonomous_run;
+pub mod complete_oauth_callback;
 pub mod dictation;
 pub mod doctor_report;
 pub mod emulator;
@@ -36,6 +37,7 @@ pub mod session_history;
 pub mod skills;
 pub mod solana;
 pub mod start_autonomous_run;
+pub mod start_oauth_login;
 pub mod start_openai_login;
 pub mod start_runtime_run;
 pub mod start_runtime_session;
@@ -73,6 +75,7 @@ pub use browser::{
     BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
+pub use complete_oauth_callback::complete_oauth_callback;
 pub use dictation::{
     speech_dictation_cancel, speech_dictation_settings, speech_dictation_start,
     speech_dictation_status, speech_dictation_stop, speech_dictation_update_settings,
@@ -154,6 +157,7 @@ pub use solana::{
     solana_tx_send, solana_tx_simulate, solana_verified_build_submit, SolanaState,
 };
 pub use start_autonomous_run::start_autonomous_run;
+pub use start_oauth_login::start_oauth_login;
 pub use start_openai_login::start_openai_login;
 pub use start_runtime_run::start_runtime_run;
 pub use start_runtime_session::start_runtime_session;

@@ -44,7 +44,7 @@ pub fn upsert_provider_credential<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: UpsertProviderCredentialRequestDto,
-) -> CommandResult<ProviderCredentialDto> {
+) -> CommandResult<ProviderCredentialsSnapshotDto> {
     let provider_id = request.provider_id.trim();
     if provider_id.is_empty() {
         return Err(CommandError::invalid_request("providerId"));
@@ -122,7 +122,10 @@ pub fn upsert_provider_credential<R: Runtime>(
     };
 
     sql_upsert(&connection, &record)?;
-    Ok(provider_credential_dto(&record))
+    let records = load_all_provider_credentials(&connection)?;
+    Ok(ProviderCredentialsSnapshotDto {
+        credentials: records.iter().map(provider_credential_dto).collect(),
+    })
 }
 
 #[tauri::command]

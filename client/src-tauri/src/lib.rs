@@ -238,6 +238,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::provider_credentials::delete_provider_credential,
             commands::start_openai_login::start_openai_login,
             commands::submit_openai_callback::submit_openai_callback,
+            commands::start_oauth_login::start_oauth_login,
+            commands::complete_oauth_callback::complete_oauth_callback,
             commands::logout_runtime_session::logout_runtime_session,
             commands::start_autonomous_run::start_autonomous_run,
             commands::start_runtime_run::start_runtime_run,
