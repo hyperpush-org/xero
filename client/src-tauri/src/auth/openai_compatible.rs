@@ -8,7 +8,7 @@ use url::Url;
 use super::{AuthDiagnostic, AuthFlowError};
 use crate::{
     commands::{get_runtime_settings::RuntimeSettingsSnapshot, RuntimeAuthPhase},
-    provider_profiles::ProviderProfileRecord,
+    provider_credentials::ProviderCredentialProfile,
     runtime::{
         ResolvedRuntimeProvider, AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
         GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
@@ -215,7 +215,7 @@ struct OpenAiCompatibleThinkingPayload {
 }
 
 pub(crate) fn resolve_openai_compatible_endpoint_for_profile(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     config: &OpenAiCompatibleAuthConfig,
 ) -> Result<ResolvedOpenAiCompatibleEndpoint, AuthFlowError> {
     resolve_openai_compatible_endpoint(

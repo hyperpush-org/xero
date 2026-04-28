@@ -40,10 +40,6 @@ fn create_state(root: &TempDir) -> DesktopState {
         .with_global_db_path_override(app_data.join("cadence.db"))
         .with_registry_file_override(app_data.join("project-registry.json"))
         .with_auth_store_file_override(app_data.join("openai-auth.json"))
-        .with_provider_profiles_file_override(app_data.join("provider-profiles.json"))
-        .with_provider_profile_credential_store_file_override(
-            app_data.join("provider-profile-credentials.json"),
-        )
         .with_runtime_settings_file_override(app_data.join("runtime-settings.json"))
         .with_mcp_registry_file_override(app_data.join("mcp-registry.json"))
         .with_openrouter_credential_file_override(app_data.join("openrouter-credentials.json"))

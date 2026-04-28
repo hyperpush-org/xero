@@ -13,6 +13,7 @@ pub fn migrations() -> &'static Migrations<'static> {
         Migrations::new(vec![
             M::up(INITIAL_SCHEMA_SQL),
             M::up(PROVIDER_CREDENTIALS_SCHEMA_SQL),
+            M::up(DROP_LEGACY_PROVIDER_PROFILES_SQL),
         ])
     });
     &MIGRATIONS
@@ -258,4 +259,14 @@ const PROVIDER_CREDENTIALS_SCHEMA_SQL: &str = r#"
             )
      WHERE kind = 'oauth_session'
        AND oauth_account_id IS NOT NULL;
+"#;
+
+/// Provider-credentials cleanup: the flat `provider_credentials` table is now
+/// the only source of truth, so the legacy profile tables can be removed after
+/// the backfill migration has had a chance to run.
+const DROP_LEGACY_PROVIDER_PROFILES_SQL: &str = r#"
+    DROP TABLE IF EXISTS provider_profile_credentials;
+    DROP TABLE IF EXISTS provider_profiles_metadata;
+    DROP INDEX IF EXISTS idx_provider_profiles_provider_id;
+    DROP TABLE IF EXISTS provider_profiles;
 "#;

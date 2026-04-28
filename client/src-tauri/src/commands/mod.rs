@@ -26,7 +26,6 @@ pub mod project_files;
 pub mod provider_credentials;
 pub mod provider_diagnostics;
 pub mod provider_model_catalog;
-pub mod provider_profiles;
 pub mod record_notification_dispatch_outcome;
 pub mod remove_mcp_server;
 pub mod remove_project;

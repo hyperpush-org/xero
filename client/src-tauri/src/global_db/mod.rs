@@ -187,9 +187,6 @@ mod tests {
         let connection = migrate_in_memory();
 
         let expected_tables = [
-            "provider_profiles",
-            "provider_profiles_metadata",
-            "provider_profile_credentials",
             "openai_codex_sessions",
             "provider_credentials",
             "notification_credentials",
@@ -214,6 +211,24 @@ mod tests {
             assert_eq!(
                 count, 1,
                 "expected table `{table}` to exist after migration"
+            );
+        }
+
+        for table in [
+            "provider_profiles",
+            "provider_profiles_metadata",
+            "provider_profile_credentials",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(
+                count, 0,
+                "legacy table `{table}` should be dropped after migration"
             );
         }
     }
@@ -250,45 +265,6 @@ mod tests {
             let _ = open_global_database(&database_path).expect("first open");
         }
         let _ = open_global_database(&database_path).expect("second open is idempotent");
-    }
-
-    #[test]
-    fn provider_profile_credentials_cascade_with_profile_delete() {
-        let connection = migrate_in_memory();
-
-        connection
-            .execute(
-                "INSERT INTO provider_profiles (
-                    profile_id, provider_id, runtime_kind, label, model_id, updated_at
-                ) VALUES ('p1', 'openai', '', 'Profile 1', 'gpt-x', '2025-01-01T00:00:00Z')",
-                [],
-            )
-            .expect("insert profile");
-
-        connection
-            .execute(
-                "INSERT INTO provider_profile_credentials (
-                    profile_id, api_key, updated_at
-                ) VALUES ('p1', 'sk-secret', '2025-01-01T00:00:00Z')",
-                [],
-            )
-            .expect("insert credentials");
-
-        connection
-            .execute("DELETE FROM provider_profiles WHERE profile_id = 'p1'", [])
-            .expect("delete profile");
-
-        let remaining: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM provider_profile_credentials WHERE profile_id = 'p1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count remaining credentials");
-        assert_eq!(
-            remaining, 0,
-            "credentials should cascade-delete with profile"
-        );
     }
 
     #[test]
@@ -443,7 +419,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count anthropic rows");
-        assert_eq!(anthropic_count, 0, "orphan api-key profile must not back-fill");
+        assert_eq!(
+            anthropic_count, 0,
+            "orphan api-key profile must not back-fill"
+        );
     }
 
     #[test]
@@ -480,10 +459,7 @@ mod tests {
             paths.dictation_settings,
             app_data_dir.join("dictation-settings.json")
         );
-        assert_eq!(
-            paths.skill_sources,
-            app_data_dir.join("skill-sources.json")
-        );
+        assert_eq!(paths.skill_sources, app_data_dir.join("skill-sources.json"));
         assert_eq!(paths.mcp_registry, app_data_dir.join("mcp-registry.json"));
         assert_eq!(
             paths.provider_model_catalog_cache,

@@ -1,18 +1,20 @@
 //! Flat per-provider credential store. Replaces the legacy
 //! `provider_profiles` / `provider_profile_credentials` /
 //! `openai_codex_sessions` triplet with a single row per provider.
-//!
-//! Phase 2.1 of the provider-layer refactor. The new module coexists with the
-//! legacy `crate::provider_profiles` module until Phase 3 ships the frontend
-//! rewrite — readers and writers on each side operate on disjoint tables.
 
 pub mod readiness;
 pub mod sql;
+pub mod view;
 
 pub use readiness::{readiness_proof, ProviderCredentialReadinessProof};
 pub use sql::{
     delete_provider_credential, load_all_provider_credentials, load_provider_credential,
     upsert_provider_credential,
+};
+pub use view::{
+    load_provider_credentials_view_or_default, ProviderApiKeyCredentialEntry,
+    ProviderCredentialLink, ProviderCredentialProfile, ProviderCredentialReadinessProjection,
+    ProviderCredentialReadinessStatus, ProviderCredentialsView, OPENAI_CODEX_DEFAULT_PROFILE_ID,
 };
 
 use serde::{Deserialize, Serialize};

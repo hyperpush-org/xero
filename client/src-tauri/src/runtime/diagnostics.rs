@@ -3,11 +3,11 @@ use url::Url;
 
 use crate::{
     commands::{CommandError, CommandResult},
-    provider_models::{ProviderModelCatalog, ProviderModelCatalogSource},
-    provider_profiles::{
-        ProviderProfileReadinessProjection, ProviderProfileReadinessStatus, ProviderProfileRecord,
-        ProviderProfilesSnapshot,
+    provider_credentials::{
+        ProviderCredentialProfile, ProviderCredentialReadinessProjection,
+        ProviderCredentialReadinessStatus, ProviderCredentialsView,
     },
+    provider_models::{ProviderModelCatalog, ProviderModelCatalogSource},
 };
 
 use super::provider::{
@@ -315,12 +315,12 @@ impl CadenceDoctorReport {
 }
 
 pub fn provider_profile_readiness_diagnostic(
-    profile: &ProviderProfileRecord,
-    readiness: &ProviderProfileReadinessProjection,
+    profile: &ProviderCredentialProfile,
+    readiness: &ProviderCredentialReadinessProjection,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     let endpoint = endpoint_metadata_from_profile(profile);
     match readiness.status {
-        ProviderProfileReadinessStatus::Ready => CadenceDiagnosticCheck::new(
+        ProviderCredentialReadinessStatus::Ready => CadenceDiagnosticCheck::new(
             CadenceDiagnosticCheckInput {
                 subject: CadenceDiagnosticSubject::ProviderProfile,
                 status: CadenceDiagnosticStatus::Passed,
@@ -337,7 +337,7 @@ pub fn provider_profile_readiness_diagnostic(
                 remediation: None,
             },
         ),
-        ProviderProfileReadinessStatus::Missing => CadenceDiagnosticCheck::new(
+        ProviderCredentialReadinessStatus::Missing => CadenceDiagnosticCheck::new(
             CadenceDiagnosticCheckInput {
                 subject: CadenceDiagnosticSubject::ProviderProfile,
                 status: CadenceDiagnosticStatus::Failed,
@@ -354,7 +354,7 @@ pub fn provider_profile_readiness_diagnostic(
                 remediation: Some(provider_profile_remediation(profile)),
             },
         ),
-        ProviderProfileReadinessStatus::Malformed => CadenceDiagnosticCheck::new(
+        ProviderCredentialReadinessStatus::Malformed => CadenceDiagnosticCheck::new(
             CadenceDiagnosticCheckInput {
                 subject: CadenceDiagnosticSubject::ProviderProfile,
                 status: CadenceDiagnosticStatus::Failed,
@@ -397,7 +397,7 @@ pub fn unsupported_provider_diagnostic(
 }
 
 pub fn invalid_base_url_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     base_url: &str,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
@@ -451,7 +451,7 @@ pub fn stale_runtime_binding_diagnostic(
 }
 
 pub fn ambient_auth_failure_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     message: &str,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
@@ -562,8 +562,8 @@ pub fn provider_model_catalog_diagnostic(
 }
 
 pub fn provider_profile_validation_diagnostics(
-    snapshot: &ProviderProfilesSnapshot,
-    profile: &ProviderProfileRecord,
+    snapshot: &ProviderCredentialsView,
+    profile: &ProviderCredentialProfile,
 ) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
     let mut checks = Vec::new();
     checks.push(provider_profile_active_selection_diagnostic(
@@ -573,16 +573,16 @@ pub fn provider_profile_validation_diagnostics(
     checks.extend(provider_profile_metadata_diagnostics(profile)?);
     checks.push(provider_profile_readiness_diagnostic(
         profile,
-        &profile.readiness(&snapshot.credentials),
+        &profile.readiness(),
     )?);
     Ok(checks)
 }
 
 fn provider_profile_active_selection_diagnostic(
-    snapshot: &ProviderProfilesSnapshot,
-    profile: &ProviderProfileRecord,
+    snapshot: &ProviderCredentialsView,
+    profile: &ProviderCredentialProfile,
 ) -> CommandResult<CadenceDiagnosticCheck> {
-    if snapshot.metadata.active_profile_id == profile.profile_id {
+    if snapshot.active_profile_id() == profile.profile_id {
         return CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
             subject: CadenceDiagnosticSubject::ProviderProfile,
             status: CadenceDiagnosticStatus::Passed,
@@ -620,7 +620,7 @@ fn provider_profile_active_selection_diagnostic(
 }
 
 fn provider_profile_runtime_alignment_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     match resolve_runtime_provider_identity(
         Some(profile.provider_id.as_str()),
@@ -660,7 +660,7 @@ fn provider_profile_runtime_alignment_diagnostic(
 }
 
 fn provider_profile_metadata_diagnostics(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
     let mut checks = Vec::new();
 
@@ -860,7 +860,7 @@ fn provider_profile_metadata_diagnostics(
 }
 
 fn require_preset_id(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     expected: &str,
     checks: &mut Vec<CadenceDiagnosticCheck>,
 ) -> CommandResult<()> {
@@ -881,7 +881,7 @@ fn require_preset_id(
 }
 
 fn require_present(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     field: &'static str,
     value: Option<&str>,
     checks: &mut Vec<CadenceDiagnosticCheck>,
@@ -903,7 +903,7 @@ fn require_present(
 }
 
 fn require_absent(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     field: &'static str,
     value: Option<&str>,
     checks: &mut Vec<CadenceDiagnosticCheck>,
@@ -925,7 +925,7 @@ fn require_absent(
 }
 
 fn require_http_base_url(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     base_url: &str,
     checks: &mut Vec<CadenceDiagnosticCheck>,
 ) -> CommandResult<()> {
@@ -943,7 +943,7 @@ fn require_http_base_url(
 }
 
 fn metadata_failed(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     code: &str,
     message: &str,
     remediation: &str,
@@ -1399,7 +1399,7 @@ fn sanitize_endpoint_url(
 }
 
 fn endpoint_metadata_from_profile(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> Option<CadenceDiagnosticEndpointMetadata> {
     if profile.base_url.is_none()
         && profile.api_version.is_none()
@@ -1420,7 +1420,7 @@ fn endpoint_metadata_from_profile(
     })
 }
 
-fn provider_profile_remediation(profile: &ProviderProfileRecord) -> String {
+fn provider_profile_remediation(profile: &ProviderCredentialProfile) -> String {
     match profile.provider_id.as_str() {
         "ollama" => {
             "Start Ollama or update the local endpoint, then check the connection again.".into()

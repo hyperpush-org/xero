@@ -84,14 +84,6 @@ impl DesktopState {
         self.override_global_db_from_file(path)
     }
 
-    pub fn with_provider_profiles_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_provider_profile_credential_store_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
     pub fn with_provider_model_catalog_cache_file_override(self, path: PathBuf) -> Self {
         self.override_global_db_from_file(path)
     }
@@ -305,20 +297,6 @@ impl DesktopState {
     }
 
     pub fn skill_source_settings_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn provider_profiles_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn provider_profile_credential_store_file<R: Runtime>(
         &self,
         app: &AppHandle<R>,
     ) -> Result<PathBuf, CommandError> {

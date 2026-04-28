@@ -6,7 +6,7 @@ use crate::{
     auth::now_timestamp,
     commands::{
         dictation::{load_dictation_settings, probe_dictation_status},
-        provider_profiles::load_provider_profiles_snapshot,
+        provider_credentials::load_provider_credentials_view,
         CommandError, CommandResult, DictationEnginePreferenceDto, DictationModernAssetStatusDto,
         DictationPermissionStateDto, DictationPlatformDto, DictationStatusDto,
         RunDoctorReportRequestDto, RuntimeAuthPhase,
@@ -500,7 +500,7 @@ fn collect_provider_checks<R: Runtime>(
     mode: CadenceDoctorReportMode,
     checks: &mut DoctorCheckBuckets,
 ) {
-    let snapshot = match load_provider_profiles_snapshot(app, state) {
+    let snapshot = match load_provider_credentials_view(app, state) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             push_check(
@@ -517,7 +517,7 @@ fn collect_provider_checks<R: Runtime>(
         }
     };
 
-    if snapshot.metadata.profiles.is_empty() {
+    if snapshot.profiles().is_empty() {
         push_check(
             &mut checks.profile_checks,
             CadenceDiagnosticCheck::skipped(
@@ -530,7 +530,7 @@ fn collect_provider_checks<R: Runtime>(
         return;
     }
 
-    for profile in &snapshot.metadata.profiles {
+    for profile in snapshot.profiles() {
         match provider_profile_validation_diagnostics(&snapshot, profile) {
             Ok(profile_checks) => checks.profile_checks.extend(profile_checks),
             Err(error) => push_check(
@@ -1265,20 +1265,6 @@ fn collect_app_path_checks<R: Runtime>(
         "project_registry",
         "project registry",
         state.registry_file(app),
-        PathExpectation::OptionalFile,
-    );
-    push_path_check(
-        checks,
-        "provider_profiles",
-        "provider profiles",
-        state.provider_profiles_file(app),
-        PathExpectation::OptionalFile,
-    );
-    push_path_check(
-        checks,
-        "provider_credentials",
-        "provider credential links",
-        state.provider_profile_credential_store_file(app),
         PathExpectation::OptionalFile,
     );
     push_path_check(

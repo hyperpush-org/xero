@@ -1,9 +1,4 @@
 //! Tauri commands operating on the new flat `provider_credentials` table.
-//!
-//! Phase 2.2 of the provider-layer refactor. These commands are additive —
-//! they do not replace `provider_profiles` commands yet. The frontend will be
-//! migrated in Phase 3, at which point the legacy command surface can be
-//! deleted.
 
 use tauri::{AppHandle, Runtime, State};
 use url::Url;
@@ -17,8 +12,9 @@ use crate::{
     global_db::open_global_database,
     provider_credentials::{
         delete_provider_credential as sql_delete, load_all_provider_credentials,
-        load_provider_credential, readiness_proof, upsert_provider_credential as sql_upsert,
-        ProviderCredentialKind, ProviderCredentialReadinessProof, ProviderCredentialRecord,
+        load_provider_credential, load_provider_credentials_view_or_default, readiness_proof,
+        upsert_provider_credential as sql_upsert, ProviderCredentialKind,
+        ProviderCredentialReadinessProof, ProviderCredentialRecord, ProviderCredentialsView,
     },
     runtime::{
         resolve_runtime_provider_identity, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
@@ -26,6 +22,14 @@ use crate::{
     },
     state::DesktopState,
 };
+
+pub(crate) fn load_provider_credentials_view<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> CommandResult<ProviderCredentialsView> {
+    let connection = open_global_database(&state.global_db_path(app)?)?;
+    load_provider_credentials_view_or_default(&connection)
+}
 
 #[tauri::command]
 pub fn list_provider_credentials<R: Runtime>(
@@ -65,14 +69,26 @@ pub fn upsert_provider_credential<R: Runtime>(
         ));
     }
 
-    let api_key = request.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let base_url = request.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let api_key = request
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let base_url = request
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let api_version = request
         .api_version
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let region = request.region.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let region = request
+        .region
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let project_id = request
         .project_id
         .as_deref()
@@ -98,7 +114,9 @@ pub fn upsert_provider_credential<R: Runtime>(
     let existing = load_provider_credential(&connection, provider_id)?;
 
     let updated_at = match (existing.as_ref(), api_key) {
-        (Some(prev), Some(next)) if prev.api_key.as_deref() == Some(next) => prev.updated_at.clone(),
+        (Some(prev), Some(next)) if prev.api_key.as_deref() == Some(next) => {
+            prev.updated_at.clone()
+        }
         _ => crate::auth::now_timestamp(),
     };
 
@@ -115,9 +133,11 @@ pub fn upsert_provider_credential<R: Runtime>(
         api_version: api_version.map(str::to_owned),
         region: region.map(str::to_owned),
         project_id: project_id.map(str::to_owned),
-        default_model_id: default_model_id
-            .map(str::to_owned)
-            .or_else(|| existing.as_ref().and_then(|prev| prev.default_model_id.clone())),
+        default_model_id: default_model_id.map(str::to_owned).or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|prev| prev.default_model_id.clone())
+        }),
         updated_at,
     };
 
@@ -151,7 +171,10 @@ pub(crate) fn provider_credential_dto(record: &ProviderCredentialRecord) -> Prov
     ProviderCredentialDto {
         provider_id: record.provider_id.clone(),
         kind: ProviderCredentialKindDto::from(record.kind),
-        has_api_key: record.api_key.as_deref().is_some_and(|value| !value.is_empty()),
+        has_api_key: record
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty()),
         oauth_account_id: record.oauth_account_id.clone(),
         oauth_session_id: record.oauth_session_id.clone(),
         has_oauth_access_token: record
@@ -210,7 +233,10 @@ fn validate_per_provider_fields(
             validate_base_url(url)?;
         }
         OPENAI_API_PROVIDER_ID => {
-            if !matches!(kind, ProviderCredentialKind::ApiKey | ProviderCredentialKind::Local) {
+            if !matches!(
+                kind,
+                ProviderCredentialKind::ApiKey | ProviderCredentialKind::Local
+            ) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
                     "Cadence requires kind=api_key or kind=local for OpenAI-API credentials.",

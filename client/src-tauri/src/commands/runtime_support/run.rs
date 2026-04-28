@@ -17,7 +17,7 @@ use crate::{
         get_runtime_settings::{
             runtime_settings_file_from_request, runtime_settings_snapshot_for_provider_profile,
         },
-        provider_profiles::load_provider_profiles_snapshot,
+        provider_credentials::load_provider_credentials_view,
         CommandError, CommandResult, RuntimeAuthPhase, RuntimeRunActiveControlSnapshotDto,
         RuntimeRunApprovalModeDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
         RuntimeRunControlInputDto, RuntimeRunControlStateDto, RuntimeRunDiagnosticDto,
@@ -32,11 +32,11 @@ use crate::{
         RuntimeRunTransportRecord, RuntimeRunUpsertRecord,
     },
     mcp::{materialize_runtime_mcp_projection_for_run, RUNTIME_MCP_PROJECTION_DIRECTORY_NAME},
+    provider_credentials::ProviderCredentialReadinessStatus,
     provider_models::{
         load_provider_model_catalog, ProviderModelCatalog, ProviderModelCatalogSource,
         ProviderModelRecord, ProviderModelThinkingEffort,
     },
-    provider_profiles::ProviderProfileReadinessStatus,
     runtime::{
         create_owned_agent_run, drive_owned_agent_run, launch_detached_runtime_supervisor,
         normalize_openai_codex_model_id, openai_codex_provider, probe_runtime_run,
@@ -595,7 +595,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
         return Ok(config);
     }
 
-    let provider_profiles = load_provider_profiles_snapshot(app, state)?;
+    let provider_profiles = load_provider_credentials_view(app, state)?;
     let requested_profile_id = requested_controls
         .and_then(|controls| controls.provider_profile_id.as_deref())
         .map(str::trim)
@@ -1046,7 +1046,7 @@ fn load_provider_profile_selection<R: Runtime>(
     requested_controls: Option<&RuntimeRunControlInputDto>,
     require_ready_profile: bool,
 ) -> CommandResult<ActiveProviderProfileSelection> {
-    let provider_profiles = load_provider_profiles_snapshot(app, state)?;
+    let provider_profiles = load_provider_credentials_view(app, state)?;
     let requested_profile_id = requested_controls
         .and_then(|controls| controls.provider_profile_id.as_deref())
         .map(str::trim)
@@ -1095,10 +1095,7 @@ fn load_provider_profile_selection<R: Runtime>(
                 ),
             ));
         }
-    } else if !active_profile
-        .readiness(&provider_profiles.credentials)
-        .ready
-    {
+    } else if !active_profile.readiness().ready {
         return Err(CommandError::user_fixable(
             "provider_profile_not_ready",
             format!(
@@ -1260,7 +1257,7 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
     run_controls: &RuntimeRunControlStateRecord,
     run_id: &str,
 ) -> CommandResult<PreparedRuntimeSupervisorLaunch> {
-    let provider_profiles = load_provider_profiles_snapshot(app, state)?;
+    let provider_profiles = load_provider_credentials_view(app, state)?;
     let active_profile = provider_profiles
         .profile(&selected_profile.profile_id)
         .ok_or_else(|| {
@@ -1293,12 +1290,9 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
         ANTHROPIC_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID
     ) {
         if runtime.provider_id == ANTHROPIC_PROVIDER_ID {
-            match active_profile
-                .readiness(&provider_profiles.credentials)
-                .status
-            {
-                ProviderProfileReadinessStatus::Ready => {}
-                ProviderProfileReadinessStatus::Missing => {
+            match active_profile.readiness().status {
+                ProviderCredentialReadinessStatus::Ready => {}
+                ProviderCredentialReadinessStatus::Missing => {
                     return Err(CommandError::user_fixable(
                         "anthropic_api_key_missing",
                         format!(
@@ -1307,7 +1301,7 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
                         ),
                     ));
                 }
-                ProviderProfileReadinessStatus::Malformed => {
+                ProviderCredentialReadinessStatus::Malformed => {
                     return Err(CommandError::user_fixable(
                         "provider_profile_credentials_unavailable",
                         format!(
@@ -1341,13 +1335,13 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
             &state.openai_compatible_auth_config(),
         )
         .map_err(command_error_from_auth)?;
-        let readiness = active_profile.readiness(&provider_profiles.credentials);
+        let readiness = active_profile.readiness();
         let api_key = match readiness.status {
-            ProviderProfileReadinessStatus::Ready => provider_profiles
+            ProviderCredentialReadinessStatus::Ready => provider_profiles
                 .matched_api_key_credential_for_profile(&active_profile.profile_id)
                 .map(|secret| secret.api_key.as_str()),
-            ProviderProfileReadinessStatus::Missing => None,
-            ProviderProfileReadinessStatus::Malformed => {
+            ProviderCredentialReadinessStatus::Missing => None,
+            ProviderCredentialReadinessStatus::Malformed => {
                 return Err(CommandError::user_fixable(
                     "provider_profile_credentials_unavailable",
                     format!(

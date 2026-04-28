@@ -17,13 +17,9 @@ use crate::{
     commands::{CommandError, RuntimeAuthPhase},
     global_db::open_global_database,
     provider_credentials::{
-        delete_provider_credential as cred_delete,
-        upsert_provider_credential as cred_upsert, ProviderCredentialKind,
-        ProviderCredentialRecord,
-    },
-    provider_profiles::{
-        load_provider_profiles_or_default, ProviderProfileCredentialLink, ProviderProfilesSnapshot,
-        OPENAI_CODEX_DEFAULT_PROFILE_ID,
+        delete_provider_credential as cred_delete, load_provider_credentials_view_or_default,
+        upsert_provider_credential as cred_upsert, ProviderCredentialKind, ProviderCredentialLink,
+        ProviderCredentialRecord, ProviderCredentialsView, OPENAI_CODEX_DEFAULT_PROFILE_ID,
     },
     state::DesktopState,
 };
@@ -50,9 +46,9 @@ pub fn load_openai_codex_session(
 
 pub fn load_openai_codex_session_for_profile_link(
     path: &Path,
-    link: &ProviderProfileCredentialLink,
+    link: &ProviderCredentialLink,
 ) -> Result<Option<StoredOpenAiCodexSession>, AuthFlowError> {
-    let ProviderProfileCredentialLink::OpenAiCodex {
+    let ProviderCredentialLink::OpenAiCodex {
         account_id,
         session_id,
         ..
@@ -118,12 +114,12 @@ pub fn sync_openai_profile_link<R: Runtime>(
             .map_err(map_command_error_to_auth_error)?,
     )
     .map_err(map_command_error_to_auth_error)?;
-    let snapshot =
-        load_provider_profiles_or_default(&connection).map_err(map_provider_profiles_error)?;
+    let view = load_provider_credentials_view_or_default(&connection)
+        .map_err(map_provider_profiles_error)?;
 
     let next_link = session.map(openai_profile_link_from_session).transpose()?;
     let target_profile_ids =
-        resolve_openai_profile_sync_targets(&snapshot, preferred_profile_id, next_link.as_ref())?;
+        resolve_openai_profile_sync_targets(&view, preferred_profile_id, next_link.as_ref())?;
     if target_profile_ids.is_empty() {
         return Ok(());
     }
@@ -133,9 +129,8 @@ pub fn sync_openai_profile_link<R: Runtime>(
         .map(profile_link_updated_at)
         .unwrap_or_else(now_timestamp);
 
-    // Source of truth is provider_credentials — write the OAuth state there
-    // and the legacy snapshot will project from it on the next load. The
-    // legacy SQL persist path is gone with the loader hot-swap.
+    // Source of truth is provider_credentials. The profile-shaped runtime view
+    // projects from this row on the next load.
     mirror_openai_credential(&connection, session, &updated_at)
 }
 
@@ -185,25 +180,25 @@ pub fn ensure_openai_profile_target<R: Runtime>(
     phase: RuntimeAuthPhase,
     action: &str,
 ) -> Result<(), AuthFlowError> {
-    let snapshot = load_provider_profiles_snapshot(app, state)?;
-    validate_target_openai_profile(&snapshot, profile_id, phase, action)
+    let view = load_provider_credentials_view(app, state)?;
+    validate_target_openai_profile(&view, profile_id, phase, action)
 }
 
-fn load_provider_profiles_snapshot<R: Runtime>(
+fn load_provider_credentials_view<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
-) -> Result<ProviderProfilesSnapshot, AuthFlowError> {
+) -> Result<ProviderCredentialsView, AuthFlowError> {
     let connection = open_global_database(
         &state
             .global_db_path(app)
             .map_err(map_command_error_to_auth_error)?,
     )
     .map_err(map_command_error_to_auth_error)?;
-    load_provider_profiles_or_default(&connection).map_err(map_provider_profiles_error)
+    load_provider_credentials_view_or_default(&connection).map_err(map_provider_profiles_error)
 }
 
 fn validate_target_openai_profile(
-    snapshot: &ProviderProfilesSnapshot,
+    view: &ProviderCredentialsView,
     profile_id: &str,
     phase: RuntimeAuthPhase,
     action: &str,
@@ -217,7 +212,7 @@ fn validate_target_openai_profile(
         ));
     }
 
-    let profile = snapshot.profile(profile_id).ok_or_else(|| {
+    let profile = view.profile(profile_id).ok_or_else(|| {
         AuthFlowError::terminal(
             "provider_profile_missing",
             phase.clone(),
@@ -242,25 +237,24 @@ fn validate_target_openai_profile(
 }
 
 fn resolve_openai_profile_sync_targets(
-    snapshot: &ProviderProfilesSnapshot,
+    view: &ProviderCredentialsView,
     preferred_profile_id: Option<&str>,
-    next_link: Option<&ProviderProfileCredentialLink>,
+    next_link: Option<&ProviderCredentialLink>,
 ) -> Result<Vec<String>, AuthFlowError> {
     let preferred_profile_id = preferred_profile_id
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(preferred_profile_id) = preferred_profile_id {
         validate_target_openai_profile(
-            snapshot,
+            view,
             preferred_profile_id,
             RuntimeAuthPhase::Failed,
             "sync OpenAI auth onto the selected provider profile",
         )?;
     }
 
-    let mut profile_ids = snapshot
-        .metadata
-        .profiles
+    let mut profile_ids = view
+        .profiles()
         .iter()
         .filter(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
         .map(|profile| profile.profile_id.clone())
@@ -270,7 +264,7 @@ fn resolve_openai_profile_sync_targets(
         profile_ids.push(
             preferred_profile_id
                 .map(str::to_owned)
-                .or_else(|| select_openai_profile_id(snapshot, next_link))
+                .or_else(|| select_openai_profile_id(view, next_link))
                 .unwrap_or_else(|| OPENAI_CODEX_DEFAULT_PROFILE_ID.to_owned()),
         );
     } else if let Some(preferred_profile_id) = preferred_profile_id {
@@ -287,7 +281,7 @@ fn resolve_openai_profile_sync_targets(
 
 fn openai_profile_link_from_session(
     session: &StoredOpenAiCodexSession,
-) -> Result<ProviderProfileCredentialLink, AuthFlowError> {
+) -> Result<ProviderCredentialLink, AuthFlowError> {
     let account_id = session.account_id.trim();
     if account_id.is_empty() {
         return Err(AuthFlowError::terminal(
@@ -317,7 +311,7 @@ fn openai_profile_link_from_session(
         ));
     }
 
-    Ok(ProviderProfileCredentialLink::OpenAiCodex {
+    Ok(ProviderCredentialLink::OpenAiCodex {
         account_id: account_id.to_owned(),
         session_id: session_id.to_owned(),
         updated_at: normalize_updated_at(&session.updated_at),
@@ -325,20 +319,20 @@ fn openai_profile_link_from_session(
 }
 
 fn select_openai_profile_id(
-    snapshot: &ProviderProfilesSnapshot,
-    next_link: Option<&ProviderProfileCredentialLink>,
+    view: &ProviderCredentialsView,
+    next_link: Option<&ProviderCredentialLink>,
 ) -> Option<String> {
-    if let Some(ProviderProfileCredentialLink::OpenAiCodex {
+    if let Some(ProviderCredentialLink::OpenAiCodex {
         account_id,
         session_id,
         ..
     }) = next_link
     {
-        if let Some(profile) = snapshot.metadata.profiles.iter().find(|profile| {
+        if let Some(profile) = view.profiles().iter().find(|profile| {
             profile.provider_id == OPENAI_CODEX_PROVIDER_ID
                 && matches!(
                     profile.credential_link.as_ref(),
-                    Some(ProviderProfileCredentialLink::OpenAiCodex {
+                    Some(ProviderCredentialLink::OpenAiCodex {
                         account_id: linked_account_id,
                         session_id: linked_session_id,
                         ..
@@ -349,32 +343,28 @@ fn select_openai_profile_id(
         }
     }
 
-    snapshot
-        .active_profile()
+    view.active_profile()
         .filter(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
         .map(|profile| profile.profile_id.clone())
         .or_else(|| {
-            snapshot
-                .profile(OPENAI_CODEX_DEFAULT_PROFILE_ID)
+            view.profile(OPENAI_CODEX_DEFAULT_PROFILE_ID)
                 .filter(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
                 .map(|profile| profile.profile_id.clone())
         })
         .or_else(|| {
-            snapshot
-                .metadata
-                .profiles
+            view.profiles()
                 .iter()
                 .find(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
                 .map(|profile| profile.profile_id.clone())
         })
 }
 
-fn profile_link_updated_at(link: &ProviderProfileCredentialLink) -> String {
+fn profile_link_updated_at(link: &ProviderCredentialLink) -> String {
     match link {
-        ProviderProfileCredentialLink::OpenAiCodex { updated_at, .. }
-        | ProviderProfileCredentialLink::ApiKey { updated_at }
-        | ProviderProfileCredentialLink::Local { updated_at }
-        | ProviderProfileCredentialLink::Ambient { updated_at } => normalize_updated_at(updated_at),
+        ProviderCredentialLink::OpenAiCodex { updated_at, .. }
+        | ProviderCredentialLink::ApiKey { updated_at }
+        | ProviderCredentialLink::Local { updated_at }
+        | ProviderCredentialLink::Ambient { updated_at } => normalize_updated_at(updated_at),
     }
 }
 

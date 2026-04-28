@@ -6,7 +6,6 @@ pub mod mcp;
 pub mod notifications;
 pub mod provider_credentials;
 pub mod provider_models;
-pub mod provider_profiles;
 pub mod registry;
 pub mod runtime;
 pub mod state;

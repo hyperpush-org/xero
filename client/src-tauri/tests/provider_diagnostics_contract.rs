@@ -1,13 +1,12 @@
 use cadence_desktop_lib::{
+    provider_credentials::{
+        ProviderApiKeyCredentialEntry, ProviderCredentialLink, ProviderCredentialProfile,
+        ProviderCredentialReadinessProjection, ProviderCredentialReadinessStatus,
+        ProviderCredentialsView,
+    },
     provider_models::{
         ProviderModelCatalog, ProviderModelCatalogDiagnostic, ProviderModelCatalogSource,
         ProviderModelRecord, ProviderModelThinkingCapability,
-    },
-    provider_profiles::{
-        ProviderApiKeyCredentialEntry, ProviderProfileCredentialLink,
-        ProviderProfileCredentialsFile, ProviderProfileReadinessProjection,
-        ProviderProfileReadinessStatus, ProviderProfileRecord, ProviderProfilesMetadataFile,
-        ProviderProfilesSnapshot,
     },
     runtime::{
         ambient_auth_failure_diagnostic, invalid_base_url_diagnostic,
@@ -28,8 +27,8 @@ fn profile(
     provider_id: &str,
     runtime_kind: &str,
     base_url: Option<&str>,
-) -> ProviderProfileRecord {
-    ProviderProfileRecord {
+) -> ProviderCredentialProfile {
+    ProviderCredentialProfile {
         profile_id: profile_id.into(),
         provider_id: provider_id.into(),
         runtime_kind: runtime_kind.into(),
@@ -41,15 +40,13 @@ fn profile(
         region: None,
         project_id: None,
         credential_link: None,
-        migrated_from_legacy: false,
-        migrated_at: None,
         updated_at: "2026-04-26T12:00:00Z".into(),
     }
 }
 
-fn readiness(status: ProviderProfileReadinessStatus) -> ProviderProfileReadinessProjection {
-    ProviderProfileReadinessProjection {
-        ready: status == ProviderProfileReadinessStatus::Ready,
+fn readiness(status: ProviderCredentialReadinessStatus) -> ProviderCredentialReadinessProjection {
+    ProviderCredentialReadinessProjection {
+        ready: status == ProviderCredentialReadinessStatus::Ready,
         status,
         proof: None,
         proof_updated_at: None,
@@ -58,19 +55,14 @@ fn readiness(status: ProviderProfileReadinessStatus) -> ProviderProfileReadiness
 
 fn snapshot_for(
     active_profile_id: &str,
-    profiles: Vec<ProviderProfileRecord>,
+    profiles: Vec<ProviderCredentialProfile>,
     api_keys: Vec<ProviderApiKeyCredentialEntry>,
-) -> ProviderProfilesSnapshot {
-    ProviderProfilesSnapshot {
-        metadata: ProviderProfilesMetadataFile {
-            version: 3,
-            active_profile_id: active_profile_id.into(),
-            profiles,
-            updated_at: "2026-04-26T12:00:00Z".into(),
-            migration: None,
-        },
-        credentials: ProviderProfileCredentialsFile { api_keys },
-    }
+) -> ProviderCredentialsView {
+    ProviderCredentialsView::from_projected_profiles_for_tests(
+        active_profile_id.into(),
+        profiles,
+        api_keys,
+    )
 }
 
 fn catalog(
@@ -107,7 +99,7 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
     );
     let diagnostic = provider_profile_readiness_diagnostic(
         &missing,
-        &readiness(ProviderProfileReadinessStatus::Missing),
+        &readiness(ProviderCredentialReadinessStatus::Missing),
     )
     .expect("missing readiness diagnostic");
     assert_eq!(
@@ -137,12 +129,12 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
         .contains("Add credentials"));
 
     let mut malformed = profile("anthropic-work", "anthropic", "anthropic", None);
-    malformed.credential_link = Some(ProviderProfileCredentialLink::ApiKey {
+    malformed.credential_link = Some(ProviderCredentialLink::ApiKey {
         updated_at: "2026-04-26T12:00:00Z".into(),
     });
     let malformed_diagnostic = provider_profile_readiness_diagnostic(
         &malformed,
-        &readiness(ProviderProfileReadinessStatus::Malformed),
+        &readiness(ProviderCredentialReadinessStatus::Malformed),
     )
     .expect("malformed diagnostic");
     assert_eq!(
@@ -190,7 +182,7 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
 fn provider_profile_validation_reports_metadata_runtime_and_readiness_contracts() {
     let mut ready = profile("openrouter-work", "openrouter", "openrouter", None);
     ready.model_id = "openai/o4-mini".into();
-    ready.credential_link = Some(ProviderProfileCredentialLink::ApiKey {
+    ready.credential_link = Some(ProviderCredentialLink::ApiKey {
         updated_at: "2026-04-26T12:00:00Z".into(),
     });
     let snapshot = snapshot_for(
@@ -421,18 +413,18 @@ fn provider_profile_validation_accepts_supported_provider_metadata_shapes() {
         record.region = case.region.map(str::to_string);
         record.project_id = case.project_id.map(str::to_string);
         record.credential_link = Some(match case.credential {
-            CredentialKind::OpenAiCodex => ProviderProfileCredentialLink::OpenAiCodex {
+            CredentialKind::OpenAiCodex => ProviderCredentialLink::OpenAiCodex {
                 account_id: "acct-test".into(),
                 session_id: "session-test".into(),
                 updated_at: updated_at.into(),
             },
-            CredentialKind::ApiKey => ProviderProfileCredentialLink::ApiKey {
+            CredentialKind::ApiKey => ProviderCredentialLink::ApiKey {
                 updated_at: updated_at.into(),
             },
-            CredentialKind::Local => ProviderProfileCredentialLink::Local {
+            CredentialKind::Local => ProviderCredentialLink::Local {
                 updated_at: updated_at.into(),
             },
-            CredentialKind::Ambient => ProviderProfileCredentialLink::Ambient {
+            CredentialKind::Ambient => ProviderCredentialLink::Ambient {
                 updated_at: updated_at.into(),
             },
         });

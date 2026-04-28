@@ -3,12 +3,12 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::load_openai_codex_session_for_profile_link,
     commands::{
-        provider_model_catalog::map_provider_model_catalog,
-        provider_profiles::load_provider_profiles_snapshot, CheckProviderProfileRequestDto,
+        provider_credentials::load_provider_credentials_view,
+        provider_model_catalog::map_provider_model_catalog, CheckProviderProfileRequestDto,
         CommandError, CommandResult, ProviderProfileDiagnosticsDto,
     },
+    provider_credentials::ProviderCredentialProfile,
     provider_models::load_provider_model_catalog,
-    provider_profiles::ProviderProfileRecord,
     runtime::{
         openai_codex_provider, provider_model_catalog_diagnostic,
         provider_profile_validation_diagnostics, CadenceDiagnosticCheck,
@@ -29,7 +29,7 @@ pub fn check_provider_profile<R: Runtime>(
         return Err(CommandError::invalid_request("profileId"));
     }
 
-    let snapshot = load_provider_profiles_snapshot(&app, state.inner())?;
+    let snapshot = load_provider_credentials_view(&app, state.inner())?;
     let profile = snapshot.profile(profile_id).cloned().ok_or_else(|| {
         CommandError::user_fixable(
             "provider_profile_not_found",
@@ -69,7 +69,7 @@ pub fn check_provider_profile<R: Runtime>(
 fn openai_codex_session_check<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> CommandResult<Option<CadenceDiagnosticCheck>> {
     if profile.provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Ok(None);
@@ -145,7 +145,7 @@ fn openai_codex_session_check<R: Runtime>(
 }
 
 fn command_error_to_model_catalog_check(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     error: CommandError,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {

@@ -7,11 +7,11 @@ use crate::{
         get_runtime_settings::{
             runtime_settings_snapshot_for_provider_profile, RuntimeSettingsSnapshot,
         },
-        provider_profiles::load_provider_profiles_snapshot,
+        provider_credentials::load_provider_credentials_view,
         validate_non_empty, CommandError, CommandResult, ProjectIdRequestDto, RuntimeAuthPhase,
         RuntimeDiagnosticDto, RuntimeSessionDto,
     },
-    provider_profiles::ProviderProfilesSnapshot,
+    provider_credentials::ProviderCredentialsView,
     runtime::{
         bind_provider_runtime_session, reconcile_provider_runtime_session,
         resolve_runtime_provider_identity, ResolvedRuntimeProvider, RuntimeProvider,
@@ -29,7 +29,7 @@ use super::runtime_support::{
 pub(crate) struct RuntimeProviderSelection {
     pub provider: ResolvedRuntimeProvider,
     pub settings: RuntimeSettingsSnapshot,
-    pub provider_profiles: ProviderProfilesSnapshot,
+    pub provider_profiles: ProviderCredentialsView,
 }
 
 #[tauri::command]
@@ -97,7 +97,7 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
     runtime: RuntimeSessionDto,
     selected_profile_id: Option<&str>,
 ) -> Result<(RuntimeSessionDto, RuntimeProviderSelection), RuntimeSessionDto> {
-    let provider_profiles = match load_provider_profiles_snapshot(app, state) {
+    let provider_profiles = match load_provider_credentials_view(app, state) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             let error = normalize_runtime_provider_selection_error(error);
@@ -168,8 +168,7 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
             ));
         }
     };
-    let mut selected_provider_profiles = provider_profiles;
-    selected_provider_profiles.metadata.active_profile_id = selected_profile_id;
+    let selected_provider_profiles = provider_profiles.with_active_profile_id(selected_profile_id);
 
     Ok((
         runtime_with_selected_provider(runtime, provider),

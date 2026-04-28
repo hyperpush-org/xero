@@ -22,9 +22,9 @@ use crate::{
         },
         openrouter::{fetch_openrouter_models, OpenRouterDiscoveredModel},
     },
-    commands::{provider_profiles::load_provider_profiles_snapshot, CommandError, CommandResult},
-    provider_profiles::{
-        ProviderProfileReadinessStatus, ProviderProfileRecord, ProviderProfilesSnapshot,
+    commands::{provider_credentials::load_provider_credentials_view, CommandError, CommandResult},
+    provider_credentials::{
+        ProviderCredentialProfile, ProviderCredentialReadinessStatus, ProviderCredentialsView,
     },
     runtime::{
         ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
@@ -166,7 +166,7 @@ enum ProviderModelCatalogRefreshTarget {
 }
 
 impl ProviderModelCatalogRefreshTarget {
-    fn cache_scope(&self, profile: &ProviderProfileRecord) -> CachedProviderModelCatalogScope {
+    fn cache_scope(&self, profile: &ProviderCredentialProfile) -> CachedProviderModelCatalogScope {
         match self {
             Self::OpenAiCompatible(endpoint) => CachedProviderModelCatalogScope {
                 preset_id: endpoint.preset_id.clone(),
@@ -237,11 +237,11 @@ impl ProviderModelCatalogRefreshRegistry {
 impl ProviderModelCatalogCacheLoad {
     fn requested_cache_row(
         &self,
-        profile: &ProviderProfileRecord,
+        profile: &ProviderCredentialProfile,
         expected_scope: &CachedProviderModelCatalogScope,
     ) -> Option<CachedProviderModelCatalogRow> {
         self.catalogs
-            .get(&profile.profile_id)
+            .get(&profile.provider_id)
             .filter(|row| row.provider_id == profile.provider_id && row.scope == *expected_scope)
             .cloned()
     }
@@ -265,7 +265,7 @@ pub fn load_provider_model_catalog<R: Runtime>(
         return Err(CommandError::invalid_request("profileId"));
     }
 
-    let provider_profiles = load_provider_profiles_snapshot(app, state)?;
+    let provider_profiles = load_provider_credentials_view(app, state)?;
     let profile = provider_profiles
         .profile(profile_id)
         .cloned()
@@ -282,7 +282,8 @@ pub fn load_provider_model_catalog<R: Runtime>(
         .map_err(diagnostic_into_command_error)?;
     let expected_scope = refresh_target.cache_scope(&profile);
     let cached_row = cache_load.requested_cache_row(&profile, &expected_scope);
-    let profile_diagnostic = readiness_diagnostic(&profile, &provider_profiles);
+    let cache_key = profile.provider_id.clone();
+    let profile_diagnostic = readiness_diagnostic(&profile);
 
     if let Some(diagnostic) = profile_diagnostic.clone() {
         return Ok(match cached_row.as_ref() {
@@ -297,7 +298,7 @@ pub fn load_provider_model_catalog<R: Runtime>(
         }
     }
 
-    let cache_read_diagnostic = cache_load.requested_diagnostic(profile_id);
+    let cache_read_diagnostic = cache_load.requested_diagnostic(&cache_key);
     let cache_catalogs = cache_load.catalogs.clone();
     let cache_write_allowed = cache_load.write_allowed;
     let provider_profiles = provider_profiles.clone();
@@ -314,7 +315,7 @@ pub fn load_provider_model_catalog<R: Runtime>(
 
     Ok(state
         .provider_model_catalog_refresh_registry()
-        .run(profile_id, move || {
+        .run(&cache_key, move || {
             refresh_provider_model_catalog(
                 &profile,
                 &provider_profiles,
@@ -326,8 +327,8 @@ pub fn load_provider_model_catalog<R: Runtime>(
 }
 
 fn refresh_provider_model_catalog(
-    profile: &ProviderProfileRecord,
-    provider_profiles: &ProviderProfilesSnapshot,
+    profile: &ProviderCredentialProfile,
+    provider_profiles: &ProviderCredentialsView,
     state: &DesktopState,
     refresh_context: &ProviderModelCatalogRefreshContext,
     refresh_target: &ProviderModelCatalogRefreshTarget,
@@ -362,8 +363,11 @@ fn refresh_provider_model_catalog(
                 .map_err(diagnostic_from_auth_error)
         }
         ProviderModelCatalogRefreshTarget::OpenAiCompatible(endpoint) => {
-            let readiness = profile.readiness(&provider_profiles.credentials);
-            if matches!(readiness.status, ProviderProfileReadinessStatus::Malformed) {
+            let readiness = profile.readiness();
+            if matches!(
+                readiness.status,
+                ProviderCredentialReadinessStatus::Malformed
+            ) {
                 let diagnostic = ProviderModelCatalogDiagnostic {
                     code: "provider_profile_credentials_unavailable".into(),
                     message: format!(
@@ -449,7 +453,7 @@ fn refresh_provider_model_catalog(
                 if let Err(error) = persist_provider_model_catalog_cache(
                     &refresh_context.cache_path,
                     &refresh_context.cache_catalogs,
-                    &profile.profile_id,
+                    &profile.provider_id,
                     &new_row,
                 ) {
                     catalog.last_refresh_error = Some(diagnostic_from_command_error(error));
@@ -550,7 +554,7 @@ fn normalize_openai_compatible_models(
     normalized
 }
 
-fn manual_provider_projection(profile: &ProviderProfileRecord) -> Vec<ProviderModelRecord> {
+fn manual_provider_projection(profile: &ProviderCredentialProfile) -> Vec<ProviderModelRecord> {
     match profile.provider_id.as_str() {
         BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID => manual_anthropic_family_projection(profile),
         _ => manual_openai_compatible_projection(profile),
@@ -558,7 +562,7 @@ fn manual_provider_projection(profile: &ProviderProfileRecord) -> Vec<ProviderMo
 }
 
 fn manual_openai_compatible_projection(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> Vec<ProviderModelRecord> {
     vec![ProviderModelRecord {
         model_id: profile.model_id.clone(),
@@ -567,7 +571,9 @@ fn manual_openai_compatible_projection(
     }]
 }
 
-fn manual_anthropic_family_projection(profile: &ProviderProfileRecord) -> Vec<ProviderModelRecord> {
+fn manual_anthropic_family_projection(
+    profile: &ProviderCredentialProfile,
+) -> Vec<ProviderModelRecord> {
     let supports_thinking = profile.model_id.to_ascii_lowercase().contains("claude");
     let thinking = if supports_thinking {
         supported_thinking_capability(vec![
@@ -697,7 +703,7 @@ fn unsupported_thinking_capability() -> ProviderModelThinkingCapability {
 }
 
 fn catalog_from_cached_row(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     cached: &CachedProviderModelCatalogRow,
     diagnostic: Option<ProviderModelCatalogDiagnostic>,
 ) -> ProviderModelCatalog {
@@ -714,7 +720,7 @@ fn catalog_from_cached_row(
 }
 
 fn unavailable_or_manual_catalog(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     refresh_target: &ProviderModelCatalogRefreshTarget,
     diagnostic: Option<ProviderModelCatalogDiagnostic>,
 ) -> ProviderModelCatalog {
@@ -738,7 +744,7 @@ fn unavailable_or_manual_catalog(
 }
 
 fn unavailable_catalog(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     diagnostic: Option<ProviderModelCatalogDiagnostic>,
 ) -> ProviderModelCatalog {
     ProviderModelCatalog {
@@ -754,7 +760,7 @@ fn unavailable_catalog(
 }
 
 fn resolve_provider_model_catalog_refresh_target(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
     state: &DesktopState,
 ) -> Result<ProviderModelCatalogRefreshTarget, ProviderModelCatalogDiagnostic> {
     match profile.provider_id.as_str() {
@@ -995,8 +1001,7 @@ fn validate_cached_catalog_row(
 }
 
 fn readiness_diagnostic(
-    profile: &ProviderProfileRecord,
-    provider_profiles: &ProviderProfilesSnapshot,
+    profile: &ProviderCredentialProfile,
 ) -> Option<ProviderModelCatalogDiagnostic> {
     if !matches!(
         profile.provider_id.as_str(),
@@ -1013,10 +1018,10 @@ fn readiness_diagnostic(
         return None;
     }
 
-    let readiness = profile.readiness(&provider_profiles.credentials);
+    let readiness = profile.readiness();
     match readiness.status {
-        ProviderProfileReadinessStatus::Ready => None,
-        ProviderProfileReadinessStatus::Missing => Some(match profile.provider_id.as_str() {
+        ProviderCredentialReadinessStatus::Ready => None,
+        ProviderCredentialReadinessStatus::Missing => Some(match profile.provider_id.as_str() {
             OPENROUTER_PROVIDER_ID => missing_openrouter_credential_diagnostic(profile),
             ANTHROPIC_PROVIDER_ID => missing_anthropic_credential_diagnostic(profile),
             BEDROCK_PROVIDER_ID => missing_bedrock_ambient_diagnostic(profile),
@@ -1036,7 +1041,7 @@ fn readiness_diagnostic(
             }
             _ => return None,
         }),
-        ProviderProfileReadinessStatus::Malformed => Some(match profile.provider_id.as_str() {
+        ProviderCredentialReadinessStatus::Malformed => Some(match profile.provider_id.as_str() {
             OPENROUTER_PROVIDER_ID => ProviderModelCatalogDiagnostic {
                 code: "provider_profile_credentials_unavailable".into(),
                 message: format!(
@@ -1072,7 +1077,7 @@ fn readiness_diagnostic(
     }
 }
 
-fn openai_compatible_profile_uses_local_auth(profile: &ProviderProfileRecord) -> bool {
+fn openai_compatible_profile_uses_local_auth(profile: &ProviderCredentialProfile) -> bool {
     profile.provider_id == OLLAMA_PROVIDER_ID
         || (profile.provider_id == OPENAI_API_PROVIDER_ID
             && profile
@@ -1089,8 +1094,8 @@ fn is_local_openai_compatible_base_url(base_url: &str) -> bool {
 }
 
 fn anthropic_family_profile_input(
-    profile: &ProviderProfileRecord,
-    provider_profiles: &ProviderProfilesSnapshot,
+    profile: &ProviderCredentialProfile,
+    provider_profiles: &ProviderCredentialsView,
 ) -> AnthropicFamilyProfileInput {
     AnthropicFamilyProfileInput {
         provider_id: profile.provider_id.clone(),
@@ -1108,7 +1113,7 @@ fn anthropic_family_profile_input(
 }
 
 fn missing_openrouter_credential_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> ProviderModelCatalogDiagnostic {
     ProviderModelCatalogDiagnostic {
         code: "openrouter_api_key_missing".into(),
@@ -1121,7 +1126,7 @@ fn missing_openrouter_credential_diagnostic(
 }
 
 fn missing_anthropic_credential_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> ProviderModelCatalogDiagnostic {
     ProviderModelCatalogDiagnostic {
         code: "anthropic_api_key_missing".into(),
@@ -1134,7 +1139,7 @@ fn missing_anthropic_credential_diagnostic(
 }
 
 fn missing_bedrock_ambient_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> ProviderModelCatalogDiagnostic {
     ProviderModelCatalogDiagnostic {
         code: "bedrock_ambient_proof_missing".into(),
@@ -1147,7 +1152,7 @@ fn missing_bedrock_ambient_diagnostic(
 }
 
 fn missing_vertex_ambient_diagnostic(
-    profile: &ProviderProfileRecord,
+    profile: &ProviderCredentialProfile,
 ) -> ProviderModelCatalogDiagnostic {
     ProviderModelCatalogDiagnostic {
         code: "vertex_ambient_proof_missing".into(),

@@ -5,7 +5,7 @@ use tempfile::NamedTempFile;
 
 use crate::{
     commands::{CommandError, CommandResult},
-    provider_profiles::{ProviderProfileRecord, ProviderProfilesSnapshot},
+    provider_credentials::{ProviderCredentialProfile, ProviderCredentialsView},
     runtime::{
         normalize_openai_codex_model_id, resolve_runtime_provider_identity, ANTHROPIC_PROVIDER_ID,
         OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
@@ -142,8 +142,8 @@ pub(crate) fn write_json_file_atomically(
 }
 
 pub(crate) fn runtime_settings_snapshot_for_provider_profile(
-    provider_profiles: &ProviderProfilesSnapshot,
-    profile: &ProviderProfileRecord,
+    provider_profiles: &ProviderCredentialsView,
+    profile: &ProviderCredentialProfile,
 ) -> CommandResult<RuntimeSettingsSnapshot> {
     let preferred_openrouter_credential = provider_profiles.preferred_openrouter_credential();
     let preferred_anthropic_credential = provider_profiles.preferred_anthropic_credential();

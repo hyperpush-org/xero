@@ -13,7 +13,9 @@ use crate::{
         OpenRouterRuntimeSessionBinding, RuntimeAuthSession,
     },
     commands::{get_runtime_settings::RuntimeSettingsSnapshot, RuntimeAuthPhase},
-    provider_profiles::{ProviderProfileCredentialLink, ProviderProfilesSnapshot},
+    provider_credentials::{
+        ProviderCredentialLink, ProviderCredentialProfile, ProviderCredentialsView,
+    },
     state::DesktopState,
 };
 
@@ -273,7 +275,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
     provider: ResolvedRuntimeProvider,
     account_id: Option<&str>,
     settings: Option<&RuntimeSettingsSnapshot>,
-    provider_profiles: Option<&ProviderProfilesSnapshot>,
+    provider_profiles: Option<&ProviderCredentialsView>,
 ) -> Result<RuntimeProviderBindOutcome, AuthFlowError> {
     match provider.provider {
         RuntimeProvider::OpenAiCodex => {
@@ -354,7 +356,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
     account_id: Option<&str>,
     session_id: Option<&str>,
     settings: Option<&RuntimeSettingsSnapshot>,
-    provider_profiles: Option<&ProviderProfilesSnapshot>,
+    provider_profiles: Option<&ProviderCredentialsView>,
 ) -> Result<RuntimeProviderReconcileOutcome, AuthFlowError> {
     match provider.provider {
         RuntimeProvider::OpenAiCodex => reconcile_openai_codex_runtime_session(
@@ -482,7 +484,7 @@ fn bind_openai_codex_runtime_session<R: Runtime>(
     state: &DesktopState,
     provider: ResolvedRuntimeProvider,
     _account_id: Option<&str>,
-    provider_profiles: Option<&ProviderProfilesSnapshot>,
+    provider_profiles: Option<&ProviderCredentialsView>,
 ) -> Result<RuntimeProviderBindOutcome, AuthFlowError> {
     let profile = active_openai_profile(provider_profiles)?;
     let auth_store_path = state.auth_store_file_for_provider(app, provider)?;
@@ -521,7 +523,7 @@ fn reconcile_openai_codex_runtime_session<R: Runtime>(
     provider: ResolvedRuntimeProvider,
     _account_id: Option<&str>,
     _session_id: Option<&str>,
-    provider_profiles: Option<&ProviderProfilesSnapshot>,
+    provider_profiles: Option<&ProviderCredentialsView>,
 ) -> Result<RuntimeProviderReconcileOutcome, AuthFlowError> {
     let profile = active_openai_profile(provider_profiles)?;
     let auth_store_path = state.auth_store_file_for_provider(app, provider)?;
@@ -554,8 +556,8 @@ fn reconcile_openai_codex_runtime_session<R: Runtime>(
 }
 
 fn active_openai_profile(
-    provider_profiles: Option<&ProviderProfilesSnapshot>,
-) -> Result<&crate::provider_profiles::ProviderProfileRecord, AuthFlowError> {
+    provider_profiles: Option<&ProviderCredentialsView>,
+) -> Result<&ProviderCredentialProfile, AuthFlowError> {
     let provider_profiles = provider_profiles.ok_or_else(|| {
         AuthFlowError::terminal(
             "provider_profiles_missing",
@@ -588,7 +590,7 @@ fn active_openai_profile(
 
 fn load_global_openai_codex_session_for_profile(
     auth_store_path: &std::path::Path,
-    link: Option<&ProviderProfileCredentialLink>,
+    link: Option<&ProviderCredentialLink>,
 ) -> Result<Option<crate::auth::StoredOpenAiCodexSession>, AuthFlowError> {
     match link {
         Some(link) => load_openai_codex_session_for_profile_link(auth_store_path, link),
