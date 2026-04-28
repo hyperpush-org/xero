@@ -752,7 +752,6 @@ function createMockAdapter(options?: {
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
-    getRuntimeSettings: vi.fn(async () => runtimeSettings),
     getProviderModelCatalog: vi.fn(async (profileId: string): Promise<ProviderModelCatalogDto> => {
       const profile = providerProfiles.profiles.find((candidate) => candidate.profileId === profileId)
       if (!profile) {
@@ -802,11 +801,6 @@ function createMockAdapter(options?: {
               ],
       }
     }),
-    getProviderProfiles: vi.fn(async () => providerProfiles),
-    upsertRuntimeSettings: vi.fn(async () => runtimeSettings),
-    upsertProviderProfile: vi.fn(async () => providerProfiles),
-    setActiveProviderProfile: vi.fn(async () => providerProfiles),
-    logoutProviderProfile: vi.fn(async () => providerProfiles),
     startOpenAiLogin: vi.fn(
       async (projectId: string, _options: { selectedProfileId: string; originator?: string | null }) =>
         makeRuntimeSession(projectId),

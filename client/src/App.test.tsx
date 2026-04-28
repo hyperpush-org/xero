@@ -1811,7 +1811,6 @@ function createAdapter(options?: {
     },
     getAutonomousRun: async () => currentAutonomousState ?? { run: null },
     getRuntimeRun: async () => currentRuntimeRun,
-    getRuntimeSettings: async () => currentRuntimeSettings,
     listMcpServers,
     upsertMcpServer,
     removeMcpServer,
@@ -1878,7 +1877,6 @@ function createAdapter(options?: {
           runtimeProtocolVersion: 'supervisor-v1',
         },
       }),
-    getProviderProfiles: async () => currentProviderProfiles,
     getRuntimeSession: async () => currentRuntimeSession,
     startOpenAiLogin: async (_projectId, _options) => {
       currentRuntimeSession = makeRuntimeSession('project-1', {
@@ -1894,10 +1892,6 @@ function createAdapter(options?: {
     startAutonomousRun,
     startRuntimeRun,
     updateRuntimeRunControls,
-    upsertRuntimeSettings,
-    upsertProviderProfile,
-    setActiveProviderProfile,
-    logoutProviderProfile,
     listProviderCredentials,
     upsertProviderCredential,
     deleteProviderCredential,
@@ -2128,10 +2122,6 @@ function createAdapter(options?: {
     adapter,
     streamSubscriptions,
     upsertNotificationRoute,
-    upsertRuntimeSettings,
-    upsertProviderProfile,
-    setActiveProviderProfile,
-    logoutProviderProfile,
     listProviderCredentials,
     upsertProviderCredential,
     deleteProviderCredential,
@@ -2568,18 +2558,8 @@ describe('CadenceApp current UI', () => {
     )
   })
 
-  it('rejects legacy provider upsert fields instead of coercing them into generic profile saves', async () => {
-    const { adapter } = createAdapter()
-
-    await expect(
-      adapter.upsertProviderProfile({
-        profileId: 'openai_api-default',
-        providerId: 'openai_api',
-        label: 'OpenAI-compatible',
-        modelId: 'gpt-4.1-mini',
-        openrouterApiKey: 'sk-legacy-test-secret',
-      } as never),
-    ).rejects.toThrow()
+  it.skip('rejects legacy provider upsert fields instead of coercing them into generic profile saves', async () => {
+    // Legacy upsertProviderProfile adapter method removed in Phase 4.
   })
 
   it('imports a project and creates a notification route from onboarding', async () => {

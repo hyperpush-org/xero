@@ -164,7 +164,6 @@ import {
   runtimeRunSchema,
   runtimeRunUpdatedPayloadSchema,
   runtimeSessionSchema,
-  runtimeSettingsSchema,
   runtimeUpdatedPayloadSchema,
   archiveAgentSessionRequestSchema,
   createAgentSessionRequestSchema,
@@ -180,7 +179,6 @@ import {
   stopRuntimeRunRequestSchema,
   updateRuntimeRunControlsRequestSchema,
   updateAgentSessionRequestSchema,
-  upsertRuntimeSettingsRequestSchema,
   type AgentSessionDto,
   type ArchiveAgentSessionRequestDto,
   type CreateAgentSessionRequestDto,
@@ -194,23 +192,13 @@ import {
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
-  type RuntimeSettingsDto,
   type RuntimeUpdatedPayloadDto,
   type StartRuntimeRunRequestDto,
   type StartRuntimeSessionRequestDto,
   type StopRuntimeRunRequestDto,
   type UpdateAgentSessionRequestDto,
   type UpdateRuntimeRunControlsRequestDto,
-  type UpsertRuntimeSettingsRequestDto,
 } from '@/src/lib/cadence-model/runtime'
-import {
-  logoutProviderProfileRequestSchema,
-  providerProfilesSchema,
-  setActiveProviderProfileRequestSchema,
-  upsertProviderProfileRequestSchema,
-  type ProviderProfilesDto,
-  type UpsertProviderProfileRequestDto,
-} from '@/src/lib/cadence-model/provider-profiles'
 import {
   completeOAuthCallbackRequestSchema,
   deleteProviderCredentialRequestSchema,
@@ -362,7 +350,6 @@ const COMMANDS = {
   deleteSessionMemory: 'delete_session_memory',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
-  getRuntimeSettings: 'get_runtime_settings',
   listMcpServers: 'list_mcp_servers',
   upsertMcpServer: 'upsert_mcp_server',
   removeMcpServer: 'remove_mcp_server',
@@ -383,10 +370,6 @@ const COMMANDS = {
   getProviderModelCatalog: 'get_provider_model_catalog',
   runDoctorReport: 'run_doctor_report',
   checkProviderProfile: 'check_provider_profile',
-  listProviderProfiles: 'list_provider_profiles',
-  upsertProviderProfile: 'upsert_provider_profile',
-  setActiveProviderProfile: 'set_active_provider_profile',
-  logoutProviderProfile: 'logout_provider_profile',
   listProviderCredentials: 'list_provider_credentials',
   upsertProviderCredential: 'upsert_provider_credential',
   deleteProviderCredential: 'delete_provider_credential',
@@ -401,7 +384,6 @@ const COMMANDS = {
   cancelAutonomousRun: 'cancel_autonomous_run',
   stopRuntimeRun: 'stop_runtime_run',
   logoutRuntimeSession: 'logout_runtime_session',
-  upsertRuntimeSettings: 'upsert_runtime_settings',
   resolveOperatorAction: 'resolve_operator_action',
   resumeOperatorRun: 'resume_operator_run',
   listNotificationRoutes: 'list_notification_routes',
@@ -680,7 +662,6 @@ export interface CadenceDesktopAdapter {
   deleteSessionMemory?(request: DeleteSessionMemoryRequestDto): Promise<void>
   getRuntimeRun(projectId: string, agentSessionId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
-  getRuntimeSettings(): Promise<RuntimeSettingsDto>
   listMcpServers(): Promise<McpRegistryDto>
   upsertMcpServer(request: UpsertMcpServerRequestDto): Promise<McpRegistryDto>
   removeMcpServer(serverId: string): Promise<McpRegistryDto>
@@ -707,7 +688,6 @@ export interface CadenceDesktopAdapter {
     profileId: string,
     options?: { includeNetwork?: boolean },
   ): Promise<ProviderProfileDiagnosticsDto>
-  getProviderProfiles(): Promise<ProviderProfilesDto>
   startOpenAiLogin(projectId: string, options: StartOpenAiLoginOptions): Promise<RuntimeSessionDto>
   submitOpenAiCallback(
     projectId: string,
@@ -729,10 +709,6 @@ export interface CadenceDesktopAdapter {
   cancelAutonomousRun(projectId: string, agentSessionId: string, runId: string): Promise<AutonomousRunStateDto>
   stopRuntimeRun(projectId: string, agentSessionId: string, runId: string): Promise<RuntimeRunDto | null>
   logoutRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
-  upsertRuntimeSettings(request: UpsertRuntimeSettingsRequestDto): Promise<RuntimeSettingsDto>
-  upsertProviderProfile(request: UpsertProviderProfileRequestDto): Promise<ProviderProfilesDto>
-  setActiveProviderProfile(profileId: string): Promise<ProviderProfilesDto>
-  logoutProviderProfile(profileId: string): Promise<ProviderProfilesDto>
   listProviderCredentials(): Promise<ProviderCredentialsSnapshotDto>
   upsertProviderCredential(
     request: UpsertProviderCredentialRequestDto,
@@ -1622,9 +1598,6 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     })
   },
 
-  getRuntimeSettings() {
-    return invokeTyped(COMMANDS.getRuntimeSettings, runtimeSettingsSchema)
-  },
 
   listMcpServers() {
     return invokeTyped(COMMANDS.listMcpServers, mcpRegistrySchema)
@@ -1781,9 +1754,6 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
     })
   },
 
-  getProviderProfiles() {
-    return invokeTyped(COMMANDS.listProviderProfiles, providerProfilesSchema)
-  },
 
   startOpenAiLogin(projectId, options) {
     const request = startOpenAiLoginRequestSchema.parse({
@@ -1887,34 +1857,6 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   logoutRuntimeSession(projectId) {
     return invokeTyped(COMMANDS.logoutRuntimeSession, runtimeSessionSchema, {
       request: { projectId },
-    })
-  },
-
-  upsertRuntimeSettings(request) {
-    const parsedRequest = upsertRuntimeSettingsRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.upsertRuntimeSettings, runtimeSettingsSchema, {
-      request: parsedRequest,
-    })
-  },
-
-  upsertProviderProfile(request) {
-    const parsedRequest = upsertProviderProfileRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.upsertProviderProfile, providerProfilesSchema, {
-      request: parsedRequest,
-    })
-  },
-
-  setActiveProviderProfile(profileId) {
-    const request = setActiveProviderProfileRequestSchema.parse({ profileId })
-    return invokeTyped(COMMANDS.setActiveProviderProfile, providerProfilesSchema, {
-      request,
-    })
-  },
-
-  logoutProviderProfile(profileId) {
-    const request = logoutProviderProfileRequestSchema.parse({ profileId })
-    return invokeTyped(COMMANDS.logoutProviderProfile, providerProfilesSchema, {
-      request,
     })
   },
 
