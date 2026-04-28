@@ -85,6 +85,16 @@ fn compile_dictation_shim() {
         println!("cargo:rustc-cfg=cadence_dictation_modern_sdk");
     }
 
+    // macOS 26+ splits Foundation into new Swift overlay dylibs
+    // (swift_DarwinFoundation{1,2,3}, swiftSynchronization, etc.)
+    // that live under the SDK's usr/lib/swift. Without this search
+    // path the linker can't resolve auto-linked libs from the shim.
+    let sdk_swift_lib = PathBuf::from(&sdk_path).join("usr/lib/swift");
+    if sdk_swift_lib.is_dir() {
+        println!("cargo:rustc-link-search=native={}", sdk_swift_lib.display());
+        println!("cargo:rustc-link-search=framework={}", sdk_swift_lib.display());
+    }
+
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let shim_dir = manifest_dir.join("native/dictation");
@@ -120,6 +130,19 @@ fn compile_dictation_shim() {
     for runtime_path in swift_runtime_library_paths(&swiftc) {
         println!("cargo:rustc-link-search=native={runtime_path}");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{runtime_path}");
+    }
+    if modern_sdk {
+        // The modern dictation shim compiled with Swift 6.2 / Xcode 26
+        // references symbols across Speech, Foundation overlays, and the
+        // Swift concurrency runtime. Compiling to a static .a loses
+        // Swift's auto-link metadata, so the Rust linker never discovers
+        // those implicit dependencies. Rather than manually enumerating
+        // every Swift overlay dylib (which changes across beta releases),
+        // use -undefined dynamic_lookup to defer them to runtime. On
+        // macOS 26 all these symbols exist in /usr/lib/swift and the
+        // Speech framework; the @available guards in the Swift code
+        // ensure this path is never called on older OS versions.
+        println!("cargo:rustc-link-arg=-Wl,-undefined,dynamic_lookup");
     }
     println!("cargo:rustc-link-lib=static=CadenceDictationShim");
     println!("cargo:rustc-cfg=cadence_dictation_native_shim");

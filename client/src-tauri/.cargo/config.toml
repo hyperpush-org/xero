@@ -1,0 +1,16 @@
+# The modern dictation Swift shim (compiled with Xcode 26 / Swift 6.2)
+# references symbols from the Speech framework and Swift stdlib that only
+# exist on macOS 26+. Rust defaults to MACOSX_DEPLOYMENT_TARGET=11.0 for
+# aarch64-apple-darwin, which causes the linker's .tbd resolution to
+# filter these symbols → "Undefined symbols" at link time.
+#
+# Setting the deployment target to the current SDK major version lets
+# the linker see all symbols. The Swift shim's @available guards
+# ensure the modern dictation codepath is only used at runtime on
+# macOS 26+, so older-OS compatibility is preserved at the app level.
+#
+# If you need to target an older macOS version for distribution, set
+# CADENCE_SKIP_DICTATION_SHIM=1 to compile only the legacy
+# SFSpeechRecognizer path (which works on all deployment targets).
+[env]
+MACOSX_DEPLOYMENT_TARGET = "26.0"

@@ -1,3 +1,4 @@
+import { startTransition } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { getDesktopErrorMessage, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
 import { applyRuntimeRun, applyRuntimeSession, mapProjectSnapshot, type ProjectDetailView } from '@/src/lib/cadence-model'
@@ -520,58 +521,6 @@ export async function loadProjectState({
       return nextProject
     }
 
-    const nextRuntime = runtimeResult.runtime
-    if (nextRuntime) {
-      setters.setRuntimeSessions((currentRuntimeSessions) => ({
-        ...currentRuntimeSessions,
-        [projectId]: nextRuntime,
-      }))
-      setters.setProjects((currentProjects) =>
-        currentProjects.map((project) =>
-          project.id === projectId ? applyRuntimeToProjectList(project, nextRuntime) : project,
-        ),
-      )
-    }
-
-    if (runtimeRunResult.ok) {
-      setters.setRuntimeRuns((currentRuntimeRuns) => {
-        const nextRuntimeRun = runtimeRunResult.runtimeRun
-        if (!nextRuntimeRun) {
-          return removeProjectRecord(currentRuntimeRuns, projectId)
-        }
-
-        return {
-          ...currentRuntimeRuns,
-          [projectId]: nextRuntimeRun,
-        }
-      })
-    } else {
-      const nextRuntimeRun = runtimeRunResult.runtimeRun
-      if (nextRuntimeRun) {
-        setters.setRuntimeRuns((currentRuntimeRuns) => ({
-          ...currentRuntimeRuns,
-          [projectId]: nextRuntimeRun,
-        }))
-      }
-    }
-
-    applyAutonomousInspectionRecords(projectId, autonomousRunResult.inspection, setters, {
-      allowRemovals: autonomousRunResult.ok,
-    })
-
-    setters.setRuntimeLoadErrors((currentErrors) => ({
-      ...currentErrors,
-      [projectId]: runtimeResult.error,
-    }))
-    setters.setRuntimeRunLoadErrors((currentErrors) => ({
-      ...currentErrors,
-      [projectId]: runtimeRunResult.error,
-    }))
-    setters.setAutonomousRunLoadErrors((currentErrors) => ({
-      ...currentErrors,
-      [projectId]: autonomousRunResult.error,
-    }))
-
     const finalRuntime = runtimeResult.runtime ?? cachedRuntime
     const finalRuntimeRun = runtimeRunResult.ok ? runtimeRunResult.runtimeRun : runtimeRunResult.runtimeRun ?? cachedRuntimeRun
     const finalAutonomousRun = autonomousRunResult.ok
@@ -584,6 +533,70 @@ export async function loadProjectState({
       ),
       finalAutonomousRun,
     )
+
+    // Runtime/run/autonomous records and their load-error flags are secondary
+    // data that the import UI (and most other UI) doesn't depend on directly.
+    // Wrapping them in startTransition tells React these are non-urgent updates:
+    // it batches them at lower priority and won't interrupt a higher-priority
+    // paint (e.g. the busy→idle transition on the import screen) to apply them.
+    // This is the React equivalent of Zed/GPUI's 4 ms event-coalescing window —
+    // defer slow-path work so the visible UI stays stable during async loading.
+    startTransition(() => {
+      const nextRuntime = runtimeResult.runtime
+      if (nextRuntime) {
+        setters.setRuntimeSessions((currentRuntimeSessions) => ({
+          ...currentRuntimeSessions,
+          [projectId]: nextRuntime,
+        }))
+        setters.setProjects((currentProjects) =>
+          currentProjects.map((project) =>
+            project.id === projectId ? applyRuntimeToProjectList(project, nextRuntime) : project,
+          ),
+        )
+      }
+
+      if (runtimeRunResult.ok) {
+        setters.setRuntimeRuns((currentRuntimeRuns) => {
+          const nextRuntimeRun = runtimeRunResult.runtimeRun
+          if (!nextRuntimeRun) {
+            return removeProjectRecord(currentRuntimeRuns, projectId)
+          }
+
+          return {
+            ...currentRuntimeRuns,
+            [projectId]: nextRuntimeRun,
+          }
+        })
+      } else {
+        const nextRuntimeRun = runtimeRunResult.runtimeRun
+        if (nextRuntimeRun) {
+          setters.setRuntimeRuns((currentRuntimeRuns) => ({
+            ...currentRuntimeRuns,
+            [projectId]: nextRuntimeRun,
+          }))
+        }
+      }
+
+      applyAutonomousInspectionRecords(projectId, autonomousRunResult.inspection, setters, {
+        allowRemovals: autonomousRunResult.ok,
+      })
+
+      setters.setRuntimeLoadErrors((currentErrors) => ({
+        ...currentErrors,
+        [projectId]: runtimeResult.error,
+      }))
+      setters.setRuntimeRunLoadErrors((currentErrors) => ({
+        ...currentErrors,
+        [projectId]: runtimeRunResult.error,
+      }))
+      setters.setAutonomousRunLoadErrors((currentErrors) => ({
+        ...currentErrors,
+        [projectId]: autonomousRunResult.error,
+      }))
+    })
+
+    // setActiveProject and setErrorMessage remain urgent — they drive
+    // the import-complete transition and any error banner.
     setters.setActiveProject((currentProject) => {
       if (!currentProject || currentProject.id !== projectId) {
         return currentProject
