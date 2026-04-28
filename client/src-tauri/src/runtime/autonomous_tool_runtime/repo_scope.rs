@@ -18,7 +18,6 @@ use crate::{
 
 const SKIPPED_DIRECTORIES: &[&str] = &[
     ".git",
-    ".cadence",
     "node_modules",
     "target",
     ".next",
@@ -249,7 +248,7 @@ pub fn resolve_imported_repo_root<R: Runtime>(
     state: &DesktopState,
     project_id: &str,
 ) -> CommandResult<PathBuf> {
-    let registry_path = state.registry_file(app)?;
+    let registry_path = state.global_db_path(app)?;
     resolve_imported_repo_root_from_registry(&registry_path, project_id)
 }
 

@@ -563,9 +563,8 @@ pub fn delete_agent_session(
         ));
     }
 
-    // Snapshot the run_ids that the SQLite cascade is about to delete so we
-    // can clear matching `source_run_id` references in the Lance dataset
-    // (replacing the legacy `agent_memories_clear_deleted_*` triggers).
+    // Snapshot the run_ids that the relational cascade is about to delete so
+    // we can clear matching `source_run_id` references in the Lance dataset.
     let cascade_run_ids =
         read_run_ids_for_session(&connection, &database_path, project_id, agent_session_id)?;
 

@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type React from "react"
 import { openUrl } from "@tauri-apps/plugin-opener"
-import { AlertTriangle, CheckCircle2, LoaderCircle, Mic, RotateCcw, Settings } from "lucide-react"
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Cpu,
+  Globe2,
+  Languages,
+  LoaderCircle,
+  Mic,
+  PackageOpen,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  Volume2,
+} from "lucide-react"
 
 import type { CadenceDesktopAdapter } from "@/src/lib/cadence-desktop"
 import type {
@@ -13,7 +26,6 @@ import type {
   UpsertDictationSettingsRequestDto,
 } from "@/src/lib/cadence-model"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -57,6 +69,36 @@ const PRIVACY_OPTIONS: Array<{ value: DictationPrivacyModeDto; label: string; de
   { value: "on_device_required", label: "On-device required", detail: "Never use Apple server recognition" },
   { value: "allow_network", label: "Allow Apple server recognition", detail: "Permit Apple recognition when local support is unavailable" },
 ]
+
+type StatusTone = "ok" | "warn" | "bad" | "muted"
+
+const TONE_BG: Record<StatusTone, string> = {
+  ok: "bg-emerald-500/10",
+  warn: "bg-amber-500/10",
+  bad: "bg-destructive/10",
+  muted: "bg-muted/40",
+}
+
+const TONE_RING: Record<StatusTone, string> = {
+  ok: "ring-emerald-500/20",
+  warn: "ring-amber-500/25",
+  bad: "ring-destructive/25",
+  muted: "ring-border/60",
+}
+
+const TONE_TEXT: Record<StatusTone, string> = {
+  ok: "text-emerald-600 dark:text-emerald-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  bad: "text-destructive",
+  muted: "text-muted-foreground",
+}
+
+const TONE_DOT: Record<StatusTone, string> = {
+  ok: "bg-emerald-500 dark:bg-emerald-400",
+  warn: "bg-amber-500 dark:bg-amber-400",
+  bad: "bg-destructive",
+  muted: "bg-muted-foreground/60",
+}
 
 export function DictationSection({ adapter }: DictationSectionProps) {
   const [status, setStatus] = useState<DictationStatusDto | null>(null)
@@ -149,7 +191,7 @@ export function DictationSection({ adapter }: DictationSectionProps) {
             variant="outline"
             size="sm"
             className="h-8 gap-1.5 text-[12px]"
-            disabled={isBusy}
+            disabled={isBusy || !canUseAdapter}
             onClick={load}
           >
             {loadState === "loading" ? (
@@ -163,100 +205,173 @@ export function DictationSection({ adapter }: DictationSectionProps) {
       />
 
       {!canUseAdapter ? (
-        <UnavailableState title="Dictation settings require the Cadence desktop runtime." />
+        <UnavailableCard
+          title="Desktop runtime required"
+          body="Dictation settings are only available when Cadence is running as a desktop app."
+        />
       ) : loadState === "loading" && !status ? (
-        <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-10 text-center">
-          <LoaderCircle className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
-          <p className="mt-2 text-[12.5px] font-medium text-foreground">Loading dictation settings</p>
-        </div>
+        <LoadingCard />
       ) : !isMacos ? (
-        <UnavailableState title="Native dictation is available only on macOS." />
+        <UnavailableCard
+          title="Native dictation is macOS-only"
+          body={
+            status?.platform === "unsupported"
+              ? "Cadence's native speech input pipeline is currently shipped for macOS only."
+              : "Switch to a macOS device to configure native dictation."
+          }
+        />
       ) : (
         <>
           {error ? (
-            <Alert variant="destructive" className="rounded-md px-3 py-2 text-[12px]">
+            <Alert variant="destructive" className="rounded-lg px-3.5 py-3 text-[12px]">
               <AlertTriangle className="h-3.5 w-3.5" />
-              <AlertTitle className="text-[12px]">Dictation settings need attention</AlertTitle>
+              <AlertTitle className="text-[12.5px]">Dictation settings need attention</AlertTitle>
               <AlertDescription className="text-[12px]">{error}</AlertDescription>
             </Alert>
           ) : null}
 
-          <section className="grid gap-3 lg:grid-cols-3">
-            <SettingSelect
-              label="Engine preference"
-              value={selectedSettings.enginePreference}
-              disabled={isBusy}
-              options={ENGINE_OPTIONS}
-              onValueChange={(enginePreference) => updateSettings({ enginePreference })}
-            />
-            <SettingSelect
-              label="Privacy mode"
-              value={selectedSettings.privacyMode}
-              disabled={isBusy}
-              options={PRIVACY_OPTIONS}
-              onValueChange={(privacyMode) => updateSettings({ privacyMode })}
-            />
-            <div className="flex flex-col gap-2 rounded-md border border-border/60 px-3 py-3">
-              <label className="text-[12px] font-medium text-foreground" htmlFor="dictation-locale">
-                Locale
-              </label>
-              <Select
-                value={selectedLocale}
-                disabled={isBusy}
-                onValueChange={(value) =>
-                  updateSettings({ locale: value === SYSTEM_LOCALE_VALUE ? null : value })
-                }
-              >
-                <SelectTrigger id="dictation-locale" aria-label="Dictation locale" className="h-8 w-full text-[12.5px]" size="sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={SYSTEM_LOCALE_VALUE}>
-                    System default{status?.defaultLocale ? ` (${status.defaultLocale})` : ""}
-                  </SelectItem>
-                  {localeOptions.map((locale) => (
-                    <SelectItem key={locale} value={locale}>
-                      {locale}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-[11.5px] leading-[1.45] text-muted-foreground">
-                {selectedLocaleUnsupported
-                  ? "The selected locale is not in the current backend-supported list."
-                  : "Use System default unless a project needs a specific recognition locale."}
-              </p>
-            </div>
-          </section>
+          <ReadinessCard status={status!} settings={selectedSettings} saving={saveState === "saving"} />
 
-          <section className="flex flex-col gap-2.5">
-            <h4 className="text-[12.5px] font-semibold text-foreground">Availability</h4>
-            <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
-              <EngineRow label="Modern engine" available={status?.modern.available} reason={status?.modern.reason} />
-              <EngineRow label="Legacy engine" available={status?.legacy.available} reason={status?.legacy.reason} />
-              <PermissionRow kind="microphone" state={status?.microphonePermission ?? "unknown"} />
-              <PermissionRow kind="speech recognition" state={status?.speechPermission ?? "unknown"} />
-              <StatusRow
-                icon={Mic}
-                label="Modern speech assets"
-                tone={status?.modernAssets.status === "installed" ? "ok" : status?.modern.available ? "warn" : "muted"}
-                value={modernAssetLabel(status)}
-              />
-            </div>
-          </section>
+          <PreferencesPanel
+            settings={selectedSettings}
+            disabled={isBusy}
+            localeOptions={localeOptions}
+            selectedLocale={selectedLocale}
+            selectedLocaleUnsupported={selectedLocaleUnsupported}
+            defaultLocale={status?.defaultLocale ?? null}
+            onUpdate={updateSettings}
+          />
+
+          <CapabilitiesPanel status={status!} />
         </>
       )}
     </div>
   )
 }
 
-function SettingSelect<T extends string>({
+function ReadinessCard({
+  status,
+  settings,
+  saving,
+}: {
+  status: DictationStatusDto
+  settings: DictationSettingsDto
+  saving: boolean
+}) {
+  const summary = summarizeReadiness(status)
+  const activeEngineLabel =
+    status.modern.available && (settings.enginePreference === "automatic" || settings.enginePreference === "modern")
+      ? "Modern engine"
+      : status.legacy.available
+        ? "Legacy engine"
+        : status.modern.available
+          ? "Modern engine"
+          : "No engine available"
+  const localeLabel = settings.locale ?? status.defaultLocale ?? "System default"
+  const updatedLabel = useMemo(() => formatTimestamp(settings.updatedAt), [settings.updatedAt])
+
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/40 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]">
+      <div className="flex items-start gap-4 p-5">
+        <div
+          className={cn(
+            "flex size-12 shrink-0 items-center justify-center rounded-full ring-1 ring-inset",
+            TONE_BG[summary.tone],
+            TONE_RING[summary.tone],
+          )}
+          aria-hidden
+        >
+          <Mic className={cn("h-5 w-5", TONE_TEXT[summary.tone])} />
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="truncate text-[14px] font-semibold leading-tight text-foreground">
+              Native macOS dictation
+            </p>
+            <StatusPill tone={summary.tone} label={summary.label} />
+            {saving ? (
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <LoaderCircle className="h-3 w-3 animate-spin" />
+                Saving…
+              </span>
+            ) : null}
+          </div>
+          <p className="text-[12.5px] leading-[1.55] text-muted-foreground">{summary.body}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/60 px-5 py-3 text-[12px] text-muted-foreground">
+        <MetaItem icon={Cpu} label="Active" value={activeEngineLabel} />
+        <MetaItem icon={Globe2} label="Locale" value={localeLabel} mono />
+        {status.osVersion ? <MetaItem icon={Sparkles} label="macOS" value={status.osVersion} /> : null}
+        {updatedLabel ? <MetaItem icon={CheckCircle2} label="Updated" value={updatedLabel} /> : null}
+      </div>
+    </div>
+  )
+}
+
+function PreferencesPanel({
+  settings,
+  disabled,
+  localeOptions,
+  selectedLocale,
+  selectedLocaleUnsupported,
+  defaultLocale,
+  onUpdate,
+}: {
+  settings: DictationSettingsDto
+  disabled: boolean
+  localeOptions: string[]
+  selectedLocale: string
+  selectedLocaleUnsupported: boolean
+  defaultLocale: string | null
+  onUpdate: (patch: Partial<UpsertDictationSettingsRequestDto>) => void
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+        Preferences
+      </h4>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <PreferenceCard
+          icon={Cpu}
+          label="Engine preference"
+          value={settings.enginePreference}
+          disabled={disabled}
+          options={ENGINE_OPTIONS}
+          onValueChange={(enginePreference) => onUpdate({ enginePreference })}
+        />
+        <PreferenceCard
+          icon={ShieldCheck}
+          label="Privacy mode"
+          value={settings.privacyMode}
+          disabled={disabled}
+          options={PRIVACY_OPTIONS}
+          onValueChange={(privacyMode) => onUpdate({ privacyMode })}
+        />
+        <LocaleCard
+          disabled={disabled}
+          localeOptions={localeOptions}
+          selectedLocale={selectedLocale}
+          selectedLocaleUnsupported={selectedLocaleUnsupported}
+          defaultLocale={defaultLocale}
+          onValueChange={(value) => onUpdate({ locale: value === SYSTEM_LOCALE_VALUE ? null : value })}
+        />
+      </div>
+    </section>
+  )
+}
+
+function PreferenceCard<T extends string>({
+  icon: Icon,
   label,
   value,
   disabled,
   options,
   onValueChange,
 }: {
+  icon: React.ElementType
   label: string
   value: T
   disabled: boolean
@@ -266,8 +381,16 @@ function SettingSelect<T extends string>({
   const selected = options.find((option) => option.value === value)
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-border/60 px-3 py-3">
-      <label className="text-[12px] font-medium text-foreground">{label}</label>
+    <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/30 px-3.5 py-3.5">
+      <div className="flex items-center gap-2">
+        <span
+          className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground"
+          aria-hidden
+        >
+          <Icon className="h-3 w-3" />
+        </span>
+        <label className="text-[12px] font-medium text-foreground">{label}</label>
+      </div>
       <Select value={value} disabled={disabled} onValueChange={(nextValue) => onValueChange(nextValue as T)}>
         <SelectTrigger aria-label={label} className="h-8 w-full text-[12.5px]" size="sm">
           <SelectValue />
@@ -285,21 +408,132 @@ function SettingSelect<T extends string>({
   )
 }
 
+function LocaleCard({
+  disabled,
+  localeOptions,
+  selectedLocale,
+  selectedLocaleUnsupported,
+  defaultLocale,
+  onValueChange,
+}: {
+  disabled: boolean
+  localeOptions: string[]
+  selectedLocale: string
+  selectedLocaleUnsupported: boolean
+  defaultLocale: string | null
+  onValueChange: (value: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/30 px-3.5 py-3.5">
+      <div className="flex items-center gap-2">
+        <span
+          className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground"
+          aria-hidden
+        >
+          <Languages className="h-3 w-3" />
+        </span>
+        <label className="text-[12px] font-medium text-foreground" htmlFor="dictation-locale">
+          Locale
+        </label>
+      </div>
+      <Select value={selectedLocale} disabled={disabled} onValueChange={onValueChange}>
+        <SelectTrigger
+          id="dictation-locale"
+          aria-label="Dictation locale"
+          className="h-8 w-full text-[12.5px]"
+          size="sm"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SYSTEM_LOCALE_VALUE}>
+            System default{defaultLocale ? ` (${defaultLocale})` : ""}
+          </SelectItem>
+          {localeOptions.map((locale) => (
+            <SelectItem key={locale} value={locale}>
+              {locale}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p
+        className={cn(
+          "text-[11.5px] leading-[1.45]",
+          selectedLocaleUnsupported ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+        )}
+      >
+        {selectedLocaleUnsupported
+          ? "The selected locale is not in the current backend-supported list."
+          : "Use System default unless a project needs a specific recognition locale."}
+      </p>
+    </div>
+  )
+}
+
+function CapabilitiesPanel({ status }: { status: DictationStatusDto }) {
+  const modernAssetsTone: StatusTone =
+    status.modernAssets.status === "installed" ? "ok" : status.modern.available ? "warn" : "muted"
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+        System availability
+      </h4>
+      <ul className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30">
+        <EngineRow
+          icon={Sparkles}
+          label="Modern engine"
+          available={status.modern.available}
+          reason={status.modern.reason}
+          hint="macOS 26 SpeechAnalyzer path"
+        />
+        <EngineRow
+          icon={Cpu}
+          label="Legacy engine"
+          available={status.legacy.available}
+          reason={status.legacy.reason}
+          hint="SFSpeechRecognizer fallback"
+        />
+        <PermissionRow kind="microphone" state={status.microphonePermission} />
+        <PermissionRow kind="speech recognition" state={status.speechPermission} />
+        <CapabilityRow
+          icon={PackageOpen}
+          label="Modern speech assets"
+          tone={modernAssetsTone}
+          value={modernAssetLabel(status)}
+          pillLabel={
+            status.modernAssets.status === "installed"
+              ? "Installed"
+              : status.modern.available
+                ? "Check"
+                : "—"
+          }
+        />
+      </ul>
+    </section>
+  )
+}
+
 function EngineRow({
+  icon,
   label,
   available,
   reason,
+  hint,
 }: {
+  icon: React.ElementType
   label: string
-  available?: boolean
+  available: boolean
   reason?: string | null
+  hint: string
 }) {
   return (
-    <StatusRow
-      icon={Settings}
+    <CapabilityRow
+      icon={icon}
       label={label}
       tone={available ? "ok" : "warn"}
-      value={available ? "Available" : reason ? humanizeReason(reason) : "Unavailable"}
+      value={available ? hint : reason ? humanizeReason(reason) : "Unavailable"}
+      pillLabel={available ? "Ready" : "Unavailable"}
     />
   )
 }
@@ -312,13 +546,25 @@ function PermissionRow({
   state: DictationPermissionStateDto
 }) {
   const denied = state === "denied" || state === "restricted"
+  const tone: StatusTone = state === "authorized" ? "ok" : denied ? "bad" : "warn"
   const pane = kind === "microphone" ? "Privacy_Microphone" : "Privacy_SpeechRecognition"
+  const Icon = kind === "microphone" ? Mic : Volume2
+  const pillLabel =
+    state === "authorized"
+      ? "Allowed"
+      : denied
+        ? "Blocked"
+        : state === "not_determined"
+          ? "Will prompt"
+          : "Check"
+
   return (
-    <StatusRow
-      icon={denied ? AlertTriangle : CheckCircle2}
+    <CapabilityRow
+      icon={Icon}
       label={`${capitalize(kind)} permission`}
-      tone={state === "authorized" ? "ok" : denied ? "bad" : "warn"}
+      tone={tone}
       value={permissionLabel(state)}
+      pillLabel={pillLabel}
       action={
         denied ? (
           <Button
@@ -336,55 +582,165 @@ function PermissionRow({
   )
 }
 
-function StatusRow({
+function CapabilityRow({
   icon: Icon,
   label,
   tone,
   value,
+  pillLabel,
   action,
 }: {
   icon: React.ElementType
   label: string
-  tone: "ok" | "warn" | "bad" | "muted"
+  tone: StatusTone
   value: string
+  pillLabel: string
   action?: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3.5 py-3">
-      <div className="flex min-w-0 items-center gap-2.5">
-        <Icon
-          className={cn(
-            "h-3.5 w-3.5 shrink-0",
-            tone === "ok"
-              ? "text-emerald-600 dark:text-emerald-400"
-              : tone === "bad"
-                ? "text-destructive"
-                : tone === "warn"
-                  ? "text-amber-700 dark:text-amber-300"
-                  : "text-muted-foreground",
-          )}
-        />
-        <div className="min-w-0">
-          <p className="text-[12.5px] font-medium text-foreground">{label}</p>
-          <p className="mt-0.5 text-[11.5px] text-muted-foreground">{value}</p>
-        </div>
+    <li className="flex items-start gap-3 px-4 py-3">
+      <div
+        className={cn(
+          "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60",
+          TONE_TEXT[tone],
+        )}
+        aria-hidden
+      >
+        <Icon className="h-3.5 w-3.5" />
       </div>
-      {action ?? (
-        <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10.5px]">
-          {tone === "ok" ? "Ready" : tone === "bad" ? "Blocked" : "Check"}
-        </Badge>
+      <div className="min-w-0 flex-1">
+        <p className="text-[12.5px] font-medium text-foreground">{label}</p>
+        <p className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">{value}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {action}
+        <StatusPill tone={tone} label={pillLabel} />
+      </div>
+    </li>
+  )
+}
+
+function StatusPill({ tone, label }: { tone: StatusTone; label: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-[0.08em] ring-1 ring-inset",
+        TONE_BG[tone],
+        TONE_RING[tone],
+        TONE_TEXT[tone],
       )}
+    >
+      <span className={cn("size-1.5 rounded-full", TONE_DOT[tone])} aria-hidden />
+      {label}
+    </span>
+  )
+}
+
+function MetaItem({
+  icon: Icon,
+  label,
+  value,
+  mono = false,
+}: {
+  icon: React.ElementType
+  label: string
+  value: string
+  mono?: boolean
+}) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <Icon className="h-3 w-3 text-muted-foreground/70" aria-hidden />
+      <span className="text-muted-foreground/70">{label}</span>
+      <span className={cn("text-foreground/80", mono && "font-mono text-[11.5px]")}>{value}</span>
+    </span>
+  )
+}
+
+function UnavailableCard({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/70 bg-secondary/15 px-6 py-10 text-center">
+      <div className="flex size-11 items-center justify-center rounded-full border border-border/60 bg-background/60 text-muted-foreground">
+        <Mic className="h-5 w-5" />
+      </div>
+      <div className="flex max-w-sm flex-col gap-1.5">
+        <p className="text-[14px] font-semibold text-foreground">{title}</p>
+        <p className="text-[12.5px] leading-[1.55] text-muted-foreground">{body}</p>
+      </div>
     </div>
   )
 }
 
-function UnavailableState({ title }: { title: string }) {
+function LoadingCard() {
   return (
-    <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-10 text-center">
-      <Mic className="mx-auto h-4 w-4 text-muted-foreground" />
-      <p className="mt-2 text-[12.5px] font-medium text-foreground">{title}</p>
+    <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/70 bg-secondary/15 px-6 py-10 text-center">
+      <div className="flex size-11 items-center justify-center rounded-full border border-border/60 bg-background/60 text-muted-foreground">
+        <LoaderCircle className="h-5 w-5 animate-spin" />
+      </div>
+      <p className="text-[12.5px] font-medium text-foreground">Loading dictation settings</p>
     </div>
   )
+}
+
+function summarizeReadiness(status: DictationStatusDto): {
+  tone: StatusTone
+  label: string
+  body: string
+} {
+  const micBlocked = status.microphonePermission === "denied" || status.microphonePermission === "restricted"
+  const speechBlocked = status.speechPermission === "denied" || status.speechPermission === "restricted"
+  const anyBlocked = micBlocked || speechBlocked
+  const noEngine = !status.modern.available && !status.legacy.available
+
+  if (noEngine) {
+    return {
+      tone: "bad",
+      label: "Unavailable",
+      body: "No dictation engine is available on this Mac. Check the system requirements below.",
+    }
+  }
+
+  if (anyBlocked) {
+    return {
+      tone: "bad",
+      label: "Permissions blocked",
+      body: "macOS is blocking microphone or speech recognition for Cadence. Open System Settings to allow access.",
+    }
+  }
+
+  const micPending = status.microphonePermission === "not_determined"
+  const speechPending = status.speechPermission === "not_determined"
+  const assetsMissing = status.modern.available && status.modernAssets.status !== "installed"
+  const onlyLegacy = !status.modern.available && status.legacy.available
+
+  if (micPending || speechPending) {
+    return {
+      tone: "warn",
+      label: "Permissions pending",
+      body: "macOS will request microphone and speech permission the first time dictation runs.",
+    }
+  }
+
+  if (onlyLegacy) {
+    return {
+      tone: "warn",
+      label: "Legacy only",
+      body: "Only the legacy SFSpeechRecognizer engine is available. Modern dictation requires macOS 26.",
+    }
+  }
+
+  if (assetsMissing) {
+    return {
+      tone: "warn",
+      label: "Assets missing",
+      body: "Modern speech assets are not installed for the current locale. The first session will download them.",
+    }
+  }
+
+  return {
+    tone: "ok",
+    label: "Ready",
+    body: "Dictation is ready to use. Pick an engine, privacy mode, and locale below.",
+  }
 }
 
 function permissionLabel(state: DictationPermissionStateDto): string {
@@ -403,8 +759,8 @@ function permissionLabel(state: DictationPermissionStateDto): string {
   }
 }
 
-function modernAssetLabel(status: DictationStatusDto | null): string {
-  if (!status?.modern.available) return "Modern engine unavailable"
+function modernAssetLabel(status: DictationStatusDto): string {
+  if (!status.modern.available) return "Modern engine unavailable"
   switch (status.modernAssets.status) {
     case "installed":
       return status.modernAssets.locale ? `Installed for ${status.modernAssets.locale}` : "Installed"
@@ -436,6 +792,17 @@ function normalizeLocale(locale: string | null | undefined): string {
 
 function capitalize(value: string): string {
   return value.replace(/^\w/, (letter: string) => letter.toUpperCase())
+}
+
+function formatTimestamp(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
 }
 
 async function openMacosPrivacyPane(pane: string): Promise<void> {

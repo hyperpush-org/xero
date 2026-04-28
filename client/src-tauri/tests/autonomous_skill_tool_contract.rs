@@ -105,7 +105,7 @@ fn skill_tool_input_schema_rejects_unknown_fields_and_invalid_selectors() {
         "sourceId": source_id(),
         "approvalGrantId": null,
         "includeSupportingAssets": false,
-        "absolutePath": "/Users/sn0w/.cadence/skills/find-skills"
+        "absolutePath": "/Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills/find-skills"
     }));
     assert!(unknown_field.is_err());
 
@@ -173,7 +173,7 @@ fn skill_tool_access_contract_exposes_discovery_and_user_approval_boundaries() {
 fn skill_tool_failures_are_redacted_before_model_projection() {
     let local_path_error = CommandError::user_fixable(
         "skill_tool_read_failed",
-        "Could not read /Users/sn0w/.cadence/skills/find-skills/SKILL.md",
+        "Could not read /Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills/find-skills/SKILL.md",
     );
     let diagnostic = skill_tool_diagnostic_from_command_error(&local_path_error);
     assert!(diagnostic.redacted);
@@ -210,7 +210,7 @@ fn skill_tool_lifecycle_events_validate_success_failure_and_approval_shapes() {
         "Install failed.",
         &CommandError::retryable(
             "skill_tool_cache_failed",
-            "Cache write failed at /Users/sn0w/.cadence/skills",
+            "Cache write failed at /Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills",
         ),
     )
     .expect("failure event");
@@ -280,7 +280,7 @@ fn skill_tool_context_payload_allows_markdown_and_text_assets_without_raw_paths(
         },
         "supportingAssets": [{
             "relativePath": "guide.md",
-            "absolutePath": "/Users/sn0w/.cadence/skills/find-skills/guide.md",
+            "absolutePath": "/Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills/find-skills/guide.md",
             "sha256": SHA256_B,
             "bytes": asset_content.len(),
             "content": asset_content
@@ -293,7 +293,7 @@ fn skill_tool_context_payload_allows_markdown_and_text_assets_without_raw_paths(
         source_id: source_id(),
         skill_id: "find-skills".into(),
         markdown: CadenceSkillToolContextDocument {
-            relative_path: "/Users/sn0w/.cadence/skills/find-skills/SKILL.md".into(),
+            relative_path: "/Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills/find-skills/SKILL.md".into(),
             sha256: SHA256_A.into(),
             bytes: markdown_content.len(),
             content: markdown_content.into(),

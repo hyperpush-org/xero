@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "browser-webview",
   "description": "Sandbox for the in-app browser webviews. Arbitrary http(s) navigation, IPC limited to the bridge callback commands used by the injected init script.",
-  "webviews": ["cadence-browser", "cadence-browser-tab-*"],
+  "webviews": ["cadence-browser-tab-*"],
   "remote": {
     "urls": ["https://**", "http://**"]
   },

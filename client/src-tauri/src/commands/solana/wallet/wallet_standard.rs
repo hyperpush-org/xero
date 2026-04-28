@@ -1,10 +1,9 @@
 //! `@wallet-standard/react` + Mobile Wallet Standard scaffold.
 //!
-//! Smaller bundle than the legacy wallet-adapter path, designed for
-//! new projects. Uses `@wallet-standard/react` for wallet discovery
-//! and `@solana/wallet-standard-features` for Solana-specific hooks.
+//! Uses `@wallet-standard/react` for wallet discovery and
+//! `@solana/wallet-standard-features` for Solana-specific hooks.
 
-use super::{wallet_adapter::escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
+use super::{escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
 
 pub fn render(ctx: &WalletScaffoldContext) -> (Vec<(String, String)>, ScaffoldMeta) {
     let files = vec![

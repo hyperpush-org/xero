@@ -83,6 +83,7 @@ import type {
   OperatorApprovalDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
+  ProviderAuthSessionDto,
   ProviderModelCatalogDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
@@ -230,6 +231,24 @@ function makeProjectFiles(projectId = 'project-1'): ListProjectFilesResponseDto 
 function makeRuntimeSession(projectId = 'project-1', overrides: Partial<RuntimeSessionDto> = {}): RuntimeSessionDto {
   return {
     projectId,
+    runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
+    flowId: null,
+    sessionId: 'session-1',
+    accountId: 'acct-1',
+    phase: 'authenticated',
+    callbackBound: true,
+    authorizationUrl: 'https://auth.openai.com/oauth/authorize?client_id=test',
+    redirectUri: 'http://127.0.0.1:1455/auth/callback',
+    lastErrorCode: null,
+    lastError: null,
+    updatedAt: '2026-04-15T20:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeProviderAuthSession(overrides: Partial<ProviderAuthSessionDto> = {}): ProviderAuthSessionDto {
+  return {
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
     flowId: null,
@@ -1880,16 +1899,14 @@ function createAdapter(options?: {
         },
       }),
     getRuntimeSession: async () => currentRuntimeSession,
-    startOpenAiLogin: async (_projectId, _options) => {
-      currentRuntimeSession = makeRuntimeSession('project-1', {
+    startOpenAiLogin: async (_options) => {
+      return makeProviderAuthSession({
         phase: 'awaiting_browser_callback',
         flowId: 'flow-1',
       })
-      return currentRuntimeSession
     },
-    submitOpenAiCallback: async (_projectId, _flowId, _options) => {
-      currentRuntimeSession = makeRuntimeSession('project-1')
-      return currentRuntimeSession
+    submitOpenAiCallback: async (_flowId, _options) => {
+      return makeProviderAuthSession()
     },
     startAutonomousRun,
     startRuntimeRun,
@@ -1898,12 +1915,10 @@ function createAdapter(options?: {
     upsertProviderCredential,
     deleteProviderCredential,
     startOAuthLogin: async () => {
-      currentRuntimeSession = makeRuntimeSession('project-1')
-      return currentRuntimeSession
+      return makeProviderAuthSession()
     },
     completeOAuthCallback: async () => {
-      currentRuntimeSession = makeRuntimeSession('project-1')
-      return currentRuntimeSession
+      return makeProviderAuthSession()
     },
     startRuntimeSession: async () => {
       currentRuntimeSession = makeRuntimeSession('project-1')
@@ -2206,6 +2221,7 @@ describe('CadenceApp current UI', () => {
     expect(screen.getByText('OpenAI, Anthropic, Ollama, Bedrock, Vertex, and more')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Get started' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Skip setup' })).toBeVisible()
+    expect(screen.queryByLabelText('Status bar')).not.toBeInTheDocument()
   })
 
   it('falls through to the legacy empty state when onboarding is dismissed', async () => {
@@ -2252,9 +2268,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.change(within(card).getByLabelText(/API key/i), {
       target: { value: 'sk-or-v1-test-secret' },
     })
-    await act(async () => {
-      fireEvent.click(within(card).getByRole('button', { name: /save/i }))
-    })
+    fireEvent.click(within(card).getByRole('button', { name: /save/i }))
 
     await waitFor(() => expect(upsertProviderCredential).toHaveBeenCalledTimes(1))
     expect(upsertProviderCredential).toHaveBeenCalledWith(
@@ -2284,9 +2298,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.change(within(card).getByLabelText(/API key/i), {
       target: { value: 'sk-ant-test-secret' },
     })
-    await act(async () => {
-      fireEvent.click(within(card).getByRole('button', { name: /save/i }))
-    })
+    fireEvent.click(within(card).getByRole('button', { name: /save/i }))
 
     await waitFor(() => expect(upsertProviderCredential).toHaveBeenCalledTimes(1))
     expect(upsertProviderCredential).toHaveBeenCalledWith(

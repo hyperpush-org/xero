@@ -274,8 +274,8 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn create_state(root: &TempDir) -> DesktopState {
-    let registry_path = root.path().join("app-data").join("project-registry.json");
-    DesktopState::default().with_registry_file_override(registry_path)
+    DesktopState::default()
+        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
 }
 
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
@@ -305,11 +305,11 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
 
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(&app.handle().clone())
+        .global_db_path(&app.handle().clone())
         .expect("registry path");
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("import project into repo-local db");
+        .expect("import project into app-data db");
 
     registry::replace_projects(
         &registry_path,
@@ -366,6 +366,25 @@ fn upsert_pending_approval(
     .action_id
 }
 
+fn upsert_pending_approval_and_enqueue_dispatches(
+    repo_root: &std::path::Path,
+    project_id: &str,
+    session_id: &str,
+    created_at: &str,
+) -> String {
+    let action_id = upsert_pending_approval(repo_root, project_id, session_id, created_at);
+    project_store::enqueue_notification_dispatches(
+        repo_root,
+        &project_store::NotificationDispatchEnqueueRecord {
+            project_id: project_id.into(),
+            action_id: action_id.clone(),
+            enqueued_at: created_at.into(),
+        },
+    )
+    .expect("explicitly enqueue notification dispatches");
+    action_id
+}
+
 #[test]
 fn inbound_reply_ingestion_preserves_cross_channel_first_wins_resume_invariants() {
     let root = tempfile::tempdir().expect("temp dir");
@@ -387,8 +406,12 @@ fn inbound_reply_ingestion_preserves_cross_channel_first_wins_resume_invariants(
         "discord:998877665544332211",
     );
 
-    let action_id =
-        upsert_pending_approval(&repo_root, &project_id, "session-1", "2026-04-17T03:01:00Z");
+    let action_id = upsert_pending_approval_and_enqueue_dispatches(
+        &repo_root,
+        &project_id,
+        "session-1",
+        "2026-04-17T03:01:00Z",
+    );
 
     let dispatches =
         project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
@@ -544,8 +567,12 @@ fn inbound_reply_ingestion_rejects_forged_and_malformed_payloads_with_typed_code
         "telegram:tg-room",
     );
 
-    let action_id =
-        upsert_pending_approval(&repo_root, &project_id, "session-2", "2026-04-17T03:10:00Z");
+    let action_id = upsert_pending_approval_and_enqueue_dispatches(
+        &repo_root,
+        &project_id,
+        "session-2",
+        "2026-04-17T03:10:00Z",
+    );
     let dispatch =
         project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
             .expect("load dispatches")
@@ -746,8 +773,12 @@ fn inbound_reply_ingestion_continues_other_routes_when_one_fetch_errors() {
         "discord:998877665544332211",
     );
 
-    let action_id =
-        upsert_pending_approval(&repo_root, &project_id, "session-3", "2026-04-17T03:30:00Z");
+    let action_id = upsert_pending_approval_and_enqueue_dispatches(
+        &repo_root,
+        &project_id,
+        "session-3",
+        "2026-04-17T03:30:00Z",
+    );
     let dispatch =
         project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
             .expect("load dispatches")
@@ -836,8 +867,12 @@ fn inbound_reply_ingestion_route_message_dedupe_skips_duplicate_message_ids() {
         "discord:998877665544332211",
     );
 
-    let action_id =
-        upsert_pending_approval(&repo_root, &project_id, "session-4", "2026-04-17T03:40:00Z");
+    let action_id = upsert_pending_approval_and_enqueue_dispatches(
+        &repo_root,
+        &project_id,
+        "session-4",
+        "2026-04-17T03:40:00Z",
+    );
     let dispatch =
         project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
             .expect("load dispatches")
@@ -914,8 +949,12 @@ fn inbound_reply_ingestion_uses_submit_notification_reply_contract_directly() {
         "telegram:tg-room",
     );
 
-    let action_id =
-        upsert_pending_approval(&repo_root, &project_id, "session-5", "2026-04-17T03:50:00Z");
+    let action_id = upsert_pending_approval_and_enqueue_dispatches(
+        &repo_root,
+        &project_id,
+        "session-5",
+        "2026-04-17T03:50:00Z",
+    );
     let dispatch =
         project_store::load_notification_dispatches(&repo_root, &project_id, Some(&action_id))
             .expect("load dispatch")
@@ -979,7 +1018,7 @@ fn sync_notification_adapters_command_seam_preserves_dispatch_and_first_wins_rep
         "discord:998877665544332211",
     );
 
-    let action_id = upsert_pending_approval(
+    let action_id = upsert_pending_approval_and_enqueue_dispatches(
         &repo_root,
         &project_id,
         "session-sync",

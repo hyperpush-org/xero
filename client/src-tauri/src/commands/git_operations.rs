@@ -17,7 +17,7 @@ pub fn git_stage_paths<R: Runtime>(
     request: GitPathsRequestDto,
 ) -> CommandResult<()> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     operations::stage_paths(&request.project_id, &request.paths, &registry_path)?;
     emit_status_changed(&app, &request.project_id, &registry_path);
     Ok(())
@@ -30,7 +30,7 @@ pub fn git_unstage_paths<R: Runtime>(
     request: GitPathsRequestDto,
 ) -> CommandResult<()> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     operations::unstage_paths(&request.project_id, &request.paths, &registry_path)?;
     emit_status_changed(&app, &request.project_id, &registry_path);
     Ok(())
@@ -43,7 +43,7 @@ pub fn git_discard_changes<R: Runtime>(
     request: GitPathsRequestDto,
 ) -> CommandResult<()> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     operations::discard_changes(&request.project_id, &request.paths, &registry_path)?;
     emit_status_changed(&app, &request.project_id, &registry_path);
     Ok(())
@@ -56,7 +56,7 @@ pub fn git_commit<R: Runtime>(
     request: GitCommitRequestDto,
 ) -> CommandResult<GitCommitResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     let response = operations::commit(&request.project_id, &request.message, &registry_path)?;
     emit_status_changed(&app, &request.project_id, &registry_path);
     Ok(response)
@@ -69,7 +69,7 @@ pub fn git_fetch<R: Runtime>(
     request: GitRemoteRequestDto,
 ) -> CommandResult<GitFetchResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     operations::fetch(
         &request.project_id,
         request.remote.as_deref(),
@@ -84,7 +84,7 @@ pub fn git_pull<R: Runtime>(
     request: GitRemoteRequestDto,
 ) -> CommandResult<GitPullResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     let response = operations::pull(
         &request.project_id,
         request.remote.as_deref(),
@@ -103,7 +103,7 @@ pub fn git_push<R: Runtime>(
     request: GitRemoteRequestDto,
 ) -> CommandResult<GitPushResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     operations::push(
         &request.project_id,
         request.remote.as_deref(),

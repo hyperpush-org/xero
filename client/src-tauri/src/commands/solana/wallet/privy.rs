@@ -6,7 +6,7 @@
 //! placeholder so the developer can paste their app id after signing
 //! up at https://dashboard.privy.io.
 
-use super::{wallet_adapter::escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
+use super::{escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
 
 pub fn render(ctx: &WalletScaffoldContext) -> (Vec<(String, String)>, ScaffoldMeta) {
     let files = vec![

@@ -18,6 +18,13 @@ import {
   Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   AnalyzerKind,
   AuditEventPayload,
@@ -486,16 +493,24 @@ function ExternalTab({
       <label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
         Analyzer
       </label>
-      <select
-        className="rounded-md border border-border/70 bg-background/50 px-2 py-1 text-[11.5px]"
+      <Select
         value={analyzer}
-        onChange={(e) => setAnalyzer(e.target.value as AnalyzerKind)}
+        onValueChange={(value) => setAnalyzer(value as AnalyzerKind)}
       >
-        <option value="auto">Auto (try all)</option>
-        <option value="sec3">Sec3</option>
-        <option value="soteria">Soteria</option>
-        <option value="aderyn">Aderyn</option>
-      </select>
+        <SelectTrigger
+          aria-label="Analyzer"
+          className="h-8 w-full border-border/70 bg-background/50 text-[11.5px]"
+          size="sm"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="auto">Auto (try all)</SelectItem>
+          <SelectItem value="sec3">Sec3</SelectItem>
+          <SelectItem value="soteria">Soteria</SelectItem>
+          <SelectItem value="aderyn">Aderyn</SelectItem>
+        </SelectContent>
+      </Select>
       <label className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
         Project root
       </label>

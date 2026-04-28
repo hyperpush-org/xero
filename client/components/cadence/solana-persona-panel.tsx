@@ -10,6 +10,13 @@ import {
   Wallet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   ClusterKind,
   FundingDelta,
@@ -132,18 +139,25 @@ export function SolanaPersonaPanel({
             placeholder="e.g. whale-1"
             value={newName}
           />
-          <select
-            aria-label="Persona role"
-            className="h-8 rounded-md border border-border/60 bg-background px-2 text-[12px] outline-none transition-colors focus:border-primary/60"
-            onChange={(event) => setNewRole(event.target.value as PersonaRole)}
+          <Select
+            onValueChange={(value) => setNewRole(value as PersonaRole)}
             value={newRole}
           >
-            {roles.map((role) => (
-              <option key={role.id} value={role.id}>
-                {role.preset.displayLabel} · {formatLamports(role.preset.lamports)} SOL
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              aria-label="Persona role"
+              className="h-8 w-full border-border/60 bg-background text-[12px] focus:border-primary/60"
+              size="sm"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {roles.map((role) => (
+                <SelectItem key={role.id} value={role.id}>
+                  {role.preset.displayLabel} · {formatLamports(role.preset.lamports)} SOL
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <input
             aria-label="Persona note"
             className="h-8 rounded-md border border-border/60 bg-background px-2.5 text-[11.5px] outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-primary/60"

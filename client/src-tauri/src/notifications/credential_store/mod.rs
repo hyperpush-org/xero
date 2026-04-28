@@ -1,5 +1,4 @@
 mod file_store;
-mod importer;
 mod readiness;
 mod resolver;
 mod sql;
@@ -10,7 +9,6 @@ pub use file_store::{
     NotificationCredentialStoreFile, NotificationCredentialUpsertReceipt,
     NotificationInboundCursorEntry,
 };
-pub use importer::import_legacy_notification_credentials;
 pub use readiness::{
     NotificationCredentialReadinessDiagnostic, NotificationCredentialReadinessProjection,
     NotificationCredentialReadinessProjector, NotificationCredentialReadinessStatus,

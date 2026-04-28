@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener"
 import {
   AlertCircle,
   Check,
+  ChevronDown,
   Cloud,
   KeyRound,
   LoaderCircle,
@@ -17,7 +18,6 @@ import {
   OpenAIIcon,
 } from "@/components/cadence/brand-icons"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -31,6 +31,7 @@ import type { CloudProviderPreset } from "@/src/lib/cadence-model/provider-prese
 import {
   type ProviderCredentialDto,
   type ProviderCredentialsSnapshotDto,
+  type ProviderAuthSessionView,
   type RuntimeProviderIdDto,
   type RuntimeSessionView,
   type UpsertProviderCredentialRequestDto,
@@ -97,61 +98,41 @@ function findCredential(
   return snapshot.credentials.find((c) => c.providerId === providerId) ?? null
 }
 
-function getReadinessBadge(
-  preset: CloudProviderPreset,
-  credential: ProviderCredentialDto | null,
-): { label: string; className: string } {
-  if (!credential) {
-    if (preset.authMode === "oauth") {
-      return {
-        label: "Needs sign-in",
-        className: "border border-border bg-secondary text-muted-foreground",
-      }
-    }
-    if (preset.authMode === "local") {
-      return {
-        label: "Needs endpoint",
-        className: "border border-border bg-secondary text-muted-foreground",
-      }
-    }
-    if (preset.authMode === "ambient") {
-      return {
-        label: "Needs cloud config",
-        className: "border border-border bg-secondary text-muted-foreground",
-      }
-    }
-    return {
-      label: "Needs key",
-      className: "border border-border bg-secondary text-muted-foreground",
-    }
-  }
+interface StatusInfo {
+  label: string
+  detail: string | null
+}
 
+function getStatus(credential: ProviderCredentialDto): StatusInfo {
   switch (credential.readinessProof) {
     case "oauth_session":
       return {
         label: "Signed in",
-        className:
-          "border border-emerald-500/30 bg-emerald-500/10 text-emerald-500 dark:text-emerald-400",
+        detail: credential.oauthAccountId ? `@${credential.oauthAccountId}` : null,
       }
     case "stored_secret":
       return {
         label: "Ready",
-        className:
-          "border border-emerald-500/30 bg-emerald-500/10 text-emerald-500 dark:text-emerald-400",
+        detail: credential.baseUrl ?? null,
       }
     case "local":
       return {
         label: "Local",
-        className:
-          "border border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300",
+        detail: credential.baseUrl ?? null,
       }
     case "ambient":
       return {
-        label: "Ambient auth",
-        className:
-          "border border-cyan-500/30 bg-cyan-500/10 text-cyan-600 dark:text-cyan-300",
+        label: "Ambient",
+        detail: ambientDetail(credential),
       }
   }
+}
+
+function ambientDetail(credential: ProviderCredentialDto): string | null {
+  const parts = [credential.region, credential.projectId].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  )
+  return parts.length > 0 ? parts.join(" · ") : null
 }
 
 function createDraft(
@@ -201,7 +182,6 @@ function buildUpsertRequest(
         projectId: trimOrNull(draft.projectId),
       }
     case "oauth":
-      // OAuth providers go through start_oauth_login, not upsert.
       throw new Error(
         `Cadence persists ${preset.providerId} credentials through OAuth, not the upsert command.`,
       )
@@ -254,7 +234,7 @@ export interface ProviderCredentialsListProps {
   onStartOAuthLogin?: (request: {
     providerId: SupportedProviderId
     originator?: string | null
-  }) => Promise<RuntimeSessionView | null>
+  }) => Promise<ProviderAuthSessionView | null>
 }
 
 export function ProviderCredentialsList({
@@ -278,7 +258,6 @@ export function ProviderCredentialsList({
   const [saveError, setSaveError] = useState<SaveErrorState>(null)
   const [openAuthError, setOpenAuthError] = useState<SaveErrorState>(null)
 
-  // Auto-trigger initial load
   useEffect(() => {
     if (providerCredentialsLoadStatus === "idle" && onRefreshProviderCredentials) {
       onRefreshProviderCredentials().catch(() => {
@@ -335,7 +314,6 @@ export function ProviderCredentialsList({
     setSaveError(null)
     try {
       await onUpsertProviderCredential(buildUpsertRequest(preset, draft))
-      // On success, clear the api key field so the form doesn't keep the secret around.
       updateDraft(providerId, { apiKey: "" })
       setOpenProviderId(null)
     } catch (error) {
@@ -390,9 +368,277 @@ export function ProviderCredentialsList({
     providerCredentialsLoadStatus === "loading" && !providerCredentials
   const showLoadError = providerCredentialsLoadStatus === "error"
 
+  const supportedPresets = useMemo(
+    () => presets.filter((preset) => isSupportedProviderId(preset.providerId)),
+    [presets],
+  )
+
+  const { connected, available } = useMemo(() => {
+    const connectedRows: CloudProviderPreset[] = []
+    const availableRows: CloudProviderPreset[] = []
+    for (const preset of supportedPresets) {
+      const credential = findCredential(providerCredentials, preset.providerId)
+      if (credential) {
+        connectedRows.push(preset)
+      } else {
+        availableRows.push(preset)
+      }
+    }
+    return { connected: connectedRows, available: availableRows }
+  }, [providerCredentials, supportedPresets])
+
+  const renderRow = (preset: CloudProviderPreset) => {
+    const providerId = preset.providerId
+    if (!isSupportedProviderId(providerId)) return null
+    const credential = findCredential(providerCredentials, providerId)
+    const Icon = PROVIDER_ICON_BY_ID[providerId]
+    const isOpen = openProviderId === providerId
+    const draft = drafts[providerId] ?? createDraft(preset, credential)
+    const isSaving =
+      providerCredentialsSaveStatus === "running" && openProviderId === providerId
+    const localSaveError = saveError?.providerId === providerId ? saveError.message : null
+    const localSaveErrorFromAdapter =
+      providerCredentialsSaveError && openProviderId === providerId
+        ? providerCredentialsSaveError.message
+        : null
+    const localOpenAuthError =
+      openAuthError?.providerId === providerId ? openAuthError.message : null
+    const isOAuth = preset.authMode === "oauth"
+    const isAuthenticated =
+      credential?.kind === "oauth_session" && credential?.hasOauthAccessToken
+    const showAuthInProgress =
+      isOAuth &&
+      !!runtimeSession?.isLoginInProgress &&
+      runtimeSession.providerId === providerId
+    const status = credential ? getStatus(credential) : null
+
+    return (
+      <div
+        key={providerId}
+        className={cn(
+          "rounded-lg border bg-card/40 transition-colors",
+          isOpen ? "border-border" : "border-border/60 hover:border-border",
+        )}
+      >
+        <div className="flex items-center gap-3 px-3.5 py-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60">
+            <Icon className="h-4 w-4" />
+          </div>
+
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="truncate text-[13px] font-medium text-foreground">{preset.label}</span>
+            {status ? (
+              <span className="hidden items-center gap-1.5 truncate text-[12px] text-muted-foreground sm:flex">
+                <span
+                  className="size-1.5 shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400"
+                  aria-hidden
+                />
+                <span className="text-foreground/80">{status.label}</span>
+                {status.detail ? (
+                  <span className="truncate text-muted-foreground/70">· {status.detail}</span>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {isOAuth ? (
+              isAuthenticated ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                  onClick={() => handleDelete(providerId)}
+                  disabled={!onDeleteProviderCredential}
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  Sign out
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 text-[12px]"
+                  onClick={() => handleOAuthLogin(providerId)}
+                  disabled={
+                    !onStartOAuthLogin ||
+                    authPending?.providerId === providerId ||
+                    showAuthInProgress
+                  }
+                >
+                  {authPending?.providerId === providerId || showAuthInProgress ? (
+                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <LogIn className="h-3.5 w-3.5" />
+                  )}
+                  Sign in
+                </Button>
+              )
+            ) : (
+              <Button
+                variant={credential ? "ghost" : "outline"}
+                size="sm"
+                className={cn(
+                  "h-8 gap-1.5 text-[12px]",
+                  credential && "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => handleToggle(providerId, preset, credential)}
+                aria-expanded={isOpen}
+              >
+                {credential ? "Edit" : "Configure"}
+                <ChevronDown
+                  className={cn(
+                    "h-3.5 w-3.5 transition-transform",
+                    isOpen && "rotate-180",
+                  )}
+                />
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {localOpenAuthError ? (
+          <div className="border-t border-border/60 px-3.5 py-2.5">
+            <Alert variant="destructive" className="border-destructive/40">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{localOpenAuthError}</AlertDescription>
+            </Alert>
+          </div>
+        ) : null}
+
+        {!isOAuth && isOpen ? (
+          <div className="space-y-3 border-t border-border/60 px-3.5 py-3.5">
+            {preset.authMode === "api_key" ? (
+              <FieldRow>
+                <Label htmlFor={`${providerId}-api-key`} className="text-[11.5px] text-muted-foreground">
+                  API key
+                  {credential?.hasApiKey ? (
+                    <span className="ml-2 text-[11px] text-muted-foreground/70">
+                      (saved — leave empty to keep current)
+                    </span>
+                  ) : null}
+                </Label>
+                <Input
+                  id={`${providerId}-api-key`}
+                  type="password"
+                  autoComplete="off"
+                  value={draft.apiKey}
+                  onChange={(e) => updateDraft(providerId, { apiKey: e.target.value })}
+                  placeholder={credential?.hasApiKey ? "••••••••" : "Paste your API key"}
+                  className="h-9"
+                />
+              </FieldRow>
+            ) : null}
+
+            {preset.baseUrlMode !== "none" || preset.authMode === "local" ? (
+              <FieldRow>
+                <Label htmlFor={`${providerId}-base-url`} className="text-[11.5px] text-muted-foreground">
+                  Base URL
+                  {preset.baseUrlMode === "required" || preset.authMode === "local" ? (
+                    <span className="ml-1 text-destructive">*</span>
+                  ) : null}
+                </Label>
+                <Input
+                  id={`${providerId}-base-url`}
+                  value={draft.baseUrl}
+                  onChange={(e) => updateDraft(providerId, { baseUrl: e.target.value })}
+                  placeholder={preset.connectionHint}
+                  className="h-9"
+                />
+              </FieldRow>
+            ) : null}
+
+            {preset.apiVersionMode !== "none" ? (
+              <FieldRow>
+                <Label htmlFor={`${providerId}-api-version`} className="text-[11.5px] text-muted-foreground">
+                  API version
+                  {preset.apiVersionMode === "required" ? (
+                    <span className="ml-1 text-destructive">*</span>
+                  ) : null}
+                </Label>
+                <Input
+                  id={`${providerId}-api-version`}
+                  value={draft.apiVersion}
+                  onChange={(e) => updateDraft(providerId, { apiVersion: e.target.value })}
+                  className="h-9"
+                />
+              </FieldRow>
+            ) : null}
+
+            {preset.regionMode === "required" ? (
+              <FieldRow>
+                <Label htmlFor={`${providerId}-region`} className="text-[11.5px] text-muted-foreground">
+                  Region <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id={`${providerId}-region`}
+                  value={draft.region}
+                  onChange={(e) => updateDraft(providerId, { region: e.target.value })}
+                  className="h-9"
+                />
+              </FieldRow>
+            ) : null}
+
+            {preset.projectIdMode === "required" ? (
+              <FieldRow>
+                <Label htmlFor={`${providerId}-project-id`} className="text-[11.5px] text-muted-foreground">
+                  Project ID <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id={`${providerId}-project-id`}
+                  value={draft.projectId}
+                  onChange={(e) => updateDraft(providerId, { projectId: e.target.value })}
+                  className="h-9"
+                />
+              </FieldRow>
+            ) : null}
+
+            {localSaveError || localSaveErrorFromAdapter ? (
+              <Alert variant="destructive" className="border-destructive/40">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  {localSaveError ?? localSaveErrorFromAdapter}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              {credential ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleDelete(providerId)}
+                  disabled={isSaving || !onDeleteProviderCredential}
+                  className="h-8 text-[12px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                >
+                  Remove
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Button
+                size="sm"
+                className="h-8 gap-1.5 text-[12px]"
+                onClick={() => handleSave(preset)}
+                disabled={isSaving || !onUpsertProviderCredential}
+              >
+                {isSaving ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                Save
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col gap-4">
-      {showLoadError && (
+    <div className="flex flex-col gap-6">
+      {showLoadError ? (
         <Alert variant="destructive" className="border-destructive/40">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
@@ -402,236 +648,53 @@ export function ProviderCredentialsList({
             )}
           </AlertDescription>
         </Alert>
-      )}
+      ) : null}
 
-      {showLoadingState && (
-        <div className="flex items-center gap-2 rounded-md border border-border bg-card/50 p-3 text-sm text-muted-foreground">
-          <LoaderCircle className="h-4 w-4 animate-spin" />
+      {showLoadingState ? (
+        <div className="flex items-center gap-2 rounded-md border border-border/60 bg-card/40 px-3 py-2.5 text-[12.5px] text-muted-foreground">
+          <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
           Loading provider credentials…
         </div>
-      )}
+      ) : null}
 
-      {presets.map((preset) => {
-        const providerId = preset.providerId
-        if (!isSupportedProviderId(providerId)) return null
-        const credential = findCredential(providerCredentials, providerId)
-        const badge = getReadinessBadge(preset, credential)
-        const Icon = PROVIDER_ICON_BY_ID[providerId]
-        const isOpen = openProviderId === providerId
-        const draft = drafts[providerId] ?? createDraft(preset, credential)
-        const isSaving =
-          providerCredentialsSaveStatus === "running" && openProviderId === providerId
-        const localSaveError = saveError?.providerId === providerId ? saveError.message : null
-        const localSaveErrorFromAdapter =
-          providerCredentialsSaveError && openProviderId === providerId
-            ? providerCredentialsSaveError.message
-            : null
-        const localOpenAuthError =
-          openAuthError?.providerId === providerId ? openAuthError.message : null
-        const isOAuth = preset.authMode === "oauth"
-        const isAuthenticated =
-          credential?.kind === "oauth_session" && credential?.hasOauthAccessToken
-        const showAuthInProgress =
-          isOAuth &&
-          !!runtimeSession?.isLoginInProgress &&
-          runtimeSession.providerId === providerId
+      {connected.length > 0 ? (
+        <Group title="Connected" count={connected.length}>
+          {connected.map(renderRow)}
+        </Group>
+      ) : null}
 
-        return (
-          <div
-            key={providerId}
-            className="rounded-lg border border-border bg-card/40 p-4 transition-colors hover:border-border/80"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background">
-                  <Icon className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-foreground">{preset.label}</span>
-                    <Badge className={cn("h-5 px-2 text-[10px] font-medium", badge.className)}>
-                      {badge.label}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{preset.description}</p>
-                </div>
-              </div>
-
-              <div className="flex shrink-0 items-center gap-2">
-                {isOAuth ? (
-                  isAuthenticated ? (
-                    <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleDelete(providerId)}
-                        disabled={!onDeleteProviderCredential}
-                      >
-                        <LogOut className="mr-1.5 h-3.5 w-3.5" />
-                        Sign out
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleOAuthLogin(providerId)}
-                      disabled={
-                        !onStartOAuthLogin ||
-                        authPending?.providerId === providerId ||
-                        showAuthInProgress
-                      }
-                    >
-                      {authPending?.providerId === providerId || showAuthInProgress ? (
-                        <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <LogIn className="mr-1.5 h-3.5 w-3.5" />
-                      )}
-                      Sign in
-                    </Button>
-                  )
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleToggle(providerId, preset, credential)}
-                  >
-                    {isOpen ? "Close" : credential ? "Edit" : "Configure"}
-                  </Button>
-                )}
-              </div>
-            </div>
-
-            {localOpenAuthError && (
-              <Alert variant="destructive" className="mt-3 border-destructive/40">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{localOpenAuthError}</AlertDescription>
-              </Alert>
-            )}
-
-            {!isOAuth && isOpen && (
-              <div className="mt-4 space-y-3 border-t border-border pt-4">
-                {preset.authMode === "api_key" && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${providerId}-api-key`} className="text-xs">
-                      API key
-                      {credential?.hasApiKey && (
-                        <span className="ml-2 text-[11px] text-muted-foreground">
-                          (saved — leave empty to keep current)
-                        </span>
-                      )}
-                    </Label>
-                    <Input
-                      id={`${providerId}-api-key`}
-                      type="password"
-                      autoComplete="off"
-                      value={draft.apiKey}
-                      onChange={(e) => updateDraft(providerId, { apiKey: e.target.value })}
-                      placeholder={credential?.hasApiKey ? "••••••••" : "Paste your API key"}
-                    />
-                  </div>
-                )}
-
-                {(preset.baseUrlMode !== "none" || preset.authMode === "local") && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${providerId}-base-url`} className="text-xs">
-                      Base URL
-                      {preset.baseUrlMode === "required" || preset.authMode === "local" ? (
-                        <span className="ml-1 text-destructive">*</span>
-                      ) : null}
-                    </Label>
-                    <Input
-                      id={`${providerId}-base-url`}
-                      value={draft.baseUrl}
-                      onChange={(e) => updateDraft(providerId, { baseUrl: e.target.value })}
-                      placeholder={preset.connectionHint}
-                    />
-                  </div>
-                )}
-
-                {preset.apiVersionMode !== "none" && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${providerId}-api-version`} className="text-xs">
-                      API version
-                      {preset.apiVersionMode === "required" && (
-                        <span className="ml-1 text-destructive">*</span>
-                      )}
-                    </Label>
-                    <Input
-                      id={`${providerId}-api-version`}
-                      value={draft.apiVersion}
-                      onChange={(e) => updateDraft(providerId, { apiVersion: e.target.value })}
-                    />
-                  </div>
-                )}
-
-                {preset.regionMode === "required" && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${providerId}-region`} className="text-xs">
-                      Region <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      id={`${providerId}-region`}
-                      value={draft.region}
-                      onChange={(e) => updateDraft(providerId, { region: e.target.value })}
-                    />
-                  </div>
-                )}
-
-                {preset.projectIdMode === "required" && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${providerId}-project-id`} className="text-xs">
-                      Project ID <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      id={`${providerId}-project-id`}
-                      value={draft.projectId}
-                      onChange={(e) => updateDraft(providerId, { projectId: e.target.value })}
-                    />
-                  </div>
-                )}
-
-                {(localSaveError || localSaveErrorFromAdapter) && (
-                  <Alert variant="destructive" className="border-destructive/40">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertDescription>
-                      {localSaveError ?? localSaveErrorFromAdapter}
-                    </AlertDescription>
-                  </Alert>
-                )}
-
-                <div className="flex items-center justify-between gap-2 pt-2">
-                  {credential ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(providerId)}
-                      disabled={isSaving || !onDeleteProviderCredential}
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      Remove
-                    </Button>
-                  ) : (
-                    <span />
-                  )}
-                  <Button
-                    size="sm"
-                    onClick={() => handleSave(preset)}
-                    disabled={isSaving || !onUpsertProviderCredential}
-                  >
-                    {isSaving ? (
-                      <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Check className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    Save
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        )
-      })}
+      <Group
+        title={connected.length > 0 ? "Available" : "All providers"}
+        count={available.length}
+      >
+        {available.map(renderRow)}
+      </Group>
     </div>
   )
+}
+
+function Group({
+  title,
+  count,
+  children,
+}: {
+  title: string
+  count: number
+  children: React.ReactNode
+}) {
+  return (
+    <section className="flex flex-col gap-2">
+      <header className="flex items-baseline gap-2 px-1">
+        <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+          {title}
+        </h4>
+        <span className="text-[11px] tabular-nums text-muted-foreground/60">{count}</span>
+      </header>
+      <div className="flex flex-col gap-1.5">{children}</div>
+    </section>
+  )
+}
+
+function FieldRow({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-col gap-1.5">{children}</div>
 }

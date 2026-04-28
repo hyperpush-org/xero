@@ -1,27 +1,29 @@
-//! Generic per-provider OAuth login entry point introduced in Phase 2.2 of the
-//! provider-layer refactor. Today only `openai_codex` actually browses out for
-//! credentials; this command wraps the existing OpenAI Codex flow but accepts
-//! a `provider_id` directly so callers no longer think in terms of provider
-//! profiles.
+//! Generic app-scoped provider OAuth login entry point. Provider credentials are
+//! app-local, so this command intentionally does not require or mutate a project.
 
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
+    auth::{ensure_openai_profile_target, start_provider_auth_flow},
     commands::{
-        start_openai_login::start_openai_login, validate_non_empty, CommandError, CommandResult,
-        RuntimeSessionDto, StartOAuthLoginRequestDto, StartOpenAiLoginRequestDto,
+        validate_non_empty, CommandError, CommandResult, ProviderAuthSessionDto,
+        StartOAuthLoginRequestDto,
     },
-    runtime::OPENAI_CODEX_PROVIDER_ID,
+    provider_credentials::OPENAI_CODEX_DEFAULT_PROFILE_ID,
+    runtime::{openai_codex_provider, OPENAI_CODEX_PROVIDER_ID},
     state::DesktopState,
 };
+
+use super::runtime_support::command_error_from_auth;
+
+pub(crate) const PROVIDER_CREDENTIAL_OAUTH_SCOPE_ID: &str = "app-provider-credentials";
 
 #[tauri::command]
 pub fn start_oauth_login<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: StartOAuthLoginRequestDto,
-) -> CommandResult<RuntimeSessionDto> {
-    validate_non_empty(&request.project_id, "projectId")?;
+) -> CommandResult<ProviderAuthSessionDto> {
     validate_non_empty(&request.provider_id, "providerId")?;
 
     if request.provider_id != OPENAI_CODEX_PROVIDER_ID {
@@ -34,14 +36,37 @@ pub fn start_oauth_login<R: Runtime>(
         ));
     }
 
-    let profile_id = format!("{}-default", request.provider_id);
-    start_openai_login(
-        app,
-        state,
-        StartOpenAiLoginRequestDto {
-            project_id: request.project_id,
-            profile_id,
-            originator: request.originator,
-        },
+    let provider = openai_codex_provider();
+    ensure_openai_profile_target(
+        &app,
+        state.inner(),
+        OPENAI_CODEX_DEFAULT_PROFILE_ID,
+        crate::commands::RuntimeAuthPhase::Starting,
+        "start OpenAI login",
     )
+    .map_err(command_error_from_auth)?;
+
+    let started = start_provider_auth_flow(
+        state.inner(),
+        provider.provider,
+        PROVIDER_CREDENTIAL_OAUTH_SCOPE_ID,
+        OPENAI_CODEX_DEFAULT_PROFILE_ID,
+        request.originator.as_deref(),
+    )
+    .map_err(command_error_from_auth)?;
+
+    Ok(ProviderAuthSessionDto {
+        runtime_kind: provider.runtime_kind.into(),
+        provider_id: started.provider_id,
+        flow_id: Some(started.flow_id),
+        session_id: None,
+        account_id: None,
+        phase: started.phase,
+        callback_bound: Some(started.callback_bound),
+        authorization_url: Some(started.authorization_url),
+        redirect_uri: Some(started.redirect_uri),
+        last_error_code: started.last_error_code.clone(),
+        last_error: None,
+        updated_at: started.updated_at,
+    })
 }

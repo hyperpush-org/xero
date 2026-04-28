@@ -75,7 +75,7 @@ pub fn upsert_notification_route_credentials<R: Runtime>(
         ));
     }
 
-    let credential_store_path = state.notification_credential_store_file(&app)?;
+    let credential_store_path = state.global_db_path(&app)?;
     let credential_store = FileNotificationCredentialStore::new(credential_store_path);
     let receipt = credential_store
         .upsert_route_credentials(

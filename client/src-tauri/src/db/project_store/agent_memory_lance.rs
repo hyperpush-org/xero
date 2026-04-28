@@ -2,10 +2,8 @@
 //!
 //! Holds the per-project Lance dataset under
 //! `<app-data>/projects/<project-id>/lance/agent_memories.lance/`. The public
-//! API mirrors the previous SQLite-backed `agent_memory` module exactly: callers
-//! pass the per-project repo root, we resolve the dataset directory the same way
-//! the SQLite path was resolved, and wrap async lance ops with a dedicated
-//! tokio runtime so the rest of the codebase stays sync.
+//! API stays synchronous for the surrounding Tauri command layer by wrapping
+//! async LanceDB operations with a dedicated tokio runtime.
 //!
 //! Lance lives outside the SQLite transaction boundary, so the store does not
 //! enforce relational invariants (uniqueness, FK cascades) at the storage
@@ -42,9 +40,6 @@ use super::agent_memory::{
 /// declared so future code can populate it without a schema migration.
 pub const AGENT_MEMORY_EMBEDDING_DIM: i32 = 768;
 
-/// Dataset directory name beneath `<project>/lance/`.
-pub const AGENT_MEMORIES_DATASET_NAME: &str = "agent_memories";
-
 /// Lance-table identifier inside the dataset directory. LanceDB datasets use
 /// directories named `<table>.lance/`, but the connection API expects the
 /// table name without the `.lance` suffix.
@@ -52,11 +47,6 @@ const AGENT_MEMORIES_TABLE: &str = "agent_memories";
 
 /// Subdirectory under each per-project app-data dir that hosts Lance datasets.
 pub const PROJECT_LANCE_SUBDIR: &str = "lance";
-
-/// Filename for the staging payload written by the SQLite migration so the
-/// lance importer can drain it on next open. Lives in the same directory as
-/// the project SQLite file so the lifecycles match.
-pub const PENDING_LANCE_IMPORT_FILE: &str = "agent_memories.lance-pending.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AgentMemoryListFilterOwned {
@@ -82,14 +72,6 @@ pub fn dataset_dir_for_database_path(database_path: &Path) -> PathBuf {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(PROJECT_LANCE_SUBDIR)
-}
-
-pub fn pending_import_path(database_path: &Path) -> PathBuf {
-    database_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(PENDING_LANCE_IMPORT_FILE)
 }
 
 pub fn schema() -> SchemaRef {
@@ -248,11 +230,7 @@ async fn ensure_connection(dataset_dir: &Path) -> Result<Connection, CommandErro
 }
 
 async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandError> {
-    match connection
-        .open_table(AGENT_MEMORIES_TABLE)
-        .execute()
-        .await
-    {
+    match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
         Ok(table) => Ok(table),
         Err(_) => {
             let schema = schema();
@@ -266,9 +244,7 @@ async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandE
                 .create_table(AGENT_MEMORIES_TABLE, reader)
                 .execute()
                 .await
-                .map_err(|error| {
-                    map_lance_error("agent_memory_lance_create_table_failed", error)
-                })
+                .map_err(|error| map_lance_error("agent_memory_lance_create_table_failed", error))
         }
     }
 }
@@ -748,29 +724,9 @@ impl ProjectMemoryStore {
         runtime().block_on(async move { delete_row(&dataset, &memory_id).await })
     }
 
-    /// Replace any pending lance-import payload at `database_path` with the
-    /// given rows. Used by the SQLite migration to stage data so the live
-    /// store can drain it on next open.
-    pub fn drain_pending_import(
-        &self,
-        rows: Vec<AgentMemoryRow>,
-    ) -> Result<usize, CommandError> {
-        let dataset = self.dataset_dir.clone();
-        let count = rows.len();
-        runtime().block_on(async move {
-            let connection = ensure_connection(&dataset).await?;
-            let table = open_or_create_table(&connection).await?;
-            for row in rows {
-                insert_row(&table, &row).await?;
-            }
-            Ok::<(), CommandError>(())
-        })?;
-        Ok(count)
-    }
-
-    /// Mirror the SQLite `agent_memories_clear_deleted_source_run` trigger:
-    /// when an `agent_runs` row is removed, blank the provenance fields of any
-    /// memory that referenced it.
+    /// When an `agent_runs` row is removed, blank the provenance fields of any
+    /// memory that referenced it so Lance records stay aligned with the
+    /// relational runtime store.
     pub fn clear_runs(&self, run_ids: &[String], now: &str) -> Result<usize, CommandError> {
         if run_ids.is_empty() {
             return Ok(0);
@@ -918,11 +874,7 @@ fn stamp_project(mut row: AgentMemoryRow, project_id: &str) -> AgentMemoryRow {
 
 async fn scan_all(dataset_dir: &Path) -> Result<Vec<AgentMemoryRow>, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = match connection
-        .open_table(AGENT_MEMORIES_TABLE)
-        .execute()
-        .await
-    {
+    let table = match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
         Ok(table) => table,
         Err(_) => return Ok(Vec::new()),
     };
@@ -970,11 +922,7 @@ async fn replace_row(dataset_dir: &Path, row: AgentMemoryRow) -> Result<(), Comm
 
 async fn delete_row(dataset_dir: &Path, memory_id: &str) -> Result<bool, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = match connection
-        .open_table(AGENT_MEMORIES_TABLE)
-        .execute()
-        .await
-    {
+    let table = match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
         Ok(table) => table,
         Err(_) => return Ok(false),
     };
@@ -1293,10 +1241,7 @@ mod tests {
             &Some("session-a".into()),
             AgentMemoryListFilterOwned::default(),
         );
-        let ids: Vec<_> = only_a
-            .iter()
-            .map(|row| row.memory_id.clone())
-            .collect();
+        let ids: Vec<_> = only_a.iter().map(|row| row.memory_id.clone()).collect();
         assert!(ids.contains(&"session-mem".to_string()));
         assert!(ids.contains(&"project-mem".to_string()));
 

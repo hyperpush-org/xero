@@ -23,16 +23,9 @@ use tempfile::TempDir;
 fn build_mock_app(root: &TempDir) -> tauri::App<tauri::test::MockRuntime> {
     let app_data = root.path().join("app-data");
     fs::create_dir_all(&app_data).expect("create app-data dir");
-    let registry_path = app_data.join("project-registry.json");
     let global_db_path = app_data.join("cadence.db");
-    let auth_store_path = global_db_path.clone();
-    let credential_store_path = global_db_path.clone();
 
-    let state = DesktopState::default()
-        .with_global_db_path_override(global_db_path)
-        .with_registry_file_override(registry_path)
-        .with_auth_store_file_override(auth_store_path)
-        .with_notification_credential_store_file_override(credential_store_path);
+    let state = DesktopState::default().with_global_db_path_override(global_db_path);
 
     configure_builder_with_state(tauri::test::mock_builder(), state)
         .build(tauri::generate_context!())
@@ -70,7 +63,7 @@ fn seed_project(
 
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(app.handle())
+        .global_db_path(app.handle())
         .expect("registry path");
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
@@ -119,7 +112,7 @@ fn insert_raw_route(
     route_target: &str,
 ) {
     let connection = rusqlite::Connection::open(database_path_for_repo(repo_root))
-        .expect("open repo-local sqlite connection");
+        .expect("open app-data sqlite connection");
 
     connection
         .execute(
@@ -220,7 +213,7 @@ fn list_notification_routes_projects_redacted_readiness_for_present_and_partial_
 
     let credential_store_path = app
         .state::<DesktopState>()
-        .notification_credential_store_file(app.handle())
+        .global_db_path(app.handle())
         .expect("credential store path");
     write_store_file(
         &credential_store_path,
@@ -371,7 +364,7 @@ fn list_notification_routes_returns_typed_error_when_global_database_is_unavaila
 
     let credential_store_path = app
         .state::<DesktopState>()
-        .notification_credential_store_file(app.handle())
+        .global_db_path(app.handle())
         .expect("credential store path");
     fs::remove_file(&credential_store_path).expect("remove seeded global database");
     let _ = fs::remove_file(credential_store_path.with_extension("db-wal"));
@@ -412,7 +405,7 @@ fn list_notification_routes_marks_malformed_store_as_fail_closed_with_typed_diag
 
     let credential_store_path = app
         .state::<DesktopState>()
-        .notification_credential_store_file(app.handle())
+        .global_db_path(app.handle())
         .expect("credential store path");
     if let Some(parent) = credential_store_path.parent() {
         fs::create_dir_all(parent).expect("create app-data directory");

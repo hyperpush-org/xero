@@ -101,7 +101,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: "Example",
         url: "https://example.com/",
         loading: false,
@@ -126,7 +126,7 @@ describe("BrowserSidebar", () => {
       shownUrls.push(String((args as { url?: string })?.url ?? ""))
       return {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: String((args as { url?: string })?.url ?? ""),
         loading: true,
@@ -153,7 +153,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: "https://example.com/",
         loading: false,
@@ -204,7 +204,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: "https://example.com/",
         loading: false,
@@ -239,7 +239,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: "https://example.com/",
         loading: false,
@@ -278,7 +278,7 @@ describe("BrowserSidebar", () => {
       recordedArgs = (args as Record<string, unknown>) ?? null
       return {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: String((args as { url?: string })?.url ?? ""),
         loading: true,
@@ -304,7 +304,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: "https://example.com/",
         loading: false,
@@ -350,7 +350,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: "https://example.com/",
         loading: false,
@@ -375,7 +375,7 @@ describe("BrowserSidebar", () => {
     registerInvoke("browser_tab_list", async () => [
       {
         id: "tab-1",
-        label: "cadence-browser",
+        label: "cadence-browser-tab-1",
         title: null,
         url: "https://example.com/",
         loading: false,
@@ -400,5 +400,157 @@ describe("BrowserSidebar", () => {
     })
 
     await waitFor(() => expect(input.value).toBe("https://example.com/changed"))
+  })
+
+  it("hides the dev-server tools toolbar on a non-localhost tab", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "cadence-browser-tab-1",
+        title: "Example",
+        url: "https://example.com/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+    await screen.findByLabelText("Address")
+
+    expect(screen.queryByLabelText("Sketch on page")).toBeNull()
+    expect(screen.queryByLabelText("Inspect element")).toBeNull()
+  })
+
+  it("reveals the pen and inspect tools when the active tab is on a dev server", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "cadence-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+
+    expect(await screen.findByLabelText("Sketch on page")).toBeInTheDocument()
+    expect(await screen.findByLabelText("Inspect element")).toBeInTheDocument()
+  })
+
+  it("toggles pen mode and shows the drawing overlay; clicking again exits", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "cadence-browser-tab-1",
+        title: "Local",
+        url: "http://127.0.0.1:3000/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+
+    const penButton = await screen.findByLabelText("Sketch on page")
+    fireEvent.click(penButton)
+
+    expect(screen.getByTestId("browser-pen-overlay")).toBeInTheDocument()
+    expect(penButton).toHaveAttribute("aria-pressed", "true")
+
+    fireEvent.click(penButton)
+    expect(screen.queryByTestId("browser-pen-overlay")).toBeNull()
+    expect(penButton).toHaveAttribute("aria-pressed", "false")
+  })
+
+  it("opens the inspect overlay and renders the mini composer when a mock element is selected", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "cadence-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:8080/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+    const inspectButton = await screen.findByLabelText("Inspect element")
+    fireEvent.click(inspectButton)
+
+    const overlay = screen.getByTestId("browser-inspect-overlay")
+    expect(overlay).toBeInTheDocument()
+
+    const target = screen.getByTestId("browser-inspect-element-cta")
+    fireEvent.click(target)
+
+    expect(await screen.findByTestId("browser-mini-composer")).toBeInTheDocument()
+    expect(screen.getByLabelText("Mini composer input")).toBeInTheDocument()
+    expect(screen.getByLabelText("Send")).toBeInTheDocument()
+  })
+
+  it("switching from pen to inspect closes the pen overlay", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "cadence-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+    fireEvent.click(await screen.findByLabelText("Sketch on page"))
+    expect(screen.getByTestId("browser-pen-overlay")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText("Inspect element"))
+    expect(screen.queryByTestId("browser-pen-overlay")).toBeNull()
+    expect(screen.getByTestId("browser-inspect-overlay")).toBeInTheDocument()
+  })
+
+  it("clears tool mode when the URL changes off the dev server", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "cadence-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+    fireEvent.click(await screen.findByLabelText("Sketch on page"))
+    expect(screen.getByTestId("browser-pen-overlay")).toBeInTheDocument()
+
+    await act(async () => {
+      emitEvent("browser:url_changed", {
+        tabId: "tab-1",
+        url: "https://example.com/",
+        title: "Example",
+        canGoBack: true,
+        canGoForward: false,
+      })
+    })
+
+    await waitFor(() => expect(screen.queryByTestId("browser-pen-overlay")).toBeNull())
+    expect(screen.queryByLabelText("Sketch on page")).toBeNull()
   })
 })

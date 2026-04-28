@@ -40,13 +40,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::toolchain::configure_tauri_roots(app.handle());
             window_state::configure_main_window(app.handle().clone());
 
-            // Phase 2.6: one-shot legacy JSON → SQLite migrations. Each store's importer is
-            // idempotent and only runs when (a) its destination table is empty and (b) the
-            // legacy file exists, so re-running across boots is safe.
-            //
-            // Phase 6: after the importer runs we tighten file-mode permissions on the
-            // app-data directory and the global database file so credentials at rest are
-            // not world-readable on multi-user systems.
+            // Configure the current global database path and tighten file-mode permissions on
+            // app-data storage so credentials at rest are not world-readable on multi-user systems.
             {
                 use tauri::Manager;
                 let app_handle = app.handle().clone();
@@ -56,14 +51,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
                         .global_db_path(&app_handle)
                         .unwrap_or_else(|_| app_data_dir.join(global_db::GLOBAL_DATABASE_FILE_NAME));
                     db::configure_project_database_paths(&global_db_path);
-
-                    let paths = global_db::LegacyJsonImportPaths::resolve(&app_data_dir);
-                    if let Err(error) = global_db::run_legacy_json_imports(&paths) {
-                        eprintln!(
-                            "[storage] legacy JSON import skipped: {} ({})",
-                            error.message, error.code
-                        );
-                    }
 
                     if let Err(error) =
                         global_db::permissions::harden_global_paths(&app_data_dir, &global_db_path)
@@ -96,7 +83,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
                 use tauri::Manager;
                 let app_handle = app.handle().clone();
                 let desktop_state = app_handle.state::<state::DesktopState>();
-                if let Ok(registry_path) = desktop_state.registry_file(&app_handle) {
+                if let Ok(registry_path) = desktop_state.global_db_path(&app_handle) {
                     if let Ok(reg) = registry::read_registry(&registry_path) {
                         for record in reg.projects {
                             let root = Path::new(&record.root_path);

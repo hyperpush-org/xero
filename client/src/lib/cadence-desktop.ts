@@ -164,6 +164,7 @@ import {
   runtimeRunSchema,
   runtimeRunUpdatedPayloadSchema,
   runtimeSessionSchema,
+  providerAuthSessionSchema,
   runtimeUpdatedPayloadSchema,
   archiveAgentSessionRequestSchema,
   createAgentSessionRequestSchema,
@@ -192,6 +193,7 @@ import {
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
+  type ProviderAuthSessionDto,
   type RuntimeUpdatedPayloadDto,
   type StartRuntimeRunRequestDto,
   type StartRuntimeSessionRequestDto,
@@ -510,28 +512,22 @@ export type BrowserTabUpdatedPayload = z.infer<typeof browserTabUpdatedPayloadSc
 
 const startOpenAiLoginRequestSchema = z
   .object({
-    projectId: z.string().trim().min(1),
-    profileId: z.string().trim().min(1),
     originator: z.string().trim().min(1).nullable().optional(),
   })
   .strict()
 
 const submitOpenAiCallbackRequestSchema = z
   .object({
-    projectId: z.string().trim().min(1),
-    profileId: z.string().trim().min(1),
     flowId: z.string().trim().min(1),
     manualInput: z.string().trim().min(1).nullable().optional(),
   })
   .strict()
 
 export interface StartOpenAiLoginOptions {
-  selectedProfileId: string
   originator?: string | null
 }
 
 export interface SubmitOpenAiCallbackOptions {
-  selectedProfileId: string
   manualInput?: string | null
 }
 
@@ -688,12 +684,11 @@ export interface CadenceDesktopAdapter {
     profileId: string,
     options?: { includeNetwork?: boolean },
   ): Promise<ProviderProfileDiagnosticsDto>
-  startOpenAiLogin(projectId: string, options: StartOpenAiLoginOptions): Promise<RuntimeSessionDto>
+  startOpenAiLogin(options?: StartOpenAiLoginOptions): Promise<ProviderAuthSessionDto>
   submitOpenAiCallback(
-    projectId: string,
     flowId: string,
-    options: SubmitOpenAiCallbackOptions,
-  ): Promise<RuntimeSessionDto>
+    options?: SubmitOpenAiCallbackOptions,
+  ): Promise<ProviderAuthSessionDto>
   startAutonomousRun(
     projectId: string,
     agentSessionId: string,
@@ -714,8 +709,8 @@ export interface CadenceDesktopAdapter {
     request: UpsertProviderCredentialRequestDto,
   ): Promise<ProviderCredentialsSnapshotDto>
   deleteProviderCredential(providerId: string): Promise<ProviderCredentialsSnapshotDto>
-  startOAuthLogin(request: StartOAuthLoginRequestDto): Promise<RuntimeSessionDto>
-  completeOAuthCallback(request: CompleteOAuthCallbackRequestDto): Promise<RuntimeSessionDto>
+  startOAuthLogin(request: StartOAuthLoginRequestDto): Promise<ProviderAuthSessionDto>
+  completeOAuthCallback(request: CompleteOAuthCallbackRequestDto): Promise<ProviderAuthSessionDto>
   resolveOperatorAction(
     projectId: string,
     actionId: string,
@@ -1755,34 +1750,26 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
   },
 
 
-  startOpenAiLogin(projectId, options) {
+  startOpenAiLogin(options = {}) {
     const request = startOpenAiLoginRequestSchema.parse({
-      projectId,
-      profileId: options.selectedProfileId,
       originator: options.originator ?? null,
     })
 
-    return invokeTyped(COMMANDS.startOpenAiLogin, runtimeSessionSchema, {
+    return invokeTyped(COMMANDS.startOpenAiLogin, providerAuthSessionSchema, {
       request: {
-        projectId: request.projectId,
-        profileId: request.profileId,
         originator: request.originator ?? null,
       },
     })
   },
 
-  submitOpenAiCallback(projectId, flowId, options) {
+  submitOpenAiCallback(flowId, options = {}) {
     const request = submitOpenAiCallbackRequestSchema.parse({
-      projectId,
-      profileId: options.selectedProfileId,
       flowId,
       manualInput: options.manualInput ?? null,
     })
 
-    return invokeTyped(COMMANDS.submitOpenAiCallback, runtimeSessionSchema, {
+    return invokeTyped(COMMANDS.submitOpenAiCallback, providerAuthSessionSchema, {
       request: {
-        projectId: request.projectId,
-        profileId: request.profileId,
         flowId: request.flowId,
         manualInput: request.manualInput ?? null,
       },
@@ -1880,14 +1867,14 @@ export const CadenceDesktopAdapter: CadenceDesktopAdapter = {
 
   startOAuthLogin(request) {
     const parsed = startOAuthLoginRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.startOAuthLogin, runtimeSessionSchema, {
+    return invokeTyped(COMMANDS.startOAuthLogin, providerAuthSessionSchema, {
       request: parsed,
     })
   },
 
   completeOAuthCallback(request) {
     const parsed = completeOAuthCallbackRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.completeOAuthCallback, runtimeSessionSchema, {
+    return invokeTyped(COMMANDS.completeOAuthCallback, providerAuthSessionSchema, {
       request: parsed,
     })
   },

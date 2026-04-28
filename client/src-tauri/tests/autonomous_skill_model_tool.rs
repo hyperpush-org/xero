@@ -542,7 +542,7 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
         "Bundled skill.",
     );
     write_skill(
-        &root.path().join(".cadence").join("skills"),
+        &db::project_app_data_dir_for_repo(root.path()).join("skills"),
         "project-skill",
         "project-skill",
         "Project skill.",

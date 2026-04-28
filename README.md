@@ -291,6 +291,7 @@ Cadence stores application and project state under the OS app-data directory:
 - `projects/<project-id>/state.db` for per-project state
 
 New imports do not create `<repo>/.cadence/`. That directory is legacy.
+Project skill artifacts also live in app data, under `projects/<project-id>/skills` and `projects/<project-id>/dynamic-skills`.
 
 ### App-level JSON state
 

@@ -4,7 +4,7 @@
 //! with minimal code. The scaffold bakes in `VITE_DYNAMIC_ENVIRONMENT_ID`
 //! which the developer pastes after signing up at app.dynamic.xyz.
 
-use super::{wallet_adapter::escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
+use super::{escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
 
 pub fn render(ctx: &WalletScaffoldContext) -> (Vec<(String, String)>, ScaffoldMeta) {
     let files = vec![

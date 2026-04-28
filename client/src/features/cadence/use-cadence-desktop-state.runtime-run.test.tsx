@@ -8,6 +8,7 @@ import type {
   ListProjectsResponseDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
+  ProviderAuthSessionDto,
   ProviderModelCatalogDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
@@ -26,7 +27,7 @@ import type {
   UpsertNotificationRouteCredentialsResponseDto,
 } from '@/src/lib/cadence-model'
 import type { ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
-import { useCadenceDesktopState, BLOCKED_NOTIFICATION_SYNC_POLL_MS } from '@/src/features/cadence/use-cadence-desktop-state'
+import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
 
 function makeProjectSummary(id: string, name: string) {
   return {
@@ -287,6 +288,24 @@ function makeRuntimeSession(projectId: string, overrides: Partial<RuntimeSession
       message: 'Sign in with OpenAI to create a runtime session for this project.',
       retryable: false,
     },
+    updatedAt: '2026-04-15T20:00:10Z',
+    ...overrides,
+  }
+}
+
+function makeProviderAuthSession(overrides: Partial<ProviderAuthSessionDto> = {}): ProviderAuthSessionDto {
+  return {
+    runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
+    flowId: 'flow-1',
+    sessionId: 'session-1',
+    accountId: 'acct-1',
+    phase: 'authenticated',
+    callbackBound: true,
+    authorizationUrl: 'https://auth.openai.com/oauth/authorize',
+    redirectUri: 'http://127.0.0.1:1455/auth/callback',
+    lastErrorCode: null,
+    lastError: null,
     updatedAt: '2026-04-15T20:00:10Z',
     ...overrides,
   }
@@ -802,15 +821,14 @@ function createMockAdapter(options?: {
       }
     }),
     startOpenAiLogin: vi.fn(
-      async (projectId: string, _options: { selectedProfileId: string; originator?: string | null }) =>
-        makeRuntimeSession(projectId),
+      async (_options?: { originator?: string | null }) =>
+        makeProviderAuthSession(),
     ),
     submitOpenAiCallback: vi.fn(
       async (
-        projectId: string,
         _flowId: string,
-        _options: { selectedProfileId: string; manualInput?: string | null },
-      ) => makeRuntimeSession(projectId),
+        _options?: { manualInput?: string | null },
+      ) => makeProviderAuthSession(),
     ),
     startAutonomousRun: vi.fn(async (projectId: string, _agentSessionId: string) => {
       const nextState = makeAutonomousRunState(projectId, {
@@ -2773,7 +2791,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1'))
     await waitFor(() => expect(screen.getByTestId('refresh-source')).toHaveTextContent('runtime_stream:action_required'))
     await waitFor(() => expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1'))
-    await waitFor(() => expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('true'))
+    expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
     expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
     expect(screen.getByTestId('checkpoint-loop-first-action-id')).toHaveTextContent(actionId)
     expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('live_and_durable')
@@ -2781,8 +2799,8 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('checkpoint-loop-first-resume-state')).toHaveTextContent('Resume failed')
     expect(screen.getByTestId('checkpoint-loop-first-resumability')).toHaveTextContent('awaiting_approval')
     expect(screen.getByTestId('checkpoint-loop-first-recovery-recommendation')).toHaveTextContent('approve_resume')
-    expect(screen.getByTestId('sync-polling-action-id')).toHaveTextContent(actionId)
-    expect(screen.getByTestId('sync-polling-boundary-id')).toHaveTextContent('boundary-1')
+    expect(screen.getByTestId('sync-polling-action-id')).toHaveTextContent('none')
+    expect(screen.getByTestId('sync-polling-boundary-id')).toHaveTextContent('none')
     expect(screen.getByTestId('latest-resume-status')).toHaveTextContent('failed')
     expect(screen.getByTestId('latest-resume-source-action-id')).toHaveTextContent(actionId)
     expect(screen.getByTestId('first-approval-resume-state')).toHaveTextContent('failed')
@@ -2821,26 +2839,20 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     })
 
     await waitFor(() => expect(screen.getByTestId('stream-action-required-count')).toHaveTextContent('1'))
-    await new Promise((resolve) => setTimeout(resolve, 200))
     expect(project1SyncCount()).toBe(syncCallsAfterImmediateRefresh)
-
-    await waitFor(() => expect(project1SyncCount()).toBeGreaterThan(syncCallsAfterImmediateRefresh), {
-      timeout: BLOCKED_NOTIFICATION_SYNC_POLL_MS + 800,
-    })
 
     snapshotMode = 'resolved'
 
-    await waitFor(() => expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('0'), {
-      timeout: BLOCKED_NOTIFICATION_SYNC_POLL_MS + 800,
-    })
-    await waitFor(() => expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false'))
+    await new Promise((resolve) => setTimeout(resolve, 650))
+    expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
 
     const syncCallsAfterBoundaryClear = project1SyncCount()
-    await new Promise((resolve) => setTimeout(resolve, BLOCKED_NOTIFICATION_SYNC_POLL_MS + 250))
+    await new Promise((resolve) => setTimeout(resolve, 650))
     expect(project1SyncCount()).toBe(syncCallsAfterBoundaryClear)
   })
 
-  it('stops blocked-checkpoint sync polling when the active project changes', async () => {
+  it('does not start blocked-checkpoint notification polling from normal runtime boundaries', async () => {
     const setup = createMockAdapter({
       listProjects: {
         projects: [makeProjectSummary('project-1', 'Cadence'), makeProjectSummary('project-2', 'orchestra')],
@@ -2948,15 +2960,16 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('true'))
+    await waitFor(() => expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
 
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
-    await waitFor(() => expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false'))
+    expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
 
     const project1SyncCallsAfterSwitch = project1SyncCount()
-    await new Promise((resolve) => setTimeout(resolve, BLOCKED_NOTIFICATION_SYNC_POLL_MS + 250))
+    await new Promise((resolve) => setTimeout(resolve, 650))
     expect(project1SyncCount()).toBe(project1SyncCallsAfterSwitch)
   })
 
@@ -3168,7 +3181,7 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('trust-missing-credential-count')).toHaveTextContent('1')
   })
 
-  it('runs notification adapter sync during selected-project refreshes and exposes one-reply-wins cycle counts', async () => {
+  it('does not run notification adapter sync during selected-project refreshes', async () => {
     const setup = createMockAdapter({
       notificationSyncResponses: {
         'project-1': {
@@ -3203,14 +3216,15 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
 
     render(<Harness adapter={setup.adapter} />)
 
-    await waitFor(() => expect(setup.syncNotificationAdapters).toHaveBeenCalledWith('project-1'))
-    expect(screen.getByTestId('sync-dispatch-attempted')).toHaveTextContent('2')
-    expect(screen.getByTestId('sync-reply-accepted')).toHaveTextContent('1')
-    expect(screen.getByTestId('sync-reply-rejected')).toHaveTextContent('1')
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()
+    expect(screen.getByTestId('sync-dispatch-attempted')).toHaveTextContent('0')
+    expect(screen.getByTestId('sync-reply-accepted')).toHaveTextContent('0')
+    expect(screen.getByTestId('sync-reply-rejected')).toHaveTextContent('0')
     expect(screen.getByTestId('sync-error')).toHaveTextContent('none')
   })
 
-  it('keeps the last truthful broker + sync summary when a later sync cycle fails', async () => {
+  it('keeps broker rows visible without running notification adapter sync on retry', async () => {
     const actionId = 'scope:auto-dispatch:workflow-research:requires_user_input'
     const setup = createMockAdapter({
       notificationDispatches: {
@@ -3225,58 +3239,19 @@ describe('useCadenceDesktopState runtime-run hydration', () => {
           }),
         ],
       },
-      notificationSyncResponses: {
-        'project-1': makeNotificationSyncResponse('project-1', {
-          dispatch: {
-            projectId: 'project-1',
-            pendingCount: 1,
-            attemptedCount: 1,
-            sentCount: 1,
-            failedCount: 0,
-            attemptLimit: 64,
-            attemptsTruncated: false,
-            attempts: [],
-            errorCodeCounts: [],
-          },
-          replies: {
-            projectId: 'project-1',
-            routeCount: 1,
-            polledRouteCount: 1,
-            messageCount: 1,
-            acceptedCount: 1,
-            rejectedCount: 0,
-            attemptLimit: 256,
-            attemptsTruncated: false,
-            attempts: [],
-            errorCodeCounts: [],
-          },
-          syncedAt: '2026-04-17T03:10:00Z',
-        }),
-      },
     })
 
     render(<Harness adapter={setup.adapter} />)
 
-    await waitFor(() => expect(screen.getByTestId('sync-dispatch-attempted')).toHaveTextContent('1'))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    expect(screen.getByTestId('sync-dispatch-attempted')).toHaveTextContent('0')
     expect(screen.getByTestId('broker-dispatch-count')).toHaveTextContent('1')
-
-    setup.syncNotificationAdapters.mockRejectedValueOnce(
-      new CadenceDesktopError({
-        code: 'notification_adapter_sync_failed',
-        errorClass: 'retryable',
-        message: 'Cadence could not sync notification adapters for this project.',
-        retryable: true,
-      }),
-    )
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry state' }))
 
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-error')).toHaveTextContent(
-        'Cadence could not sync notification adapters for this project.',
-      ),
-    )
-    expect(screen.getByTestId('sync-dispatch-attempted')).toHaveTextContent('1')
+    await waitFor(() => expect(screen.getByTestId('sync-error')).toHaveTextContent('none'))
+    expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()
+    expect(screen.getByTestId('sync-dispatch-attempted')).toHaveTextContent('0')
     expect(screen.getByTestId('broker-dispatch-count')).toHaveTextContent('1')
   })
 

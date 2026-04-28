@@ -25,7 +25,7 @@ use cadence_desktop_lib::{
     },
     configure_builder_with_state,
     db::{self, project_store},
-    git::repository::{ensure_cadence_excluded, CanonicalRepository},
+    git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
     runtime::AgentProviderConfig,
     state::DesktopState,
@@ -49,7 +49,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_registry_file_override(root.path().join("app-data").join("project-registry.json"))
+        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
 }
 
 fn create_fake_provider_state(root: &TempDir) -> DesktopState {
@@ -91,15 +91,13 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         deletions: 0,
     };
 
-    ensure_cadence_excluded(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("exclude .cadence from seeded repo git status");
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(&app.handle().clone())
+        .global_db_path(&app.handle().clone())
         .expect("registry path");
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("import project into repo-local db");
+        .expect("import project into app-data db");
 
     registry::replace_projects(
         &registry_path,
@@ -933,7 +931,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
             && memory.kind == SessionMemoryKindDto::ProjectFact
             && memory.agent_session_id.is_none()
             && memory.source_run_id.as_deref() == Some("run-memory-1")
-            && memory.text.contains("repo-local SQLite")
+            && memory.text.contains("app-data LanceDB")
     }));
     assert!(extracted.memories.iter().any(|memory| {
         memory.scope == SessionMemoryScopeDto::Session
@@ -960,7 +958,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
         .iter()
         .find(|memory| {
             memory.kind == SessionMemoryKindDto::ProjectFact
-                && memory.text.contains("repo-local SQLite")
+                && memory.text.contains("app-data LanceDB")
         })
         .expect("project fact memory candidate")
         .clone();
@@ -998,7 +996,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
             && contributor
                 .text
                 .as_deref()
-                .is_some_and(|text| text.contains("repo-local SQLite"))
+                .is_some_and(|text| text.contains("app-data LanceDB"))
     }));
     assert!(approved_snapshot.policy_decisions.iter().any(|decision| {
         decision.kind == SessionContextPolicyDecisionKindDto::MemoryInjection
@@ -1560,7 +1558,7 @@ fn seed_memory_candidate_run(repo_root: &Path, project_id: &str) {
         FAKE_MODEL_ID,
         run_id,
         started_at,
-        "Project fact: Cadence stores reviewed memory in repo-local SQLite.",
+        "Project fact: Cadence stores reviewed memory in app-data LanceDB.",
     );
 
     let messages = [

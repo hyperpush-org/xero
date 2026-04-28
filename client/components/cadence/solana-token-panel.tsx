@@ -3,6 +3,13 @@
 import { useMemo, useState } from "react"
 import { AlertTriangle, CheckCircle2, Coins, Image, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   ClusterKind,
   ExtensionMatrix,
@@ -267,20 +274,26 @@ function CreateTokenForm({
         </p>
       ) : null}
       <Field label="Authority persona">
-        <select
+        <Select
           value={authority}
-          onChange={(event) => setAuthority(event.target.value)}
-          className="w-full rounded border border-border/70 bg-background/40 px-2 py-1 text-[11px]"
+          onValueChange={setAuthority}
+          disabled={personaNames.length === 0}
         >
-          {personaNames.length === 0 ? (
-            <option value="">No personas yet — create one first</option>
-          ) : null}
-          {personaNames.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            aria-label="Authority persona"
+            className="h-7 w-full border-border/70 bg-background/40 px-2 text-[11px]"
+            size="sm"
+          >
+            <SelectValue placeholder="No personas yet — create one first" />
+          </SelectTrigger>
+          <SelectContent>
+            {personaNames.map((name) => (
+              <SelectItem key={name} value={name}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </Field>
       <Field label="Decimals">
         <input
@@ -484,20 +497,26 @@ function MetaplexForm({
         </p>
       ) : null}
       <Field label="Authority persona">
-        <select
+        <Select
           value={authority}
-          onChange={(event) => setAuthority(event.target.value)}
-          className="w-full rounded border border-border/70 bg-background/40 px-2 py-1 text-[11px]"
+          onValueChange={setAuthority}
+          disabled={personaNames.length === 0}
         >
-          {personaNames.length === 0 ? (
-            <option value="">No personas yet</option>
-          ) : null}
-          {personaNames.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            aria-label="Authority persona"
+            className="h-7 w-full border-border/70 bg-background/40 px-2 text-[11px]"
+            size="sm"
+          >
+            <SelectValue placeholder="No personas yet" />
+          </SelectTrigger>
+          <SelectContent>
+            {personaNames.map((p) => (
+              <SelectItem key={p} value={p}>
+                {p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Name">
@@ -556,15 +575,23 @@ function MetaplexForm({
           />
         </Field>
         <Field label="Standard">
-          <select
+          <Select
             value={standard}
-            onChange={(event) => setStandard(event.target.value as MetaplexStandard)}
-            className="w-full rounded border border-border/70 bg-background/40 px-2 py-1 text-[11px]"
+            onValueChange={(value) => setStandard(value as MetaplexStandard)}
           >
-            <option value="non_fungible">Non-fungible</option>
-            <option value="programmable_non_fungible">pNFT</option>
-            <option value="fungible">Fungible</option>
-          </select>
+            <SelectTrigger
+              aria-label="Standard"
+              className="h-7 w-full border-border/70 bg-background/40 px-2 text-[11px]"
+              size="sm"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="non_fungible">Non-fungible</SelectItem>
+              <SelectItem value="programmable_non_fungible">pNFT</SelectItem>
+              <SelectItem value="fungible">Fungible</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
       </div>
       <button

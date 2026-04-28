@@ -8,7 +8,7 @@ export const CADENCE_DOCTOR_REPORT_CONTRACT_VERSION = 1
 
 export const cadenceDiagnosticSubjectSchema = z.enum([
   'dictation',
-  'provider_profile',
+  'provider_credential',
   'model_catalog',
   'runtime_binding',
   'runtime_supervisor',
@@ -208,7 +208,7 @@ export const providerProfileDiagnosticsSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['validationChecks', index, 'affectedProfileId'],
-          message: 'Provider-profile diagnostics must not include validation checks for another profile.',
+          message: 'Provider diagnostics must not include validation checks for another provider connection.',
         })
       }
     }
@@ -218,7 +218,7 @@ export const providerProfileDiagnosticsSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['reachabilityChecks', index, 'affectedProfileId'],
-          message: 'Provider-profile diagnostics must not include reachability checks for another profile.',
+          message: 'Provider diagnostics must not include reachability checks for another provider connection.',
         })
       }
     }
@@ -227,7 +227,7 @@ export const providerProfileDiagnosticsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['modelCatalog', 'profileId'],
-        message: 'Provider-profile diagnostics model catalog must belong to the checked profile.',
+        message: 'Provider diagnostics model catalog must belong to the checked provider connection.',
       })
     }
   })
@@ -351,7 +351,7 @@ export function renderCadenceDoctorReport(
     `Mode: ${sanitized.mode}`,
     `Summary: ${sanitized.summary.passed} passed, ${sanitized.summary.warnings} warning(s), ${sanitized.summary.failed} failed, ${sanitized.summary.skipped} skipped`,
   ]
-  pushHumanGroup(lines, 'Provider profiles', sanitized.profileChecks)
+  pushHumanGroup(lines, 'Providers', sanitized.profileChecks)
   pushHumanGroup(lines, 'Dictation', sanitized.dictationChecks)
   pushHumanGroup(lines, 'Model catalogs', sanitized.modelCatalogChecks)
   pushHumanGroup(lines, 'Runtime supervisor', sanitized.runtimeSupervisorChecks)

@@ -17,6 +17,13 @@ import {
   Users,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   ClusterDriftReport,
   ClusterKind,
@@ -30,6 +37,7 @@ import type {
 } from "@/src/features/solana/use-solana-workbench"
 
 type SafetyTab = "secrets" | "scope" | "drift" | "cost"
+const ALL_SEVERITIES = "__all__"
 
 const SEVERITY_CLASS: Record<SecretSeverity, string> = {
   critical: "bg-destructive/15 text-destructive border-destructive/40",
@@ -207,19 +215,29 @@ export function SolanaSafetyPanel({
               <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground">
                 Min severity
               </label>
-              <select
-                value={minSeverity}
-                onChange={(e) =>
-                  setMinSeverity(e.target.value as SecretSeverity | "")
+              <Select
+                value={minSeverity || ALL_SEVERITIES}
+                onValueChange={(value) =>
+                  setMinSeverity(
+                    value === ALL_SEVERITIES ? "" : (value as SecretSeverity),
+                  )
                 }
-                className="rounded-md border border-border/60 bg-background px-2 py-1 text-[11px]"
               >
-                <option value="">All</option>
-                <option value="critical">Critical+</option>
-                <option value="high">High+</option>
-                <option value="medium">Medium+</option>
-                <option value="low">Low+</option>
-              </select>
+                <SelectTrigger
+                  aria-label="Min severity"
+                  className="h-7 w-[112px] border-border/60 bg-background px-2 text-[11px]"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_SEVERITIES}>All</SelectItem>
+                  <SelectItem value="critical">Critical+</SelectItem>
+                  <SelectItem value="high">High+</SelectItem>
+                  <SelectItem value="medium">Medium+</SelectItem>
+                  <SelectItem value="low">Low+</SelectItem>
+                </SelectContent>
+              </Select>
               <button
                 type="button"
                 disabled={busy || !projectRoot.trim()}

@@ -7,16 +7,11 @@ use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
 use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use crate::{
-    commands::{
-        BranchSummaryDto, BranchUpstreamSummaryDto, ChangeKind, CommandError, CommandResult,
-        LastCommitSummaryDto, RepositoryStatusEntryDto, RepositoryStatusResponseDto,
-        RepositorySummaryDto,
-    },
-    state::ImportFailpoints,
+use crate::commands::{
+    BranchSummaryDto, BranchUpstreamSummaryDto, ChangeKind, CommandError, CommandResult,
+    LastCommitSummaryDto, RepositoryStatusEntryDto, RepositoryStatusResponseDto,
+    RepositorySummaryDto,
 };
-
-const CADENCE_EXCLUDE_ENTRY: &str = ".cadence/";
 
 #[derive(Debug, Clone)]
 pub struct CanonicalRepository {
@@ -138,56 +133,6 @@ pub fn open_repository(selected_path: &str) -> CommandResult<RepositoryHandle> {
 pub fn open_repository_root(root_path: &Path) -> CommandResult<RepositoryHandle> {
     let root_path = root_path.to_string_lossy();
     open_repository_internal(root_path.as_ref())
-}
-
-pub fn ensure_cadence_excluded(
-    repository: &CanonicalRepository,
-    failpoints: &ImportFailpoints,
-) -> CommandResult<()> {
-    if failpoints.fail_exclude_write {
-        return Err(CommandError::retryable(
-            "git_exclude_write_failed",
-            "Test failpoint forced the .git/info/exclude update to fail.",
-        ));
-    }
-
-    let exclude_path = repository.common_git_dir.join("info").join("exclude");
-    if let Some(parent) = exclude_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            CommandError::retryable(
-                "git_exclude_write_failed",
-                format!(
-                    "Cadence could not prepare the git exclude directory at {}: {error}",
-                    parent.display()
-                ),
-            )
-        })?;
-    }
-
-    let existing_contents = fs::read_to_string(&exclude_path).unwrap_or_default();
-    if existing_contents
-        .lines()
-        .any(|line| matches!(line.trim(), ".cadence" | ".cadence/"))
-    {
-        return Ok(());
-    }
-
-    let mut next_contents = existing_contents;
-    if !next_contents.is_empty() && !next_contents.ends_with('\n') {
-        next_contents.push('\n');
-    }
-    next_contents.push_str(CADENCE_EXCLUDE_ENTRY);
-    next_contents.push('\n');
-
-    fs::write(&exclude_path, next_contents).map_err(|error| {
-        CommandError::retryable(
-            "git_exclude_write_failed",
-            format!(
-                "Cadence could not write .git/info/exclude for {}: {error}",
-                repository.root_path.display()
-            ),
-        )
-    })
 }
 
 fn open_repository_internal(selected_path: &str) -> CommandResult<RepositoryHandle> {

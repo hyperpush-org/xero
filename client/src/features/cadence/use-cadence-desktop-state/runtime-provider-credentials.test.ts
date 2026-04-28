@@ -223,8 +223,32 @@ describe('buildComposerModelOptions', () => {
       'openrouter:openai/gpt-4.1-mini',
       'openrouter:meta/llama-4',
     ])
+    expect(options.map((o) => o.profileId)).toEqual([
+      'anthropic-default',
+      'openrouter-default',
+      'openrouter-default',
+    ])
     expect(options[2].thinkingEffortOptions).toEqual(['medium', 'high'])
     expect(options[2].defaultThinkingEffort).toBe('medium')
+  })
+
+  it('uses profile-keyed catalogs for credentialed providers', () => {
+    const credentials = makeSnapshot([makeCredential({ providerId: 'openai_codex', kind: 'oauth_session' })])
+    const catalogs = {
+      'openai_codex-default': makeCatalog('openai_codex', [
+        { modelId: 'gpt-5.4', displayName: 'GPT-5.4', thinking: true },
+      ]),
+    }
+    const options = buildComposerModelOptions(credentials, catalogs)
+    expect(options).toHaveLength(1)
+    expect(options[0]).toMatchObject({
+      selectionKey: 'openai_codex:gpt-5.4',
+      profileId: 'openai_codex-default',
+      providerId: 'openai_codex',
+      modelId: 'gpt-5.4',
+      thinkingEffortOptions: ['medium', 'high'],
+      defaultThinkingEffort: 'medium',
+    })
   })
 
   it('omits providers without a catalog entry', () => {

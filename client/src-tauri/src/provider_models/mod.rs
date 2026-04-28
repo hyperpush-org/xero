@@ -268,15 +268,21 @@ pub fn load_provider_model_catalog<R: Runtime>(
     let provider_profiles = load_provider_credentials_view(app, state)?;
     let profile = provider_profiles
         .profile(profile_id)
+        .or_else(|| {
+            provider_profiles
+                .profiles()
+                .iter()
+                .find(|profile| profile.provider_id == profile_id)
+        })
         .cloned()
         .ok_or_else(|| {
             CommandError::user_fixable(
-                "provider_profile_not_found",
-                format!("Cadence could not find provider profile `{profile_id}`."),
+                "provider_not_found",
+                format!("Cadence could not find provider `{profile_id}`."),
             )
         })?;
 
-    let cache_path = state.provider_model_catalog_cache_file(app)?;
+    let cache_path = state.global_db_path(app)?;
     let cache_load = load_provider_model_catalog_cache(&cache_path);
     let refresh_target = resolve_provider_model_catalog_refresh_target(&profile, state)
         .map_err(diagnostic_into_command_error)?;
@@ -336,7 +342,9 @@ fn refresh_provider_model_catalog(
     let live_models = match refresh_target {
         ProviderModelCatalogRefreshTarget::OpenAiCodex => Ok(openai_codex_projection()),
         ProviderModelCatalogRefreshTarget::OpenRouter => {
-            let Some(secret) = provider_profiles.openrouter_credential(&profile.profile_id) else {
+            let Some(secret) =
+                provider_profiles.matched_api_key_credential_for_profile(&profile.profile_id)
+            else {
                 let diagnostic = missing_openrouter_credential_diagnostic(profile);
                 return match refresh_context.cached_row.as_ref() {
                     Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
@@ -369,10 +377,10 @@ fn refresh_provider_model_catalog(
                 ProviderCredentialReadinessStatus::Malformed
             ) {
                 let diagnostic = ProviderModelCatalogDiagnostic {
-                    code: "provider_profile_credentials_unavailable".into(),
+                    code: "provider_credentials_unavailable".into(),
                     message: format!(
-                        "Cadence cannot discover models for provider profile `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
-                        profile.profile_id
+                        "Cadence cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                        profile.provider_id
                     ),
                     retryable: false,
                 };
@@ -479,16 +487,66 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
                 "gpt-5.3-codex" => "GPT-5.3 Codex",
                 "gpt-5.3-codex-spark" => "GPT-5.3 Codex Spark",
                 "gpt-5.4" => "GPT-5.4",
+                "gpt-5.5" => "GPT-5.5",
                 other => other,
             }
             .into(),
-            thinking: supported_thinking_capability(vec![
+            thinking: openai_codex_thinking_capability(model_id),
+        })
+        .collect()
+}
+
+fn openai_codex_thinking_capability(model_id: &str) -> ProviderModelThinkingCapability {
+    let mut effort_options = vec![
+        ProviderModelThinkingEffort::Low,
+        ProviderModelThinkingEffort::Medium,
+        ProviderModelThinkingEffort::High,
+    ];
+    if model_id == "gpt-5.5" {
+        effort_options.push(ProviderModelThinkingEffort::XHigh);
+    }
+
+    supported_thinking_capability(effort_options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_codex_projection_exposes_gpt_5_5_choice() {
+        let models = openai_codex_projection();
+        let model_ids = models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            model_ids,
+            vec![
+                "gpt-5.2",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+                "gpt-5.4",
+                "gpt-5.5",
+            ]
+        );
+
+        let gpt_5_5 = models
+            .iter()
+            .find(|model| model.model_id == "gpt-5.5")
+            .expect("gpt-5.5 model choice");
+        assert_eq!(gpt_5_5.display_name, "GPT-5.5");
+        assert_eq!(
+            gpt_5_5.thinking.effort_options,
+            vec![
                 ProviderModelThinkingEffort::Low,
                 ProviderModelThinkingEffort::Medium,
                 ProviderModelThinkingEffort::High,
-            ]),
-        })
-        .collect()
+                ProviderModelThinkingEffort::XHigh,
+            ]
+        );
+    }
 }
 
 fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<ProviderModelRecord> {
@@ -913,7 +971,7 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
                             ProviderModelCatalogDiagnostic {
                                 code: "provider_model_catalog_cache_decode_failed".into(),
                                 message: format!(
-                                    "Cadence could not decode the cached provider-model catalog row for profile `{profile_id}`: {error}"
+                                    "Cadence could not decode the cached provider-model catalog row for provider connection `{profile_id}`: {error}"
                                 ),
                                 retryable: false,
                             },
@@ -947,7 +1005,7 @@ fn validate_cached_catalog_row(
         return Err(ProviderModelCatalogDiagnostic {
             code: "provider_model_catalog_cache_invalid".into(),
             message: format!(
-                "Cadence rejected the cached provider-model catalog row for profile `{profile_id}` at {} because providerId was blank.",
+                "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because providerId was blank.",
                 path.display()
             ),
             retryable: false,
@@ -965,7 +1023,7 @@ fn validate_cached_catalog_row(
             return Err(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_invalid".into(),
                 message: format!(
-                    "Cadence rejected the cached provider-model catalog row for profile `{profile_id}` at {} because one cache-scope field was blank.",
+                    "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one cache-scope field was blank.",
                     path.display()
                 ),
                 retryable: false,
@@ -978,7 +1036,7 @@ fn validate_cached_catalog_row(
             return Err(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_invalid".into(),
                 message: format!(
-                    "Cadence rejected the cached provider-model catalog row for profile `{profile_id}` at {} because one modelId was blank.",
+                    "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one modelId was blank.",
                     path.display()
                 ),
                 retryable: false,
@@ -989,7 +1047,7 @@ fn validate_cached_catalog_row(
             return Err(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_invalid".into(),
                 message: format!(
-                    "Cadence rejected the cached provider-model catalog row for profile `{profile_id}` at {} because one displayName was blank.",
+                    "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one displayName was blank.",
                     path.display()
                 ),
                 retryable: false,
@@ -1043,18 +1101,18 @@ fn readiness_diagnostic(
         }),
         ProviderCredentialReadinessStatus::Malformed => Some(match profile.provider_id.as_str() {
             OPENROUTER_PROVIDER_ID => ProviderModelCatalogDiagnostic {
-                code: "provider_profile_credentials_unavailable".into(),
+                code: "provider_credentials_unavailable".into(),
                 message: format!(
-                    "Cadence cannot discover OpenRouter models for provider profile `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
-                    profile.profile_id
+                    "Cadence cannot discover OpenRouter models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                    profile.provider_id
                 ),
                 retryable: false,
             },
             ANTHROPIC_PROVIDER_ID => ProviderModelCatalogDiagnostic {
-                code: "provider_profile_credentials_unavailable".into(),
+                code: "provider_credentials_unavailable".into(),
                 message: format!(
-                    "Cadence cannot discover Anthropic models for provider profile `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
-                    profile.profile_id
+                    "Cadence cannot discover Anthropic models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                    profile.provider_id
                 ),
                 retryable: false,
             },
@@ -1064,10 +1122,10 @@ fn readiness_diagnostic(
             | GITHUB_MODELS_PROVIDER_ID
             | GEMINI_AI_STUDIO_PROVIDER_ID => {
                 ProviderModelCatalogDiagnostic {
-                    code: "provider_profile_credentials_unavailable".into(),
+                    code: "provider_credentials_unavailable".into(),
                     message: format!(
-                        "Cadence cannot discover models for provider profile `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
-                        profile.profile_id
+                        "Cadence cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                        profile.provider_id
                     ),
                     retryable: false,
                 }
@@ -1104,10 +1162,10 @@ fn anthropic_family_profile_input(
         region: profile.region.clone(),
         project_id: profile.project_id.clone(),
         api_key: provider_profiles
-            .anthropic_credential(&profile.profile_id)
+            .matched_api_key_credential_for_profile(&profile.profile_id)
             .map(|entry| entry.api_key.clone()),
         api_key_updated_at: provider_profiles
-            .anthropic_credential(&profile.profile_id)
+            .matched_api_key_credential_for_profile(&profile.profile_id)
             .map(|entry| entry.updated_at.clone()),
     }
 }
@@ -1118,8 +1176,8 @@ fn missing_openrouter_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "openrouter_api_key_missing".into(),
         message: format!(
-            "Cadence cannot discover OpenRouter models for provider profile `{}` because no app-local API key is configured for that profile.",
-            profile.profile_id
+            "Cadence cannot discover OpenRouter models for provider `{}` because no app-local API key is configured.",
+            profile.provider_id
         ),
         retryable: false,
     }
@@ -1131,8 +1189,8 @@ fn missing_anthropic_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "anthropic_api_key_missing".into(),
         message: format!(
-            "Cadence cannot discover Anthropic models for provider profile `{}` because no app-local API key is configured for that profile.",
-            profile.profile_id
+            "Cadence cannot discover Anthropic models for provider `{}` because no app-local API key is configured.",
+            profile.provider_id
         ),
         retryable: false,
     }
@@ -1144,8 +1202,8 @@ fn missing_bedrock_ambient_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "bedrock_ambient_proof_missing".into(),
         message: format!(
-            "Cadence cannot validate Amazon Bedrock model availability for provider profile `{}` because the profile is missing its ambient readiness proof link. Save the profile again so Cadence records ambient-auth intent.",
-            profile.profile_id
+            "Cadence cannot validate Amazon Bedrock model availability for provider `{}` because its ambient readiness proof link is missing. Save the provider again so Cadence records ambient-auth intent.",
+            profile.provider_id
         ),
         retryable: false,
     }
@@ -1157,8 +1215,8 @@ fn missing_vertex_ambient_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "vertex_ambient_proof_missing".into(),
         message: format!(
-            "Cadence cannot validate Google Vertex AI model availability for provider profile `{}` because the profile is missing its ambient readiness proof link. Save the profile again so Cadence records ambient-auth intent.",
-            profile.profile_id
+            "Cadence cannot validate Google Vertex AI model availability for provider `{}` because its ambient readiness proof link is missing. Save the provider again so Cadence records ambient-auth intent.",
+            profile.provider_id
         ),
         retryable: false,
     }

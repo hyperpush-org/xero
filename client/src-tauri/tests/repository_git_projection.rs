@@ -28,11 +28,11 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn registry_path(root: &TempDir) -> PathBuf {
-    root.path().join("app-data").join("project-registry.json")
+    root.path().join("app-data").join("cadence.db")
 }
 
 fn create_state(registry_root: &TempDir) -> DesktopState {
-    DesktopState::default().with_registry_file_override(registry_path(registry_root))
+    DesktopState::default().with_global_db_path_override(registry_path(registry_root))
 }
 
 fn import_with_app(

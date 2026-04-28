@@ -84,6 +84,22 @@ pub fn database_path_for_project_in_app_data(app_data_dir: &Path, project_id: &s
         .join(STATE_DATABASE_FILE)
 }
 
+pub fn project_app_data_dir_for_project(project_id: &str) -> PathBuf {
+    database_path_for_project(project_id)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_project_app_data_dir(project_id))
+}
+
+pub fn project_app_data_dir_for_repo(repo_root: &Path) -> PathBuf {
+    database_path_for_repo(repo_root)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            project_app_data_dir_for_project(&stable_project_id_for_repo_root(repo_root))
+        })
+}
+
 pub fn database_path_for_repo(repo_root: &Path) -> PathBuf {
     database_path_for_registered_repo(repo_root)
         .unwrap_or_else(|| database_path_for_project(&stable_project_id_for_repo_root(repo_root)))
@@ -225,7 +241,7 @@ fn state_database_migration_error(database_path: &Path, error: MigrationError) -
     )
 }
 
-fn is_database_too_far_ahead(error: &MigrationError) -> bool {
+pub(crate) fn is_database_too_far_ahead(error: &MigrationError) -> bool {
     matches!(
         error,
         MigrationError::MigrationDefinition(MigrationDefinitionError::DatabaseTooFarAhead)
@@ -257,6 +273,30 @@ fn quarantine_incompatible_database(
 
     remove_database_sidecars(database_path);
     Ok(())
+}
+
+pub(crate) fn rebuild_incompatible_project_database(
+    repo_root: &Path,
+    database_path: &Path,
+    connection: Connection,
+) -> Result<Connection, CommandError> {
+    let observed_user_version = read_user_version(&connection);
+    let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    drop(connection);
+
+    quarantine_incompatible_database(database_path, observed_user_version)?;
+
+    let mut reset_connection = open_database_connection(database_path)?;
+    configure_connection(&reset_connection)?;
+    migrations()
+        .to_latest(&mut reset_connection)
+        .map_err(|error| state_database_migration_error(database_path, error))?;
+
+    let repository = crate::git::repository::open_repository_root(repo_root)?;
+    persist_import_rows(&reset_connection, &repository.canonical_repository()?)?;
+    register_project_database_path(repo_root, database_path);
+
+    Ok(reset_connection)
 }
 
 fn next_incompatible_backup_path(database_path: &Path, observed_user_version: i64) -> PathBuf {
@@ -488,12 +528,15 @@ fn configured_database_path_for_project(project_id: &str) -> Option<PathBuf> {
 }
 
 fn default_database_path_for_project(project_id: &str) -> PathBuf {
+    default_project_app_data_dir(project_id).join(STATE_DATABASE_FILE)
+}
+
+fn default_project_app_data_dir(project_id: &str) -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(APP_DATA_DIRECTORY_NAME)
         .join(PROJECTS_DIRECTORY)
         .join(project_id)
-        .join(STATE_DATABASE_FILE)
 }
 
 fn database_path_for_registered_repo(repo_root: &Path) -> Option<PathBuf> {

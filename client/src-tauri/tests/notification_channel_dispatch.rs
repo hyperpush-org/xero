@@ -256,7 +256,7 @@ fn enqueue_dispatches(repo_root: &Path, project_id: &str, action_id: &str, enque
 }
 
 fn open_connection(repo_root: &Path) -> Connection {
-    Connection::open(database_path_for_repo(repo_root)).expect("open repo-local sqlite connection")
+    Connection::open(database_path_for_repo(repo_root)).expect("open app-data sqlite connection")
 }
 
 #[test]

@@ -63,9 +63,7 @@ interface PluginsSectionProps {
 }
 
 type PluginRootForm = {
-  rootId: string
   path: string
-  enabled: boolean
 }
 
 type PluginRootErrors = Partial<Record<keyof PluginRootForm, string>>
@@ -74,10 +72,15 @@ type Tone = 'good' | 'info' | 'warn' | 'bad' | 'neutral'
 
 function defaultPluginRootForm(): PluginRootForm {
   return {
-    rootId: '',
     path: '',
-    enabled: true,
   }
+}
+
+function derivePluginRootLabel(rootId: string, path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const lastSlash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  const basename = lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed
+  return basename || rootId
 }
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -91,13 +94,6 @@ function formatTimestamp(value: string | null | undefined): string {
   return new Date(parsed).toLocaleString()
 }
 
-function formatHash(value: string | null | undefined): string {
-  if (!value) {
-    return 'None'
-  }
-  return value.length > 12 ? value.slice(0, 12) : value
-}
-
 function isAbsolutePath(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
 }
@@ -105,16 +101,11 @@ function isAbsolutePath(path: string): boolean {
 function validatePluginRootForm(form: PluginRootForm): PluginRootErrors {
   const errors: PluginRootErrors = {}
   const path = form.path.trim()
-  const rootId = form.rootId.trim()
 
   if (!path) {
     errors.path = 'Path is required.'
   } else if (!isAbsolutePath(path)) {
     errors.path = 'Use an absolute directory path.'
-  }
-
-  if (rootId && !/^[a-z0-9-]+$/.test(rootId)) {
-    errors.rootId = 'Root id must be lowercase kebab-case.'
   }
 
   return errors
@@ -251,9 +242,9 @@ export function PluginsSection({
 
     try {
       await onUpsertPluginRoot?.({
-        rootId: rootForm.rootId.trim() || null,
+        rootId: null,
         path: rootForm.path.trim(),
-        enabled: rootForm.enabled,
+        enabled: true,
         projectId,
       })
       setRootForm(defaultPluginRootForm())
@@ -296,22 +287,8 @@ export function PluginsSection({
           Directories Cadence scans for plugin manifests.
         </p>
 
-        <div className="grid gap-1.5 sm:grid-cols-[0.7fr_1.4fr_auto_auto]">
-          <div>
-            <Label htmlFor="plugin-root-id" className="sr-only">
-              Plugin root id
-            </Label>
-            <Input
-              id="plugin-root-id"
-              value={rootForm.rootId}
-              onChange={(event) => setRootForm((current) => ({ ...current, rootId: event.target.value }))}
-              className="h-8 font-mono text-[12px]"
-              placeholder="root-id"
-              aria-invalid={Boolean(rootErrors.rootId)}
-            />
-            {rootErrors.rootId ? <p className="mt-1 text-[11px] text-destructive">{rootErrors.rootId}</p> : null}
-          </div>
-          <div>
+        <div className="flex items-start gap-1.5">
+          <div className="flex-1">
             <Label htmlFor="plugin-root-path" className="sr-only">
               Plugin root path
             </Label>
@@ -325,14 +302,6 @@ export function PluginsSection({
             />
             {rootErrors.path ? <p className="mt-1 text-[11px] text-destructive">{rootErrors.path}</p> : null}
           </div>
-          <label className="flex h-8 items-center gap-2 px-1 text-[11.5px] text-muted-foreground">
-            <Switch
-              checked={rootForm.enabled}
-              onCheckedChange={(enabled) => setRootForm((current) => ({ ...current, enabled }))}
-              aria-label="Enable new plugin root"
-            />
-            Enabled
-          </label>
           <Button
             type="button"
             size="sm"
@@ -354,13 +323,16 @@ export function PluginsSection({
                 className="flex items-center gap-2 px-3 py-2"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[12.5px] font-medium text-foreground">{root.rootId}</p>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{root.path}</p>
+                  <p className="truncate text-[12.5px] font-medium text-foreground">
+                    {derivePluginRootLabel(root.rootId, root.path)}
+                  </p>
+                  <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={root.path}>
+                    {root.path}
+                  </p>
                 </div>
                 {pendingSkillSourceId === root.rootId ? (
                   <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                 ) : null}
-                <span className="shrink-0 text-[11px] text-muted-foreground">{root.enabled ? 'On' : 'Off'}</span>
                 <Switch
                   checked={root.enabled}
                   disabled={mutating || !onUpsertPluginRoot}
@@ -496,6 +468,7 @@ function PluginRow({
 }: PluginRowProps) {
   const canMutate = Boolean(projectId)
   const blocked = plugin.trust === 'blocked' || plugin.state === 'blocked'
+  const showTrustPill = plugin.trust !== 'trusted' && plugin.trust !== 'user_approved'
 
   return (
     <div className="px-3.5 py-3">
@@ -506,7 +479,9 @@ function PluginRow({
             <p className="truncate text-[13px] font-medium text-foreground">{plugin.name}</p>
             <Pill tone="neutral">{plugin.version}</Pill>
             <Pill tone={stateTone(plugin.state)}>{getSkillSourceStateLabel(plugin.state)}</Pill>
-            <Pill tone={trustTone(plugin.trust)}>{getSkillTrustStateLabel(plugin.trust)}</Pill>
+            {showTrustPill ? (
+              <Pill tone={trustTone(plugin.trust)}>{getSkillTrustStateLabel(plugin.trust)}</Pill>
+            ) : null}
           </div>
           <p className="mt-1 line-clamp-2 text-[12px] leading-[1.5] text-muted-foreground">
             {plugin.description || plugin.pluginId}
@@ -566,16 +541,16 @@ function PluginRow({
 
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
         <span>
-          <span className="text-muted-foreground/60">Plugin </span>
-          <span className="font-mono text-foreground/80">{plugin.pluginId}</span>
-        </span>
-        <span>
           <span className="text-muted-foreground/60">Skills </span>
           <span className="text-foreground/80">{plugin.skillCount}</span>
         </span>
         <span>
           <span className="text-muted-foreground/60">Commands </span>
           <span className="text-foreground/80">{plugin.commandCount}</span>
+        </span>
+        <span>
+          <span className="text-muted-foreground/60">Reloaded </span>
+          <span className="text-foreground/80">{formatTimestamp(plugin.lastReloadedAt)}</span>
         </span>
       </div>
 
@@ -593,28 +568,12 @@ function PluginRow({
         </summary>
         <dl className="mt-1.5 grid gap-x-4 gap-y-1 rounded-md border border-border/50 bg-secondary/20 p-2.5 text-[11px] sm:grid-cols-[110px_1fr]">
           <div className="contents">
-            <dt className="text-muted-foreground">Root id</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.rootId}</dd>
-          </div>
-          <div className="contents">
-            <dt className="text-muted-foreground">Root path</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.rootPath}</dd>
-          </div>
-          <div className="contents">
-            <dt className="text-muted-foreground">Plugin path</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.pluginRootPath}</dd>
-          </div>
-          <div className="contents">
             <dt className="text-muted-foreground">Manifest</dt>
             <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.manifestPath}</dd>
           </div>
           <div className="contents">
-            <dt className="text-muted-foreground">Hash</dt>
-            <dd className="min-w-0 break-words font-mono text-foreground/85">{formatHash(plugin.manifestHash)}</dd>
-          </div>
-          <div className="contents">
-            <dt className="text-muted-foreground">Reloaded</dt>
-            <dd className="min-w-0 break-words text-foreground/85">{formatTimestamp(plugin.lastReloadedAt)}</dd>
+            <dt className="text-muted-foreground">Plugin path</dt>
+            <dd className="min-w-0 break-words font-mono text-foreground/85">{plugin.pluginRootPath}</dd>
           </div>
         </dl>
       </details>
@@ -678,23 +637,22 @@ function ContributionList({ title, emptyLabel, rows }: ContributionListProps) {
 }
 
 function PluginCommandRow({ command }: { command: PluginCommandContributionDto }) {
+  const showTrustPill = command.trust !== 'trusted' && command.trust !== 'user_approved'
   return (
     <div className="px-3.5 py-2.5">
       <div className="flex flex-wrap items-center gap-1.5">
         <p className="text-[12.5px] font-medium text-foreground">{command.label}</p>
         <Pill tone="neutral">{getPluginCommandAvailabilityLabel(command.availability)}</Pill>
         <Pill tone={stateTone(command.state)}>{getSkillSourceStateLabel(command.state)}</Pill>
-        <Pill tone={trustTone(command.trust)}>{getSkillTrustStateLabel(command.trust)}</Pill>
+        {showTrustPill ? (
+          <Pill tone={trustTone(command.trust)}>{getSkillTrustStateLabel(command.trust)}</Pill>
+        ) : null}
       </div>
       <p className="mt-1 line-clamp-2 text-[11.5px] leading-[1.5] text-muted-foreground">{command.description}</p>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
         <span>
           <span className="text-muted-foreground/60">Command </span>
           <span className="font-mono text-foreground/80">{command.commandId}</span>
-        </span>
-        <span>
-          <span className="text-muted-foreground/60">Plugin </span>
-          <span className="font-mono text-foreground/80">{command.pluginId}</span>
         </span>
         <span>
           <span className="text-muted-foreground/60">Entry </span>

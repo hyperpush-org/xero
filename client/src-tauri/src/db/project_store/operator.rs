@@ -11,11 +11,10 @@ use crate::{
 };
 
 use super::{
-    classify_operator_answer_requirement,
-    enqueue_notification_dispatches_best_effort_with_connection,
-    find_prohibited_runtime_persistence_content, find_prohibited_transition_diagnostic_content,
-    normalize_runtime_checkpoint_summary, open_project_database, read_project_row,
-    NotificationDispatchEnqueueRecord, PreparedRuntimeOperatorResume, ResumeOperatorRunRecord,
+    classify_operator_answer_requirement, find_prohibited_runtime_persistence_content,
+    find_prohibited_transition_diagnostic_content, normalize_runtime_checkpoint_summary,
+    open_project_database, read_project_row, PreparedRuntimeOperatorResume,
+    ResumeOperatorRunRecord,
 };
 
 // The `operator_approvals`, `operator_verification_records`, and
@@ -188,13 +187,7 @@ pub fn upsert_pending_operator_approval(
                           AND status = 'pending'
                         "#,
                         params![
-                            project_id,
-                            action_id,
-                            session_id,
-                            flow_id,
-                            title,
-                            detail,
-                            created_at,
+                            project_id, action_id, session_id, flow_id, title, detail, created_at,
                         ],
                     )
                     .map_err(|error| {
@@ -225,16 +218,6 @@ pub fn upsert_pending_operator_approval(
             "Cadence could not commit the pending operator approval.",
         )
     })?;
-
-    let _ = enqueue_notification_dispatches_best_effort_with_connection(
-        &connection,
-        &database_path,
-        &NotificationDispatchEnqueueRecord {
-            project_id: project_id.to_string(),
-            action_id: action_id.clone(),
-            enqueued_at: created_at.to_string(),
-        },
-    );
 
     read_operator_approval_by_action_id(&connection, &database_path, project_id, &action_id)?.ok_or_else(|| {
         CommandError::system_fault(

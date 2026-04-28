@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde_json::{json, Value as JsonValue};
@@ -407,19 +407,11 @@ impl AutonomousToolRuntime {
             CadenceSkillSourceState::Disabled,
             CadenceSkillTrustState::Untrusted,
         )?;
-        let directory_relative = PathBuf::from(".cadence")
-            .join("dynamic-skills")
+        let directory_relative = PathBuf::from("dynamic-skills")
             .join(sanitize_path_segment(&run_id))
             .join(sanitize_path_segment(&artifact_id))
             .join(skill_id);
-        let directory = self.resolve_writable_path(&directory_relative)?;
-        let expected_dynamic_root = self.repo_root.join(".cadence").join("dynamic-skills");
-        if !directory.starts_with(&expected_dynamic_root) {
-            return Err(CommandError::user_fixable(
-                "skill_tool_dynamic_path_denied",
-                "Cadence requires dynamic skill files to remain inside .cadence/dynamic-skills.",
-            ));
-        }
+        let directory = skill_tool.project_app_data_dir.join(&directory_relative);
         fs::create_dir_all(&directory).map_err(|error| {
             CommandError::retryable(
                 "skill_tool_dynamic_write_failed",
@@ -429,12 +421,7 @@ impl AutonomousToolRuntime {
                 ),
             )
         })?;
-        self.write_dynamic_skill_files(
-            &directory_relative,
-            &directory,
-            markdown,
-            &supporting_assets,
-        )?;
+        self.write_dynamic_skill_files(&directory, markdown, &supporting_assets)?;
         let context =
             load_skill_context_from_directory(&source.source_id, skill_id, &directory, None, true)?;
         let metadata = frontmatter_metadata(markdown)?;
@@ -562,7 +549,10 @@ impl AutonomousToolRuntime {
         if !skill_tool.project_skills_enabled {
             return Ok(());
         }
-        let discovered = discover_project_skill_directory(&skill_tool.project_id, &self.repo_root)?;
+        let discovered = discover_project_skill_directory(
+            &skill_tool.project_id,
+            &skill_tool.project_app_data_dir,
+        )?;
         push_discovery(entries, diagnostics, discovered);
         Ok(())
     }
@@ -1295,13 +1285,11 @@ impl AutonomousToolRuntime {
 
     fn write_dynamic_skill_files(
         &self,
-        directory_relative: &Path,
         directory: &Path,
         markdown: &str,
         supporting_assets: &[CadenceSkillToolDynamicAssetInput],
     ) -> CommandResult<()> {
-        let skill_path =
-            self.dynamic_skill_write_path(directory_relative, directory, Path::new("SKILL.md"))?;
+        let skill_path = self.dynamic_skill_write_path(directory, Path::new("SKILL.md"))?;
         fs::write(&skill_path, markdown).map_err(|error| {
             CommandError::retryable(
                 "skill_tool_dynamic_write_failed",
@@ -1322,11 +1310,7 @@ impl AutonomousToolRuntime {
                     ),
                 ));
             }
-            let path = self.dynamic_skill_write_path(
-                directory_relative,
-                directory,
-                Path::new(&asset.relative_path),
-            )?;
+            let path = self.dynamic_skill_write_path(directory, Path::new(&asset.relative_path))?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
                     CommandError::retryable(
@@ -1350,11 +1334,21 @@ impl AutonomousToolRuntime {
 
     fn dynamic_skill_write_path(
         &self,
-        directory_relative: &Path,
         directory: &Path,
         relative_path: &Path,
     ) -> CommandResult<PathBuf> {
-        let path = self.resolve_writable_path(&directory_relative.join(relative_path))?;
+        if relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir
+            )
+        }) {
+            return Err(CommandError::user_fixable(
+                "skill_tool_dynamic_path_denied",
+                "Cadence requires dynamic skill asset paths to stay relative to their staged skill directory.",
+            ));
+        }
+        let path = directory.join(relative_path);
         if path.starts_with(directory) {
             return Ok(path);
         }

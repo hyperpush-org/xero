@@ -62,10 +62,9 @@ import {
   type VerificationRecordView,
   type WriteProjectFileResponseDto,
 } from '@/src/lib/cadence-model'
+import { getCloudProviderDefaultProfileId } from '@/src/lib/cadence-model/provider-presets'
 
 import {
-  getBlockedNotificationSyncPollKey,
-  getBlockedNotificationSyncPollTarget,
   type BlockedNotificationSyncPollTarget,
 } from './use-cadence-desktop-state/notification-health'
 import { useCadenceDesktopMutations } from './use-cadence-desktop-state/mutations'
@@ -80,9 +79,7 @@ import {
 import {
   attachDesktopRuntimeListeners,
   attachRuntimeStreamSubscription,
-  clearBlockedNotificationSyncPoll as clearBlockedNotificationSyncPollHelper,
   clearRuntimeMetadataRefresh,
-  scheduleBlockedNotificationSyncPoll as scheduleBlockedNotificationSyncPollHelper,
   scheduleRuntimeMetadataRefresh as scheduleRuntimeMetadataRefreshHelper,
   type RuntimeMetadataRefreshSource,
 } from './use-cadence-desktop-state/runtime-stream'
@@ -109,14 +106,10 @@ import type {
   ProviderCredentialsLoadStatus,
   ProviderCredentialsSaveStatus,
   ProviderModelCatalogLoadStatus,
-  ProviderProfilesLoadStatus,
-  ProviderProfilesSaveStatus,
   RefreshSource,
   RepositoryDiffState,
   RuntimeRunActionKind,
   RuntimeRunActionStatus,
-  RuntimeSettingsLoadStatus,
-  RuntimeSettingsSaveStatus,
   McpRegistryLoadStatus,
   McpRegistryMutationStatus,
   SkillRegistryLoadStatus,
@@ -148,15 +141,11 @@ export type {
   ProviderCredentialsLoadStatus,
   ProviderCredentialsSaveStatus,
   ProviderModelCatalogLoadStatus,
-  ProviderProfilesLoadStatus,
-  ProviderProfilesSaveStatus,
   RefreshSource,
   RepositoryDiffLoadStatus,
   RepositoryDiffState,
   RuntimeRunActionKind,
   RuntimeRunActionStatus,
-  RuntimeSettingsLoadStatus,
-  RuntimeSettingsSaveStatus,
   McpRegistryLoadStatus,
   McpRegistryMutationStatus,
   SkillRegistryLoadStatus,
@@ -270,6 +259,15 @@ function removeRecordKey<T>(records: Record<string, T>, key: string): Record<str
   const nextRecords = { ...records }
   delete nextRecords[key]
   return nextRecords
+}
+
+function getProviderModelCatalogRefreshId(providerId: string): string {
+  return getCloudProviderDefaultProfileId(providerId) ?? providerId
+}
+
+function getProviderModelCatalogStateKeys(providerId: string): string[] {
+  const profileId = getProviderModelCatalogRefreshId(providerId)
+  return profileId === providerId ? [providerId] : [providerId, profileId]
 }
 
 export function useCadenceDesktopState(
@@ -405,9 +403,6 @@ export function useCadenceDesktopState(
   const skillRegistryRef = useRef<SkillRegistryDto | null>(null)
   const skillRegistryLoadInFlightRef = useRef<Promise<SkillRegistryDto> | null>(null)
   const runtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const blockedNotificationSyncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const blockedNotificationSyncPollTargetRef = useRef<BlockedNotificationSyncPollTarget | null>(null)
-  const blockedNotificationSyncPollInFlightRef = useRef(false)
   const pendingRuntimeRefreshRef = useRef<{
     projectId: string
     source: Extract<RefreshSource, 'runtime_run:updated' | 'runtime_stream:action_required'>
@@ -953,37 +948,14 @@ export function useCadenceDesktopState(
     [loadProject],
   )
 
-  const clearBlockedNotificationSyncPoll = useCallback(() => {
-    clearBlockedNotificationSyncPollHelper(blockedNotificationSyncPollTimeoutRef)
-  }, [])
-
-  const scheduleBlockedNotificationSyncPoll = useCallback(
-    (expectedPollKey: string) => {
-      scheduleBlockedNotificationSyncPollHelper({
-        expectedPollKey,
-        refs: {
-          activeProjectIdRef,
-          blockedNotificationSyncPollTimeoutRef,
-          blockedNotificationSyncPollTargetRef,
-          blockedNotificationSyncPollInFlightRef,
-        },
-        loadProject,
-      })
-    },
-    [loadProject],
-  )
-
   useEffect(() => {
     return () => {
       clearRuntimeMetadataRefresh({
         pendingRuntimeRefreshRef,
         runtimeRefreshTimeoutRef,
       })
-      clearBlockedNotificationSyncPoll()
-      blockedNotificationSyncPollTargetRef.current = null
-      blockedNotificationSyncPollInFlightRef.current = false
     }
-  }, [clearBlockedNotificationSyncPoll])
+  }, [])
 
   const bootstrap = useCallback(async (source: 'startup' | 'remove' = 'startup') => {
     setIsLoading(true)
@@ -1363,6 +1335,29 @@ export function useCadenceDesktopState(
     void refreshProviderCredentials().catch(() => undefined)
   }, [providerCredentialsLoadStatus, refreshProviderCredentials])
 
+  useEffect(() => {
+    if (providerCredentialsLoadStatus !== 'ready' || !providerCredentials) {
+      return
+    }
+
+    for (const credential of providerCredentials.credentials) {
+      const catalogKeys = getProviderModelCatalogStateKeys(credential.providerId)
+      const hasCatalog = catalogKeys.some((key) => providerModelCatalogsRef.current[key])
+      const hasActiveLoad = catalogKeys.some(
+        (key) =>
+          providerModelCatalogLoadStatusesRef.current[key] === 'loading' ||
+          Boolean(providerModelCatalogLoadInFlightRef.current[key]),
+      )
+
+      if (hasCatalog || hasActiveLoad) {
+        continue
+      }
+
+      void refreshProviderModelCatalog(
+        getProviderModelCatalogRefreshId(credential.providerId),
+      ).catch(() => undefined)
+    }
+  }, [providerCredentials, providerCredentialsLoadStatus, refreshProviderModelCatalog])
 
   useEffect(() => {
     if (mcpRegistryLoadStatus !== 'idle') {
@@ -1497,40 +1492,7 @@ export function useCadenceDesktopState(
   const activeNotificationSyncError = activeProject
     ? notificationSyncErrors[activeProject.id] ?? null
     : null
-  const activeBlockedNotificationSyncPollTarget = useMemo(
-    () =>
-      getBlockedNotificationSyncPollTarget({
-        project: activeProject,
-        runtimeStream: activeRuntimeStream,
-      }),
-    [activeProject, activeRuntimeStream],
-  )
-  const activeBlockedNotificationSyncPollKey = getBlockedNotificationSyncPollKey(
-    activeBlockedNotificationSyncPollTarget,
-  )
-
-  useEffect(() => {
-    blockedNotificationSyncPollTargetRef.current = activeBlockedNotificationSyncPollTarget
-  }, [activeBlockedNotificationSyncPollTarget])
-
-  useEffect(() => {
-    clearBlockedNotificationSyncPoll()
-    blockedNotificationSyncPollInFlightRef.current = false
-
-    if (!activeBlockedNotificationSyncPollKey) {
-      return
-    }
-
-    scheduleBlockedNotificationSyncPoll(activeBlockedNotificationSyncPollKey)
-
-    return () => {
-      clearBlockedNotificationSyncPoll()
-    }
-  }, [
-    activeBlockedNotificationSyncPollKey,
-    clearBlockedNotificationSyncPoll,
-    scheduleBlockedNotificationSyncPoll,
-  ])
+  const activeBlockedNotificationSyncPollTarget: BlockedNotificationSyncPollTarget | null = null
 
   const workflowView = useMemo<WorkflowPaneView | null>(
     () =>

@@ -239,7 +239,7 @@ pub fn speech_dictation_update_settings<R: Runtime>(
     state: State<'_, DesktopState>,
     request: UpsertDictationSettingsRequestDto,
 ) -> CommandResult<DictationSettingsDto> {
-    let path = state.dictation_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let next = dictation_settings_file_from_request(request)?;
     persist_dictation_settings_file(&path, &next)?;
     Ok(next.into_dto())
@@ -413,7 +413,7 @@ pub(crate) fn load_dictation_settings<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<DictationSettingsDto> {
-    load_dictation_settings_from_path(&state.dictation_settings_file(app)?)
+    load_dictation_settings_from_path(&state.global_db_path(app)?)
 }
 
 fn load_dictation_settings_from_path(path: &Path) -> CommandResult<DictationSettingsDto> {

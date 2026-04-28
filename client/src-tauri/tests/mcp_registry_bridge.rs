@@ -36,13 +36,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 fn create_state(root: &TempDir) -> DesktopState {
     let app_data = root.path().join("app-data");
 
-    DesktopState::default()
-        .with_global_db_path_override(app_data.join("cadence.db"))
-        .with_registry_file_override(app_data.join("project-registry.json"))
-        .with_auth_store_file_override(app_data.join("openai-auth.json"))
-        .with_runtime_settings_file_override(app_data.join("runtime-settings.json"))
-        .with_mcp_registry_file_override(app_data.join("mcp-registry.json"))
-        .with_openrouter_credential_file_override(app_data.join("openrouter-credentials.json"))
+    DesktopState::default().with_global_db_path_override(app_data.join("cadence.db"))
 }
 
 fn mcp_registry_path(root: &TempDir) -> PathBuf {

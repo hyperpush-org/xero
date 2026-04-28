@@ -9,8 +9,7 @@ use crate::{
     auth::now_timestamp,
     commands::CommandError,
     db::project_store::{
-        self, NotificationDispatchEnqueueStatus, RuntimeActionRequiredPersistedRecord,
-        RuntimeActionRequiredUpsertRecord,
+        self, RuntimeActionRequiredPersistedRecord, RuntimeActionRequiredUpsertRecord,
     },
 };
 
@@ -314,7 +313,6 @@ fn emit_runtime_boundary_candidate(
         Ok(persisted) => {
             let action_id = persisted.approval_request.action_id.clone();
             let boundary_id = boundary.boundary_id.clone();
-            let notification_dispatch_outcome = persisted.notification_dispatch_outcome.clone();
             {
                 let mut state = shared.lock().expect("sidecar state lock poisoned");
                 state.active_boundary = Some(ActiveInteractiveBoundary {
@@ -349,45 +347,6 @@ fn emit_runtime_boundary_candidate(
                     detail: boundary.detail.clone(),
                 },
             );
-
-            match notification_dispatch_outcome.status {
-                NotificationDispatchEnqueueStatus::Enqueued => {
-                    append_live_event(
-                        shared,
-                        event_hub,
-                        &SupervisorLiveEventPayload::Activity {
-                            code: notification_dispatch_outcome
-                                .code
-                                .unwrap_or_else(|| "notification_dispatch_enqueued".into()),
-                            title: "Notification dispatch fan-out enqueued".into(),
-                            detail: Some(format!(
-                                "Cadence enqueued {} notification dispatch route(s) for pending action `{action_id}`.",
-                                notification_dispatch_outcome.dispatch_count
-                            )),
-                        },
-                    );
-                }
-                NotificationDispatchEnqueueStatus::Skipped => {
-                    append_live_event(
-                        shared,
-                        event_hub,
-                        &SupervisorLiveEventPayload::Activity {
-                            code: notification_dispatch_outcome
-                                .code
-                                .unwrap_or_else(|| "notification_dispatch_enqueue_skipped".into()),
-                            title: "Notification dispatch fan-out skipped".into(),
-                            detail: Some(
-                                notification_dispatch_outcome
-                                    .message
-                                    .unwrap_or_else(|| {
-                                        "Cadence skipped notification dispatch fan-out after persisting the pending runtime boundary."
-                                            .into()
-                                    }),
-                            ),
-                        },
-                    );
-                }
-            }
         }
         Err(error) => reject_runtime_boundary_candidate(
             repo_root,

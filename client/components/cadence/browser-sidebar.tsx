@@ -8,6 +8,8 @@ import {
   ArrowRight,
   Cookie,
   Loader2,
+  MousePointerSquareDashed,
+  Pencil,
   Plus,
   RotateCw,
   X,
@@ -19,6 +21,13 @@ import {
   type CookieImportStatus,
   type DetectedBrowser,
 } from "./browser-cookie-import"
+import {
+  InspectOverlay,
+  PenOverlay,
+  isDevServerUrl,
+} from "./browser-tool-overlay"
+
+type ToolMode = "pen" | "inspect" | null
 
 const MIN_WIDTH = 320
 const RIGHT_PADDING = 200
@@ -138,6 +147,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
   const [canGoForward, setCanGoForward] = useState(false)
   const [navError, setNavError] = useState<string | null>(null)
   const [showCookieBanner, setShowCookieBanner] = useState(false)
+  const [toolMode, setToolMode] = useState<ToolMode>(null)
   const targetWidth = open ? width : 0
   const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const {
@@ -159,9 +169,27 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
     [tabs, activeTabId],
   )
 
+  const isDevTab = isDevServerUrl(activeTab?.url ?? null)
+  const pageLabel = activeTab?.title ?? activeTab?.url ?? null
+
+  // Tools are gated to dev-server tabs. Drop the active tool whenever the
+  // tab/URL changes to one that isn't a dev server, or when the sidebar closes.
+  useEffect(() => {
+    if (toolMode === null) return
+    if (!open || !isDevTab) {
+      setToolMode(null)
+    }
+  }, [open, isDevTab, toolMode])
+
   useEffect(() => {
     if (!open || !isTauri()) return
     if (!hasWebviewRef.current) return
+    // Tool overlays (pen / inspect) sit on top of the viewport in HTML, but the
+    // native child webview always paints on top of HTML — so we have to hide
+    // the webview while a tool is active. The hide is dispatched in the effect
+    // below; here we just bail out so the rAF resize loop doesn't immediately
+    // pull it back to the foreground.
+    if (toolMode !== null) return
 
     // Reset the cache on every effect re-run (sidebar open, active tab change)
     // so the first tick always fires a browser_resize. Without this, switching
@@ -191,7 +219,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
     }
     rafId = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(rafId)
-  }, [open, activeTabId])
+  }, [open, activeTabId, toolMode])
 
   useEffect(() => {
     if (open || !isTauri() || !hasWebviewRef.current) return
@@ -200,6 +228,15 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
       /* swallow */
     })
   }, [open])
+
+  useEffect(() => {
+    if (!isTauri() || !hasWebviewRef.current) return
+    if (toolMode === null) return
+    lastSyncedRectRef.current = null
+    void invoke("browser_hide").catch(() => {
+      /* swallow */
+    })
+  }, [toolMode])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -635,6 +672,47 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
             value={address}
           />
         </form>
+        {isDevTab ? (
+          <div
+            className="ml-1 flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-background/40 px-0.5"
+            data-testid="browser-dev-tools"
+          >
+            <button
+              aria-label="Sketch on page"
+              aria-pressed={toolMode === "pen"}
+              className={cn(
+                "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+                toolMode === "pen"
+                  ? "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary"
+                  : null,
+              )}
+              onClick={() =>
+                setToolMode((current) => (current === "pen" ? null : "pen"))
+              }
+              title="Sketch on page"
+              type="button"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button
+              aria-label="Inspect element"
+              aria-pressed={toolMode === "inspect"}
+              className={cn(
+                "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+                toolMode === "inspect"
+                  ? "bg-emerald-400/15 text-emerald-400 hover:bg-emerald-400/20 hover:text-emerald-400"
+                  : null,
+              )}
+              onClick={() =>
+                setToolMode((current) => (current === "inspect" ? null : "inspect"))
+              }
+              title="Inspect element"
+              type="button"
+            >
+              <MousePointerSquareDashed className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {showCookieBanner ? (
@@ -666,6 +744,20 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
               Browser engine is only available in the desktop app.
             </div>
           </div>
+        ) : null}
+        {toolMode === "pen" ? (
+          <PenOverlay
+            pageLabel={pageLabel}
+            onSubmit={() => setToolMode(null)}
+            onExit={() => setToolMode(null)}
+          />
+        ) : null}
+        {toolMode === "inspect" ? (
+          <InspectOverlay
+            pageLabel={pageLabel}
+            onSubmit={() => setToolMode(null)}
+            onExit={() => setToolMode(null)}
+          />
         ) : null}
       </div>
       </div>

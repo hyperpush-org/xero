@@ -27,6 +27,7 @@ import {
   type ProviderCredentialsSnapshotDto,
   type RuntimeProviderIdDto,
 } from '@/src/lib/cadence-model'
+import { getCloudProviderDefaultProfileId } from '@/src/lib/cadence-model/provider-presets'
 import { projectCheckpointControlLoops } from '../agent-runtime-projections/checkpoint-control-loops'
 import {
   composeAgentTrustSnapshot,
@@ -40,6 +41,7 @@ import {
   getAgentMessagesUnavailableCredentialReason,
   getAgentRuntimeRunUnavailableCredentialReason,
   getAgentSessionUnavailableCredentialReason,
+  getProviderModelCatalogForProvider,
   getRuntimeProviderLabel,
   isAgentRuntimeBlocked,
   isKnownRuntimeProviderId,
@@ -80,8 +82,6 @@ interface SelectedProviderProjection {
     providerLabel: string
     modelId: string | null
     source: 'credential_default' | 'fallback' | 'default'
-    openrouterApiKeyConfigured: boolean
-    anthropicApiKeyConfigured: boolean
   }
 }
 
@@ -174,8 +174,6 @@ function getSelectedProviderProjection(
       providerLabel: selectedModel.providerLabel,
       modelId: selectedModel.modelId,
       source: selectedModel.source === 'runtime_run' ? 'credential_default' : selectedModel.source,
-      openrouterApiKeyConfigured: false,
-      anthropicApiKeyConfigured: false,
     },
   }
 }
@@ -306,6 +304,44 @@ function getCatalogRefreshError(
   return loadError
 }
 
+function getProviderCatalogStateKeys(
+  providerId: string | null | undefined,
+  catalog: ProviderModelCatalogDto | null,
+): string[] {
+  if (!providerId) {
+    return []
+  }
+
+  const keys = [providerId]
+  if (catalog?.profileId && !keys.includes(catalog.profileId)) {
+    keys.push(catalog.profileId)
+  }
+
+  const defaultProfileId = getCloudProviderDefaultProfileId(providerId)
+  if (defaultProfileId && !keys.includes(defaultProfileId)) {
+    keys.push(defaultProfileId)
+  }
+
+  return keys
+}
+
+function firstCatalogStateValue<T>(
+  records: Record<string, T> | null | undefined,
+  keys: string[],
+): T | undefined {
+  if (!records) {
+    return undefined
+  }
+
+  for (const key of keys) {
+    if (key in records) {
+      return records[key]
+    }
+  }
+
+  return undefined
+}
+
 function getCatalogStateCopy(options: {
   providerId: string
   providerLabel: string
@@ -390,13 +426,17 @@ function buildAgentProviderModelCatalog(options: {
 } {
   const providerId = options.selectedModel.providerId
   const providerLabel = options.selectedModel.providerLabel
-  const catalog = providerId ? options.providerModelCatalogs?.[providerId] ?? null : null
+  const catalog = getProviderModelCatalogForProvider(options.providerModelCatalogs, providerId)
+  const catalogStateKeys = getProviderCatalogStateKeys(providerId, catalog)
   const loadStatus =
     providerId
-      ? options.providerModelCatalogLoadStatuses?.[providerId] ?? 'idle'
+      ? firstCatalogStateValue(options.providerModelCatalogLoadStatuses, catalogStateKeys) ?? 'idle'
       : ('idle' as ProviderModelCatalogLoadStatus)
+  const loadError = providerId
+    ? firstCatalogStateValue(options.providerModelCatalogLoadErrors, catalogStateKeys) ?? null
+    : null
   const refreshError = providerId
-    ? getCatalogRefreshError(catalog, options.providerModelCatalogLoadErrors?.[providerId] ?? null)
+    ? getCatalogRefreshError(catalog, loadError)
     : null
 
   const credentialedProviders = new Set(
@@ -406,7 +446,7 @@ function buildAgentProviderModelCatalog(options: {
   // truth for `models`; we adapt it to the legacy AgentProviderModelView shape.
   const models: AgentProviderModelView[] = options.composerModelOptions.map((option) => ({
     selectionKey: option.selectionKey,
-    profileId: null,
+    profileId: option.profileId,
     profileLabel: null,
     providerId: option.providerId,
     providerLabel: option.providerLabel,
@@ -520,7 +560,6 @@ export function buildWorkflowView({
     selectedProviderLabel: selectedProvider.providerLabel,
     selectedProviderSource: selectedProvider.source,
     selectedModelId: selectedProvider.modelId,
-    openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
     hasAnyReadyProvider,
     providerMismatch: false,
     providerMismatchReason: null,
@@ -670,7 +709,6 @@ export function buildAgentView({
       selectedModelOption: providerModelCatalogProjection.selectedModelOption,
       selectedModelThinkingEffortOptions: providerModelCatalogProjection.selectedModelThinkingEffortOptions,
       selectedModelDefaultThinkingEffort: providerModelCatalogProjection.selectedModelDefaultThinkingEffort,
-      openrouterApiKeyConfigured: selectedProvider.openrouterApiKeyConfigured,
       hasAnyReadyProvider: (providerCredentials?.credentials.length ?? 0) > 0,
       providerMismatch: false,
       providerMismatchReason: null,

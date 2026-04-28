@@ -66,18 +66,10 @@ export function NoProjectEmptyState({ isDesktopRuntime, isImporting, onImport }:
 }
 
 function BrandGlyph() {
-  // A larger, softer echo of the Cadence mark used in the titlebar.
   return (
     <div className="relative">
       <div className="absolute inset-0 -z-10 rounded-3xl bg-primary/10 blur-2xl" />
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-card/60">
-        <svg className="text-primary" fill="none" height="26" viewBox="0 0 24 24" width="26">
-          <path d="M4 4h6v6H4V4Z" fill="currentColor" />
-          <path d="M14 4h6v6h-6V4Z" fill="currentColor" fillOpacity="0.3" />
-          <path d="M4 14h6v6H4v-6Z" fill="currentColor" fillOpacity="0.3" />
-          <path d="M14 14h6v6h-6v-6Z" fill="currentColor" />
-        </svg>
-      </div>
+      <img src="/icon-logo.svg" alt="" className="h-12 w-12" />
     </div>
   )
 }

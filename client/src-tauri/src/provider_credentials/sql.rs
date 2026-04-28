@@ -23,14 +23,12 @@ pub fn load_all_provider_credentials(
             )
         })?;
 
-    let rows = stmt
-        .query_map([], map_row)
-        .map_err(|error| {
-            CommandError::retryable(
-                "provider_credentials_read_failed",
-                format!("Cadence could not query provider_credentials: {error}"),
-            )
-        })?;
+    let rows = stmt.query_map([], map_row).map_err(|error| {
+        CommandError::retryable(
+            "provider_credentials_read_failed",
+            format!("Cadence could not query provider_credentials: {error}"),
+        )
+    })?;
 
     let mut records = Vec::new();
     for row in rows {
@@ -57,9 +55,7 @@ pub fn load_provider_credential(
 ) -> CommandResult<Option<ProviderCredentialRecord>> {
     connection
         .query_row(
-            &format!(
-                "SELECT {SELECT_COLUMNS} FROM provider_credentials WHERE provider_id = ?1"
-            ),
+            &format!("SELECT {SELECT_COLUMNS} FROM provider_credentials WHERE provider_id = ?1"),
             params![provider_id],
             map_row,
         )
@@ -258,7 +254,10 @@ mod tests {
         let mut record = api_key_record("openrouter", "sk-test");
         record.api_key = None;
         let result = upsert_provider_credential(&connection, &record);
-        assert!(result.is_err(), "missing api_key for kind=api_key must error");
+        assert!(
+            result.is_err(),
+            "missing api_key for kind=api_key must error"
+        );
     }
 
     #[test]

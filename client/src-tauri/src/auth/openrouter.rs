@@ -97,7 +97,7 @@ pub(crate) fn bind_openrouter_runtime_session<R: Runtime>(
     state: &DesktopState,
     settings: &RuntimeSettingsSnapshot,
 ) -> Result<OpenRouterBindOutcome, AuthFlowError> {
-    let Some(api_key) = settings.openrouter_api_key.as_deref() else {
+    let Some(api_key) = settings.provider_api_key.as_deref() else {
         return Ok(OpenRouterBindOutcome::SignedOut(AuthDiagnostic {
             code: "openrouter_api_key_missing".into(),
             message: "Cadence cannot bind the selected OpenRouter runtime because no app-global API key is configured in Settings.".into(),
@@ -122,7 +122,7 @@ pub(crate) fn reconcile_openrouter_runtime_session<R: Runtime>(
     session_id: Option<&str>,
     settings: &RuntimeSettingsSnapshot,
 ) -> Result<OpenRouterReconcileOutcome, AuthFlowError> {
-    let Some(api_key) = settings.openrouter_api_key.as_deref() else {
+    let Some(api_key) = settings.provider_api_key.as_deref() else {
         return Ok(OpenRouterReconcileOutcome::SignedOut(AuthDiagnostic {
             code: "openrouter_api_key_missing".into(),
             message: "Cadence cannot reconcile the selected OpenRouter runtime because no app-global API key is configured in Settings.".into(),
@@ -314,7 +314,7 @@ fn synthetic_binding(
     let provider = openrouter_provider();
     let key_fingerprint = sha256_hex(format!("{OPENROUTER_PROVIDER_ID}:{api_key}"));
     let effective_timestamp = settings
-        .openrouter_credentials_updated_at
+        .provider_api_key_updated_at
         .as_deref()
         .unwrap_or(settings.settings.updated_at.as_str());
     let session_fingerprint = sha256_hex(format!(

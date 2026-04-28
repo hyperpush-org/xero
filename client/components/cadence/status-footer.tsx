@@ -14,10 +14,8 @@ import { formatTokenCount, formatMicrosUsd } from "@/src/lib/cadence-model/usage
 
 export interface FooterSpendData {
   totalTokens: number
-  /** Cost in micros (1e-6 USD); preferred over totalUsd when both are present. */
+  /** Cost in micros (1e-6 USD). */
   totalCostMicros?: number
-  /** Backwards-compatible USD figure used when micros are unavailable. */
-  totalUsd?: number
 }
 
 export interface StatusFooterProps {
@@ -170,9 +168,7 @@ export function StatusFooter({
 
 function resolveCostMicros(spend: FooterSpendData | null | undefined): number {
   if (!spend) return 0
-  if (typeof spend.totalCostMicros === "number") return spend.totalCostMicros
-  if (typeof spend.totalUsd === "number") return Math.round(spend.totalUsd * 1_000_000)
-  return 0
+  return typeof spend.totalCostMicros === "number" ? spend.totalCostMicros : 0
 }
 
 function resolveCostLabel(spend: FooterSpendData | null | undefined): string {

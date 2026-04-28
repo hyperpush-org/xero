@@ -101,9 +101,6 @@ pub(crate) fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::Moc
 }
 
 pub(crate) fn create_state(root: &TempDir) -> (DesktopState, PathBuf, PathBuf) {
-    // Phase 2.7: every per-file override now funnels into a single global SQLite database.
-    // The legacy registry/auth-store paths share the same `cadence.db` so persisted auth
-    // state is visible to the runtime session reads.
     let global_db_path = root.path().join("app-data").join("cadence.db");
     (
         DesktopState::default()
@@ -186,11 +183,11 @@ pub(crate) fn seed_project(
 
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(&app.handle().clone())
+        .global_db_path(&app.handle().clone())
         .expect("registry path");
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("import project into repo-local db");
+        .expect("import project into app-data db");
 
     registry::replace_projects(
         &registry_path,

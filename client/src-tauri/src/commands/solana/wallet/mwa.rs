@@ -11,7 +11,7 @@
 //!   import path so the developer doesn't have to hunt.
 //! - Provides a concrete checklist for testing on a physical device.
 
-use super::{wallet_adapter::escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
+use super::{escape_ts_string, ScaffoldMeta, WalletScaffoldContext};
 
 pub fn render(ctx: &WalletScaffoldContext) -> (Vec<(String, String)>, ScaffoldMeta) {
     let files = vec![

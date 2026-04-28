@@ -663,6 +663,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         platformOverride={platformOverride}
         footer={statusFooter}
         chromeOnly
+        hideFooter
       >
         <OnboardingFlow
           providerCredentials={providerCredentials}

@@ -290,7 +290,7 @@ pub(crate) fn resolve_project_root<R: Runtime>(
     state: &State<'_, DesktopState>,
     project_id: &str,
 ) -> CommandResult<PathBuf> {
-    let registry_path = state.registry_file(app)?;
+    let registry_path = state.global_db_path(app)?;
     let registry = registry::read_registry(&registry_path)?;
     let mut live_root_records = Vec::new();
     let mut pruned_stale_roots = false;

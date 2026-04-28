@@ -133,8 +133,8 @@ pub use autonomous_web_runtime::{
 };
 pub use diagnostics::{
     ambient_auth_failure_diagnostic, invalid_base_url_diagnostic,
-    provider_model_catalog_diagnostic, provider_profile_readiness_diagnostic,
-    provider_profile_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
+    provider_model_catalog_diagnostic, provider_readiness_diagnostic,
+    provider_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
     stale_runtime_binding_diagnostic, summarize_diagnostic_checks, unsupported_provider_diagnostic,
     validate_diagnostic_check, validate_doctor_report, CadenceDiagnosticCheck,
     CadenceDiagnosticCheckInput, CadenceDiagnosticEndpointMetadata,

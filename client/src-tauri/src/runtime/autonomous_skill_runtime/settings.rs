@@ -408,8 +408,8 @@ pub fn persist_skill_source_settings(
 }
 
 fn default_local_root_settings() -> Vec<SkillLocalRootSetting> {
-    dirs::home_dir()
-        .map(|home| home.join(".cadence").join("skills"))
+    dirs::data_dir()
+        .map(|data| data.join("dev.sn0w.cadence").join("skills"))
         .filter(|root| root.is_dir())
         .and_then(|root| {
             normalize_local_root_setting(None, root.to_string_lossy().into_owned(), true).ok()
@@ -419,8 +419,8 @@ fn default_local_root_settings() -> Vec<SkillLocalRootSetting> {
 }
 
 fn default_plugin_root_settings() -> Vec<SkillPluginRootSetting> {
-    dirs::home_dir()
-        .map(|home| home.join(".cadence").join("plugins"))
+    dirs::data_dir()
+        .map(|data| data.join("dev.sn0w.cadence").join("plugins"))
         .filter(|root| root.is_dir())
         .and_then(|root| {
             normalize_plugin_root_setting(None, root.to_string_lossy().into_owned(), true).ok()

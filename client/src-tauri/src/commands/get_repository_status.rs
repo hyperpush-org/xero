@@ -16,6 +16,6 @@ pub fn get_repository_status<R: Runtime>(
 ) -> CommandResult<RepositoryStatusResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
 
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     status::load_repository_status(&request.project_id, &registry_path)
 }

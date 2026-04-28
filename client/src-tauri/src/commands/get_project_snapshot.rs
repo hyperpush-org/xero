@@ -26,7 +26,7 @@ pub fn get_project_snapshot<R: Runtime>(
 ) -> CommandResult<ProjectSnapshotResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
 
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     db::configure_project_database_paths(&registry_path);
     let registry = registry::read_registry(&registry_path)?;
     let mut live_root_records = Vec::new();

@@ -153,7 +153,7 @@ pub fn upsert_skill_local_root<R: Runtime>(
     state: State<'_, DesktopState>,
     request: UpsertSkillLocalRootRequestDto,
 ) -> CommandResult<SkillRegistryDto> {
-    let path = state.skill_source_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let settings = load_settings(&app, state.inner())?.upsert_local_root(
         request.root_id,
         request.path,
@@ -178,7 +178,7 @@ pub fn remove_skill_local_root<R: Runtime>(
     state: State<'_, DesktopState>,
     request: RemoveSkillLocalRootRequestDto,
 ) -> CommandResult<SkillRegistryDto> {
-    let path = state.skill_source_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let settings = load_settings(&app, state.inner())?.remove_local_root(&request.root_id)?;
     persist_settings(&path, settings)?;
     load_skill_registry(
@@ -200,7 +200,7 @@ pub fn update_project_skill_source<R: Runtime>(
     request: UpdateProjectSkillSourceRequestDto,
 ) -> CommandResult<SkillRegistryDto> {
     let project_id = validate_required(request.project_id, "projectId")?;
-    let path = state.skill_source_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let settings =
         load_settings(&app, state.inner())?.update_project(project_id.clone(), request.enabled)?;
     persist_settings(&path, settings)?;
@@ -222,7 +222,7 @@ pub fn update_github_skill_source<R: Runtime>(
     state: State<'_, DesktopState>,
     request: UpdateGithubSkillSourceRequestDto,
 ) -> CommandResult<SkillRegistryDto> {
-    let path = state.skill_source_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let settings = load_settings(&app, state.inner())?.update_github(
         request.repo,
         request.reference,
@@ -248,7 +248,7 @@ pub fn upsert_plugin_root<R: Runtime>(
     state: State<'_, DesktopState>,
     request: UpsertPluginRootRequestDto,
 ) -> CommandResult<SkillRegistryDto> {
-    let path = state.skill_source_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let settings = load_settings(&app, state.inner())?.upsert_plugin_root(
         request.root_id,
         request.path,
@@ -273,7 +273,7 @@ pub fn remove_plugin_root<R: Runtime>(
     state: State<'_, DesktopState>,
     request: RemovePluginRootRequestDto,
 ) -> CommandResult<SkillRegistryDto> {
-    let path = state.skill_source_settings_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let settings = load_settings(&app, state.inner())?.remove_plugin_root(&request.root_id)?;
     persist_settings(&path, settings)?;
     load_skill_registry(
@@ -453,10 +453,11 @@ fn collect_discoverable_skills<R: Runtime>(
         project_id.filter(|project_id| settings.project_discovery_enabled(project_id))
     {
         let repo_root = resolve_imported_repo_root(app, state, project_id)?;
+        let project_app_data_dir = crate::db::project_app_data_dir_for_repo(&repo_root);
         push_discovery(
             &mut candidates,
             &mut diagnostics,
-            discover_project_skill_directory(project_id, &repo_root)?,
+            discover_project_skill_directory(project_id, project_app_data_dir)?,
         );
     }
 
@@ -586,7 +587,7 @@ fn load_settings<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<SkillSourceSettings> {
-    crate::runtime::load_skill_source_settings_from_path(&state.skill_source_settings_file(app)?)
+    crate::runtime::load_skill_source_settings_from_path(&state.global_db_path(app)?)
 }
 
 fn persist_settings(path: &std::path::Path, settings: SkillSourceSettings) -> CommandResult<()> {

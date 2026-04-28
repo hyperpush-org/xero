@@ -160,9 +160,9 @@ export function VcsSidebar(props: VcsSidebarProps) {
     })
   }, [])
 
-  // The shell footer is `h-8` (32px) and the titlebar is `h-11` (44px). We
-  // overlay between those with `position: fixed` so toggling the panel
-  // never restructures the underlying layout.
+  // The panel overlays the main content area. `<main>` has `contain: paint`,
+  // which makes it the containing block for fixed descendants, so `inset-y-0`
+  // already fills exactly the area between the titlebar and the status footer.
   return (
     <>
       {/* Backdrop: dims the underlying app and dismisses the panel on click. */}
@@ -170,7 +170,7 @@ export function VcsSidebar(props: VcsSidebarProps) {
         animate={{ opacity: open ? 1 : 0 }}
         aria-hidden="true"
         className={cn(
-          "fixed inset-x-0 top-11 bottom-8 z-40 bg-black/30",
+          "fixed inset-0 z-40 bg-black/30",
           open ? "pointer-events-auto" : "pointer-events-none",
         )}
         initial={false}
@@ -182,7 +182,7 @@ export function VcsSidebar(props: VcsSidebarProps) {
         aria-hidden={!open}
         aria-label="Source control panel"
         className={cn(
-          "gpu-layer fixed top-11 bottom-8 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
+          "gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
         )}
         initial={false}
         inert={!open ? true : undefined}

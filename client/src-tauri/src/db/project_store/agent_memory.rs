@@ -229,9 +229,8 @@ pub fn delete_agent_memory(
     Ok(())
 }
 
-/// Mirror the SQLite trigger that wiped `agent_memories.source_run_id` when an
-/// `agent_runs` row was deleted. Called by `delete_agent_session` after the
-/// SQLite cascade so the Lance dataset converges with the relational store.
+/// Clear Lance provenance references for runs deleted by the relational
+/// runtime store.
 pub fn clear_memory_runs_for_deletion(
     repo_root: &Path,
     project_id: &str,

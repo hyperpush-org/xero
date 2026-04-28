@@ -29,7 +29,7 @@ pub fn import_mcp_servers<R: Runtime>(
     }
 
     let import_path = PathBuf::from(import_path);
-    let registry_path = state.mcp_registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
 
     let current = load_mcp_registry_from_path(&registry_path)?;
     let entries = parse_mcp_registry_import_file(&import_path)?;

@@ -92,7 +92,10 @@ fn compile_dictation_shim() {
     let sdk_swift_lib = PathBuf::from(&sdk_path).join("usr/lib/swift");
     if sdk_swift_lib.is_dir() {
         println!("cargo:rustc-link-search=native={}", sdk_swift_lib.display());
-        println!("cargo:rustc-link-search=framework={}", sdk_swift_lib.display());
+        println!(
+            "cargo:rustc-link-search=framework={}",
+            sdk_swift_lib.display()
+        );
     }
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());

@@ -12,10 +12,7 @@ use cadence_desktop_lib::{
         RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
     },
     configure_builder_with_state, db,
-    git::{
-        diff::MAX_PATCH_BYTES,
-        repository::{ensure_cadence_excluded, CanonicalRepository},
-    },
+    git::{diff::MAX_PATCH_BYTES, repository::CanonicalRepository},
     mcp::{
         persist_mcp_registry, McpConnectionState, McpConnectionStatus, McpEnvironmentReference,
         McpRegistry, McpServerRecord, McpTransport,
@@ -53,7 +50,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_registry_file_override(root.path().join("app-data").join("project-registry.json"))
+        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
 }
 
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
@@ -86,16 +83,13 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         deletions: 0,
     };
 
-    ensure_cadence_excluded(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("exclude .cadence from seeded repo git status");
-
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(&app.handle().clone())
+        .global_db_path(&app.handle().clone())
         .expect("registry path");
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("import project into repo-local db");
+        .expect("import project into app-data db");
 
     registry::replace_projects(
         &registry_path,

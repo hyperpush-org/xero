@@ -502,7 +502,6 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
       overrides.selectedModelThinkingEffortOptions ?? selectedModelOption?.thinkingEffortOptions ?? [],
     selectedModelDefaultThinkingEffort:
       overrides.selectedModelDefaultThinkingEffort ?? selectedModelOption?.defaultThinkingEffort ?? null,
-    openrouterApiKeyConfigured: overrides.openrouterApiKeyConfigured ?? false,
     providerMismatch: overrides.providerMismatch ?? false,
     runtimeRun,
     autonomousRun: overrides.autonomousRun ?? project.autonomousRun ?? null,
@@ -1663,6 +1662,7 @@ describe('AgentRuntime current UI', () => {
     const composerModelOptions = [
       {
         selectionKey: 'openrouter:openai/gpt-4.1-mini',
+        profileId: 'openrouter-default',
         providerId: 'openrouter' as const,
         providerLabel: 'OpenRouter',
         modelId: 'openai/gpt-4.1-mini',
@@ -1673,6 +1673,7 @@ describe('AgentRuntime current UI', () => {
       },
       {
         selectionKey: 'anthropic:claude-3-7-sonnet-latest',
+        profileId: 'anthropic-default',
         providerId: 'anthropic' as const,
         providerLabel: 'Anthropic',
         modelId: 'claude-3-7-sonnet-latest',
@@ -1711,6 +1712,7 @@ describe('AgentRuntime current UI', () => {
           composerModelOptions: [
             {
               selectionKey: 'openrouter:openai/gpt-4.1-mini',
+              profileId: 'openrouter-default',
               providerId: 'openrouter' as const,
               providerLabel: 'OpenRouter',
               modelId: 'openai/gpt-4.1-mini',

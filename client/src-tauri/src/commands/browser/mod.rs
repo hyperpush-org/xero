@@ -31,13 +31,12 @@ pub use events::{
     BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use screenshot::capture_webview as screenshot_webview;
-pub use tabs::{BrowserTabMetadata, BROWSER_LEGACY_LABEL, BROWSER_TAB_PREFIX};
+pub use tabs::{BrowserTabMetadata, BROWSER_TAB_PREFIX};
 
 use bridge::{BridgeReply, BridgeWaiters};
 use script::BROWSER_BRIDGE_INIT_SCRIPT;
 use tabs::{BrowserTabs, BROWSER_MAIN_WINDOW_LABEL};
 
-pub const BROWSER_WEBVIEW_LABEL: &str = BROWSER_LEGACY_LABEL;
 const HIDDEN_OFFSET: f64 = -32_000.0;
 const DEFAULT_AUTONOMOUS_BROWSER_WIDTH: f64 = 1_280.0;
 const DEFAULT_AUTONOMOUS_BROWSER_HEIGHT: f64 = 720.0;
@@ -170,7 +169,6 @@ pub fn provision_browser_tab<R: Runtime>(
     let (tab_id, label) = if force_new {
         inserted_tab = true;
         let (id, label) = tabs.new_tab_label();
-        let label = first_tab_legacy_label(&id, label);
         tabs.insert(id.clone(), label.clone())?;
         (id, label)
     } else {
@@ -180,12 +178,11 @@ pub fn provision_browser_tab<R: Runtime>(
                 if let Some(active) = tabs.active_tab_id() {
                     let label = tabs
                         .active_label_soft()
-                        .unwrap_or_else(|| BROWSER_LEGACY_LABEL.to_string());
+                        .unwrap_or_else(|| tab_label_for_id(&active));
                     (active, label)
                 } else {
                     inserted_tab = true;
                     let (id, label) = tabs.new_tab_label();
-                    let label = first_tab_legacy_label(&id, label);
                     tabs.insert(id.clone(), label.clone())?;
                     (id, label)
                 }
@@ -318,14 +315,6 @@ fn ensure_browser_webview<R: Runtime>(
             )
         })?;
     Ok(())
-}
-
-fn first_tab_legacy_label(id: &str, label: String) -> String {
-    if id == "tab-1" {
-        BROWSER_LEGACY_LABEL.to_string()
-    } else {
-        label
-    }
 }
 
 fn resolve_browser_viewport<R: Runtime>(
@@ -935,7 +924,7 @@ fn current_tab_meta(tabs: &BrowserTabs, id: &str) -> BrowserTabMetadata {
         .and_then(|list| list.into_iter().find(|tab| tab.id == id))
         .unwrap_or(BrowserTabMetadata {
             id: id.to_string(),
-            label: BROWSER_LEGACY_LABEL.to_string(),
+            label: tab_label_for_id(id),
             title: None,
             url: None,
             loading: false,
@@ -943,6 +932,11 @@ fn current_tab_meta(tabs: &BrowserTabs, id: &str) -> BrowserTabMetadata {
             can_go_forward: false,
             active: true,
         })
+}
+
+fn tab_label_for_id(id: &str) -> String {
+    let suffix = id.strip_prefix("tab-").unwrap_or(id);
+    format!("{BROWSER_TAB_PREFIX}{suffix}")
 }
 
 fn emit_tab_list<R: Runtime>(app: &AppHandle<R>, tabs: &BrowserTabs) {

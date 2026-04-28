@@ -1242,7 +1242,6 @@ export interface MetaplexMintResult {
 }
 
 export type WalletKind =
-  | "wallet_adapter"
   | "wallet_standard"
   | "privy"
   | "dynamic"

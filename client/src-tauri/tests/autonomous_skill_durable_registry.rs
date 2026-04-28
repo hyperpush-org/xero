@@ -218,13 +218,16 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
     assert_eq!(installed.source.state, CadenceSkillSourceState::Enabled);
 
     let project_skill = write_skill(
-        &repo_root.join(".cadence").join("skills"),
+        &db::project_app_data_dir_for_repo(&repo_root).join("skills"),
         "project-helper",
         "project-helper",
         "Project-local helper.",
     );
-    let discovered =
-        discover_project_skill_directory("project-1", &repo_root).expect("discover project skill");
+    let discovered = discover_project_skill_directory(
+        "project-1",
+        db::project_app_data_dir_for_repo(&repo_root),
+    )
+    .expect("discover project skill");
     assert_eq!(discovered.candidates.len(), 1);
     let project_record = project_store::InstalledSkillRecord::from_discovered_skill(
         &discovered.candidates[0],
@@ -239,7 +242,10 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
             .as_ref()
             .expect("project local location")
     )
-    .starts_with(project_skill.parent().expect("project skill parent")));
+    .starts_with(
+        std::fs::canonicalize(project_skill.parent().expect("project skill parent"))
+            .expect("canonical project skill parent")
+    ));
     project_store::upsert_installed_skill(&repo_root, project_record)
         .expect("upsert project skill");
 
@@ -572,16 +578,21 @@ fn local_and_project_skill_scanning_returns_candidates_and_typed_diagnostics() {
     assert!(diagnostic_codes.contains(&"autonomous_skill_layout_unsupported"));
     assert!(diagnostic_codes.contains(&"autonomous_skill_path_outside_root"));
 
+    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
     let project_root = root.path().join("project");
-    let project_skill_root = project_root.join(".cadence").join("skills");
+    std::fs::create_dir_all(&project_root).expect("create project root");
+    let project_skill_root = db::project_app_data_dir_for_repo(&project_root).join("skills");
     write_skill(
         &project_skill_root,
         "project-helper",
         "project-helper",
         "Project helper.",
     );
-    let project_discovery =
-        discover_project_skill_directory("project-1", &project_root).expect("project discovery");
+    let project_discovery = discover_project_skill_directory(
+        "project-1",
+        db::project_app_data_dir_for_repo(&project_root),
+    )
+    .expect("project discovery");
     assert_eq!(project_discovery.diagnostics, Vec::new());
     assert_eq!(project_discovery.candidates.len(), 1);
     assert_eq!(project_discovery.candidates[0].skill_id, "project-helper");
@@ -592,7 +603,7 @@ fn local_and_project_skill_scanning_returns_candidates_and_typed_diagnostics() {
     assert!(project_discovery.candidates[0]
         .source
         .source_id
-        .contains(".cadence/skills/project-helper"));
+        .contains("skills/project-helper"));
 }
 
 #[test]

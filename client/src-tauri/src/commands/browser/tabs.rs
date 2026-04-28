@@ -17,10 +17,6 @@ pub const BROWSER_MAIN_WINDOW_LABEL: &str = "main";
 /// global webview registry.
 pub const BROWSER_TAB_PREFIX: &str = "cadence-browser-tab-";
 
-/// Legacy label used before multi-tab support. Kept as an alias of the first tab so
-/// existing screenshots and IPC paths continue to work.
-pub const BROWSER_LEGACY_LABEL: &str = "cadence-browser";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserTabMetadata {

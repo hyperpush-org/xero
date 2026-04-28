@@ -4,11 +4,6 @@ mod runtime_rows;
 mod support;
 
 #[test]
-fn pre_agent_session_runtime_rows_migrate_into_default_session_scope() {
-    runtime_rows::pre_agent_session_runtime_rows_migrate_into_default_session_scope();
-}
-
-#[test]
 fn runtime_run_recovery_distinguishes_running_stale_stopped_and_failed_states() {
     runtime_rows::runtime_run_recovery_distinguishes_running_stale_stopped_and_failed_states();
 }

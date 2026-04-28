@@ -1,38 +1,13 @@
 use std::path::Path;
 
-use rusqlite::Connection;
-
 use crate::{
     commands::CommandError,
-    db::{configure_connection, migrations::migrations, project_store::drain_pending_into_lance},
+    db::{
+        configure_connection, is_database_too_far_ahead, migrations::migrations,
+        rebuild_incompatible_project_database,
+    },
 };
-
-fn project_id_from_meta(connection: &Connection) -> Option<String> {
-    use rusqlite::OptionalExtension;
-    connection
-        .query_row::<String, _, _>(
-            "SELECT project_id FROM meta WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-}
-
-fn drain_lance_imports(connection: &Connection, database_path: &Path) {
-    let project_id = project_id_from_meta(connection)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    if let Err(error) = drain_pending_into_lance(database_path, &project_id) {
-        eprintln!(
-            "[cadence] agent_memories lance drain failed at {}: {} ({})",
-            database_path.display(),
-            error.message,
-            error.code
-        );
-    }
-}
+use rusqlite::Connection;
 
 fn open_state_database(repo_root: &Path, database_path: &Path) -> Result<Connection, CommandError> {
     if !repo_root.is_dir() {
@@ -76,16 +51,22 @@ pub(crate) fn open_project_database(
     database_path: &Path,
 ) -> Result<Connection, CommandError> {
     let mut connection = open_state_database(repo_root, database_path)?;
-    migrations().to_latest(&mut connection).map_err(|error| {
-        CommandError::retryable(
-            "project_state_migration_failed",
-            format!(
-                "Cadence could not migrate selected-project state at {}: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
-    drain_lance_imports(&connection, database_path);
+    match migrations().to_latest(&mut connection) {
+        Ok(()) => {}
+        Err(error) if is_database_too_far_ahead(&error) => {
+            connection =
+                rebuild_incompatible_project_database(repo_root, database_path, connection)?;
+        }
+        Err(error) => {
+            return Err(CommandError::retryable(
+                "project_state_migration_failed",
+                format!(
+                    "Cadence could not initialize selected-project state at {}. The local project state may need to be reset: {error}",
+                    database_path.display()
+                ),
+            ));
+        }
+    }
     Ok(connection)
 }
 
@@ -94,15 +75,21 @@ pub(crate) fn open_runtime_database(
     database_path: &Path,
 ) -> Result<Connection, CommandError> {
     let mut connection = open_state_database(repo_root, database_path)?;
-    migrations().to_latest(&mut connection).map_err(|error| {
-        CommandError::retryable(
-            "runtime_session_migration_failed",
-            format!(
-                "Cadence could not migrate runtime-session tables at {}: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
-    drain_lance_imports(&connection, database_path);
+    match migrations().to_latest(&mut connection) {
+        Ok(()) => {}
+        Err(error) if is_database_too_far_ahead(&error) => {
+            connection =
+                rebuild_incompatible_project_database(repo_root, database_path, connection)?;
+        }
+        Err(error) => {
+            return Err(CommandError::retryable(
+                "runtime_session_migration_failed",
+                format!(
+                    "Cadence could not initialize runtime-session tables at {}. The local project state may need to be reset: {error}",
+                    database_path.display()
+                ),
+            ));
+        }
+    }
     Ok(connection)
 }

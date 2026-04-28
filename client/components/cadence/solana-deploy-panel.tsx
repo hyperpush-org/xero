@@ -15,6 +15,13 @@ import {
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   BuildReport,
   ClusterKind,
@@ -28,6 +35,7 @@ import type {
 } from "@/src/features/solana/use-solana-workbench"
 
 type AuthorityMode = "direct" | "squads"
+const NO_PERSONA = "__none__"
 
 interface SolanaDeployPanelProps {
   cluster: ClusterKind
@@ -374,19 +382,22 @@ export function SolanaDeployPanel({
       {authorityMode === "direct" ? (
         <>
           <Field label="Persona">
-            <select
-              aria-label="Persona"
-              className={inputClass}
-              onChange={(e) => setPersona(e.target.value)}
-              value={persona}
+            <Select
+              value={persona || NO_PERSONA}
+              onValueChange={(value) => setPersona(value === NO_PERSONA ? "" : value)}
             >
-              <option value="">— select persona —</option>
-              {personaNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger aria-label="Persona" className={inputClass} size="sm">
+                <SelectValue placeholder="Select persona" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PERSONA}>Select persona</SelectItem>
+                {personaNames.map((name) => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
           <Field label="Keypair path">
             <input

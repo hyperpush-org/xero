@@ -32,7 +32,7 @@ fn skill_source_contract_names_every_taxonomy_source_and_scope() {
             CadenceSkillSourceScope::global(),
             CadenceSkillSourceLocator::Local {
                 root_id: "personal-skills".into(),
-                root_path: "/Users/sn0w/.cadence/skills".into(),
+                root_path: "/Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills".into(),
                 relative_path: "write-docs".into(),
                 skill_id: "write-docs".into(),
             },
@@ -43,7 +43,7 @@ fn skill_source_contract_names_every_taxonomy_source_and_scope() {
         CadenceSkillSourceRecord::new(
             CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
             CadenceSkillSourceLocator::Project {
-                relative_path: ".cadence/skills/write-docs".into(),
+                relative_path: "skills/write-docs".into(),
                 skill_id: "write-docs".into(),
             },
             CadenceSkillSourceState::Discoverable,
@@ -139,7 +139,7 @@ fn skill_source_contract_assigns_canonical_ids_and_round_trips_github_runtime_me
     let project_record = CadenceSkillSourceRecord::new(
         CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
         CadenceSkillSourceLocator::Project {
-            relative_path: ".cadence/skills/write-docs".into(),
+            relative_path: "skills/write-docs".into(),
             skill_id: "write-docs".into(),
         },
         CadenceSkillSourceState::Discoverable,
@@ -149,7 +149,7 @@ fn skill_source_contract_assigns_canonical_ids_and_round_trips_github_runtime_me
 
     assert_eq!(
         project_record.source_id,
-        "skill-source:v1:project:project-alpha:project:.cadence/skills/write-docs:write-docs"
+        "skill-source:v1:project:project-alpha:project:skills/write-docs:write-docs"
     );
     assert_eq!(
         project_record.contract_version,
@@ -175,7 +175,7 @@ fn skill_source_contract_requires_kind_specific_scope_and_fields() {
     let global_project_error = CadenceSkillSourceRecord::new(
         CadenceSkillSourceScope::global(),
         CadenceSkillSourceLocator::Project {
-            relative_path: ".cadence/skills/write-docs".into(),
+            relative_path: "skills/write-docs".into(),
             skill_id: "write-docs".into(),
         },
         CadenceSkillSourceState::Discoverable,

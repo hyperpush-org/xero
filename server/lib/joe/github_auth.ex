@@ -8,11 +8,16 @@ defmodule Joe.GitHubAuth do
 
   use GenServer
 
+  alias Joe.GitHubAuth.Session
+  alias Joe.Repo
+
   @authorize_url "https://github.com/login/oauth/authorize"
   @token_url "https://github.com/login/oauth/access_token"
   @user_url "https://api.github.com/user"
   @default_scopes ["read:user", "user:email"]
   @session_header "x-cadence-github-session-id"
+  @session_token_salt "github auth session access token v1"
+  @session_token_max_age_seconds 365 * 24 * 60 * 60
   @user_agent "Cadence/0.1"
 
   def start_link(_opts) do
@@ -28,6 +33,10 @@ defmodule Joe.GitHubAuth do
 
   def reset! do
     GenServer.call(__MODULE__, :reset)
+  end
+
+  def clear_in_memory_state_for_test! do
+    GenServer.call(__MODULE__, :clear_in_memory_state_for_test)
   end
 
   def start_login do
@@ -127,6 +136,11 @@ defmodule Joe.GitHubAuth do
 
   @impl true
   def handle_call(:reset, _from, _state) do
+    :ok = delete_all_sessions()
+    {:reply, :ok, %{flows: %{}, states: %{}, sessions: %{}}}
+  end
+
+  def handle_call(:clear_in_memory_state_for_test, _from, _state) do
     {:reply, :ok, %{flows: %{}, states: %{}, sessions: %{}}}
   end
 
@@ -161,11 +175,33 @@ defmodule Joe.GitHubAuth do
   end
 
   def handle_call({:get_session, session_id}, _from, state) do
-    {:reply, {:ok, Map.get(state.sessions, session_id)}, state}
+    case Map.fetch(state.sessions, session_id) do
+      {:ok, session} ->
+        {:reply, {:ok, session}, state}
+
+      :error ->
+        case fetch_persisted_session(session_id) do
+          {:ok, nil} ->
+            {:reply, {:ok, nil}, state}
+
+          {:ok, session} ->
+            {:reply, {:ok, session},
+             %{state | sessions: Map.put(state.sessions, session_id, session)}}
+
+          {:error, error} ->
+            {:reply, {:error, error}, state}
+        end
+    end
   end
 
   def handle_call({:logout, session_id}, _from, state) do
-    {:reply, :ok, %{state | sessions: Map.delete(state.sessions, session_id)}}
+    case delete_session(session_id) do
+      :ok ->
+        {:reply, :ok, %{state | sessions: Map.delete(state.sessions, session_id)}}
+
+      {:error, error} ->
+        {:reply, {:error, error}, state}
+    end
   end
 
   def handle_call({:complete_state, state_token, session_id, stored_session}, _from, state) do
@@ -177,18 +213,24 @@ defmodule Joe.GitHubAuth do
          state}
 
       flow_id ->
-        flow =
-          state.flows
-          |> Map.fetch!(flow_id)
-          |> Map.merge(%{status: :complete, session_id: session_id, session: stored_session})
+        case persist_session(session_id, stored_session) do
+          :ok ->
+            flow =
+              state.flows
+              |> Map.fetch!(flow_id)
+              |> Map.merge(%{status: :complete, session_id: session_id, session: stored_session})
 
-        next_state = %{
-          state
-          | flows: Map.put(state.flows, flow_id, flow),
-            sessions: Map.put(state.sessions, session_id, stored_session)
-        }
+            next_state = %{
+              state
+              | flows: Map.put(state.flows, flow_id, flow),
+                sessions: Map.put(state.sessions, session_id, stored_session)
+            }
 
-        {:reply, :ok, next_state}
+            {:reply, :ok, next_state}
+
+          {:error, error} ->
+            {:reply, {:error, error}, state}
+        end
     end
   end
 
@@ -246,6 +288,132 @@ defmodule Joe.GitHubAuth do
 
   defp fail_state(state_token, error) do
     GenServer.call(__MODULE__, {:fail_state, state_token, error})
+  end
+
+  defp persist_session(session_id, stored_session) do
+    with {:ok, attrs} <- persisted_session_attrs(session_id, stored_session),
+         {:ok, _session} <-
+           %Session{}
+           |> Session.changeset(attrs)
+           |> Repo.insert(
+             on_conflict:
+               {:replace,
+                [
+                  :encrypted_access_token,
+                  :token_type,
+                  :scope,
+                  :user,
+                  :created_at,
+                  :updated_at
+                ]},
+             conflict_target: :session_id
+           ) do
+      :ok
+    else
+      {:error, %Ecto.Changeset{}} ->
+        {:error, error("github_session_store_failed", "Could not save the GitHub session.")}
+
+      {:error, %{"code" => _code} = error} ->
+        {:error, error}
+    end
+  rescue
+    exception ->
+      {:error,
+       error(
+         "github_session_store_unavailable",
+         "Could not save the GitHub session: #{Exception.message(exception)}"
+       )}
+  end
+
+  defp persisted_session_attrs(session_id, stored_session) do
+    access_token =
+      Map.get(stored_session, :access_token) || Map.get(stored_session, "access_token")
+
+    if is_binary(access_token) and access_token != "" do
+      encrypted_access_token =
+        Phoenix.Token.encrypt(JoeWeb.Endpoint, @session_token_salt, access_token,
+          max_age: @session_token_max_age_seconds
+        )
+
+      {:ok,
+       %{
+         session_id: session_id,
+         encrypted_access_token: encrypted_access_token,
+         token_type:
+           Map.get(stored_session, :token_type) || Map.get(stored_session, "token_type") ||
+             "bearer",
+         scope: Map.get(stored_session, :scope) || Map.get(stored_session, "scope") || "",
+         user: Map.get(stored_session, :user) || Map.get(stored_session, "user") || %{},
+         created_at:
+           Map.get(stored_session, :created_at) || Map.get(stored_session, "created_at") ||
+             DateTime.to_iso8601(DateTime.utc_now())
+       }}
+    else
+      {:error,
+       error(
+         "github_session_store_failed",
+         "GitHub session did not include an access token."
+       )}
+    end
+  end
+
+  defp fetch_persisted_session(session_id) do
+    case Repo.get(Session, session_id) do
+      nil ->
+        {:ok, nil}
+
+      session ->
+        persisted_session_to_stored_session(session)
+    end
+  rescue
+    exception ->
+      {:error,
+       error(
+         "github_session_store_unavailable",
+         "Could not read the saved GitHub session: #{Exception.message(exception)}"
+       )}
+  end
+
+  defp persisted_session_to_stored_session(session) do
+    case Phoenix.Token.decrypt(
+           JoeWeb.Endpoint,
+           @session_token_salt,
+           session.encrypted_access_token,
+           max_age: @session_token_max_age_seconds
+         ) do
+      {:ok, access_token} when is_binary(access_token) ->
+        {:ok,
+         %{
+           access_token: access_token,
+           token_type: session.token_type || "bearer",
+           scope: session.scope || "",
+           user: session.user || %{},
+           created_at: session.created_at
+         }}
+
+      {:error, _reason} ->
+        _ = Repo.delete(session)
+        {:ok, nil}
+    end
+  end
+
+  defp delete_session(session_id) do
+    case Repo.get(Session, session_id) do
+      nil -> :ok
+      session -> Repo.delete(session) |> then(fn _result -> :ok end)
+    end
+  rescue
+    exception ->
+      {:error,
+       error(
+         "github_session_store_unavailable",
+         "Could not delete the saved GitHub session: #{Exception.message(exception)}"
+       )}
+  end
+
+  defp delete_all_sessions do
+    Repo.delete_all(Session)
+    :ok
   end
 
   defp oauth_config do

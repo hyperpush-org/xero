@@ -58,6 +58,6 @@ pub fn list_projects<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
 ) -> CommandResult<ListProjectsResponseDto> {
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     load_projects_from_registry(&registry_path)
 }

@@ -1,8 +1,7 @@
 use super::{ProviderCredentialKind, ProviderCredentialRecord};
 
-/// Why a credential row is considered ready. Mirrors the legacy
-/// `ProviderProfileReadinessProof` enum but drops the `Malformed` case — under
-/// the new schema a row either exists (always ready) or it doesn't.
+/// Why a credential row is considered ready. Under the flat credential schema,
+/// a row either exists with a valid kind-specific shape or it doesn't.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialReadinessProof {
     OAuthSession,

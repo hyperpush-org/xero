@@ -195,11 +195,6 @@ fn privy_scaffold_writes_compileable_tree_with_api_key_env() {
 }
 
 #[test]
-fn wallet_adapter_scaffold_bakes_rpc_url_and_reports_free_tier() {
-    wallet_and_token::wallet_adapter_scaffold_bakes_rpc_url_and_reports_free_tier();
-}
-
-#[test]
 fn mwa_scaffold_writes_phone_testing_checklist() {
     wallet_and_token::mwa_scaffold_writes_phone_testing_checklist();
 }

@@ -11,6 +11,7 @@ import type {
 } from '@/src/lib/cadence-model'
 import { findProviderCredential } from '@/src/lib/cadence-model/provider-credentials'
 import {
+  getCloudProviderDefaultProfileId,
   getCloudProviderLabel,
   isKnownCloudProviderId,
 } from '@/src/lib/cadence-model/provider-presets'
@@ -55,6 +56,7 @@ export interface SelectedModelView {
 
 export interface ComposerModelOptionView {
   selectionKey: string
+  profileId: string
   providerId: ProviderCredentialDto['providerId']
   providerLabel: string
   modelId: string
@@ -110,6 +112,30 @@ function defaultThinkingEffortFor(
   return options[0] ?? null
 }
 
+export function getProviderModelCatalogForProvider(
+  catalogs: Record<string, ProviderModelCatalogDto> | null | undefined,
+  providerId: ProviderCredentialDto['providerId'] | null | undefined,
+): ProviderModelCatalogDto | null {
+  if (!catalogs || !providerId) {
+    return null
+  }
+
+  const providerCatalog = catalogs[providerId]
+  if (providerCatalog?.providerId === providerId) {
+    return providerCatalog
+  }
+
+  const defaultProfileId = getCloudProviderDefaultProfileId(providerId)
+  if (defaultProfileId) {
+    const defaultProfileCatalog = catalogs[defaultProfileId]
+    if (defaultProfileCatalog?.providerId === providerId) {
+      return defaultProfileCatalog
+    }
+  }
+
+  return Object.values(catalogs).find((catalog) => catalog.providerId === providerId) ?? null
+}
+
 /**
  * Builds the composer model picker option list as the union of every
  * credentialed provider's catalog. Models are sorted by provider label, then
@@ -127,7 +153,7 @@ export function buildComposerModelOptions(
 
   const options: ComposerModelOptionView[] = []
   for (const credential of list) {
-    const catalog = catalogs?.[credential.providerId]
+    const catalog = getProviderModelCatalogForProvider(catalogs, credential.providerId)
     if (!catalog) continue
     const providerLabel = getRuntimeProviderLabel(credential.providerId)
     for (const model of catalog.models) {
@@ -136,6 +162,7 @@ export function buildComposerModelOptions(
       const thinkingEffortOptions = thinkingEffortListFor(model)
       options.push({
         selectionKey: buildComposerModelSelectionKey(credential.providerId, modelId),
+        profileId: catalog.profileId,
         providerId: credential.providerId,
         providerLabel,
         modelId,
@@ -310,14 +337,14 @@ export function getAgentRuntimeRunUnavailableCredentialReason(
 
   if (!runtimeRun) {
     if (agentRuntimeBlocked) {
-      return 'Add a provider credential in Settings, then launch a supervised harness run to populate durable repo-local run state.'
+      return 'Add a provider credential in Settings, then launch a supervised harness run to populate durable app-data run state.'
     }
 
     if (runtimeSession?.isAuthenticated) {
       return 'No durable supervised runtime run is recorded for this project yet.'
     }
 
-    return 'Authenticate and launch a supervised harness run to populate durable repo-local run state.'
+    return 'Authenticate and launch a supervised harness run to populate durable app-data run state.'
   }
 
   if (runtimeRun.lastError?.message) return runtimeRun.lastError.message

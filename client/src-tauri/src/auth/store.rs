@@ -115,7 +115,7 @@ pub fn sync_openai_profile_link<R: Runtime>(
     )
     .map_err(map_command_error_to_auth_error)?;
     let view = load_provider_credentials_view_or_default(&connection)
-        .map_err(map_provider_profiles_error)?;
+        .map_err(map_provider_credentials_error)?;
 
     let next_link = session.map(openai_profile_link_from_session).transpose()?;
     let target_profile_ids =
@@ -134,11 +134,9 @@ pub fn sync_openai_profile_link<R: Runtime>(
     mirror_openai_credential(&connection, session, &updated_at)
 }
 
-/// Phase 2.3 (write-through): keep the new flat `provider_credentials` row for
-/// `openai_codex` in sync with the OAuth session writes that still flow through
-/// the legacy profile machinery. When `session` is `Some`, upsert the
-/// credential row; when it's `None`, drop the row so the new readers see the
-/// signed-out state.
+/// Keep the flat `provider_credentials` row for `openai_codex` in sync with
+/// OAuth session writes. When `session` is `Some`, upsert the credential row;
+/// when it's `None`, drop the row so readers see the signed-out state.
 fn mirror_openai_credential(
     connection: &rusqlite::Connection,
     session: Option<&StoredOpenAiCodexSession>,
@@ -170,7 +168,7 @@ fn mirror_openai_credential(
         ),
         None => cred_delete(connection, OPENAI_CODEX_PROVIDER_ID),
     };
-    result.map_err(map_provider_profiles_error)
+    result.map_err(map_provider_credentials_error)
 }
 
 pub fn ensure_openai_profile_target<R: Runtime>(
@@ -194,7 +192,7 @@ fn load_provider_credentials_view<R: Runtime>(
             .map_err(map_command_error_to_auth_error)?,
     )
     .map_err(map_command_error_to_auth_error)?;
-    load_provider_credentials_view_or_default(&connection).map_err(map_provider_profiles_error)
+    load_provider_credentials_view_or_default(&connection).map_err(map_provider_credentials_error)
 }
 
 fn validate_target_openai_profile(
@@ -212,22 +210,25 @@ fn validate_target_openai_profile(
         ));
     }
 
-    let profile = view.profile(profile_id).ok_or_else(|| {
-        AuthFlowError::terminal(
+    let Some(profile) = view.profile(profile_id) else {
+        if profile_id == OPENAI_CODEX_DEFAULT_PROFILE_ID {
+            return Ok(());
+        }
+        return Err(AuthFlowError::terminal(
             "provider_profile_missing",
-            phase.clone(),
+            phase,
             format!(
-                "Cadence rejected {action} because provider profile `{profile_id}` was not found. Repair the provider-profile metadata or select a different OpenAI profile."
+                "Cadence rejected {action} because provider profile `{profile_id}` was not found. Select a different OpenAI credential."
             ),
-        )
-    })?;
+        ));
+    };
 
     if profile.provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Err(AuthFlowError::terminal(
             "provider_profile_provider_mismatch",
             phase,
             format!(
-                "Cadence rejected {action} because provider profile `{profile_id}` belongs to provider `{}` instead of `{OPENAI_CODEX_PROVIDER_ID}`. Select an OpenAI profile or repair the provider-profile metadata.",
+                "Cadence rejected {action} because provider profile `{profile_id}` belongs to provider `{}` instead of `{OPENAI_CODEX_PROVIDER_ID}`. Select an OpenAI credential.",
                 profile.provider_id
             ),
         ));
@@ -377,7 +378,7 @@ fn normalize_updated_at(value: &str) -> String {
     }
 }
 
-fn map_provider_profiles_error(error: CommandError) -> AuthFlowError {
+fn map_provider_credentials_error(error: CommandError) -> AuthFlowError {
     if error.retryable {
         AuthFlowError::retryable(error.code, RuntimeAuthPhase::Failed, error.message)
     } else {

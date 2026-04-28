@@ -13,6 +13,13 @@ import {
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   ClusterKind,
   CodamaGenerationReport,
@@ -25,6 +32,7 @@ import type {
 } from "@/src/features/solana/use-solana-workbench"
 
 const ALL_TARGETS: CodamaTarget[] = ["ts", "rust", "umi"]
+const NO_AUTHORITY_PERSONA = "__none__"
 
 interface SolanaIdlPanelProps {
   cluster: ClusterKind
@@ -323,18 +331,28 @@ export function SolanaIdlPanel({
               upgrade
             </label>
           </div>
-          <select
-            value={authorityPersona}
-            onChange={(e) => setAuthorityPersona(e.target.value)}
-            className="h-8 rounded-md border border-border/60 bg-background px-2 text-[11.5px] outline-none transition-colors focus:border-primary/60"
+          <Select
+            value={authorityPersona || NO_AUTHORITY_PERSONA}
+            onValueChange={(value) =>
+              setAuthorityPersona(value === NO_AUTHORITY_PERSONA ? "" : value)
+            }
           >
-            <option value="">— authority persona —</option>
-            {personaNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              aria-label="Authority persona"
+              className="h-8 w-full border-border/60 bg-background text-[11.5px] focus:border-primary/60"
+              size="sm"
+            >
+              <SelectValue placeholder="Authority persona" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_AUTHORITY_PERSONA}>Authority persona</SelectItem>
+              {personaNames.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <button
             type="button"
             onClick={handlePublish}

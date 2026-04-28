@@ -98,7 +98,6 @@ pub fn load_provider_credentials_view_or_default(
 
 impl ProviderCredentialsView {
     pub fn from_records(records: Vec<ProviderCredentialRecord>) -> Self {
-        let timestamp = crate::auth::now_timestamp();
         let mut profiles = Vec::new();
         let mut api_keys = Vec::new();
 
@@ -112,16 +111,12 @@ impl ProviderCredentialsView {
             profiles.push(synthesized.profile);
         }
 
-        if profiles.is_empty() {
-            profiles.push(build_openai_default_profile(None, &timestamp));
-        }
-
         let active_profile_id = profiles
             .iter()
             .find(|profile| profile.provider_id == OPENAI_CODEX_PROVIDER_ID)
             .map(|profile| profile.profile_id.clone())
             .or_else(|| profiles.first().map(|profile| profile.profile_id.clone()))
-            .unwrap_or_else(|| OPENAI_CODEX_DEFAULT_PROFILE_ID.into());
+            .unwrap_or_default();
 
         Self {
             records,
@@ -178,45 +173,11 @@ impl ProviderCredentialsView {
             .find(|record| record.provider_id == provider_id)
     }
 
-    pub fn any_openrouter_api_key_configured(&self) -> bool {
-        self.api_key_credential_for_provider(OPENROUTER_PROVIDER_ID)
-            .is_some()
-    }
-
-    pub fn preferred_openrouter_credential(&self) -> Option<&ProviderApiKeyCredentialEntry> {
-        self.api_key_credential_for_provider(OPENROUTER_PROVIDER_ID)
-    }
-
-    pub fn preferred_anthropic_credential(&self) -> Option<&ProviderApiKeyCredentialEntry> {
-        self.api_key_credential_for_provider(ANTHROPIC_PROVIDER_ID)
-    }
-
-    pub fn openrouter_credential(
-        &self,
-        profile_id: &str,
-    ) -> Option<&ProviderApiKeyCredentialEntry> {
-        self.api_key_credential(profile_id)
-    }
-
-    pub fn anthropic_credential(&self, profile_id: &str) -> Option<&ProviderApiKeyCredentialEntry> {
-        self.api_key_credential(profile_id)
-    }
-
     pub fn matched_api_key_credential_for_profile(
         &self,
         profile_id: &str,
     ) -> Option<&ProviderApiKeyCredentialEntry> {
         self.api_key_credential(profile_id)
-    }
-
-    fn api_key_credential_for_provider(
-        &self,
-        provider_id: &str,
-    ) -> Option<&ProviderApiKeyCredentialEntry> {
-        self.profiles
-            .iter()
-            .filter(|profile| profile.provider_id == provider_id)
-            .find_map(|profile| self.api_key_credential(&profile.profile_id))
     }
 
     fn api_key_credential(&self, profile_id: &str) -> Option<&ProviderApiKeyCredentialEntry> {
@@ -417,25 +378,5 @@ fn synthesized_profile_metadata(
             OPENAI_COMPATIBLE_RUNTIME_KIND,
             None,
         ),
-    }
-}
-
-fn build_openai_default_profile(
-    credential_link: Option<ProviderCredentialLink>,
-    updated_at: &str,
-) -> ProviderCredentialProfile {
-    ProviderCredentialProfile {
-        profile_id: OPENAI_CODEX_DEFAULT_PROFILE_ID.into(),
-        provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-        runtime_kind: OPENAI_CODEX_PROVIDER_ID.into(),
-        label: OPENAI_CODEX_DEFAULT_PROFILE_LABEL.into(),
-        model_id: normalize_openai_codex_model_id(OPENAI_CODEX_PROVIDER_ID),
-        preset_id: None,
-        base_url: None,
-        api_version: None,
-        region: None,
-        project_id: None,
-        credential_link,
-        updated_at: updated_at.to_owned(),
     }
 }

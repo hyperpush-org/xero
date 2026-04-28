@@ -358,40 +358,6 @@ export async function loadProjectState({
       error: getDesktopErrorMessage(error),
     }))
 
-  const shouldSyncNotificationAdapters = source !== 'runtime_run:updated'
-  const syncPromise: Promise<{
-    attempted: boolean
-    summary: SyncNotificationAdaptersResponseDto | null
-    error: OperatorActionErrorView | null
-    errorMessage: string | null
-  }> = shouldSyncNotificationAdapters
-    ? adapter
-        .syncNotificationAdapters(projectId)
-        .then((summary) => ({
-          attempted: true as const,
-          summary,
-          error: null,
-          errorMessage: null,
-        }))
-        .catch((error) => {
-          const metadata = getOperatorActionError(
-            error,
-            'Cadence could not sync notification adapters for this project.',
-          )
-          return {
-            attempted: true as const,
-            summary: refs.notificationSyncSummariesRef.current[projectId] ?? null,
-            error: metadata,
-            errorMessage: metadata.message,
-          }
-        })
-    : Promise.resolve({
-        attempted: false as const,
-        summary: refs.notificationSyncSummariesRef.current[projectId] ?? null,
-        error: null,
-        errorMessage: null,
-      })
-
   const brokerPromise: Promise<{
     ok: boolean
     dispatches: NotificationDispatchDto[]
@@ -432,8 +398,7 @@ export async function loadProjectState({
   const repositoryStatusPromise = adapter.getRepositoryStatus(projectId)
 
   try {
-    const [syncResult, snapshotResponse, statusResponse, brokerResult, routeResult] = await Promise.all([
-      syncPromise,
+    const [snapshotResponse, statusResponse, brokerResult, routeResult] = await Promise.all([
       snapshotPromise,
       repositoryStatusPromise,
       brokerPromise,
@@ -442,20 +407,6 @@ export async function loadProjectState({
 
     if (refs.latestLoadRequestRef.current !== requestId) {
       return null
-    }
-
-    if (syncResult.attempted) {
-      if (syncResult.summary) {
-        setters.setNotificationSyncSummaries((currentSummaries) => ({
-          ...currentSummaries,
-          [projectId]: syncResult.summary,
-        }))
-      }
-
-      setters.setNotificationSyncErrors((currentErrors) => ({
-        ...currentErrors,
-        [projectId]: syncResult.error,
-      }))
     }
 
     refs.notificationDispatchesRef.current[projectId] = brokerResult.dispatches
@@ -606,7 +557,6 @@ export async function loadProjectState({
     })
     setters.setErrorMessage(
       combineLoadErrors(
-        syncResult.errorMessage,
         brokerResult.error,
         routeResult.error,
         runtimeResult.error,

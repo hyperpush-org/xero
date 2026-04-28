@@ -3,6 +3,13 @@
 import { useMemo, useState } from "react"
 import { FileCode2, FolderCog, Loader2, Play, Wrench } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   ClusterKind,
   IndexerKind,
@@ -108,16 +115,23 @@ export function SolanaIndexerPanel({
     <div className="flex flex-col gap-4">
       <section className="space-y-1.5">
         <div className="text-[11.5px] font-medium text-foreground">Scaffold</div>
-        <select
-          aria-label="Indexer kind"
-          className="h-8 rounded-md border border-border/60 bg-background px-2 text-[12px] outline-none transition-colors focus:border-primary/60"
-          onChange={(event) => setKind(event.target.value as IndexerKind)}
+        <Select
+          onValueChange={(value) => setKind(value as IndexerKind)}
           value={kind}
         >
-          <option value="carbon">carbon (Rust)</option>
-          <option value="log_parser">log_parser (TypeScript)</option>
-          <option value="helius_webhook">helius_webhook (Express)</option>
-        </select>
+          <SelectTrigger
+            aria-label="Indexer kind"
+            className="h-8 w-full border-border/60 bg-background text-[12px] focus:border-primary/60"
+            size="sm"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="carbon">carbon (Rust)</SelectItem>
+            <SelectItem value="log_parser">log_parser (TypeScript)</SelectItem>
+            <SelectItem value="helius_webhook">helius_webhook (Express)</SelectItem>
+          </SelectContent>
+        </Select>
         <input
           aria-label="IDL path"
           className="h-8 rounded-md border border-border/60 bg-background px-2.5 text-[12px] outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-primary/60"

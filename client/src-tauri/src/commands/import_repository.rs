@@ -21,7 +21,7 @@ pub fn import_repository<R: Runtime>(
     validate_non_empty(&request.path, "path")?;
 
     let repository = resolve_repository(&request.path)?;
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     db::configure_project_database_paths(&registry_path);
 
     let imported = db::import_project(&repository, state.import_failpoints())?;

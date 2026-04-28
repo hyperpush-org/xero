@@ -22,7 +22,7 @@ pub fn get_project_usage_summary<R: Runtime>(
 ) -> CommandResult<ProjectUsageSummaryDto> {
     validate_non_empty(&request.project_id, "projectId")?;
 
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     db::configure_project_database_paths(&registry_path);
     let registry = registry::read_registry(&registry_path)?;
 

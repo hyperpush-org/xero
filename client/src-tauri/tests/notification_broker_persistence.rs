@@ -42,7 +42,7 @@ fn seed_project(root: &TempDir, project_id: &str, repository_id: &str, repo_name
 }
 
 fn open_state_connection(repo_root: &Path) -> Connection {
-    Connection::open(database_path_for_repo(repo_root)).expect("open repo-local database")
+    Connection::open(database_path_for_repo(repo_root)).expect("open app-data database")
 }
 
 fn insert_project_row(repo_root: &Path, project_id: &str, name: &str) {

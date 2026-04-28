@@ -7,8 +7,8 @@ use crate::{
     commands::{CommandError, CommandResult},
     provider_credentials::{ProviderCredentialProfile, ProviderCredentialsView},
     runtime::{
-        normalize_openai_codex_model_id, resolve_runtime_provider_identity, ANTHROPIC_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+        normalize_openai_codex_model_id, resolve_runtime_provider_identity,
+        OPENAI_CODEX_PROVIDER_ID,
     },
 };
 
@@ -17,7 +17,6 @@ use crate::{
 pub(crate) struct RuntimeSettingsFile {
     pub provider_id: String,
     pub model_id: String,
-    pub openrouter_api_key_configured: bool,
     pub updated_at: String,
 }
 
@@ -32,16 +31,11 @@ pub(crate) struct RuntimeSettingsSnapshot {
     pub api_version: Option<String>,
     pub region: Option<String>,
     pub project_id: Option<String>,
-    pub openrouter_api_key: Option<String>,
-    pub openrouter_credentials_updated_at: Option<String>,
-    pub anthropic_api_key: Option<String>,
-    pub anthropic_credentials_updated_at: Option<String>,
 }
 
 pub(crate) fn runtime_settings_file_from_request(
     provider_id: &str,
     model_id: &str,
-    openrouter_api_key_configured: bool,
 ) -> CommandResult<RuntimeSettingsFile> {
     let provider_id = provider_id.trim();
     if provider_id.is_empty() {
@@ -58,16 +52,6 @@ pub(crate) fn runtime_settings_file_from_request(
             CommandError::user_fixable("runtime_settings_request_invalid", diagnostic.message)
         })?;
 
-    if !supports_runtime_settings_compatibility_provider(provider.provider_id) {
-        return Err(CommandError::user_fixable(
-            "runtime_settings_request_invalid",
-            format!(
-                "Cadence only accepts runtime-settings compatibility writes for `openai_codex`, `openrouter`, or `anthropic`. Use provider profiles for provider `{}`.",
-                provider.provider_id
-            ),
-        ));
-    }
-
     let model_id = if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
         normalize_openai_codex_model_id(model_id)
     } else {
@@ -77,7 +61,6 @@ pub(crate) fn runtime_settings_file_from_request(
     Ok(RuntimeSettingsFile {
         provider_id: provider.provider_id.to_owned(),
         model_id,
-        openrouter_api_key_configured,
         updated_at: crate::auth::now_timestamp(),
     })
 }
@@ -145,8 +128,6 @@ pub(crate) fn runtime_settings_snapshot_for_provider_profile(
     provider_profiles: &ProviderCredentialsView,
     profile: &ProviderCredentialProfile,
 ) -> CommandResult<RuntimeSettingsSnapshot> {
-    let preferred_openrouter_credential = provider_profiles.preferred_openrouter_credential();
-    let preferred_anthropic_credential = provider_profiles.preferred_anthropic_credential();
     let active_api_key_credential =
         provider_profiles.matched_api_key_credential_for_profile(&profile.profile_id);
 
@@ -154,7 +135,6 @@ pub(crate) fn runtime_settings_snapshot_for_provider_profile(
         settings: RuntimeSettingsFile {
             provider_id: profile.provider_id.clone(),
             model_id: profile.model_id.clone(),
-            openrouter_api_key_configured: provider_profiles.any_openrouter_api_key_configured(),
             updated_at: profile.updated_at.clone(),
         },
         runtime_kind: profile.runtime_kind.clone(),
@@ -166,17 +146,5 @@ pub(crate) fn runtime_settings_snapshot_for_provider_profile(
         api_version: profile.api_version.clone(),
         region: profile.region.clone(),
         project_id: profile.project_id.clone(),
-        openrouter_api_key: preferred_openrouter_credential.map(|entry| entry.api_key.clone()),
-        openrouter_credentials_updated_at: preferred_openrouter_credential
-            .map(|entry| entry.updated_at.clone()),
-        anthropic_api_key: preferred_anthropic_credential.map(|entry| entry.api_key.clone()),
-        anthropic_credentials_updated_at: preferred_anthropic_credential
-            .map(|entry| entry.updated_at.clone()),
     })
-}
-
-fn supports_runtime_settings_compatibility_provider(provider_id: &str) -> bool {
-    provider_id == OPENAI_CODEX_PROVIDER_ID
-        || provider_id == OPENROUTER_PROVIDER_ID
-        || provider_id == ANTHROPIC_PROVIDER_ID
 }

@@ -2,6 +2,8 @@ defmodule JoeWeb.GitHubAuthControllerTest do
   use JoeWeb.ConnCase
 
   alias Joe.GitHubAuth
+  alias Joe.GitHubAuth.Session
+  alias Joe.Repo
 
   setup do
     GitHubAuth.reset!()
@@ -72,6 +74,8 @@ defmodule JoeWeb.GitHubAuthControllerTest do
         )
 
       assert :ok = GitHubAuth.complete_state(state_token, "session-test", stored_session)
+      persisted = Repo.get!(Session, "session-test")
+      refute persisted.encrypted_access_token =~ "server-only-access-token"
 
       ready_conn = get(conn, ~p"/api/github/session?flowId=#{start_body["flowId"]}")
       ready_body = json_response(ready_conn, 200)
@@ -95,6 +99,7 @@ defmodule JoeWeb.GitHubAuthControllerTest do
         |> delete(~p"/api/github/session")
 
       assert response(logout_conn, 204) == ""
+      assert Repo.get(Session, "session-test") == nil
 
       signed_out_conn =
         conn
@@ -102,6 +107,48 @@ defmodule JoeWeb.GitHubAuthControllerTest do
         |> get(~p"/api/github/session")
 
       assert json_response(signed_out_conn, 200) == %{"session" => nil}
+    end)
+  end
+
+  test "session lookup survives cleared server memory", %{conn: conn} do
+    with_github_env(fn ->
+      start_conn = post(conn, ~p"/api/github/login")
+      start_body = json_response(start_conn, 200)
+
+      state_token =
+        start_body["authorizationUrl"]
+        |> URI.parse()
+        |> Map.fetch!(:query)
+        |> URI.decode_query()
+        |> Map.fetch!("state")
+
+      stored_session =
+        GitHubAuth.stored_session(
+          "durable-server-token",
+          "bearer",
+          "read:user user:email",
+          %{
+            "id" => 42,
+            "login" => "octo",
+            "name" => "Octo",
+            "email" => nil,
+            "avatarUrl" => "https://avatars.githubusercontent.com/u/42?v=4",
+            "htmlUrl" => "https://github.com/octo"
+          }
+        )
+
+      assert :ok = GitHubAuth.complete_state(state_token, "session-durable", stored_session)
+      assert :ok = GitHubAuth.clear_in_memory_state_for_test!()
+
+      current_conn =
+        conn
+        |> put_req_header(GitHubAuth.session_header(), "session-durable")
+        |> get(~p"/api/github/session")
+
+      body = json_response(current_conn, 200)
+      assert body["session"]["user"]["login"] == "octo"
+      assert body["session"]["scope"] == "read:user user:email"
+      refute inspect(body) =~ "durable-server-token"
     end)
   end
 

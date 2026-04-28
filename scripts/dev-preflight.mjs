@@ -237,7 +237,7 @@ async function ensureSchema() {
     cwd: serverDir,
     env: { ...process.env, MIX_ENV: process.env.MIX_ENV ?? 'dev' },
   })
-  await streamRun('mix', ['ecto.migrate'], {
+  await streamRun('mix', ['ecto.migrate', '--all'], {
     cwd: serverDir,
     env: { ...process.env, MIX_ENV: process.env.MIX_ENV ?? 'dev' },
   })

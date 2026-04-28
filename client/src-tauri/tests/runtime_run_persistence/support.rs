@@ -46,7 +46,7 @@ pub(crate) fn seed_project(
 }
 
 pub(crate) fn open_state_connection(repo_root: &Path) -> Connection {
-    Connection::open(database_path_for_repo(repo_root)).expect("open repo-local database")
+    Connection::open(database_path_for_repo(repo_root)).expect("open app-data database")
 }
 
 pub(crate) fn sample_run(project_id: &str, run_id: &str) -> project_store::RuntimeRunRecord {
@@ -99,4 +99,3 @@ pub(crate) fn sample_checkpoint(
         created_at: created_at.into(),
     }
 }
-

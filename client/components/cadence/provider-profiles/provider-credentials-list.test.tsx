@@ -77,7 +77,7 @@ describe('ProviderCredentialsList', () => {
     vi.clearAllMocks()
   })
 
-  it('renders a card per provider preset with default Needs key/Sign-in badges when no credentials exist', () => {
+  it('renders a row per provider preset with the right action button when no credentials exist', () => {
     render(
       <ProviderCredentialsList
         providerCredentials={makeSnapshot([])}
@@ -88,11 +88,11 @@ describe('ProviderCredentialsList', () => {
       />,
     )
 
-    expect(within(getProviderCard('OpenAI Codex')).getByText('Needs sign-in')).toBeInTheDocument()
-    expect(within(getProviderCard('OpenRouter')).getByText('Needs key')).toBeInTheDocument()
-    expect(within(getProviderCard('Anthropic')).getByText('Needs key')).toBeInTheDocument()
-    expect(within(getProviderCard('Ollama')).getByText('Needs endpoint')).toBeInTheDocument()
-    expect(within(getProviderCard('Amazon Bedrock')).getByText('Needs cloud config')).toBeInTheDocument()
+    expect(within(getProviderCard('OpenAI Codex')).getByRole('button', { name: /sign in/i })).toBeInTheDocument()
+    expect(within(getProviderCard('OpenRouter')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
+    expect(within(getProviderCard('Anthropic')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
+    expect(within(getProviderCard('Ollama')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
+    expect(within(getProviderCard('Amazon Bedrock')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
   })
 
   it('shows Ready badge for an api_key provider with stored credential', () => {

@@ -25,7 +25,7 @@ pub const CADENCE_DOCTOR_REPORT_CONTRACT_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum CadenceDiagnosticSubject {
     Dictation,
-    ProviderProfile,
+    ProviderCredential,
     ModelCatalog,
     RuntimeBinding,
     RuntimeSupervisor,
@@ -314,7 +314,7 @@ impl CadenceDoctorReport {
     }
 }
 
-pub fn provider_profile_readiness_diagnostic(
+pub fn provider_readiness_diagnostic(
     profile: &ProviderCredentialProfile,
     readiness: &ProviderCredentialReadinessProjection,
 ) -> CommandResult<CadenceDiagnosticCheck> {
@@ -322,14 +322,14 @@ pub fn provider_profile_readiness_diagnostic(
     match readiness.status {
         ProviderCredentialReadinessStatus::Ready => CadenceDiagnosticCheck::new(
             CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ProviderProfile,
+                subject: CadenceDiagnosticSubject::ProviderCredential,
                 status: CadenceDiagnosticStatus::Passed,
                 severity: CadenceDiagnosticSeverity::Info,
                 retryable: false,
-                code: "provider_profile_ready".into(),
+                code: "provider_ready".into(),
                 message: format!(
-                    "Provider profile `{}` is ready for `{}`.",
-                    profile.profile_id, profile.provider_id
+                    "Provider `{}` is ready.",
+                    profile.provider_id
                 ),
                 affected_profile_id: Some(profile.profile_id.clone()),
                 affected_provider_id: Some(profile.provider_id.clone()),
@@ -339,37 +339,37 @@ pub fn provider_profile_readiness_diagnostic(
         ),
         ProviderCredentialReadinessStatus::Missing => CadenceDiagnosticCheck::new(
             CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ProviderProfile,
+                subject: CadenceDiagnosticSubject::ProviderCredential,
                 status: CadenceDiagnosticStatus::Failed,
                 severity: CadenceDiagnosticSeverity::Error,
                 retryable: false,
-                code: "provider_profile_credentials_missing".into(),
+                code: "provider_credentials_missing".into(),
                 message: format!(
-                    "Provider profile `{}` is missing credentials for `{}`.",
-                    profile.profile_id, profile.provider_id
+                    "Provider `{}` is missing credentials.",
+                    profile.provider_id
                 ),
                 affected_profile_id: Some(profile.profile_id.clone()),
                 affected_provider_id: Some(profile.provider_id.clone()),
                 endpoint,
-                remediation: Some(provider_profile_remediation(profile)),
+                remediation: Some(provider_remediation(profile)),
             },
         ),
         ProviderCredentialReadinessStatus::Malformed => CadenceDiagnosticCheck::new(
             CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ProviderProfile,
+                subject: CadenceDiagnosticSubject::ProviderCredential,
                 status: CadenceDiagnosticStatus::Failed,
                 severity: CadenceDiagnosticSeverity::Error,
                 retryable: false,
-                code: "provider_profile_credentials_malformed".into(),
+                code: "provider_credentials_malformed".into(),
                 message: format!(
-                    "Provider profile `{}` has a credential link that no longer matches its stored credential record.",
-                    profile.profile_id
+                    "Provider `{}` has a credential link that no longer matches its stored credential record.",
+                    profile.provider_id
                 ),
                 affected_profile_id: Some(profile.profile_id.clone()),
                 affected_provider_id: Some(profile.provider_id.clone()),
                 endpoint,
                 remediation: Some(
-                    "Reconnect or resave this provider profile so Cadence can rebuild the app-local credential link.".into(),
+                    "Reconnect or resave this provider so Cadence can rebuild the app-local credential link.".into(),
                 ),
             },
         ),
@@ -381,7 +381,7 @@ pub fn unsupported_provider_diagnostic(
     provider_id: &str,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderProfile,
+        subject: CadenceDiagnosticSubject::ProviderCredential,
         status: CadenceDiagnosticStatus::Failed,
         severity: CadenceDiagnosticSeverity::Error,
         retryable: false,
@@ -401,14 +401,14 @@ pub fn invalid_base_url_diagnostic(
     base_url: &str,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderProfile,
+        subject: CadenceDiagnosticSubject::ProviderCredential,
         status: CadenceDiagnosticStatus::Failed,
         severity: CadenceDiagnosticSeverity::Error,
         retryable: false,
-        code: "provider_profile_base_url_invalid".into(),
+        code: "provider_base_url_invalid".into(),
         message: format!(
-            "Provider profile `{}` has an invalid base URL.",
-            profile.profile_id
+            "Provider `{}` has an invalid base URL.",
+            profile.provider_id
         ),
         affected_profile_id: Some(profile.profile_id.clone()),
         affected_provider_id: Some(profile.provider_id.clone()),
@@ -445,7 +445,7 @@ pub fn stale_runtime_binding_diagnostic(
         affected_provider_id: Some(provider_id.into()),
         endpoint: None,
         remediation: Some(
-            "Restart the runtime session after resaving or reselecting the provider profile.".into(),
+            "Restart the runtime session after resaving or reselecting the provider.".into(),
         ),
     })
 }
@@ -455,11 +455,11 @@ pub fn ambient_auth_failure_diagnostic(
     message: &str,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderProfile,
+        subject: CadenceDiagnosticSubject::ProviderCredential,
         status: CadenceDiagnosticStatus::Failed,
         severity: CadenceDiagnosticSeverity::Error,
         retryable: true,
-        code: "provider_profile_ambient_auth_failed".into(),
+        code: "provider_ambient_auth_failed".into(),
         message: message.into(),
         affected_profile_id: Some(profile.profile_id.clone()),
         affected_provider_id: Some(profile.provider_id.clone()),
@@ -512,8 +512,8 @@ pub fn provider_model_catalog_diagnostic(
                 retryable: false,
                 code: "provider_model_catalog_ready".into(),
                 message: format!(
-                    "Model catalog for profile `{}` is available from {:?}.",
-                    catalog.profile_id, catalog.source
+                    "Model catalog for provider `{}` is available from {:?}.",
+                    catalog.provider_id, catalog.source
                 ),
                 affected_profile_id: Some(catalog.profile_id.clone()),
                 affected_provider_id: Some(catalog.provider_id.clone()),
@@ -549,8 +549,8 @@ pub fn provider_model_catalog_diagnostic(
                 retryable: true,
                 code: "provider_model_catalog_unavailable".into(),
                 message: format!(
-                    "Model catalog for profile `{}` is unavailable.",
-                    catalog.profile_id
+                    "Model catalog for provider `{}` is unavailable.",
+                    catalog.provider_id
                 ),
                 affected_profile_id: Some(catalog.profile_id.clone()),
                 affected_provider_id: Some(catalog.provider_id.clone()),
@@ -561,65 +561,22 @@ pub fn provider_model_catalog_diagnostic(
     }
 }
 
-pub fn provider_profile_validation_diagnostics(
+pub fn provider_validation_diagnostics(
     snapshot: &ProviderCredentialsView,
     profile: &ProviderCredentialProfile,
 ) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
     let mut checks = Vec::new();
-    checks.push(provider_profile_active_selection_diagnostic(
-        snapshot, profile,
-    )?);
-    checks.push(provider_profile_runtime_alignment_diagnostic(profile)?);
-    checks.extend(provider_profile_metadata_diagnostics(profile)?);
-    checks.push(provider_profile_readiness_diagnostic(
+    let _ = snapshot;
+    checks.push(provider_runtime_alignment_diagnostic(profile)?);
+    checks.extend(provider_metadata_diagnostics(profile)?);
+    checks.push(provider_readiness_diagnostic(
         profile,
         &profile.readiness(),
     )?);
     Ok(checks)
 }
 
-fn provider_profile_active_selection_diagnostic(
-    snapshot: &ProviderCredentialsView,
-    profile: &ProviderCredentialProfile,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    if snapshot.active_profile_id() == profile.profile_id {
-        return CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderProfile,
-            status: CadenceDiagnosticStatus::Passed,
-            severity: CadenceDiagnosticSeverity::Info,
-            retryable: false,
-            code: "provider_profile_active".into(),
-            message: format!(
-                "Provider profile `{}` is the active profile.",
-                profile.profile_id
-            ),
-            affected_profile_id: Some(profile.profile_id.clone()),
-            affected_provider_id: Some(profile.provider_id.clone()),
-            endpoint: endpoint_metadata_from_profile(profile),
-            remediation: None,
-        });
-    }
-
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderProfile,
-        status: CadenceDiagnosticStatus::Skipped,
-        severity: CadenceDiagnosticSeverity::Info,
-        retryable: false,
-        code: "provider_profile_not_active".into(),
-        message: format!(
-            "Provider profile `{}` is saved but is not the active profile.",
-            profile.profile_id
-        ),
-        affected_profile_id: Some(profile.profile_id.clone()),
-        affected_provider_id: Some(profile.provider_id.clone()),
-        endpoint: endpoint_metadata_from_profile(profile),
-        remediation: Some(
-            "Select this profile before launching a runtime that should use it.".into(),
-        ),
-    })
-}
-
-fn provider_profile_runtime_alignment_diagnostic(
+fn provider_runtime_alignment_diagnostic(
     profile: &ProviderCredentialProfile,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     match resolve_runtime_provider_identity(
@@ -627,14 +584,14 @@ fn provider_profile_runtime_alignment_diagnostic(
         Some(profile.runtime_kind.as_str()),
     ) {
         Ok(provider) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderProfile,
+            subject: CadenceDiagnosticSubject::ProviderCredential,
             status: CadenceDiagnosticStatus::Passed,
             severity: CadenceDiagnosticSeverity::Info,
             retryable: false,
-            code: "provider_profile_runtime_aligned".into(),
+            code: "provider_runtime_aligned".into(),
             message: format!(
-                "Provider profile `{}` maps `{}` to runtime kind `{}`.",
-                profile.profile_id, provider.provider_id, provider.runtime_kind
+                "Provider `{}` maps to runtime kind `{}`.",
+                provider.provider_id, provider.runtime_kind
             ),
             affected_profile_id: Some(profile.profile_id.clone()),
             affected_provider_id: Some(profile.provider_id.clone()),
@@ -642,7 +599,7 @@ fn provider_profile_runtime_alignment_diagnostic(
             remediation: None,
         }),
         Err(diagnostic) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderProfile,
+            subject: CadenceDiagnosticSubject::ProviderCredential,
             status: CadenceDiagnosticStatus::Failed,
             severity: CadenceDiagnosticSeverity::Error,
             retryable: diagnostic.retryable,
@@ -652,14 +609,14 @@ fn provider_profile_runtime_alignment_diagnostic(
             affected_provider_id: Some(profile.provider_id.clone()),
             endpoint: endpoint_metadata_from_profile(profile),
             remediation: Some(
-                "Resave this profile from Providers settings so provider and runtime metadata match."
+                "Resave this provider from Providers settings so provider and runtime metadata match."
                     .into(),
             ),
         }),
     }
 }
 
-fn provider_profile_metadata_diagnostics(
+fn provider_metadata_diagnostics(
     profile: &ProviderCredentialProfile,
 ) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
     let mut checks = Vec::new();
@@ -711,9 +668,9 @@ fn provider_profile_metadata_diagnostics(
             {
                 checks.push(metadata_failed(
                     profile,
-                    "provider_profile_runtime_kind_invalid",
-                    "Gemini AI Studio profiles must use runtime kind `gemini`.",
-                    "Resave the profile so Cadence can rebuild Gemini runtime metadata.",
+                    "provider_runtime_kind_invalid",
+                    "Gemini AI Studio providers must use runtime kind `gemini`.",
+                    "Resave the provider so Cadence can rebuild Gemini runtime metadata.",
                 )?);
             }
         }
@@ -727,8 +684,8 @@ fn provider_profile_metadata_diagnostics(
                 {
                     checks.push(metadata_failed(
                         profile,
-                        "provider_profile_preset_invalid",
-                        "Custom OpenAI-compatible profiles may only keep presetId `openai_api`.",
+                        "provider_preset_invalid",
+                        "Custom OpenAI-compatible providers may only keep presetId `openai_api`.",
                         "Choose the OpenAI-compatible preset or clear unsupported preset metadata.",
                     )?);
                 }
@@ -770,9 +727,9 @@ fn provider_profile_metadata_diagnostics(
             if profile.runtime_kind != OPENAI_COMPATIBLE_RUNTIME_KIND {
                 checks.push(metadata_failed(
                     profile,
-                    "provider_profile_runtime_kind_invalid",
-                    "Ollama profiles must use runtime kind `openai_compatible`.",
-                    "Resave the profile so Cadence can rebuild local runtime metadata.",
+                    "provider_runtime_kind_invalid",
+                    "Ollama providers must use runtime kind `openai_compatible`.",
+                    "Resave the provider so Cadence can rebuild local runtime metadata.",
                 )?);
             }
         }
@@ -840,14 +797,14 @@ fn provider_profile_metadata_diagnostics(
 
     if checks.is_empty() {
         checks.push(CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderProfile,
+            subject: CadenceDiagnosticSubject::ProviderCredential,
             status: CadenceDiagnosticStatus::Passed,
             severity: CadenceDiagnosticSeverity::Info,
             retryable: false,
-            code: "provider_profile_metadata_ready".into(),
+            code: "provider_metadata_ready".into(),
             message: format!(
-                "Provider profile `{}` has complete provider metadata.",
-                profile.profile_id
+                "Provider `{}` has complete provider metadata.",
+                profile.provider_id
             ),
             affected_profile_id: Some(profile.profile_id.clone()),
             affected_provider_id: Some(profile.provider_id.clone()),
@@ -870,12 +827,12 @@ fn require_preset_id(
 
     checks.push(metadata_failed(
         profile,
-        "provider_profile_preset_invalid",
+        "provider_preset_invalid",
         &format!(
-            "Provider profile `{}` must use presetId `{expected}` for `{}`.",
-            profile.profile_id, profile.provider_id
+            "Provider `{}` must use presetId `{expected}` for `{}`.",
+            profile.provider_id, profile.provider_id
         ),
-        "Resave this profile from Providers settings so Cadence can restore the preset metadata.",
+        "Resave this provider from Providers settings so Cadence can restore the preset metadata.",
     )?);
     Ok(())
 }
@@ -892,12 +849,12 @@ fn require_present(
 
     checks.push(metadata_failed(
         profile,
-        "provider_profile_metadata_missing",
+        "provider_metadata_missing",
         &format!(
-            "Provider profile `{}` is missing required `{field}` metadata.",
-            profile.profile_id
+            "Provider `{}` is missing required `{field}` metadata.",
+            profile.provider_id
         ),
-        "Open this profile in Providers settings, fill the required connection field, and save it again.",
+        "Open this provider in Providers settings, fill the required connection field, and save it again.",
     )?);
     Ok(())
 }
@@ -914,12 +871,12 @@ fn require_absent(
 
     checks.push(metadata_failed(
         profile,
-        "provider_profile_metadata_unexpected",
+        "provider_metadata_unexpected",
         &format!(
-            "Provider profile `{}` has unsupported `{field}` metadata for `{}`.",
-            profile.profile_id, profile.provider_id
+            "Provider `{}` has unsupported `{field}` metadata for `{}`.",
+            profile.provider_id, profile.provider_id
         ),
-        "Resave this profile from Providers settings so Cadence can drop unsupported connection metadata.",
+        "Resave this provider from Providers settings so Cadence can drop unsupported connection metadata.",
     )?);
     Ok(())
 }
@@ -949,7 +906,7 @@ fn metadata_failed(
     remediation: &str,
 ) -> CommandResult<CadenceDiagnosticCheck> {
     CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderProfile,
+        subject: CadenceDiagnosticSubject::ProviderCredential,
         status: CadenceDiagnosticStatus::Failed,
         severity: CadenceDiagnosticSeverity::Error,
         retryable: false,
@@ -1221,7 +1178,7 @@ fn render_compact_human_report(report: &CadenceDoctorReport) -> String {
         ),
     ];
     push_human_group(&mut lines, "Dictation", &report.dictation_checks);
-    push_human_group(&mut lines, "Provider profiles", &report.profile_checks);
+    push_human_group(&mut lines, "Providers", &report.profile_checks);
     push_human_group(&mut lines, "Model catalogs", &report.model_catalog_checks);
     push_human_group(
         &mut lines,
@@ -1420,7 +1377,7 @@ fn endpoint_metadata_from_profile(
     })
 }
 
-fn provider_profile_remediation(profile: &ProviderCredentialProfile) -> String {
+fn provider_remediation(profile: &ProviderCredentialProfile) -> String {
     match profile.provider_id.as_str() {
         "ollama" => {
             "Start Ollama or update the local endpoint, then check the connection again.".into()
@@ -1429,9 +1386,7 @@ fn provider_profile_remediation(profile: &ProviderCredentialProfile) -> String {
             "Configure ambient cloud credentials and confirm the region/project metadata.".into()
         }
         "openai_codex" => "Sign in to OpenAI Codex from Providers settings.".into(),
-        _ => {
-            "Add credentials or choose another ready provider profile in Providers settings.".into()
-        }
+        _ => "Add credentials or choose another ready provider in Providers settings.".into(),
     }
 }
 
@@ -1439,7 +1394,9 @@ fn provider_catalog_remediation(provider_id: &str, retryable: bool) -> String {
     if retryable {
         format!("Check network access and credentials for `{provider_id}`, then refresh the model catalog.")
     } else {
-        format!("Review the saved provider profile for `{provider_id}` before refreshing the model catalog.")
+        format!(
+            "Review the saved provider for `{provider_id}` before refreshing the model catalog."
+        )
     }
 }
 

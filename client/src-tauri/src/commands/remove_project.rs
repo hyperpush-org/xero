@@ -16,7 +16,7 @@ pub fn remove_project<R: Runtime>(
 ) -> CommandResult<ListProjectsResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
 
-    let registry_path = state.registry_file(&app)?;
+    let registry_path = state.global_db_path(&app)?;
     let registry_snapshot = registry::read_registry(&registry_path)?;
     let original_count = registry_snapshot.projects.len();
     let remaining_projects = registry_snapshot

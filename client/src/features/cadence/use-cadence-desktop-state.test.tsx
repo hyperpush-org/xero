@@ -10,6 +10,8 @@ import {
   type McpRegistryDto,
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
+  type ProviderCredentialDto,
+  type ProviderAuthSessionDto,
   type ProviderModelCatalogDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusChangedPayloadDto,
@@ -169,6 +171,44 @@ function makeRuntimeSession(
     redirectUri: 'http://127.0.0.1:1455/auth/callback',
     lastErrorCode: null,
     lastError: null,
+    updatedAt: '2026-04-13T19:33:32Z',
+    ...overrides,
+  }
+}
+
+function makeProviderAuthSession(overrides: Partial<ProviderAuthSessionDto> = {}): ProviderAuthSessionDto {
+  return {
+    runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
+    flowId: 'flow-1',
+    sessionId: 'session-1',
+    accountId: 'acct-1',
+    phase: 'authenticated',
+    callbackBound: true,
+    authorizationUrl: 'https://auth.openai.com/oauth/authorize',
+    redirectUri: 'http://127.0.0.1:1455/auth/callback',
+    lastErrorCode: null,
+    lastError: null,
+    updatedAt: '2026-04-13T19:33:32Z',
+    ...overrides,
+  }
+}
+
+function makeProviderCredential(overrides: Partial<ProviderCredentialDto> = {}): ProviderCredentialDto {
+  return {
+    providerId: 'openai_codex',
+    kind: 'oauth_session',
+    hasApiKey: false,
+    oauthAccountId: 'acct-1',
+    oauthSessionId: 'session-1',
+    hasOauthAccessToken: true,
+    oauthExpiresAt: null,
+    baseUrl: null,
+    apiVersion: null,
+    region: null,
+    projectId: null,
+    defaultModelId: null,
+    readinessProof: 'oauth_session',
     updatedAt: '2026-04-13T19:33:32Z',
     ...overrides,
   }
@@ -387,13 +427,13 @@ function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegi
         lastUsedAt: null,
         lastDiagnostic: null,
         source: {
-          label: 'Project skill .cadence/skills/reviewer',
+          label: 'Project skill skills/reviewer',
           repo: null,
           reference: null,
-          path: '.cadence/skills/reviewer',
+          path: 'skills/reviewer',
           rootId: null,
           rootPath: null,
-          relativePath: '.cadence/skills/reviewer',
+          relativePath: 'skills/reviewer',
           bundleId: null,
           pluginId: null,
           serverId: null,
@@ -619,6 +659,7 @@ function createMockAdapter(options?: {
   runtimeSettings?: RuntimeSettingsDto
   mcpRegistry?: McpRegistryDto
   skillRegistry?: SkillRegistryDto
+  providerCredentials?: ProviderCredentialDto[]
   providerProfiles?: ProviderProfilesDto
   providerModelCatalogs?: Record<string, ProviderModelCatalogDto>
   providerModelCatalogErrors?: Record<string, Error>
@@ -690,6 +731,9 @@ function createMockAdapter(options?: {
   }
   const currentSkillRegistry = {
     value: options?.skillRegistry ?? makeSkillRegistry(),
+  }
+  const currentProviderCredentials = {
+    value: options?.providerCredentials ?? [],
   }
   const currentProviderProfiles = {
     value: options?.providerProfiles ?? makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings.value),
@@ -1345,10 +1389,9 @@ function createMockAdapter(options?: {
   })
   const startOpenAiLogin = vi.fn(
     async (
-      projectId: string,
-      _options: { selectedProfileId: string; originator?: string | null },
+      _options?: { originator?: string | null },
     ) =>
-      makeRuntimeSession(projectId, {
+      makeProviderAuthSession({
         sessionId: null,
         phase: 'awaiting_browser_callback',
         lastErrorCode: null,
@@ -1357,10 +1400,9 @@ function createMockAdapter(options?: {
   )
   const submitOpenAiCallback = vi.fn(
     async (
-      projectId: string,
       flowId: string,
-      _options: { selectedProfileId: string; manualInput?: string | null },
-    ) => makeRuntimeSession(projectId, { flowId, phase: 'authenticated' }),
+      _options?: { manualInput?: string | null },
+    ) => makeProviderAuthSession({ flowId, phase: 'authenticated' }),
   )
   const startAutonomousRun = vi.fn(async (projectId: string) => {
     const nextState = makeAutonomousRunState(projectId)
@@ -1690,11 +1732,11 @@ function createMockAdapter(options?: {
     cancelAutonomousRun,
     stopRuntimeRun,
     logoutRuntimeSession,
-    listProviderCredentials: vi.fn(async () => ({ credentials: [] })),
+    listProviderCredentials: vi.fn(async () => ({ credentials: currentProviderCredentials.value })),
     upsertProviderCredential: vi.fn(async () => ({ credentials: [] })),
     deleteProviderCredential: vi.fn(async () => ({ credentials: [] })),
-    startOAuthLogin: vi.fn(async () => makeRuntimeSession('project-1')),
-    completeOAuthCallback: vi.fn(async () => makeRuntimeSession('project-1')),
+    startOAuthLogin: vi.fn(async () => makeProviderAuthSession()),
+    completeOAuthCallback: vi.fn(async () => makeProviderAuthSession()),
     resolveOperatorAction,
     resumeOperatorRun,
     listNotificationRoutes,
@@ -1900,6 +1942,11 @@ function Harness({ adapter }: { adapter: CadenceDesktopAdapter }) {
       <div data-testid="selected-provider-label">{state.agentView?.selectedProviderLabel ?? 'none'}</div>
       <div data-testid="selected-provider-source">{state.agentView?.selectedProviderSource ?? 'none'}</div>
       <div data-testid="selected-model-id">{state.agentView?.selectedModelId ?? 'none'}</div>
+      <div data-testid="selected-model-selection-key">{state.agentView?.selectedModelSelectionKey ?? 'none'}</div>
+      <div data-testid="selected-model-option-profile-id">{state.agentView?.selectedModelOption?.profileId ?? 'none'}</div>
+      <div data-testid="selected-model-thinking-options">{state.agentView?.selectedModelThinkingEffortOptions.join(',') ?? 'none'}</div>
+      <div data-testid="composer-model-option-count">{String(state.agentView?.composerModelOptions?.length ?? 0)}</div>
+      <div data-testid="composer-model-option-profile-id">{state.agentView?.composerModelOptions?.[0]?.profileId ?? 'none'}</div>
       <div data-testid="provider-mismatch">{String(state.agentView?.providerMismatch ?? false)}</div>
       <div data-testid="provider-mismatch-reason">{state.agentView?.providerMismatchReason ?? 'none'}</div>
       <div data-testid="provider-mismatch-recovery-copy">{state.agentView?.providerMismatchRecoveryCopy ?? 'none'}</div>
@@ -2360,7 +2407,26 @@ describe('useCadenceDesktopState', () => {
     expect(setup.getRepositoryStatus).toHaveBeenCalledWith('project-1')
     expect(setup.getRuntimeSession).toHaveBeenCalledWith('project-1')
     expect(setup.listNotificationRoutes).toHaveBeenCalledWith('project-1')
-    expect(setup.syncNotificationAdapters).toHaveBeenCalledWith('project-1')
+    expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()
+  })
+
+  it('loads model catalogs for credentialed providers and feeds the agent composer', async () => {
+    const setup = createMockAdapter({
+      providerCredentials: [makeProviderCredential()],
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(setup.getProviderModelCatalog).toHaveBeenCalledWith('openai_codex-default', {
+        forceRefresh: false,
+      }),
+    )
+    await waitFor(() => expect(screen.getByTestId('composer-model-option-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('composer-model-option-profile-id')).toHaveTextContent('openai_codex-default')
+    expect(screen.getByTestId('selected-model-option-profile-id')).toHaveTextContent('openai_codex-default')
+    expect(screen.getByTestId('selected-model-selection-key')).toHaveTextContent('openai_codex:openai_codex')
+    expect(screen.getByTestId('selected-model-thinking-options')).toHaveTextContent('low,medium,high')
   })
 
   it('projects plugin registry mutations through the skill registry state', async () => {
@@ -2488,7 +2554,7 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1')
     expect(screen.getByTestId('branch')).toHaveTextContent('release/verified')
     expect(setup.listNotificationRoutes.mock.calls.length).toBeGreaterThan(routeRefreshesBeforeEvent)
-    expect(syncNotificationAdaptersMock.mock.calls.length).toBeGreaterThan(syncRefreshesBeforeEvent)
+    expect(syncNotificationAdaptersMock.mock.calls.length).toBe(syncRefreshesBeforeEvent)
   })
 
   it('ignores wrong-project update callbacks so one project cannot overwrite another project\'s operator history', async () => {
@@ -2892,7 +2958,7 @@ describe('useCadenceDesktopState', () => {
     expect(screen.getByTestId('error')).toHaveTextContent('runtime failed')
     expect(screen.getByTestId('runtime-label')).toHaveTextContent('Runtime unavailable')
     expect(setup.listNotificationRoutes).toHaveBeenLastCalledWith('project-2')
-    expect(setup.syncNotificationAdapters).toHaveBeenLastCalledWith('project-2')
+    expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()
   })
 
   it('resolves operator actions by invoking the adapter and reloading the active project snapshot', async () => {

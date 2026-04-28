@@ -7,10 +7,6 @@ use super::autonomous::{
     AutonomousSkillLifecycleStageDto, ToolResultSummaryDto,
 };
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAuthPhase {
@@ -190,6 +186,23 @@ pub struct RuntimeSessionDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAuthSessionDto {
+    pub runtime_kind: String,
+    pub provider_id: String,
+    pub flow_id: Option<String>,
+    pub session_id: Option<String>,
+    pub account_id: Option<String>,
+    pub phase: RuntimeAuthPhase,
+    pub callback_bound: Option<bool>,
+    pub authorization_url: Option<String>,
+    pub redirect_uri: Option<String>,
+    pub last_error_code: Option<String>,
+    pub last_error: Option<RuntimeDiagnosticDto>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSessionStatusDto {
     Active,
@@ -325,95 +338,6 @@ pub struct ListAgentSessionsResponseDto {
     pub sessions: Vec<AgentSessionDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeSettingsDto {
-    pub provider_id: String,
-    pub model_id: String,
-    pub openrouter_api_key_configured: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub anthropic_api_key_configured: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderProfileReadinessStatusDto {
-    Ready,
-    Missing,
-    Malformed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderProfileReadinessProofDto {
-    #[serde(rename = "oauth_session", alias = "o_auth_session")]
-    OAuthSession,
-    StoredSecret,
-    Local,
-    Ambient,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderProfileReadinessDto {
-    pub ready: bool,
-    pub status: ProviderProfileReadinessStatusDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proof: Option<ProviderProfileReadinessProofDto>,
-    pub proof_updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderProfileDto {
-    pub profile_id: String,
-    pub provider_id: String,
-    pub runtime_kind: String,
-    pub label: String,
-    pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    pub active: bool,
-    pub readiness: ProviderProfileReadinessDto,
-    pub migrated_from_legacy: bool,
-    pub migrated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderProfilesMigrationDto {
-    pub source: String,
-    pub migrated_at: String,
-    pub runtime_settings_updated_at: Option<String>,
-    pub openrouter_credentials_updated_at: Option<String>,
-    pub openai_auth_updated_at: Option<String>,
-    pub openrouter_model_inferred: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderProfilesDto {
-    pub active_profile_id: String,
-    pub profiles: Vec<ProviderProfileDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub migration: Option<ProviderProfilesMigrationDto>,
-}
-
-// ---------------------------------------------------------------------------
-// Provider-credentials (Phase 2.2 of the provider-layer refactor).
-// These DTOs back the new commands that operate on the flat
-// `provider_credentials` table. The legacy `ProviderProfile*` DTOs above will
-// be removed in Phase 3 once the frontend stops calling the old commands.
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCredentialKindDto {
@@ -491,7 +415,6 @@ pub struct DeleteProviderCredentialRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartOAuthLoginRequestDto {
     pub provider_id: String,
-    pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub originator: Option<String>,
 }
@@ -500,7 +423,6 @@ pub struct StartOAuthLoginRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompleteOAuthCallbackRequestDto {
     pub provider_id: String,
-    pub project_id: String,
     pub flow_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_input: Option<String>,
@@ -593,17 +515,15 @@ pub struct RuntimeRunUpdatedPayloadDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartOpenAiLoginRequestDto {
-    pub project_id: String,
-    pub profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub originator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitOpenAiCallbackRequestDto {
-    pub project_id: String,
-    pub profile_id: String,
     pub flow_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_input: Option<String>,
 }
 
@@ -612,53 +532,6 @@ pub struct SubmitOpenAiCallbackRequestDto {
 pub struct GetRuntimeRunRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpsertRuntimeSettingsRequestDto {
-    pub provider_id: String,
-    pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openrouter_api_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anthropic_api_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpsertProviderProfileRequestDto {
-    pub profile_id: String,
-    pub provider_id: String,
-    pub runtime_kind: String,
-    pub label: String,
-    pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub activate: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetActiveProviderProfileRequestDto {
-    pub profile_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LogoutProviderProfileRequestDto {
-    pub profile_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

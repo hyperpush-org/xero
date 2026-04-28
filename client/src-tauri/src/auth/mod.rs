@@ -1,12 +1,9 @@
 pub mod anthropic;
-pub mod importer;
 pub mod openai_codex;
 pub mod openai_compatible;
 pub mod openrouter;
 pub mod sql;
 pub mod store;
-
-pub use importer::import_legacy_openai_codex_sessions;
 
 pub use crate::runtime::{
     anthropic_provider, openai_codex_provider, openrouter_provider, ResolvedRuntimeProvider,
@@ -50,7 +47,10 @@ use tauri::{AppHandle, Runtime};
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use crate::{commands::RuntimeAuthPhase, state::DesktopState};
+use crate::{
+    commands::{CommandError, RuntimeAuthPhase},
+    state::DesktopState,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -63,7 +63,7 @@ pub struct AuthDiagnostic {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeAuthStateSnapshot {
-    pub project_id: String,
+    pub scope_id: String,
     pub profile_id: String,
     pub provider_id: String,
     pub flow_id: String,
@@ -130,6 +130,15 @@ impl AuthFlowError {
             retryable: self.retryable,
         }
     }
+}
+
+pub(crate) fn auth_flow_error_from_command_error(error: CommandError) -> AuthFlowError {
+    AuthFlowError::new(
+        error.code,
+        RuntimeAuthPhase::Failed,
+        error.message,
+        error.retryable,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,14 +268,14 @@ impl ActiveAuthFlowRegistry {
 pub fn start_provider_auth_flow(
     state: &DesktopState,
     provider: RuntimeProvider,
-    project_id: &str,
+    scope_id: &str,
     profile_id: &str,
     originator: Option<&str>,
 ) -> Result<StartedRuntimeAuthFlow, AuthFlowError> {
     match provider {
         RuntimeProvider::OpenAiCodex => openai_codex::start_openai_codex_flow(
             state,
-            project_id,
+            scope_id,
             profile_id,
             state.openai_auth_config(),
             originator,
@@ -300,7 +309,7 @@ pub fn complete_provider_auth_flow<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     provider: RuntimeProvider,
-    project_id: &str,
+    scope_id: &str,
     flow_id: &str,
     profile_id: &str,
     manual_input: Option<&str>,
@@ -320,11 +329,11 @@ pub fn complete_provider_auth_flow<R: Runtime>(
     }
 
     let snapshot = active_flow.snapshot();
-    if snapshot.project_id != project_id {
-        return Err(auth_flow_project_mismatch_error(
+    if snapshot.scope_id != scope_id {
+        return Err(auth_flow_scope_mismatch_error(
             flow_id,
-            project_id,
-            &snapshot.project_id,
+            scope_id,
+            &snapshot.scope_id,
         ));
     }
     if snapshot.profile_id != profile_id {
@@ -432,16 +441,16 @@ fn auth_flow_provider_mismatch_error(
     )
 }
 
-fn auth_flow_project_mismatch_error(
+fn auth_flow_scope_mismatch_error(
     flow_id: &str,
-    requested_project_id: &str,
-    actual_project_id: &str,
+    requested_scope_id: &str,
+    actual_scope_id: &str,
 ) -> AuthFlowError {
     AuthFlowError::terminal(
-        "auth_flow_project_mismatch",
+        "auth_flow_scope_mismatch",
         RuntimeAuthPhase::Failed,
         format!(
-            "Cadence rejected auth flow `{flow_id}` because it belongs to project `{actual_project_id}` instead of `{requested_project_id}`. Start a fresh login from the current project."
+            "Cadence rejected auth flow `{flow_id}` because it belongs to auth scope `{actual_scope_id}` instead of `{requested_scope_id}`. Start a fresh provider login."
         ),
     )
 }

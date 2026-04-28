@@ -258,20 +258,6 @@ pub struct NotificationReplyClaimResultRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NotificationDispatchEnqueueStatus {
-    Enqueued,
-    Skipped,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotificationDispatchEnqueueOutcomeRecord {
-    pub status: NotificationDispatchEnqueueStatus,
-    pub dispatch_count: u32,
-    pub code: Option<String>,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeActionRequiredUpsertRecord {
     pub project_id: String,
     pub agent_session_id: String,
@@ -295,7 +281,6 @@ pub struct RuntimeActionRequiredUpsertRecord {
 pub struct RuntimeActionRequiredPersistedRecord {
     pub approval_request: OperatorApprovalDto,
     pub runtime_run: RuntimeRunSnapshotRecord,
-    pub notification_dispatch_outcome: NotificationDispatchEnqueueOutcomeRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

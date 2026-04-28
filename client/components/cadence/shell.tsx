@@ -87,6 +87,8 @@ interface CadenceShellProps {
   platformOverride?: PlatformVariant | null
   /** Hide app-level controls (nav, sidebar toggle, settings). Window chrome stays. */
   chromeOnly?: boolean
+  /** Hide the app status footer while retaining the main shell chrome. */
+  hideFooter?: boolean
   footer?: StatusFooterProps
 }
 
@@ -216,6 +218,7 @@ export function CadenceShell({
   onToggleSidebar,
   platformOverride,
   chromeOnly = false,
+  hideFooter = false,
   footer,
 }: CadenceShellProps) {
   const desktopRuntime = isTauri()
@@ -249,12 +252,7 @@ export function CadenceShell({
 
   const Logo = (
     <div className="flex items-center gap-2">
-      <svg className="text-primary" fill="none" height="16" viewBox="0 0 24 24" width="16">
-        <path d="M4 4h6v6H4V4Z" fill="currentColor" />
-        <path d="M14 4h6v6h-6V4Z" fill="currentColor" fillOpacity="0.25" />
-        <path d="M4 14h6v6H4v-6Z" fill="currentColor" fillOpacity="0.25" />
-        <path d="M14 14h6v6h-6v-6Z" fill="currentColor" />
-      </svg>
+      <img src="/icon-logo.svg" alt="" className="h-3 w-3" />
       <span className="text-[13px] font-semibold tracking-[-0.01em] text-foreground/90">Xero</span>
     </div>
   )
@@ -722,13 +720,15 @@ export function CadenceShell({
     <div className="cadence-window-shell flex h-screen flex-col overflow-hidden bg-background text-foreground select-none">
       {titlebar}
       <main className="shell-main-row flex min-h-0 flex-1">{children}</main>
-      <StatusFooter
-        git={footer?.git}
-        spend={footer?.spend}
-        notifications={footer?.notifications}
-        spendActive={footer?.spendActive}
-        onSpendClick={footer?.onSpendClick}
-      />
+      {hideFooter ? null : (
+        <StatusFooter
+          git={footer?.git}
+          spend={footer?.spend}
+          notifications={footer?.notifications}
+          spendActive={footer?.spendActive}
+          onSpendClick={footer?.onSpendClick}
+        />
+      )}
     </div>
   )
 }

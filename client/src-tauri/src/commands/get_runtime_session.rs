@@ -8,7 +8,7 @@ use crate::{
             runtime_settings_snapshot_for_provider_profile, RuntimeSettingsSnapshot,
         },
         provider_credentials::load_provider_credentials_view,
-        validate_non_empty, CommandError, CommandResult, ProjectIdRequestDto, RuntimeAuthPhase,
+        validate_non_empty, CommandResult, ProjectIdRequestDto, RuntimeAuthPhase,
         RuntimeDiagnosticDto, RuntimeSessionDto,
     },
     provider_credentials::ProviderCredentialsView,
@@ -100,7 +100,6 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
     let provider_profiles = match load_provider_credentials_view(app, state) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            let error = normalize_runtime_provider_selection_error(error);
             return Err(signed_out_runtime(
                 runtime,
                 &error.code,
@@ -119,8 +118,8 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
             None => {
                 return Err(signed_out_runtime(
                     runtime,
-                    "provider_profile_not_found",
-                    &format!("Cadence could not bind the selected runtime because provider profile `{profile_id}` no longer exists."),
+                    "provider_not_found",
+                    &format!("Cadence could not bind the selected runtime because provider `{profile_id}` no longer exists."),
                     false,
                 ));
             }
@@ -130,8 +129,8 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
             None => {
                 return Err(signed_out_runtime(
                     runtime,
-                    "provider_profiles_invalid",
-                    "Cadence could not bind the selected runtime because the active provider profile is missing.",
+                    "provider_credentials_invalid",
+                    "Cadence could not bind the selected runtime because the selected provider is missing.",
                     false,
                 ));
             }
@@ -311,21 +310,6 @@ pub(crate) fn reconcile_prepared_runtime_session<R: Runtime>(
             emit_runtime_updated(app, &persisted)?;
             Ok(persisted)
         }
-    }
-}
-
-fn normalize_runtime_provider_selection_error(error: CommandError) -> CommandError {
-    const MIGRATION_PREFIX: &str = "provider_profiles_migration_";
-    const AUTH_STORE_PREFIX: &str = "auth_store_";
-
-    match error.code.strip_prefix(MIGRATION_PREFIX) {
-        Some(stripped) if stripped.starts_with(AUTH_STORE_PREFIX) => CommandError::new(
-            stripped.to_owned(),
-            error.class,
-            error.message,
-            error.retryable,
-        ),
-        _ => error,
     }
 }
 

@@ -19,6 +19,7 @@ import type {
 } from "@/src/features/cadence/use-cadence-desktop-state"
 import {
   type ProviderCredentialsSnapshotDto,
+  type ProviderAuthSessionView,
   type ProviderModelCatalogDto,
   type RuntimeProviderIdDto,
   type RuntimeSessionView,
@@ -123,7 +124,7 @@ export interface OnboardingFlowProps {
   onStartOAuthLogin?: (request: {
     providerId: RuntimeProviderIdDto
     originator?: string | null
-  }) => Promise<RuntimeSessionView | null>
+  }) => Promise<ProviderAuthSessionView | null>
   onUpsertNotificationRoute: (
     request: Omit<UpsertNotificationRouteRequestDto, "projectId">,
   ) => Promise<unknown>

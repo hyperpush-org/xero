@@ -435,29 +435,6 @@ pub fn privy_scaffold_writes_compileable_tree_with_api_key_env() {
     assert!(env_example.contains("priv-test-id"));
 }
 
-pub fn wallet_adapter_scaffold_bakes_rpc_url_and_reports_free_tier() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let toolchain = full_toolchain();
-    let request = WalletScaffoldRequest {
-        kind: WalletKind::WalletAdapter,
-        output_dir: tmp.path().display().to_string(),
-        project_slug: Some("my-adapter".into()),
-        cluster: ClusterKind::Mainnet,
-        rpc_url: Some("https://rpc.example/free".into()),
-        app_name: Some("Demo".into()),
-        app_id: None,
-        overwrite: false,
-    };
-    let result = generate_wallet_scaffold(&toolchain, &request).expect("scaffold");
-    assert!(result.api_key_env.is_none());
-    assert_eq!(result.rpc_url, "https://rpc.example/free");
-    let providers =
-        std::fs::read_to_string(std::path::Path::new(&result.root).join("src/WalletProviders.tsx"))
-            .unwrap();
-    assert!(providers.contains("https://rpc.example/free"));
-    assert!(providers.contains("LedgerWalletAdapter"));
-}
-
 pub fn mwa_scaffold_writes_phone_testing_checklist() {
     let tmp = tempfile::TempDir::new().unwrap();
     let toolchain = full_toolchain();
@@ -488,7 +465,7 @@ pub fn wallet_scaffold_refuses_missing_node() {
     let tmp = tempfile::TempDir::new().unwrap();
     let toolchain = ToolchainStatus::default();
     let request = WalletScaffoldRequest {
-        kind: WalletKind::WalletAdapter,
+        kind: WalletKind::WalletStandard,
         output_dir: tmp.path().display().to_string(),
         project_slug: None,
         cluster: ClusterKind::Devnet,

@@ -21,7 +21,7 @@ use cadence_desktop_lib::{
         StartAutonomousRunRequestDto, StartRuntimeSessionRequestDto,
     },
     configure_builder_with_state, db,
-    git::repository::{ensure_cadence_excluded, CanonicalRepository},
+    git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
     runtime::{
         AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
@@ -56,7 +56,6 @@ fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
     (
         DesktopState::default()
             .with_global_db_path_override(global_db_path)
-            .with_auth_store_file_override(auth_store_path.clone())
             .with_autonomous_skill_cache_dir_override(
                 root.path().join("app-data").join("autonomous-skills"),
             )
@@ -164,16 +163,13 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         deletions: 0,
     };
 
-    ensure_cadence_excluded(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("exclude .cadence from imported repo git status");
-
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(&app.handle().clone())
+        .global_db_path(&app.handle().clone())
         .expect("registry path");
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("import imported repo into repo-local db");
+        .expect("import imported repo into app-data db");
 
     registry::replace_projects(
         &registry_path,

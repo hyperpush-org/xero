@@ -91,7 +91,6 @@ export const deleteProviderCredentialRequestSchema = z
 export const startOAuthLoginRequestSchema = z
   .object({
     providerId: runtimeProviderIdSchema,
-    projectId: z.string().trim().min(1),
     originator: z.string().trim().min(1).nullable().optional(),
   })
   .strict()
@@ -99,7 +98,6 @@ export const startOAuthLoginRequestSchema = z
 export const completeOAuthCallbackRequestSchema = z
   .object({
     providerId: runtimeProviderIdSchema,
-    projectId: z.string().trim().min(1),
     flowId: z.string().trim().min(1),
     manualInput: z.string().nullable().optional(),
   })

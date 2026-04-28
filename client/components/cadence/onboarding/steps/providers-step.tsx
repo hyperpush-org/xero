@@ -5,6 +5,7 @@ import type {
 } from "@/src/features/cadence/use-cadence-desktop-state"
 import type {
   ProviderCredentialsSnapshotDto,
+  ProviderAuthSessionView,
   RuntimeProviderIdDto,
   RuntimeSessionView,
   UpsertProviderCredentialRequestDto,
@@ -30,7 +31,7 @@ interface ProvidersStepProps {
   onStartOAuthLogin?: (request: {
     providerId: RuntimeProviderIdDto
     originator?: string | null
-  }) => Promise<RuntimeSessionView | null>
+  }) => Promise<ProviderAuthSessionView | null>
 }
 
 export function ProvidersStep({

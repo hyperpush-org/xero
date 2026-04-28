@@ -1762,7 +1762,6 @@ fn should_skip_directory_for_root(repo_root: &Path, path: &Path) -> bool {
         && path.file_name().is_some_and(|name| {
             [
                 ".git",
-                ".cadence",
                 "node_modules",
                 "target",
                 ".next",

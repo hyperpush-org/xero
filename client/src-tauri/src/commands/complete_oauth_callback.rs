@@ -1,17 +1,20 @@
-//! Generic per-provider OAuth callback completion command introduced in
-//! Phase 2.2 of the provider-layer refactor. Mirrors `start_oauth_login` —
-//! today this is a thin wrapper over the existing OpenAI Codex callback.
+//! Generic app-scoped provider OAuth callback completion command.
 
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
+    auth::complete_provider_auth_flow,
     commands::{
-        submit_openai_callback::submit_openai_callback, validate_non_empty,
-        CommandError, CommandResult, CompleteOAuthCallbackRequestDto, RuntimeSessionDto,
-        SubmitOpenAiCallbackRequestDto,
+        validate_non_empty, CommandError, CommandResult, CompleteOAuthCallbackRequestDto,
+        ProviderAuthSessionDto,
     },
-    runtime::OPENAI_CODEX_PROVIDER_ID,
+    provider_credentials::OPENAI_CODEX_DEFAULT_PROFILE_ID,
+    runtime::{openai_codex_provider, OPENAI_CODEX_PROVIDER_ID},
     state::DesktopState,
+};
+
+use super::{
+    runtime_support::command_error_from_auth, start_oauth_login::PROVIDER_CREDENTIAL_OAUTH_SCOPE_ID,
 };
 
 #[tauri::command]
@@ -19,8 +22,7 @@ pub fn complete_oauth_callback<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: CompleteOAuthCallbackRequestDto,
-) -> CommandResult<RuntimeSessionDto> {
-    validate_non_empty(&request.project_id, "projectId")?;
+) -> CommandResult<ProviderAuthSessionDto> {
     validate_non_empty(&request.provider_id, "providerId")?;
     validate_non_empty(&request.flow_id, "flowId")?;
 
@@ -34,15 +36,30 @@ pub fn complete_oauth_callback<R: Runtime>(
         ));
     }
 
-    let profile_id = format!("{}-default", request.provider_id);
-    submit_openai_callback(
-        app,
-        state,
-        SubmitOpenAiCallbackRequestDto {
-            project_id: request.project_id,
-            profile_id,
-            flow_id: request.flow_id,
-            manual_input: request.manual_input,
-        },
+    let provider = openai_codex_provider();
+    let session = complete_provider_auth_flow(
+        &app,
+        state.inner(),
+        provider.provider,
+        PROVIDER_CREDENTIAL_OAUTH_SCOPE_ID,
+        &request.flow_id,
+        OPENAI_CODEX_DEFAULT_PROFILE_ID,
+        request.manual_input.as_deref(),
     )
+    .map_err(command_error_from_auth)?;
+
+    Ok(ProviderAuthSessionDto {
+        runtime_kind: provider.runtime_kind.into(),
+        provider_id: session.provider_id,
+        flow_id: None,
+        session_id: Some(session.session_id),
+        account_id: Some(session.account_id),
+        phase: crate::commands::RuntimeAuthPhase::Authenticated,
+        callback_bound: None,
+        authorization_url: None,
+        redirect_uri: None,
+        last_error_code: None,
+        last_error: None,
+        updated_at: session.updated_at,
+    })
 }

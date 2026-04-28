@@ -457,7 +457,7 @@ fn locate_agent_run<R: Runtime>(
     state: &DesktopState,
     run_id: &str,
 ) -> CommandResult<LocatedAgentRun> {
-    let registry_path = state.registry_file(app)?;
+    let registry_path = state.global_db_path(app)?;
     crate::db::configure_project_database_paths(&registry_path);
     let registry = read_registry(&registry_path)?;
     for project in registry.projects {

@@ -10,8 +10,8 @@ use cadence_desktop_lib::{
     },
     runtime::{
         ambient_auth_failure_diagnostic, invalid_base_url_diagnostic,
-        provider_model_catalog_diagnostic, provider_profile_readiness_diagnostic,
-        provider_profile_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
+        provider_model_catalog_diagnostic, provider_readiness_diagnostic,
+        provider_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
         stale_runtime_binding_diagnostic, summarize_diagnostic_checks,
         unsupported_provider_diagnostic, validate_diagnostic_check, validate_doctor_report,
         CadenceDiagnosticCheck, CadenceDiagnosticCheckInput, CadenceDiagnosticEndpointMetadata,
@@ -97,14 +97,14 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
         "openrouter",
         Some("https://openrouter.ai/api/v1"),
     );
-    let diagnostic = provider_profile_readiness_diagnostic(
+    let diagnostic = provider_readiness_diagnostic(
         &missing,
         &readiness(ProviderCredentialReadinessStatus::Missing),
     )
     .expect("missing readiness diagnostic");
     assert_eq!(
         diagnostic.subject,
-        CadenceDiagnosticSubject::ProviderProfile
+        CadenceDiagnosticSubject::ProviderCredential
     );
     assert_eq!(diagnostic.status, CadenceDiagnosticStatus::Failed);
     assert_eq!(diagnostic.severity, CadenceDiagnosticSeverity::Error);
@@ -132,15 +132,12 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
     malformed.credential_link = Some(ProviderCredentialLink::ApiKey {
         updated_at: "2026-04-26T12:00:00Z".into(),
     });
-    let malformed_diagnostic = provider_profile_readiness_diagnostic(
+    let malformed_diagnostic = provider_readiness_diagnostic(
         &malformed,
         &readiness(ProviderCredentialReadinessStatus::Malformed),
     )
     .expect("malformed diagnostic");
-    assert_eq!(
-        malformed_diagnostic.code,
-        "provider_profile_credentials_malformed"
-    );
+    assert_eq!(malformed_diagnostic.code, "provider_credentials_malformed");
     assert!(!malformed_diagnostic.message.contains("api key value"));
 
     let invalid_url = invalid_base_url_diagnostic(
@@ -179,7 +176,7 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
 }
 
 #[test]
-fn provider_profile_validation_reports_metadata_runtime_and_readiness_contracts() {
+fn provider_validation_reports_metadata_runtime_and_readiness_contracts() {
     let mut ready = profile("openrouter-work", "openrouter", "openrouter", None);
     ready.model_id = "openai/o4-mini".into();
     ready.credential_link = Some(ProviderCredentialLink::ApiKey {
@@ -195,23 +192,18 @@ fn provider_profile_validation_reports_metadata_runtime_and_readiness_contracts(
         }],
     );
 
-    let checks = provider_profile_validation_diagnostics(&snapshot, &ready)
-        .expect("validate ready provider profile");
+    let checks =
+        provider_validation_diagnostics(&snapshot, &ready).expect("validate ready provider");
     assert!(checks
         .iter()
         .all(|check| check.status != CadenceDiagnosticStatus::Failed));
     assert!(checks
         .iter()
-        .any(|check| check.code == "provider_profile_active"));
+        .any(|check| check.code == "provider_runtime_aligned"));
     assert!(checks
         .iter()
-        .any(|check| check.code == "provider_profile_runtime_aligned"));
-    assert!(checks
-        .iter()
-        .any(|check| check.code == "provider_profile_metadata_ready"));
-    assert!(checks
-        .iter()
-        .any(|check| check.code == "provider_profile_ready"));
+        .any(|check| check.code == "provider_metadata_ready"));
+    assert!(checks.iter().any(|check| check.code == "provider_ready"));
 
     let malformed_metadata = profile(
         "openrouter-bad",
@@ -225,16 +217,15 @@ fn provider_profile_validation_reports_metadata_runtime_and_readiness_contracts(
         Vec::new(),
     );
 
-    let repair_checks =
-        provider_profile_validation_diagnostics(&malformed_snapshot, &malformed_metadata)
-            .expect("validate malformed provider profile");
+    let repair_checks = provider_validation_diagnostics(&malformed_snapshot, &malformed_metadata)
+        .expect("validate malformed provider");
     assert!(repair_checks
         .iter()
-        .any(|check| check.code == "provider_profile_metadata_unexpected"
+        .any(|check| check.code == "provider_metadata_unexpected"
             && check.status == CadenceDiagnosticStatus::Failed));
     assert!(repair_checks
         .iter()
-        .any(|check| check.code == "provider_profile_credentials_missing"
+        .any(|check| check.code == "provider_credentials_missing"
             && check
                 .remediation
                 .as_deref()
@@ -242,7 +233,7 @@ fn provider_profile_validation_reports_metadata_runtime_and_readiness_contracts(
 }
 
 #[test]
-fn provider_profile_validation_accepts_supported_provider_metadata_shapes() {
+fn provider_validation_accepts_supported_provider_metadata_shapes() {
     #[derive(Clone, Copy)]
     enum CredentialKind {
         OpenAiCodex,
@@ -440,7 +431,7 @@ fn provider_profile_validation_accepts_supported_provider_metadata_shapes() {
         };
         let snapshot = snapshot_for(case.profile_id, vec![record.clone()], api_keys);
 
-        let checks = provider_profile_validation_diagnostics(&snapshot, &record)
+        let checks = provider_validation_diagnostics(&snapshot, &record)
             .unwrap_or_else(|error| panic!("{} validation failed: {error:?}", case.provider_id));
         assert!(
             checks
@@ -451,10 +442,8 @@ fn provider_profile_validation_accepts_supported_provider_metadata_shapes() {
         );
         assert!(checks
             .iter()
-            .any(|check| check.code == "provider_profile_metadata_ready"));
-        assert!(checks
-            .iter()
-            .any(|check| check.code == "provider_profile_ready"));
+            .any(|check| check.code == "provider_metadata_ready"));
+        assert!(checks.iter().any(|check| check.code == "provider_ready"));
     }
 }
 
@@ -463,7 +452,7 @@ fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
     let invalid_passed = CadenceDiagnosticCheck {
         contract_version: CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
         check_id: "diagnostic:v1:test".into(),
-        subject: CadenceDiagnosticSubject::ProviderProfile,
+        subject: CadenceDiagnosticSubject::ProviderCredential,
         status: CadenceDiagnosticStatus::Passed,
         severity: CadenceDiagnosticSeverity::Error,
         retryable: true,
@@ -658,7 +647,7 @@ fn doctor_report_serializes_human_and_json_with_stable_counts_and_no_secrets() {
         severity: CadenceDiagnosticSeverity::Error,
         retryable: false,
         code: "settings_secret_path_rejected".into(),
-        message: "Settings dependency read failed at /Users/sn0w/.cadence/secrets.json with token=sk-live-secret".into(),
+        message: "Settings dependency read failed at /Users/sn0w/Library/Application Support/dev.sn0w.cadence/secrets.json with token=sk-live-secret".into(),
         affected_profile_id: None,
         affected_provider_id: None,
         endpoint: None,

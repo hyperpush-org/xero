@@ -21,6 +21,7 @@ import type {
   ProviderModelThinkingEffortDto,
   ProviderCredentialDto,
   ProviderCredentialsSnapshotDto,
+  ProviderAuthSessionView,
   ProviderProfileDiagnosticsDto,
   ReadProjectFileResponseDto,
   RenameProjectEntryRequestDto,
@@ -110,14 +111,10 @@ export interface OperatorActionErrorView {
 export type RepositoryDiffLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type NotificationRoutesLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type NotificationRouteMutationStatus = 'idle' | 'running'
-export type ProviderProfilesLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
-export type ProviderProfilesSaveStatus = 'idle' | 'running'
 export type ProviderCredentialsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type ProviderCredentialsSaveStatus = 'idle' | 'running'
 export type ProviderModelCatalogLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type DoctorReportRunStatus = 'idle' | 'running' | 'ready' | 'error'
-export type RuntimeSettingsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
-export type RuntimeSettingsSaveStatus = 'idle' | 'running'
 export type McpRegistryLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type McpRegistryMutationStatus = 'idle' | 'running'
 export type SkillRegistryLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
@@ -281,7 +278,6 @@ export interface WorkflowPaneView {
   selectedProviderLabel?: string
   selectedProviderSource?: SelectedRuntimeProviderSource | null
   selectedModelId?: string | null
-  openrouterApiKeyConfigured?: boolean
   hasAnyReadyProvider?: boolean
   providerMismatch?: boolean
   providerMismatchReason?: string | null
@@ -314,7 +310,6 @@ export interface AgentPaneView {
   selectedModelOption: AgentProviderModelView | null
   selectedModelThinkingEffortOptions: ProviderModelThinkingEffortDto[]
   selectedModelDefaultThinkingEffort: ProviderModelThinkingEffortDto | null
-  openrouterApiKeyConfigured?: boolean
   hasAnyReadyProvider?: boolean
   providerMismatch?: boolean
   providerMismatchReason?: string | null
@@ -462,8 +457,8 @@ export interface UseCadenceDesktopStateResult {
   deleteProjectEntry: (projectId: string, path: string) => Promise<DeleteProjectEntryResponseDto>
   searchProject: (request: SearchProjectRequestDto) => Promise<SearchProjectResponseDto>
   replaceInProject: (request: ReplaceInProjectRequestDto) => Promise<ReplaceInProjectResponseDto>
-  startOpenAiLogin: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
-  submitOpenAiCallback: (flowId: string, options?: { manualInput?: string | null }) => Promise<RuntimeSessionView | null>
+  startOpenAiLogin: (options?: { originator?: string | null }) => Promise<ProviderAuthSessionView | null>
+  submitOpenAiCallback: (flowId: string, options?: { manualInput?: string | null }) => Promise<ProviderAuthSessionView | null>
   startAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
   inspectAutonomousRun: () => Promise<ProjectDetailView['autonomousRun'] | null>
   cancelAutonomousRun: (runId: string) => Promise<ProjectDetailView['autonomousRun'] | null>
@@ -493,14 +488,14 @@ export interface UseCadenceDesktopStateResult {
       providerId: ProviderCredentialDto['providerId']
       originator?: string | null
     },
-  ) => Promise<RuntimeSessionView | null>
+  ) => Promise<ProviderAuthSessionView | null>
   completeOAuthCallback: (
     request: {
       providerId: ProviderCredentialDto['providerId']
       flowId: string
       manualInput?: string | null
     },
-  ) => Promise<RuntimeSessionView | null>
+  ) => Promise<ProviderAuthSessionView | null>
   refreshProviderModelCatalog: (
     profileId: string,
     options?: { force?: boolean },

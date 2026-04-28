@@ -100,8 +100,6 @@ pub struct AutonomousSolanaClusterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum AutonomousSolanaLogsAction {
-    /// Backwards-compatible status surface.
-    Status,
     /// Fetch and decode recent logs for one or more program ids.
     Recent {
         cluster: ClusterKind,
@@ -828,13 +826,6 @@ impl SolanaExecutor for StateSolanaExecutor {
 
     fn logs(&self, request: AutonomousSolanaLogsRequest) -> CommandResult<AutonomousSolanaOutput> {
         let (action_name, value) = match request.action {
-            AutonomousSolanaLogsAction::Status => {
-                let status = self.inner.supervisor.status();
-                (
-                    "status".to_string(),
-                    serde_json::to_value::<ClusterStatus>(status).unwrap_or(JsonValue::Null),
-                )
-            }
             AutonomousSolanaLogsAction::Active => {
                 let active = self
                     .inner
@@ -2203,7 +2194,7 @@ mod tests {
 
         let err = exec
             .logs(AutonomousSolanaLogsRequest {
-                action: AutonomousSolanaLogsAction::Status,
+                action: AutonomousSolanaLogsAction::Active,
             })
             .unwrap_err();
         assert_eq!(err.class, crate::commands::CommandErrorClass::PolicyDenied);

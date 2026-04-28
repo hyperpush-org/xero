@@ -20,10 +20,10 @@ import type {
   McpImportDiagnosticDto,
   McpRegistryDto,
   ProviderCredentialsSnapshotDto,
+  ProviderAuthSessionView,
   ProviderModelCatalogDto,
   ProviderProfileDiagnosticsDto,
   RuntimeProviderIdDto,
-  RuntimeSessionView,
   RunDoctorReportRequestDto,
   ListSkillRegistryRequestDto,
   RemovePluginRequestDto,
@@ -47,7 +47,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, Bell, Code2, Globe, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Code2, Globe, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -151,7 +151,7 @@ export interface SettingsDialogProps {
   onStartOAuthLogin?: (request: {
     providerId: RuntimeProviderIdDto
     originator?: string | null
-  }) => Promise<RuntimeSessionView | null>
+  }) => Promise<ProviderAuthSessionView | null>
   providerModelCatalogs: Record<string, ProviderModelCatalogDto>
   providerModelCatalogLoadStatuses: Record<string, ProviderModelCatalogLoadStatus>
   onRefreshProviderModelCatalog?: (
@@ -305,8 +305,8 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex h-[min(640px,88vh)] w-[min(880px,92vw)] max-w-none flex-col gap-0 overflow-hidden border-border/80 p-0 shadow-xl sm:max-w-none"
-        showCloseButton
+        className="left-0 top-0 flex h-screen w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:max-w-none"
+        showCloseButton={false}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
@@ -314,54 +314,61 @@ export function SettingsDialog({
         </DialogDescription>
 
         <div className="flex min-h-0 flex-1">
-          <nav className="flex w-44 shrink-0 flex-col gap-3 border-r border-border/70 bg-sidebar py-3">
-            {NAV_GROUPS.map((group) => (
-              <div key={group.id} className="flex flex-col">
-                <span className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
-                  {group.label}
-                </span>
-                <div className="flex flex-col">
-                  {group.items.map(({ id, label, icon: Icon }) => {
-                    const active = section === id
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        aria-label={label}
-                        aria-current={active ? "page" : undefined}
-                        onClick={() => setSection(id)}
-                        className={cn(
-                          "group relative flex items-center gap-2 px-3 py-2.5 text-left text-[12.5px] leading-tight transition-colors",
-                          active
-                            ? "text-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {active ? (
-                          <span
-                            aria-hidden
-                            className="absolute inset-y-1 left-0 w-[2px] rounded-r-sm bg-primary"
-                          />
-                        ) : null}
-                        <Icon
+          <nav className="flex w-64 shrink-0 flex-col gap-4 border-r border-border/70 bg-sidebar py-4">
+            <div className="px-2.5">
+              <button
+                type="button"
+                onClick={() => onOpenChange(false)}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back to app
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3.5">
+              {NAV_GROUPS.map((group) => (
+                <div key={group.id} className="flex flex-col">
+                  <span className="px-4 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+                    {group.label}
+                  </span>
+                  <div className="flex flex-col px-2.5">
+                    {group.items.map(({ id, label, icon: Icon }) => {
+                      const active = section === id
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          aria-label={label}
+                          aria-current={active ? "page" : undefined}
+                          onClick={() => setSection(id)}
                           className={cn(
-                            "h-3.5 w-3.5 shrink-0",
-                            active ? "text-primary" : "text-muted-foreground/80",
+                            "group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13.5px] leading-tight transition-colors",
+                            active
+                              ? "bg-accent/60 text-foreground"
+                              : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                           )}
-                        />
-                        <span className="truncate font-medium">{label}</span>
-                      </button>
-                    )
-                  })}
+                        >
+                          <Icon
+                            className={cn(
+                              "h-4 w-4 shrink-0",
+                              active ? "text-foreground" : "text-muted-foreground/80",
+                            )}
+                          />
+                          <span className="truncate font-medium">{label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </nav>
 
           <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
             <div
               key={section}
-              className="flex flex-1 flex-col gap-5 py-5 pl-6 pr-14 animate-in fade-in-0 motion-enter"
+              className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 px-10 py-10 animate-in fade-in-0 motion-enter"
             >
               {section === "account" ? (
                 <AccountSection

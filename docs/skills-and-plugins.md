@@ -12,7 +12,7 @@ Users manage skills and plugins from Settings.
 
 Local and plugin roots must be absolute directories. Cadence canonicalizes each root before saving it and rejects duplicate root ids or duplicate canonical paths.
 
-Project skills live under `.cadence/skills` in an imported project. Dynamic skills are staged under `.cadence/dynamic-skills` and start disabled and untrusted.
+Project skills live under `projects/<project-id>/skills` in the OS app-data directory. Dynamic skills are staged under `projects/<project-id>/dynamic-skills` and start disabled and untrusted.
 
 ## Agent Workflow
 
@@ -45,9 +45,9 @@ Every skill source has a kind, scope, locator, source state, trust state, and ca
 
 - `bundled`: global, Cadence-owned, discovered from app resources.
 - `local`: global, discovered from configured absolute local roots.
-- `project`: project-scoped, discovered from `.cadence/skills`.
+- `project`: project-scoped, discovered from `projects/<project-id>/skills`.
 - `github`: global or project-scoped, backed by the autonomous GitHub skill cache.
-- `dynamic`: project-scoped, staged from run artifacts under `.cadence/dynamic-skills`.
+- `dynamic`: project-scoped, staged from run artifacts under `projects/<project-id>/dynamic-skills`.
 - `mcp`: project-scoped, projected from approved connected MCP servers.
 - `plugin`: project-scoped, contributed by a validated plugin manifest.
 

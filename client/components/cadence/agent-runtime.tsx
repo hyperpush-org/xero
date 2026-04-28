@@ -9,6 +9,7 @@ import type {
 import type {
   RuntimeRunView,
   RuntimeAutoCompactPreferenceDto,
+  ProviderAuthSessionView,
   RuntimeSessionView,
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/cadence-model'
@@ -44,7 +45,7 @@ interface AgentRuntimeProps {
   agent: AgentPaneView
   onOpenSettings?: () => void
   onOpenDiagnostics?: () => void
-  onStartLogin?: (options?: { profileId?: string | null }) => Promise<RuntimeSessionView | null>
+  onStartLogin?: (options?: { originator?: string | null }) => Promise<ProviderAuthSessionView | null>
   onStartAutonomousRun?: () => Promise<unknown>
   onInspectAutonomousRun?: () => Promise<unknown>
   onCancelAutonomousRun?: (runId: string) => Promise<unknown>
@@ -59,7 +60,7 @@ interface AgentRuntimeProps {
   }) => Promise<RuntimeRunView | null>
   onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
   onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
-  onSubmitManualCallback?: (flowId: string, manualInput: string) => Promise<RuntimeSessionView | null>
+  onSubmitManualCallback?: (flowId: string, manualInput: string) => Promise<ProviderAuthSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
   onRetryStream?: () => Promise<void>
   onResolveOperatorAction?: (
@@ -111,7 +112,7 @@ export function AgentRuntime({
     () =>
       (agent.composerModelOptions ?? []).map((option) => ({
         selectionKey: option.selectionKey,
-        profileId: null,
+        profileId: option.profileId,
         profileLabel: null,
         providerId: option.providerId,
         providerLabel: option.providerLabel,

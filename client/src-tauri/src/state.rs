@@ -4,15 +4,15 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{
     auth::{
-        ActiveAuthFlowRegistry, AnthropicAuthConfig, AuthFlowError, OpenAiCodexAuthConfig,
+        ActiveAuthFlowRegistry, AnthropicAuthConfig, OpenAiCodexAuthConfig,
         OpenAiCompatibleAuthConfig, OpenRouterAuthConfig,
     },
     commands::CommandError,
     global_db::global_database_path,
     provider_models::ProviderModelCatalogRefreshRegistry,
     runtime::{
-        openai_codex_provider, AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig,
-        ResolvedRuntimeProvider, RuntimeStreamController, RuntimeSupervisorController,
+        AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig, RuntimeStreamController,
+        RuntimeSupervisorController,
     },
 };
 
@@ -21,7 +21,6 @@ pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
 #[derive(Debug, Clone, Default)]
 pub struct ImportFailpoints {
     pub fail_registry_write: bool,
-    pub fail_exclude_write: bool,
     pub fail_migration: bool,
 }
 
@@ -34,9 +33,6 @@ pub struct RuntimeStreamFailpoints {
 
 #[derive(Debug, Clone, Default)]
 pub struct DesktopState {
-    /// Phase 2.7: every store now reads through a single global SQLite database, so the
-    /// per-file overrides have collapsed into this one. The legacy `with_*_file_override`
-    /// builders below funnel into this field so historical tests continue to compile.
     global_db_path_override: Option<PathBuf>,
     autonomous_skill_cache_dir_override: Option<PathBuf>,
     runtime_supervisor_binary_override: Option<PathBuf>,
@@ -59,53 +55,6 @@ impl DesktopState {
     pub fn with_global_db_path_override(mut self, path: PathBuf) -> Self {
         self.global_db_path_override = Some(path);
         self
-    }
-
-    /// Phase 2.7 compatibility shim: every per-file override funnels into the single
-    /// `global_db_path_override` because every store now reads through `cadence.db`. The
-    /// builder takes the deepest existing override into account so callers that mix
-    /// `with_global_db_path_override(...)` with one of the legacy file overrides keep working.
-    fn override_global_db_from_file(mut self, path: PathBuf) -> Self {
-        if self.global_db_path_override.is_none() {
-            self.global_db_path_override = Some(path);
-        }
-        self
-    }
-
-    pub fn with_registry_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_auth_store_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_notification_credential_store_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_provider_model_catalog_cache_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_runtime_settings_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_dictation_settings_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_mcp_registry_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_skill_source_settings_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
-    }
-
-    pub fn with_openrouter_credential_file_override(self, path: PathBuf) -> Self {
-        self.override_global_db_from_file(path)
     }
 
     pub fn with_autonomous_skill_cache_dir_override(mut self, path: PathBuf) -> Self {
@@ -258,76 +207,5 @@ impl DesktopState {
         Ok(self
             .app_data_dir(app)?
             .join(AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME))
-    }
-
-    // Phase 6: every per-file path resolver returns the global database path. The legacy
-    // JSON filenames now live exclusively inside `global_db::LegacyJsonImportPaths::resolve`,
-    // which is the only construction site that turns them into actual paths on disk.
-
-    pub fn registry_file<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn notification_credential_store_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn runtime_settings_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn dictation_settings_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn mcp_registry_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn skill_source_settings_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn provider_model_catalog_cache_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, CommandError> {
-        self.global_db_path(app)
-    }
-
-    pub fn auth_store_file_for_provider<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        _provider: ResolvedRuntimeProvider,
-    ) -> Result<PathBuf, AuthFlowError> {
-        self.global_db_path(app).map_err(|error| {
-            AuthFlowError::terminal(
-                error.code,
-                crate::commands::RuntimeAuthPhase::Failed,
-                error.message,
-            )
-        })
-    }
-
-    pub fn auth_store_file<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-    ) -> Result<PathBuf, AuthFlowError> {
-        self.auth_store_file_for_provider(app, openai_codex_provider())
     }
 }

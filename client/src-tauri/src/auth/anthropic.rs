@@ -118,8 +118,8 @@ impl From<&RuntimeSettingsSnapshot> for AnthropicFamilyProfileInput {
             updated_at: settings.settings.updated_at.clone(),
             region: settings.region.clone(),
             project_id: settings.project_id.clone(),
-            api_key: settings.anthropic_api_key.clone(),
-            api_key_updated_at: settings.anthropic_credentials_updated_at.clone(),
+            api_key: settings.provider_api_key.clone(),
+            api_key_updated_at: settings.provider_api_key_updated_at.clone(),
         }
     }
 }

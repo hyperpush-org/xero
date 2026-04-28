@@ -113,6 +113,21 @@ export const runtimeSessionSchema = z.object({
   updatedAt: isoTimestampSchema,
 })
 
+export const providerAuthSessionSchema = z.object({
+  runtimeKind: z.string().trim().min(1),
+  providerId: z.string().trim().min(1),
+  flowId: nonEmptyOptionalTextSchema,
+  sessionId: nonEmptyOptionalTextSchema,
+  accountId: nonEmptyOptionalTextSchema,
+  phase: runtimeAuthPhaseSchema,
+  callbackBound: z.boolean().nullable().optional(),
+  authorizationUrl: z.string().url().nullable().optional(),
+  redirectUri: z.string().url().nullable().optional(),
+  lastErrorCode: nonEmptyOptionalTextSchema,
+  lastError: runtimeDiagnosticSchema.nullable().optional(),
+  updatedAt: isoTimestampSchema,
+})
+
 export const runtimeUpdatedPayloadSchema = z.object({
   projectId: z.string().trim().min(1),
   runtimeKind: z.string().trim().min(1),
@@ -427,6 +442,7 @@ export type RuntimeProviderIdDto = z.infer<typeof runtimeProviderIdSchema>
 export type RuntimeSettingsDto = z.infer<typeof runtimeSettingsSchema>
 export type UpsertRuntimeSettingsRequestDto = z.infer<typeof upsertRuntimeSettingsRequestSchema>
 export type RuntimeSessionDto = z.infer<typeof runtimeSessionSchema>
+export type ProviderAuthSessionDto = z.infer<typeof providerAuthSessionSchema>
 export type RuntimeUpdatedPayloadDto = z.infer<typeof runtimeUpdatedPayloadSchema>
 export type RuntimeRunStatusDto = z.infer<typeof runtimeRunStatusSchema>
 export type RuntimeRunTransportLivenessDto = z.infer<typeof runtimeRunTransportLivenessSchema>
@@ -464,6 +480,30 @@ export type StopRuntimeRunRequestDto = z.infer<typeof stopRuntimeRunRequestSchem
 
 export interface RuntimeSessionView {
   projectId: string
+  runtimeKind: string
+  providerId: string
+  flowId: string | null
+  sessionId: string | null
+  accountId: string | null
+  phase: RuntimeAuthPhaseDto
+  phaseLabel: string
+  runtimeLabel: string
+  accountLabel: string
+  sessionLabel: string
+  callbackBound: boolean | null
+  authorizationUrl: string | null
+  redirectUri: string | null
+  lastErrorCode: string | null
+  lastError: RuntimeDiagnosticDto | null
+  updatedAt: string
+  isAuthenticated: boolean
+  isLoginInProgress: boolean
+  needsManualInput: boolean
+  isSignedOut: boolean
+  isFailed: boolean
+}
+
+export interface ProviderAuthSessionView {
   runtimeKind: string
   providerId: string
   flowId: string | null
@@ -814,6 +854,43 @@ export function mapRuntimeSession(runtime: RuntimeSessionDto): RuntimeSessionVie
     needsManualInput: runtime.phase === 'awaiting_manual_input',
     isSignedOut: runtime.phase === 'idle',
     isFailed: runtime.phase === 'failed' || runtime.phase === 'cancelled',
+  }
+}
+
+export function mapProviderAuthSession(session: ProviderAuthSessionDto): ProviderAuthSessionView {
+  const runtimeKind = normalizeText(session.runtimeKind, 'openai_codex')
+  const providerId = normalizeText(session.providerId, 'provider-unavailable')
+  const accountId = normalizeOptionalText(session.accountId)
+  const sessionId = normalizeOptionalText(session.sessionId)
+
+  return {
+    runtimeKind,
+    providerId,
+    flowId: normalizeOptionalText(session.flowId),
+    sessionId,
+    accountId,
+    phase: session.phase,
+    phaseLabel: getRuntimePhaseLabel(session.phase),
+    runtimeLabel: getRuntimeLabel(runtimeKind, session.phase),
+    accountLabel: accountId ?? 'Not signed in',
+    sessionLabel: sessionId ?? 'No session',
+    callbackBound: session.callbackBound ?? null,
+    authorizationUrl: normalizeOptionalText(session.authorizationUrl),
+    redirectUri: normalizeOptionalText(session.redirectUri),
+    lastErrorCode: normalizeOptionalText(session.lastErrorCode),
+    lastError: session.lastError ?? null,
+    updatedAt: session.updatedAt,
+    isAuthenticated: session.phase === 'authenticated',
+    isLoginInProgress: [
+      'starting',
+      'awaiting_browser_callback',
+      'awaiting_manual_input',
+      'exchanging_code',
+      'refreshing',
+    ].includes(session.phase),
+    needsManualInput: session.phase === 'awaiting_manual_input',
+    isSignedOut: session.phase === 'idle',
+    isFailed: session.phase === 'failed' || session.phase === 'cancelled',
   }
 }
 

@@ -34,7 +34,7 @@ pub fn sync_notification_adapters<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let credential_store_path = state.notification_credential_store_file(&app)?;
+    let credential_store_path = state.global_db_path(&app)?;
     let service = NotificationDispatchService::from_credential_store_path(credential_store_path)?;
 
     sync_notification_adapters_with_service(app, &repo_root, &request.project_id, &service)

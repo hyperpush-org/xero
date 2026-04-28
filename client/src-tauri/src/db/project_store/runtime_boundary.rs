@@ -8,15 +8,15 @@ use crate::{
 };
 
 use super::{
-    derive_operator_scope_prefix, enqueue_notification_dispatches_best_effort_with_connection,
-    find_prohibited_transition_diagnostic_content, map_operator_loop_commit_error,
-    map_operator_loop_transaction_error, map_operator_loop_write_error,
-    map_runtime_run_write_error, normalize_runtime_checkpoint_summary, open_project_database,
-    operator_approval_status_label, read_operator_approval_by_action_id, read_project_row,
-    read_resume_history_entry_by_id, read_runtime_run_row, read_runtime_run_snapshot,
-    runtime_run_checkpoint_kind_sql_value, validate_non_empty_text,
-    validate_runtime_action_required_payload, NotificationDispatchEnqueueRecord,
-    RuntimeActionRequiredPersistedRecord, RuntimeActionRequiredUpsertRecord, RuntimeRunCheckpointKind,
+    derive_operator_scope_prefix, find_prohibited_transition_diagnostic_content,
+    map_operator_loop_commit_error, map_operator_loop_transaction_error,
+    map_operator_loop_write_error, map_runtime_run_write_error,
+    normalize_runtime_checkpoint_summary, open_project_database, operator_approval_status_label,
+    read_operator_approval_by_action_id, read_project_row, read_resume_history_entry_by_id,
+    read_runtime_run_row, read_runtime_run_snapshot, runtime_run_checkpoint_kind_sql_value,
+    validate_non_empty_text, validate_runtime_action_required_payload,
+    RuntimeActionRequiredPersistedRecord, RuntimeActionRequiredUpsertRecord,
+    RuntimeRunCheckpointKind,
 };
 
 #[derive(Debug, Clone)]
@@ -294,20 +294,9 @@ pub fn upsert_runtime_action_required(
                 ),
             )
         })?;
-    let notification_dispatch_outcome = enqueue_notification_dispatches_best_effort_with_connection(
-        &connection,
-        &database_path,
-        &NotificationDispatchEnqueueRecord {
-            project_id: payload.project_id.clone(),
-            action_id: action_id.clone(),
-            enqueued_at: payload.created_at.clone(),
-        },
-    );
-
     Ok(RuntimeActionRequiredPersistedRecord {
         approval_request,
         runtime_run,
-        notification_dispatch_outcome,
     })
 }
 

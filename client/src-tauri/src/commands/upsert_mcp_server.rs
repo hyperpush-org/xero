@@ -24,7 +24,7 @@ pub fn upsert_mcp_server<R: Runtime>(
     state: State<'_, DesktopState>,
     request: UpsertMcpServerRequestDto,
 ) -> CommandResult<McpRegistryDto> {
-    let path = state.mcp_registry_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let current = load_mcp_registry_from_path(&path)?;
     let candidate = server_record_from_request(&request, &current.servers)?;
 

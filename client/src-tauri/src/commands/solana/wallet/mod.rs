@@ -1,15 +1,12 @@
-//! Wallet-adapter scaffolds (Phase 8).
+//! Wallet scaffolds (Phase 8).
 //!
 //! Generates drop-in client-side wallet integrations. Matches the
 //! `indexer::scaffold` contract: declarative request, deterministic
 //! file set, sha256-hashed output, fail-closed on existing files
 //! unless `overwrite=true`.
 //!
-//! Five flavours ship in this phase:
+//! Four flavours ship in this phase:
 //!
-//! - `WalletAdapter` — legacy `@solana/wallet-adapter-react` provider +
-//!   connect button. Works with every wallet that still exposes a
-//!   wallet-adapter entry.
 //! - `WalletStandard` — the newer `@wallet-standard/react` + Mobile
 //!   Wallet Standard path. Recommended for new projects.
 //! - `Privy` — Privy's free-tier embedded-wallet flow (social login +
@@ -41,14 +38,12 @@ use crate::commands::{CommandError, CommandResult};
 pub mod dynamic;
 pub mod mwa;
 pub mod privy;
-pub mod wallet_adapter;
 pub mod wallet_standard;
 
 /// Scaffold flavour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WalletKind {
-    WalletAdapter,
     WalletStandard,
     Privy,
     Dynamic,
@@ -56,8 +51,7 @@ pub enum WalletKind {
 }
 
 impl WalletKind {
-    pub const ALL: [WalletKind; 5] = [
-        WalletKind::WalletAdapter,
+    pub const ALL: [WalletKind; 4] = [
         WalletKind::WalletStandard,
         WalletKind::Privy,
         WalletKind::Dynamic,
@@ -66,7 +60,6 @@ impl WalletKind {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            WalletKind::WalletAdapter => "wallet_adapter",
             WalletKind::WalletStandard => "wallet_standard",
             WalletKind::Privy => "privy",
             WalletKind::Dynamic => "dynamic",
@@ -76,7 +69,6 @@ impl WalletKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            WalletKind::WalletAdapter => "Wallet Adapter (legacy)",
             WalletKind::WalletStandard => "Wallet Standard",
             WalletKind::Privy => "Privy (free tier)",
             WalletKind::Dynamic => "Dynamic (free tier)",
@@ -86,9 +78,6 @@ impl WalletKind {
 
     pub fn summary(self) -> &'static str {
         match self {
-            WalletKind::WalletAdapter => {
-                "Legacy @solana/wallet-adapter-react provider. Maximum wallet reach; works with every adapter-exposing wallet."
-            }
             WalletKind::WalletStandard => {
                 "Modern @wallet-standard/react + MWA provider. Recommended for new projects — smaller bundle, better mobile story."
             }
@@ -119,8 +108,7 @@ pub struct WalletScaffoldRequest {
     /// cluster's default RPC URL.
     #[serde(default)]
     pub rpc_url: Option<String>,
-    /// App name surfaced to the wallet (wallet-adapter "App Name",
-    /// Privy "app name", etc.).
+    /// App name surfaced to the generated wallet client.
     #[serde(default)]
     pub app_name: Option<String>,
     /// Some providers require an app id / publishable key to run. The
@@ -220,7 +208,6 @@ pub fn generate(
     };
 
     let (files, meta) = match request.kind {
-        WalletKind::WalletAdapter => wallet_adapter::render(&ctx),
         WalletKind::WalletStandard => wallet_standard::render(&ctx),
         WalletKind::Privy => privy::render(&ctx),
         WalletKind::Dynamic => dynamic::render(&ctx),
@@ -280,7 +267,6 @@ pub fn descriptors() -> Vec<WalletDescriptor> {
 
 fn default_slug(kind: WalletKind) -> String {
     match kind {
-        WalletKind::WalletAdapter => "wallet-adapter-app".to_string(),
         WalletKind::WalletStandard => "wallet-standard-app".to_string(),
         WalletKind::Privy => "privy-solana-app".to_string(),
         WalletKind::Dynamic => "dynamic-solana-app".to_string(),
@@ -382,6 +368,13 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+pub(crate) fn escape_ts_string(value: &str) -> String {
+    value
+        .replace('\\', r"\\")
+        .replace('"', r#"\""#)
+        .replace('\n', r"\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,7 +416,7 @@ mod tests {
         let toolchain = ToolchainStatus::default();
         let err = generate(
             &toolchain,
-            &base_request(WalletKind::WalletAdapter, tmp.path()),
+            &base_request(WalletKind::WalletStandard, tmp.path()),
         )
         .unwrap_err();
         assert_eq!(err.code, "solana_wallet_scaffold_requires_node");
@@ -436,7 +429,7 @@ mod tests {
         toolchain.node.present = true;
         let err = generate(
             &toolchain,
-            &base_request(WalletKind::WalletAdapter, tmp.path()),
+            &base_request(WalletKind::WalletStandard, tmp.path()),
         )
         .unwrap_err();
         assert_eq!(err.code, "solana_wallet_scaffold_requires_pnpm");
@@ -476,7 +469,7 @@ mod tests {
     fn scaffold_rejects_overwriting_existing_without_flag() {
         let tmp = TempDir::new().unwrap();
         let toolchain = full_toolchain();
-        let request = base_request(WalletKind::WalletAdapter, tmp.path());
+        let request = base_request(WalletKind::WalletStandard, tmp.path());
         generate(&toolchain, &request).unwrap();
         let err = generate(&toolchain, &request).unwrap_err();
         assert_eq!(err.code, "solana_wallet_scaffold_output_exists");
@@ -486,7 +479,7 @@ mod tests {
     fn overwrite_flag_replaces_existing() {
         let tmp = TempDir::new().unwrap();
         let toolchain = full_toolchain();
-        let request = base_request(WalletKind::WalletAdapter, tmp.path());
+        let request = base_request(WalletKind::WalletStandard, tmp.path());
         generate(&toolchain, &request).unwrap();
         let mut second = request.clone();
         second.overwrite = true;
@@ -513,12 +506,12 @@ mod tests {
     }
 
     #[test]
-    fn wallet_adapter_scaffold_does_not_require_api_key() {
+    fn wallet_standard_scaffold_does_not_require_api_key() {
         let tmp = TempDir::new().unwrap();
         let toolchain = full_toolchain();
         let result = generate(
             &toolchain,
-            &base_request(WalletKind::WalletAdapter, tmp.path()),
+            &base_request(WalletKind::WalletStandard, tmp.path()),
         )
         .unwrap();
         assert!(result.api_key_env.is_none());

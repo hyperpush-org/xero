@@ -39,15 +39,15 @@ use crate::{
     },
     runtime::{
         create_owned_agent_run, drive_owned_agent_run, launch_detached_runtime_supervisor,
-        normalize_openai_codex_model_id, openai_codex_provider, probe_runtime_run,
-        resolve_runtime_shell_selection, AgentProviderConfig, AnthropicProviderConfig,
-        AutonomousToolRuntime, BedrockProviderConfig, OpenAiCompatibleProviderConfig,
-        OpenAiResponsesProviderConfig, OwnedAgentRunRequest, RuntimeSupervisorLaunchContext,
-        RuntimeSupervisorLaunchEnv, RuntimeSupervisorLaunchRequest, RuntimeSupervisorProbeRequest,
-        VertexProviderConfig, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
-        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
-        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
-        OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID,
+        normalize_openai_codex_model_id, probe_runtime_run, resolve_runtime_shell_selection,
+        AgentProviderConfig, AnthropicProviderConfig, AutonomousToolRuntime, BedrockProviderConfig,
+        OpenAiCompatibleProviderConfig, OpenAiResponsesProviderConfig, OwnedAgentRunRequest,
+        RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv, RuntimeSupervisorLaunchRequest,
+        RuntimeSupervisorProbeRequest, VertexProviderConfig, ANTHROPIC_PROVIDER_ID,
+        AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
+        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
+        OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -603,16 +603,16 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
     let active_profile = match requested_profile_id {
         Some(profile_id) => provider_profiles.profile(profile_id).ok_or_else(|| {
             CommandError::user_fixable(
-                "provider_profile_not_found",
+                "provider_not_found",
                 format!(
-                    "Cadence could not resolve the owned-agent provider because provider profile `{profile_id}` is missing.",
+                    "Cadence could not resolve the owned-agent provider because provider `{profile_id}` is missing.",
                 ),
             )
         })?,
         None => provider_profiles.active_profile().ok_or_else(|| {
             CommandError::user_fixable(
-                "provider_profiles_invalid",
-                "Cadence could not resolve the owned-agent provider because the active provider profile is missing.",
+                "provider_credentials_invalid",
+                "Cadence could not resolve the owned-agent provider because the selected provider is missing.",
             )
         })?,
     };
@@ -625,9 +625,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
 
     match active_profile.provider_id.as_str() {
         OPENAI_CODEX_PROVIDER_ID => {
-            let auth_store_path = state
-                .auth_store_file_for_provider(app, openai_codex_provider())
-                .map_err(command_error_from_auth)?;
+            let auth_store_path = state.global_db_path(app)?;
             let session = match active_profile.credential_link.as_ref() {
                 Some(link) => load_openai_codex_session_for_profile_link(&auth_store_path, link)
                     .map_err(command_error_from_auth)?,
@@ -638,8 +636,8 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                     CommandError::user_fixable(
                         "openai_codex_auth_missing",
                         format!(
-                            "Cadence cannot start the owned OpenAI Codex adapter because no global app-local auth session is available for provider profile `{}`.",
-                            active_profile.profile_id
+                            "Cadence cannot start the owned OpenAI Codex adapter because no global app-local auth session is available for provider `{}`.",
+                            active_profile.provider_id
                         ),
                     )
                 })?;
@@ -678,8 +676,8 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                     return Err(CommandError::user_fixable(
                         "openai_api_key_missing",
                         format!(
-                            "Cadence cannot start the owned OpenAI-compatible adapter because provider profile `{}` targets hosted endpoint `{}` without an app-local API key.",
-                            active_profile.profile_id, endpoint.effective_base_url
+                            "Cadence cannot start the owned OpenAI-compatible adapter because provider `{}` targets hosted endpoint `{}` without an app-local API key.",
+                            active_profile.provider_id, endpoint.effective_base_url
                         ),
                     ));
                 }
@@ -699,7 +697,6 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             let api_key = runtime_settings
                 .provider_api_key
                 .clone()
-                .or_else(|| runtime_settings.openrouter_api_key.clone())
                 .ok_or_else(|| {
                     CommandError::user_fixable(
                         "openrouter_api_key_missing",
@@ -721,13 +718,12 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             let api_key = runtime_settings
                 .provider_api_key
                 .clone()
-                .or_else(|| runtime_settings.anthropic_api_key.clone())
                 .ok_or_else(|| {
                     CommandError::user_fixable(
                         "anthropic_api_key_missing",
                         format!(
-                            "Cadence cannot start the owned Anthropic adapter because provider profile `{}` has no app-local API key.",
-                            active_profile.profile_id
+                            "Cadence cannot start the owned Anthropic adapter because provider `{}` has no app-local API key.",
+                            active_profile.provider_id
                         ),
                     )
                 })?;
@@ -748,8 +744,8 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 CommandError::user_fixable(
                     format!("{}_api_key_missing", active_profile.provider_id),
                     format!(
-                        "Cadence cannot start the owned `{}` adapter because provider profile `{}` has no app-local API key.",
-                        active_profile.provider_id, active_profile.profile_id
+                        "Cadence cannot start the owned `{}` adapter because provider `{}` has no app-local API key.",
+                        active_profile.provider_id, active_profile.provider_id
                     ),
                 )
             })?;
@@ -785,7 +781,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             let region = runtime_settings.region.clone().ok_or_else(|| {
                 CommandError::user_fixable(
                     "bedrock_region_missing",
-                    "Cadence cannot start the owned Bedrock adapter because the active provider profile has no AWS region.",
+                    "Cadence cannot start the owned Bedrock adapter because the selected provider has no AWS region.",
                 )
             })?;
             Ok(AgentProviderConfig::Bedrock(BedrockProviderConfig {
@@ -798,13 +794,13 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             let region = runtime_settings.region.clone().ok_or_else(|| {
                 CommandError::user_fixable(
                     "vertex_region_missing",
-                    "Cadence cannot start the owned Vertex AI adapter because the active provider profile has no Google Cloud region.",
+                    "Cadence cannot start the owned Vertex AI adapter because the selected provider has no Google Cloud region.",
                 )
             })?;
             let project_id = runtime_settings.project_id.clone().ok_or_else(|| {
                 CommandError::user_fixable(
                     "vertex_project_id_missing",
-                    "Cadence cannot start the owned Vertex AI adapter because the active provider profile has no Google Cloud project id.",
+                    "Cadence cannot start the owned Vertex AI adapter because the selected provider has no Google Cloud project id.",
                 )
             })?;
             Ok(AgentProviderConfig::Vertex(VertexProviderConfig {
@@ -1054,16 +1050,16 @@ fn load_provider_profile_selection<R: Runtime>(
     let active_profile = match requested_profile_id {
         Some(profile_id) => provider_profiles.profile(profile_id).ok_or_else(|| {
             CommandError::user_fixable(
-                "provider_profile_not_found",
+                "provider_not_found",
                 format!(
-                    "Cadence could not determine the selected provider profile `{profile_id}` before launching or reconnecting a runtime run.",
+                    "Cadence could not determine the selected provider `{profile_id}` before launching or reconnecting a runtime run.",
                 ),
             )
         })?,
         None => provider_profiles.active_profile().ok_or_else(|| {
             CommandError::user_fixable(
-                "provider_profiles_invalid",
-                "Cadence could not determine the active provider profile before launching or reconnecting a runtime run.",
+                "provider_credentials_invalid",
+                "Cadence could not determine a provider before launching or reconnecting a runtime run.",
             )
         })?,
     };
@@ -1077,9 +1073,7 @@ fn load_provider_profile_selection<R: Runtime>(
     }
 
     if active_profile.provider_id == OPENAI_CODEX_PROVIDER_ID {
-        let auth_store_path = state
-            .auth_store_file_for_provider(app, openai_codex_provider())
-            .map_err(command_error_from_auth)?;
+        let auth_store_path = state.global_db_path(app)?;
         let session = match active_profile.credential_link.as_ref() {
             Some(link) => load_openai_codex_session_for_profile_link(&auth_store_path, link)
                 .map_err(command_error_from_auth)?,
@@ -1088,19 +1082,19 @@ fn load_provider_profile_selection<R: Runtime>(
         };
         if session.is_none() {
             return Err(CommandError::user_fixable(
-                "provider_profile_not_ready",
+                "provider_not_ready",
                 format!(
-                    "Cadence cannot launch a runtime run with provider profile `{}` because global OpenAI auth is not ready.",
-                    active_profile.profile_id
+                    "Cadence cannot launch a runtime run with provider `{}` because global OpenAI auth is not ready.",
+                    active_profile.provider_id
                 ),
             ));
         }
     } else if !active_profile.readiness().ready {
         return Err(CommandError::user_fixable(
-            "provider_profile_not_ready",
+            "provider_not_ready",
             format!(
-                "Cadence cannot launch a runtime run with provider profile `{}` because it is not ready.",
-                active_profile.profile_id
+                "Cadence cannot launch a runtime run with provider `{}` because it is not ready.",
+                active_profile.provider_id
             ),
         ));
     }
@@ -1119,9 +1113,9 @@ fn runtime_supervisor_existing_run_provider_mismatch(
     CommandError::user_fixable(
         "runtime_supervisor_provider_mismatch",
         format!(
-            "Cadence cannot launch runtime run `{}` because active provider profile `{}` targets `{}` while durable runtime run `{}` is still attributable to `{}`. Reconnect or stop the existing run before switching providers.",
+            "Cadence cannot launch runtime run `{}` because selected provider `{}` targets `{}` while durable runtime run `{}` is still attributable to `{}`. Reconnect or stop the existing run before switching providers.",
             active_profile.model_id,
-            active_profile.profile_id,
+            active_profile.provider_id,
             active_profile.provider_id,
             snapshot.run.run_id,
             snapshot.run.provider_id,
@@ -1136,9 +1130,9 @@ fn runtime_supervisor_session_provider_mismatch(
     CommandError::user_fixable(
         "runtime_supervisor_provider_mismatch",
         format!(
-            "Cadence cannot launch runtime run `{}` because active provider profile `{}` targets `{}` while the authenticated runtime session is still bound to `{}`. Rebind the runtime session or switch back to the matching provider profile.",
+            "Cadence cannot launch runtime run `{}` because selected provider `{}` targets `{}` while the authenticated runtime session is still bound to `{}`. Rebind the runtime session or switch back to the matching provider.",
             active_profile.model_id,
-            active_profile.profile_id,
+            active_profile.provider_id,
             active_profile.provider_id,
             runtime.provider_id,
         ),
@@ -1164,9 +1158,9 @@ fn reject_runtime_run_provider_profile_switch(
     if let (Some(requested), Some(active)) = (requested_profile_id, active_profile_id) {
         if requested != active {
             return Err(CommandError::user_fixable(
-                "runtime_run_provider_profile_switch_blocked",
+                "runtime_run_provider_switch_blocked",
                 format!(
-                    "Cadence cannot switch active runtime run `{}` from provider profile `{active}` to `{requested}`. Stop the current run before changing providers.",
+                    "Cadence cannot switch active runtime run `{}` from provider `{active}` to `{requested}`. Stop the current run before changing providers.",
                     snapshot.run.run_id
                 ),
             ));
@@ -1262,11 +1256,11 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
         .profile(&selected_profile.profile_id)
         .ok_or_else(|| {
             CommandError::user_fixable(
-                "provider_profile_not_found",
+                "provider_not_found",
                 format!(
-                "Cadence could not launch a runtime run because provider profile `{}` is missing.",
-                selected_profile.profile_id
-            ),
+                    "Cadence could not launch a runtime run because provider `{}` is missing.",
+                    selected_profile.profile_id
+                ),
             )
         })?;
 
@@ -1274,7 +1268,7 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
         return Err(CommandError::user_fixable(
             "runtime_supervisor_provider_mismatch",
             format!(
-                "Cadence cannot launch runtime run `{}` because the active provider profile targets `{}` while the authenticated runtime session is bound to `{}`.",
+                "Cadence cannot launch runtime run `{}` because the selected provider is `{}` while the authenticated runtime session is bound to `{}`.",
                 run_controls.active.model_id, active_profile.provider_id, runtime.provider_id
             ),
         ));
@@ -1296,17 +1290,17 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
                     return Err(CommandError::user_fixable(
                         "anthropic_api_key_missing",
                         format!(
-                            "Cadence cannot launch the detached Anthropic runtime because provider profile `{}` has no app-local API key configured.",
-                            active_profile.profile_id
+                            "Cadence cannot launch the detached Anthropic runtime because provider `{}` has no app-local API key configured.",
+                            active_profile.provider_id
                         ),
                     ));
                 }
                 ProviderCredentialReadinessStatus::Malformed => {
                     return Err(CommandError::user_fixable(
-                        "provider_profile_credentials_unavailable",
+                        "provider_credentials_unavailable",
                         format!(
-                            "Cadence cannot launch the detached Anthropic runtime because provider profile `{}` no longer matches the saved app-local secret state.",
-                            active_profile.profile_id
+                            "Cadence cannot launch the detached Anthropic runtime because provider `{}` no longer matches the saved app-local secret state.",
+                            active_profile.provider_id
                         ),
                     ));
                 }
@@ -1343,10 +1337,10 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
             ProviderCredentialReadinessStatus::Missing => None,
             ProviderCredentialReadinessStatus::Malformed => {
                 return Err(CommandError::user_fixable(
-                    "provider_profile_credentials_unavailable",
+                    "provider_credentials_unavailable",
                     format!(
-                        "Cadence cannot launch the detached {} runtime because provider profile `{}` no longer matches the saved app-local secret state.",
-                        runtime.provider_id, active_profile.profile_id
+                        "Cadence cannot launch the detached {} runtime because provider `{}` no longer matches the saved app-local secret state.",
+                        runtime.provider_id, active_profile.provider_id
                     ),
                 ));
             }
@@ -1363,7 +1357,7 @@ fn prepare_runtime_supervisor_launch<R: Runtime>(
         }
     }
 
-    let mcp_registry_path = state.mcp_registry_file(app)?;
+    let mcp_registry_path = state.global_db_path(app)?;
     let mcp_projection_root = state
         .app_data_dir(app)?
         .join(RUNTIME_MCP_PROJECTION_DIRECTORY_NAME);
@@ -1411,10 +1405,8 @@ fn resolve_initial_runtime_run_model_id(
     requested_controls: Option<&RuntimeRunControlInputDto>,
 ) -> CommandResult<String> {
     match requested_controls {
-        Some(requested) => {
-            runtime_settings_file_from_request(provider_id, &requested.model_id, false)
-                .map(|settings| settings.model_id)
-        }
+        Some(requested) => runtime_settings_file_from_request(provider_id, &requested.model_id)
+            .map(|settings| settings.model_id),
         None => Ok(configured_model_id.trim().to_owned()),
     }
 }
@@ -1429,8 +1421,8 @@ fn resolve_initial_runtime_run_model<'a>(
         return Err(CommandError::user_fixable(
             "runtime_run_initial_controls_unavailable",
             format!(
-                "Cadence could not derive runtime-run controls because the active provider-model catalog for profile `{}` is unavailable.",
-                catalog.profile_id
+                "Cadence could not derive runtime-run controls because the active provider-model catalog for provider `{}` is unavailable.",
+                catalog.provider_id
             ),
         ));
     }
@@ -1439,8 +1431,8 @@ fn resolve_initial_runtime_run_model<'a>(
         CommandError::user_fixable(
             "runtime_run_initial_controls_invalid",
             format!(
-                "Cadence could not seed runtime-run controls because model `{model_id}` is not present in the active provider-model catalog for profile `{}`.",
-                catalog.profile_id
+                "Cadence could not seed runtime-run controls because model `{model_id}` is not present in the active provider-model catalog for provider `{}`.",
+                catalog.provider_id
             ),
         )
     })

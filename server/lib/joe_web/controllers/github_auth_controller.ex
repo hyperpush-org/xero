@@ -41,14 +41,17 @@ defmodule JoeWeb.GitHubAuthController do
     case GitHubAuth.get_session(session_id) do
       {:ok, nil} -> json(conn, %{session: nil})
       {:ok, session} -> json(conn, %{session: GitHubAuth.public_session(session)})
+      {:error, error} -> render_error(conn, :internal_server_error, error)
     end
   end
 
   def delete_session(conn, _params) do
     session_id = conn |> get_req_header(GitHubAuth.session_header()) |> List.first()
-    :ok = GitHubAuth.logout(session_id)
 
-    send_resp(conn, :no_content, "")
+    case GitHubAuth.logout(session_id) do
+      :ok -> send_resp(conn, :no_content, "")
+      {:error, error} -> render_error(conn, :internal_server_error, error)
+    end
   end
 
   defp render_flow_session(conn, flow_id) do

@@ -69,12 +69,12 @@ describe('diagnostics contract', () => {
     expect(sanitized.value).not.toContain('sk-live-secret')
 
     const diagnostic = createCadenceDiagnosticCheck({
-      subject: 'provider_profile',
+      subject: 'provider_credential',
       status: 'failed',
       severity: 'error',
       retryable: false,
-      code: 'provider_profile_base_url_invalid',
-      message: 'Provider profile has an invalid endpoint.',
+      code: 'provider_base_url_invalid',
+      message: 'Provider has an invalid endpoint.',
       affectedProfileId: 'openai-compatible-work',
       affectedProviderId: 'openai_api',
       endpoint: {
@@ -86,7 +86,7 @@ describe('diagnostics contract', () => {
         modelListStrategy: null,
         redacted: false,
       },
-      remediation: 'Enter a valid /v1 endpoint and resave the provider profile.',
+      remediation: 'Enter a valid /v1 endpoint and resave the provider.',
     })
 
     const json = JSON.stringify(diagnostic)
@@ -186,7 +186,7 @@ describe('diagnostics contract', () => {
     expect(copiedJson).toContain('"redacted": true')
   })
 
-  it('accepts strict provider-profile diagnostics and rejects cross-profile catalog payloads', () => {
+  it('accepts strict provider diagnostics and rejects cross-profile catalog payloads', () => {
     expect(runDoctorReportRequestSchema.parse({})).toEqual({ mode: 'quick_local' })
     expect(runDoctorReportRequestSchema.parse({ mode: 'extended_network' })).toEqual({
       mode: 'extended_network',
@@ -201,11 +201,11 @@ describe('diagnostics contract', () => {
     })
 
     const validationCheck = createCadenceDiagnosticCheck({
-      subject: 'provider_profile',
+      subject: 'provider_credential',
       status: 'failed',
       severity: 'error',
       retryable: false,
-      code: 'provider_profile_credentials_missing',
+      code: 'provider_credentials_missing',
       message: 'OpenRouter is missing app-local credentials.',
       affectedProfileId: 'openrouter-default',
       affectedProviderId: 'openrouter',
@@ -255,7 +255,7 @@ describe('diagnostics contract', () => {
       },
     })
 
-    expect(diagnostics.validationChecks[0].code).toBe('provider_profile_credentials_missing')
+    expect(diagnostics.validationChecks[0].code).toBe('provider_credentials_missing')
     expect(diagnostics.reachabilityChecks[0].code).toBe('openrouter_rate_limited')
 
     expect(() =>
@@ -276,7 +276,8 @@ describe('diagnostics contract', () => {
       severity: 'error',
       retryable: false,
       code: 'settings_secret_path_rejected',
-      message: 'Settings read failed at /Users/sn0w/.cadence/secrets.json with token=sk-live-secret',
+      message:
+        'Settings read failed at /Users/sn0w/Library/Application Support/dev.sn0w.cadence/secrets.json with token=sk-live-secret',
       remediation: 'Move the secret out of copied diagnostics and resave settings.',
     })
     const skipped = createCadenceDiagnosticCheck({

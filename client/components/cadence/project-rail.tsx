@@ -511,9 +511,8 @@ function ProjectRailItem({
         <AlertDialogHeader>
           <AlertDialogTitle>Remove {project.name} from the sidebar?</AlertDialogTitle>
           <AlertDialogDescription>
-            Cadence will only forget this project in the desktop registry. The repo, the local{' '}
-            <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs text-foreground">.cadence</code>{' '}
-            database, and the rest of the project state stay untouched. You can import the same folder again any time.
+            Cadence will only forget this project in the desktop registry. The repo and its app-data
+            project state stay untouched. You can import the same folder again any time.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

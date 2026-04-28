@@ -630,13 +630,13 @@ function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegi
         lastUsedAt: '2026-04-24T04:30:00Z',
         lastDiagnostic: null,
         source: {
-          label: 'Project skill .cadence/skills/reviewer',
+          label: 'Project skill skills/reviewer',
           repo: null,
           reference: null,
-          path: '.cadence/skills/reviewer',
+          path: 'skills/reviewer',
           rootId: null,
           rootPath: null,
-          relativePath: '.cadence/skills/reviewer',
+          relativePath: 'skills/reviewer',
           bundleId: null,
           pluginId: null,
           serverId: null,
@@ -962,7 +962,7 @@ describe('SettingsDialog', () => {
       />,
     )
 
-    expect(await screen.findByText('Availability')).toBeVisible()
+    expect(await screen.findByText('System availability')).toBeVisible()
     expect(screen.getByText('Modern sdk unavailable')).toBeVisible()
     expect(screen.getByText('Open System Settings > Privacy & Security and allow Cadence.')).toBeVisible()
 
@@ -1236,8 +1236,8 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('Skill has not been approved for this project.')).toBeVisible()
 
     fireEvent.click(screen.getAllByText('Source metadata')[0])
-    expect(screen.getByText('project:project-1:reviewer')).toBeVisible()
-    expect(screen.getAllByText('.cadence/skills/reviewer').length).toBeGreaterThan(0)
+    expect(screen.getByText('Project skill skills/reviewer')).toBeVisible()
+    expect(screen.getAllByText('skills/reviewer').length).toBeGreaterThan(0)
 
     fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'release' } })
 
@@ -1293,9 +1293,6 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('Use an absolute directory path.')).toBeVisible()
     expect(onUpsertSkillLocalRoot).not.toHaveBeenCalled()
 
-    fireEvent.change(screen.getByLabelText('Root id'), {
-      target: { value: 'team-extra' },
-    })
     fireEvent.change(screen.getByLabelText('Local root path'), {
       target: { value: '/tmp/team-extra-skills' },
     })
@@ -1303,7 +1300,7 @@ describe('SettingsDialog', () => {
 
     await waitFor(() =>
       expect(onUpsertSkillLocalRoot).toHaveBeenCalledWith({
-        rootId: 'team-extra',
+        rootId: null,
         path: '/tmp/team-extra-skills',
         enabled: true,
         projectId: 'project-1',
@@ -1337,6 +1334,8 @@ describe('SettingsDialog', () => {
         enabled: false,
       }),
     )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit source' }))
 
     fireEvent.change(screen.getByLabelText('GitHub skill repository'), {
       target: { value: 'acme/skills' },
@@ -1493,9 +1492,6 @@ describe('SettingsDialog', () => {
     expect(screen.getByText('Use an absolute directory path.')).toBeVisible()
     expect(onUpsertPluginRoot).not.toHaveBeenCalled()
 
-    fireEvent.change(screen.getByLabelText('Plugin root id'), {
-      target: { value: 'extra-plugins' },
-    })
     fireEvent.change(screen.getByLabelText('Plugin root path'), {
       target: { value: '/tmp/extra-plugins' },
     })
@@ -1503,7 +1499,7 @@ describe('SettingsDialog', () => {
 
     await waitFor(() =>
       expect(onUpsertPluginRoot).toHaveBeenCalledWith({
-        rootId: 'extra-plugins',
+        rootId: null,
         path: '/tmp/extra-plugins',
         enabled: true,
         projectId: 'project-1',

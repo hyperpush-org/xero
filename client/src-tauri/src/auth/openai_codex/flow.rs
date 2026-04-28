@@ -6,7 +6,10 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime};
 use url::Url;
 
-use super::super::{now_timestamp, store, AuthDiagnostic, AuthFlowError, RuntimeAuthStateSnapshot};
+use super::super::{
+    auth_flow_error_from_command_error, now_timestamp, store, AuthDiagnostic, AuthFlowError,
+    RuntimeAuthStateSnapshot,
+};
 use super::{
     callback::spawn_callback_listener,
     config::OpenAiCodexAuthConfig,
@@ -46,7 +49,7 @@ pub struct OpenAiCodexAuthSession {
 
 #[derive(Debug, Clone)]
 pub struct ActiveOpenAiCodexFlow {
-    project_id: String,
+    scope_id: String,
     profile_id: String,
     flow_id: String,
     verifier: String,
@@ -85,7 +88,7 @@ impl ActiveOpenAiCodexFlow {
             .expect("openai oauth flow lock poisoned");
 
         RuntimeAuthStateSnapshot {
-            project_id: self.project_id.clone(),
+            scope_id: self.scope_id.clone(),
             profile_id: self.profile_id.clone(),
             provider_id: openai_codex_provider().provider_id.into(),
             flow_id: self.flow_id.clone(),
@@ -198,7 +201,7 @@ impl ActiveOpenAiCodexFlow {
 
 pub fn start_openai_codex_flow(
     state: &DesktopState,
-    project_id: &str,
+    scope_id: &str,
     profile_id: &str,
     config: OpenAiCodexAuthConfig,
     originator: Option<&str>,
@@ -250,7 +253,7 @@ pub fn start_openai_codex_flow(
         .as_ref()
         .map(|diagnostic| diagnostic.code.clone());
     let flow = ActiveOpenAiCodexFlow {
-        project_id: project_id.to_owned(),
+        scope_id: scope_id.to_owned(),
         profile_id: profile_id.to_owned(),
         flow_id: flow_id.clone(),
         verifier,
@@ -372,7 +375,9 @@ pub fn complete_openai_codex_flow<R: Runtime>(
         "sync OpenAI auth onto the selected provider profile",
     )
     .inspect_err(|error| selected_flow.record_error(error))?;
-    let auth_store_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
+    let auth_store_path = state
+        .global_db_path(app)
+        .map_err(auth_flow_error_from_command_error)?;
     let stored_session = store::StoredOpenAiCodexSession {
         provider_id: session.provider_id.clone(),
         session_id: session.session_id.clone(),
@@ -409,7 +414,9 @@ pub fn refresh_openai_codex_session<R: Runtime>(
         ));
     }
 
-    let auth_store_path = state.auth_store_file_for_provider(app, openai_codex_provider())?;
+    let auth_store_path = state
+        .global_db_path(app)
+        .map_err(auth_flow_error_from_command_error)?;
     let stored_session = store::load_openai_codex_session(&auth_store_path, account_id)?
         .ok_or_else(|| {
             AuthFlowError::terminal(

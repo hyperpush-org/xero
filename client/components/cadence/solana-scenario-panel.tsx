@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { ChevronRight, Loader2, PlayCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   ClusterKind,
   Persona,
@@ -136,22 +143,26 @@ export function SolanaScenarioPanel({
             </span>
           </div>
           <div className="flex flex-col gap-1.5">
-            <select
-              aria-label="Persona"
-              className="h-8 rounded-md border border-border/60 bg-background px-2 text-[12px] outline-none transition-colors focus:border-primary/60 disabled:opacity-50"
+            <Select
               disabled={personas.length === 0}
-              onChange={(event) => setSelectedPersona(event.target.value)}
+              onValueChange={setSelectedPersona}
               value={selectedPersona ?? ""}
             >
-              {personas.length === 0 ? (
-                <option value="">No personas on this cluster</option>
-              ) : null}
-              {personas.map((persona) => (
-                <option key={persona.name} value={persona.name}>
-                  {persona.name} · {persona.role}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                aria-label="Persona"
+                className="h-8 w-full border-border/60 bg-background text-[12px] focus:border-primary/60"
+                size="sm"
+              >
+                <SelectValue placeholder="No personas on this cluster" />
+              </SelectTrigger>
+              <SelectContent>
+                {personas.map((persona) => (
+                  <SelectItem key={persona.name} value={persona.name}>
+                    {persona.name} · {persona.role}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {selectedScenario.requiredClonePrograms.length > 0 ? (
               <div className="text-[11px] text-muted-foreground">
                 Clone programs:{" "}

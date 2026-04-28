@@ -422,8 +422,7 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<Self> {
         let browser_executor = browser::tauri_browser_executor(app.clone(), state.clone());
         let repo_root = resolve_imported_repo_root(app, state, project_id)?;
-        let skill_settings =
-            load_skill_source_settings_from_path(&state.skill_source_settings_file(app)?)?;
+        let skill_settings = load_skill_source_settings_from_path(&state.global_db_path(app)?)?;
         let skill_runtime_config = AutonomousSkillRuntimeConfig {
             default_source_repo: skill_settings.github.repo.clone(),
             default_source_ref: skill_settings.github.reference.clone(),
@@ -462,7 +461,7 @@ impl AutonomousToolRuntime {
         )?
         .with_browser_executor(browser_executor)
         .with_emulator_executor(emulator::tauri_emulator_executor(app.clone()))
-        .with_mcp_registry_path(state.mcp_registry_file(app)?)
+        .with_mcp_registry_path(state.global_db_path(app)?)
         .with_skill_tool_config(
             project_id.to_owned(),
             skill_runtime,
@@ -555,8 +554,11 @@ impl AutonomousToolRuntime {
         github_enabled: bool,
         plugin_roots: Vec<AutonomousPluginRoot>,
     ) -> Self {
+        let project_id = project_id.into();
+        let project_app_data_dir = crate::db::project_app_data_dir_for_repo(&self.repo_root);
         self.skill_tool = Some(AutonomousSkillToolRuntime::new(
-            project_id.into(),
+            project_id,
+            project_app_data_dir,
             github_runtime,
             bundled_roots,
             local_roots,
@@ -2396,6 +2398,7 @@ pub struct AutonomousPluginRoot {
 #[derive(Clone)]
 pub(super) struct AutonomousSkillToolRuntime {
     project_id: String,
+    project_app_data_dir: PathBuf,
     github_runtime: AutonomousSkillRuntime,
     bundled_roots: Vec<AutonomousBundledSkillRoot>,
     local_roots: Vec<AutonomousLocalSkillRoot>,
@@ -2408,6 +2411,7 @@ pub(super) struct AutonomousSkillToolRuntime {
 impl AutonomousSkillToolRuntime {
     fn new(
         project_id: String,
+        project_app_data_dir: PathBuf,
         github_runtime: AutonomousSkillRuntime,
         bundled_roots: Vec<AutonomousBundledSkillRoot>,
         local_roots: Vec<AutonomousLocalSkillRoot>,
@@ -2417,6 +2421,7 @@ impl AutonomousSkillToolRuntime {
     ) -> Self {
         Self {
             project_id,
+            project_app_data_dir,
             github_runtime,
             bundled_roots,
             local_roots,
@@ -2449,6 +2454,7 @@ impl std::fmt::Debug for AutonomousSkillToolRuntime {
         formatter
             .debug_struct("AutonomousSkillToolRuntime")
             .field("project_id", &self.project_id)
+            .field("project_app_data_dir", &self.project_app_data_dir)
             .field("bundled_roots", &self.bundled_roots)
             .field("local_roots", &self.local_roots)
             .field("plugin_roots", &self.plugin_roots)

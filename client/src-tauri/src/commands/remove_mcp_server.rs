@@ -20,7 +20,7 @@ pub fn remove_mcp_server<R: Runtime>(
         return Err(CommandError::invalid_request("serverId"));
     }
 
-    let path = state.mcp_registry_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let current = load_mcp_registry_from_path(&path)?;
 
     if !current.servers.iter().any(|server| server.id == server_id) {

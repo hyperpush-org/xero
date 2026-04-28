@@ -31,7 +31,7 @@ pub fn refresh_mcp_server_statuses<R: Runtime>(
     state: State<'_, DesktopState>,
     request: RefreshMcpServerStatusesRequestDto,
 ) -> CommandResult<McpRegistryDto> {
-    let path = state.mcp_registry_file(&app)?;
+    let path = state.global_db_path(&app)?;
     let current = load_mcp_registry_from_path(&path)?;
 
     let selection = parse_refresh_selection(&current, &request.server_ids)?;
@@ -50,7 +50,7 @@ pub(crate) fn load_mcp_registry_snapshot<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<McpRegistry> {
-    let path = state.mcp_registry_file(app)?;
+    let path = state.global_db_path(app)?;
     load_mcp_registry_from_path(&path)
 }
 

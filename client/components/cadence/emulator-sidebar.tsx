@@ -12,6 +12,13 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   useDeferredSidebarActivation,
   useSidebarWidthMotion,
 } from "@/lib/sidebar-motion"
@@ -309,19 +316,26 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         </span>
         <div className="ml-auto flex items-center gap-1">
           {session.devices.length > 0 ? (
-            <select
-              aria-label="Device"
-              className="h-6 rounded-md border border-border/70 bg-background/40 px-1.5 text-[11px] text-foreground focus:border-primary/50 focus:outline-none disabled:opacity-60"
+            <Select
               disabled={isActive}
-              onChange={(e) => setSelectedDeviceId(e.target.value)}
+              onValueChange={setSelectedDeviceId}
               value={selectedDeviceId ?? ""}
             >
-              {session.devices.map((device) => (
-                <option key={device.id} value={device.id}>
-                  {device.displayName}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger
+                aria-label="Device"
+                className="h-6 max-w-[160px] border-border/70 bg-background/40 px-1.5 text-[11px] text-foreground focus:border-primary/50 disabled:opacity-60"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {session.devices.map((device) => (
+                  <SelectItem key={device.id} value={device.id}>
+                    {device.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           ) : null}
           {isActive ? (
             <>

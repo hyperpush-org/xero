@@ -1,17 +1,30 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
+import { CadenceDesktopError } from '@/src/lib/cadence-desktop'
 import type { ProviderCredentialsSnapshotDto } from '@/src/lib/cadence-model/provider-credentials'
-import type { RuntimeSessionView } from '@/src/lib/cadence-model/runtime'
-import { mapRuntimeSession } from '@/src/lib/cadence-model/runtime'
+import type { ProviderAuthSessionView } from '@/src/lib/cadence-model/runtime'
+import { mapProviderAuthSession } from '@/src/lib/cadence-model/runtime'
 
 import type {
   CadenceDesktopMutationActions,
   UseCadenceDesktopMutationsArgs,
 } from './mutation-support'
 import {
-  getActiveProjectId,
   getOperatorActionError,
 } from './mutation-support'
+
+const OAUTH_CALLBACK_INITIAL_POLL_DELAY_MS = 1_500
+const OAUTH_CALLBACK_POLL_INTERVAL_MS = 750
+const OAUTH_CALLBACK_POLL_TIMEOUT_MS = 120_000
+
+type OAuthCallbackPollTask = {
+  cancelled: boolean
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+function isOAuthCallbackPending(error: unknown): boolean {
+  return error instanceof CadenceDesktopError && error.code === 'authorization_code_pending'
+}
 
 export function useProviderCredentialsMutations({
   adapter,
@@ -27,7 +40,6 @@ export function useProviderCredentialsMutations({
   | 'completeOAuthCallback'
 > {
   const {
-    activeProjectIdRef,
     providerCredentialsRef,
     providerCredentialsLoadInFlightRef,
   } = refs
@@ -38,6 +50,19 @@ export function useProviderCredentialsMutations({
     setProviderCredentialsSaveStatus,
     setProviderCredentialsSaveError,
   } = setters
+  const oauthCallbackPollsRef = useRef<Map<string, OAuthCallbackPollTask>>(new Map())
+
+  useEffect(() => {
+    return () => {
+      for (const task of oauthCallbackPollsRef.current.values()) {
+        task.cancelled = true
+        if (task.timer !== null) {
+          clearTimeout(task.timer)
+        }
+      }
+      oauthCallbackPollsRef.current.clear()
+    }
+  }, [])
 
   const applySnapshot = useCallback(
     (snapshot: ProviderCredentialsSnapshotDto) => {
@@ -173,41 +198,101 @@ export function useProviderCredentialsMutations({
     ],
   )
 
+  const scheduleOAuthCallbackCompletion = useCallback(
+    (providerId: Parameters<CadenceDesktopMutationActions['startOAuthLogin']>[0]['providerId'], flowId: string) => {
+      const pollKey = `${providerId}:${flowId}`
+      if (oauthCallbackPollsRef.current.has(pollKey)) {
+        return
+      }
+
+      const deadline = Date.now() + OAUTH_CALLBACK_POLL_TIMEOUT_MS
+      const task: OAuthCallbackPollTask = {
+        cancelled: false,
+        timer: null,
+      }
+
+      const finish = () => {
+        task.cancelled = true
+        if (task.timer !== null) {
+          clearTimeout(task.timer)
+          task.timer = null
+        }
+        oauthCallbackPollsRef.current.delete(pollKey)
+      }
+
+      const poll = async () => {
+        task.timer = null
+        if (task.cancelled) {
+          return
+        }
+
+        try {
+          await adapter.completeOAuthCallback({
+            providerId,
+            flowId,
+            manualInput: null,
+          })
+          if (!task.cancelled) {
+            await refreshProviderCredentials({ force: true })
+          }
+          finish()
+        } catch (error) {
+          if (task.cancelled) {
+            return
+          }
+
+          if (isOAuthCallbackPending(error) && Date.now() < deadline) {
+            task.timer = setTimeout(poll, OAUTH_CALLBACK_POLL_INTERVAL_MS)
+            return
+          }
+
+          try {
+            await refreshProviderCredentials({ force: true })
+          } catch {
+            // Preserve the last truthful credentials snapshot if refresh-after-failure also fails.
+          } finally {
+            finish()
+          }
+        }
+      }
+
+      oauthCallbackPollsRef.current.set(pollKey, task)
+      task.timer = setTimeout(poll, OAUTH_CALLBACK_INITIAL_POLL_DELAY_MS)
+    },
+    [adapter, refreshProviderCredentials],
+  )
+
   const startOAuthLogin = useCallback<
     CadenceDesktopMutationActions['startOAuthLogin']
   >(
-    async (request): Promise<RuntimeSessionView | null> => {
-      const projectId = getActiveProjectId(
-        activeProjectIdRef,
-        'Cadence cannot start OAuth login without an active project.',
-      )
+    async (request): Promise<ProviderAuthSessionView | null> => {
       const session = await adapter.startOAuthLogin({
         providerId: request.providerId,
-        projectId,
         originator: request.originator ?? null,
       })
-      return mapRuntimeSession(session)
+      const runtime = mapProviderAuthSession(session)
+      if (runtime.flowId && runtime.isLoginInProgress) {
+        scheduleOAuthCallbackCompletion(request.providerId, runtime.flowId)
+      }
+      return runtime
     },
-    [activeProjectIdRef, adapter],
+    [adapter, scheduleOAuthCallbackCompletion],
   )
 
   const completeOAuthCallback = useCallback<
     CadenceDesktopMutationActions['completeOAuthCallback']
   >(
-    async (request): Promise<RuntimeSessionView | null> => {
-      const projectId = getActiveProjectId(
-        activeProjectIdRef,
-        'Cadence cannot complete OAuth callback without an active project.',
-      )
+    async (request): Promise<ProviderAuthSessionView | null> => {
       const session = await adapter.completeOAuthCallback({
         providerId: request.providerId,
-        projectId,
         flowId: request.flowId,
         manualInput: request.manualInput ?? null,
       })
-      return mapRuntimeSession(session)
+      const runtime = mapProviderAuthSession(session)
+      await refreshProviderCredentials({ force: true })
+      return runtime
     },
-    [activeProjectIdRef, adapter],
+    [adapter, refreshProviderCredentials],
   )
 
   return {

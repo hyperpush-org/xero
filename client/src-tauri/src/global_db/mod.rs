@@ -1,93 +1,16 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use rusqlite::Connection;
+use rusqlite_migration::{Error as MigrationError, MigrationDefinitionError};
 
 use crate::commands::CommandError;
 
-pub mod importer;
 pub mod migrations;
 pub mod permissions;
-
-pub use importer::{
-    import_legacy_dictation_settings, import_legacy_mcp_registry,
-    import_legacy_provider_model_catalog_cache, import_legacy_skill_sources,
-};
-
-// Legacy JSON filenames. Phase 6 collapses every per-module `*_FILE_NAME` constant into
-// this single source of truth so production modules no longer carry import-time strings.
-pub(crate) const LEGACY_OPENAI_CODEX_AUTH_STORE_FILE_NAME: &str = "openai-auth.json";
-pub(crate) const LEGACY_NOTIFICATION_CREDENTIAL_STORE_FILE_NAME: &str =
-    "notification-credentials.json";
-pub(crate) const LEGACY_DICTATION_SETTINGS_FILE_NAME: &str = "dictation-settings.json";
-pub(crate) const LEGACY_SKILL_SOURCE_SETTINGS_FILE_NAME: &str = "skill-sources.json";
-pub(crate) const LEGACY_MCP_REGISTRY_FILE_NAME: &str = "mcp-registry.json";
-pub(crate) const LEGACY_PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME: &str =
-    "provider-model-catalogs.json";
-pub(crate) const LEGACY_PROJECT_REGISTRY_FILE_NAME: &str = "project-registry.json";
-
-/// Locations of the legacy JSON files this orchestrator may consume on first boot.
-/// Every field is required; missing files are skipped silently.
-pub struct LegacyJsonImportPaths {
-    pub global_db: PathBuf,
-    pub openai_codex_auth: PathBuf,
-    pub notification_credentials: PathBuf,
-    pub dictation_settings: PathBuf,
-    pub skill_sources: PathBuf,
-    pub mcp_registry: PathBuf,
-    pub provider_model_catalog_cache: PathBuf,
-    pub project_registry: PathBuf,
-}
-
-impl LegacyJsonImportPaths {
-    /// Build the legacy import paths from a single app-data directory. This is the
-    /// only construction site outside of tests; production callers in `lib.rs`
-    /// invoke this so the legacy filename strings live in exactly one module.
-    pub fn resolve(app_data_dir: &Path) -> Self {
-        Self {
-            global_db: global_database_path(app_data_dir),
-            openai_codex_auth: app_data_dir.join(LEGACY_OPENAI_CODEX_AUTH_STORE_FILE_NAME),
-            notification_credentials: app_data_dir
-                .join(LEGACY_NOTIFICATION_CREDENTIAL_STORE_FILE_NAME),
-            dictation_settings: app_data_dir.join(LEGACY_DICTATION_SETTINGS_FILE_NAME),
-            skill_sources: app_data_dir.join(LEGACY_SKILL_SOURCE_SETTINGS_FILE_NAME),
-            mcp_registry: app_data_dir.join(LEGACY_MCP_REGISTRY_FILE_NAME),
-            provider_model_catalog_cache: app_data_dir
-                .join(LEGACY_PROVIDER_MODEL_CATALOG_CACHE_FILE_NAME),
-            project_registry: app_data_dir.join(LEGACY_PROJECT_REGISTRY_FILE_NAME),
-        }
-    }
-}
-
-/// Runs every legacy-JSON importer once at app startup. Each importer is idempotent: it short-
-/// circuits when its destination table already has rows, so re-running this function across
-/// boots is safe.
-///
-/// Returns the first error encountered; importers run in the listed order. Phase 2.6 wires this
-/// in `lib.rs::configure_builder_with_state` after the global DB has been opened.
-pub fn run_legacy_json_imports(paths: &LegacyJsonImportPaths) -> Result<(), CommandError> {
-    let mut connection = open_global_database(&paths.global_db)?;
-
-    crate::auth::import_legacy_openai_codex_sessions(&connection, &paths.openai_codex_auth)?;
-
-    crate::notifications::import_legacy_notification_credentials(
-        &mut connection,
-        &paths.notification_credentials,
-    )?;
-
-    import_legacy_dictation_settings(&connection, &paths.dictation_settings)?;
-    import_legacy_skill_sources(&connection, &paths.skill_sources)?;
-    import_legacy_mcp_registry(&connection, &paths.mcp_registry)?;
-    import_legacy_provider_model_catalog_cache(&connection, &paths.provider_model_catalog_cache)?;
-
-    drop(connection);
-
-    crate::registry::import_legacy_project_registry(&paths.global_db, &paths.project_registry)?;
-
-    Ok(())
-}
 
 pub const GLOBAL_DATABASE_FILE_NAME: &str = "cadence.db";
 
@@ -108,6 +31,7 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
         })?;
     }
 
+    let database_existed = database_path.exists();
     let mut connection = Connection::open(database_path).map_err(|error| {
         CommandError::retryable(
             "global_database_open_failed",
@@ -120,17 +44,32 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
 
     configure_connection(&connection)?;
 
-    migrations::migrations()
-        .to_latest(&mut connection)
-        .map_err(|error| {
-            CommandError::system_fault(
-                "global_database_migration_failed",
-                format!(
-                    "Cadence could not migrate the global database at {}: {error}",
-                    database_path.display()
-                ),
-            )
-        })?;
+    match migrations::migrations().to_latest(&mut connection) {
+        Ok(()) => {}
+        Err(error) if database_existed && is_database_too_far_ahead(&error) => {
+            let observed_user_version = read_user_version(&connection);
+            let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            drop(connection);
+
+            quarantine_incompatible_database(database_path, observed_user_version)?;
+
+            let mut reset_connection = Connection::open(database_path).map_err(|error| {
+                CommandError::retryable(
+                    "global_database_open_failed",
+                    format!(
+                        "Cadence could not recreate the global database at {}: {error}",
+                        database_path.display()
+                    ),
+                )
+            })?;
+            configure_connection(&reset_connection)?;
+            migrations::migrations()
+                .to_latest(&mut reset_connection)
+                .map_err(|error| global_database_migration_error(database_path, error))?;
+            connection = reset_connection;
+        }
+        Err(error) => return Err(global_database_migration_error(database_path, error)),
+    }
 
     Ok(connection)
 }
@@ -157,6 +96,77 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
                 format!("Cadence could not configure SQLite pragmas: {error}"),
             )
         })
+}
+
+fn global_database_migration_error(database_path: &Path, error: MigrationError) -> CommandError {
+    CommandError::system_fault(
+        "global_database_migration_failed",
+        format!(
+            "Cadence could not initialize the global database at {}. The local app state may need to be reset: {error}",
+            database_path.display()
+        ),
+    )
+}
+
+fn is_database_too_far_ahead(error: &MigrationError) -> bool {
+    matches!(
+        error,
+        MigrationError::MigrationDefinition(MigrationDefinitionError::DatabaseTooFarAhead)
+    )
+}
+
+fn read_user_version(connection: &Connection) -> i64 {
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0)
+}
+
+fn quarantine_incompatible_database(
+    database_path: &Path,
+    observed_user_version: i64,
+) -> Result<(), CommandError> {
+    let backup_path = next_incompatible_backup_path(database_path, observed_user_version);
+
+    fs::rename(database_path, &backup_path).map_err(|error| {
+        CommandError::retryable(
+            "global_database_backup_failed",
+            format!(
+                "Cadence found pre-release app state from an incompatible build at {} but could not move it aside to {}: {error}",
+                database_path.display(),
+                backup_path.display(),
+            ),
+        )
+    })?;
+
+    remove_database_sidecars(database_path);
+    Ok(())
+}
+
+fn next_incompatible_backup_path(database_path: &Path, observed_user_version: i64) -> PathBuf {
+    let file_name = database_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(GLOBAL_DATABASE_FILE_NAME);
+    let version_label = observed_user_version.max(0);
+    let parent = database_path.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut candidate = parent.join(format!("{file_name}.incompatible-v{version_label}.bak"));
+    let mut attempt = 1;
+    while candidate.exists() {
+        candidate = parent.join(format!(
+            "{file_name}.incompatible-v{version_label}.{attempt}.bak"
+        ));
+        attempt += 1;
+    }
+
+    candidate
+}
+
+fn remove_database_sidecars(database_path: &Path) {
+    let wal_path = database_path.with_extension("db-wal");
+    let shm_path = database_path.with_extension("db-shm");
+    let _ = fs::remove_file(wal_path);
+    let _ = fs::remove_file(shm_path);
 }
 
 #[cfg(test)]
@@ -228,7 +238,7 @@ mod tests {
                 .unwrap_or(0);
             assert_eq!(
                 count, 0,
-                "legacy table `{table}` should be dropped after migration"
+                "legacy table `{table}` should be absent from the fresh baseline"
             );
         }
     }
@@ -268,6 +278,41 @@ mod tests {
     }
 
     #[test]
+    fn open_global_database_rebuilds_incompatible_pre_release_state() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let database_path = tempdir.path().join("cadence.db");
+
+        {
+            let connection = Connection::open(&database_path).expect("open old db");
+            connection
+                .execute_batch(
+                    "PRAGMA user_version = 99; CREATE TABLE stale_marker (id INTEGER PRIMARY KEY);",
+                )
+                .expect("seed incompatible db");
+        }
+
+        let connection = open_global_database(&database_path).expect("rebuild incompatible db");
+        let stale_table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'stale_marker'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count stale table");
+        assert_eq!(
+            stale_table_count, 0,
+            "incompatible pre-release state should be moved aside before rebuilding"
+        );
+        assert!(
+            tempdir
+                .path()
+                .join("cadence.db.incompatible-v99.bak")
+                .exists(),
+            "the incompatible database should be quarantined for inspection"
+        );
+    }
+
+    #[test]
     fn repositories_cascade_with_project_delete() {
         let connection = migrate_in_memory();
 
@@ -303,125 +348,35 @@ mod tests {
     }
 
     #[test]
-    fn provider_credentials_migration_backfills_from_legacy_tables() {
-        // Walk migrations to the version that owns the legacy schema, seed it, then
-        // walk forward across the provider_credentials migration and assert the
-        // backfill produced the expected rows.
-        let mut connection = Connection::open_in_memory().expect("open in-memory db");
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .expect("enable foreign keys");
+    fn provider_credentials_schema_is_current_baseline() {
+        let connection = migrate_in_memory();
 
-        migrations::migrations()
-            .to_version(&mut connection, 1)
-            .expect("walk to legacy schema only");
-
-        // Seed legacy tables: an api-key profile, an oauth profile with a session row,
-        // and a profile that points at a missing api-key entry (orphan).
-        connection
-            .execute(
-                "INSERT INTO provider_profiles (
-                    profile_id, provider_id, runtime_kind, label, model_id,
-                    preset_id, base_url, api_version, region, scope_project_id,
-                    credential_link_kind, credential_link_account_id,
-                    credential_link_session_id, credential_link_updated_at, updated_at
-                ) VALUES
-                  ('openrouter-default', 'openrouter', 'openrouter', 'OpenRouter',
-                   'openai/gpt-4.1-mini', 'openrouter', NULL, NULL, NULL, NULL,
-                   'api_key', NULL, NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
-                  ('openai_codex-default', 'openai_codex', 'openai_codex', 'OpenAI Codex',
-                   'gpt-5-codex', NULL, NULL, NULL, NULL, NULL,
-                   'openai_codex', 'acct-1', 'sess-1',
-                   '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z'),
-                  ('anthropic-default', 'anthropic', 'anthropic', 'Anthropic',
-                   'claude-3-5-sonnet', 'anthropic', NULL, NULL, NULL, NULL,
-                   'api_key', NULL, NULL, '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z')",
-                [],
-            )
-            .expect("seed provider_profiles");
-
-        // Only the openrouter row gets a matching api-key secret.
-        connection
-            .execute(
-                "INSERT INTO provider_profile_credentials (profile_id, api_key, updated_at)
-                 VALUES ('openrouter-default', 'sk-or-test', '2026-01-01T00:00:00Z')",
-                [],
-            )
-            .expect("seed openrouter api key");
-
-        connection
-            .execute(
-                "INSERT INTO openai_codex_sessions (
-                    account_id, provider_id, session_id, access_token, refresh_token,
-                    expires_at, updated_at
-                 ) VALUES
-                   ('acct-1', 'openai_codex', 'sess-1', 'access-token', 'refresh-token',
-                    1900000000, '2026-02-01T00:00:00Z')",
-                [],
-            )
-            .expect("seed openai_codex_sessions");
-
-        migrations::migrations()
-            .to_latest(&mut connection)
-            .expect("walk to latest");
-
-        let openrouter: (String, Option<String>, Option<String>) = connection
-            .query_row(
-                "SELECT kind, api_key, default_model_id FROM provider_credentials
-                 WHERE provider_id = 'openrouter'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("openrouter credential row backfilled");
-        assert_eq!(openrouter.0, "api_key");
-        assert_eq!(openrouter.1.as_deref(), Some("sk-or-test"));
-        assert_eq!(openrouter.2.as_deref(), Some("openai/gpt-4.1-mini"));
-
-        let openai: (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-        ) = connection
-            .query_row(
-                "SELECT kind, oauth_account_id, oauth_session_id,
-                        oauth_access_token, oauth_refresh_token, oauth_expires_at
-                 FROM provider_credentials WHERE provider_id = 'openai_codex'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )
-            .expect("openai credential row backfilled");
-        assert_eq!(openai.0, "oauth_session");
-        assert_eq!(openai.1.as_deref(), Some("acct-1"));
-        assert_eq!(openai.2.as_deref(), Some("sess-1"));
-        assert_eq!(openai.3.as_deref(), Some("access-token"));
-        assert_eq!(openai.4.as_deref(), Some("refresh-token"));
-        assert_eq!(openai.5, Some(1_900_000_000));
-
-        // The anthropic profile had a credential_link_kind = 'api_key' but no matching
-        // secret row — it should NOT be carried over (today's `Malformed` state should
-        // not become Ready post-migration).
-        let anthropic_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM provider_credentials WHERE provider_id = 'anthropic'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count anthropic rows");
+        let columns = table_columns(&connection, "provider_credentials");
         assert_eq!(
-            anthropic_count, 0,
-            "orphan api-key profile must not back-fill"
+            columns,
+            [
+                "provider_id",
+                "kind",
+                "api_key",
+                "oauth_account_id",
+                "oauth_session_id",
+                "oauth_access_token",
+                "oauth_refresh_token",
+                "oauth_expires_at",
+                "base_url",
+                "api_version",
+                "region",
+                "scope_project_id",
+                "default_model_id",
+                "updated_at",
+            ],
+            "provider_credentials should be created directly in the baseline schema"
+        );
+
+        let old_profile_columns = table_columns(&connection, "provider_profiles");
+        assert!(
+            old_profile_columns.is_empty(),
+            "legacy provider profile tables should not exist in the fresh baseline"
         );
     }
 
@@ -441,33 +396,13 @@ mod tests {
             .expect("second migration walk is idempotent");
     }
 
-    #[test]
-    fn legacy_json_import_paths_resolve_uses_canonical_filenames() {
-        let app_data_dir = Path::new("/var/lib/cadence");
-        let paths = LegacyJsonImportPaths::resolve(app_data_dir);
-
-        assert_eq!(paths.global_db, app_data_dir.join("cadence.db"));
-        assert_eq!(
-            paths.openai_codex_auth,
-            app_data_dir.join("openai-auth.json")
-        );
-        assert_eq!(
-            paths.notification_credentials,
-            app_data_dir.join("notification-credentials.json")
-        );
-        assert_eq!(
-            paths.dictation_settings,
-            app_data_dir.join("dictation-settings.json")
-        );
-        assert_eq!(paths.skill_sources, app_data_dir.join("skill-sources.json"));
-        assert_eq!(paths.mcp_registry, app_data_dir.join("mcp-registry.json"));
-        assert_eq!(
-            paths.provider_model_catalog_cache,
-            app_data_dir.join("provider-model-catalogs.json")
-        );
-        assert_eq!(
-            paths.project_registry,
-            app_data_dir.join("project-registry.json")
-        );
+    fn table_columns(connection: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table_info");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query table_info");
+        rows.map(|row| row.expect("read column name")).collect()
     }
 }

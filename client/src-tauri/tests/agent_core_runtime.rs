@@ -15,7 +15,7 @@ use cadence_desktop_lib::{
         UpdateRuntimeRunControlsRequestDto,
     },
     configure_builder_with_state, db,
-    git::repository::{ensure_cadence_excluded, CanonicalRepository},
+    git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
     runtime::{
         continue_owned_agent_run, create_owned_agent_run, run_owned_agent_task,
@@ -41,7 +41,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_registry_file_override(root.path().join("app-data").join("project-registry.json"))
+        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
         .with_owned_agent_provider_config_override(AgentProviderConfig::Fake)
 }
 
@@ -81,9 +81,6 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         deletions: 0,
     };
 
-    ensure_cadence_excluded(&repository, app.state::<DesktopState>().import_failpoints())
-        .expect("exclude .cadence from seeded repo git status");
-
     let desktop_state = app.state::<DesktopState>();
     let global_db_path = desktop_state
         .global_db_path(&app.handle().clone())
@@ -91,11 +88,11 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
     db::configure_project_database_paths(&global_db_path);
 
     db::import_project(&repository, desktop_state.import_failpoints())
-        .expect("import project into repo-local db");
+        .expect("import project into app-data db");
 
     let registry_path = app
         .state::<DesktopState>()
-        .registry_file(&app.handle().clone())
+        .global_db_path(&app.handle().clone())
         .expect("registry path");
     registry::replace_projects(
         &registry_path,

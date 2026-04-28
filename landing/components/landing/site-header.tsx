@@ -38,13 +38,14 @@ export function SiteHeader() {
       <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-6 px-4 sm:px-6 lg:px-8">
         <Link href="/" className="flex items-center gap-2" aria-label="Xero home">
           <Image
-            src="/logo.svg"
-            alt="Xero"
-            width={120}
-            height={40}
-            className="h-5.5 w-auto opacity-95"
+            src="/icon-logo.svg"
+            alt=""
+            width={32}
+            height={32}
+            className="h-7 w-7 opacity-95"
             priority
           />
+          <span className="text-base font-semibold tracking-tight text-foreground">Xero</span>
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Main">

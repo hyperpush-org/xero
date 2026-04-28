@@ -23,7 +23,7 @@ use super::{
     },
 };
 
-pub const PROJECT_SKILL_DIRECTORY: &str = ".cadence/skills";
+pub const PROJECT_SKILL_DIRECTORY: &str = "skills";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CadenceSkillDirectoryDiscovery {
@@ -59,7 +59,7 @@ enum SkillDiscoveryRoot {
     },
     Project {
         project_id: String,
-        project_root: PathBuf,
+        project_app_data_dir: PathBuf,
     },
     Bundled {
         bundle_id: String,
@@ -83,7 +83,10 @@ impl SkillDiscoveryRoot {
             Self::Local { root_path, .. }
             | Self::Bundled { root_path, .. }
             | Self::Plugin { root_path, .. } => root_path.clone(),
-            Self::Project { project_root, .. } => project_root.join(PROJECT_SKILL_DIRECTORY),
+            Self::Project {
+                project_app_data_dir,
+                ..
+            } => project_app_data_dir.join(PROJECT_SKILL_DIRECTORY),
         }
     }
 
@@ -166,12 +169,12 @@ pub fn discover_local_skill_directory(
 
 pub fn discover_project_skill_directory(
     project_id: impl Into<String>,
-    project_root: impl AsRef<Path>,
+    project_app_data_dir: impl AsRef<Path>,
 ) -> CommandResult<CadenceSkillDirectoryDiscovery> {
     let project_id = normalize_required(project_id.into(), "projectId")?;
     discover_skill_directory(SkillDiscoveryRoot::Project {
         project_id,
-        project_root: project_root.as_ref().to_path_buf(),
+        project_app_data_dir: project_app_data_dir.as_ref().to_path_buf(),
     })
 }
 

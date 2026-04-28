@@ -19,6 +19,9 @@ export const metadata: Metadata = {
   description:
     'A native desktop app that builds production software end-to-end. Written from the ground up in Rust — agentic workflow, harness, and persistence — with Discord and Telegram pings when you are needed. Works with your existing Claude, ChatGPT, Copilot, and OpenRouter subscriptions.',
   generator: 'v0.app',
+  icons: {
+    icon: '/icon-logo.svg',
+  },
 }
 
 export const viewport: Viewport = {

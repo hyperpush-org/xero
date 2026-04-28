@@ -100,7 +100,6 @@ function makeWorkflow(project = makeProject(), overrides: Partial<WorkflowPaneVi
     selectedProviderId: overrides.selectedProviderId ?? 'openai_codex',
     selectedProviderLabel: overrides.selectedProviderLabel ?? 'OpenAI Codex',
     selectedModelId: overrides.selectedModelId ?? 'openai_codex',
-    openrouterApiKeyConfigured: overrides.openrouterApiKeyConfigured ?? false,
     providerMismatch: overrides.providerMismatch ?? false,
     ...overrides,
   }
@@ -596,7 +595,7 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
       overrides.runtimeRunUnavailableReason ??
       (runtimeRun
         ? 'Cadence recovered a supervised harness run and its durable checkpoints before the live runtime feed resumed.'
-        : 'Authenticate and launch a supervised harness run to populate durable repo-local run state for this project.'),
+        : 'Authenticate and launch a supervised harness run to populate durable app-data run state for this project.'),
     messagesUnavailableReason:
       overrides.messagesUnavailableReason ??
       (runtimeSession?.isAuthenticated

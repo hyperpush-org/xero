@@ -74,7 +74,7 @@ fn registry_path(root: &TempDir) -> PathBuf {
 }
 
 fn create_state(registry_root: &TempDir) -> DesktopState {
-    DesktopState::default().with_registry_file_override(registry_path(registry_root))
+    DesktopState::default().with_global_db_path_override(registry_path(registry_root))
 }
 
 fn import_with_raw_path(

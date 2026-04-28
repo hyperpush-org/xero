@@ -17,10 +17,10 @@ use crate::{
     provider_models::load_provider_model_catalog,
     registry,
     runtime::{
-        provider_model_catalog_diagnostic, provider_profile_validation_diagnostics,
-        CadenceDiagnosticCheck, CadenceDiagnosticCheckInput, CadenceDiagnosticSeverity,
-        CadenceDiagnosticStatus, CadenceDiagnosticSubject, CadenceDoctorReport,
-        CadenceDoctorReportInput, CadenceDoctorReportMode, CadenceDoctorVersionInfo,
+        provider_model_catalog_diagnostic, provider_validation_diagnostics, CadenceDiagnosticCheck,
+        CadenceDiagnosticCheckInput, CadenceDiagnosticSeverity, CadenceDiagnosticStatus,
+        CadenceDiagnosticSubject, CadenceDoctorReport, CadenceDoctorReportInput,
+        CadenceDoctorReportMode, CadenceDoctorVersionInfo,
     },
     state::DesktopState,
 };
@@ -507,10 +507,10 @@ fn collect_provider_checks<R: Runtime>(
                 &mut checks.settings_dependency_checks,
                 command_error_check(
                     CadenceDiagnosticSubject::SettingsDependency,
-                    "provider_profiles_unavailable",
-                    "Cadence could not load provider profiles while generating diagnostics.",
+                    "providers_unavailable",
+                    "Cadence could not load providers while generating diagnostics.",
                     error,
-                    "Open Providers settings, repair the app-local profile store, then run diagnostics again.",
+                    "Open Providers settings, repair app-local provider storage, then run diagnostics again.",
                 ),
             );
             return;
@@ -521,26 +521,26 @@ fn collect_provider_checks<R: Runtime>(
         push_check(
             &mut checks.profile_checks,
             CadenceDiagnosticCheck::skipped(
-                CadenceDiagnosticSubject::ProviderProfile,
-                "provider_profiles_not_configured",
-                "No provider profiles are configured.",
-                Some("Add a provider profile in Providers settings.".into()),
+                CadenceDiagnosticSubject::ProviderCredential,
+                "providers_not_connected",
+                "No providers are connected.",
+                Some("Connect a provider in Providers settings.".into()),
             ),
         );
         return;
     }
 
     for profile in snapshot.profiles() {
-        match provider_profile_validation_diagnostics(&snapshot, profile) {
+        match provider_validation_diagnostics(&snapshot, profile) {
             Ok(profile_checks) => checks.profile_checks.extend(profile_checks),
             Err(error) => push_check(
                 &mut checks.profile_checks,
                 command_error_check(
-                    CadenceDiagnosticSubject::ProviderProfile,
-                    "provider_profile_validation_failed",
-                    "Cadence could not validate a provider profile.",
+                    CadenceDiagnosticSubject::ProviderCredential,
+                    "provider_validation_failed",
+                    "Cadence could not validate a provider.",
                     error,
-                    "Open Providers settings, resave the affected profile, then run diagnostics again.",
+                    "Open Providers settings, resave the affected provider, then run diagnostics again.",
                 ),
             ),
         }
@@ -559,11 +559,11 @@ fn collect_provider_checks<R: Runtime>(
                         CadenceDiagnosticSubject::ModelCatalog,
                         "provider_model_catalog_probe_failed",
                         format!(
-                            "Cadence could not refresh the model catalog for profile `{}`.",
-                            profile.profile_id
+                            "Cadence could not refresh the model catalog for provider `{}`.",
+                            profile.provider_id
                         ),
                         error,
-                        "Repair the provider profile, credentials, or endpoint metadata before checking the connection again.",
+                        "Repair the provider, credentials, or endpoint metadata before checking the connection again.",
                     ),
                 ),
             }
@@ -591,7 +591,7 @@ fn collect_mcp_checks<R: Runtime>(
     state: &DesktopState,
     checks: &mut Vec<CadenceDiagnosticCheck>,
 ) {
-    let registry_path = match state.mcp_registry_file(app) {
+    let registry_path = match state.global_db_path(app) {
         Ok(path) => path,
         Err(error) => {
             push_check(
@@ -727,7 +727,7 @@ fn collect_project_runtime_checks<R: Runtime>(
     state: &DesktopState,
     checks: &mut DoctorCheckBuckets,
 ) {
-    let registry_path = match state.registry_file(app) {
+    let registry_path = match state.global_db_path(app) {
         Ok(path) => path,
         Err(error) => {
             push_check(
@@ -778,7 +778,7 @@ fn collect_project_runtime_checks<R: Runtime>(
         return;
     }
 
-    let credential_store_path = match state.notification_credential_store_file(app) {
+    let credential_store_path = match state.global_db_path(app) {
         Ok(path) => Some(path),
         Err(error) => {
             push_check(
@@ -893,7 +893,7 @@ fn collect_runtime_session_check<R: Runtime>(
                     "runtime_session_reconcile_failed",
                     format!("Cadence could not reconcile runtime-session state for project `{project_id}`."),
                     error,
-                    "Repair the selected provider profile, then restart the runtime session from the Agent tab.",
+                    "Repair the selected provider, then restart the runtime session from the Agent tab.",
                 ),
             );
             return;
@@ -987,7 +987,7 @@ fn collect_runtime_session_check<R: Runtime>(
                 affected_provider_id: Some(runtime.provider_id),
                 endpoint: None,
                 remediation: Some(
-                    "Repair the selected provider profile, then restart the runtime session from the Agent tab.".into(),
+                    "Repair the selected provider, then restart the runtime session from the Agent tab.".into(),
                 ),
             }),
         ),
@@ -1172,7 +1172,7 @@ fn collect_notification_checks(
                         "Cadence could not load notification routes for project `{project_id}`."
                     ),
                     error,
-                    "Refresh the project or repair repo-local notification route state.",
+                    "Refresh the project or repair app-data notification route state.",
                 ),
             );
             return 0;
@@ -1264,35 +1264,35 @@ fn collect_app_path_checks<R: Runtime>(
         checks,
         "project_registry",
         "project registry",
-        state.registry_file(app),
+        state.global_db_path(app),
         PathExpectation::OptionalFile,
     );
     push_path_check(
         checks,
         "runtime_settings",
         "runtime settings",
-        state.runtime_settings_file(app),
+        state.global_db_path(app),
         PathExpectation::OptionalFile,
     );
     push_path_check(
         checks,
         "mcp_registry",
         "MCP registry",
-        state.mcp_registry_file(app),
+        state.global_db_path(app),
         PathExpectation::OptionalFile,
     );
     push_path_check(
         checks,
         "notification_credentials",
         "notification credential store",
-        state.notification_credential_store_file(app),
+        state.global_db_path(app),
         PathExpectation::OptionalFile,
     );
     push_path_check(
         checks,
         "provider_model_catalog_cache",
         "provider model catalog cache",
-        state.provider_model_catalog_cache_file(app),
+        state.global_db_path(app),
         PathExpectation::OptionalFile,
     );
 }
@@ -1454,22 +1454,22 @@ fn command_error_check(
 
 fn runtime_binding_remediation(code: &str) -> String {
     match code {
-        "provider_profile_credentials_missing" | "provider_profile_missing" => {
-            "Add credentials or choose another ready provider profile in Providers settings.".into()
+        "provider_credentials_missing" | "provider_missing" => {
+            "Add credentials or choose another ready provider in Providers settings.".into()
         }
-        "provider_profile_credentials_malformed"
-        | "provider_profiles_invalid"
-        | "provider_profile_provider_mismatch"
-        | "provider_profile_runtime_kind_invalid" => {
-            "Reconnect or resave the selected provider profile in Providers settings.".into()
+        "provider_credentials_malformed"
+        | "providers_invalid"
+        | "provider_provider_mismatch"
+        | "provider_runtime_kind_invalid" => {
+            "Reconnect or resave the selected provider in Providers settings.".into()
         }
-        "provider_profile_ambient_auth_failed" | "bedrock_ambient_auth_missing" | "vertex_ambient_auth_missing" => {
+        "provider_ambient_auth_failed" | "bedrock_ambient_auth_missing" | "vertex_ambient_auth_missing" => {
             "Refresh the ambient provider login in your shell or cloud SDK, then run diagnostics again.".into()
         }
         "runtime_binding_stale" => {
-            "Restart the runtime session after resaving or reselecting the provider profile.".into()
+            "Restart the runtime session after resaving or reselecting the provider.".into()
         }
-        _ => "Open Diagnostics in Settings, repair the selected provider profile, then restart the runtime session.".into(),
+        _ => "Open Diagnostics in Settings, repair the selected provider, then restart the runtime session.".into(),
     }
 }
 

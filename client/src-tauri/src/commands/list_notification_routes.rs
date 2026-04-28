@@ -23,7 +23,7 @@ pub fn list_notification_routes<R: Runtime>(
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let routes = project_store::load_notification_routes(&repo_root, &request.project_id)?;
-    let credential_store_path = state.notification_credential_store_file(&app)?;
+    let credential_store_path = state.global_db_path(&app)?;
     let credential_store = FileNotificationCredentialStore::new(credential_store_path);
     let readiness_projector = credential_store.load_readiness_projector();
 
