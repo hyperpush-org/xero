@@ -18,11 +18,6 @@ pub use importer::{
 
 // Legacy JSON filenames. Phase 6 collapses every per-module `*_FILE_NAME` constant into
 // this single source of truth so production modules no longer carry import-time strings.
-pub(crate) const LEGACY_PROVIDER_PROFILES_FILE_NAME: &str = "provider-profiles.json";
-pub(crate) const LEGACY_PROVIDER_PROFILE_CREDENTIALS_FILE_NAME: &str =
-    "provider-profile-credentials.json";
-pub(crate) const LEGACY_RUNTIME_SETTINGS_FILE_NAME: &str = "runtime-settings.json";
-pub(crate) const LEGACY_OPENROUTER_CREDENTIAL_FILE_NAME: &str = "openrouter-credentials.json";
 pub(crate) const LEGACY_OPENAI_CODEX_AUTH_STORE_FILE_NAME: &str = "openai-auth.json";
 pub(crate) const LEGACY_NOTIFICATION_CREDENTIAL_STORE_FILE_NAME: &str =
     "notification-credentials.json";
@@ -37,10 +32,6 @@ pub(crate) const LEGACY_PROJECT_REGISTRY_FILE_NAME: &str = "project-registry.jso
 /// Every field is required; missing files are skipped silently.
 pub struct LegacyJsonImportPaths {
     pub global_db: PathBuf,
-    pub provider_profiles: PathBuf,
-    pub provider_profile_credentials: PathBuf,
-    pub legacy_runtime_settings: PathBuf,
-    pub legacy_openrouter_credentials: PathBuf,
     pub openai_codex_auth: PathBuf,
     pub notification_credentials: PathBuf,
     pub dictation_settings: PathBuf,
@@ -57,12 +48,6 @@ impl LegacyJsonImportPaths {
     pub fn resolve(app_data_dir: &Path) -> Self {
         Self {
             global_db: global_database_path(app_data_dir),
-            provider_profiles: app_data_dir.join(LEGACY_PROVIDER_PROFILES_FILE_NAME),
-            provider_profile_credentials: app_data_dir
-                .join(LEGACY_PROVIDER_PROFILE_CREDENTIALS_FILE_NAME),
-            legacy_runtime_settings: app_data_dir.join(LEGACY_RUNTIME_SETTINGS_FILE_NAME),
-            legacy_openrouter_credentials: app_data_dir
-                .join(LEGACY_OPENROUTER_CREDENTIAL_FILE_NAME),
             openai_codex_auth: app_data_dir.join(LEGACY_OPENAI_CODEX_AUTH_STORE_FILE_NAME),
             notification_credentials: app_data_dir
                 .join(LEGACY_NOTIFICATION_CREDENTIAL_STORE_FILE_NAME),
@@ -483,22 +468,6 @@ mod tests {
         let paths = LegacyJsonImportPaths::resolve(app_data_dir);
 
         assert_eq!(paths.global_db, app_data_dir.join("cadence.db"));
-        assert_eq!(
-            paths.provider_profiles,
-            app_data_dir.join("provider-profiles.json")
-        );
-        assert_eq!(
-            paths.provider_profile_credentials,
-            app_data_dir.join("provider-profile-credentials.json")
-        );
-        assert_eq!(
-            paths.legacy_runtime_settings,
-            app_data_dir.join("runtime-settings.json")
-        );
-        assert_eq!(
-            paths.legacy_openrouter_credentials,
-            app_data_dir.join("openrouter-credentials.json")
-        );
         assert_eq!(
             paths.openai_codex_auth,
             app_data_dir.join("openai-auth.json")
