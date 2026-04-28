@@ -86,15 +86,6 @@ impl LegacyJsonImportPaths {
 pub fn run_legacy_json_imports(paths: &LegacyJsonImportPaths) -> Result<(), CommandError> {
     let mut connection = open_global_database(&paths.global_db)?;
 
-    crate::provider_profiles::import_legacy_provider_profiles(
-        &mut connection,
-        &paths.provider_profiles,
-        &paths.provider_profile_credentials,
-        &paths.legacy_runtime_settings,
-        &paths.legacy_openrouter_credentials,
-        &paths.openai_codex_auth,
-    )?;
-
     crate::auth::import_legacy_openai_codex_sessions(&connection, &paths.openai_codex_auth)?;
 
     crate::notifications::import_legacy_notification_credentials(

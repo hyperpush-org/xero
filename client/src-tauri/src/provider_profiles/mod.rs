@@ -1,4 +1,3 @@
-pub mod importer;
 pub mod sql;
 pub mod store;
 
@@ -6,9 +5,6 @@ use rusqlite::Connection;
 
 use crate::commands::CommandResult;
 use crate::provider_credentials::load_all_provider_credentials;
-
-pub use importer::import_legacy_provider_profiles;
-pub use sql::{load_provider_profiles_from_db, persist_provider_profiles_to_db};
 
 /// Loads the provider-profiles snapshot. The legacy SQL tables are no longer
 /// the source of truth — synthesize the snapshot from the flat
