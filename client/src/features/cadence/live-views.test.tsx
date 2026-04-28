@@ -621,17 +621,6 @@ describe('live views', () => {
     expect(screen.queryByRole('button', { name: /Open agent runtime/ })).not.toBeInTheDocument()
   })
 
-  it.skip('renders the current signed-out agent shell truthfully', () => {
-    render(<AgentRuntime agent={makeAgent(makeProject(), { hasAnyReadyProvider: true })} />)
-
-    expect(screen.getByText('Configure agent runtime')).toBeVisible()
-    expect(
-      screen.getByText('Connect a provider in Settings to start chatting with the agent.'),
-    ).toBeVisible()
-    expect(screen.getByLabelText('Agent input unavailable')).toHaveAttribute('placeholder', 'Connect a provider to start.')
-    expect(screen.queryByText('Context')).not.toBeInTheDocument()
-    expect(screen.queryByText('Signed out')).not.toBeInTheDocument()
-  })
 
   it('renders the promptable empty-session state when the selected provider is ready', () => {
     const onStartRuntimeSession = vi.fn(async () =>
