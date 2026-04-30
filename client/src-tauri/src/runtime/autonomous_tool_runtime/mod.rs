@@ -677,10 +677,10 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_SUBAGENT,
             "agent_ops",
-            "Spawn built-in model-routed subagent tasks.",
+            "Manage async model-routed subagent tasks.",
             &["agent", "subagent", "delegate", "explore", "verify", "parallel"],
-            &["agentType", "prompt", "modelId"],
-            &["Spawn an explorer for a bounded codebase question."],
+            &["action", "taskId", "role", "prompt", "modelId", "writeSet", "decision"],
+            &["Spawn an explorer for a bounded codebase question.", "Poll a worker and integrate its result with a parent decision."],
             "agent_delegation",
         ),
         catalog_entry(
@@ -1020,6 +1020,7 @@ pub struct AutonomousToolRuntime {
     pub(super) subagent_tasks: Arc<Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
     pub(super) subagent_executor: Option<Arc<dyn AutonomousSubagentExecutor>>,
     pub(super) subagent_execution_depth: usize,
+    pub(super) subagent_write_scope: Option<AutonomousSubagentWriteScope>,
     pub(super) skill_tool: Option<AutonomousSkillToolRuntime>,
     process_sessions: Arc<process::ProcessSessionRegistry>,
     owned_processes: Arc<process_manager::OwnedProcessRegistry>,
@@ -1037,15 +1038,28 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             )
             .field("mcp_registry_path", &self.mcp_registry_path)
             .field("subagent_execution_depth", &self.subagent_execution_depth)
+            .field("subagent_write_scope", &self.subagent_write_scope)
             .field("skill_tool_enabled", &self.skill_tool.is_some())
             .finish_non_exhaustive()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousSubagentWriteScope {
+    pub role: AutonomousSubagentRole,
+    pub write_set: Vec<String>,
 }
 
 pub trait AutonomousSubagentExecutor: Send + Sync {
     fn execute_subagent(
         &self,
         task: AutonomousSubagentTask,
+        task_store: Arc<Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
+    ) -> CommandResult<AutonomousSubagentTask>;
+
+    fn cancel_subagent(
+        &self,
+        task: &AutonomousSubagentTask,
     ) -> CommandResult<AutonomousSubagentTask>;
 }
 
@@ -1107,6 +1121,7 @@ impl AutonomousToolRuntime {
             subagent_tasks: Arc::new(Mutex::new(BTreeMap::new())),
             subagent_executor: None,
             subagent_execution_depth: 0,
+            subagent_write_scope: None,
             skill_tool: None,
             process_sessions: Arc::new(process::ProcessSessionRegistry::default()),
             owned_processes: Arc::new(process_manager::OwnedProcessRegistry::default()),
@@ -1261,6 +1276,19 @@ impl AutonomousToolRuntime {
     pub fn with_subagent_execution_depth(mut self, depth: usize) -> Self {
         self.subagent_execution_depth = depth;
         self
+    }
+
+    pub fn with_subagent_write_scope(
+        mut self,
+        role: AutonomousSubagentRole,
+        write_set: Vec<String>,
+    ) -> Self {
+        self.subagent_write_scope = Some(AutonomousSubagentWriteScope { role, write_set });
+        self
+    }
+
+    pub fn subagent_write_scope(&self) -> Option<&AutonomousSubagentWriteScope> {
+        self.subagent_write_scope.as_ref()
     }
 
     pub fn with_skill_tool(
@@ -2149,29 +2177,49 @@ pub struct AutonomousMcpRequest {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AutonomousSubagentType {
-    Explore,
-    Plan,
-    General,
-    Verify,
+pub enum AutonomousSubagentAction {
+    Spawn,
+    Status,
+    Cancel,
+    Integrate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousSubagentRole {
+    Explorer,
+    Worker,
+    Verifier,
+    Reviewer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousSubagentRequest {
-    pub agent_type: AutonomousSubagentType,
-    pub prompt: String,
+    pub action: AutonomousSubagentAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<AutonomousSubagentRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_set: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousSubagentTask {
     pub subagent_id: String,
-    pub agent_type: AutonomousSubagentType,
+    pub role: AutonomousSubagentRole,
     pub prompt: String,
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_set: Vec<String>,
     pub status: String,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2179,9 +2227,17 @@ pub struct AutonomousSubagentTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_decision: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -1384,21 +1384,44 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_SUBAGENT,
-            "Spawn a built-in model-routed subagent for explore, plan, general, or verification work.",
+            "Manage async model-routed subagents for explorer, worker, verifier, or reviewer work.",
             object_schema(
-                &["agentType", "prompt"],
+                &["action"],
                 &[
                     (
-                        "agentType",
+                        "action",
                         enum_schema(
-                            "Built-in subagent type.",
-                            &["explore", "plan", "general", "verify"],
+                            "Subagent action.",
+                            &["spawn", "status", "cancel", "integrate"],
+                        ),
+                    ),
+                    (
+                        "taskId",
+                        string_schema("Existing subagent task id for status, cancel, or integrate."),
+                    ),
+                    (
+                        "role",
+                        enum_schema(
+                            "Subagent role for spawn.",
+                            &["explorer", "worker", "verifier", "reviewer"],
                         ),
                     ),
                     ("prompt", string_schema("Focused task for the subagent.")),
                     (
                         "modelId",
                         string_schema("Optional model route requested for this subagent."),
+                    ),
+                    (
+                        "writeSet",
+                        json!({
+                            "type": "array",
+                            "description": "Worker-owned repo-relative files or directories. Required for worker role and disallowed for read-only roles.",
+                            "items": { "type": "string" }
+                        }),
+                    ),
+                    (
+                        "decision",
+                        string_schema("Parent decision recorded when integrating a completed subagent output."),
                     ),
                 ],
             ),
@@ -2211,7 +2234,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-subagent-{}", calls.len() + 1),
                 tool_name: "subagent".into(),
-                input: json!({ "agentType": "explore", "prompt": prompt.trim() }),
+                input: json!({ "action": "spawn", "role": "explorer", "prompt": prompt.trim() }),
             });
             continue;
         }

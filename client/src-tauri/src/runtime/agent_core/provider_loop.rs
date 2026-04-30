@@ -18,7 +18,8 @@ pub(crate) fn drive_provider_loop(
     agent_session_id: &str,
     cancellation: &AgentRunCancellationToken,
 ) -> CommandResult<()> {
-    let mut workspace_guard = AgentWorkspaceGuard::default();
+    let mut workspace_guard =
+        AgentWorkspaceGuard::new(tool_runtime.subagent_write_scope().cloned());
     let mut usage_total = ProviderUsage::default();
     let task_classification =
         classify_agent_task(&provider_messages_task_text(&messages), &controls);

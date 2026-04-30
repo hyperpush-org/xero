@@ -190,16 +190,22 @@ fn wait_for_agent_run_status(
 ) -> db::project_store::AgentRunSnapshotRecord {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = db::project_store::load_agent_run(repo_root, project_id, run_id)
-            .expect("load owned agent run while waiting for status");
-        if snapshot.run.status == status {
-            return snapshot;
+        match db::project_store::load_agent_run(repo_root, project_id, run_id) {
+            Ok(snapshot) if snapshot.run.status == status => return snapshot,
+            Ok(snapshot) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned agent run {run_id} did not reach {status:?}; last status was {:?}",
+                    snapshot.run.status
+                );
+            }
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned agent run {run_id} was not persisted while waiting for {status:?}: {error:?}"
+                );
+            }
         }
-        assert!(
-            Instant::now() < deadline,
-            "owned agent run {run_id} did not reach {status:?}; last status was {:?}",
-            snapshot.run.status
-        );
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -575,7 +581,9 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
 
     assert_eq!(
         snapshot.run.status,
-        db::project_store::AgentRunStatus::Completed
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
     );
     assert_eq!(
         fs::read_to_string(repo_root.join("src").join("tracked.txt"))
@@ -647,7 +655,9 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
 
     assert_eq!(
         snapshot.run.status,
-        db::project_store::AgentRunStatus::Completed
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
     );
     let tool_names = snapshot
         .tool_calls
@@ -673,17 +683,17 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
     assert!(snapshot.messages.iter().any(|message| {
         message.role == db::project_store::AgentMessageRole::Tool
             && message.content.contains("\"toolName\":\"subagent\"")
-            && message.content.contains("\"status\":\"completed\"")
+            && message.content.contains("\"status\":\"running\"")
             && message
                 .content
                 .contains("\"runId\":\"owned-run-priority-tools-1-subagent-1\"")
     }));
-    let child_snapshot = db::project_store::load_agent_run(
+    let child_snapshot = wait_for_agent_run_status(
         &repo_root,
         &project_id,
         "owned-run-priority-tools-1-subagent-1",
-    )
-    .expect("subagent child run should be persisted");
+        db::project_store::AgentRunStatus::Completed,
+    );
     assert_eq!(
         child_snapshot.run.status,
         db::project_store::AgentRunStatus::Completed

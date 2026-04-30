@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::AutonomousSubagentRole;
 
 pub fn run_owned_agent_task(
     request: OwnedAgentRunRequest,
@@ -965,6 +966,7 @@ fn tool_runtime_with_subagent_executor(
         provider_config,
         tool_runtime: child_tool_runtime,
         cancellation,
+        subagent_tokens: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
     }))
 }
 
@@ -978,16 +980,19 @@ struct OwnedAgentSubagentExecutor {
     provider_config: AgentProviderConfig,
     tool_runtime: AutonomousToolRuntime,
     cancellation: AgentRunCancellationToken,
+    subagent_tokens: Arc<std::sync::Mutex<BTreeMap<String, AgentRunCancellationToken>>>,
 }
 
 impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
     fn execute_subagent(
         &self,
         mut task: AutonomousSubagentTask,
+        task_store: Arc<std::sync::Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
     ) -> CommandResult<AutonomousSubagentTask> {
         self.cancellation.check_cancelled()?;
         let child_run_id =
             sanitize_action_id(&format!("{}-{}", self.parent_run_id, task.subagent_id));
+        let result_artifact = format!("owned-agent-run:{child_run_id}");
         let model_id = task
             .model_id
             .as_deref()
@@ -995,6 +1000,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             .to_owned();
         let provider_config = route_provider_config_model(self.provider_config.clone(), &model_id);
         let prompt = subagent_prompt(&task, &self.parent_run_id);
+        let child_token = self.cancellation.linked_child();
         let request = OwnedAgentRunRequest {
             repo_root: self.repo_root.clone(),
             project_id: self.project_id.clone(),
@@ -1008,23 +1014,153 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 approval_mode: self.controls.active.approval_mode.clone(),
                 plan_mode_required: false,
             }),
-            tool_runtime: self.tool_runtime.clone(),
+            tool_runtime: self
+                .tool_runtime
+                .clone()
+                .with_subagent_write_scope(task.role, task.write_set.clone()),
             provider_config,
         };
 
-        create_owned_agent_run(&request)?;
-        let snapshot = drive_owned_agent_run(request, self.cancellation.clone())?;
         task.run_id = Some(child_run_id);
-        task.completed_at = Some(now_timestamp());
-        task.status = match snapshot.run.status {
-            AgentRunStatus::Completed => "completed".into(),
-            AgentRunStatus::Cancelled => "cancelled".into(),
-            AgentRunStatus::Failed => "failed".into(),
-            _ => format!("{:?}", snapshot.run.status).to_ascii_lowercase(),
-        };
-        task.result_summary = Some(subagent_result_summary(&snapshot));
+        task.result_artifact = Some(result_artifact);
+        task.status = "running".into();
+        task.started_at.get_or_insert_with(now_timestamp);
+        {
+            let mut tokens = self.subagent_tokens.lock().map_err(|_| {
+                CommandError::system_fault(
+                    "agent_subagent_token_lock_failed",
+                    "Xero could not lock the owned-agent subagent token store.",
+                )
+            })?;
+            tokens.insert(task.subagent_id.clone(), child_token.clone());
+        }
+        let started_task = task.clone();
+        update_subagent_task(&task_store, started_task.clone())?;
+        let executor = self.clone();
+        std::thread::Builder::new()
+            .name(format!("xero-subagent-{}", started_task.subagent_id))
+            .spawn(move || {
+                executor.drive_subagent_background(request, child_token, started_task, task_store);
+            })
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "agent_subagent_spawn_failed",
+                    format!("Xero could not spawn the owned-agent subagent worker thread: {error}"),
+                )
+            })?;
         Ok(task)
     }
+
+    fn cancel_subagent(
+        &self,
+        task: &AutonomousSubagentTask,
+    ) -> CommandResult<AutonomousSubagentTask> {
+        let token = {
+            let tokens = self.subagent_tokens.lock().map_err(|_| {
+                CommandError::system_fault(
+                    "agent_subagent_token_lock_failed",
+                    "Xero could not lock the owned-agent subagent token store.",
+                )
+            })?;
+            tokens.get(&task.subagent_id).cloned()
+        };
+        if let Some(token) = token {
+            token.cancel();
+        }
+        let mut task = task.clone();
+        task.status = "cancelled".into();
+        task.cancelled_at = Some(now_timestamp());
+        Ok(task)
+    }
+}
+
+impl OwnedAgentSubagentExecutor {
+    fn drive_subagent_background(
+        &self,
+        request: OwnedAgentRunRequest,
+        cancellation: AgentRunCancellationToken,
+        mut task: AutonomousSubagentTask,
+        task_store: Arc<std::sync::Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
+    ) {
+        let run_id = request.run_id.clone();
+        let result = create_owned_agent_run(&request).and_then(|_| {
+            let _ = append_event(
+                &self.repo_root,
+                &self.project_id,
+                &self.parent_run_id,
+                AgentRunEventKind::ReasoningSummary,
+                json!({
+                    "summary": format!(
+                        "Subagent task `{}` started as {:?} in child run `{}`.",
+                        task.subagent_id, task.role, run_id
+                    ),
+                    "subagentId": task.subagent_id.clone(),
+                    "childRunId": run_id.clone(),
+                    "status": "running",
+                }),
+            );
+            drive_owned_agent_run(request, cancellation)
+        });
+
+        match result {
+            Ok(snapshot) => {
+                task.status = match snapshot.run.status {
+                    AgentRunStatus::Completed => "completed".into(),
+                    AgentRunStatus::Cancelled => "cancelled".into(),
+                    AgentRunStatus::Failed => "failed".into(),
+                    _ => format!("{:?}", snapshot.run.status).to_ascii_lowercase(),
+                };
+                task.result_summary = Some(subagent_result_summary(&snapshot));
+            }
+            Err(error) => {
+                task.status = if error.code == AGENT_RUN_CANCELLED_CODE {
+                    "cancelled".into()
+                } else {
+                    "failed".into()
+                };
+                task.result_summary = Some(format!("Subagent execution failed: {}", error.message));
+            }
+        }
+        task.completed_at = Some(now_timestamp());
+        if task.status == "cancelled" && task.cancelled_at.is_none() {
+            task.cancelled_at = task.completed_at.clone();
+        }
+        let _ = update_subagent_task(&task_store, task.clone());
+        if let Ok(mut tokens) = self.subagent_tokens.lock() {
+            tokens.remove(&task.subagent_id);
+        }
+        let _ = append_event(
+            &self.repo_root,
+            &self.project_id,
+            &self.parent_run_id,
+            AgentRunEventKind::ReasoningSummary,
+            json!({
+                "summary": format!(
+                    "Subagent task `{}` finished with status {}.",
+                    task.subagent_id, task.status
+                ),
+                "subagentId": task.subagent_id.clone(),
+                "childRunId": task.run_id.clone(),
+                "status": task.status.clone(),
+                "resultSummary": task.result_summary.clone(),
+                "resultArtifact": task.result_artifact.clone(),
+            }),
+        );
+    }
+}
+
+fn update_subagent_task(
+    task_store: &Arc<std::sync::Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
+    task: AutonomousSubagentTask,
+) -> CommandResult<()> {
+    let mut tasks = task_store.lock().map_err(|_| {
+        CommandError::system_fault(
+            "autonomous_tool_subagent_lock_failed",
+            "Xero could not lock the owned-agent subagent task store.",
+        )
+    })?;
+    tasks.insert(task.subagent_id.clone(), task);
+    Ok(())
 }
 
 fn route_provider_config_model(
@@ -1047,9 +1183,20 @@ fn route_provider_config_model(
 }
 
 fn subagent_prompt(task: &AutonomousSubagentTask, parent_run_id: &str) -> String {
+    let boundary = match task.role {
+        AutonomousSubagentRole::Worker => format!(
+            "You may edit only these repo-relative writeSet paths: {}. Do not modify any other file.",
+            task.write_set.join(", ")
+        ),
+        AutonomousSubagentRole::Explorer
+        | AutonomousSubagentRole::Verifier
+        | AutonomousSubagentRole::Reviewer => {
+            "This is a read-only role. Do not change files.".into()
+        }
+    };
     format!(
-        "You are a {:?} subagent for parent owned-agent run `{parent_run_id}`. Work only on this focused task, return concise findings, and do not change files unless the task explicitly requires it.\n\n{}",
-        task.agent_type,
+        "You are a {:?} subagent for parent owned-agent run `{parent_run_id}`. Work only on this focused task, return concise findings, and respect the ownership boundary. {boundary}\n\n{}",
+        task.role,
         task.prompt
     )
 }

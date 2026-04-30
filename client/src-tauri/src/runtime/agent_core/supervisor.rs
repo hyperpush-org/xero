@@ -37,9 +37,19 @@ pub struct AgentRunLease {
     supervisor: AgentRunSupervisor,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AgentRunCancellationToken {
     cancelled: Arc<AtomicBool>,
+    linked_parents: Arc<Vec<Arc<AtomicBool>>>,
+}
+
+impl Default for AgentRunCancellationToken {
+    fn default() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            linked_parents: Arc::new(Vec::new()),
+        }
+    }
 }
 
 impl AgentRunSupervisor {
@@ -145,6 +155,10 @@ impl AgentRunCancellationToken {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+            || self
+                .linked_parents
+                .iter()
+                .any(|parent| parent.load(Ordering::SeqCst))
     }
 
     pub fn check_cancelled(&self) -> CommandResult<()> {
@@ -156,6 +170,15 @@ impl AgentRunCancellationToken {
 
     fn same_token(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.cancelled, &other.cancelled)
+    }
+
+    pub fn linked_child(&self) -> Self {
+        let mut linked_parents = self.linked_parents.as_ref().clone();
+        linked_parents.push(self.cancelled.clone());
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            linked_parents: Arc::new(linked_parents),
+        }
     }
 }
 

@@ -457,6 +457,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             'validation_started',
             'validation_completed',
             'tool_registry_snapshot',
+            'policy_decision',
             'state_transition',
             'plan_updated',
             'verification_gate',

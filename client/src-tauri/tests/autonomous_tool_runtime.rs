@@ -29,12 +29,13 @@ use xero_desktop_lib::{
         AutonomousMcpAction, AutonomousMcpRequest, AutonomousNotebookEditRequest,
         AutonomousProcessManagerAction, AutonomousProcessManagerRequest,
         AutonomousProcessOwnershipScope, AutonomousReadMode, AutonomousReadRequest,
-        AutonomousSearchRequest, AutonomousSubagentRequest, AutonomousSubagentType,
-        AutonomousTodoAction, AutonomousTodoRequest, AutonomousToolAccessAction,
-        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
-        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousToolSearchRequest,
-        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
-        AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
+        AutonomousSearchRequest, AutonomousSubagentAction, AutonomousSubagentRequest,
+        AutonomousSubagentRole, AutonomousTodoAction, AutonomousTodoRequest,
+        AutonomousToolAccessAction, AutonomousToolAccessRequest, AutonomousToolOutput,
+        AutonomousToolRequest, AutonomousToolRuntime, AutonomousToolRuntimeLimits,
+        AutonomousToolSearchRequest, AutonomousWebConfig, AutonomousWebFetchContentKind,
+        AutonomousWebFetchRequest, AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest,
+        AutonomousWriteRequest,
     },
     state::DesktopState,
 };
@@ -896,9 +897,13 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
 
     let subagent = runtime
         .subagent(AutonomousSubagentRequest {
-            agent_type: AutonomousSubagentType::Explore,
-            prompt: "Find the relevant symbols.".into(),
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Explorer),
+            prompt: Some("Find the relevant symbols.".into()),
             model_id: Some("fast-model".into()),
+            write_set: Vec::new(),
+            decision: None,
         })
         .expect("subagent task");
     match subagent.output {
@@ -1002,6 +1007,97 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
             assert_eq!(output.servers[0].status, "connected");
         }
         other => panic!("unexpected mcp output: {other:?}"),
+    }
+}
+
+#[test]
+fn subagent_runtime_enforces_worker_ownership_and_integration_decisions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(temp.path()).expect("runtime");
+
+    let first_worker = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Worker),
+            prompt: Some("Own the source root.".into()),
+            model_id: None,
+            write_set: vec!["src".into()],
+            decision: None,
+        })
+        .expect("spawn first worker");
+    match first_worker.output {
+        AutonomousToolOutput::Subagent(output) => {
+            assert_eq!(output.task.status, "registered");
+            assert_eq!(output.task.write_set, vec!["src"]);
+        }
+        other => panic!("unexpected subagent output: {other:?}"),
+    }
+
+    let overlapping_worker = runtime.subagent(AutonomousSubagentRequest {
+        action: AutonomousSubagentAction::Spawn,
+        task_id: None,
+        role: Some(AutonomousSubagentRole::Worker),
+        prompt: Some("Try overlapping ownership.".into()),
+        model_id: None,
+        write_set: vec!["src/lib.rs".into()],
+        decision: None,
+    });
+    assert_eq!(
+        overlapping_worker
+            .expect_err("overlapping worker should be denied")
+            .code,
+        "autonomous_tool_subagent_write_set_conflict"
+    );
+
+    let readonly_with_write_set = runtime.subagent(AutonomousSubagentRequest {
+        action: AutonomousSubagentAction::Spawn,
+        task_id: None,
+        role: Some(AutonomousSubagentRole::Reviewer),
+        prompt: Some("Review only.".into()),
+        model_id: None,
+        write_set: vec!["README.md".into()],
+        decision: None,
+    });
+    assert_eq!(
+        readonly_with_write_set
+            .expect_err("read-only role cannot own writes")
+            .code,
+        "autonomous_tool_subagent_readonly_write_set"
+    );
+
+    runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Cancel,
+            task_id: Some("subagent-1".into()),
+            role: None,
+            prompt: None,
+            model_id: None,
+            write_set: Vec::new(),
+            decision: None,
+        })
+        .expect("cancel worker");
+
+    let integrated = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Integrate,
+            task_id: Some("subagent-1".into()),
+            role: None,
+            prompt: None,
+            model_id: None,
+            write_set: Vec::new(),
+            decision: Some("Do not apply output; worker was cancelled.".into()),
+        })
+        .expect("integrate cancelled worker");
+    match integrated.output {
+        AutonomousToolOutput::Subagent(output) => {
+            assert_eq!(
+                output.task.parent_decision.as_deref(),
+                Some("Do not apply output; worker was cancelled.")
+            );
+            assert!(output.task.integrated_at.is_some());
+        }
+        other => panic!("unexpected subagent output: {other:?}"),
     }
 }
 

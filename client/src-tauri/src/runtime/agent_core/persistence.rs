@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::{AutonomousSubagentRole, AutonomousSubagentWriteScope};
 
 pub(crate) fn append_message(
     repo_root: &Path,
@@ -638,9 +639,17 @@ pub(crate) fn sanitize_action_id(value: &str) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct AgentWorkspaceGuard {
     observed_hashes: BTreeMap<String, Option<String>>,
+    subagent_write_scope: Option<AutonomousSubagentWriteScope>,
 }
 
 impl AgentWorkspaceGuard {
+    pub(crate) fn new(subagent_write_scope: Option<AutonomousSubagentWriteScope>) -> Self {
+        Self {
+            observed_hashes: BTreeMap::new(),
+            subagent_write_scope,
+        }
+    }
+
     pub(crate) fn validate_write_intent(
         &self,
         repo_root: &Path,
@@ -664,6 +673,7 @@ impl AgentWorkspaceGuard {
             if !seen_paths.insert(path_key.clone()) {
                 continue;
             }
+            self.validate_subagent_write_scope(&path_key)?;
 
             let current_hash = file_hash_if_present(repo_root, &path_key)?;
             if approved_existing_write {
@@ -714,6 +724,37 @@ impl AgentWorkspaceGuard {
         Ok(observations)
     }
 
+    fn validate_subagent_write_scope(&self, path_key: &str) -> CommandResult<()> {
+        let Some(scope) = &self.subagent_write_scope else {
+            return Ok(());
+        };
+        if scope.role != AutonomousSubagentRole::Worker {
+            return Err(CommandError::new(
+                "agent_subagent_readonly_write_denied",
+                CommandErrorClass::PolicyDenied,
+                format!(
+                    "Xero refused to modify `{path_key}` because this subagent role is read-only."
+                ),
+                false,
+            ));
+        }
+        if scope
+            .write_set
+            .iter()
+            .any(|owned| path_is_inside_subagent_write_set(path_key, owned))
+        {
+            return Ok(());
+        }
+        Err(CommandError::new(
+            "agent_subagent_write_set_denied",
+            CommandErrorClass::PolicyDenied,
+            format!(
+                "Xero refused to modify `{path_key}` because it is outside this worker subagent's writeSet."
+            ),
+            false,
+        ))
+    }
+
     pub(crate) fn record_tool_output(
         &mut self,
         repo_root: &Path,
@@ -736,6 +777,13 @@ impl AgentWorkspaceGuard {
         self.observed_hashes.insert(path_key, hash);
         Ok(())
     }
+}
+
+fn path_is_inside_subagent_write_set(path: &str, owned: &str) -> bool {
+    path == owned
+        || path
+            .strip_prefix(owned)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn planned_file_change_paths(request: &AutonomousToolRequest) -> Vec<&str> {
