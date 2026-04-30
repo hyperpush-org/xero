@@ -203,7 +203,8 @@ pub fn subscribe_agent_stream<R: Runtime>(
     let last_event_id = dto.events.iter().map(|event| event.id).max().unwrap_or(0);
     let terminal = matches!(
         dto.status,
-        crate::commands::AgentRunStatusDto::Cancelled
+        crate::commands::AgentRunStatusDto::Paused
+            | crate::commands::AgentRunStatusDto::Cancelled
             | crate::commands::AgentRunStatusDto::Completed
             | crate::commands::AgentRunStatusDto::Failed
     );
@@ -365,7 +366,8 @@ fn stream_live_agent_events(
         }
         let terminal = matches!(
             event.event_kind,
-            project_store::AgentRunEventKind::RunCompleted
+            project_store::AgentRunEventKind::RunPaused
+                | project_store::AgentRunEventKind::RunCompleted
                 | project_store::AgentRunEventKind::RunFailed
         );
         last_event_id = event.id;
@@ -418,7 +420,8 @@ fn stream_persisted_agent_events_after(
             }
             terminal = matches!(
                 event.event_kind,
-                project_store::AgentRunEventKind::RunCompleted
+                project_store::AgentRunEventKind::RunPaused
+                    | project_store::AgentRunEventKind::RunCompleted
                     | project_store::AgentRunEventKind::RunFailed
             );
             last_id = event.id;

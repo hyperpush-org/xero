@@ -1678,12 +1678,16 @@ fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItem
         AgentRunEventKind::ToolCompleted => SessionTranscriptItemKindDto::ToolResult,
         AgentRunEventKind::FileChanged => SessionTranscriptItemKindDto::FileChange,
         AgentRunEventKind::ActionRequired => SessionTranscriptItemKindDto::ActionRequest,
+        AgentRunEventKind::RunPaused => SessionTranscriptItemKindDto::Activity,
         AgentRunEventKind::RunCompleted => SessionTranscriptItemKindDto::Complete,
         AgentRunEventKind::RunFailed => SessionTranscriptItemKindDto::Failure,
         AgentRunEventKind::CommandOutput
         | AgentRunEventKind::ValidationStarted
         | AgentRunEventKind::ValidationCompleted
-        | AgentRunEventKind::ToolRegistrySnapshot => SessionTranscriptItemKindDto::Activity,
+        | AgentRunEventKind::ToolRegistrySnapshot
+        | AgentRunEventKind::StateTransition
+        | AgentRunEventKind::PlanUpdated
+        | AgentRunEventKind::VerificationGate => SessionTranscriptItemKindDto::Activity,
     }
 }
 
@@ -1720,16 +1724,21 @@ fn transcript_parts_from_event(
         AgentRunEventKind::ValidationStarted => Some("Validation started".into()),
         AgentRunEventKind::ValidationCompleted => Some("Validation completed".into()),
         AgentRunEventKind::ToolRegistrySnapshot => Some("Tool registry".into()),
+        AgentRunEventKind::StateTransition => Some("Agent state".into()),
+        AgentRunEventKind::PlanUpdated => Some("Plan updated".into()),
+        AgentRunEventKind::VerificationGate => Some("Verification gate".into()),
         AgentRunEventKind::ActionRequired => {
             payload_string(payload, "title").or_else(|| Some("Action required".into()))
         }
+        AgentRunEventKind::RunPaused => Some("Run paused".into()),
         AgentRunEventKind::RunCompleted => Some("Run completed".into()),
         AgentRunEventKind::RunFailed => Some("Run failed".into()),
     };
     let raw_text = payload_string(payload, "text")
         .or_else(|| payload_string(payload, "summary"))
         .or_else(|| payload_string(payload, "detail"))
-        .or_else(|| payload_string(payload, "message"));
+        .or_else(|| payload_string(payload, "message"))
+        .or_else(|| payload_string(payload, "reason"));
     let (text, text_redaction) = raw_text
         .as_deref()
         .map(sanitize_context_text)

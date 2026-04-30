@@ -20,6 +20,9 @@ pub(crate) fn drive_provider_loop(
 ) -> CommandResult<()> {
     let mut workspace_guard = AgentWorkspaceGuard::default();
     let mut usage_total = ProviderUsage::default();
+    let task_classification =
+        classify_agent_task(&provider_messages_task_text(&messages), &controls);
+    let mut verification_gate_prompt_count = 0_u8;
 
     for turn_index in 0..MAX_PROVIDER_TURNS {
         cancellation.check_cancelled()?;
@@ -54,6 +57,60 @@ pub(crate) fn drive_provider_loop(
         match outcome {
             ProviderTurnOutcome::Complete { message, usage } => {
                 merge_provider_usage(&mut usage_total, usage);
+                let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+                let gate = evaluate_completion_gate(&snapshot, &message);
+                record_state_transition(
+                    repo_root,
+                    project_id,
+                    run_id,
+                    None,
+                    AgentRunState::Summarize,
+                    "Provider returned a candidate final response.",
+                    None,
+                    None,
+                )?;
+                record_completion_gate(repo_root, project_id, run_id, &gate)?;
+                if gate.status == VerificationGateStatus::Required {
+                    if provider_usage_has_tokens(&usage_total) {
+                        persist_provider_usage(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            provider.provider_id(),
+                            provider.model_id(),
+                            &usage_total,
+                        )?;
+                    }
+                    if verification_gate_prompt_count == 0 {
+                        verification_gate_prompt_count =
+                            verification_gate_prompt_count.saturating_add(1);
+                        let gate_prompt = verification_gate_prompt(&gate);
+                        record_state_transition(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            Some(AgentRunState::Summarize),
+                            AgentRunState::Verify,
+                            "Completion was held until verification evidence is recorded.",
+                            None,
+                            None,
+                        )?;
+                        append_message(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            AgentMessageRole::Developer,
+                            gate_prompt.clone(),
+                        )?;
+                        messages.push(ProviderMessage::User {
+                            content: gate_prompt,
+                        });
+                        continue;
+                    }
+                    return Err(record_verification_action_required(
+                        repo_root, project_id, run_id, &gate,
+                    )?);
+                }
                 if !message.trim().is_empty() {
                     append_message(
                         repo_root,
@@ -70,6 +127,18 @@ pub(crate) fn drive_provider_loop(
                     provider.provider_id(),
                     provider.model_id(),
                     &usage_total,
+                )?;
+                record_state_transition(
+                    repo_root,
+                    project_id,
+                    run_id,
+                    Some(AgentRunState::Summarize),
+                    AgentRunState::Complete,
+                    "Completion gate passed.",
+                    Some(AgentRunStopReason::Complete),
+                    Some(json!({
+                        "verificationStatus": gate.status.as_str(),
+                    })),
                 )?;
                 return Ok(());
             }
@@ -100,6 +169,39 @@ pub(crate) fn drive_provider_loop(
                     ));
                 }
 
+                let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+                match evaluate_tool_batch_gate(
+                    &snapshot,
+                    &controls,
+                    &task_classification,
+                    &tool_calls,
+                ) {
+                    ToolBatchGate::Allow => {}
+                    ToolBatchGate::RequirePlan { message } => {
+                        record_plan_gate_message(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            &message,
+                            &task_classification,
+                        )?;
+                        append_message(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            AgentMessageRole::Developer,
+                            message.clone(),
+                        )?;
+                        messages.push(ProviderMessage::User { content: message });
+                        continue;
+                    }
+                    ToolBatchGate::RequirePlanApproval { action_id, message } => {
+                        return Err(record_plan_review_action_required(
+                            repo_root, project_id, run_id, &action_id, &message,
+                        )?);
+                    }
+                }
+
                 if !message.trim().is_empty() {
                     append_message(
                         repo_root,
@@ -110,21 +212,22 @@ pub(crate) fn drive_provider_loop(
                     )?;
                 }
 
-                if controls.active.plan_mode_required
-                    && turn_index == 0
-                    && !messages.iter().any(|message| {
-                        matches!(
-                            message,
-                            ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. }
-                        )
-                    })
-                {
-                    return Err(record_plan_mode_action_required(
+                if tool_batch_contains_execution(&tool_calls) {
+                    record_state_transition(
                         repo_root,
                         project_id,
                         run_id,
-                        &tool_calls,
-                    )?);
+                        None,
+                        AgentRunState::Execute,
+                        "Provider requested execution-capable tool calls.",
+                        None,
+                        Some(json!({
+                            "toolNames": tool_calls
+                                .iter()
+                                .map(|tool_call| tool_call.tool_name.as_str())
+                                .collect::<Vec<_>>(),
+                        })),
+                    )?;
                 }
 
                 messages.push(ProviderMessage::Assistant {
@@ -150,6 +253,7 @@ pub(crate) fn drive_provider_loop(
                             format!("Xero could not serialize owned-agent tool result: {error}"),
                         )
                     })?;
+                    record_plan_artifact_from_tool_result(repo_root, project_id, run_id, &result)?;
                     append_message(
                         repo_root,
                         project_id,
@@ -178,6 +282,17 @@ pub(crate) fn drive_provider_loop(
             "Xero stopped the owned-agent model loop after {MAX_PROVIDER_TURNS} provider turns to prevent an infinite tool loop."
         ),
     ))
+}
+
+fn provider_messages_task_text(messages: &[ProviderMessage]) -> String {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ProviderMessage::User { content } => Some(content.as_str()),
+            ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn record_tool_registry_snapshot(
@@ -262,28 +377,31 @@ fn dynamic_tool_catalog_metadata(
     }
 }
 
-fn record_plan_mode_action_required(
+fn record_verification_action_required(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
-    tool_calls: &[AgentToolCall],
+    gate: &VerificationGateDecision,
 ) -> CommandResult<CommandError> {
-    let tool_names = tool_calls
-        .iter()
-        .map(|tool_call| tool_call.tool_name.as_str())
-        .collect::<Vec<_>>();
-    let tool_list = tool_names.join(", ");
-    let message = format!(
-        "Plan mode is enabled, so Xero paused before executing provider-requested tool call(s): {tool_list}. Ask the agent to provide or confirm a plan before resuming tool execution."
-    );
-    let action_id = sanitize_action_id("plan-mode-before-tools");
+    let action_id = sanitize_action_id("verification-required");
+    let message = verification_gate_prompt(gate);
+    record_state_transition(
+        repo_root,
+        project_id,
+        run_id,
+        Some(AgentRunState::Verify),
+        AgentRunState::ApprovalWait,
+        "Verification gate still lacked evidence after a retry.",
+        Some(AgentRunStopReason::WaitingForApproval),
+        None,
+    )?;
     record_action_request(
         repo_root,
         project_id,
         run_id,
         &action_id,
-        "plan_mode",
-        "Plan required",
+        "verification_required",
+        "Verification required",
         &message,
     )?;
     append_event(
@@ -293,15 +411,16 @@ fn record_plan_mode_action_required(
         AgentRunEventKind::ActionRequired,
         json!({
             "actionId": action_id,
-            "actionType": "plan_mode",
-            "title": "Plan required",
-            "code": "agent_plan_mode_requires_approval",
+            "actionType": "verification_required",
+            "title": "Verification required",
+            "code": "agent_verification_required",
             "message": message,
-            "toolNames": tool_names,
+            "stopReason": AgentRunStopReason::WaitingForApproval.as_str(),
+            "state": AgentRunState::ApprovalWait.as_str(),
         }),
     )?;
     Ok(CommandError::new(
-        "agent_plan_mode_requires_approval",
+        "agent_verification_required",
         CommandErrorClass::PolicyDenied,
         message,
         false,

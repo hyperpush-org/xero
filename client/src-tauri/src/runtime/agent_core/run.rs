@@ -92,6 +92,13 @@ pub fn create_owned_agent_run(
             "outcome": "passed",
         }),
     )?;
+    record_initial_state_artifacts(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.prompt,
+        &controls,
+    )?;
 
     project_store::update_agent_run_status(
         &request.repo_root,
@@ -173,7 +180,11 @@ pub fn drive_owned_agent_run(
                 &request.project_id,
                 &request.run_id,
                 AgentRunEventKind::RunCompleted,
-                json!({ "summary": "Owned agent run completed." }),
+                json!({
+                    "summary": "Owned agent run completed.",
+                    "state": AgentRunState::Complete.as_str(),
+                    "stopReason": AgentRunStopReason::Complete.as_str(),
+                }),
             )?;
             project_store::update_agent_run_status(
                 &request.repo_root,
@@ -547,7 +558,11 @@ pub fn drive_owned_agent_continuation(
                 &request.project_id,
                 &request.run_id,
                 AgentRunEventKind::RunCompleted,
-                json!({ "summary": "Owned agent run continued and completed." }),
+                json!({
+                    "summary": "Owned agent run continued and completed.",
+                    "state": AgentRunState::Complete.as_str(),
+                    "stopReason": AgentRunStopReason::Complete.as_str(),
+                }),
             )?;
             project_store::update_agent_run_status(
                 &request.repo_root,
@@ -813,10 +828,60 @@ fn finish_owned_agent_drive_error(
         return mark_owned_agent_run_cancelled(repo_root, project_id, run_id);
     }
 
+    let current_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+    let stop_reason = stop_reason_for_error(&error);
+    if error_should_pause(&current_snapshot, &error) {
+        let diagnostic = project_store::AgentRunDiagnosticRecord {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        };
+        record_state_transition(
+            repo_root,
+            project_id,
+            run_id,
+            None,
+            AgentRunState::ApprovalWait,
+            "Owned-agent run paused at a harness boundary.",
+            Some(stop_reason),
+            None,
+        )?;
+        append_event(
+            repo_root,
+            project_id,
+            run_id,
+            AgentRunEventKind::RunPaused,
+            json!({
+                "code": error.code,
+                "message": error.message,
+                "retryable": error.retryable,
+                "state": AgentRunState::ApprovalWait.as_str(),
+                "stopReason": stop_reason.as_str(),
+            }),
+        )?;
+        return project_store::update_agent_run_status(
+            repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Paused,
+            Some(diagnostic),
+            &now_timestamp(),
+        );
+    }
+
     let diagnostic = project_store::AgentRunDiagnosticRecord {
         code: error.code.clone(),
         message: error.message.clone(),
     };
+    record_state_transition(
+        repo_root,
+        project_id,
+        run_id,
+        None,
+        AgentRunState::Blocked,
+        "Owned-agent run stopped before completion.",
+        Some(stop_reason),
+        None,
+    )?;
     append_event(
         repo_root,
         project_id,
@@ -826,6 +891,8 @@ fn finish_owned_agent_drive_error(
             "code": error.code,
             "message": error.message,
             "retryable": error.retryable,
+            "state": AgentRunState::Blocked.as_str(),
+            "stopReason": stop_reason.as_str(),
         }),
     )?;
     project_store::update_agent_run_status(
@@ -854,7 +921,12 @@ fn mark_owned_agent_run_cancelled(
         project_id,
         run_id,
         AgentRunEventKind::RunFailed,
-        json!({ "code": AGENT_RUN_CANCELLED_CODE, "message": "Owned agent run was cancelled." }),
+        json!({
+            "code": AGENT_RUN_CANCELLED_CODE,
+            "message": "Owned agent run was cancelled.",
+            "state": AgentRunState::Blocked.as_str(),
+            "stopReason": AgentRunStopReason::Cancelled.as_str(),
+        }),
     )?;
     project_store::update_agent_run_status(
         repo_root,

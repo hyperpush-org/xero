@@ -15,6 +15,7 @@ use super::runtime::{RuntimeRunControlInputDto, RuntimeRunDiagnosticDto};
 pub enum AgentRunStatusDto {
     Starting,
     Running,
+    Paused,
     Cancelling,
     Cancelled,
     Completed,
@@ -44,7 +45,11 @@ pub enum AgentRunEventKindDto {
     ValidationStarted,
     ValidationCompleted,
     ToolRegistrySnapshot,
+    StateTransition,
+    PlanUpdated,
+    VerificationGate,
     ActionRequired,
+    RunPaused,
     RunCompleted,
     RunFailed,
 }

@@ -130,6 +130,70 @@ describe('owned agent run schemas', () => {
     expect(parsed.events[0].eventKind).toBe('tool_registry_snapshot')
   })
 
+  it('accepts state-machine events and plan checkpoints', () => {
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        status: 'paused',
+        checkpoints: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            checkpointKind: 'plan',
+            summary: 'Structured plan updated with 2 item(s).',
+            payload: { total: 2 },
+            createdAt: '2026-04-24T12:00:02Z',
+          },
+        ],
+        events: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'state_transition',
+            payload: { to: 'plan', reason: 'Task requires a structured plan.' },
+            createdAt: '2026-04-24T12:00:02Z',
+          },
+          {
+            id: 2,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'plan_updated',
+            payload: { total: 2, completed: 0 },
+            createdAt: '2026-04-24T12:00:03Z',
+          },
+          {
+            id: 3,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'verification_gate',
+            payload: { status: 'required' },
+            createdAt: '2026-04-24T12:00:04Z',
+          },
+          {
+            id: 4,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'run_paused',
+            payload: { stopReason: 'waiting_for_approval' },
+            createdAt: '2026-04-24T12:00:05Z',
+          },
+        ],
+      }),
+    )
+    const view = mapAgentRun(parsed)
+
+    expect(view.statusLabel).toBe('Paused')
+    expect(view.isActive).toBe(false)
+    expect(view.isTerminal).toBe(false)
+    expect(parsed.events.map((event) => event.eventKind)).toEqual([
+      'state_transition',
+      'plan_updated',
+      'verification_gate',
+      'run_paused',
+    ])
+  })
+
   it('validates task-start controls and stream replay metadata', () => {
     const request = startAgentTaskRequestSchema.parse({
       projectId: 'project-1',

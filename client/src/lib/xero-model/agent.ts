@@ -5,6 +5,7 @@ import { runtimeRunControlInputSchema, runtimeRunDiagnosticSchema } from './runt
 export const agentRunStatusSchema = z.enum([
   'starting',
   'running',
+  'paused',
   'cancelling',
   'cancelled',
   'completed',
@@ -22,7 +23,11 @@ export const agentRunEventKindSchema = z.enum([
   'validation_started',
   'validation_completed',
   'tool_registry_snapshot',
+  'state_transition',
+  'plan_updated',
+  'verification_gate',
   'action_required',
+  'run_paused',
   'run_completed',
   'run_failed',
 ])
@@ -41,7 +46,9 @@ export const agentCheckpointKindSchema = z.enum([
   'preflight',
   'message',
   'tool',
+  'plan',
   'validation',
+  'verification',
   'completion',
   'failure',
   'recovery',
@@ -286,6 +293,8 @@ export function getAgentRunStatusLabel(status: AgentRunStatusDto): string {
       return 'Starting'
     case 'running':
       return 'Running'
+    case 'paused':
+      return 'Paused'
     case 'cancelling':
       return 'Cancelling'
     case 'cancelled':

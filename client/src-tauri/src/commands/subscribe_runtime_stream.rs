@@ -153,7 +153,10 @@ fn replay_owned_agent_events(
     };
     let terminal = matches!(
         snapshot.run.status,
-        AgentRunStatus::Cancelled | AgentRunStatus::Completed | AgentRunStatus::Failed
+        AgentRunStatus::Paused
+            | AgentRunStatus::Cancelled
+            | AgentRunStatus::Completed
+            | AgentRunStatus::Failed
     );
     let mut last_event_id = 0;
     for event in snapshot.events {
@@ -195,7 +198,9 @@ fn stream_live_owned_agent_events(
         }
         let terminal = matches!(
             event.event_kind,
-            AgentRunEventKind::RunCompleted | AgentRunEventKind::RunFailed
+            AgentRunEventKind::RunPaused
+                | AgentRunEventKind::RunCompleted
+                | AgentRunEventKind::RunFailed
         );
         last_event_id = event.id;
         if let Some(item) = owned_agent_event_runtime_item(event, &session_id, None) {
@@ -364,6 +369,41 @@ fn owned_agent_event_runtime_item(
             ));
             item.text = item.detail.clone();
         }
+        AgentRunEventKind::StateTransition => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_state_transition".into());
+            item.title = Some("Agent state".into());
+            let to = payload_string(&payload, "to").unwrap_or_else(|| "unknown".into());
+            let reason =
+                payload_string(&payload, "reason").unwrap_or_else(|| "State changed.".into());
+            item.detail = Some(format!("{to}: {reason}"));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::PlanUpdated => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_plan_updated".into());
+            item.title = Some("Plan updated".into());
+            let total = payload
+                .get("total")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let completed = payload
+                .get("completed")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            item.detail = Some(format!(
+                "Structured plan has {total} item(s), {completed} completed."
+            ));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::VerificationGate => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_verification_gate".into());
+            item.title = Some("Verification gate".into());
+            item.detail = payload_string(&payload, "message")
+                .or_else(|| Some("Completion verification gate evaluated.".into()));
+            item.text = item.detail.clone();
+        }
         AgentRunEventKind::ActionRequired => {
             item.kind = RuntimeStreamItemKind::ActionRequired;
             item.action_id = payload_string(&payload, "actionId")
@@ -379,6 +419,15 @@ fn owned_agent_event_runtime_item(
                 .or_else(|| Some("Owned agent requires operator input before continuing.".into()));
             item.code = payload_string(&payload, "code");
             item.message = payload_string(&payload, "message");
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::RunPaused => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code =
+                payload_string(&payload, "code").or_else(|| Some("owned_agent_paused".into()));
+            item.title = Some("Run paused".into());
+            item.detail = payload_string(&payload, "message")
+                .or_else(|| Some("Owned agent run paused.".into()));
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RunCompleted => {

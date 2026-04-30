@@ -407,7 +407,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (run_id <> ''),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
-        CHECK (status IN ('starting', 'running', 'cancelling', 'cancelled', 'completed', 'failed')),
+        CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'completed', 'failed')),
         CHECK (prompt <> ''),
         CHECK (system_prompt <> ''),
         CHECK (
@@ -457,7 +457,11 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             'validation_started',
             'validation_completed',
             'tool_registry_snapshot',
+            'state_transition',
+            'plan_updated',
+            'verification_gate',
             'action_required',
+            'run_paused',
             'run_completed',
             'run_failed'
         )),
@@ -528,7 +532,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         summary TEXT NOT NULL,
         payload_json TEXT,
         created_at TEXT NOT NULL,
-        CHECK (checkpoint_kind IN ('preflight', 'message', 'tool', 'validation', 'completion', 'failure', 'recovery')),
+        CHECK (checkpoint_kind IN ('preflight', 'message', 'tool', 'plan', 'validation', 'verification', 'completion', 'failure', 'recovery')),
         CHECK (summary <> ''),
         CHECK (payload_json IS NULL OR (payload_json <> '' AND json_valid(payload_json))),
         FOREIGN KEY (project_id, run_id)
