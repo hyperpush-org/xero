@@ -45,6 +45,7 @@ pub enum AgentRunEventKindDto {
     ValidationStarted,
     ValidationCompleted,
     ToolRegistrySnapshot,
+    PolicyDecision,
     StateTransition,
     PlanUpdated,
     VerificationGate,

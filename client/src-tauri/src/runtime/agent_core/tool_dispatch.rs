@@ -1,4 +1,9 @@
 use super::*;
+use crate::runtime::{
+    redaction::redact_json_for_persistence, AutonomousSafetyPolicyAction,
+    AutonomousSafetyPolicyDecision,
+};
+use sha2::{Digest, Sha256};
 
 pub(crate) fn dispatch_tool_call(
     tool_registry: &ToolRegistry,
@@ -35,12 +40,14 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
     operator_approved: bool,
 ) -> CommandResult<AgentToolResult> {
     let started_at = now_timestamp();
-    let input_json = serde_json::to_string(&tool_call.input).map_err(|error| {
+    let (persisted_input, input_redacted) = redact_json_for_persistence(&tool_call.input);
+    let input_json = serde_json::to_string(&persisted_input).map_err(|error| {
         CommandError::system_fault(
             "agent_tool_input_serialize_failed",
             format!("Xero could not serialize owned-agent tool input: {error}"),
         )
     })?;
+    let input_sha256 = sha256_json(&tool_call.input)?;
     project_store::start_agent_tool_call(
         repo_root,
         &AgentToolCallStartRecord {
@@ -60,7 +67,8 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
         json!({
             "toolCallId": tool_call.tool_call_id,
             "toolName": tool_call.tool_name,
-            "input": tool_call.input,
+            "input": persisted_input,
+            "inputRedacted": input_redacted,
             "approvedReplay": approved_existing_write || operator_approved,
         }),
     )?;
@@ -68,10 +76,36 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
     let request = match tool_registry.decode_call(&tool_call) {
         Ok(request) => request,
         Err(error) => {
+            record_policy_decode_failure_event(repo_root, project_id, run_id, &tool_call, &error)?;
             finish_failed_tool_call(repo_root, project_id, run_id, &tool_call, &error)?;
             return Err(error);
         }
     };
+
+    let policy_decision = match tool_runtime.evaluate_safety_policy(
+        &tool_call.tool_name,
+        &tool_call.input,
+        &request,
+        operator_approved,
+        &input_sha256,
+    ) {
+        Ok(decision) => decision,
+        Err(error) => {
+            finish_failed_tool_call(repo_root, project_id, run_id, &tool_call, &error)?;
+            return Err(error);
+        }
+    };
+    record_policy_decision_event(repo_root, project_id, run_id, &tool_call, &policy_decision)?;
+    if policy_decision.action == AutonomousSafetyPolicyAction::Deny {
+        let error = CommandError::new(
+            policy_decision.code.clone(),
+            CommandErrorClass::PolicyDenied,
+            policy_decision.explanation.clone(),
+            false,
+        );
+        finish_failed_tool_call(repo_root, project_id, run_id, &tool_call, &error)?;
+        return Err(error);
+    }
 
     let write_observations =
         match workspace_guard.validate_write_intent(repo_root, &request, approved_existing_write) {
@@ -158,6 +192,80 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
             Err(error)
         }
     }
+}
+
+fn record_policy_decode_failure_event(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call: &AgentToolCall,
+    error: &CommandError,
+) -> CommandResult<()> {
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::PolicyDecision,
+        json!({
+            "toolCallId": tool_call.tool_call_id,
+            "toolName": tool_call.tool_name,
+            "action": "deny",
+            "code": error.code,
+            "explanation": error.message,
+            "riskClass": "invalid_tool_call",
+            "approvalMode": null,
+            "projectTrust": "imported_project",
+            "networkIntent": "unknown",
+            "credentialSensitivity": "unknown",
+            "osTarget": null,
+            "priorObservationRequired": false,
+            "approvalGrant": null,
+        }),
+    )?;
+    Ok(())
+}
+
+fn sha256_json(value: &JsonValue) -> CommandResult<String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_input_hash_failed",
+            format!("Xero could not hash owned-agent tool input: {error}"),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn record_policy_decision_event(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call: &AgentToolCall,
+    decision: &AutonomousSafetyPolicyDecision,
+) -> CommandResult<()> {
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::PolicyDecision,
+        json!({
+            "toolCallId": tool_call.tool_call_id,
+            "toolName": tool_call.tool_name,
+            "action": decision.action.as_str(),
+            "code": decision.code,
+            "explanation": decision.explanation,
+            "riskClass": decision.risk_class,
+            "approvalMode": decision.approval_mode,
+            "projectTrust": decision.project_trust,
+            "networkIntent": decision.network_intent,
+            "credentialSensitivity": decision.credential_sensitivity,
+            "osTarget": decision.os_target,
+            "priorObservationRequired": decision.prior_observation_required,
+            "approvalGrant": decision.approval_grant,
+        }),
+    )?;
+    Ok(())
 }
 
 fn finish_failed_tool_call(

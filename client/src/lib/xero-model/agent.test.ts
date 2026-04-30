@@ -130,6 +130,31 @@ describe('owned agent run schemas', () => {
     expect(parsed.events[0].eventKind).toBe('tool_registry_snapshot')
   })
 
+  it('accepts durable policy decision events', () => {
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        events: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'policy_decision',
+            payload: {
+              toolCallId: 'tool-call-1',
+              toolName: 'command',
+              action: 'require_approval',
+              code: 'policy_escalated_approval_mode',
+              explanation: 'Active approval mode requires operator review.',
+            },
+            createdAt: '2026-04-24T12:00:02Z',
+          },
+        ],
+      }),
+    )
+
+    expect(parsed.events[0].eventKind).toBe('policy_decision')
+  })
+
   it('accepts state-machine events and plan checkpoints', () => {
     const parsed = agentRunSchema.parse(
       makeAgentRunDto({

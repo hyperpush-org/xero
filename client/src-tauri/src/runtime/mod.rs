@@ -104,6 +104,7 @@ pub use autonomous_tool_runtime::{
     AutonomousProcessReadinessDetector, AutonomousProcessReadinessState, AutonomousProcessStatus,
     AutonomousReadContentKind, AutonomousReadLineHash, AutonomousReadMode, AutonomousReadOutput,
     AutonomousReadRequest, AutonomousRenameOutput, AutonomousRenameRequest,
+    AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
     AutonomousSearchContextLine, AutonomousSearchMatch, AutonomousSearchOutput,
     AutonomousSearchRequest, AutonomousSkillToolCandidate, AutonomousSkillToolOutput,
     AutonomousSkillToolStatus, AutonomousSubagentExecutor, AutonomousSubagentOutput,

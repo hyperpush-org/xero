@@ -1685,6 +1685,7 @@ fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItem
         | AgentRunEventKind::ValidationStarted
         | AgentRunEventKind::ValidationCompleted
         | AgentRunEventKind::ToolRegistrySnapshot
+        | AgentRunEventKind::PolicyDecision
         | AgentRunEventKind::StateTransition
         | AgentRunEventKind::PlanUpdated
         | AgentRunEventKind::VerificationGate => SessionTranscriptItemKindDto::Activity,
@@ -1724,6 +1725,7 @@ fn transcript_parts_from_event(
         AgentRunEventKind::ValidationStarted => Some("Validation started".into()),
         AgentRunEventKind::ValidationCompleted => Some("Validation completed".into()),
         AgentRunEventKind::ToolRegistrySnapshot => Some("Tool registry".into()),
+        AgentRunEventKind::PolicyDecision => Some("Policy decision".into()),
         AgentRunEventKind::StateTransition => Some("Agent state".into()),
         AgentRunEventKind::PlanUpdated => Some("Plan updated".into()),
         AgentRunEventKind::VerificationGate => Some("Verification gate".into()),

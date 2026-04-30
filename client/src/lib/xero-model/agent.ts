@@ -23,6 +23,7 @@ export const agentRunEventKindSchema = z.enum([
   'validation_started',
   'validation_completed',
   'tool_registry_snapshot',
+  'policy_decision',
   'state_transition',
   'plan_updated',
   'verification_gate',

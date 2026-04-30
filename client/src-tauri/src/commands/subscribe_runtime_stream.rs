@@ -369,6 +369,18 @@ fn owned_agent_event_runtime_item(
             ));
             item.text = item.detail.clone();
         }
+        AgentRunEventKind::PolicyDecision => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = payload_string(&payload, "code")
+                .or_else(|| Some("owned_agent_policy_decision".into()));
+            item.title = Some("Policy decision".into());
+            let action = payload_string(&payload, "action").unwrap_or_else(|| "allow".into());
+            let tool = payload_string(&payload, "toolName").unwrap_or_else(|| "tool".into());
+            let explanation = payload_string(&payload, "explanation")
+                .unwrap_or_else(|| "Central safety policy evaluated the tool call.".into());
+            item.detail = Some(format!("{action}: {tool}: {explanation}"));
+            item.text = item.detail.clone();
+        }
         AgentRunEventKind::StateTransition => {
             item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_state_transition".into());

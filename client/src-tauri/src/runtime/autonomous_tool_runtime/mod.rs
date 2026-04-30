@@ -2305,6 +2305,50 @@ pub enum AutonomousCommandPolicyOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousSafetyPolicyAction {
+    Allow,
+    RequireApproval,
+    Deny,
+}
+
+impl AutonomousSafetyPolicyAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::RequireApproval => "require_approval",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSafetyApprovalGrant {
+    pub scope: String,
+    pub expires: String,
+    pub replay_rule: String,
+    pub input_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSafetyPolicyDecision {
+    pub action: AutonomousSafetyPolicyAction,
+    pub code: String,
+    pub explanation: String,
+    pub tool_name: String,
+    pub risk_class: String,
+    pub approval_mode: Option<RuntimeRunApprovalModeDto>,
+    pub project_trust: String,
+    pub network_intent: String,
+    pub credential_sensitivity: String,
+    pub os_target: Option<String>,
+    pub prior_observation_required: bool,
+    pub approval_grant: Option<AutonomousSafetyApprovalGrant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousCommandPolicyTrace {
     pub outcome: AutonomousCommandPolicyOutcome,

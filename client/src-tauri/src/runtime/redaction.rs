@@ -1,3 +1,5 @@
+use serde_json::{Map as JsonMap, Value as JsonValue};
+
 const REDACTED_ARG: &str = "[REDACTED]";
 
 pub(crate) fn render_command_for_persistence(argv: &[String]) -> String {
@@ -33,7 +35,7 @@ pub(crate) fn redact_command_argv_for_persistence(argv: &[String]) -> Vec<String
         .collect()
 }
 
-fn is_sensitive_argument_name(argument: &str) -> bool {
+pub(crate) fn is_sensitive_argument_name(argument: &str) -> bool {
     let name = argument
         .trim()
         .trim_start_matches('-')
@@ -135,4 +137,68 @@ pub(crate) fn find_prohibited_persistence_content(value: &str) -> Option<&'stati
     }
 
     None
+}
+
+pub(crate) fn redact_json_for_persistence(value: &JsonValue) -> (JsonValue, bool) {
+    match value {
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => (value.clone(), false),
+        JsonValue::String(text) => {
+            if high_confidence_secret_text(text) {
+                (JsonValue::String(REDACTED_ARG.into()), true)
+            } else {
+                (value.clone(), false)
+            }
+        }
+        JsonValue::Array(items) => {
+            let mut redacted = false;
+            let items = items
+                .iter()
+                .map(|item| {
+                    let (item, item_redacted) = redact_json_for_persistence(item);
+                    redacted |= item_redacted;
+                    item
+                })
+                .collect();
+            (JsonValue::Array(items), redacted)
+        }
+        JsonValue::Object(fields) => {
+            let mut redacted = false;
+            let mut output = JsonMap::new();
+            for (key, field_value) in fields {
+                if is_sensitive_argument_name(key) {
+                    output.insert(key.clone(), JsonValue::String(REDACTED_ARG.into()));
+                    redacted = true;
+                    continue;
+                }
+                let (field_value, field_redacted) = redact_json_for_persistence(field_value);
+                redacted |= field_redacted;
+                output.insert(key.clone(), field_value);
+            }
+            (JsonValue::Object(output), redacted)
+        }
+    }
+}
+
+fn high_confidence_secret_text(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    normalized.contains("bearer ")
+        || normalized.contains("sk-")
+        || normalized.contains("ghp_")
+        || normalized.contains("gho_")
+        || normalized.contains("ghu_")
+        || normalized.contains("ghs_")
+        || normalized.contains("github_pat_")
+        || normalized.contains("glpat-")
+        || normalized.contains("xoxb-")
+        || normalized.contains("xoxp-")
+        || normalized.contains("-----begin")
+        || normalized.contains("akia")
+        || normalized.contains("aiza")
+        || normalized.contains("ya29.")
+        || find_prohibited_persistence_content(text).is_some()
+            && (normalized.contains('=')
+                || normalized.contains(':')
+                || normalized.contains("token")
+                || normalized.contains("password")
+                || normalized.contains("private"))
 }

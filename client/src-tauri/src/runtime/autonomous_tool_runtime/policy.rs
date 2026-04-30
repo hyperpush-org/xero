@@ -7,12 +7,17 @@ use super::{
     repo_scope::normalize_relative_path, AutonomousCommandPolicyOutcome,
     AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousProcessActionRiskLevel,
     AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
-    AutonomousProcessOwnershipScope, AutonomousToolRuntime, DEFAULT_COMMAND_TIMEOUT_MS,
+    AutonomousProcessOwnershipScope, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
+    AutonomousSafetyPolicyDecision, AutonomousToolRequest, AutonomousToolRuntime,
+    DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::commands::{
     validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
 };
-use crate::runtime::redaction::render_command_for_persistence;
+use crate::runtime::redaction::{
+    find_prohibited_persistence_content, is_sensitive_argument_name, render_command_for_persistence,
+};
+use serde_json::Value as JsonValue;
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedCommandRequest {
@@ -35,6 +40,100 @@ pub(super) enum CommandPolicyDecision {
 }
 
 impl AutonomousToolRuntime {
+    pub fn evaluate_safety_policy(
+        &self,
+        tool_name: &str,
+        raw_input: &JsonValue,
+        request: &AutonomousToolRequest,
+        operator_approved: bool,
+        input_sha256: &str,
+    ) -> CommandResult<AutonomousSafetyPolicyDecision> {
+        let metadata = safety_policy_metadata(request);
+        let approval_mode = self
+            .command_controls
+            .as_ref()
+            .map(|controls| controls.active.approval_mode.clone());
+
+        if secret_like_tool_input(raw_input) {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_secret_like_tool_input",
+                "Xero denied the tool call because its arguments contain credential-like material. Secret-bearing tool inputs are not persisted, replayed, or sent back to the model.",
+                tool_name,
+                metadata,
+                approval_mode,
+                operator_approved,
+                input_sha256,
+            ));
+        }
+
+        if let Some(path) = repo_path_escape(request) {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_path_escape",
+                format!(
+                    "Xero denied the tool call because path `{path}` escapes the imported repository root."
+                ),
+                tool_name,
+                metadata,
+                approval_mode,
+                operator_approved,
+                input_sha256,
+            ));
+        }
+
+        if is_destructive_system_operation(request) {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_destructive_system_operation",
+                "Xero denied the tool call because it targets destructive system-level operations that are not allowed in autonomous runs.",
+                tool_name,
+                metadata,
+                approval_mode,
+                operator_approved,
+                input_sha256,
+            ));
+        }
+
+        let command_decision = command_family_policy_decision(self, request)?;
+        if let Some((action, code, explanation)) = command_decision {
+            return Ok(safety_decision(
+                action,
+                code,
+                explanation,
+                tool_name,
+                metadata,
+                approval_mode,
+                operator_approved,
+                input_sha256,
+            ));
+        }
+
+        if metadata.requires_approval && !operator_approved {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::RequireApproval,
+                metadata.require_approval_code,
+                metadata.require_approval_reason,
+                tool_name,
+                metadata,
+                approval_mode,
+                operator_approved,
+                input_sha256,
+            ));
+        }
+
+        Ok(safety_decision(
+            AutonomousSafetyPolicyAction::Allow,
+            "policy_allowed_tool_call",
+            "Xero allowed the tool call after central safety policy evaluation.",
+            tool_name,
+            metadata,
+            approval_mode,
+            operator_approved,
+            input_sha256,
+        ))
+    }
+
     pub(super) fn prepare_command_request(
         &self,
         request: AutonomousCommandRequest,
@@ -122,6 +221,323 @@ impl AutonomousToolRuntime {
 
         Ok(CommandPolicyDecision::Allow { prepared, policy })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SafetyPolicyMetadata {
+    risk_class: &'static str,
+    network_intent: &'static str,
+    credential_sensitivity: &'static str,
+    os_target: Option<&'static str>,
+    prior_observation_required: bool,
+    requires_approval: bool,
+    require_approval_code: &'static str,
+    require_approval_reason: &'static str,
+}
+
+fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetadata {
+    match request {
+        AutonomousToolRequest::Read(request) if request.system_path => SafetyPolicyMetadata {
+            risk_class: "system_read",
+            network_intent: "none",
+            credential_sensitivity: "possible",
+            os_target: Some("filesystem"),
+            prior_observation_required: false,
+            requires_approval: true,
+            require_approval_code: "policy_requires_approval_system_read",
+            require_approval_reason: "Reading an absolute system path outside the imported repository requires operator approval.",
+        },
+        AutonomousToolRequest::WebSearch(_) | AutonomousToolRequest::WebFetch(_) => {
+            SafetyPolicyMetadata {
+                risk_class: "network",
+                network_intent: "external_read",
+                credential_sensitivity: "low",
+                os_target: None,
+                prior_observation_required: false,
+                requires_approval: false,
+                require_approval_code: "policy_requires_approval_network",
+                require_approval_reason: "External network reads require operator approval.",
+            }
+        }
+        AutonomousToolRequest::Browser(_) => SafetyPolicyMetadata {
+            risk_class: "browser_control",
+            network_intent: "browser",
+            credential_sensitivity: "possible",
+            os_target: Some("browser"),
+            prior_observation_required: false,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_browser_control",
+            require_approval_reason: "Browser control requires operator approval.",
+        },
+        AutonomousToolRequest::MacosAutomation(_) => SafetyPolicyMetadata {
+            risk_class: "os_control",
+            network_intent: "none",
+            credential_sensitivity: "possible",
+            os_target: Some("macos"),
+            prior_observation_required: false,
+            requires_approval: true,
+            require_approval_code: "policy_requires_approval_os_automation",
+            require_approval_reason: "Operating-system automation requires operator approval.",
+        },
+        AutonomousToolRequest::Command(_)
+        | AutonomousToolRequest::CommandSessionStart(_)
+        | AutonomousToolRequest::PowerShell(_) => SafetyPolicyMetadata {
+            risk_class: "command",
+            network_intent: "command_dependent",
+            credential_sensitivity: "possible",
+            os_target: Some("process"),
+            prior_observation_required: false,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_command",
+            require_approval_reason: "The command policy requires operator approval.",
+        },
+        AutonomousToolRequest::ProcessManager(request) => {
+            let trace = process_manager_policy_trace(
+                request.action.clone(),
+                request.target_ownership.clone(),
+                request.persistent,
+            );
+            SafetyPolicyMetadata {
+                risk_class: "process_control",
+                network_intent: "process_dependent",
+                credential_sensitivity: "possible",
+                os_target: Some("process"),
+                prior_observation_required: false,
+                requires_approval: trace.approval_required,
+                require_approval_code: "policy_requires_approval_process_control",
+                require_approval_reason: "Process control requires operator approval for this action.",
+            }
+        }
+        AutonomousToolRequest::Edit(_)
+        | AutonomousToolRequest::Write(_)
+        | AutonomousToolRequest::Patch(_)
+        | AutonomousToolRequest::Delete(_)
+        | AutonomousToolRequest::Rename(_)
+        | AutonomousToolRequest::Mkdir(_)
+        | AutonomousToolRequest::NotebookEdit(_) => SafetyPolicyMetadata {
+            risk_class: "write",
+            network_intent: "none",
+            credential_sensitivity: "possible",
+            os_target: Some("filesystem"),
+            prior_observation_required: true,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_write",
+            require_approval_reason: "Repository writes require operator approval.",
+        },
+        AutonomousToolRequest::Mcp(_) | AutonomousToolRequest::Skill(_) => SafetyPolicyMetadata {
+            risk_class: "external_capability",
+            network_intent: "external_capability_dependent",
+            credential_sensitivity: "possible",
+            os_target: None,
+            prior_observation_required: false,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_external_capability",
+            require_approval_reason: "External capability invocation requires operator approval.",
+        },
+        AutonomousToolRequest::SolanaDeploy(_)
+        | AutonomousToolRequest::SolanaCodama(_)
+        | AutonomousToolRequest::SolanaReplay(_)
+        | AutonomousToolRequest::SolanaSimulate(_)
+        | AutonomousToolRequest::SolanaAuditExternal(_) => SafetyPolicyMetadata {
+            risk_class: "external_chain_mutation",
+            network_intent: "external_chain",
+            credential_sensitivity: "possible",
+            os_target: None,
+            prior_observation_required: false,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_external_chain",
+            require_approval_reason: "External-chain mutation, replay, simulation, or audit actions require operator approval.",
+        },
+        AutonomousToolRequest::Emulator(_) => SafetyPolicyMetadata {
+            risk_class: "device_control",
+            network_intent: "none",
+            credential_sensitivity: "possible",
+            os_target: Some("emulator"),
+            prior_observation_required: false,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_device_control",
+            require_approval_reason: "Device control requires operator approval.",
+        },
+        _ => SafetyPolicyMetadata {
+            risk_class: "observe",
+            network_intent: "none",
+            credential_sensitivity: "low",
+            os_target: None,
+            prior_observation_required: false,
+            requires_approval: false,
+            require_approval_code: "policy_requires_approval_tool_call",
+            require_approval_reason: "This tool call requires operator approval.",
+        },
+    }
+}
+
+fn command_family_policy_decision(
+    runtime: &AutonomousToolRuntime,
+    request: &AutonomousToolRequest,
+) -> CommandResult<Option<(AutonomousSafetyPolicyAction, String, String)>> {
+    let command_request = match request {
+        AutonomousToolRequest::Command(request) => Some(request.clone()),
+        AutonomousToolRequest::CommandSessionStart(request) => Some(AutonomousCommandRequest {
+            argv: request.argv.clone(),
+            cwd: request.cwd.clone(),
+            timeout_ms: request.timeout_ms,
+        }),
+        AutonomousToolRequest::PowerShell(request) => Some(AutonomousCommandRequest {
+            argv: vec![
+                if cfg!(target_os = "windows") {
+                    "powershell.exe".into()
+                } else {
+                    "pwsh".into()
+                },
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                request.script.clone(),
+            ],
+            cwd: request.cwd.clone(),
+            timeout_ms: request.timeout_ms,
+        }),
+        _ => None,
+    };
+
+    let Some(command_request) = command_request else {
+        return Ok(None);
+    };
+    let prepared = runtime.prepare_command_request(command_request)?;
+    Ok(Some(match runtime.evaluate_command_policy(prepared)? {
+        CommandPolicyDecision::Allow { policy, .. } => (
+            AutonomousSafetyPolicyAction::Allow,
+            policy.code,
+            policy.reason,
+        ),
+        CommandPolicyDecision::Escalate { policy, .. } => (
+            AutonomousSafetyPolicyAction::RequireApproval,
+            policy.code,
+            policy.reason,
+        ),
+    }))
+}
+
+fn safety_decision(
+    action: AutonomousSafetyPolicyAction,
+    code: impl Into<String>,
+    explanation: impl Into<String>,
+    tool_name: &str,
+    metadata: SafetyPolicyMetadata,
+    approval_mode: Option<RuntimeRunApprovalModeDto>,
+    operator_approved: bool,
+    input_sha256: &str,
+) -> AutonomousSafetyPolicyDecision {
+    let approval_grant = operator_approved.then(|| AutonomousSafetyApprovalGrant {
+        scope: format!("tool_call:{tool_name}"),
+        expires: "run_end".into(),
+        replay_rule: "exact_tool_call_input_sha256".into(),
+        input_sha256: input_sha256.into(),
+    });
+    AutonomousSafetyPolicyDecision {
+        action,
+        code: code.into(),
+        explanation: explanation.into(),
+        tool_name: tool_name.into(),
+        risk_class: metadata.risk_class.into(),
+        approval_mode,
+        project_trust: "imported_project".into(),
+        network_intent: metadata.network_intent.into(),
+        credential_sensitivity: metadata.credential_sensitivity.into(),
+        os_target: metadata.os_target.map(str::to_owned),
+        prior_observation_required: metadata.prior_observation_required,
+        approval_grant,
+    }
+}
+
+fn secret_like_tool_input(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => false,
+        JsonValue::String(text) => high_confidence_secret_text(text),
+        JsonValue::Array(items) => items.iter().any(secret_like_tool_input),
+        JsonValue::Object(fields) => fields
+            .iter()
+            .any(|(key, value)| is_sensitive_argument_name(key) || secret_like_tool_input(value)),
+    }
+}
+
+fn high_confidence_secret_text(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    normalized.contains("bearer ")
+        || normalized.contains("sk-")
+        || normalized.contains("ghp_")
+        || normalized.contains("gho_")
+        || normalized.contains("ghu_")
+        || normalized.contains("ghs_")
+        || normalized.contains("github_pat_")
+        || normalized.contains("glpat-")
+        || normalized.contains("xoxb-")
+        || normalized.contains("xoxp-")
+        || normalized.contains("-----begin")
+        || normalized.contains("akia")
+        || normalized.contains("aiza")
+        || normalized.contains("ya29.")
+        || find_prohibited_persistence_content(text).is_some()
+            && (normalized.contains('=')
+                || normalized.contains(':')
+                || normalized.contains("token")
+                || normalized.contains("password")
+                || normalized.contains("private"))
+}
+
+fn repo_path_escape(request: &AutonomousToolRequest) -> Option<String> {
+    repo_relative_paths(request)
+        .into_iter()
+        .find(|path| normalize_relative_path(path, "path").is_err())
+        .map(str::to_owned)
+}
+
+fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
+    match request {
+        AutonomousToolRequest::Read(request) if !request.system_path => vec![request.path.as_str()],
+        AutonomousToolRequest::Search(request) => request.path.as_deref().into_iter().collect(),
+        AutonomousToolRequest::Find(request) => request.path.as_deref().into_iter().collect(),
+        AutonomousToolRequest::List(request) => request.path.as_deref().into_iter().collect(),
+        AutonomousToolRequest::Hash(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Write(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Edit(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Patch(request) => {
+            let mut paths = request.path.as_deref().into_iter().collect::<Vec<_>>();
+            paths.extend(
+                request
+                    .operations
+                    .iter()
+                    .map(|operation| operation.path.as_str()),
+            );
+            paths
+        }
+        AutonomousToolRequest::Delete(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Rename(request) => {
+            vec![request.from_path.as_str(), request.to_path.as_str()]
+        }
+        AutonomousToolRequest::Mkdir(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::NotebookEdit(request) => vec![request.path.as_str()],
+        _ => Vec::new(),
+    }
+}
+
+fn is_destructive_system_operation(request: &AutonomousToolRequest) -> bool {
+    let argv = match request {
+        AutonomousToolRequest::Command(request) => request.argv.as_slice(),
+        AutonomousToolRequest::CommandSessionStart(request) => request.argv.as_slice(),
+        _ => return false,
+    };
+    let Some(program) = argv
+        .first()
+        .map(|program| executable_name(program).to_ascii_lowercase())
+    else {
+        return false;
+    };
+    matches!(
+        program.as_str(),
+        "sudo" | "su" | "doas" | "diskutil" | "mkfs" | "shutdown" | "reboot"
+    ) || (program == "dd" && argv.iter().any(|argument| argument.starts_with("of=")))
 }
 
 pub(super) fn process_manager_policy_trace(
@@ -796,6 +1212,8 @@ fn policy_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{RuntimeRunActiveControlSnapshotDto, RuntimeRunControlStateDto};
+    use serde_json::json;
     use tempfile::tempdir;
 
     #[test]
@@ -861,6 +1279,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn safety_policy_denies_secret_like_tool_input() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let request =
+            AutonomousToolRequest::ToolAccess(super::super::AutonomousToolAccessRequest {
+                action: super::super::AutonomousToolAccessAction::Request,
+                groups: Vec::new(),
+                tools: Vec::new(),
+                reason: Some("use token sk-test-secret".into()),
+            });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                "tool_access",
+                &json!({"reason": "use token sk-test-secret"}),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
+        assert_eq!(decision.code, "policy_denied_secret_like_tool_input");
+    }
+
+    #[test]
+    fn safety_policy_denies_repo_path_escape() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let request = AutonomousToolRequest::Write(super::super::AutonomousWriteRequest {
+            path: "../outside.txt".into(),
+            content: "hello".into(),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                "write",
+                &json!({"path": "../outside.txt", "content": "hello"}),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
+        assert_eq!(decision.code, "policy_denied_path_escape");
+    }
+
+    #[test]
+    fn safety_policy_uses_command_approval_mode() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["echo".into(), "hello".into()],
+            cwd: None,
+            timeout_ms: None,
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                "command",
+                &json!({"argv": ["echo", "hello"]}),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("policy");
+
+        assert_eq!(
+            decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
+        assert_eq!(decision.code, "policy_escalated_approval_mode");
+    }
+
     fn prepared_command<const N: usize>(cwd: &Path, argv: [&str; N]) -> PreparedCommandRequest {
         PreparedCommandRequest {
             argv: argv.into_iter().map(str::to_owned).collect(),
@@ -868,5 +1362,25 @@ mod tests {
             cwd: cwd.to_path_buf(),
             timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
         }
+    }
+
+    fn test_runtime(
+        repo_root: &Path,
+        approval_mode: RuntimeRunApprovalModeDto,
+    ) -> AutonomousToolRuntime {
+        AutonomousToolRuntime::new(repo_root)
+            .expect("runtime")
+            .with_runtime_run_controls(RuntimeRunControlStateDto {
+                active: RuntimeRunActiveControlSnapshotDto {
+                    provider_profile_id: None,
+                    model_id: "test-model".into(),
+                    thinking_effort: None,
+                    approval_mode,
+                    plan_mode_required: false,
+                    revision: 1,
+                    applied_at: "2026-04-30T00:00:00Z".into(),
+                },
+                pending: None,
+            })
     }
 }
