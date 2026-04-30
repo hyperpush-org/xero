@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{Cursor, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -19,7 +19,8 @@ use super::{
     AutonomousDeleteOutput, AutonomousDeleteRequest, AutonomousEditOutput, AutonomousEditRequest,
     AutonomousFindOutput, AutonomousFindRequest, AutonomousHashOutput, AutonomousHashRequest,
     AutonomousLineEnding, AutonomousListEntry, AutonomousListOutput, AutonomousListRequest,
-    AutonomousMkdirOutput, AutonomousMkdirRequest, AutonomousPatchOutput, AutonomousPatchRequest,
+    AutonomousMkdirOutput, AutonomousMkdirRequest, AutonomousPatchFileOutput,
+    AutonomousPatchOperation, AutonomousPatchOutput, AutonomousPatchRequest,
     AutonomousReadContentKind, AutonomousReadLineHash, AutonomousReadMode, AutonomousReadOutput,
     AutonomousReadRequest, AutonomousRenameOutput, AutonomousRenameRequest,
     AutonomousSearchContextLine, AutonomousSearchMatch, AutonomousSearchOutput,
@@ -38,6 +39,7 @@ const MAX_BINARY_EXCERPT_BYTES: usize = 4 * 1024;
 const IMAGE_PREVIEW_MAX_DIMENSION: u32 = 1024;
 const MUTATION_DIFF_CONTEXT_LINES: usize = 3;
 const MAX_MUTATION_DIFF_LINES: usize = 80;
+const MAX_PATCH_OPERATIONS: usize = 64;
 
 impl AutonomousToolRuntime {
     pub fn read(&self, request: AutonomousReadRequest) -> CommandResult<AutonomousToolResult> {
@@ -532,67 +534,78 @@ impl AutonomousToolRuntime {
     }
 
     pub fn patch(&self, request: AutonomousPatchRequest) -> CommandResult<AutonomousToolResult> {
-        validate_non_empty(&request.path, "path")?;
-        validate_non_empty(&request.search, "search")?;
-        let relative_path = normalize_relative_path(&request.path, "path")?;
-        let resolved_path = self.resolve_existing_path(&relative_path)?;
-        let decoded = self.read_decoded_text_file(&resolved_path)?;
-        validate_expected_hash_for_bytes(
-            request.expected_hash.as_deref(),
-            &decoded.raw_bytes,
-            "autonomous_tool_patch_expected_hash_mismatch",
-        )?;
-        let existing = decoded.text;
-        let replace = normalize_replacement_line_endings(&request.replace, decoded.line_ending);
+        let preview = request.preview;
+        let operations = normalize_patch_operations(request)?;
+        let planned_files = self.plan_patch_files(&operations)?;
 
-        let matches = existing.matches(&request.search).count();
-        if matches == 0 {
-            return Err(CommandError::user_fixable(
-                "autonomous_tool_patch_search_not_found",
-                "Xero refused to patch the file because the search text was not found.",
-            ));
-        }
-        if matches > 1 && !request.replace_all {
-            return Err(CommandError::user_fixable(
-                "autonomous_tool_patch_search_ambiguous",
-                "Xero refused to patch the file because the search text matched more than once. Set replaceAll to true or use a more specific search string.",
-            ));
+        if !preview {
+            self.write_patch_files_atomically(&planned_files)?;
         }
 
-        let updated = if request.replace_all {
-            existing.replace(&request.search, &replace)
+        let files = planned_files
+            .iter()
+            .map(|file| AutonomousPatchFileOutput {
+                path: file.display_path.clone(),
+                replacements: file.replacements,
+                bytes_written: file.updated_bytes.len(),
+                old_hash: file.old_hash.clone(),
+                new_hash: file.new_hash.clone(),
+                diff: file.diff.clone(),
+                line_ending: file.line_ending,
+                bom_preserved: file.bom_preserved,
+            })
+            .collect::<Vec<_>>();
+        let replacements = files.iter().map(|file| file.replacements).sum::<usize>();
+        let bytes_written = files.iter().map(|file| file.bytes_written).sum::<usize>();
+        let first_file = files.first();
+        let path = if files.len() == 1 {
+            first_file.map(|file| file.path.clone()).unwrap_or_default()
         } else {
-            existing.replacen(&request.search, &replace, 1)
+            format!("{} files", files.len())
         };
-        let updated_bytes = encode_text_bytes(&updated, decoded.has_bom);
-        fs::write(&resolved_path, &updated_bytes).map_err(|error| {
-            CommandError::retryable(
-                "autonomous_tool_patch_write_failed",
-                format!(
-                    "Xero could not persist the patch to {}: {error}",
-                    resolved_path.display()
-                ),
+        let old_hash = single_file_field(&files, |file| file.old_hash.clone());
+        let new_hash = single_file_field(&files, |file| file.new_hash.clone());
+        let diff = if files.is_empty() {
+            None
+        } else {
+            Some(
+                files
+                    .iter()
+                    .map(|file| file.diff.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             )
-        })?;
-
-        let display_path = path_to_forward_slash(&relative_path);
-        let replacements = if request.replace_all { matches } else { 1 };
-        let old_hash = sha256_hex(&decoded.raw_bytes);
-        let new_hash = sha256_hex(&updated_bytes);
-        let diff = compact_text_diff(&display_path, &existing, &updated);
+        };
+        let line_ending = single_file_field(&files, |file| file.line_ending);
+        let bom_preserved = single_file_field(&files, |file| file.bom_preserved);
+        let verb = if preview { "Previewed" } else { "Patched" };
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_PATCH.into(),
-            summary: format!("Patched `{display_path}` with {replacements} replacement(s)."),
+            summary: if files.len() == 1 {
+                format!(
+                    "{verb} `{}` with {replacements} replacement(s).",
+                    files[0].path
+                )
+            } else {
+                format!(
+                    "{verb} {} file(s) with {replacements} total replacement(s).",
+                    files.len()
+                )
+            },
             command_result: None,
             output: AutonomousToolOutput::Patch(AutonomousPatchOutput {
-                path: display_path,
+                path,
                 replacements,
-                bytes_written: updated_bytes.len(),
-                old_hash: Some(old_hash),
-                new_hash: Some(new_hash),
-                diff: Some(diff),
-                line_ending: Some(decoded.line_ending),
-                bom_preserved: Some(decoded.has_bom),
+                bytes_written,
+                applied: !preview,
+                preview,
+                files,
+                failure: None,
+                old_hash,
+                new_hash,
+                diff,
+                line_ending,
+                bom_preserved,
             }),
         })
     }
@@ -1287,6 +1300,99 @@ impl AutonomousToolRuntime {
             )
         })
     }
+
+    fn plan_patch_files(
+        &self,
+        operations: &[NormalizedPatchOperation],
+    ) -> CommandResult<Vec<PlannedPatchFile>> {
+        let mut grouped = BTreeMap::<String, GroupedPatchOperations<'_>>::new();
+        for operation in operations {
+            grouped
+                .entry(operation.display_path.clone())
+                .and_modify(|group| group.operations.push(operation))
+                .or_insert_with(|| GroupedPatchOperations {
+                    relative_path: operation.relative_path.clone(),
+                    operations: vec![operation],
+                });
+        }
+
+        let mut planned_files = Vec::with_capacity(grouped.len());
+        for (display_path, group) in grouped {
+            let resolved_path = self.resolve_existing_path(&group.relative_path)?;
+            let decoded = self.read_decoded_text_file(&resolved_path)?;
+            let original_text = decoded.text;
+            let mut updated = original_text.clone();
+            let mut replacements = 0_usize;
+
+            for operation in group.operations {
+                validate_patch_expected_hash(operation, &decoded.raw_bytes)?;
+                let matches = updated.matches(operation.search.as_str()).count();
+                if matches == 0 {
+                    return Err(patch_operation_error(
+                        operation,
+                        "autonomous_tool_patch_search_not_found",
+                        "search text was not found in the current file contents",
+                    ));
+                }
+                if matches > 1 && !operation.replace_all {
+                    return Err(patch_operation_error(
+                        operation,
+                        "autonomous_tool_patch_search_ambiguous",
+                        "search text matched more than once; set replaceAll=true or use a more specific search string",
+                    ));
+                }
+
+                let replace =
+                    normalize_replacement_line_endings(&operation.replace, decoded.line_ending);
+                let applied = if operation.replace_all { matches } else { 1 };
+                updated = if operation.replace_all {
+                    updated.replace(operation.search.as_str(), replace.as_str())
+                } else {
+                    updated.replacen(operation.search.as_str(), replace.as_str(), 1)
+                };
+                replacements = replacements.saturating_add(applied);
+            }
+
+            let updated_bytes = encode_text_bytes(&updated, decoded.has_bom);
+            let new_hash = sha256_hex(&updated_bytes);
+            let diff = compact_text_diff(&display_path, &original_text, &updated);
+            planned_files.push(PlannedPatchFile {
+                display_path,
+                resolved_path,
+                original_bytes: decoded.raw_bytes,
+                updated_bytes,
+                replacements,
+                old_hash: decoded.raw_sha256,
+                new_hash,
+                diff,
+                line_ending: decoded.line_ending,
+                bom_preserved: decoded.has_bom,
+            });
+        }
+
+        Ok(planned_files)
+    }
+
+    fn write_patch_files_atomically(
+        &self,
+        planned_files: &[PlannedPatchFile],
+    ) -> CommandResult<()> {
+        let mut written_files = Vec::new();
+        for file in planned_files {
+            if let Err(error) = fs::write(&file.resolved_path, &file.updated_bytes) {
+                let rollback_message = rollback_written_patch_files(&written_files);
+                return Err(CommandError::retryable(
+                    "autonomous_tool_patch_write_failed",
+                    format!(
+                        "Xero could not persist the patch to {}: {error}. {rollback_message}",
+                        file.resolved_path.display()
+                    ),
+                ));
+            }
+            written_files.push(file);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1302,6 +1408,37 @@ struct DecodedText {
     raw_sha256: String,
     has_bom: bool,
     line_ending: AutonomousLineEnding,
+}
+
+#[derive(Debug)]
+struct NormalizedPatchOperation {
+    operation_index: usize,
+    relative_path: PathBuf,
+    display_path: String,
+    search: String,
+    replace: String,
+    replace_all: bool,
+    expected_hash: Option<String>,
+}
+
+#[derive(Debug)]
+struct GroupedPatchOperations<'a> {
+    relative_path: PathBuf,
+    operations: Vec<&'a NormalizedPatchOperation>,
+}
+
+#[derive(Debug)]
+struct PlannedPatchFile {
+    display_path: String,
+    resolved_path: PathBuf,
+    original_bytes: Vec<u8>,
+    updated_bytes: Vec<u8>,
+    replacements: usize,
+    old_hash: String,
+    new_hash: String,
+    diff: String,
+    line_ending: AutonomousLineEnding,
+    bom_preserved: bool,
 }
 
 #[derive(Debug)]
@@ -1768,6 +1905,146 @@ fn should_skip_search_file_error(error: &CommandError) -> bool {
     )
 }
 
+fn normalize_patch_operations(
+    request: AutonomousPatchRequest,
+) -> CommandResult<Vec<NormalizedPatchOperation>> {
+    let has_legacy_fields =
+        request.path.is_some() || request.search.is_some() || request.replace.is_some();
+    if has_legacy_fields && !request.operations.is_empty() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_patch_request_invalid",
+            "Xero requires patch requests to use either path/search/replace or operations, not both.",
+        ));
+    }
+
+    let operations = if request.operations.is_empty() {
+        vec![AutonomousPatchOperation {
+            path: required_patch_field(request.path, "path")?,
+            search: required_patch_field(request.search, "search")?,
+            replace: request.replace.unwrap_or_default(),
+            replace_all: request.replace_all,
+            expected_hash: request.expected_hash,
+        }]
+    } else {
+        request.operations
+    };
+
+    if operations.is_empty() || operations.len() > MAX_PATCH_OPERATIONS {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_patch_operation_count_invalid",
+            format!(
+                "Xero requires patch requests to include 1..={MAX_PATCH_OPERATIONS} operation(s)."
+            ),
+        ));
+    }
+
+    operations
+        .into_iter()
+        .enumerate()
+        .map(|(index, operation)| {
+            validate_non_empty(&operation.path, "path")?;
+            validate_non_empty(&operation.search, "search")?;
+            let relative_path = normalize_relative_path(&operation.path, "path")?;
+            let display_path = path_to_forward_slash(&relative_path);
+            Ok(NormalizedPatchOperation {
+                operation_index: index,
+                relative_path,
+                display_path,
+                search: operation.search,
+                replace: operation.replace,
+                replace_all: operation.replace_all,
+                expected_hash: operation.expected_hash,
+            })
+        })
+        .collect()
+}
+
+fn required_patch_field(value: Option<String>, field: &'static str) -> CommandResult<String> {
+    match value {
+        Some(value) => Ok(value),
+        None => Err(CommandError::user_fixable(
+            "autonomous_tool_patch_request_invalid",
+            format!("Xero requires patch field `{field}` when operations is not provided."),
+        )),
+    }
+}
+
+fn validate_patch_expected_hash(
+    operation: &NormalizedPatchOperation,
+    current_bytes: &[u8],
+) -> CommandResult<()> {
+    let Some(expected_hash) = operation.expected_hash.as_deref() else {
+        return Ok(());
+    };
+    validate_sha256(expected_hash, "expectedHash")?;
+    let actual = sha256_hex(current_bytes);
+    if actual != expected_hash.trim() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_patch_expected_hash_mismatch",
+            format!(
+                "Xero refused patch operation #{} for `{}` because expectedHash `{}` no longer matches the current file hash `{actual}`.",
+                operation.operation_index + 1,
+                operation.display_path,
+                expected_hash.trim()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn patch_operation_error(
+    operation: &NormalizedPatchOperation,
+    code: &'static str,
+    reason: &str,
+) -> CommandError {
+    CommandError::user_fixable(
+        code,
+        format!(
+            "Xero refused patch operation #{} for `{}` because {reason}.",
+            operation.operation_index + 1,
+            operation.display_path
+        ),
+    )
+}
+
+fn rollback_written_patch_files(written_files: &[&PlannedPatchFile]) -> String {
+    if written_files.is_empty() {
+        return "No earlier patch writes needed rollback.".into();
+    }
+
+    let mut failed = Vec::new();
+    for file in written_files.iter().rev() {
+        if let Err(error) = fs::write(&file.resolved_path, &file.original_bytes) {
+            failed.push(format!("{} ({error})", file.display_path));
+        }
+    }
+
+    if failed.is_empty() {
+        format!(
+            "Rolled back {} earlier patch write(s) from memory.",
+            written_files.len()
+        )
+    } else {
+        format!(
+            "Rollback attempted for {} earlier patch write(s), but {} restore(s) failed: {}.",
+            written_files.len(),
+            failed.len(),
+            failed.join(", ")
+        )
+    }
+}
+
+fn single_file_field<T>(
+    files: &[AutonomousPatchFileOutput],
+    field: impl FnOnce(&AutonomousPatchFileOutput) -> T,
+) -> Option<T> {
+    if files.len() == 1 {
+        Some(field(&files[0]))
+    } else {
+        None
+    }
+}
+
 fn validate_expected_hash_for_bytes(
     expected_hash: Option<&str>,
     current_bytes: &[u8],
@@ -2095,6 +2372,96 @@ mod tests {
         assert_eq!(approved.content, "outside\n");
     }
 
+    #[test]
+    fn patch_supports_preview_and_multi_file_apply() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("alpha.txt"), "one\ntwo\n").expect("alpha");
+        fs::write(root.join("beta.txt"), "red\nblue\n").expect("beta");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let preview = patch_output(runtime.patch(AutonomousPatchRequest {
+            path: None,
+            search: None,
+            replace: None,
+            replace_all: false,
+            expected_hash: None,
+            preview: true,
+            operations: vec![
+                AutonomousPatchOperation {
+                    path: "alpha.txt".into(),
+                    search: "two\n".into(),
+                    replace: "TWO\n".into(),
+                    replace_all: false,
+                    expected_hash: None,
+                },
+                AutonomousPatchOperation {
+                    path: "beta.txt".into(),
+                    search: "blue\n".into(),
+                    replace: "BLUE\n".into(),
+                    replace_all: false,
+                    expected_hash: None,
+                },
+            ],
+        }));
+
+        assert!(preview.preview);
+        assert!(!preview.applied);
+        assert_eq!(preview.files.len(), 2);
+        assert_eq!(preview.replacements, 2);
+        assert_eq!(
+            fs::read_to_string(root.join("alpha.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        let applied = patch_output(runtime.patch(AutonomousPatchRequest {
+            preview: false,
+            ..preview_request()
+        }));
+
+        assert!(applied.applied);
+        assert!(!applied.preview);
+        assert_eq!(applied.files.len(), 2);
+        assert_eq!(
+            fs::read_to_string(root.join("alpha.txt")).unwrap(),
+            "one\nTWO\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("beta.txt")).unwrap(),
+            "red\nBLUE\n"
+        );
+    }
+
+    #[test]
+    fn patch_reports_exact_operation_diagnostics() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("notes.txt"), "same\nsame\n").expect("notes");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let err = runtime
+            .patch(AutonomousPatchRequest {
+                path: None,
+                search: None,
+                replace: None,
+                replace_all: false,
+                expected_hash: None,
+                preview: false,
+                operations: vec![AutonomousPatchOperation {
+                    path: "notes.txt".into(),
+                    search: "same\n".into(),
+                    replace: "changed\n".into(),
+                    replace_all: false,
+                    expected_hash: None,
+                }],
+            })
+            .expect_err("ambiguous patch");
+
+        assert_eq!(err.code, "autonomous_tool_patch_search_ambiguous");
+        assert!(err.message.contains("operation #1"));
+        assert!(err.message.contains("notes.txt"));
+    }
+
     fn read_request(path: &str) -> AutonomousReadRequest {
         AutonomousReadRequest {
             path: path.into(),
@@ -2126,6 +2493,40 @@ mod tests {
         match result.expect("edit").output {
             AutonomousToolOutput::Edit(output) => output,
             output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn patch_output(result: CommandResult<AutonomousToolResult>) -> AutonomousPatchOutput {
+        match result.expect("patch").output {
+            AutonomousToolOutput::Patch(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn preview_request() -> AutonomousPatchRequest {
+        AutonomousPatchRequest {
+            path: None,
+            search: None,
+            replace: None,
+            replace_all: false,
+            expected_hash: None,
+            preview: false,
+            operations: vec![
+                AutonomousPatchOperation {
+                    path: "alpha.txt".into(),
+                    search: "two\n".into(),
+                    replace: "TWO\n".into(),
+                    replace_all: false,
+                    expected_hash: None,
+                },
+                AutonomousPatchOperation {
+                    path: "beta.txt".into(),
+                    search: "blue\n".into(),
+                    replace: "BLUE\n".into(),
+                    replace_all: false,
+                    expected_hash: None,
+                },
+            ],
         }
     }
 }

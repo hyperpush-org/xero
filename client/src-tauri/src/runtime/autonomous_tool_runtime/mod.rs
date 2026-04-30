@@ -542,10 +542,10 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_PATCH,
             "mutation",
-            "Patch a UTF-8 text file by replacing exact search text.",
-            &["file", "patch", "replace", "exact_text"],
-            &["path", "search", "replace", "replaceAll", "expectedHash"],
-            &["Replace an exact import statement."],
+            "Apply a canonical UTF-8 text patch with preview, expected-hash guards, exact diagnostics, and multi-file support.",
+            &["file", "patch", "replace", "exact_text", "multi_file", "preview", "hash_guard"],
+            &["path", "search", "replace", "replaceAll", "expectedHash", "preview", "operations"],
+            &["Preview a multi-file patch before writing.", "Replace an exact import statement with an expected hash."],
             "write",
         ),
         catalog_entry(
@@ -1877,6 +1877,25 @@ pub struct AutonomousWriteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousPatchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
+    #[serde(default)]
+    pub replace_all: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<AutonomousPatchOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousPatchOperation {
     pub path: String,
     pub search: String,
     pub replace: String,
@@ -2553,6 +2572,14 @@ pub struct AutonomousPatchOutput {
     pub path: String,
     pub replacements: usize,
     pub bytes_written: usize,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<AutonomousPatchFileOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<AutonomousPatchFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2563,6 +2590,29 @@ pub struct AutonomousPatchOutput {
     pub line_ending: Option<AutonomousLineEnding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bom_preserved: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousPatchFileOutput {
+    pub path: String,
+    pub replacements: usize,
+    pub bytes_written: usize,
+    pub old_hash: String,
+    pub new_hash: String,
+    pub diff: String,
+    pub line_ending: AutonomousLineEnding,
+    pub bom_preserved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousPatchFailure {
+    pub operation_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

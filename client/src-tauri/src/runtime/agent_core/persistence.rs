@@ -80,16 +80,34 @@ pub(crate) fn record_file_change_event(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
-    old_hash: Option<String>,
+    write_observations: &[AgentWorkspaceWriteObservation],
     output: &AutonomousToolOutput,
 ) -> CommandResult<()> {
+    if let AutonomousToolOutput::Patch(output) = output {
+        if !output.applied {
+            return Ok(());
+        }
+        for file in &output.files {
+            record_single_file_change_event(
+                repo_root,
+                project_id,
+                run_id,
+                "patch",
+                file.path.as_str(),
+                None,
+                Some(file.old_hash.clone()),
+                Some(file.new_hash.clone()),
+            )?;
+        }
+        return Ok(());
+    }
+
     let (operation, path) = match output {
         AutonomousToolOutput::Write(output) => (
             if output.created { "create" } else { "write" },
             output.path.as_str(),
         ),
         AutonomousToolOutput::Edit(output) => ("edit", output.path.as_str()),
-        AutonomousToolOutput::Patch(output) => ("patch", output.path.as_str()),
         AutonomousToolOutput::NotebookEdit(output) => ("notebook_edit", output.path.as_str()),
         AutonomousToolOutput::Delete(output) => ("delete", output.path.as_str()),
         AutonomousToolOutput::Rename(output) => ("rename", output.from_path.as_str()),
@@ -106,6 +124,22 @@ pub(crate) fn record_file_change_event(
         AutonomousToolOutput::Rename(output) => Some(output.to_path.clone()),
         _ => None,
     };
+    let old_hash = old_hash_for_path(write_observations, path);
+    record_single_file_change_event(
+        repo_root, project_id, run_id, operation, path, to_path, old_hash, new_hash,
+    )
+}
+
+fn record_single_file_change_event(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    operation: &str,
+    path: &str,
+    to_path: Option<String>,
+    old_hash: Option<String>,
+    new_hash: Option<String>,
+) -> CommandResult<()> {
     project_store::append_agent_file_change(
         repo_root,
         &NewAgentFileChangeRecord {
@@ -136,6 +170,12 @@ pub(crate) fn record_file_change_event(
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct AgentWorkspaceWriteObservation {
+    path: String,
+    old_hash: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct AgentRollbackCheckpoint {
     path: String,
     operation: String,
@@ -145,85 +185,86 @@ pub(crate) struct AgentRollbackCheckpoint {
     old_content_bytes: Option<u64>,
 }
 
-pub(crate) fn rollback_checkpoint_for_request(
+pub(crate) fn rollback_checkpoints_for_request(
     repo_root: &Path,
     request: &AutonomousToolRequest,
-    old_hash: Option<&str>,
-) -> CommandResult<Option<AgentRollbackCheckpoint>> {
-    let (path, operation) = match request {
-        AutonomousToolRequest::Edit(request) => (request.path.as_str(), "edit"),
-        AutonomousToolRequest::Patch(request) => (request.path.as_str(), "patch"),
-        AutonomousToolRequest::NotebookEdit(request) => (request.path.as_str(), "notebook_edit"),
-        AutonomousToolRequest::Delete(request) => (request.path.as_str(), "delete"),
-        AutonomousToolRequest::Rename(request) => (request.from_path.as_str(), "rename"),
-        AutonomousToolRequest::Write(request) if old_hash.is_some() => {
-            (request.path.as_str(), "write")
-        }
-        AutonomousToolRequest::Write(request) => (request.path.as_str(), "create"),
-        _ => return Ok(None),
-    };
-    let Some(path_key) = relative_path_key(path) else {
-        return Ok(None);
-    };
-    let old_content = match old_hash {
-        Some(_) => capture_rollback_content(repo_root, &path_key)?,
-        None => RollbackContentCapture::NotNeeded,
-    };
-    let (old_content_base64, old_content_omitted_reason, old_content_bytes) = match old_content {
-        RollbackContentCapture::Captured { base64, bytes } => (Some(base64), None, Some(bytes)),
-        RollbackContentCapture::Omitted { reason, bytes } => (None, Some(reason), bytes),
-        RollbackContentCapture::NotNeeded => (None, None, None),
-    };
+    observations: &[AgentWorkspaceWriteObservation],
+) -> CommandResult<Vec<AgentRollbackCheckpoint>> {
+    let mut checkpoints = Vec::new();
+    for (path, operation) in planned_file_change_operations(request) {
+        let Some(path_key) = relative_path_key(path) else {
+            continue;
+        };
+        let old_hash = old_hash_for_path(observations, &path_key);
+        let operation = if matches!(request, AutonomousToolRequest::Write(_)) {
+            if old_hash.is_some() {
+                "write"
+            } else {
+                "create"
+            }
+        } else {
+            operation
+        };
+        let old_content = match old_hash.as_deref() {
+            Some(_) => capture_rollback_content(repo_root, &path_key)?,
+            None => RollbackContentCapture::NotNeeded,
+        };
+        let (old_content_base64, old_content_omitted_reason, old_content_bytes) = match old_content
+        {
+            RollbackContentCapture::Captured { base64, bytes } => (Some(base64), None, Some(bytes)),
+            RollbackContentCapture::Omitted { reason, bytes } => (None, Some(reason), bytes),
+            RollbackContentCapture::NotNeeded => (None, None, None),
+        };
 
-    Ok(Some(AgentRollbackCheckpoint {
-        path: path_key,
-        operation: operation.into(),
-        old_hash: old_hash.map(ToOwned::to_owned),
-        old_content_base64,
-        old_content_omitted_reason,
-        old_content_bytes,
-    }))
+        checkpoints.push(AgentRollbackCheckpoint {
+            path: path_key,
+            operation: operation.into(),
+            old_hash,
+            old_content_base64,
+            old_content_omitted_reason,
+            old_content_bytes,
+        });
+    }
+    Ok(checkpoints)
 }
 
-pub(crate) fn record_rollback_checkpoint(
+pub(crate) fn record_rollback_checkpoints(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
     tool_call_id: &str,
-    checkpoint: Option<&AgentRollbackCheckpoint>,
+    checkpoints: &[AgentRollbackCheckpoint],
 ) -> CommandResult<()> {
-    let Some(checkpoint) = checkpoint else {
-        return Ok(());
-    };
+    for checkpoint in checkpoints {
+        let payload_json = serde_json::to_string(&json!({
+            "kind": "file_rollback",
+            "toolCallId": tool_call_id,
+            "path": checkpoint.path.clone(),
+            "operation": checkpoint.operation.clone(),
+            "oldHash": checkpoint.old_hash.clone(),
+            "oldContentBase64": checkpoint.old_content_base64.clone(),
+            "oldContentOmittedReason": checkpoint.old_content_omitted_reason.clone(),
+            "oldContentBytes": checkpoint.old_content_bytes,
+        }))
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_checkpoint_payload_serialize_failed",
+                format!("Xero could not serialize owned-agent rollback checkpoint: {error}"),
+            )
+        })?;
 
-    let payload_json = serde_json::to_string(&json!({
-        "kind": "file_rollback",
-        "toolCallId": tool_call_id,
-        "path": checkpoint.path.clone(),
-        "operation": checkpoint.operation.clone(),
-        "oldHash": checkpoint.old_hash.clone(),
-        "oldContentBase64": checkpoint.old_content_base64.clone(),
-        "oldContentOmittedReason": checkpoint.old_content_omitted_reason.clone(),
-        "oldContentBytes": checkpoint.old_content_bytes,
-    }))
-    .map_err(|error| {
-        CommandError::system_fault(
-            "agent_checkpoint_payload_serialize_failed",
-            format!("Xero could not serialize owned-agent rollback checkpoint: {error}"),
-        )
-    })?;
-
-    project_store::append_agent_checkpoint(
-        repo_root,
-        &NewAgentCheckpointRecord {
-            project_id: project_id.into(),
-            run_id: run_id.into(),
-            checkpoint_kind: "tool".into(),
-            summary: format!("Rollback data for `{}`.", checkpoint.path),
-            payload_json: Some(payload_json),
-            created_at: now_timestamp(),
-        },
-    )?;
+        project_store::append_agent_checkpoint(
+            repo_root,
+            &NewAgentCheckpointRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                checkpoint_kind: "tool".into(),
+                summary: format!("Rollback data for `{}`.", checkpoint.path),
+                payload_json: Some(payload_json),
+                created_at: now_timestamp(),
+            },
+        )?;
+    }
     Ok(())
 }
 
@@ -605,50 +646,72 @@ impl AgentWorkspaceGuard {
         repo_root: &Path,
         request: &AutonomousToolRequest,
         approved_existing_write: bool,
-    ) -> CommandResult<Option<String>> {
-        let Some(path) = planned_file_change_path(request) else {
-            return Ok(None);
-        };
-        let Some(path_key) = relative_path_key(path) else {
-            return Err(CommandError::new(
-                "agent_file_path_invalid",
-                CommandErrorClass::PolicyDenied,
-                format!(
-                    "Xero refused to modify `{path}` because it is not a safe repo-relative path."
-                ),
-                false,
-            ));
-        };
-
-        let current_hash = file_hash_if_present(repo_root, &path_key)?;
-        if approved_existing_write {
-            return Ok(current_hash);
-        }
-        match (&current_hash, self.observed_hashes.get(&path_key)) {
-            (None, _) => Ok(None),
-            (Some(_), None) => Err(CommandError::new(
-                "agent_file_write_requires_observation",
-                CommandErrorClass::PolicyDenied,
-                format!(
-                    "Xero refused to modify `{path_key}` because the owned agent has not read this existing file during the run."
-                ),
-                false,
-            )),
-            (Some(current_hash), Some(observed_hash)) if observed_hash.as_ref() == Some(current_hash) => {
-                Ok(Some(current_hash.clone()))
+    ) -> CommandResult<Vec<AgentWorkspaceWriteObservation>> {
+        let paths = planned_file_change_paths(request);
+        let mut observations = Vec::new();
+        let mut seen_paths = BTreeSet::new();
+        for path in paths {
+            let Some(path_key) = relative_path_key(path) else {
+                return Err(CommandError::new(
+                    "agent_file_path_invalid",
+                    CommandErrorClass::PolicyDenied,
+                    format!(
+                        "Xero refused to modify `{path}` because it is not a safe repo-relative path."
+                    ),
+                    false,
+                ));
+            };
+            if !seen_paths.insert(path_key.clone()) {
+                continue;
             }
-            (Some(_), Some(observed_hash)) => Err(CommandError::new(
-                "agent_file_changed_since_observed",
-                CommandErrorClass::PolicyDenied,
-                format!(
-                    "Xero refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}).",
-                    observed_hash
-                        .as_deref()
-                        .unwrap_or("absent")
-                ),
-                false,
-            )),
+
+            let current_hash = file_hash_if_present(repo_root, &path_key)?;
+            if approved_existing_write {
+                observations.push(AgentWorkspaceWriteObservation {
+                    path: path_key,
+                    old_hash: current_hash,
+                });
+                continue;
+            }
+            match (&current_hash, self.observed_hashes.get(&path_key)) {
+                (None, _) => observations.push(AgentWorkspaceWriteObservation {
+                    path: path_key,
+                    old_hash: None,
+                }),
+                (Some(_), None) => {
+                    return Err(CommandError::new(
+                        "agent_file_write_requires_observation",
+                        CommandErrorClass::PolicyDenied,
+                        format!(
+                            "Xero refused to modify `{path_key}` because the owned agent has not read this existing file during the run."
+                        ),
+                        false,
+                    ));
+                }
+                (Some(current_hash), Some(observed_hash))
+                    if observed_hash.as_ref() == Some(current_hash) =>
+                {
+                    observations.push(AgentWorkspaceWriteObservation {
+                        path: path_key,
+                        old_hash: Some(current_hash.clone()),
+                    });
+                }
+                (Some(_), Some(observed_hash)) => {
+                    return Err(CommandError::new(
+                        "agent_file_changed_since_observed",
+                        CommandErrorClass::PolicyDenied,
+                        format!(
+                            "Xero refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}).",
+                            observed_hash
+                                .as_deref()
+                                .unwrap_or("absent")
+                        ),
+                        false,
+                    ));
+                }
+            }
         }
+        Ok(observations)
     }
 
     pub(crate) fn record_tool_output(
@@ -656,41 +719,105 @@ impl AgentWorkspaceGuard {
         repo_root: &Path,
         output: &AutonomousToolOutput,
     ) -> CommandResult<()> {
-        let path = match output {
-            AutonomousToolOutput::Read(output) => output.path.as_str(),
-            AutonomousToolOutput::Edit(output) => output.path.as_str(),
-            AutonomousToolOutput::Write(output) => output.path.as_str(),
-            AutonomousToolOutput::Patch(output) => output.path.as_str(),
-            AutonomousToolOutput::NotebookEdit(output) => output.path.as_str(),
-            AutonomousToolOutput::Delete(output) => output.path.as_str(),
-            AutonomousToolOutput::Rename(output) => output.from_path.as_str(),
-            AutonomousToolOutput::Hash(output) => output.path.as_str(),
-            _ => return Ok(()),
-        };
+        for path in observed_paths_from_output(output) {
+            self.record_path_observation(repo_root, &path)?;
+        }
+        if let AutonomousToolOutput::Rename(output) = output {
+            self.record_path_observation(repo_root, &output.to_path)?;
+        }
+        Ok(())
+    }
+
+    fn record_path_observation(&mut self, repo_root: &Path, path: &str) -> CommandResult<()> {
         let Some(path_key) = relative_path_key(path) else {
             return Ok(());
         };
         let hash = file_hash_if_present(repo_root, &path_key)?;
         self.observed_hashes.insert(path_key, hash);
-        if let AutonomousToolOutput::Rename(output) = output {
-            if let Some(to_path_key) = relative_path_key(&output.to_path) {
-                let hash = file_hash_if_present(repo_root, &to_path_key)?;
-                self.observed_hashes.insert(to_path_key, hash);
-            }
-        }
         Ok(())
     }
 }
 
-fn planned_file_change_path(request: &AutonomousToolRequest) -> Option<&str> {
+fn planned_file_change_paths(request: &AutonomousToolRequest) -> Vec<&str> {
     match request {
-        AutonomousToolRequest::Edit(request) => Some(request.path.as_str()),
-        AutonomousToolRequest::Write(request) => Some(request.path.as_str()),
-        AutonomousToolRequest::Patch(request) => Some(request.path.as_str()),
-        AutonomousToolRequest::NotebookEdit(request) => Some(request.path.as_str()),
-        AutonomousToolRequest::Delete(request) => Some(request.path.as_str()),
-        AutonomousToolRequest::Rename(request) => Some(request.from_path.as_str()),
-        _ => None,
+        AutonomousToolRequest::Edit(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Write(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Patch(request) => request
+            .operations
+            .iter()
+            .map(|operation| operation.path.as_str())
+            .chain(request.path.as_deref())
+            .collect(),
+        AutonomousToolRequest::NotebookEdit(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Delete(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Rename(request) => vec![request.from_path.as_str()],
+        _ => Vec::new(),
+    }
+}
+
+fn planned_file_change_operations(request: &AutonomousToolRequest) -> Vec<(&str, &'static str)> {
+    match request {
+        AutonomousToolRequest::Edit(request) => vec![(request.path.as_str(), "edit")],
+        AutonomousToolRequest::Write(request) => {
+            vec![(request.path.as_str(), "write")]
+        }
+        AutonomousToolRequest::Patch(request) => request
+            .operations
+            .iter()
+            .map(|operation| operation.path.as_str())
+            .chain(request.path.as_deref())
+            .map(|path| (path, "patch"))
+            .collect(),
+        AutonomousToolRequest::NotebookEdit(request) => {
+            vec![(request.path.as_str(), "notebook_edit")]
+        }
+        AutonomousToolRequest::Delete(request) => vec![(request.path.as_str(), "delete")],
+        AutonomousToolRequest::Rename(request) => vec![(request.from_path.as_str(), "rename")],
+        _ => Vec::new(),
+    }
+}
+
+fn old_hash_for_path(
+    observations: &[AgentWorkspaceWriteObservation],
+    path: &str,
+) -> Option<String> {
+    let path_key = relative_path_key(path)?;
+    observations
+        .iter()
+        .find(|observation| observation.path == path_key)
+        .and_then(|observation| observation.old_hash.clone())
+}
+
+fn observed_paths_from_output(output: &AutonomousToolOutput) -> Vec<String> {
+    match output {
+        AutonomousToolOutput::Read(output) => vec![output.path.clone()],
+        AutonomousToolOutput::Search(output) => output
+            .matches
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        AutonomousToolOutput::Find(output) => output.matches.clone(),
+        AutonomousToolOutput::List(output) => output
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect(),
+        AutonomousToolOutput::Edit(output) => vec![output.path.clone()],
+        AutonomousToolOutput::Write(output) => vec![output.path.clone()],
+        AutonomousToolOutput::Patch(output) => {
+            if output.files.is_empty() {
+                vec![output.path.clone()]
+            } else {
+                output.files.iter().map(|file| file.path.clone()).collect()
+            }
+        }
+        AutonomousToolOutput::NotebookEdit(output) => vec![output.path.clone()],
+        AutonomousToolOutput::Delete(output) => vec![output.path.clone()],
+        AutonomousToolOutput::Rename(output) => vec![output.from_path.clone()],
+        AutonomousToolOutput::Hash(output) => vec![output.path.clone()],
+        _ => Vec::new(),
     }
 }
 
@@ -771,4 +898,82 @@ pub(crate) fn validate_prompt(prompt: &str) -> CommandResult<()> {
         return Err(CommandError::invalid_request("prompt"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{
+        AutonomousPatchOperation, AutonomousPatchRequest, AutonomousSearchMatch,
+        AutonomousSearchOutput,
+    };
+    use tempfile::tempdir;
+
+    #[test]
+    fn workspace_guard_treats_search_results_as_file_observations() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src/lib.rs"), "fn before() {}\n").expect("source");
+
+        let mut guard = AgentWorkspaceGuard::default();
+        guard
+            .record_tool_output(
+                root,
+                &AutonomousToolOutput::Search(AutonomousSearchOutput {
+                    query: "before".into(),
+                    scope: None,
+                    matches: vec![AutonomousSearchMatch {
+                        path: "src/lib.rs".into(),
+                        line: 1,
+                        column: 4,
+                        preview: "fn before() {}".into(),
+                        end_column: Some(10),
+                        match_text: Some("before".into()),
+                        line_hash: None,
+                        context_before: Vec::new(),
+                        context_after: Vec::new(),
+                    }],
+                    scanned_files: 1,
+                    truncated: false,
+                    total_matches: Some(1),
+                    matched_files: Some(1),
+                    engine: Some("test".into()),
+                    regex: false,
+                    ignore_case: false,
+                    include_hidden: false,
+                    include_ignored: false,
+                    include_globs: Vec::new(),
+                    exclude_globs: Vec::new(),
+                    context_lines: 0,
+                }),
+            )
+            .expect("record search observation");
+
+        let observations = guard
+            .validate_write_intent(
+                root,
+                &AutonomousToolRequest::Patch(AutonomousPatchRequest {
+                    path: None,
+                    search: None,
+                    replace: None,
+                    replace_all: false,
+                    expected_hash: None,
+                    preview: false,
+                    operations: vec![AutonomousPatchOperation {
+                        path: "src/lib.rs".into(),
+                        search: "before".into(),
+                        replace: "after".into(),
+                        replace_all: false,
+                        expected_hash: None,
+                    }],
+                }),
+                false,
+            )
+            .expect("search-observed file can be patched");
+
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].path, "src/lib.rs");
+        assert!(observations[0].old_hash.is_some());
+    }
 }

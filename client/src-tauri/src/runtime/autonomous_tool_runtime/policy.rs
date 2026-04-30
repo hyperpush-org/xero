@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use super::{
     repo_scope::normalize_relative_path, AutonomousCommandPolicyOutcome,
@@ -96,7 +99,7 @@ impl AutonomousToolRuntime {
             return Ok(CommandPolicyDecision::Escalate { prepared, policy });
         }
 
-        let policy = match classify_command(&prepared.argv) {
+        let policy = match classify_command(&prepared) {
             CommandClassification::Safe(reason) => policy_trace(
                 AutonomousCommandPolicyOutcome::Allowed,
                 active.approval_mode.clone(),
@@ -335,7 +338,8 @@ enum CommandClassification {
     Ambiguous { code: &'static str, reason: String },
 }
 
-fn classify_command(argv: &[String]) -> CommandClassification {
+fn classify_command(prepared: &PreparedCommandRequest) -> CommandClassification {
+    let argv = &prepared.argv;
     let program = executable_name(&argv[0]);
 
     if is_shell_wrapper(program) {
@@ -404,7 +408,7 @@ fn classify_command(argv: &[String]) -> CommandClassification {
         }
         "git" => classify_git_command(argv),
         "cargo" => classify_cargo_command(argv),
-        "npm" | "pnpm" | "yarn" | "bun" => classify_package_manager_command(argv),
+        "npm" | "pnpm" | "yarn" | "bun" => classify_package_manager_command(argv, &prepared.cwd),
         "rm" | "rmdir" | "del" | "erase" | "rd" | "mv" | "move" | "chmod" | "chown"
         | "dd" | "mkfs" | "diskutil" => CommandClassification::Destructive {
             code: "policy_escalated_destructive_command",
@@ -495,7 +499,7 @@ fn classify_cargo_command(argv: &[String]) -> CommandClassification {
     }
 }
 
-fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
+fn classify_package_manager_command(argv: &[String], cwd: &Path) -> CommandClassification {
     let subcommand = argv
         .iter()
         .skip(1)
@@ -510,7 +514,9 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
                 ),
             }
         }
-        Some("test" | "lint" | "typecheck" | "build") => safe_command(argv),
+        Some(script @ ("test" | "lint" | "typecheck" | "build")) => {
+            classify_repo_package_script(argv, cwd, script, true)
+        }
         Some("exec") => CommandClassification::Ambiguous {
             code: "policy_escalated_package_manager_exec",
             reason: format!(
@@ -519,15 +525,7 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
             ),
         },
         Some("publish") => destructive_command(argv, "package manager publish commands can affect external registries"),
-        Some("run") => {
-            CommandClassification::Ambiguous {
-                code: "policy_escalated_package_manager_run",
-                reason: format!(
-                    "Xero requires operator review for `{}` because package-manager scripts are project-defined commands and can perform arbitrary side effects.",
-                    render_command_for_summary(argv)
-                ),
-            }
-        }
+        Some("run" | "run-script") => classify_package_manager_run_script(argv, cwd),
         Some(_) | None => CommandClassification::Ambiguous {
             code: "policy_escalated_ambiguous_command",
             reason: format!(
@@ -536,6 +534,112 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
             ),
         },
     }
+}
+
+fn classify_package_manager_run_script(argv: &[String], cwd: &Path) -> CommandClassification {
+    let Some(script_name) = package_manager_run_script_name(argv) else {
+        return CommandClassification::Ambiguous {
+            code: "policy_escalated_package_manager_run",
+            reason: format!(
+                "Xero requires operator review for `{}` because the package-manager script name could not be identified.",
+                render_command_for_summary(argv)
+            ),
+        };
+    };
+
+    classify_repo_package_script(argv, cwd, script_name, false)
+}
+
+fn package_manager_run_script_name(argv: &[String]) -> Option<&str> {
+    let mut seen_run = false;
+    for argument in argv.iter().skip(1) {
+        if !seen_run {
+            if matches!(argument.as_str(), "run" | "run-script") {
+                seen_run = true;
+            }
+            continue;
+        }
+        if argument == "--" || argument.starts_with('-') {
+            continue;
+        }
+        return Some(argument.as_str());
+    }
+    None
+}
+
+fn classify_repo_package_script(
+    argv: &[String],
+    cwd: &Path,
+    script_name: &str,
+    direct_script_command: bool,
+) -> CommandClassification {
+    if !is_safe_package_script_name(script_name) {
+        return CommandClassification::Ambiguous {
+            code: "policy_escalated_package_manager_run",
+            reason: format!(
+                "Xero requires operator review for `{}` because package script `{script_name}` is not in the repo-local verification allowlist.",
+                render_command_for_summary(argv)
+            ),
+        };
+    }
+
+    let Some(script) = package_json_script(cwd, script_name) else {
+        if direct_script_command {
+            return safe_command(argv);
+        }
+        return CommandClassification::Ambiguous {
+            code: "policy_escalated_package_manager_run_missing_script",
+            reason: format!(
+                "Xero requires operator review for `{}` because package.json in `{}` does not define script `{script_name}`.",
+                render_command_for_summary(argv),
+                cwd.display()
+            ),
+        };
+    };
+
+    let shell_argv = vec!["sh".to_string(), "-c".to_string(), script];
+    if shell_wrapper_contains_destructive_pattern(&shell_argv) {
+        return CommandClassification::Destructive {
+            code: "policy_escalated_destructive_package_script",
+            reason: format!(
+                "Xero requires operator review for `{}` because package script `{script_name}` contains destructive shell patterns.",
+                render_command_for_summary(argv)
+            ),
+        };
+    }
+    if shell_wrapper_contains_sensitive_pattern(&shell_argv) {
+        return CommandClassification::Ambiguous {
+            code: "policy_escalated_sensitive_package_script",
+            reason: format!(
+                "Xero requires operator review for `{}` because package script `{script_name}` may expand secrets, access absolute paths, or contact external network surfaces.",
+                render_command_for_summary(argv)
+            ),
+        };
+    }
+
+    CommandClassification::Safe(format!(
+        "Active approval mode `yolo` allowed repo-local package script `{script_name}` via `{}` after package.json introspection classified the script as verification-safe.",
+        render_command_for_summary(argv)
+    ))
+}
+
+fn is_safe_package_script_name(script_name: &str) -> bool {
+    matches!(
+        script_name,
+        "test" | "tests" | "lint" | "typecheck" | "check" | "build" | "rust:test"
+    )
+}
+
+fn package_json_script(cwd: &Path, script_name: &str) -> Option<String> {
+    let package_json = cwd.join("package.json");
+    let bytes = fs::read(package_json).ok()?;
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    value
+        .get("scripts")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|scripts| scripts.get(script_name))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 fn safe_command(argv: &[String]) -> CommandClassification {
@@ -686,5 +790,83 @@ fn policy_trace(
         approval_mode,
         code: code.into(),
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn package_manager_run_allows_introspected_verification_script() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest run","build":"vite build"}}"#,
+        )
+        .expect("package");
+        let prepared = prepared_command(tempdir.path(), ["npm", "run", "test"]);
+
+        let decision = classify_command(&prepared);
+
+        match decision {
+            CommandClassification::Safe(reason) => {
+                assert!(reason.contains("package.json introspection"));
+                assert!(reason.contains("test"));
+            }
+            other => panic!("expected safe script, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn package_manager_run_escalates_destructive_allowed_script() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"build":"rm -rf dist"}}"#,
+        )
+        .expect("package");
+        let prepared = prepared_command(tempdir.path(), ["npm", "run", "build"]);
+
+        let decision = classify_command(&prepared);
+
+        match decision {
+            CommandClassification::Destructive { code, reason } => {
+                assert_eq!(code, "policy_escalated_destructive_package_script");
+                assert!(reason.contains("build"));
+            }
+            other => panic!("expected destructive script, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn package_manager_run_escalates_non_allowlisted_script() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"deploy":"vite build"}}"#,
+        )
+        .expect("package");
+        let prepared = prepared_command(tempdir.path(), ["npm", "run", "deploy"]);
+
+        let decision = classify_command(&prepared);
+
+        match decision {
+            CommandClassification::Ambiguous { code, reason } => {
+                assert_eq!(code, "policy_escalated_package_manager_run");
+                assert!(reason.contains("verification allowlist"));
+            }
+            other => panic!("expected ambiguous script, got {other:?}"),
+        }
+    }
+
+    fn prepared_command<const N: usize>(cwd: &Path, argv: [&str; N]) -> PreparedCommandRequest {
+        PreparedCommandRequest {
+            argv: argv.into_iter().map(str::to_owned).collect(),
+            cwd_relative: None,
+            cwd: cwd.to_path_buf(),
+            timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
+        }
     }
 }

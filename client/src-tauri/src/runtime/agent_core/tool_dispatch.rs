@@ -73,16 +73,16 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
         }
     };
 
-    let old_hash =
+    let write_observations =
         match workspace_guard.validate_write_intent(repo_root, &request, approved_existing_write) {
-            Ok(hash) => hash,
+            Ok(observations) => observations,
             Err(error) => {
                 finish_failed_tool_call(repo_root, project_id, run_id, &tool_call, &error)?;
                 return Err(error);
             }
         };
-    let rollback_checkpoint =
-        rollback_checkpoint_for_request(repo_root, &request, old_hash.as_deref())?;
+    let rollback_checkpoints =
+        rollback_checkpoints_for_request(repo_root, &request, &write_observations)?;
 
     let tool_execution = if operator_approved {
         tool_runtime.execute_approved(request)
@@ -116,14 +116,20 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
                     completed_at: now_timestamp(),
                 },
             )?;
-            record_file_change_event(repo_root, project_id, run_id, old_hash, &tool_result.output)?;
+            record_file_change_event(
+                repo_root,
+                project_id,
+                run_id,
+                &write_observations,
+                &tool_result.output,
+            )?;
             record_command_output_event(repo_root, project_id, run_id, &tool_result.output)?;
-            record_rollback_checkpoint(
+            record_rollback_checkpoints(
                 repo_root,
                 project_id,
                 run_id,
                 &tool_call.tool_call_id,
-                rollback_checkpoint.as_ref(),
+                &rollback_checkpoints,
             )?;
             workspace_guard.record_tool_output(repo_root, &tool_result.output)?;
             append_event(

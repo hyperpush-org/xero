@@ -1063,23 +1063,8 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_PATCH,
-            "Patch a UTF-8 text file by replacing exact search text.",
-            object_schema(
-                &["path", "search", "replace"],
-                &[
-                    ("path", string_schema("Repo-relative file path to patch.")),
-                    ("search", string_schema("Exact text to replace.")),
-                    ("replace", string_schema("Replacement text.")),
-                    (
-                        "replaceAll",
-                        boolean_schema("Replace every match instead of exactly one match."),
-                    ),
-                    (
-                        "expectedHash",
-                        string_schema("Optional lowercase SHA-256 expected current file hash."),
-                    ),
-                ],
-            ),
+            "Apply a canonical UTF-8 text patch with preview, expected-hash guards, exact diagnostics, and multi-file support.",
+            patch_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_DELETE,
@@ -1516,6 +1501,65 @@ fn boolean_schema(description: &str) -> JsonValue {
     json!({
         "type": "boolean",
         "description": description,
+    })
+}
+
+fn patch_schema() -> JsonValue {
+    let operation_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "search", "replace"],
+        "properties": {
+            "path": string_schema("Repo-relative file path to patch."),
+            "search": string_schema("Exact current text to replace."),
+            "replace": string_schema("Replacement text."),
+            "replaceAll": boolean_schema("Replace every match instead of exactly one match."),
+            "expectedHash": string_schema("Optional lowercase SHA-256 expected current file hash for this file before any patch operations run.")
+        }
+    });
+
+    json!({
+        "oneOf": [
+            object_schema(
+                &["path", "search", "replace"],
+                &[
+                    ("path", string_schema("Repo-relative file path to patch.")),
+                    ("search", string_schema("Exact current text to replace.")),
+                    ("replace", string_schema("Replacement text.")),
+                    (
+                        "replaceAll",
+                        boolean_schema("Replace every match instead of exactly one match."),
+                    ),
+                    (
+                        "expectedHash",
+                        string_schema("Optional lowercase SHA-256 expected current file hash."),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema("When true, return the exact diff and hashes without writing files."),
+                    ),
+                ],
+            ),
+            object_schema(
+                &["operations"],
+                &[
+                    (
+                        "operations",
+                        json!({
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 64,
+                            "description": "Canonical ordered patch operations. Operations that target the same file are applied sequentially after one file read.",
+                            "items": operation_schema
+                        }),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema("When true, return per-file diffs and hashes without writing files."),
+                    ),
+                ],
+            ),
+        ]
     })
 }
 
