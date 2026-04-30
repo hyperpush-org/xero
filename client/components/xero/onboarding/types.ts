@@ -1,4 +1,10 @@
-export type OnboardingStepId = "welcome" | "providers" | "project" | "notifications" | "confirm"
+export type OnboardingStepId =
+  | "welcome"
+  | "providers"
+  | "project"
+  | "notifications"
+  | "environment-access"
+  | "confirm"
 
 export type ProviderId =
   | "openai_codex"

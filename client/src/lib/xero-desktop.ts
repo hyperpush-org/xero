@@ -311,6 +311,10 @@ import {
   type AgentUsageUpdatedPayloadDto,
   type ProjectUsageSummaryDto,
 } from '@/src/lib/xero-model/usage'
+import {
+  environmentDiscoveryStatusSchema,
+  type EnvironmentDiscoveryStatusDto,
+} from '@/src/lib/xero-model/environment'
 
 const COMMANDS = {
   importRepository: 'import_repository',
@@ -446,6 +450,8 @@ const COMMANDS = {
   browserTabList: 'browser_tab_list',
   browserTabFocus: 'browser_tab_focus',
   browserTabClose: 'browser_tab_close',
+  getEnvironmentDiscoveryStatus: 'get_environment_discovery_status',
+  startEnvironmentDiscovery: 'start_environment_discovery',
 } as const
 
 const EVENTS = {
@@ -758,6 +764,8 @@ export interface XeroDesktopAdapter {
   ): Promise<RecordNotificationDispatchOutcomeResponseDto>
   submitNotificationReply(request: SubmitNotificationReplyRequestDto): Promise<SubmitNotificationReplyResponseDto>
   syncNotificationAdapters(projectId: string): Promise<SyncNotificationAdaptersResponseDto>
+  getEnvironmentDiscoveryStatus?(): Promise<EnvironmentDiscoveryStatusDto>
+  startEnvironmentDiscovery?(): Promise<EnvironmentDiscoveryStatusDto>
   speechDictationStatus?(): Promise<DictationStatusDto>
   speechDictationSettings?(): Promise<DictationSettingsDto>
   speechDictationUpdateSettings?(
@@ -2003,6 +2011,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTyped(COMMANDS.syncNotificationAdapters, syncNotificationAdaptersResponseSchema, {
       request,
     })
+  },
+
+  getEnvironmentDiscoveryStatus() {
+    return invokeTyped(COMMANDS.getEnvironmentDiscoveryStatus, environmentDiscoveryStatusSchema)
+  },
+
+  startEnvironmentDiscovery() {
+    return invokeTyped(COMMANDS.startEnvironmentDiscovery, environmentDiscoveryStatusSchema)
   },
 
   speechDictationStatus() {

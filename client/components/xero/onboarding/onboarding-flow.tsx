@@ -8,6 +8,7 @@ import { WelcomeStep } from "./steps/welcome-step"
 import { ProvidersStep } from "./steps/providers-step"
 import { ProjectStep } from "./steps/project-step"
 import { NotificationsStep } from "./steps/notifications-step"
+import { EnvironmentAccessStep } from "./steps/environment-access-step"
 import { ConfirmationStep } from "./steps/confirmation-step"
 import type {
   NotificationRouteHealthView,
@@ -24,18 +25,17 @@ import {
   type UpsertNotificationRouteRequestDto,
   type UpsertProviderCredentialRequestDto,
 } from "@/src/lib/xero-model"
+import type { EnvironmentPermissionRequestDto } from "@/src/lib/xero-model/environment"
 import { getCloudProviderPreset } from "@/src/lib/xero-model/provider-presets"
 import { type OnboardingStepId } from "./types"
 
-const STEP_ORDER: Array<{ id: OnboardingStepId; showIndicator: boolean }> = [
+const BASE_STEP_ORDER: Array<{ id: OnboardingStepId; showIndicator: boolean }> = [
   { id: "welcome", showIndicator: false },
   { id: "providers", showIndicator: true },
   { id: "project", showIndicator: true },
   { id: "notifications", showIndicator: true },
   { id: "confirm", showIndicator: true },
 ]
-
-const INDICATOR_STEPS = STEP_ORDER.filter((step) => step.showIndicator)
 
 interface ImportedProjectView {
   name: string
@@ -103,6 +103,7 @@ export interface OnboardingFlowProps {
   notificationRouteMutationStatus: NotificationRouteMutationStatus
   pendingNotificationRouteId: string | null
   notificationRouteMutationError: OperatorActionErrorView | null
+  environmentPermissionRequests?: EnvironmentPermissionRequestDto[]
   onImportProject: () => Promise<void>
   onRefreshProviderCredentials?: (options?: {
     force?: boolean
@@ -139,6 +140,7 @@ export function OnboardingFlow({
   notificationRouteMutationStatus,
   pendingNotificationRouteId,
   notificationRouteMutationError,
+  environmentPermissionRequests = [],
   onImportProject,
   onRefreshProviderCredentials,
   onUpsertProviderCredential,
@@ -151,23 +153,38 @@ export function OnboardingFlow({
   const [stepIndex, setStepIndex] = useState(0)
   const directionRef = useRef<1 | -1>(1)
 
-  const currentStep = STEP_ORDER[stepIndex]
+  const stepOrder = useMemo(() => {
+    if (environmentPermissionRequests.length === 0) {
+      return BASE_STEP_ORDER
+    }
+
+    return BASE_STEP_ORDER.flatMap((step) =>
+      step.id === "confirm"
+        ? [{ id: "environment-access" as const, showIndicator: true }, step]
+        : [step],
+    )
+  }, [environmentPermissionRequests.length])
+  const indicatorSteps = useMemo(
+    () => stepOrder.filter((step) => step.showIndicator),
+    [stepOrder],
+  )
+  const currentStep = stepOrder[Math.min(stepIndex, stepOrder.length - 1)]
   const providerReview = getProviderReview(providerCredentials, runtimeSession)
 
   const goTo = useCallback((target: number) => {
     setStepIndex((current) => {
-      const clamped = Math.max(0, Math.min(STEP_ORDER.length - 1, target))
+      const clamped = Math.max(0, Math.min(stepOrder.length - 1, target))
       directionRef.current = clamped >= current ? 1 : -1
       return clamped
     })
-  }, [])
+  }, [stepOrder.length])
 
   const next = useCallback(() => goTo(stepIndex + 1), [goTo, stepIndex])
   const back = useCallback(() => goTo(stepIndex - 1), [goTo, stepIndex])
 
   const indicatorIndex = useMemo(
-    () => Math.max(0, INDICATOR_STEPS.findIndex((step) => step.id === currentStep.id)),
-    [currentStep.id],
+    () => Math.max(0, indicatorSteps.findIndex((step) => step.id === currentStep.id)),
+    [currentStep.id, indicatorSteps],
   )
 
   const showFooter = currentStep.id !== "welcome"
@@ -180,7 +197,7 @@ export function OnboardingFlow({
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-3 px-8 pt-5">
         <div className="min-w-[72px]">
           {currentStep.showIndicator ? (
-            <StepIndicator total={INDICATOR_STEPS.length} currentIndex={indicatorIndex} />
+            <StepIndicator total={indicatorSteps.length} currentIndex={indicatorIndex} />
           ) : null}
         </div>
 
@@ -237,6 +254,9 @@ export function OnboardingFlow({
               mutationError={notificationRouteMutationError}
               onUpsertNotificationRoute={onUpsertNotificationRoute}
             />
+          ) : null}
+          {currentStep.id === "environment-access" ? (
+            <EnvironmentAccessStep permissionRequests={environmentPermissionRequests} />
           ) : null}
           {currentStep.id === "confirm" ? (
             <ConfirmationStep

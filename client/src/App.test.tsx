@@ -79,6 +79,7 @@ import {
 } from '@/src/test/legacy-provider-profiles'
 import type {
   AutonomousRunStateDto,
+  EnvironmentDiscoveryStatusDto,
   ImportMcpServersResponseDto,
   ImportRepositoryResponseDto,
   ListNotificationDispatchesResponseDto,
@@ -337,6 +338,23 @@ function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegi
     },
     diagnostics: [],
     reloadedAt: '2026-04-24T04:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeEnvironmentDiscoveryStatus(
+  overrides: Partial<EnvironmentDiscoveryStatusDto> = {},
+): EnvironmentDiscoveryStatusDto {
+  return {
+    hasProfile: false,
+    status: 'pending',
+    stale: true,
+    shouldStart: true,
+    refreshedAt: null,
+    probeStartedAt: null,
+    probeCompletedAt: null,
+    permissionRequests: [],
+    diagnostics: [],
     ...overrides,
   }
 }
@@ -811,6 +829,7 @@ function createAdapter(options?: {
   runtimeRun?: RuntimeRunDto | null
   autonomousState?: AutonomousRunStateDto | null
   notificationRoutes?: ListNotificationRoutesResponseDto['routes']
+  environmentDiscoveryStatus?: EnvironmentDiscoveryStatusDto
   projectFiles?: ListProjectFilesResponseDto
   pickedRepositoryPath?: string | null
   usageSummary?: ProjectUsageSummaryDto
@@ -837,6 +856,8 @@ function createAdapter(options?: {
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
+  let currentEnvironmentDiscoveryStatus =
+    options?.environmentDiscoveryStatus ?? makeEnvironmentDiscoveryStatus()
   let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'Xero')]
   let currentProjectFiles = options?.projectFiles ?? makeProjectFiles()
   const currentUsageSummary =
@@ -1303,6 +1324,18 @@ function createAdapter(options?: {
     currentAutonomousState = makeAutonomousRunState('project-1')
     return currentAutonomousState
   })
+  const getEnvironmentDiscoveryStatus = vi.fn(async () => currentEnvironmentDiscoveryStatus)
+  const startEnvironmentDiscovery = vi.fn(async () => {
+    currentEnvironmentDiscoveryStatus = {
+      ...currentEnvironmentDiscoveryStatus,
+      hasProfile: true,
+      status: 'probing',
+      shouldStart: false,
+      probeStartedAt: '2026-04-30T18:00:00Z',
+      refreshedAt: '2026-04-30T18:00:00Z',
+    }
+    return currentEnvironmentDiscoveryStatus
+  })
 
   const pickRepositoryFolder = vi.fn(async () => pickedRepositoryPath)
   const importRepository = vi.fn(async (_path: string): Promise<ImportRepositoryResponseDto> => {
@@ -1758,6 +1791,8 @@ function createAdapter(options?: {
       },
       syncedAt: '2026-04-16T13:00:00Z',
     }),
+    getEnvironmentDiscoveryStatus,
+    startEnvironmentDiscovery,
     browserEval: async () => undefined,
     browserCurrentUrl: async () => null,
     browserScreenshot: async () => '',
@@ -1853,6 +1888,8 @@ function createAdapter(options?: {
     startRuntimeRun,
     updateRuntimeRunControls,
     startAutonomousRun,
+    getEnvironmentDiscoveryStatus,
+    startEnvironmentDiscovery,
     onProjectUpdated,
     onRuntimeUpdated,
     onRuntimeRunUpdated,
@@ -1907,7 +1944,7 @@ function getProviderCard(label: string): HTMLElement {
 
 describe('XeroApp current UI', () => {
   it('shows the onboarding flow on a cold-start empty state', async () => {
-    const { adapter } = createAdapter({
+    const { adapter, getEnvironmentDiscoveryStatus, startEnvironmentDiscovery } = createAdapter({
       projects: [],
       runtimeSession: makeRuntimeSession('project-1', {
         phase: 'idle',
@@ -1923,10 +1960,13 @@ describe('XeroApp current UI', () => {
     expect(screen.getByRole('button', { name: 'Get started' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Skip setup' })).toBeVisible()
     expect(screen.queryByLabelText('Status bar')).not.toBeInTheDocument()
+    await waitFor(() => expect(getEnvironmentDiscoveryStatus).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(startEnvironmentDiscovery).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('heading', { name: /Review environment access/i })).not.toBeInTheDocument()
   })
 
   it('falls through to the legacy empty state when onboarding is dismissed', async () => {
-    const { adapter } = createAdapter({
+    const { adapter, startEnvironmentDiscovery } = createAdapter({
       projects: [],
       runtimeSession: makeRuntimeSession('project-1', {
         phase: 'idle',
@@ -1941,6 +1981,80 @@ describe('XeroApp current UI', () => {
 
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     expect(screen.getAllByRole('button', { name: /Import repository/ }).length).toBeGreaterThanOrEqual(1)
+    await waitFor(() => expect(startEnvironmentDiscovery).toHaveBeenCalledTimes(1))
+  })
+
+  it('adds the environment access step only when discovery reports permission requests', async () => {
+    const { adapter, startEnvironmentDiscovery } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+      environmentDiscoveryStatus: makeEnvironmentDiscoveryStatus({
+        hasProfile: true,
+        status: 'partial',
+        stale: false,
+        shouldStart: false,
+        refreshedAt: '2026-04-30T18:00:00Z',
+        permissionRequests: [
+          {
+            id: 'developer-folder-access',
+            kind: 'protected_path',
+            status: 'pending',
+            title: 'Developer folder access',
+            reason: 'Allow Xero to inspect a protected toolchain directory during onboarding.',
+            optional: true,
+          },
+        ],
+      }),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Add a project' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Add notification routes' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+    expect(await screen.findByRole('heading', { name: 'Review environment access' })).toBeVisible()
+    expect(screen.getByText('Developer folder access')).toBeVisible()
+    expect(screen.getByLabelText('Skip this optional access for now')).toBeChecked()
+    expect(startEnvironmentDiscovery).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
+  })
+
+  it('goes straight from notifications to confirmation when no environment permission is needed', async () => {
+    const { adapter } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+      environmentDiscoveryStatus: makeEnvironmentDiscoveryStatus({
+        hasProfile: true,
+        status: 'ready',
+        stale: false,
+        shouldStart: false,
+        refreshedAt: '2026-04-30T18:00:00Z',
+      }),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Review environment access' })).not.toBeInTheDocument()
   })
 
 

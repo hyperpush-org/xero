@@ -28,6 +28,7 @@ import type {
 } from '@/src/lib/xero-model/session-context'
 import { type RepositoryDiffScope } from '@/src/lib/xero-model/project'
 import { summarizeProjectUsageSpend } from '@/src/lib/xero-model/usage'
+import type { EnvironmentDiscoveryStatusDto } from '@/src/lib/xero-model/environment'
 import { useXeroDesktopState, type AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
@@ -233,6 +234,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [solanaOpen, setSolanaOpen] = useState(false)
   const [vcsOpen, setVcsOpen] = useState(false)
   const [usageOpen, setUsageOpen] = useState(false)
+  const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
+    useState<EnvironmentDiscoveryStatusDto | null>(null)
+  const environmentDiscoveryStartedRef = useRef(false)
 
   useEffect(() => {
     setAgentComposerControls(null)
@@ -672,6 +676,44 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const shouldAutoOpenOnboarding = !onboardingDismissed && !isLoading && projects.length === 0
   const showOnboarding = (onboardingOpen || shouldAutoOpenOnboarding) && !onboardingDismissed && !isLoading
 
+  useEffect(() => {
+    if (!showOnboarding || environmentDiscoveryStartedRef.current) {
+      return
+    }
+    if (!resolvedAdapter.getEnvironmentDiscoveryStatus) {
+      environmentDiscoveryStartedRef.current = true
+      return
+    }
+
+    let cancelled = false
+    environmentDiscoveryStartedRef.current = true
+
+    const refreshEnvironmentDiscovery = async () => {
+      try {
+        const status = await resolvedAdapter.getEnvironmentDiscoveryStatus?.()
+        if (!status || cancelled) {
+          return
+        }
+        setEnvironmentDiscoveryStatus(status)
+
+        if (status.shouldStart && resolvedAdapter.startEnvironmentDiscovery) {
+          const startedStatus = await resolvedAdapter.startEnvironmentDiscovery()
+          if (!cancelled) {
+            setEnvironmentDiscoveryStatus(startedStatus)
+          }
+        }
+      } catch {
+        // Onboarding remains non-blocking; diagnostics can surface discovery failures later.
+      }
+    }
+
+    void refreshEnvironmentDiscovery()
+
+    return () => {
+      cancelled = true
+    }
+  }, [resolvedAdapter, showOnboarding])
+
   if (showOnboarding) {
     return (
       <XeroShell
@@ -723,6 +765,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           notificationRouteMutationStatus={agentView?.notificationRouteMutationStatus ?? 'idle'}
           pendingNotificationRouteId={agentView?.pendingNotificationRouteId ?? null}
           notificationRouteMutationError={agentView?.notificationRouteMutationError ?? null}
+          environmentPermissionRequests={environmentDiscoveryStatus?.permissionRequests ?? []}
           onImportProject={() => importProject()}
           onRefreshProviderCredentials={(options) => refreshProviderCredentials(options)}
           onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
