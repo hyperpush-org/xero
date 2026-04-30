@@ -93,7 +93,13 @@ const removePath = async (path, size = 0) => {
 
 for (const entry of entries) {
   const path = join(depsDir, entry.name)
-  const entryStat = await stat(path)
+  let entryStat
+  try {
+    entryStat = await stat(path)
+  } catch (error) {
+    if (error.code === 'ENOENT') continue
+    throw error
+  }
 
   if (!isLikelyTestExecutable(entry, entryStat)) continue
   if (entryStat.mtimeMs > cutoffMs) continue

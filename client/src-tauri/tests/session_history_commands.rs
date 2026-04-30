@@ -1407,7 +1407,21 @@ fn seed_history_run_with_provider(
                 "toolName": "read",
                 "ok": true,
                 "summary": "Read tracked file.",
-                "output": { "stdout": "alpha\nbeta\n" }
+                "output": {
+                    "toolName": "read",
+                    "summary": "Read tracked file.",
+                    "commandResult": null,
+                    "output": {
+                        "kind": "read",
+                        "path": "src/tracked.txt",
+                        "startLine": 1,
+                        "lineCount": 2,
+                        "totalLines": 2,
+                        "truncated": false,
+                        "content": "alpha\nbeta\n",
+                        "lineHashes": []
+                    }
+                }
             })
             .to_string(),
             created_at: plus_seconds(started_at, 3),
@@ -1448,7 +1462,24 @@ fn seed_history_run_with_provider(
             run_id: run_id.into(),
             tool_call_id: format!("{run_id}-tool-read"),
             state: project_store::AgentToolCallState::Succeeded,
-            result_json: Some(json!({ "stdout": "x".repeat(800) }).to_string()),
+            result_json: Some(
+                json!({
+                    "toolName": "read",
+                    "summary": "Read tracked file.",
+                    "commandResult": null,
+                    "output": {
+                        "kind": "read",
+                        "path": "src/tracked.txt",
+                        "startLine": 1,
+                        "lineCount": 1,
+                        "totalLines": 1,
+                        "truncated": true,
+                        "content": "x".repeat(800),
+                        "lineHashes": []
+                    }
+                })
+                .to_string(),
+            ),
             error: None,
             completed_at: plus_seconds(started_at, 6),
         },

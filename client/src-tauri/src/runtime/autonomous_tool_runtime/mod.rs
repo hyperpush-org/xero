@@ -1296,14 +1296,16 @@ impl AutonomousToolRuntime {
         let project_id = project_id.into();
         let project_app_data_dir = crate::db::project_app_data_dir_for_repo(&self.repo_root);
         self.skill_tool = Some(AutonomousSkillToolRuntime::new(
-            project_id,
-            project_app_data_dir,
-            github_runtime,
-            bundled_roots,
-            local_roots,
-            project_skills_enabled,
-            github_enabled,
-            plugin_roots,
+            AutonomousSkillToolRuntimeConfig {
+                project_id,
+                project_app_data_dir,
+                github_runtime,
+                bundled_roots,
+                local_roots,
+                project_skills_enabled,
+                github_enabled,
+                plugin_roots,
+            },
         ));
         self
     }
@@ -1605,11 +1607,10 @@ impl AutonomousToolRuntime {
 
                 let known_tools = tool_access_all_known_tools();
                 for tool in request.tools {
-                    if known_tools.contains(tool.as_str())
-                        && self.tool_available_by_runtime(tool.as_str())
-                    {
-                        requested.insert(tool);
-                    } else if self.dynamic_tool_descriptor(&tool)?.is_some() {
+                    let runtime_tool_available = known_tools.contains(tool.as_str())
+                        && self.tool_available_by_runtime(tool.as_str());
+                    let dynamic_tool_available = self.dynamic_tool_descriptor(&tool)?.is_some();
+                    if runtime_tool_available || dynamic_tool_available {
                         requested.insert(tool);
                     } else {
                         denied.insert(tool);
@@ -3176,6 +3177,18 @@ pub struct AutonomousDynamicToolDescriptor {
 }
 
 #[derive(Clone)]
+struct AutonomousSkillToolRuntimeConfig {
+    project_id: String,
+    project_app_data_dir: PathBuf,
+    github_runtime: AutonomousSkillRuntime,
+    bundled_roots: Vec<AutonomousBundledSkillRoot>,
+    local_roots: Vec<AutonomousLocalSkillRoot>,
+    project_skills_enabled: bool,
+    github_enabled: bool,
+    plugin_roots: Vec<AutonomousPluginRoot>,
+}
+
+#[derive(Clone)]
 pub(super) struct AutonomousSkillToolRuntime {
     project_id: String,
     project_app_data_dir: PathBuf,
@@ -3189,25 +3202,16 @@ pub(super) struct AutonomousSkillToolRuntime {
 }
 
 impl AutonomousSkillToolRuntime {
-    fn new(
-        project_id: String,
-        project_app_data_dir: PathBuf,
-        github_runtime: AutonomousSkillRuntime,
-        bundled_roots: Vec<AutonomousBundledSkillRoot>,
-        local_roots: Vec<AutonomousLocalSkillRoot>,
-        project_skills_enabled: bool,
-        github_enabled: bool,
-        plugin_roots: Vec<AutonomousPluginRoot>,
-    ) -> Self {
+    fn new(config: AutonomousSkillToolRuntimeConfig) -> Self {
         Self {
-            project_id,
-            project_app_data_dir,
-            github_runtime,
-            bundled_roots,
-            local_roots,
-            project_skills_enabled,
-            github_enabled,
-            plugin_roots,
+            project_id: config.project_id,
+            project_app_data_dir: config.project_app_data_dir,
+            github_runtime: config.github_runtime,
+            bundled_roots: config.bundled_roots,
+            local_roots: config.local_roots,
+            project_skills_enabled: config.project_skills_enabled,
+            github_enabled: config.github_enabled,
+            plugin_roots: config.plugin_roots,
             discovery_cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }

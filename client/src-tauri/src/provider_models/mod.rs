@@ -529,90 +529,6 @@ fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
         .any(|marker| model_id.contains(marker))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn openai_codex_projection_exposes_gsd_thinking_levels_for_openai_choices() {
-        let models = openai_codex_projection();
-        let model_ids = models
-            .iter()
-            .map(|model| model.model_id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            model_ids,
-            vec![
-                "gpt-5.2",
-                "gpt-5.3-codex",
-                "gpt-5.3-codex-spark",
-                "gpt-5.4",
-                "gpt-5.5",
-            ]
-        );
-
-        for model in models {
-            assert_eq!(
-                model.thinking.effort_options,
-                vec![
-                    ProviderModelThinkingEffort::Minimal,
-                    ProviderModelThinkingEffort::Low,
-                    ProviderModelThinkingEffort::Medium,
-                    ProviderModelThinkingEffort::High,
-                    ProviderModelThinkingEffort::XHigh,
-                ],
-                "{} should expose GSD-style OpenAI Codex thinking levels",
-                model.model_id
-            );
-        }
-    }
-
-    #[test]
-    fn openai_codex_thinking_capability_matches_gsd_x_high_patch() {
-        assert_eq!(
-            openai_codex_thinking_capability("gpt-5.1").effort_options,
-            vec![
-                ProviderModelThinkingEffort::Minimal,
-                ProviderModelThinkingEffort::Low,
-                ProviderModelThinkingEffort::Medium,
-                ProviderModelThinkingEffort::High,
-            ]
-        );
-        assert_eq!(
-            openai_codex_thinking_capability("openai/gpt-5.4").effort_options,
-            vec![
-                ProviderModelThinkingEffort::Minimal,
-                ProviderModelThinkingEffort::Low,
-                ProviderModelThinkingEffort::Medium,
-                ProviderModelThinkingEffort::High,
-                ProviderModelThinkingEffort::XHigh,
-            ]
-        );
-    }
-
-    #[test]
-    fn openai_codex_projection_exposes_gpt_5_5_display_name() {
-        let models = openai_codex_projection();
-        let gpt_5_5 = models
-            .iter()
-            .find(|model| model.model_id == "gpt-5.5")
-            .expect("gpt-5.5 model choice");
-
-        assert_eq!(gpt_5_5.display_name, "GPT-5.5");
-        assert_eq!(
-            gpt_5_5.thinking.effort_options,
-            vec![
-                ProviderModelThinkingEffort::Minimal,
-                ProviderModelThinkingEffort::Low,
-                ProviderModelThinkingEffort::Medium,
-                ProviderModelThinkingEffort::High,
-                ProviderModelThinkingEffort::XHigh,
-            ]
-        );
-    }
-}
-
 fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<ProviderModelRecord> {
     let mut normalized = models
         .into_iter()
@@ -1315,4 +1231,88 @@ fn normalized_optional_string(value: Option<&str>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_codex_projection_exposes_gsd_thinking_levels_for_openai_choices() {
+        let models = openai_codex_projection();
+        let model_ids = models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            model_ids,
+            vec![
+                "gpt-5.2",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+                "gpt-5.4",
+                "gpt-5.5",
+            ]
+        );
+
+        for model in models {
+            assert_eq!(
+                model.thinking.effort_options,
+                vec![
+                    ProviderModelThinkingEffort::Minimal,
+                    ProviderModelThinkingEffort::Low,
+                    ProviderModelThinkingEffort::Medium,
+                    ProviderModelThinkingEffort::High,
+                    ProviderModelThinkingEffort::XHigh,
+                ],
+                "{} should expose GSD-style OpenAI Codex thinking levels",
+                model.model_id
+            );
+        }
+    }
+
+    #[test]
+    fn openai_codex_thinking_capability_matches_gsd_x_high_patch() {
+        assert_eq!(
+            openai_codex_thinking_capability("gpt-5.1").effort_options,
+            vec![
+                ProviderModelThinkingEffort::Minimal,
+                ProviderModelThinkingEffort::Low,
+                ProviderModelThinkingEffort::Medium,
+                ProviderModelThinkingEffort::High,
+            ]
+        );
+        assert_eq!(
+            openai_codex_thinking_capability("openai/gpt-5.4").effort_options,
+            vec![
+                ProviderModelThinkingEffort::Minimal,
+                ProviderModelThinkingEffort::Low,
+                ProviderModelThinkingEffort::Medium,
+                ProviderModelThinkingEffort::High,
+                ProviderModelThinkingEffort::XHigh,
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_codex_projection_exposes_gpt_5_5_display_name() {
+        let models = openai_codex_projection();
+        let gpt_5_5 = models
+            .iter()
+            .find(|model| model.model_id == "gpt-5.5")
+            .expect("gpt-5.5 model choice");
+
+        assert_eq!(gpt_5_5.display_name, "GPT-5.5");
+        assert_eq!(
+            gpt_5_5.thinking.effort_options,
+            vec![
+                ProviderModelThinkingEffort::Minimal,
+                ProviderModelThinkingEffort::Low,
+                ProviderModelThinkingEffort::Medium,
+                ProviderModelThinkingEffort::High,
+                ProviderModelThinkingEffort::XHigh,
+            ]
+        );
+    }
 }

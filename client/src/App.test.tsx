@@ -23,6 +23,17 @@ vi.mock('@/src/lib/github-auth', () => ({
   }),
 }))
 
+vi.mock('@/components/ui/tooltip', () => ({
+  Tooltip: ({ children }: any) => <>{children}</>,
+  TooltipContent: () => null,
+  TooltipProvider: ({ children }: any) => <>{children}</>,
+  TooltipTrigger: ({ children }: any) => <>{children}</>,
+}))
+
+vi.mock('../components/xero/agent-runtime', () => ({
+  AgentRuntime: () => <section aria-label="Agent runtime" />,
+}))
+
 vi.mock('../components/xero/code-editor', () => ({
   CodeEditor: ({ filePath, onChange, onSave, value }: any) => (
     <div>
@@ -2220,7 +2231,7 @@ describe('XeroApp current UI', () => {
     })
 
     expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
-    expect(within(breadcrumb).getByText('Personas')).toBeVisible()
+    expect(within(breadcrumb).getByText('Cluster')).toBeVisible()
   })
 
   it('starts GitHub auth from the titlebar without opening Account settings', async () => {

@@ -253,7 +253,7 @@ fn collect_repository_instruction_files(repo_root: &Path) -> Vec<RepositoryInstr
         .git_ignore(true)
         .git_exclude(true)
         .git_global(true)
-        .filter_entry(|entry| should_visit_instruction_entry(entry))
+        .filter_entry(should_visit_instruction_entry)
         .build();
     let mut instruction_files = walker
         .filter_map(Result::ok)

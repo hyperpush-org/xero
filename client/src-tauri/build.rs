@@ -280,11 +280,6 @@ fn build_cookie_importer() {
     if std::env::var_os(BUILD_COOKIE_IMPORTER_ENV).is_none() {
         if helper_target.exists() {
             copy_cookie_importer(&helper_target, &destination);
-        } else {
-            println!(
-                "cargo:warning=skipping cookie-importer sidecar build; set {BUILD_COOKIE_IMPORTER_ENV}=1 to build it or prebuild {}",
-                helper_target.display()
-            );
         }
         return;
     }

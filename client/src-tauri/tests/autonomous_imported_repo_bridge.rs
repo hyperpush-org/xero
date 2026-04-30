@@ -181,8 +181,15 @@ fn seed_authenticated_runtime(
     auth_store_path: &Path,
     project_id: &str,
 ) {
-    persist_openai_codex_session(auth_store_path, valid_openai_session())
-        .expect("persist auth session");
+    let session = valid_openai_session();
+    persist_openai_codex_session(auth_store_path, session.clone()).expect("persist auth session");
+    sync_openai_profile_link(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        None,
+        Some(&session),
+    )
+    .expect("sync OpenAI Codex provider profile");
 
     let runtime = start_runtime_session(
         app.handle().clone(),

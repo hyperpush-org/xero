@@ -828,9 +828,7 @@ fn filter_rows(
             if !enabled_ok {
                 return false;
             }
-            let rejected_ok =
-                filter.include_rejected || row.review_state != AgentMemoryReviewState::Rejected;
-            rejected_ok
+            filter.include_rejected || row.review_state != AgentMemoryReviewState::Rejected
         })
         .collect()
 }

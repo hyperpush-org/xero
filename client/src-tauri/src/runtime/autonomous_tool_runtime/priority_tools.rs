@@ -856,7 +856,7 @@ impl AutonomousToolRuntime {
         let result = match self.skill(XeroSkillToolInput::List {
             query: Some(query.into()),
             include_unavailable: true,
-            limit: Some(limit.max(10).min(MAX_PRIORITY_TOOL_LIMIT)),
+            limit: Some(limit.clamp(10, MAX_PRIORITY_TOOL_LIMIT)),
         }) {
             Ok(result) => result,
             Err(_) => return Ok(Vec::new()),
