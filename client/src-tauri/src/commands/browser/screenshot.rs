@@ -10,13 +10,13 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
     let webview_pos = webview.position().map_err(|error| {
         CommandError::system_fault(
             "browser_screenshot_position_failed",
-            format!("Cadence could not read the browser webview position: {error}"),
+            format!("Xero could not read the browser webview position: {error}"),
         )
     })?;
     let webview_size = webview.size().map_err(|error| {
         CommandError::system_fault(
             "browser_screenshot_size_failed",
-            format!("Cadence could not read the browser webview size: {error}"),
+            format!("Xero could not read the browser webview size: {error}"),
         )
     })?;
 
@@ -31,7 +31,7 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
     let inner_pos = parent.inner_position().map_err(|error| {
         CommandError::system_fault(
             "browser_screenshot_window_pos_failed",
-            format!("Cadence could not read the host window position: {error}"),
+            format!("Xero could not read the host window position: {error}"),
         )
     })?;
 
@@ -41,7 +41,7 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
     let monitors = xcap::Monitor::all().map_err(|error| {
         CommandError::system_fault(
             "browser_screenshot_monitors_failed",
-            format!("Cadence could not enumerate displays for screenshot: {error}"),
+            format!("Xero could not enumerate displays for screenshot: {error}"),
         )
     })?;
 
@@ -51,7 +51,7 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
         .ok_or_else(|| {
             CommandError::system_fault(
                 "browser_screenshot_no_monitor",
-                "Cadence could not find a display containing the browser webview.",
+                "Xero could not find a display containing the browser webview.",
             )
         })?;
 
@@ -61,7 +61,7 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
     let captured: RgbaImage = monitor.capture_image().map_err(|error| {
         CommandError::system_fault(
             "browser_screenshot_capture_failed",
-            format!("Cadence could not capture the display contents: {error}"),
+            format!("Xero could not capture the display contents: {error}"),
         )
     })?;
 
@@ -89,7 +89,7 @@ pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String
         .map_err(|error| {
             CommandError::system_fault(
                 "browser_screenshot_encode_failed",
-                format!("Cadence could not encode the screenshot as PNG: {error}"),
+                format!("Xero could not encode the screenshot as PNG: {error}"),
             )
         })?;
 
@@ -131,7 +131,7 @@ fn monitor_geometry_field(monitor: &xcap::Monitor, field: MonitorField) -> Comma
     .map_err(|error| {
         CommandError::system_fault(
             "browser_screenshot_monitor_field_failed",
-            format!("Cadence could not read display geometry: {error}"),
+            format!("Xero could not read display geometry: {error}"),
         )
     })?;
 

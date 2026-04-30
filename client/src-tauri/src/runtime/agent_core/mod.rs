@@ -19,7 +19,8 @@ mod types;
 pub use events::{publish_agent_event, subscribe_agent_events, AgentEventSubscription};
 pub use provider_adapters::{
     create_provider_adapter, AgentProviderConfig, AnthropicProviderConfig, BedrockProviderConfig,
-    OpenAiCompatibleProviderConfig, OpenAiResponsesProviderConfig, VertexProviderConfig,
+    OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
+    OpenAiResponsesProviderConfig, VertexProviderConfig,
 };
 pub use run::*;
 pub use supervisor::{
@@ -91,7 +92,7 @@ use crate::{
 pub const OWNED_AGENT_SUPERVISOR_KIND: &str = "owned_agent";
 pub const OWNED_AGENT_RUNTIME_KIND: &str = "owned_agent";
 pub const FAKE_PROVIDER_ID: &str = "fake_provider";
-const SYSTEM_PROMPT_VERSION: &str = "cadence-owned-agent-v1";
+const SYSTEM_PROMPT_VERSION: &str = "xero-owned-agent-v1";
 const MAX_PROVIDER_TURNS: usize = 32;
 const MAX_ROLLBACK_CONTENT_BYTES: u64 = 256 * 1024;
 const INTERRUPTED_TOOL_CALL_CODE: &str = "agent_tool_call_interrupted";

@@ -29,15 +29,15 @@ end
 # If you use `mix release`, you need to explicitly enable the server
 # by passing the PHX_SERVER=true when you start it:
 #
-#     PHX_SERVER=true bin/joe start
+#     PHX_SERVER=true bin/xero start
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 if System.get_env("PHX_SERVER") do
-  config :joe, JoeWeb.Endpoint, server: true
+  config :xero, XeroWeb.Endpoint, server: true
 end
 
-config :joe, JoeWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+config :xero, XeroWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 # --- CORS (cors_plug) ---
 # Comma-separated list of allowed origins. "*" is allowed for dev only.
@@ -54,10 +54,10 @@ config :cors_plug,
   origin: cors_origins,
   max_age: 86_400,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  headers: ["authorization", "content-type", "x-cadence-github-session-id"]
+  headers: ["authorization", "content-type", "x-xero-github-session-id"]
 
 # --- Rate limiting (Hammer) ---
-config :joe, Joe.RateLimiter,
+config :xero, Xero.RateLimiter,
   per_minute: String.to_integer(System.get_env("RATE_LIMIT_PER_MINUTE", "60"))
 
 # --- Oban background jobs ---
@@ -69,8 +69,8 @@ oban_queues =
     {String.to_atom(String.trim(name)), String.to_integer(String.trim(limit))}
   end)
 
-config :joe, Oban,
-  repo: Joe.Repo,
+config :xero, Oban,
+  repo: Xero.Repo,
   queues: oban_queues,
   plugins: [
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
@@ -87,7 +87,7 @@ if config_env() == :prod do
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
-  config :joe, Joe.Repo,
+  config :xero, Xero.Repo,
     # ssl: true,
     url: database_url,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
@@ -109,9 +109,9 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
-  config :joe, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :xero, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
-  config :joe, JoeWeb.Endpoint,
+  config :xero, XeroWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
       # Enable IPv6 and bind on all interfaces.
@@ -127,7 +127,7 @@ if config_env() == :prod do
   # To get SSL working, you will need to add the `https` key
   # to your endpoint configuration:
   #
-  #     config :joe, JoeWeb.Endpoint,
+  #     config :xero, XeroWeb.Endpoint,
   #       https: [
   #         ...,
   #         port: 443,
@@ -149,7 +149,7 @@ if config_env() == :prod do
   # We also recommend setting `force_ssl` in your config/prod.exs,
   # ensuring no data is ever sent via http, always redirecting to https:
   #
-  #     config :joe, JoeWeb.Endpoint,
+  #     config :xero, XeroWeb.Endpoint,
   #       force_ssl: [hsts: true]
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
@@ -159,7 +159,7 @@ if config_env() == :prod do
   # In production you need to configure the mailer to use a different adapter.
   # Here is an example configuration for Mailgun:
   #
-  #     config :joe, Joe.Mailer,
+  #     config :xero, Xero.Mailer,
   #       adapter: Swoosh.Adapters.Mailgun,
   #       api_key: System.get_env("MAILGUN_API_KEY"),
   #       domain: System.get_env("MAILGUN_DOMAIN")

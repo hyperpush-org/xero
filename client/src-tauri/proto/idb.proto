@@ -15,7 +15,7 @@ service CompanionService {
   //
   // Upstream ships `rpc connect(ConnectRequest)` here, but tonic-build
   // emits an inherent `connect()` constructor on the generated client
-  // at the same name, which collides in Rust. Cadence doesn't call this
+  // at the same name, which collides in Rust. Xero doesn't call this
   // RPC (we always spawn idb_companion targeting a specific UDID, so the
   // ambient connection identity is already set), so we simply drop it
   // from the vendored service surface.
@@ -923,7 +923,7 @@ message DapRequest {
 message DapResponse {
   // Renamed from `Event` to avoid a naming collision with the `event`
   // oneof below — prost generates identical Rust identifiers for both.
-  // We don't use the dap RPC from Cadence, but the message types must
+  // We don't use the dap RPC from Xero, but the message types must
   // still compile for the rest of the service to be usable.
   message DescEvent {
     string desc = 1;

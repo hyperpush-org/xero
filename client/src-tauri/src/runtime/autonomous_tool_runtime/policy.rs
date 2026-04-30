@@ -67,7 +67,7 @@ impl AutonomousToolRuntime {
             CommandError::new(
                 "policy_denied_approval_snapshot_missing",
                 CommandErrorClass::PolicyDenied,
-                "Cadence denied the autonomous shell command because no active approval snapshot was available.",
+                "Xero denied the autonomous shell command because no active approval snapshot was available.",
                 false,
             )
         })?;
@@ -76,7 +76,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::new(
                 "policy_denied_approval_snapshot_invalid",
                 CommandErrorClass::PolicyDenied,
-                "Cadence denied the autonomous shell command because the active approval snapshot was malformed.",
+                "Xero denied the autonomous shell command because the active approval snapshot was malformed.",
                 false,
             ));
         }
@@ -126,7 +126,7 @@ pub(super) fn process_manager_policy_trace(
     target_ownership: Option<AutonomousProcessOwnershipScope>,
     persistent: bool,
 ) -> AutonomousProcessManagerPolicyTrace {
-    let target_scope = target_ownership.unwrap_or(AutonomousProcessOwnershipScope::CadenceOwned);
+    let target_scope = target_ownership.unwrap_or(AutonomousProcessOwnershipScope::XeroOwned);
     let risk_level = match action {
         AutonomousProcessManagerAction::List
         | AutonomousProcessManagerAction::Status
@@ -181,12 +181,12 @@ pub(super) fn process_manager_policy_trace(
         AutonomousProcessActionRiskLevel::RunOwned => (
             true,
             "process_policy_run_owned_requires_command_policy",
-            "Starting or interacting with Cadence-owned processes must pass the existing repo-scoped command approval policy before implementation.",
+            "Starting or interacting with Xero-owned processes must pass the existing repo-scoped command approval policy before implementation.",
         ),
         AutonomousProcessActionRiskLevel::SignalOwned => (
             false,
             "process_policy_signal_owned",
-            "Signaling Cadence-owned processes is allowed after ownership verification and audit logging.",
+            "Signaling Xero-owned processes is allowed after ownership verification and audit logging.",
         ),
         AutonomousProcessActionRiskLevel::SignalExternal => (
             true,
@@ -222,14 +222,14 @@ fn normalize_command_argv(argv: &[String]) -> CommandResult<Vec<String>> {
     if argv.is_empty() || argv[0].trim().is_empty() {
         return Err(CommandError::user_fixable(
             "autonomous_tool_command_invalid",
-            "Cadence requires autonomous command requests to include a non-empty argv[0].",
+            "Xero requires autonomous command requests to include a non-empty argv[0].",
         ));
     }
 
     if argv.iter().any(|argument| argument.contains('\0')) {
         return Err(CommandError::user_fixable(
             "autonomous_tool_command_invalid",
-            "Cadence refused a command that contained a NUL byte.",
+            "Xero refused a command that contained a NUL byte.",
         ));
     }
 
@@ -249,7 +249,7 @@ fn normalize_timeout_ms(timeout_ms: Option<u64>, max_timeout_ms: u64) -> Command
     if timeout == 0 || timeout > max_timeout_ms {
         return Err(CommandError::user_fixable(
             "autonomous_tool_command_timeout_invalid",
-            format!("Cadence requires command timeout_ms to be between 1 and {max_timeout_ms}."),
+            format!("Xero requires command timeout_ms to be between 1 and {max_timeout_ms}."),
         ));
     }
     Ok(timeout)
@@ -270,7 +270,7 @@ fn validate_repo_scoped_arguments(
                     "policy_denied_argument_outside_repo",
                     CommandErrorClass::PolicyDenied,
                     format!(
-                        "Cadence denied the autonomous shell command under active approval mode `{}` because argument `{candidate}` escapes the imported repository root.",
+                        "Xero denied the autonomous shell command under active approval mode `{}` because argument `{candidate}` escapes the imported repository root.",
                         approval_mode_label(&approval_mode)
                     ),
                     false,
@@ -320,7 +320,7 @@ fn map_cwd_policy_error(error: CommandError) -> CommandError {
         return CommandError::new(
             "policy_denied_command_cwd_outside_repo",
             CommandErrorClass::PolicyDenied,
-            "Cadence denied the autonomous shell command because its cwd escapes the imported repository root.",
+            "Xero denied the autonomous shell command because its cwd escapes the imported repository root.",
             false,
         );
     }
@@ -343,7 +343,7 @@ fn classify_command(argv: &[String]) -> CommandClassification {
             return CommandClassification::Ambiguous {
                 code: "policy_escalated_sensitive_shell",
                 reason: format!(
-                    "Cadence requires operator review for shell wrapper command `{}` because the script may expand environment variables, access absolute paths, or contact external network surfaces.",
+                    "Xero requires operator review for shell wrapper command `{}` because the script may expand environment variables, access absolute paths, or contact external network surfaces.",
                     render_command_for_summary(argv)
                 ),
             };
@@ -352,7 +352,7 @@ fn classify_command(argv: &[String]) -> CommandClassification {
             return CommandClassification::Destructive {
                 code: "policy_escalated_destructive_shell",
                 reason: format!(
-                    "Cadence requires operator review for shell wrapper command `{}` because the script text matches the destructive command classifier.",
+                    "Xero requires operator review for shell wrapper command `{}` because the script text matches the destructive command classifier.",
                     render_command_for_summary(argv)
                 ),
             };
@@ -368,7 +368,7 @@ fn classify_command(argv: &[String]) -> CommandClassification {
             CommandClassification::Ambiguous {
                 code: "policy_escalated_network_command",
                 reason: format!(
-                    "Cadence requires operator review for `{}` because it can contact external network surfaces.",
+                    "Xero requires operator review for `{}` because it can contact external network surfaces.",
                     render_command_for_summary(argv)
                 ),
             }
@@ -377,7 +377,7 @@ fn classify_command(argv: &[String]) -> CommandClassification {
             CommandClassification::Ambiguous {
                 code: "policy_escalated_network_command",
                 reason: format!(
-                    "Cadence requires operator review for `{}` because it can contact external network surfaces.",
+                    "Xero requires operator review for `{}` because it can contact external network surfaces.",
                     render_command_for_summary(argv)
                 ),
             }
@@ -392,7 +392,7 @@ fn classify_command(argv: &[String]) -> CommandClassification {
                 return CommandClassification::Destructive {
                     code: "policy_escalated_destructive_command",
                     reason: format!(
-                        "Cadence requires operator review for `{}` because `find -delete` is destructive.",
+                        "Xero requires operator review for `{}` because `find -delete` is destructive.",
                         render_command_for_summary(argv)
                     ),
                 };
@@ -409,14 +409,14 @@ fn classify_command(argv: &[String]) -> CommandClassification {
         | "dd" | "mkfs" | "diskutil" => CommandClassification::Destructive {
             code: "policy_escalated_destructive_command",
             reason: format!(
-                "Cadence requires operator review for `{}` because it matches the destructive command classifier.",
+                "Xero requires operator review for `{}` because it matches the destructive command classifier.",
                 render_command_for_summary(argv)
             ),
         },
         _ => CommandClassification::Ambiguous {
             code: "policy_escalated_ambiguous_command",
             reason: format!(
-                "Cadence could not classify `{}` as a repo-scoped non-destructive command, so operator review is required.",
+                "Xero could not classify `{}` as a repo-scoped non-destructive command, so operator review is required.",
                 render_command_for_summary(argv)
             ),
         },
@@ -469,7 +469,7 @@ fn classify_git_command(argv: &[String]) -> CommandClassification {
         Some(_) | None => CommandClassification::Ambiguous {
             code: "policy_escalated_ambiguous_command",
             reason: format!(
-                "Cadence could not classify git command `{}` as non-destructive, so operator review is required.",
+                "Xero could not classify git command `{}` as non-destructive, so operator review is required.",
                 render_command_for_summary(argv)
             ),
         },
@@ -488,7 +488,7 @@ fn classify_cargo_command(argv: &[String]) -> CommandClassification {
         Some(_) | None => CommandClassification::Ambiguous {
             code: "policy_escalated_ambiguous_command",
             reason: format!(
-                "Cadence could not classify cargo command `{}` as non-destructive, so operator review is required.",
+                "Xero could not classify cargo command `{}` as non-destructive, so operator review is required.",
                 render_command_for_summary(argv)
             ),
         },
@@ -505,7 +505,7 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
             CommandClassification::Ambiguous {
                 code: "policy_escalated_package_manager_mutation",
                 reason: format!(
-                    "Cadence requires operator review for `{}` because package-manager mutation commands can execute install scripts, change dependency state, or contact external registries.",
+                    "Xero requires operator review for `{}` because package-manager mutation commands can execute install scripts, change dependency state, or contact external registries.",
                     render_command_for_summary(argv)
                 ),
             }
@@ -514,7 +514,7 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
         Some("exec") => CommandClassification::Ambiguous {
             code: "policy_escalated_package_manager_exec",
             reason: format!(
-                "Cadence requires operator review for `{}` because package-manager exec commands can run arbitrary local or registry-provided binaries.",
+                "Xero requires operator review for `{}` because package-manager exec commands can run arbitrary local or registry-provided binaries.",
                 render_command_for_summary(argv)
             ),
         },
@@ -523,7 +523,7 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
             CommandClassification::Ambiguous {
                 code: "policy_escalated_package_manager_run",
                 reason: format!(
-                    "Cadence requires operator review for `{}` because package-manager scripts are project-defined commands and can perform arbitrary side effects.",
+                    "Xero requires operator review for `{}` because package-manager scripts are project-defined commands and can perform arbitrary side effects.",
                     render_command_for_summary(argv)
                 ),
             }
@@ -531,7 +531,7 @@ fn classify_package_manager_command(argv: &[String]) -> CommandClassification {
         Some(_) | None => CommandClassification::Ambiguous {
             code: "policy_escalated_ambiguous_command",
             reason: format!(
-                "Cadence could not classify package-manager command `{}` as non-destructive, so operator review is required.",
+                "Xero could not classify package-manager command `{}` as non-destructive, so operator review is required.",
                 render_command_for_summary(argv)
             ),
         },
@@ -549,7 +549,7 @@ fn destructive_command(argv: &[String], reason: &str) -> CommandClassification {
     CommandClassification::Destructive {
         code: "policy_escalated_destructive_command",
         reason: format!(
-            "Cadence requires operator review for `{}` because {reason}.",
+            "Xero requires operator review for `{}` because {reason}.",
             render_command_for_summary(argv)
         ),
     }

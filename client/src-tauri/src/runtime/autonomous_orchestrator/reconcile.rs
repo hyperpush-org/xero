@@ -10,7 +10,7 @@ use crate::{
 use super::AutonomousRuntimeReconcileIntent;
 
 const AUTONOMOUS_DUPLICATE_START_REASON: &str =
-    "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.";
+    "Xero reused the already-active autonomous run for this project instead of launching a duplicate supervisor.";
 const AUTONOMOUS_CANCEL_REASON_CODE: &str = "autonomous_run_cancelled";
 const AUTONOMOUS_CANCEL_REASON_MESSAGE: &str =
     "Operator cancelled the autonomous run from the desktop shell.";

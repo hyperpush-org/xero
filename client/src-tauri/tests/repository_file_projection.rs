@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature};
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         create_project_entry, delete_project_entry, import_repository, list_project_files,
         read_project_file, rename_project_entry, write_project_file, CommandError,
@@ -14,9 +17,6 @@ use cadence_desktop_lib::{
     configure_builder_with_state,
     state::DesktopState,
 };
-use git2::{IndexAddOption, Repository, Signature};
-use tauri::Manager;
-use tempfile::TempDir;
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
@@ -25,7 +25,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn registry_path(root: &TempDir) -> PathBuf {
-    root.path().join("app-data").join("cadence.db")
+    root.path().join("app-data").join("xero.db")
 }
 
 fn create_state(registry_root: &TempDir) -> DesktopState {
@@ -35,7 +35,7 @@ fn create_state(registry_root: &TempDir) -> DesktopState {
 fn import_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     path: impl AsRef<Path>,
-) -> Result<cadence_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
     import_repository(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -48,7 +48,7 @@ fn import_with_app(
 fn list_files_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
-) -> Result<cadence_desktop_lib::commands::ListProjectFilesResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::ListProjectFilesResponseDto, CommandError> {
     list_project_files(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -62,7 +62,7 @@ fn read_file_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
     path: &str,
-) -> Result<cadence_desktop_lib::commands::ReadProjectFileResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::ReadProjectFileResponseDto, CommandError> {
     read_project_file(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -78,7 +78,7 @@ fn write_file_with_app(
     project_id: &str,
     path: &str,
     content: &str,
-) -> Result<cadence_desktop_lib::commands::WriteProjectFileResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::WriteProjectFileResponseDto, CommandError> {
     write_project_file(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -96,7 +96,7 @@ fn create_entry_with_app(
     parent_path: &str,
     name: &str,
     entry_type: ProjectEntryKindDto,
-) -> Result<cadence_desktop_lib::commands::CreateProjectEntryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::CreateProjectEntryResponseDto, CommandError> {
     create_project_entry(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -114,7 +114,7 @@ fn rename_entry_with_app(
     project_id: &str,
     path: &str,
     new_name: &str,
-) -> Result<cadence_desktop_lib::commands::RenameProjectEntryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::RenameProjectEntryResponseDto, CommandError> {
     rename_project_entry(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -130,7 +130,7 @@ fn delete_entry_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
     path: &str,
-) -> Result<cadence_desktop_lib::commands::DeleteProjectEntryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::DeleteProjectEntryResponseDto, CommandError> {
     delete_project_entry(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -145,11 +145,11 @@ fn init_git_repo() -> TempDir {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let repository = Repository::init(temp_dir.path()).expect("git repo");
 
-    fs::write(temp_dir.path().join("README.md"), "Cadence\n").expect("write README");
+    fs::write(temp_dir.path().join("README.md"), "Xero\n").expect("write README");
     fs::create_dir_all(temp_dir.path().join("src")).expect("create src");
     fs::write(
         temp_dir.path().join("src").join("App.tsx"),
-        "export default function App() {\n  return <main>Cadence</main>\n}\n",
+        "export default function App() {\n  return <main>Xero</main>\n}\n",
     )
     .expect("write app");
     fs::create_dir_all(temp_dir.path().join("node_modules")).expect("create node_modules");
@@ -173,7 +173,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
+    let signature = Signature::now("Xero", "Xero@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -227,13 +227,13 @@ fn project_file_commands_list_read_write_create_rename_and_delete_real_repo_stat
     assert!(find_node(&tree.root, "/.git").is_none());
 
     let readme = read_file_with_app(&app, &project_id, "/README.md").expect("readme loads");
-    assert_eq!(readme.content, "Cadence\n");
+    assert_eq!(readme.content, "Xero\n");
 
-    write_file_with_app(&app, &project_id, "/README.md", "Cadence\nUpdated\n")
+    write_file_with_app(&app, &project_id, "/README.md", "Xero\nUpdated\n")
         .expect("write succeeds");
     assert_eq!(
         fs::read_to_string(repository_root.path().join("README.md")).expect("read written README"),
-        "Cadence\nUpdated\n"
+        "Xero\nUpdated\n"
     );
 
     let created_file = create_entry_with_app(

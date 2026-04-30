@@ -29,7 +29,7 @@ pub(crate) fn append_event(
     let payload_json = serde_json::to_string(&payload).map_err(|error| {
         CommandError::system_fault(
             "agent_event_serialize_failed",
-            format!("Cadence could not serialize owned-agent event payload: {error}"),
+            format!("Xero could not serialize owned-agent event payload: {error}"),
         )
     })?;
     let event = project_store::append_agent_event(
@@ -209,7 +209,7 @@ pub(crate) fn record_rollback_checkpoint(
     .map_err(|error| {
         CommandError::system_fault(
             "agent_checkpoint_payload_serialize_failed",
-            format!("Cadence could not serialize owned-agent rollback checkpoint: {error}"),
+            format!("Xero could not serialize owned-agent rollback checkpoint: {error}"),
         )
     })?;
 
@@ -245,7 +245,7 @@ fn capture_rollback_content(
             "agent_file_path_invalid",
             CommandErrorClass::PolicyDenied,
             format!(
-                "Cadence refused to capture rollback data for `{repo_relative_path}` because it is not a safe repo-relative path."
+                "Xero refused to capture rollback data for `{repo_relative_path}` because it is not a safe repo-relative path."
             ),
             false,
         ));
@@ -261,7 +261,7 @@ fn capture_rollback_content(
         CommandError::retryable(
             "agent_rollback_read_failed",
             format!(
-                "Cadence could not inspect rollback data for {}: {error}",
+                "Xero could not inspect rollback data for {}: {error}",
                 path.display()
             ),
         )
@@ -276,7 +276,7 @@ fn capture_rollback_content(
         CommandError::retryable(
             "agent_rollback_read_failed",
             format!(
-                "Cadence could not capture rollback data for {}: {error}",
+                "Xero could not capture rollback data for {}: {error}",
                 path.display()
             ),
         )
@@ -613,7 +613,9 @@ impl AgentWorkspaceGuard {
             return Err(CommandError::new(
                 "agent_file_path_invalid",
                 CommandErrorClass::PolicyDenied,
-                format!("Cadence refused to modify `{path}` because it is not a safe repo-relative path."),
+                format!(
+                    "Xero refused to modify `{path}` because it is not a safe repo-relative path."
+                ),
                 false,
             ));
         };
@@ -628,7 +630,7 @@ impl AgentWorkspaceGuard {
                 "agent_file_write_requires_observation",
                 CommandErrorClass::PolicyDenied,
                 format!(
-                    "Cadence refused to modify `{path_key}` because the owned agent has not read this existing file during the run."
+                    "Xero refused to modify `{path_key}` because the owned agent has not read this existing file during the run."
                 ),
                 false,
             )),
@@ -639,7 +641,7 @@ impl AgentWorkspaceGuard {
                 "agent_file_changed_since_observed",
                 CommandErrorClass::PolicyDenied,
                 format!(
-                    "Cadence refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}).",
+                    "Xero refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}).",
                     observed_hash
                         .as_deref()
                         .unwrap_or("absent")
@@ -727,7 +729,7 @@ fn file_hash_if_present(
         Err(error) => Err(CommandError::retryable(
             "agent_file_hash_read_failed",
             format!(
-                "Cadence could not hash owned-agent file change target {}: {error}",
+                "Xero could not hash owned-agent file change target {}: {error}",
                 path.display()
             ),
         )),

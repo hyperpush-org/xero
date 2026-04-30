@@ -1,8 +1,8 @@
 # Session Memory And Context
 
-Cadence keeps session history durable while giving users control over what becomes model-visible context. This guide is for users and support engineers who need to find prior work, export a transcript, compact a long session, review memory, or recover from an earlier point without editing raw history.
+Xero keeps session history durable while giving users control over what becomes model-visible context. This guide is for users and support engineers who need to find prior work, export a transcript, compact a long session, review memory, or recover from an earlier point without editing raw history.
 
-## What Cadence Preserves
+## What Xero Preserves
 
 Owned-agent runs keep their raw transcript rows, tool summaries, file-change records, checkpoints, action requests, usage records, compaction records, memory records, and branch lineage. User-facing projections are redacted views over that durable history. Compaction, branch, rewind, and memory review do not delete the original transcript.
 
@@ -10,13 +10,13 @@ Owned-agent runs keep their raw transcript rows, tool summaries, file-change rec
 
 Use session search when you remember a prompt, assistant response, tool summary, changed file label, checkpoint, or session title. Search can include archived sessions and can be scoped to one session or run. Results show safe snippets and can reopen the matching session or run.
 
-Use export when you need to share or inspect a selected run or a whole session outside Cadence. Markdown export is readable for humans. JSON export is structured for support and future automation. Both include run boundaries, prompts, assistant responses, tool summaries, checkpoints, file changes, action requests, usage totals, and redaction metadata.
+Use export when you need to share or inspect a selected run or a whole session outside Xero. Markdown export is readable for humans. JSON export is structured for support and future automation. Both include run boundaries, prompts, assistant responses, tool summaries, checkpoints, file changes, action requests, usage totals, and redaction metadata.
 
 Exports intentionally keep enough metadata to debug a session: project id, session id, run id, provider id, model id, timestamps, status, and token totals. They do not include raw secret-bearing values.
 
 ## Context Visualization
 
-The Context panel explains what Cadence expects to send on the next owned-agent provider turn. Contributors can include:
+The Context panel explains what Xero expects to send on the next owned-agent provider turn. Contributors can include:
 
 - The active system prompt.
 - Project instructions from supported instruction files.
@@ -43,13 +43,13 @@ After compacting, the Context panel shows the active compaction summary and the 
 
 ## Auto-Compact
 
-Auto-compact is opt-in. When enabled, Cadence checks context pressure before continuing an owned-agent run. If the configured threshold is crossed and the active provider can summarize, Cadence runs the same compaction pipeline used by manual compact before the next provider turn.
+Auto-compact is opt-in. When enabled, Xero checks context pressure before continuing an owned-agent run. If the configured threshold is crossed and the active provider can summarize, Xero runs the same compaction pipeline used by manual compact before the next provider turn.
 
-Auto-compact never runs when disabled, when the provider cannot summarize, when the session is below threshold, or when the provider budget is unknown. If auto-compact fails, Cadence preserves the raw transcript and reports a diagnostic rather than silently mutating replay state.
+Auto-compact never runs when disabled, when the provider cannot summarize, when the session is below threshold, or when the provider budget is unknown. If auto-compact fails, Xero preserves the raw transcript and reports a diagnostic rather than silently mutating replay state.
 
 ## Memory Review
 
-Memory candidates are suggestions, not instructions. Cadence may propose candidates from completed runs, file changes, user preferences, project decisions, and durable troubleshooting facts. Candidates are not model-visible until a user approves them.
+Memory candidates are suggestions, not instructions. Xero may propose candidates from completed runs, file changes, user preferences, project decisions, and durable troubleshooting facts. Candidates are not model-visible until a user approves them.
 
 The Memory surface lets users approve, reject, enable, disable, delete, filter, and inspect provenance. Approved and enabled memory is injected deterministically into the owned-agent system prompt. Candidate, rejected, disabled, secret-bearing, or instruction-override-shaped memory is not injected.
 
@@ -57,7 +57,7 @@ Approved memory is treated as durable context, not higher-priority policy. The s
 
 ## Instruction Files
 
-Cadence includes supported project instruction files in the system prompt and shows them as context contributors. Missing or malformed instruction content should produce diagnostics or empty contributors rather than failing the provider call. Instruction text is counted separately from the system prompt when context visualization can identify it.
+Xero includes supported project instruction files in the system prompt and shows them as context contributors. Missing or malformed instruction content should produce diagnostics or empty contributors rather than failing the provider call. Instruction text is counted separately from the system prompt when context visualization can identify it.
 
 ## Branch And Rewind
 
@@ -71,7 +71,7 @@ Use branch when you want to explore from the end of a prior run. Use rewind when
 
 Session projections, exports, search snippets, context visualization, compaction summaries, memory candidates, approved memory, and branch/rewind metadata are redacted before they are copied, exported, or shown as model-visible context.
 
-Cadence redacts:
+Xero redacts:
 
 - API keys, OAuth tokens, bearer headers, session ids, cloud access keys, GitHub tokens, Slack tokens, and private-key markers.
 - Secret-bearing assignments and nested JSON fields such as token, API key, authorization, and cloud credential names.
@@ -80,7 +80,7 @@ Cadence redacts:
 - Raw payload markers and terminal control bytes.
 - Memory text that looks like an attempt to override system, developer, or tool instructions.
 
-Redaction favors safety over perfect partial preservation. When a value looks unsafe, Cadence may replace the whole text field with a redaction marker while preserving ids, timestamps, source kind, status, and remediation metadata.
+Redaction favors safety over perfect partial preservation. When a value looks unsafe, Xero may replace the whole text field with a redaction marker while preserving ids, timestamps, source kind, status, and remediation metadata.
 
 ## Support Triage
 

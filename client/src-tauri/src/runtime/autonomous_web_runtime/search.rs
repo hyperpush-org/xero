@@ -20,7 +20,7 @@ impl AutonomousWebRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_web_search_query_too_large",
                 format!(
-                    "Cadence requires web search queries to be {} characters or fewer.",
+                    "Xero requires web search queries to be {} characters or fewer.",
                     self.config.limits.max_search_query_chars
                 ),
             ));
@@ -44,14 +44,14 @@ impl AutonomousWebRuntime {
         let provider = self.config.search_provider.as_ref().ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_web_search_provider_unavailable",
-                "Cadence cannot execute `web_search` because no backend search provider is configured.",
+                "Xero cannot execute `web_search` because no backend search provider is configured.",
             )
         })?;
 
         let mut url = parse_http_url(
             &provider.endpoint,
             "autonomous_web_search_provider_config_invalid",
-            "Cadence requires the configured autonomous web search provider endpoint to be a valid absolute HTTP or HTTPS URL.",
+            "Xero requires the configured autonomous web search provider endpoint to be a valid absolute HTTP or HTTPS URL.",
         )?;
         url.query_pairs_mut()
             .append_pair("q", request.query.trim())
@@ -81,7 +81,7 @@ impl AutonomousWebRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_web_search_response_too_large",
                 format!(
-                    "Cadence refused the configured web search provider response because it exceeded the {} byte body limit.",
+                    "Xero refused the configured web search provider response because it exceeded the {} byte body limit.",
                     self.config.limits.max_response_bytes
                 ),
             ));
@@ -91,13 +91,13 @@ impl AutonomousWebRuntime {
             &response.body,
             false,
             "autonomous_web_search_decode_failed",
-            "Cadence could not decode the configured web search provider response as UTF-8 text.",
+            "Xero could not decode the configured web search provider response as UTF-8 text.",
         )?;
         let decoded: SearchProviderResponse = serde_json::from_str(&body).map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_web_search_decode_failed",
                 format!(
-                    "Cadence could not decode the configured web search provider payload: {error}"
+                    "Xero could not decode the configured web search provider payload: {error}"
                 ),
             )
         })?;
@@ -108,12 +108,12 @@ impl AutonomousWebRuntime {
             let title = normalize_non_empty_text(
                 &result.title,
                 "autonomous_web_search_decode_failed",
-                "Cadence rejected a web search result with a blank title.",
+                "Xero rejected a web search result with a blank title.",
             )?;
             let normalized_url = parse_http_url(
                 &result.url,
                 "autonomous_web_search_decode_failed",
-                "Cadence rejected a web search result with an unsupported URL.",
+                "Xero rejected a web search result with an unsupported URL.",
             )?
             .to_string();
             let snippet = result
@@ -152,19 +152,19 @@ fn map_search_status_error(status: u16) -> CommandError {
     match status {
         401 | 403 => CommandError::user_fixable(
             "autonomous_web_search_provider_rejected",
-            format!("Cadence received HTTP {status} from the configured web search provider."),
+            format!("Xero received HTTP {status} from the configured web search provider."),
         ),
         408 | 429 => CommandError::retryable(
             "autonomous_web_search_rate_limited",
-            format!("Cadence received HTTP {status} from the configured web search provider."),
+            format!("Xero received HTTP {status} from the configured web search provider."),
         ),
         500..=599 => CommandError::retryable(
             "autonomous_web_search_provider_unavailable",
-            format!("Cadence received HTTP {status} from the configured web search provider."),
+            format!("Xero received HTTP {status} from the configured web search provider."),
         ),
         _ => CommandError::user_fixable(
             "autonomous_web_search_status_error",
-            format!("Cadence received HTTP {status} from the configured web search provider."),
+            format!("Xero received HTTP {status} from the configured web search provider."),
         ),
     }
 }

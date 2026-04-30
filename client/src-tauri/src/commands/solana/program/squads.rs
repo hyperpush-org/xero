@@ -295,7 +295,7 @@ fn build_vault_tx_create_argv(request: &SquadsProposalRequest, vault_index: u8) 
         request
             .memo
             .clone()
-            .unwrap_or_else(|| format!("Cadence: upgrade {}", request.program_id)),
+            .unwrap_or_else(|| format!("Xero: upgrade {}", request.program_id)),
         "--instruction-program-id".into(),
         BPF_UPGRADEABLE_LOADER.to_string(),
         "--instruction-data-hex".into(),

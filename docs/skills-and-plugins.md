@@ -1,6 +1,6 @@
-# Cadence Skills And Plugins
+# Xero Skills And Plugins
 
-Cadence skills are model-visible instruction bundles. Plugins are manifest-validated source packages that can contribute skills and Cadence commands without becoming a second runtime.
+Xero skills are model-visible instruction bundles. Plugins are manifest-validated source packages that can contribute skills and Xero commands without becoming a second runtime.
 
 ## User Workflow
 
@@ -10,7 +10,7 @@ Users manage skills and plugins from Settings.
 - Skill sources: configure local skill roots, project skill discovery, and the GitHub skill source repository/ref/root.
 - Plugins: configure plugin roots, reload plugin discovery, enable or disable installed plugins, remove stale plugin records, and inspect contributed skills and commands.
 
-Local and plugin roots must be absolute directories. Cadence canonicalizes each root before saving it and rejects duplicate root ids or duplicate canonical paths.
+Local and plugin roots must be absolute directories. Xero canonicalizes each root before saving it and rejects duplicate root ids or duplicate canonical paths.
 
 Project skills live under `projects/<project-id>/skills` in the OS app-data directory. Dynamic skills are staged under `projects/<project-id>/dynamic-skills` and start disabled and untrusted.
 
@@ -31,7 +31,7 @@ The model receives canonical `skill-source:v1` ids. Local absolute paths are not
 
 ## Trust States
 
-- `trusted`: Cadence-controlled or already approved by policy. Agents may install, reload, and invoke it.
+- `trusted`: Xero-controlled or already approved by policy. Agents may install, reload, and invoke it.
 - `user_approved`: a user explicitly approved the source. Agents may install, reload, and invoke it.
 - `approval_required`: agents may discover the source, but install/invoke/reload requires a user approval grant.
 - `untrusted`: agents may discover the source, but it must be reviewed before use.
@@ -43,7 +43,7 @@ Blocked skill records and blocked plugin records cannot be re-enabled through th
 
 Every skill source has a kind, scope, locator, source state, trust state, and canonical source id.
 
-- `bundled`: global, Cadence-owned, discovered from app resources.
+- `bundled`: global, Xero-owned, discovered from app resources.
 - `local`: global, discovered from configured absolute local roots.
 - `project`: project-scoped, discovered from `projects/<project-id>/skills`.
 - `github`: global or project-scoped, backed by the autonomous GitHub skill cache.
@@ -51,11 +51,11 @@ Every skill source has a kind, scope, locator, source state, trust state, and ca
 - `mcp`: project-scoped, projected from approved connected MCP servers.
 - `plugin`: project-scoped, contributed by a validated plugin manifest.
 
-New source implementations must validate paths before discovery, never follow symlinks outside the declared root, emit typed diagnostics, and use existing `CadenceSkillSourceRecord` constructors so duplicate identities converge.
+New source implementations must validate paths before discovery, never follow symlinks outside the declared root, emit typed diagnostics, and use existing `XeroSkillSourceRecord` constructors so duplicate identities converge.
 
 ## Plugin Contract
 
-Plugins use `cadence-plugin.json` or `.cadence-plugin/plugin.json`.
+Plugins use `xero-plugin.json` or `.xero-plugin/plugin.json`.
 
 Required manifest fields:
 
@@ -75,8 +75,8 @@ Contributed `skills`, `commands`, and `entryLocations` must point inside the plu
 - `skill_source_content_changed`: reload found a changed `SKILL.md` or supporting asset; review and reinstall or invoke after approval.
 - `skill_source_content_missing`: the installed filesystem location no longer contains `SKILL.md`.
 - `skill_source_root_unavailable`: the local, project, bundled, or plugin source root is no longer configured or available.
-- `cadence_plugin_root_unavailable`: the configured plugin root cannot be read.
-- `cadence_plugin_manifest_invalid`: fix the manifest shape, remove unsupported fields, or restore required fields.
-- `cadence_plugin_path_outside_root`: keep contributed plugin entries inside the plugin root.
+- `xero_plugin_root_unavailable`: the configured plugin root cannot be read.
+- `xero_plugin_manifest_invalid`: fix the manifest shape, remove unsupported fields, or restore required fields.
+- `xero_plugin_path_outside_root`: keep contributed plugin entries inside the plugin root.
 
 When a diagnostic mentions a redacted path or secret in a model-facing response, use the Settings surface for full non-secret source metadata and fix the root or manifest from there.

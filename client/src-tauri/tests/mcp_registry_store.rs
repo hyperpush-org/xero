@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use cadence_desktop_lib::{
+use serde_json::json;
+use xero_desktop_lib::{
     commands::CommandError,
     global_db::open_global_database,
     mcp::{
@@ -10,10 +11,9 @@ use cadence_desktop_lib::{
         McpServerRecord, McpTransport,
     },
 };
-use serde_json::json;
 
 fn registry_path(root: &tempfile::TempDir) -> PathBuf {
-    root.path().join("app-data").join("cadence.db")
+    root.path().join("app-data").join("xero.db")
 }
 
 fn write_registry_payload_rows(path: &Path, rows: Vec<serde_json::Value>) {
@@ -332,7 +332,7 @@ fn persist_returns_typed_error_when_registry_parent_is_not_a_directory() {
     let root = tempfile::tempdir().expect("temp dir");
     let blocked_parent = root.path().join("blocked-parent");
     std::fs::write(&blocked_parent, "not-a-directory").expect("write blocking file");
-    let path = blocked_parent.join("cadence.db");
+    let path = blocked_parent.join("xero.db");
 
     let error = persist_mcp_registry(&path, &default_mcp_registry())
         .expect_err("write should fail when parent is a file");

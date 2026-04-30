@@ -10,7 +10,6 @@ pub(crate) mod process_tree;
 pub mod protocol;
 pub mod provider;
 pub(crate) mod redaction;
-pub mod stream;
 pub mod supervisor;
 pub mod usage_events;
 
@@ -22,11 +21,11 @@ pub use agent_core::{
     AgentProviderConfig, AgentRunCancellationToken, AgentRunSupervisor, AgentSafetyDecision,
     AgentToolCall, AgentToolDescriptor, AgentToolResult, AnthropicProviderConfig,
     BedrockProviderConfig, ContinueOwnedAgentRunRequest, FakeProviderAdapter,
-    OpenAiCompatibleProviderConfig, OpenAiResponsesProviderConfig, OwnedAgentRunRequest,
-    ProviderAdapter, ProviderMessage, ProviderStreamEvent, ProviderTurnOutcome,
-    ProviderTurnRequest, ProviderUsage, ToolRegistry, ToolRegistryOptions, VertexProviderConfig,
-    AGENT_RUN_CANCELLED_CODE, FAKE_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
-    OWNED_AGENT_SUPERVISOR_KIND,
+    OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
+    OpenAiResponsesProviderConfig, OwnedAgentRunRequest, ProviderAdapter, ProviderMessage,
+    ProviderStreamEvent, ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage, ToolRegistry,
+    ToolRegistryOptions, VertexProviderConfig, AGENT_RUN_CANCELLED_CODE, FAKE_PROVIDER_ID,
+    OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND,
 };
 pub use autonomous_skill_runtime::{
     decide_skill_tool_access, discover_bundled_skill_directory, discover_local_skill_directory,
@@ -49,27 +48,27 @@ pub use autonomous_skill_runtime::{
     AutonomousSkillSource, AutonomousSkillSourceEntryKind, AutonomousSkillSourceError,
     AutonomousSkillSourceFileRequest, AutonomousSkillSourceFileResponse,
     AutonomousSkillSourceMetadata, AutonomousSkillSourceTreeEntry,
-    AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse, CadenceDiscoveredPlugin,
-    CadenceDiscoveredSkill, CadencePluginCommandApprovalPolicy, CadencePluginCommandAvailability,
-    CadencePluginCommandContribution, CadencePluginCommandRiskLevel,
-    CadencePluginCommandStatePolicy, CadencePluginDiscovery, CadencePluginDiscoveryDiagnostic,
-    CadencePluginEntryKind, CadencePluginEntryLocation, CadencePluginManifest, CadencePluginRoot,
-    CadencePluginSkillContribution, CadencePluginTrustDeclaration, CadenceSkillDirectoryDiscovery,
-    CadenceSkillDiscoveryDiagnostic, CadenceSkillSourceKind, CadenceSkillSourceLocator,
-    CadenceSkillSourceRecord, CadenceSkillSourceScope, CadenceSkillSourceState,
-    CadenceSkillToolAccessDecision, CadenceSkillToolAccessStatus, CadenceSkillToolContextAsset,
-    CadenceSkillToolContextDocument, CadenceSkillToolContextPayload, CadenceSkillToolDiagnostic,
-    CadenceSkillToolDynamicAssetInput, CadenceSkillToolInput, CadenceSkillToolLifecycleEvent,
-    CadenceSkillToolLifecycleResult, CadenceSkillToolOperation, CadenceSkillTrustState,
+    AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse,
     FilesystemAutonomousSkillCacheStore, GithubAutonomousSkillSource, SkillGithubSourceSetting,
     SkillLocalRootSetting, SkillPluginRootSetting, SkillProjectSourceSetting, SkillSourceSettings,
-    AUTONOMOUS_SKILL_SOURCE_REF, AUTONOMOUS_SKILL_SOURCE_REPO, AUTONOMOUS_SKILL_SOURCE_ROOT,
-    CADENCE_PLUGIN_MANIFEST_FILE, CADENCE_PLUGIN_MANIFEST_SCHEMA_VERSION,
-    CADENCE_PLUGIN_NESTED_MANIFEST_FILE, CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
-    CADENCE_SKILL_TOOL_CONTRACT_VERSION, CADENCE_SKILL_TOOL_DEFAULT_LIMIT,
-    CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS, CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES,
-    CADENCE_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES, CADENCE_SKILL_TOOL_MAX_LIMIT,
-    CADENCE_SKILL_TOOL_MAX_QUERY_CHARS, PROJECT_SKILL_DIRECTORY,
+    XeroDiscoveredPlugin, XeroDiscoveredSkill, XeroPluginCommandApprovalPolicy,
+    XeroPluginCommandAvailability, XeroPluginCommandContribution, XeroPluginCommandRiskLevel,
+    XeroPluginCommandStatePolicy, XeroPluginDiscovery, XeroPluginDiscoveryDiagnostic,
+    XeroPluginEntryKind, XeroPluginEntryLocation, XeroPluginManifest, XeroPluginRoot,
+    XeroPluginSkillContribution, XeroPluginTrustDeclaration, XeroSkillDirectoryDiscovery,
+    XeroSkillDiscoveryDiagnostic, XeroSkillSourceKind, XeroSkillSourceLocator,
+    XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState, XeroSkillToolAccessDecision,
+    XeroSkillToolAccessStatus, XeroSkillToolContextAsset, XeroSkillToolContextDocument,
+    XeroSkillToolContextPayload, XeroSkillToolDiagnostic, XeroSkillToolDynamicAssetInput,
+    XeroSkillToolInput, XeroSkillToolLifecycleEvent, XeroSkillToolLifecycleResult,
+    XeroSkillToolOperation, XeroSkillTrustState, AUTONOMOUS_SKILL_SOURCE_REF,
+    AUTONOMOUS_SKILL_SOURCE_REPO, AUTONOMOUS_SKILL_SOURCE_ROOT, PROJECT_SKILL_DIRECTORY,
+    XERO_PLUGIN_MANIFEST_FILE, XERO_PLUGIN_MANIFEST_SCHEMA_VERSION,
+    XERO_PLUGIN_NESTED_MANIFEST_FILE, XERO_SKILL_SOURCE_CONTRACT_VERSION,
+    XERO_SKILL_TOOL_CONTRACT_VERSION, XERO_SKILL_TOOL_DEFAULT_LIMIT,
+    XERO_SKILL_TOOL_MAX_CONTEXT_ASSETS, XERO_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES,
+    XERO_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES, XERO_SKILL_TOOL_MAX_LIMIT,
+    XERO_SKILL_TOOL_MAX_QUERY_CHARS,
 };
 pub use autonomous_tool_runtime::{
     resolve_imported_repo_root, resolve_imported_repo_root_from_registry,
@@ -136,20 +135,18 @@ pub use diagnostics::{
     provider_model_catalog_diagnostic, provider_readiness_diagnostic,
     provider_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
     stale_runtime_binding_diagnostic, summarize_diagnostic_checks, unsupported_provider_diagnostic,
-    validate_diagnostic_check, validate_doctor_report, CadenceDiagnosticCheck,
-    CadenceDiagnosticCheckInput, CadenceDiagnosticEndpointMetadata,
-    CadenceDiagnosticRedactionClass, CadenceDiagnosticSeverity, CadenceDiagnosticStatus,
-    CadenceDiagnosticSubject, CadenceDoctorReport, CadenceDoctorReportInput,
-    CadenceDoctorReportMode, CadenceDoctorReportOutputMode, CadenceDoctorReportSummary,
-    CadenceDoctorVersionInfo, CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
-    CADENCE_DOCTOR_REPORT_CONTRACT_VERSION,
+    validate_diagnostic_check, validate_doctor_report, XeroDiagnosticCheck,
+    XeroDiagnosticCheckInput, XeroDiagnosticEndpointMetadata, XeroDiagnosticRedactionClass,
+    XeroDiagnosticSeverity, XeroDiagnosticStatus, XeroDiagnosticSubject, XeroDoctorReport,
+    XeroDoctorReportInput, XeroDoctorReportMode, XeroDoctorReportOutputMode,
+    XeroDoctorReportSummary, XeroDoctorVersionInfo, XERO_DIAGNOSTIC_CONTRACT_VERSION,
+    XERO_DOCTOR_REPORT_CONTRACT_VERSION,
 };
 pub use platform_adapter::{
     bind_openai_callback_listener, default_openai_callback_policy, resolve_openai_callback_policy,
     resolve_runtime_shell_selection, resolve_runtime_shell_selection_for_platform,
-    resolve_runtime_supervisor_binary, resolve_runtime_supervisor_binary_with_current_executable,
     OpenAiCallbackBindResult, OpenAiCallbackPolicy, RuntimeAdapterDiagnostic, RuntimePlatform,
-    RuntimeShellSelection, RuntimeShellSource, RuntimeSupervisorBinaryResolution,
+    RuntimeShellSelection, RuntimeShellSource,
 };
 pub use protocol::RuntimeSupervisorLaunchContext;
 pub use provider::{
@@ -166,9 +163,8 @@ pub use provider::{
     OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
 };
 pub(crate) use provider::{bind_provider_runtime_session, reconcile_provider_runtime_session};
-pub use stream::{start_runtime_stream, RuntimeStreamController, RuntimeStreamRequest};
 pub use supervisor::{
-    launch_detached_runtime_supervisor, probe_runtime_run, run_supervisor_sidecar_from_env,
+    launch_legacy_runtime_supervisor, probe_runtime_run, run_supervisor_sidecar_from_env,
     stop_runtime_run, submit_runtime_run_input, update_runtime_run_controls,
     RuntimeSupervisorController, RuntimeSupervisorLaunchEnv, RuntimeSupervisorLaunchRequest,
     RuntimeSupervisorProbeRequest, RuntimeSupervisorStopRequest,

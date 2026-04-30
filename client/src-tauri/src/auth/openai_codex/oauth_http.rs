@@ -99,7 +99,7 @@ fn parse_token_response(
             format!("{prefix}_decode_failed"),
             phase.clone(),
             format!(
-                "Cadence could not decode the OpenAI {} response: {error}",
+                "Xero could not decode the OpenAI {} response: {error}",
                 prefix.replace('_', " ")
             ),
         )
@@ -110,7 +110,7 @@ fn parse_token_response(
             format!("{prefix}_decode_failed"),
             phase.clone(),
             format!(
-                "Cadence rejected the OpenAI {} response because access_token was missing.",
+                "Xero rejected the OpenAI {} response because access_token was missing.",
                 prefix.replace('_', " ")
             ),
         )
@@ -120,7 +120,7 @@ fn parse_token_response(
             format!("{prefix}_decode_failed"),
             phase.clone(),
             format!(
-                "Cadence rejected the OpenAI {} response because refresh_token was missing.",
+                "Xero rejected the OpenAI {} response because refresh_token was missing.",
                 prefix.replace('_', " ")
             ),
         )
@@ -130,7 +130,7 @@ fn parse_token_response(
             format!("{prefix}_decode_failed"),
             phase,
             format!(
-                "Cadence rejected the OpenAI {} response because expires_in was missing.",
+                "Xero rejected the OpenAI {} response because expires_in was missing.",
                 prefix.replace('_', " ")
             ),
         )
@@ -156,7 +156,7 @@ fn map_http_error(error: reqwest::Error, phase: RuntimeAuthPhase, prefix: &str) 
         format!("{prefix}_request_failed"),
         phase,
         format!(
-            "Cadence could not complete the OpenAI {} request: {error}",
+            "Xero could not complete the OpenAI {} request: {error}",
             prefix.replace('_', " ")
         ),
     )

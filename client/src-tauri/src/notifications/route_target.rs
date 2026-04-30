@@ -18,7 +18,7 @@ pub fn parse_notification_route_target(
     let trimmed = raw_target.trim();
     let Some((prefix, channel_target)) = trimmed.split_once(':') else {
         return Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires route targets in `<kind>:<channel-target>` format. Received `{trimmed}`."
+            "Xero requires route targets in `<kind>:<channel-target>` format. Received `{trimmed}`."
         )));
     };
 
@@ -26,7 +26,7 @@ pub fn parse_notification_route_target(
     let channel_target = channel_target.trim();
     if channel_target.is_empty() {
         return Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
+            "Xero requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
             route_kind.as_str()
         )));
     }
@@ -44,7 +44,7 @@ pub fn parse_notification_route_target_for_kind(
     let trimmed = raw_target.trim();
     let Some((prefix, channel_target)) = trimmed.split_once(':') else {
         return Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
+            "Xero requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
             route_kind.as_str()
         )));
     };
@@ -54,7 +54,7 @@ pub fn parse_notification_route_target_for_kind(
 
     if prefix != route_kind.as_str() || channel_target.is_empty() {
         return Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
+            "Xero requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
             route_kind.as_str()
         )));
     }
@@ -72,7 +72,7 @@ pub fn compose_notification_route_target(
     let trimmed = raw_target.trim();
     if trimmed.is_empty() {
         return Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires a non-empty route target for `{}` notifications.",
+            "Xero requires a non-empty route target for `{}` notifications.",
             route_kind.as_str()
         )));
     }
@@ -83,7 +83,7 @@ pub fn compose_notification_route_target(
 
         if prefix != route_kind.as_str() || channel_target.is_empty() {
             return Err(NotificationAdapterError::payload_invalid(format!(
-                "Cadence requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
+                "Xero requires route targets in `<kind>:<channel-target>` format for `{}` notifications.",
                 route_kind.as_str()
             )));
         }

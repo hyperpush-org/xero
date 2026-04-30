@@ -78,7 +78,7 @@ pub(crate) fn drive_provider_loop(
                 if tool_calls.is_empty() {
                     return Err(CommandError::system_fault(
                         "agent_provider_turn_invalid",
-                        "Cadence received a provider tool-turn outcome without tool calls.",
+                        "Xero received a provider tool-turn outcome without tool calls.",
                     ));
                 }
 
@@ -129,7 +129,7 @@ pub(crate) fn drive_provider_loop(
                     let result_content = serde_json::to_string(&result).map_err(|error| {
                         CommandError::system_fault(
                             "agent_tool_result_serialize_failed",
-                            format!("Cadence could not serialize owned-agent tool result: {error}"),
+                            format!("Xero could not serialize owned-agent tool result: {error}"),
                         )
                     })?;
                     append_message(
@@ -156,7 +156,7 @@ pub(crate) fn drive_provider_loop(
     Err(CommandError::retryable(
         "agent_provider_turn_limit_exceeded",
         format!(
-            "Cadence stopped the owned-agent model loop after {MAX_PROVIDER_TURNS} provider turns to prevent an infinite tool loop."
+            "Xero stopped the owned-agent model loop after {MAX_PROVIDER_TURNS} provider turns to prevent an infinite tool loop."
         ),
     ))
 }
@@ -169,7 +169,7 @@ fn append_owned_process_lifecycle_summary(
         return Ok(system_prompt);
     };
     Ok(format!(
-        "{system_prompt}\n\nCadence-owned process state for this turn (read-only digest; call `process_manager` for fresh output or control):\n{summary}"
+        "{system_prompt}\n\nXero-owned process state for this turn (read-only digest; call `process_manager` for fresh output or control):\n{summary}"
     ))
 }
 
@@ -185,7 +185,7 @@ fn record_plan_mode_action_required(
         .collect::<Vec<_>>();
     let tool_list = tool_names.join(", ");
     let message = format!(
-        "Plan mode is enabled, so Cadence paused before executing provider-requested tool call(s): {tool_list}. Ask the agent to provide or confirm a plan before resuming tool execution."
+        "Plan mode is enabled, so Xero paused before executing provider-requested tool call(s): {tool_list}. Ask the agent to provide or confirm a plan before resuming tool execution."
     );
     let action_id = sanitize_action_id("plan-mode-before-tools");
     record_action_request(
@@ -291,7 +291,7 @@ pub(crate) fn provider_messages_from_snapshot(
             return Err(CommandError::user_fixable(
                 "agent_compaction_provider_mismatch",
                 format!(
-                    "Cadence cannot replay compaction `{}` for run `{}` because it was created with `{}/{}` but the run uses `{}/{}`.",
+                    "Xero cannot replay compaction `{}` for run `{}` because it was created with `{}/{}` but the run uses `{}/{}`.",
                     compaction.compaction_id,
                     snapshot.run.run_id,
                     compaction.provider_id,
@@ -306,7 +306,7 @@ pub(crate) fn provider_messages_from_snapshot(
             return Err(CommandError::user_fixable(
                 "agent_compaction_source_mismatch",
                 format!(
-                    "Cadence cannot replay compaction `{}` because the covered transcript changed after compaction. Refresh the Context panel and compact again before continuing.",
+                    "Xero cannot replay compaction `{}` because the covered transcript changed after compaction. Refresh the Context panel and compact again before continuing.",
                     compaction.compaction_id
                 ),
             ));
@@ -322,7 +322,7 @@ pub(crate) fn provider_messages_from_snapshot(
                 CommandError::system_fault(
                     "agent_transcript_tool_input_decode_failed",
                     format!(
-                        "Cadence could not decode persisted tool input `{}` while rebuilding provider state: {error}",
+                        "Xero could not decode persisted tool input `{}` while rebuilding provider state: {error}",
                         tool_call.tool_call_id
                     ),
                 )
@@ -342,7 +342,7 @@ pub(crate) fn provider_messages_from_snapshot(
     if let Some(compaction) = active_compaction.as_ref() {
         messages.push(ProviderMessage::User {
             content: format!(
-                "Compacted prior session context from Cadence. Raw transcript rows are still durable for search/export, but replay should use this summary plus the raw tail below.\n\n{}",
+                "Compacted prior session context from Xero. Raw transcript rows are still durable for search/export, but replay should use this summary plus the raw tail below.\n\n{}",
                 compaction.summary
             ),
         });
@@ -376,7 +376,7 @@ pub(crate) fn provider_messages_from_snapshot(
                         CommandError::system_fault(
                             "agent_transcript_tool_result_decode_failed",
                             format!(
-                                "Cadence could not decode persisted tool result while rebuilding provider state: {error}"
+                                "Xero could not decode persisted tool result while rebuilding provider state: {error}"
                             ),
                         )
                     },
@@ -496,7 +496,7 @@ fn granted_tools_from_snapshot(
                 CommandError::system_fault(
                     "agent_tool_access_result_decode_failed",
                     format!(
-                        "Cadence could not decode persisted tool-access result `{}`: {error}",
+                        "Xero could not decode persisted tool-access result `{}`: {error}",
                         tool_call.tool_call_id
                     ),
                 )
@@ -530,7 +530,7 @@ fn superseded_tool_message_ids(messages: &[AgentMessageRecord]) -> CommandResult
             CommandError::system_fault(
                 "agent_transcript_tool_result_decode_failed",
                 format!(
-                    "Cadence could not decode persisted tool result while checking replay supersession: {error}"
+                    "Xero could not decode persisted tool result while checking replay supersession: {error}"
                 ),
             )
         })?;

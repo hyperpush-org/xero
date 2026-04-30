@@ -211,7 +211,7 @@ pub fn subscribe_agent_stream<R: Runtime>(
         channel.send(event).map_err(|error| {
             CommandError::retryable(
                 "agent_stream_channel_closed",
-                format!("Cadence could not deliver the owned-agent stream event because the desktop channel closed: {error}"),
+                format!("Xero could not deliver the owned-agent stream event because the desktop channel closed: {error}"),
             )
         })?;
     }
@@ -270,7 +270,7 @@ fn ensure_agent_run_not_active(state: &DesktopState, run_id: &str) -> CommandRes
         return Err(CommandError::user_fixable(
             "agent_run_already_active",
             format!(
-                "Cadence is already driving owned-agent run `{run_id}`. Wait for it to finish or cancel it before sending another message."
+                "Xero is already driving owned-agent run `{run_id}`. Wait for it to finish or cancel it before sending another message."
             ),
         ));
     }
@@ -426,7 +426,7 @@ fn stream_persisted_agent_events_after(
             channel.send(agent_event_dto(event)).map_err(|error| {
                 CommandError::retryable(
                     "agent_stream_channel_closed",
-                    format!("Cadence could not deliver persisted owned-agent stream event because the desktop channel closed: {error}"),
+                    format!("Xero could not deliver persisted owned-agent stream event because the desktop channel closed: {error}"),
                 )
             })?;
             if terminal {
@@ -477,7 +477,7 @@ fn locate_agent_run<R: Runtime>(
 
     Err(CommandError::user_fixable(
         "agent_run_not_found",
-        format!("Cadence could not find owned agent run `{run_id}` in the imported projects."),
+        format!("Xero could not find owned agent run `{run_id}` in the imported projects."),
     ))
 }
 
@@ -488,14 +488,14 @@ fn resolve_agent_channel<R: Runtime>(
     let Some(raw_channel) = raw_channel else {
         return Err(CommandError::user_fixable(
             "agent_stream_channel_missing",
-            "Cadence requires an agent stream channel before it can replay owned-agent events.",
+            "Xero requires an agent stream channel before it can replay owned-agent events.",
         ));
     };
 
     let channel_id = JavaScriptChannelId::from_str(raw_channel).map_err(|_| {
         CommandError::user_fixable(
             "agent_stream_channel_invalid",
-            "Cadence received an invalid owned-agent stream channel handle from the desktop shell.",
+            "Xero received an invalid owned-agent stream channel handle from the desktop shell.",
         )
     })?;
 
@@ -517,7 +517,7 @@ mod tests {
         let run_id = "run-1";
         let database_path = crate::db::database_path_for_repo(repo_root);
         std::fs::create_dir_all(database_path.parent().expect("database parent"))
-            .expect("create cadence state dir");
+            .expect("create xero state dir");
         let mut connection =
             rusqlite::Connection::open(&database_path).expect("create state database");
         crate::db::configure_connection(&connection).expect("configure state database");

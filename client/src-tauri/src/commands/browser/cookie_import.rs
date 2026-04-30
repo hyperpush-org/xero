@@ -14,7 +14,7 @@ use crate::commands::{CommandError, CommandResult};
 use super::tabs::BrowserTabs;
 use super::BrowserState;
 
-const HELPER_BIN_NAME: &str = "cadence-cookie-importer";
+const HELPER_BIN_NAME: &str = "xero-cookie-importer";
 
 #[derive(Debug, Clone, Copy)]
 enum BrowserSource {
@@ -284,7 +284,7 @@ pub fn browser_import_cookies<R: Runtime>(
             return Err(CommandError::user_fixable(
                 "browser_cookie_read_failed",
                 format!(
-                    "Could not read cookies from {label}: {message}. Close that browser and try again; on macOS Cadence may also need Full Disk Access.",
+                    "Could not read cookies from {label}: {message}. Close that browser and try again; on macOS Xero may also need Full Disk Access.",
                     label = source_enum.label(),
                 ),
             ));

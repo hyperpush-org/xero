@@ -12,11 +12,11 @@ use super::{
     source::AutonomousSkillSourceMetadata,
 };
 
-pub const CADENCE_SKILL_SOURCE_CONTRACT_VERSION: u32 = 1;
+pub const XERO_SKILL_SOURCE_CONTRACT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceSkillSourceKind {
+pub enum XeroSkillSourceKind {
     Bundled,
     Local,
     Project,
@@ -28,14 +28,14 @@ pub enum CadenceSkillSourceKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CadenceSkillSourceScope {
+pub enum XeroSkillSourceScope {
     Global,
     Project { project_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CadenceSkillSourceLocator {
+pub enum XeroSkillSourceLocator {
     Bundled {
         bundle_id: String,
         skill_id: String,
@@ -77,7 +77,7 @@ pub enum CadenceSkillSourceLocator {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceSkillSourceState {
+pub enum XeroSkillSourceState {
     Discoverable,
     Installed,
     Enabled,
@@ -89,7 +89,7 @@ pub enum CadenceSkillSourceState {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceSkillTrustState {
+pub enum XeroSkillTrustState {
     Trusted,
     UserApproved,
     ApprovalRequired,
@@ -99,16 +99,16 @@ pub enum CadenceSkillTrustState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillSourceRecord {
+pub struct XeroSkillSourceRecord {
     pub contract_version: u32,
     pub source_id: String,
-    pub scope: CadenceSkillSourceScope,
-    pub locator: CadenceSkillSourceLocator,
-    pub state: CadenceSkillSourceState,
-    pub trust: CadenceSkillTrustState,
+    pub scope: XeroSkillSourceScope,
+    pub locator: XeroSkillSourceLocator,
+    pub state: XeroSkillSourceState,
+    pub trust: XeroSkillTrustState,
 }
 
-impl CadenceSkillSourceScope {
+impl XeroSkillSourceScope {
     pub fn global() -> Self {
         Self::Global
     }
@@ -139,16 +139,16 @@ impl CadenceSkillSourceScope {
     }
 }
 
-impl CadenceSkillSourceLocator {
-    pub fn kind(&self) -> CadenceSkillSourceKind {
+impl XeroSkillSourceLocator {
+    pub fn kind(&self) -> XeroSkillSourceKind {
         match self {
-            Self::Bundled { .. } => CadenceSkillSourceKind::Bundled,
-            Self::Local { .. } => CadenceSkillSourceKind::Local,
-            Self::Project { .. } => CadenceSkillSourceKind::Project,
-            Self::Github { .. } => CadenceSkillSourceKind::Github,
-            Self::Dynamic { .. } => CadenceSkillSourceKind::Dynamic,
-            Self::Mcp { .. } => CadenceSkillSourceKind::Mcp,
-            Self::Plugin { .. } => CadenceSkillSourceKind::Plugin,
+            Self::Bundled { .. } => XeroSkillSourceKind::Bundled,
+            Self::Local { .. } => XeroSkillSourceKind::Local,
+            Self::Project { .. } => XeroSkillSourceKind::Project,
+            Self::Github { .. } => XeroSkillSourceKind::Github,
+            Self::Dynamic { .. } => XeroSkillSourceKind::Dynamic,
+            Self::Mcp { .. } => XeroSkillSourceKind::Mcp,
+            Self::Plugin { .. } => XeroSkillSourceKind::Plugin,
         }
     }
 
@@ -313,7 +313,7 @@ impl CadenceSkillSourceLocator {
     }
 }
 
-impl CadenceSkillSourceState {
+impl XeroSkillSourceState {
     pub fn can_transition_to(self, next: Self) -> bool {
         if self == next {
             return true;
@@ -370,7 +370,7 @@ impl CadenceSkillSourceState {
     }
 }
 
-impl CadenceSkillTrustState {
+impl XeroSkillTrustState {
     fn merge(self, other: Self) -> Self {
         if self == Self::Blocked || other == Self::Blocked {
             return Self::Blocked;
@@ -388,19 +388,19 @@ impl CadenceSkillTrustState {
     }
 }
 
-impl CadenceSkillSourceRecord {
+impl XeroSkillSourceRecord {
     pub fn new(
-        scope: CadenceSkillSourceScope,
-        locator: CadenceSkillSourceLocator,
-        state: CadenceSkillSourceState,
-        trust: CadenceSkillTrustState,
+        scope: XeroSkillSourceScope,
+        locator: XeroSkillSourceLocator,
+        state: XeroSkillSourceState,
+        trust: XeroSkillTrustState,
     ) -> CommandResult<Self> {
         let scope = scope.normalize()?;
         let locator = locator.normalize()?;
         validate_scope_for_locator(&scope, &locator)?;
         let source_id = source_id_for(&scope, &locator);
         Ok(Self {
-            contract_version: CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
+            contract_version: XERO_SKILL_SOURCE_CONTRACT_VERSION,
             source_id,
             scope,
             locator,
@@ -410,25 +410,25 @@ impl CadenceSkillSourceRecord {
     }
 
     pub fn github_autonomous(
-        scope: CadenceSkillSourceScope,
+        scope: XeroSkillSourceScope,
         source: &AutonomousSkillSourceMetadata,
-        state: CadenceSkillSourceState,
-        trust: CadenceSkillTrustState,
+        state: XeroSkillSourceState,
+        trust: XeroSkillTrustState,
     ) -> CommandResult<Self> {
         Self::new(
             scope,
-            CadenceSkillSourceLocator::from_autonomous_github_source(source),
+            XeroSkillSourceLocator::from_autonomous_github_source(source),
             state,
             trust,
         )
     }
 
     pub fn validate(self) -> CommandResult<Self> {
-        if self.contract_version != CADENCE_SKILL_SOURCE_CONTRACT_VERSION {
+        if self.contract_version != XERO_SKILL_SOURCE_CONTRACT_VERSION {
             return Err(CommandError::user_fixable(
                 "skill_source_contract_version_unsupported",
                 format!(
-                    "Cadence rejected skill source contract version `{}` because only version `{CADENCE_SKILL_SOURCE_CONTRACT_VERSION}` is supported.",
+                    "Xero rejected skill source contract version `{}` because only version `{XERO_SKILL_SOURCE_CONTRACT_VERSION}` is supported.",
                     self.contract_version
                 ),
             ));
@@ -439,7 +439,7 @@ impl CadenceSkillSourceRecord {
             return Err(CommandError::user_fixable(
                 "skill_source_id_invalid",
                 format!(
-                    "Cadence rejected skill source id `{}` because the canonical id is `{}`.",
+                    "Xero rejected skill source id `{}` because the canonical id is `{}`.",
                     self.source_id, normalized.source_id
                 ),
             ));
@@ -469,17 +469,17 @@ impl CadenceSkillSourceRecord {
         if revision_mismatch
             && !matches!(
                 self.state,
-                CadenceSkillSourceState::Blocked | CadenceSkillSourceState::Failed
+                XeroSkillSourceState::Blocked | XeroSkillSourceState::Failed
             )
         {
-            self.state = CadenceSkillSourceState::Stale;
+            self.state = XeroSkillSourceState::Stale;
         }
     }
 }
 
 pub fn validate_skill_source_state_transition(
-    from: CadenceSkillSourceState,
-    to: CadenceSkillSourceState,
+    from: XeroSkillSourceState,
+    to: XeroSkillSourceState,
 ) -> CommandResult<()> {
     if from.can_transition_to(to) {
         return Ok(());
@@ -488,22 +488,22 @@ pub fn validate_skill_source_state_transition(
     Err(CommandError::user_fixable(
         "skill_source_state_transition_unsupported",
         format!(
-            "Cadence cannot transition a skill source directly from `{:?}` to `{:?}`.",
+            "Xero cannot transition a skill source directly from `{:?}` to `{:?}`.",
             from, to
         ),
     ))
 }
 
 pub fn merge_skill_source_records(
-    records: impl IntoIterator<Item = CadenceSkillSourceRecord>,
-) -> CommandResult<Vec<CadenceSkillSourceRecord>> {
+    records: impl IntoIterator<Item = XeroSkillSourceRecord>,
+) -> CommandResult<Vec<XeroSkillSourceRecord>> {
     let mut by_id = BTreeMap::new();
 
     for record in records {
         let record = record.validate()?;
         by_id
             .entry(record.source_id.clone())
-            .and_modify(|existing: &mut CadenceSkillSourceRecord| {
+            .and_modify(|existing: &mut XeroSkillSourceRecord| {
                 existing.merge_duplicate(record.clone());
             })
             .or_insert(record);
@@ -513,30 +513,28 @@ pub fn merge_skill_source_records(
 }
 
 fn validate_scope_for_locator(
-    scope: &CadenceSkillSourceScope,
-    locator: &CadenceSkillSourceLocator,
+    scope: &XeroSkillSourceScope,
+    locator: &XeroSkillSourceLocator,
 ) -> CommandResult<()> {
     match locator.kind() {
-        CadenceSkillSourceKind::Bundled if scope.is_project() => Err(CommandError::user_fixable(
+        XeroSkillSourceKind::Bundled if scope.is_project() => Err(CommandError::user_fixable(
             "skill_source_scope_invalid",
-            "Cadence bundled skill sources are global because they ship with the application.",
+            "Xero bundled skill sources are global because they ship with the application.",
         )),
-        CadenceSkillSourceKind::Project | CadenceSkillSourceKind::Dynamic
-            if !scope.is_project() =>
-        {
+        XeroSkillSourceKind::Project | XeroSkillSourceKind::Dynamic if !scope.is_project() => {
             Err(CommandError::user_fixable(
                 "skill_source_scope_invalid",
-                "Cadence project and dynamic skill sources must be project-scoped.",
+                "Xero project and dynamic skill sources must be project-scoped.",
             ))
         }
         _ => Ok(()),
     }
 }
 
-fn source_id_for(scope: &CadenceSkillSourceScope, locator: &CadenceSkillSourceLocator) -> String {
+fn source_id_for(scope: &XeroSkillSourceScope, locator: &XeroSkillSourceLocator) -> String {
     format!(
         "skill-source:v{}:{}:{}",
-        CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
+        XERO_SKILL_SOURCE_CONTRACT_VERSION,
         scope.id_segment(),
         locator.identity_segment()
     )

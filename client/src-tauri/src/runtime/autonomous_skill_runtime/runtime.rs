@@ -336,7 +336,7 @@ impl AutonomousSkillRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_skill_discovery_query_too_large",
                 format!(
-                    "Cadence requires autonomous skill discovery queries to be {} characters or fewer.",
+                    "Xero requires autonomous skill discovery queries to be {} characters or fewer.",
                     self.config.limits.max_discover_query_chars
                 ),
             ));
@@ -599,7 +599,7 @@ impl AutonomousSkillRuntime {
             .ok_or_else(|| {
                 CommandError::user_fixable(
                     "autonomous_skill_cache_contract_failed",
-                    "Cadence could not reload the installed autonomous skill cache manifest.",
+                    "Xero could not reload the installed autonomous skill cache manifest.",
                 )
             })?;
         let skill_markdown = self
@@ -687,7 +687,7 @@ impl AutonomousSkillRuntime {
                 return Err(CommandError::user_fixable(
                     "autonomous_skill_layout_unsupported",
                     format!(
-                        "Cadence rejected `{}` because skill assets must be {} bytes or smaller.",
+                        "Xero rejected `{}` because skill assets must be {} bytes or smaller.",
                         asset.relative_path, self.config.limits.max_skill_file_bytes
                     ),
                 ));
@@ -697,7 +697,7 @@ impl AutonomousSkillRuntime {
                 return Err(CommandError::user_fixable(
                     "autonomous_skill_layout_unsupported",
                     format!(
-                        "Cadence rejected `{}` because the resolved autonomous skill exceeds the {} byte total cache budget.",
+                        "Xero rejected `{}` because the resolved autonomous skill exceeds the {} byte total cache budget.",
                         inspected.skill_id, self.config.limits.max_total_skill_bytes
                     ),
                 ));
@@ -706,7 +706,7 @@ impl AutonomousSkillRuntime {
                 CommandError::user_fixable(
                     "autonomous_skill_layout_unsupported",
                     format!(
-                        "Cadence rejected `{}` because skill asset `{}` was not valid UTF-8 text: {error}",
+                        "Xero rejected `{}` because skill asset `{}` was not valid UTF-8 text: {error}",
                         inspected.skill_id, asset.relative_path
                     ),
                 )
@@ -766,7 +766,7 @@ impl AutonomousSkillRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_skill_layout_unsupported",
                 format!(
-                    "Cadence rejected `{}` because SKILL.md exceeds the {} byte limit.",
+                    "Xero rejected `{}` because SKILL.md exceeds the {} byte limit.",
                     inspected.skill_id, self.config.limits.max_skill_file_bytes
                 ),
             ));
@@ -775,7 +775,7 @@ impl AutonomousSkillRuntime {
             CommandError::user_fixable(
                 "autonomous_skill_document_invalid",
                 format!(
-                    "Cadence rejected `{}` because SKILL.md was not valid UTF-8 text: {error}",
+                    "Xero rejected `{}` because SKILL.md was not valid UTF-8 text: {error}",
                     inspected.skill_id
                 ),
             )
@@ -785,7 +785,7 @@ impl AutonomousSkillRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_skill_document_invalid",
                 format!(
-                    "Cadence rejected `{}` because SKILL.md frontmatter name `{}` did not match the resolved skill id.",
+                    "Xero rejected `{}` because SKILL.md frontmatter name `{}` did not match the resolved skill id.",
                     inspected.skill_id, frontmatter.name
                 ),
             ));
@@ -854,7 +854,7 @@ fn normalize_result_limit(
         return Err(CommandError::user_fixable(
             "autonomous_skill_discovery_result_limit_invalid",
             format!(
-                "Cadence requires autonomous skill discovery result_limit to be between 1 and {max_value}."
+                "Xero requires autonomous skill discovery result_limit to be between 1 and {max_value}."
             ),
         ));
     }
@@ -872,7 +872,7 @@ fn normalize_timeout_ms(
     if timeout_ms == 0 || timeout_ms > max_timeout_ms {
         return Err(CommandError::user_fixable(
             error_code,
-            format!("Cadence requires {label} to be between 1 and {max_timeout_ms}."),
+            format!("Xero requires {label} to be between 1 and {max_timeout_ms}."),
         ));
     }
     Ok(timeout_ms)

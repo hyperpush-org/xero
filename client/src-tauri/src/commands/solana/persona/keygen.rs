@@ -104,7 +104,7 @@ impl KeypairProvider for OsRngKeypairProvider {
 }
 
 /// On-disk keypair store. Lives alongside the persona registry under
-/// `data_dir()/cadence/solana/keypairs/{cluster}/{name}.json`.
+/// `data_dir()/xero/solana/keypairs/{cluster}/{name}.json`.
 #[derive(Debug)]
 pub struct KeypairStore {
     root: PathBuf,

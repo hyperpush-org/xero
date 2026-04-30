@@ -227,7 +227,7 @@ pub fn run(
         };
         (argv, invocation, outcome, lcov)
     } else {
-        let lcov_out = root.join("target").join("cadence-llvm-cov.lcov");
+        let lcov_out = root.join("target").join("xero-llvm-cov.lcov");
         let mut argv: Vec<String> = vec![
             "cargo".to_string(),
             "llvm-cov".to_string(),

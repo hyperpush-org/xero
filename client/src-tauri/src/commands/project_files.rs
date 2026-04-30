@@ -10,9 +10,10 @@ use crate::{
     commands::{
         validate_non_empty, CommandError, CommandResult, CreateProjectEntryRequestDto,
         CreateProjectEntryResponseDto, DeleteProjectEntryResponseDto, ListProjectFilesResponseDto,
-        ProjectEntryKindDto, ProjectFileNodeDto, ProjectFileRequestDto, ProjectIdRequestDto,
-        ReadProjectFileResponseDto, RenameProjectEntryRequestDto, RenameProjectEntryResponseDto,
-        WriteProjectFileRequestDto, WriteProjectFileResponseDto,
+        MoveProjectEntryRequestDto, MoveProjectEntryResponseDto, ProjectEntryKindDto,
+        ProjectFileNodeDto, ProjectFileRequestDto, ProjectIdRequestDto, ReadProjectFileResponseDto,
+        RenameProjectEntryRequestDto, RenameProjectEntryResponseDto, WriteProjectFileRequestDto,
+        WriteProjectFileResponseDto,
     },
     registry,
     state::DesktopState,
@@ -66,7 +67,7 @@ pub fn read_project_file<R: Runtime>(
         return Err(CommandError::user_fixable(
             "project_file_is_directory",
             format!(
-                "Cadence cannot open `{normalized_path}` because it is a directory, not a text file."
+                "Xero cannot open `{normalized_path}` because it is a directory, not a text file."
             ),
         ));
     }
@@ -74,18 +75,16 @@ pub fn read_project_file<R: Runtime>(
     let content = fs::read_to_string(&resolved_path).map_err(|error| match error.kind() {
         ErrorKind::InvalidData => CommandError::user_fixable(
             "project_file_not_text",
-            format!("Cadence cannot open `{normalized_path}` because it is not a UTF-8 text file."),
+            format!("Xero cannot open `{normalized_path}` because it is not a UTF-8 text file."),
         ),
         ErrorKind::NotFound => CommandError::user_fixable(
             "project_file_not_found",
-            format!("Cadence could not find `{normalized_path}` in the selected project."),
+            format!("Xero could not find `{normalized_path}` in the selected project."),
         ),
         _ => io_error(
             "project_file_read_failed",
             &resolved_path,
-            format!(
-                "Cadence could not read `{normalized_path}` from the selected project: {error}"
-            ),
+            format!("Xero could not read `{normalized_path}` from the selected project: {error}"),
         ),
     })?;
 
@@ -114,7 +113,7 @@ pub fn write_project_file<R: Runtime>(
         return Err(CommandError::user_fixable(
             "project_file_is_directory",
             format!(
-                "Cadence cannot save `{normalized_path}` because it is a directory, not a text file."
+                "Xero cannot save `{normalized_path}` because it is a directory, not a text file."
             ),
         ));
     }
@@ -122,12 +121,12 @@ pub fn write_project_file<R: Runtime>(
     fs::write(&resolved_path, request.content).map_err(|error| match error.kind() {
         ErrorKind::NotFound => CommandError::user_fixable(
             "project_file_not_found",
-            format!("Cadence could not find `{normalized_path}` in the selected project."),
+            format!("Xero could not find `{normalized_path}` in the selected project."),
         ),
         _ => io_error(
             "project_file_write_failed",
             &resolved_path,
-            format!("Cadence could not save `{normalized_path}` in the selected project: {error}"),
+            format!("Xero could not save `{normalized_path}` in the selected project: {error}"),
         ),
     })?;
 
@@ -156,7 +155,7 @@ pub fn create_project_entry<R: Runtime>(
         return Err(CommandError::user_fixable(
             "project_parent_not_directory",
             format!(
-                "Cadence cannot create a new entry inside `{normalized_parent_path}` because it is not a directory."
+                "Xero cannot create a new entry inside `{normalized_parent_path}` because it is not a directory."
             ),
         ));
     }
@@ -167,7 +166,7 @@ pub fn create_project_entry<R: Runtime>(
         return Err(CommandError::user_fixable(
             "project_entry_exists",
             format!(
-                "Cadence cannot create `{normalized_path}` because that path already exists in the selected project."
+                "Xero cannot create `{normalized_path}` because that path already exists in the selected project."
             ),
         ));
     }
@@ -181,7 +180,7 @@ pub fn create_project_entry<R: Runtime>(
             "project_entry_create_failed",
             &created_path,
             format!(
-                "Cadence could not create `{}` in the selected project: {error}",
+                "Xero could not create `{}` in the selected project: {error}",
                 created_path.display()
             ),
         )
@@ -211,7 +210,7 @@ pub fn rename_project_entry<R: Runtime>(
     let parent_path = resolved_path.parent().ok_or_else(|| {
         CommandError::system_fault(
             "project_entry_parent_missing",
-            format!("Cadence could not determine the parent directory for `{normalized_path}`."),
+            format!("Xero could not determine the parent directory for `{normalized_path}`."),
         )
     })?;
 
@@ -222,7 +221,7 @@ pub fn rename_project_entry<R: Runtime>(
         return Err(CommandError::user_fixable(
             "project_entry_exists",
             format!(
-                "Cadence cannot rename `{normalized_path}` to `{normalized_new_path}` because the destination already exists."
+                "Xero cannot rename `{normalized_path}` to `{normalized_new_path}` because the destination already exists."
             ),
         ));
     }
@@ -232,7 +231,7 @@ pub fn rename_project_entry<R: Runtime>(
             "project_entry_rename_failed",
             &resolved_path,
             format!(
-                "Cadence could not rename `{normalized_path}` inside the selected project: {error}"
+                "Xero could not rename `{normalized_path}` inside the selected project: {error}"
             ),
         )
     })?;
@@ -240,6 +239,92 @@ pub fn rename_project_entry<R: Runtime>(
     Ok(RenameProjectEntryResponseDto {
         project_id: request.project_id,
         path: child_virtual_path(&parent_virtual_path(&normalized_path), &new_name),
+    })
+}
+
+#[tauri::command]
+pub fn move_project_entry<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: MoveProjectEntryRequestDto,
+) -> CommandResult<MoveProjectEntryResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.path, "path")?;
+    validate_non_empty(&request.target_parent_path, "targetParentPath")?;
+
+    let project_root = resolve_project_root(&app, &state, &request.project_id)?;
+    let (resolved_path, normalized_path) =
+        resolve_virtual_path(&project_root, &request.path, "path", false)?;
+    read_metadata(&resolved_path)?;
+
+    let (target_parent_path, normalized_target_parent_path) = resolve_virtual_path(
+        &project_root,
+        &request.target_parent_path,
+        "targetParentPath",
+        true,
+    )?;
+    let target_parent_metadata = read_metadata(&target_parent_path)?;
+
+    if !target_parent_metadata.is_dir() {
+        return Err(CommandError::user_fixable(
+            "project_target_parent_not_directory",
+            format!(
+                "Xero cannot move `{normalized_path}` into `{normalized_target_parent_path}` because the target is not a directory."
+            ),
+        ));
+    }
+
+    let current_parent_path = parent_virtual_path(&normalized_path);
+    if normalized_target_parent_path == current_parent_path {
+        return Ok(MoveProjectEntryResponseDto {
+            project_id: request.project_id,
+            path: normalized_path,
+        });
+    }
+
+    if normalized_target_parent_path == normalized_path
+        || normalized_target_parent_path.starts_with(&format!("{normalized_path}/"))
+    {
+        return Err(CommandError::user_fixable(
+            "project_move_into_self",
+            format!("Xero cannot move `{normalized_path}` into itself or one of its descendants."),
+        ));
+    }
+
+    let entry_name = resolved_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "project_entry_name_missing",
+                format!("Xero could not determine the name for `{normalized_path}`."),
+            )
+        })?
+        .to_owned();
+    let destination_path = target_parent_path.join(&entry_name);
+    let normalized_destination_path =
+        child_virtual_path(&normalized_target_parent_path, &entry_name);
+
+    if destination_path.exists() {
+        return Err(CommandError::user_fixable(
+            "project_entry_exists",
+            format!(
+                "Xero cannot move `{normalized_path}` to `{normalized_destination_path}` because the destination already exists."
+            ),
+        ));
+    }
+
+    fs::rename(&resolved_path, &destination_path).map_err(|error| {
+        io_error(
+            "project_entry_move_failed",
+            &resolved_path,
+            format!("Xero could not move `{normalized_path}` inside the selected project: {error}"),
+        )
+    })?;
+
+    Ok(MoveProjectEntryResponseDto {
+        project_id: request.project_id,
+        path: normalized_destination_path,
     })
 }
 
@@ -263,7 +348,7 @@ pub fn delete_project_entry<R: Runtime>(
                 "project_directory_delete_failed",
                 &resolved_path,
                 format!(
-                    "Cadence could not delete `{normalized_path}` from the selected project: {error}"
+                    "Xero could not delete `{normalized_path}` from the selected project: {error}"
                 ),
             )
         })?;
@@ -273,7 +358,7 @@ pub fn delete_project_entry<R: Runtime>(
                 "project_file_delete_failed",
                 &resolved_path,
                 format!(
-                    "Cadence could not delete `{normalized_path}` from the selected project: {error}"
+                    "Xero could not delete `{normalized_path}` from the selected project: {error}"
                 ),
             )
         })?;
@@ -335,7 +420,7 @@ fn read_child_nodes(
                 "project_tree_read_failed",
                 directory,
                 format!(
-                    "Cadence could not read the selected project tree at {}: {error}",
+                    "Xero could not read the selected project tree at {}: {error}",
                     directory.display()
                 ),
             )
@@ -393,7 +478,7 @@ fn read_metadata(path: &Path) -> CommandResult<fs::Metadata> {
         ErrorKind::NotFound => CommandError::user_fixable(
             "project_path_not_found",
             format!(
-                "Cadence could not find `{}` in the selected project.",
+                "Xero could not find `{}` in the selected project.",
                 path.display()
             ),
         ),
@@ -401,7 +486,7 @@ fn read_metadata(path: &Path) -> CommandResult<fs::Metadata> {
             "project_path_metadata_failed",
             path,
             format!(
-                "Cadence could not inspect `{}` in the selected project: {error}",
+                "Xero could not inspect `{}` in the selected project: {error}",
                 path.display()
             ),
         ),
@@ -409,7 +494,7 @@ fn read_metadata(path: &Path) -> CommandResult<fs::Metadata> {
 
     if metadata.file_type().is_symlink() {
         return Err(CommandError::policy_denied(format!(
-            "Cadence refuses to operate on symlinked project paths such as `{}`.",
+            "Xero refuses to operate on symlinked project paths such as `{}`.",
             path.display()
         )));
     }
@@ -433,7 +518,7 @@ fn resolve_virtual_path(
             let metadata = read_metadata(&resolved)?;
             if metadata.file_type().is_symlink() {
                 return Err(CommandError::policy_denied(format!(
-                    "Cadence refuses to follow symlinked project paths such as `{}`.",
+                    "Xero refuses to follow symlinked project paths such as `{}`.",
                     resolved.display()
                 )));
             }
@@ -463,7 +548,7 @@ fn split_virtual_path(
             Ok(Vec::new())
         } else {
             Err(CommandError::policy_denied(
-                "Cadence cannot operate on the repository root path directly.",
+                "Xero cannot operate on the repository root path directly.",
             ))
         };
     }
@@ -521,7 +606,7 @@ fn parent_virtual_path(path: &str) -> String {
 fn io_error(code: &str, path: &Path, message: String) -> CommandError {
     let normalized_message = if message.is_empty() {
         format!(
-            "Cadence hit an I/O error while working with {}.",
+            "Xero hit an I/O error while working with {}.",
             path.display()
         )
     } else {

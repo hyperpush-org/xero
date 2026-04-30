@@ -54,7 +54,7 @@ pub(crate) fn autonomous_run_persistence_tracks_current_unit_duplicate_start_and
                 duplicate_start_detected: true,
                 duplicate_start_run_id: Some(run_id.into()),
                 duplicate_start_reason: Some(
-                    "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
+                    "Xero reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
                         .into(),
                 ),
                 cancelled_at: Some("2099-04-15T19:01:05Z".into()),

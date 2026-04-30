@@ -58,7 +58,7 @@ impl OpenAiCompatibleAuthConfig {
                     "openai_compatible_http_client_unavailable",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not build the OpenAI-compatible HTTP client for the models probe: {error}"
+                        "Xero could not build the OpenAI-compatible HTTP client for the models probe: {error}"
                     ),
                 )
             })
@@ -90,7 +90,7 @@ impl ResolvedOpenAiCompatibleEndpoint {
                     "openai_compatible_models_url_invalid",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not build the {} catalog endpoint because URL `{model_list_url}` was invalid: {error}",
+                        "Xero could not build the {} catalog endpoint because URL `{model_list_url}` was invalid: {error}",
                         provider_display_label(self.provider_id.as_str())
                     ),
                 )
@@ -103,7 +103,7 @@ impl ResolvedOpenAiCompatibleEndpoint {
                 "openai_compatible_base_url_invalid",
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not build the OpenAI-compatible models endpoint because base URL `{}` was invalid: {error}",
+                    "Xero could not build the OpenAI-compatible models endpoint because base URL `{}` was invalid: {error}",
                     self.effective_base_url
                 ),
             )
@@ -139,13 +139,6 @@ pub struct OpenAiCompatibleDiscoveredModel {
     pub id: String,
     pub display_name: String,
     pub thinking: OpenAiCompatibleDiscoveredThinkingCapability,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenAiCompatibleLaunchEnv {
-    pub api_key: Option<String>,
-    pub base_url: String,
-    pub api_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,36 +236,6 @@ pub(crate) fn resolve_openai_compatible_endpoint_for_settings(
     )
 }
 
-pub(crate) fn resolve_openai_compatible_launch_env(
-    api_key: Option<&str>,
-    endpoint: &ResolvedOpenAiCompatibleEndpoint,
-) -> Result<OpenAiCompatibleLaunchEnv, AuthFlowError> {
-    let api_key = normalize_optional(api_key).map(str::to_owned);
-    if api_key_required_for_endpoint(endpoint) && api_key.is_none() {
-        return Err(missing_openai_compatible_api_key_error(
-            endpoint.provider_id.as_str(),
-            "prepare",
-        ));
-    }
-
-    let base_url = normalize_base_url(&endpoint.effective_base_url);
-    Url::parse(&base_url).map_err(|error| {
-        AuthFlowError::terminal(
-            "openai_compatible_base_url_invalid",
-            RuntimeAuthPhase::Failed,
-            format!(
-                "Cadence could not prepare OpenAI-compatible launch environment because base URL `{base_url}` was invalid: {error}"
-            ),
-        )
-    })?;
-
-    Ok(OpenAiCompatibleLaunchEnv {
-        api_key,
-        base_url,
-        api_version: endpoint.api_version.clone(),
-    })
-}
-
 pub(crate) fn missing_openai_compatible_api_key_error(
     provider_id: &str,
     operation: &str,
@@ -332,7 +295,7 @@ pub(crate) fn reconcile_openai_compatible_runtime_session(
         return Ok(OpenAiCompatibleReconcileOutcome::SignedOut(AuthDiagnostic {
             code: cloud_binding_stale_code(provider.provider_id).into(),
             message: format!(
-                "Cadence rejected the persisted {} runtime binding because the selected provider profile, model, endpoint, or API key changed. Rebind the runtime session from the active profile.",
+                "Xero rejected the persisted {} runtime binding because the selected provider profile, model, endpoint, or API key changed. Rebind the runtime session from the active profile.",
                 provider_display_label(provider.provider_id)
             ),
             retryable: false,
@@ -379,7 +342,7 @@ pub(crate) fn fetch_openai_compatible_models(
             provider_unavailable_code(endpoint.provider_id.as_str()),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence could not read the {} catalog response body: {error}",
+                "Xero could not read the {} catalog response body: {error}",
                 provider_display_label(endpoint.provider_id.as_str())
             ),
         )
@@ -392,7 +355,7 @@ pub(crate) fn fetch_openai_compatible_models(
                     models_decode_failed_code(endpoint.provider_id.as_str()),
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not decode the {} catalog response: {error}",
+                        "Xero could not decode the {} catalog response: {error}",
                         provider_display_label(endpoint.provider_id.as_str())
                     ),
                 )
@@ -406,7 +369,7 @@ pub(crate) fn fetch_openai_compatible_models(
             models_decode_failed_code(endpoint.provider_id.as_str()),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence could not decode the {} models response: {error}",
+                "Xero could not decode the {} models response: {error}",
                 provider_display_label(endpoint.provider_id.as_str())
             ),
         )
@@ -466,7 +429,7 @@ fn resolve_openai_compatible_endpoint(
                 "openai_compatible_provider_unsupported",
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence cannot resolve OpenAI-compatible endpoint metadata for unsupported provider `{other}`."
+                    "Xero cannot resolve OpenAI-compatible endpoint metadata for unsupported provider `{other}`."
                 ),
             ));
             }
@@ -477,7 +440,7 @@ fn resolve_openai_compatible_endpoint(
             "runtime_provider_invalid",
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected provider `{provider_id}` because runtime kind `{runtime_kind}` must be `{expected_runtime_kind}`."
+                "Xero rejected provider `{provider_id}` because runtime kind `{runtime_kind}` must be `{expected_runtime_kind}`."
             ),
         ));
     }
@@ -489,7 +452,7 @@ fn resolve_openai_compatible_endpoint(
                 AuthFlowError::terminal(
                     "openai_compatible_base_url_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not resolve the OpenAI-compatible base URL because neither a preset nor a custom base URL was available.",
+                    "Xero could not resolve the OpenAI-compatible base URL because neither a preset nor a custom base URL was available.",
                 )
             })?
             .to_owned(),
@@ -498,7 +461,7 @@ fn resolve_openai_compatible_endpoint(
                 AuthFlowError::terminal(
                     "openai_compatible_base_url_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not resolve the Azure OpenAI base URL because the active provider profile omitted baseUrl.",
+                    "Xero could not resolve the Azure OpenAI base URL because the active provider profile omitted baseUrl.",
                 )
             })?
             .to_owned(),
@@ -507,7 +470,7 @@ fn resolve_openai_compatible_endpoint(
                 AuthFlowError::terminal(
                     "openai_compatible_base_url_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not resolve the Gemini AI Studio compatibility base URL.",
+                    "Xero could not resolve the Gemini AI Studio compatibility base URL.",
                 )
             })?
             .to_owned(),
@@ -519,7 +482,7 @@ fn resolve_openai_compatible_endpoint(
             "openai_compatible_base_url_invalid",
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected the {} base URL `{effective_base_url}` because it was invalid: {error}",
+                "Xero rejected the {} base URL `{effective_base_url}` because it was invalid: {error}",
                 provider_display_label(provider_id)
             ),
         )
@@ -529,7 +492,7 @@ fn resolve_openai_compatible_endpoint(
         return Err(AuthFlowError::terminal(
             "openai_compatible_api_version_missing",
             RuntimeAuthPhase::Failed,
-            "Cadence could not resolve Azure OpenAI endpoint metadata because apiVersion is required.",
+            "Xero could not resolve Azure OpenAI endpoint metadata because apiVersion is required.",
         ));
     }
 
@@ -558,7 +521,7 @@ fn normalize_models(
                 models_decode_failed_code(endpoint.provider_id.as_str()),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} models response because one model id was blank.",
+                    "Xero could not decode the {} models response because one model id was blank.",
                     provider_display_label(endpoint.provider_id.as_str())
                 ),
             ));
@@ -569,7 +532,7 @@ fn normalize_models(
                 models_decode_failed_code(endpoint.provider_id.as_str()),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} models response because model `{id}` appeared more than once.",
+                    "Xero could not decode the {} models response because model `{id}` appeared more than once.",
                     provider_display_label(endpoint.provider_id.as_str())
                 ),
             ));
@@ -615,7 +578,7 @@ fn normalize_github_models_catalog(
                 models_decode_failed_code(provider_id),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} catalog response because one model id was blank.",
+                    "Xero could not decode the {} catalog response because one model id was blank.",
                     provider_display_label(provider_id)
                 ),
             ));
@@ -626,7 +589,7 @@ fn normalize_github_models_catalog(
                 models_decode_failed_code(provider_id),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} catalog response because model `{id}` appeared more than once.",
+                    "Xero could not decode the {} catalog response because model `{id}` appeared more than once.",
                     provider_display_label(provider_id)
                 ),
             ));
@@ -692,7 +655,7 @@ fn normalize_thinking_payload(
                 models_decode_failed_code(provider_id),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} models response because thinking capability for model `{model_id}` declared unsupported while still providing effort metadata.",
+                    "Xero could not decode the {} models response because thinking capability for model `{model_id}` declared unsupported while still providing effort metadata.",
                     provider_display_label(provider_id)
                 ),
             ));
@@ -710,7 +673,7 @@ fn normalize_thinking_payload(
                 models_decode_failed_code(provider_id),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} models response because thinking capability for model `{model_id}` repeated effort `{}`.",
+                    "Xero could not decode the {} models response because thinking capability for model `{model_id}` repeated effort `{}`.",
                     provider_display_label(provider_id),
                     effort.trim()
                 ),
@@ -724,7 +687,7 @@ fn normalize_thinking_payload(
             models_decode_failed_code(provider_id),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence could not decode the {} models response because thinking capability for model `{model_id}` did not include any effort options.",
+                "Xero could not decode the {} models response because thinking capability for model `{model_id}` did not include any effort options.",
                 provider_display_label(provider_id)
             ),
         ));
@@ -741,7 +704,7 @@ fn normalize_thinking_payload(
                 models_decode_failed_code(provider_id),
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence could not decode the {} models response because thinking default effort for model `{model_id}` was not present in effortOptions.",
+                    "Xero could not decode the {} models response because thinking default effort for model `{model_id}` was not present in effortOptions.",
                     provider_display_label(provider_id)
                 ),
             ));
@@ -810,7 +773,7 @@ fn parse_thinking_effort(
             models_decode_failed_code(provider_id),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence could not decode the {} models response because model `{model_id}` declared unsupported thinking effort `{}`.",
+                "Xero could not decode the {} models response because model `{model_id}` declared unsupported thinking effort `{}`.",
                 provider_display_label(provider_id),
                 value.trim()
             ),
@@ -893,7 +856,7 @@ fn map_probe_transport_error(provider_id: &str, error: reqwest::Error) -> AuthFl
         provider_unavailable_code(provider_id),
         RuntimeAuthPhase::Failed,
         format!(
-            "Cadence could not reach the {} models endpoint. Check the active base URL and try again once the provider is reachable.",
+            "Xero could not reach the {} models endpoint. Check the active base URL and try again once the provider is reachable.",
             provider_display_label(provider_id)
         ),
     )
@@ -916,7 +879,7 @@ fn map_probe_status_error(
             missing_api_key_code(provider_id),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected the {} models probe because the API key was unauthorized.{context}",
+                "Xero rejected the {} models probe because the API key was unauthorized.{context}",
                 provider_display_label(provider_id)
             ),
         ),
@@ -924,7 +887,7 @@ fn map_probe_status_error(
             provider_unavailable_code(provider_id),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected the {} models probe because the local endpoint returned HTTP {status}.{context}",
+                "Xero rejected the {} models probe because the local endpoint returned HTTP {status}.{context}",
                 provider_display_label(provider_id)
             ),
         ),
@@ -948,7 +911,7 @@ fn map_probe_status_error(
             models_decode_failed_code(provider_id),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected the {} models probe because the provider returned unexpected status {status}.{context}",
+                "Xero rejected the {} models probe because the provider returned unexpected status {status}.{context}",
                 provider_display_label(provider_id)
             ),
         ),
@@ -980,10 +943,10 @@ fn missing_api_key_code(provider_id: &str) -> &'static str {
 fn missing_api_key_message(provider_id: &str, operation: &str) -> String {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => format!(
-            "Cadence cannot {operation} the selected GitHub Models runtime because no app-local GitHub token is configured for the active provider profile."
+            "Xero cannot {operation} the selected GitHub Models runtime because no app-local GitHub token is configured for the active provider profile."
         ),
         _ => format!(
-            "Cadence cannot {operation} the selected {} runtime because no app-local API key is configured for the active provider profile.",
+            "Xero cannot {operation} the selected {} runtime because no app-local API key is configured for the active provider profile.",
             provider_display_label(provider_id)
         ),
     }

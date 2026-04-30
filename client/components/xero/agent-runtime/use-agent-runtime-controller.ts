@@ -1,0 +1,643 @@
+"use client"
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+
+import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
+import type {
+  ProviderModelThinkingEffortDto,
+  RuntimeAutoCompactPreferenceDto,
+  RuntimeRunApprovalModeDto,
+  RuntimeRunControlInputDto,
+  RuntimeRunView,
+  RuntimeSessionView,
+} from '@/src/lib/xero-model'
+
+import {
+  getComposerControlInput,
+  getComposerModelOption,
+  resolveComposerThinkingSelection,
+} from './composer-helpers'
+import {
+  useSpeechDictation,
+  type SpeechDictationAdapter,
+} from './use-speech-dictation'
+
+export type OperatorIntentKind = 'approve' | 'reject' | 'resume'
+export type ComposerThinkingLevel = ProviderModelThinkingEffortDto | null
+
+export interface PendingOperatorIntent {
+  actionId: string
+  kind: OperatorIntentKind
+}
+
+interface UseAgentRuntimeControllerOptions {
+  projectId: string
+  selectedModelSelectionKey: string | null
+  selectedThinkingEffort: ComposerThinkingLevel
+  selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedPrompt: AgentPaneView['selectedPrompt']
+  availableModels: AgentPaneView['providerModelCatalog']['models']
+  approvalRequests: AgentPaneView['approvalRequests']
+  operatorActionStatus: AgentPaneView['operatorActionStatus']
+  pendingOperatorActionId: string | null
+  renderableRuntimeRun: RuntimeRunView | null
+  runtimeStream: AgentPaneView['runtimeStream'] | null
+  runtimeStreamItems: NonNullable<AgentPaneView['runtimeStreamItems']>
+  runtimeRunActionStatus: AgentPaneView['runtimeRunActionStatus']
+  runtimeRunActionError: AgentPaneView['runtimeRunActionError']
+  canStartRuntimeRun: boolean
+  canStartRuntimeSession: boolean
+  canStopRuntimeRun: boolean
+  actionRequiredItems: NonNullable<AgentPaneView['actionRequiredItems']>
+  dictationAdapter?: SpeechDictationAdapter
+  dictationScopeKey: string
+  onStartRuntimeRun?: (options?: {
+    controls?: RuntimeRunControlInputDto | null
+    prompt?: string | null
+  }) => Promise<RuntimeRunView | null>
+  onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
+  onUpdateRuntimeRunControls?: (request?: {
+    controls?: RuntimeRunControlInputDto | null
+    prompt?: string | null
+    autoCompact?: RuntimeAutoCompactPreferenceDto | null
+  }) => Promise<RuntimeRunView | null>
+  onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
+  onResolveOperatorAction?: (
+    actionId: string,
+    decision: 'approve' | 'reject',
+    options?: { userAnswer?: string | null },
+  ) => Promise<unknown>
+  onResumeOperatorRun?: (actionId: string, options?: { userAnswer?: string | null }) => Promise<unknown>
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message
+  }
+
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return error
+  }
+
+  return fallback
+}
+
+const AUTO_COMPACT_STORAGE_KEY = 'xero.agent.autoCompact.enabled'
+const AUTO_COMPACT_DEFAULT_PREFERENCE: RuntimeAutoCompactPreferenceDto = {
+  enabled: true,
+  thresholdPercent: 85,
+  rawTailMessageCount: 8,
+}
+
+function readStoredAutoCompactEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+
+  try {
+    return window.localStorage.getItem(AUTO_COMPACT_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function useAgentRuntimeController({
+  projectId,
+  selectedModelSelectionKey,
+  selectedThinkingEffort,
+  selectedApprovalMode,
+  selectedPrompt,
+  availableModels,
+  approvalRequests,
+  operatorActionStatus,
+  pendingOperatorActionId,
+  renderableRuntimeRun,
+  runtimeStream,
+  runtimeStreamItems,
+  runtimeRunActionStatus,
+  runtimeRunActionError,
+  canStartRuntimeRun,
+  canStartRuntimeSession,
+  canStopRuntimeRun,
+  actionRequiredItems,
+  dictationAdapter,
+  dictationScopeKey,
+  onStartRuntimeRun,
+  onStartRuntimeSession,
+  onUpdateRuntimeRunControls,
+  onStopRuntimeRun,
+  onResolveOperatorAction,
+  onResumeOperatorRun,
+}: UseAgentRuntimeControllerOptions) {
+  const [draftPrompt, setDraftPrompt] = useState('')
+  const [draftModelSelectionKey, setDraftModelSelectionKey] = useState<string | null>(selectedModelSelectionKey)
+  const [draftThinkingEffort, setDraftThinkingEffort] = useState<ComposerThinkingLevel>(selectedThinkingEffort)
+  const [draftApprovalMode, setDraftApprovalMode] = useState<RuntimeRunApprovalModeDto>(selectedApprovalMode)
+  const [runtimeSessionBindInFlight, setRuntimeSessionBindInFlight] = useState(false)
+  const [queuedDraftAcknowledgement, setQueuedDraftAcknowledgement] = useState<string | null>(null)
+  const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
+  const [autoCompactEnabled, setAutoCompactEnabled] = useState(readStoredAutoCompactEnabled)
+  const [operatorAnswers, setOperatorAnswers] = useState<Record<string, string>>({})
+  const [pendingOperatorIntent, setPendingOperatorIntent] = useState<PendingOperatorIntent | null>(null)
+  const [recentRunReplacement, setRecentRunReplacement] = useState<{
+    previousRunId: string
+    nextRunId: string
+  } | null>(null)
+  const promptInputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  const lastSeenProjectIdRef = useRef(projectId)
+  const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
+  const draftPromptRef = useRef(draftPrompt)
+
+  const activeRuntimeRun = renderableRuntimeRun && !renderableRuntimeRun.isTerminal ? renderableRuntimeRun : null
+  const effectiveModelSelectionKey = activeRuntimeRun ? selectedModelSelectionKey : draftModelSelectionKey
+  const effectiveThinkingEffort = activeRuntimeRun ? selectedThinkingEffort : draftThinkingEffort
+  const effectiveApprovalMode = activeRuntimeRun ? selectedApprovalMode : draftApprovalMode
+  const selectedControlInput = useMemo(
+    () =>
+      getComposerControlInput({
+        models: availableModels,
+        selectionKey: effectiveModelSelectionKey,
+        thinkingEffort: effectiveThinkingEffort,
+        approvalMode: effectiveApprovalMode,
+      }),
+    [availableModels, effectiveApprovalMode, effectiveModelSelectionKey, effectiveThinkingEffort],
+  )
+
+  const trimmedDraftPrompt = draftPrompt.trim()
+  const hasQueuedPrompt = selectedPrompt.hasQueuedPrompt
+  const canPrepareFirstRun = Boolean(
+    !renderableRuntimeRun &&
+      (canStartRuntimeRun || canStartRuntimeSession) &&
+      onStartRuntimeRun,
+  )
+  const canStartReplacementRun = Boolean(
+    renderableRuntimeRun?.isTerminal &&
+      (canStartRuntimeRun || canStartRuntimeSession) &&
+      onStartRuntimeRun,
+  )
+  const canStartNewRuntimeRun = canPrepareFirstRun || canStartReplacementRun
+  const runtimeMutationInFlight = runtimeRunActionStatus === 'running' || runtimeSessionBindInFlight
+  const promptInputAvailable = Boolean(
+    canStartNewRuntimeRun ||
+      (activeRuntimeRun && onUpdateRuntimeRunControls),
+  )
+  const isPromptDisabled = !promptInputAvailable || runtimeMutationInFlight
+  const areControlsDisabled = Boolean(
+    runtimeMutationInFlight ||
+      (activeRuntimeRun ? !onUpdateRuntimeRunControls : !canStartNewRuntimeRun),
+  )
+  const canSubmitPrompt = Boolean(
+    !runtimeMutationInFlight &&
+      !hasQueuedPrompt &&
+      trimmedDraftPrompt.length > 0 &&
+      (canStartNewRuntimeRun ||
+        (activeRuntimeRun &&
+          onUpdateRuntimeRunControls)),
+  )
+  const dictation = useSpeechDictation({
+    adapter: dictationAdapter,
+    scopeKey: dictationScopeKey,
+    draftPrompt,
+    setDraftPrompt,
+    promptInputDisabled: isPromptDisabled,
+    promptInputRef,
+  })
+
+  useEffect(() => {
+    draftPromptRef.current = draftPrompt
+  }, [draftPrompt])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    try {
+      window.localStorage.setItem(AUTO_COMPACT_STORAGE_KEY, autoCompactEnabled ? '1' : '0')
+    } catch {
+      /* storage unavailable, keep the in-memory preference */
+    }
+  }, [autoCompactEnabled])
+
+  useEffect(() => {
+    if (renderableRuntimeRun) {
+      setDraftModelSelectionKey(selectedModelSelectionKey)
+      setDraftThinkingEffort(selectedThinkingEffort)
+      setDraftApprovalMode(selectedApprovalMode)
+      return
+    }
+
+    setDraftModelSelectionKey(selectedModelSelectionKey)
+    setDraftThinkingEffort(selectedThinkingEffort)
+    setDraftApprovalMode(selectedApprovalMode)
+  }, [projectId, renderableRuntimeRun?.runId, selectedApprovalMode, selectedModelSelectionKey, selectedThinkingEffort])
+
+  useEffect(() => {
+    if (runtimeRunActionError) {
+      setRuntimeRunActionMessage(null)
+      return
+    }
+
+    if (renderableRuntimeRun?.updatedAt) {
+      setRuntimeRunActionMessage(null)
+    }
+  }, [renderableRuntimeRun?.runId, renderableRuntimeRun?.updatedAt, runtimeRunActionError])
+
+  useEffect(() => {
+    if (!queuedDraftAcknowledgement) {
+      return
+    }
+
+    if (selectedPrompt.hasQueuedPrompt && selectedPrompt.text === queuedDraftAcknowledgement) {
+      setDraftPrompt((currentDraft) => (currentDraft === queuedDraftAcknowledgement ? '' : currentDraft))
+      setQueuedDraftAcknowledgement(null)
+    }
+  }, [queuedDraftAcknowledgement, selectedPrompt])
+
+  useEffect(() => {
+    if (operatorActionStatus === 'idle' && !pendingOperatorActionId) {
+      setPendingOperatorIntent(null)
+    }
+  }, [operatorActionStatus, pendingOperatorActionId])
+
+  useEffect(() => {
+    setOperatorAnswers((currentAnswers) => {
+      const nextAnswers: Record<string, string> = {}
+
+      for (const approval of approvalRequests) {
+        const existingAnswer = currentAnswers[approval.actionId]
+        if (typeof existingAnswer === 'string') {
+          nextAnswers[approval.actionId] = existingAnswer
+          continue
+        }
+
+        if (approval.userAnswer) {
+          nextAnswers[approval.actionId] = approval.userAnswer
+        }
+      }
+
+      for (const actionRequired of actionRequiredItems) {
+        const existingAnswer = currentAnswers[actionRequired.actionId]
+        if (typeof existingAnswer === 'string') {
+          nextAnswers[actionRequired.actionId] = existingAnswer
+        }
+      }
+
+      const currentKeys = Object.keys(currentAnswers)
+      const nextKeys = Object.keys(nextAnswers)
+      if (
+        currentKeys.length === nextKeys.length &&
+        nextKeys.every((actionId) => nextAnswers[actionId] === currentAnswers[actionId])
+      ) {
+        return currentAnswers
+      }
+
+      return nextAnswers
+    })
+  }, [actionRequiredItems, approvalRequests])
+
+  useEffect(() => {
+    if (lastSeenProjectIdRef.current !== projectId) {
+      lastSeenProjectIdRef.current = projectId
+      lastSeenRuntimeRunIdRef.current = renderableRuntimeRun?.runId ?? null
+      setDraftPrompt('')
+      setQueuedDraftAcknowledgement(null)
+      setRecentRunReplacement(null)
+      return
+    }
+
+    const previousRunId = lastSeenRuntimeRunIdRef.current
+    const nextRunId = renderableRuntimeRun?.runId ?? null
+
+    if (previousRunId && nextRunId && previousRunId !== nextRunId) {
+      setRecentRunReplacement({ previousRunId, nextRunId })
+    }
+
+    lastSeenRuntimeRunIdRef.current = nextRunId
+  }, [projectId, renderableRuntimeRun?.runId])
+
+  useEffect(() => {
+    if (!recentRunReplacement) {
+      return
+    }
+
+    const currentRunId = renderableRuntimeRun?.runId ?? null
+    const hasFreshItemsForReplacementRun =
+      currentRunId === recentRunReplacement.nextRunId &&
+      runtimeStream?.runId === recentRunReplacement.nextRunId &&
+      runtimeStreamItems.some((item) => item.runId === recentRunReplacement.nextRunId)
+
+    if (!currentRunId || currentRunId !== recentRunReplacement.nextRunId || hasFreshItemsForReplacementRun) {
+      setRecentRunReplacement(null)
+    }
+  }, [recentRunReplacement, renderableRuntimeRun?.runId, runtimeStream?.runId, runtimeStreamItems])
+
+  const resolvedRuntimeRunActionError =
+    runtimeRunActionError ??
+    (runtimeRunActionMessage
+      ? {
+          code: 'runtime_run_action_failed',
+          message: runtimeRunActionMessage,
+          retryable: false,
+        }
+      : null)
+
+  const composerActionError = resolvedRuntimeRunActionError ?? dictation.error
+
+  const runtimeRunActionErrorTitle =
+    resolvedRuntimeRunActionError?.retryable || resolvedRuntimeRunActionError?.code.includes('timeout')
+      ? 'Run control needs retry'
+      : 'Run control failed'
+  const composerActionErrorTitle = resolvedRuntimeRunActionError
+    ? runtimeRunActionErrorTitle
+    : 'Dictation unavailable'
+
+  async function queueRuntimeRunControls(nextControls: RuntimeRunControlInputDto | null) {
+    if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal || !onUpdateRuntimeRunControls || !nextControls) {
+      return
+    }
+
+    if (runtimeRunActionStatus === 'running') {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      await onUpdateRuntimeRunControls({ controls: nextControls })
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not queue the requested run control change.'))
+    }
+  }
+
+  async function handleStartRuntimeRun() {
+    if (!onStartRuntimeRun || (!canStartRuntimeRun && !canStartRuntimeSession)) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      if (!canStartRuntimeRun && canStartRuntimeSession) {
+        if (!onStartRuntimeSession) {
+          return
+        }
+
+        setRuntimeSessionBindInFlight(true)
+        const boundRuntimeSession = await onStartRuntimeSession({
+          providerProfileId: selectedControlInput?.providerProfileId ?? null,
+        })
+        setRuntimeSessionBindInFlight(false)
+
+        if (!boundRuntimeSession?.isAuthenticated) {
+          const message = boundRuntimeSession?.isLoginInProgress
+            ? 'Finish provider sign-in, then send again.'
+            : boundRuntimeSession?.lastError?.message?.trim() ||
+              'Xero could not authenticate the configured provider. Check the provider setup and try again.'
+          setRuntimeRunActionMessage(message)
+          return
+        }
+      }
+
+      if (!(await dictation.stopBeforeSubmit())) {
+        return
+      }
+
+      const promptToSubmit = draftPromptRef.current.trim()
+      await onStartRuntimeRun({
+        controls: selectedControlInput,
+        prompt: promptToSubmit.length > 0 ? promptToSubmit : null,
+      })
+      if (promptToSubmit.length > 0) {
+        setQueuedDraftAcknowledgement(promptToSubmit)
+      }
+    } catch (error) {
+      setQueuedDraftAcknowledgement(null)
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not start the agent run.'))
+      setRuntimeSessionBindInFlight(false)
+    }
+  }
+
+  async function handleSubmitDraftPrompt() {
+    if (!activeRuntimeRun) {
+      await handleStartRuntimeRun()
+      return
+    }
+
+    if (!onUpdateRuntimeRunControls) {
+      return
+    }
+
+    if (trimmedDraftPrompt.length === 0 || hasQueuedPrompt || runtimeRunActionStatus === 'running') {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      if (!(await dictation.stopBeforeSubmit())) {
+        return
+      }
+
+      const promptToSubmit = draftPromptRef.current.trim()
+      if (promptToSubmit.length === 0) {
+        return
+      }
+
+      await onUpdateRuntimeRunControls({
+        prompt: promptToSubmit,
+        ...(autoCompactEnabled ? { autoCompact: AUTO_COMPACT_DEFAULT_PREFERENCE } : {}),
+      })
+      setQueuedDraftAcknowledgement(promptToSubmit)
+    } catch (error) {
+      setQueuedDraftAcknowledgement(null)
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not queue the next prompt for this agent run.'))
+    }
+  }
+
+  async function handleStopRuntimeRun() {
+    if (!canStopRuntimeRun || !onStopRuntimeRun || !renderableRuntimeRun) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      await onStopRuntimeRun(renderableRuntimeRun.runId)
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not stop the agent run.'))
+    }
+  }
+
+  function handleDraftPromptChange(value: string) {
+    draftPromptRef.current = value
+    setDraftPrompt(value)
+  }
+
+  function handleAutoCompactEnabledChange(value: boolean) {
+    setAutoCompactEnabled(value)
+  }
+
+  function handleComposerModelChange(value: string) {
+    if (!activeRuntimeRun) {
+      const selectedModel = getComposerModelOption(availableModels, value)
+      setDraftModelSelectionKey(value)
+      setDraftThinkingEffort(resolveComposerThinkingSelection(selectedModel, draftThinkingEffort))
+      return
+    }
+
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        models: availableModels,
+        selectionKey: value,
+        thinkingEffort: selectedThinkingEffort,
+        approvalMode: selectedApprovalMode,
+      }),
+    )
+  }
+
+  function handleComposerThinkingLevelChange(value: ProviderModelThinkingEffortDto) {
+    const selectedModel = getComposerModelOption(availableModels, effectiveModelSelectionKey)
+    if (!selectedModel?.thinkingSupported || !selectedModel.thinkingEffortOptions.includes(value)) {
+      return
+    }
+
+    if (!activeRuntimeRun) {
+      setDraftThinkingEffort(value)
+      return
+    }
+
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        models: availableModels,
+        selectionKey: effectiveModelSelectionKey,
+        thinkingEffort: value,
+        approvalMode: effectiveApprovalMode,
+      }),
+    )
+  }
+
+  function handleComposerApprovalModeChange(value: RuntimeRunApprovalModeDto) {
+    if (!activeRuntimeRun) {
+      setDraftApprovalMode(value)
+      return
+    }
+
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        models: availableModels,
+        selectionKey: effectiveModelSelectionKey,
+        thinkingEffort: effectiveThinkingEffort,
+        approvalMode: value,
+      }),
+    )
+  }
+
+  async function handleResolveOperatorAction(
+    actionId: string,
+    decision: 'approve' | 'reject',
+    options: { userAnswer?: string | null } = {},
+  ) {
+    if (!onResolveOperatorAction) {
+      return
+    }
+
+    setPendingOperatorIntent({ actionId, kind: decision })
+
+    try {
+      await onResolveOperatorAction(actionId, decision, {
+        userAnswer: options.userAnswer ?? null,
+      })
+    } catch {
+      // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
+    } finally {
+      setPendingOperatorIntent((currentIntent) =>
+        currentIntent?.actionId === actionId && currentIntent.kind === decision ? null : currentIntent,
+      )
+    }
+  }
+
+  async function handleResumeOperatorRun(actionId: string, options: { userAnswer?: string | null } = {}) {
+    if (!onResumeOperatorRun) {
+      return
+    }
+
+    setPendingOperatorIntent({ actionId, kind: 'resume' })
+
+    try {
+      await onResumeOperatorRun(actionId, {
+        userAnswer: options.userAnswer ?? null,
+      })
+    } catch {
+      // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
+    } finally {
+      setPendingOperatorIntent((currentIntent) =>
+        currentIntent?.actionId === actionId && currentIntent.kind === 'resume' ? null : currentIntent,
+      )
+    }
+  }
+
+  async function handleResumeLiveActionRequired(actionId: string, options: { userAnswer?: string | null } = {}) {
+    if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal || !onUpdateRuntimeRunControls) {
+      return
+    }
+
+    if (runtimeRunActionStatus === 'running') {
+      return
+    }
+
+    const userAnswer = options.userAnswer?.trim() ?? ''
+    if (userAnswer.length === 0) {
+      return
+    }
+
+    setRuntimeRunActionMessage(null)
+    setPendingOperatorIntent({ actionId, kind: 'resume' })
+
+    try {
+      await onUpdateRuntimeRunControls({ prompt: userAnswer })
+    } catch (error) {
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not send the owned-agent response.'))
+    } finally {
+      setPendingOperatorIntent((currentIntent) =>
+        currentIntent?.actionId === actionId && currentIntent.kind === 'resume' ? null : currentIntent,
+      )
+    }
+  }
+
+  function handleOperatorAnswerChange(actionId: string, value: string) {
+    setOperatorAnswers((currentAnswers) => ({
+      ...currentAnswers,
+      [actionId]: value,
+    }))
+  }
+
+  return {
+    draftPrompt,
+    autoCompactEnabled,
+    composerModelId: effectiveModelSelectionKey,
+    composerThinkingEffort: effectiveThinkingEffort,
+    composerApprovalMode: effectiveApprovalMode,
+    promptInputAvailable,
+    isPromptDisabled,
+    areControlsDisabled,
+    canSubmitPrompt,
+    runtimeSessionBindInFlight,
+    operatorAnswers,
+    pendingOperatorIntent,
+    recentRunReplacement,
+    runtimeRunActionError: composerActionError,
+    runtimeRunActionErrorTitle: composerActionErrorTitle,
+    dictation,
+    promptInputRef,
+    handleDraftPromptChange,
+    handleAutoCompactEnabledChange,
+    handleSubmitDraftPrompt,
+    handleComposerModelChange,
+    handleComposerThinkingLevelChange,
+    handleComposerApprovalModeChange,
+    handleOperatorAnswerChange,
+    handleStartRuntimeRun,
+    handleStopRuntimeRun,
+    handleResolveOperatorAction,
+    handleResumeOperatorRun,
+    handleResumeLiveActionRequired,
+  }
+}

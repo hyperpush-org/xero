@@ -67,6 +67,13 @@ pub fn create_owned_agent_run(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
+        AgentRunEventKind::MessageDelta,
+        json!({ "role": "user", "text": request.prompt }),
+    )?;
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
         AgentRunEventKind::ValidationStarted,
         json!({
             "label": "repo_preflight",
@@ -118,7 +125,7 @@ pub fn drive_owned_agent_run(
         return Err(CommandError::user_fixable(
             "agent_run_provider_mismatch",
             format!(
-                "Cadence cannot drive run `{}` with provider `{}/{}` because the run was created with `{}/{}`.",
+                "Xero cannot drive run `{}` with provider `{}/{}` because the run was created with `{}/{}`.",
                 request.run_id,
                 provider.provider_id(),
                 provider.model_id(),
@@ -230,28 +237,13 @@ pub fn prepare_owned_agent_continuation(
         return Err(CommandError::user_fixable(
             "agent_run_not_resumable",
             format!(
-                "Cadence cannot continue owned agent run `{}` because it is {:?}.",
+                "Xero cannot continue owned agent run `{}` because it is {:?}.",
                 request.run_id, before.run.status
             ),
         ));
     }
 
     let provider = create_provider_adapter(request.provider_config.clone())?;
-    if provider.provider_id() != before.run.provider_id
-        || provider.model_id() != before.run.model_id
-    {
-        return Err(CommandError::user_fixable(
-            "agent_run_provider_mismatch",
-            format!(
-                "Cadence cannot continue run `{}` with provider `{}/{}` because the run was created with `{}/{}`.",
-                request.run_id,
-                provider.provider_id(),
-                provider.model_id(),
-                before.run.provider_id,
-                before.run.model_id
-            ),
-        ));
-    }
 
     maybe_auto_compact_before_continuation(request, provider.as_ref(), &before)?;
     before =
@@ -342,7 +334,7 @@ fn ensure_context_budget_allows_continuation(
     Err(CommandError::user_fixable(
         "agent_context_budget_exceeded",
         format!(
-            "Cadence estimated {} tokens for run `{}` after this continuation, which exceeds the known {} token context budget for `{}/{}`. Open the Context panel, shorten the prompt, or start a fresh session before continuing.",
+            "Xero estimated {} tokens for run `{}` after this continuation, which exceeds the known {} token context budget for `{}/{}`. Open the Context panel, shorten the prompt, or start a fresh session before continuing.",
             budget.estimated_tokens,
             snapshot.run.run_id,
             budget_tokens,
@@ -441,7 +433,7 @@ fn estimate_continuation_context_tokens(
             CommandError::system_fault(
                 "agent_context_message_serialize_failed",
                 format!(
-                    "Cadence could not estimate context size for run `{}`: {error}",
+                    "Xero could not estimate context size for run `{}`: {error}",
                     snapshot.run.run_id
                 ),
             )
@@ -457,7 +449,7 @@ fn estimate_continuation_context_tokens(
                     CommandError::system_fault(
                         "agent_context_tool_descriptor_serialize_failed",
                         format!(
-                            "Cadence could not estimate tool context size for run `{}`: {error}",
+                            "Xero could not estimate tool context size for run `{}`: {error}",
                             snapshot.run.run_id
                         ),
                     )
@@ -488,7 +480,7 @@ pub fn drive_owned_agent_continuation(
         return Err(CommandError::user_fixable(
             "agent_run_not_resumable",
             format!(
-                "Cadence cannot continue owned agent run `{}` because it is {:?}.",
+                "Xero cannot continue owned agent run `{}` because it is {:?}.",
                 request.run_id, before.run.status
             ),
         ));
@@ -496,21 +488,6 @@ pub fn drive_owned_agent_continuation(
 
     let provider_config = request.provider_config.clone();
     let provider = create_provider_adapter(provider_config.clone())?;
-    if provider.provider_id() != before.run.provider_id
-        || provider.model_id() != before.run.model_id
-    {
-        return Err(CommandError::user_fixable(
-            "agent_run_provider_mismatch",
-            format!(
-                "Cadence cannot continue run `{}` with provider `{}/{}` because the run was created with `{}/{}`.",
-                request.run_id,
-                provider.provider_id(),
-                provider.model_id(),
-                before.run.provider_id,
-                before.run.model_id
-            ),
-        ));
-    }
     let snapshot =
         project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
     let messages = provider_messages_from_snapshot(&request.repo_root, &snapshot)?;
@@ -599,7 +576,7 @@ fn replay_answered_tool_action_requests(
             CommandError::system_fault(
                 "agent_tool_replay_input_decode_failed",
                 format!(
-                    "Cadence could not decode approved tool call `{}` before replay: {error}",
+                    "Xero could not decode approved tool call `{}` before replay: {error}",
                     tool_call.tool_call_id
                 ),
             )
@@ -626,7 +603,7 @@ fn replay_answered_tool_action_requests(
         let result_content = serde_json::to_string(&result).map_err(|error| {
             CommandError::system_fault(
                 "agent_tool_result_serialize_failed",
-                format!("Cadence could not serialize approved owned-agent tool result: {error}"),
+                format!("Xero could not serialize approved owned-agent tool result: {error}"),
             )
         })?;
         append_message(
@@ -702,7 +679,7 @@ fn command_approval_action_id_for_tool_call(
         CommandError::system_fault(
             "agent_tool_replay_result_decode_failed",
             format!(
-                "Cadence could not decode tool call `{}` while checking approval replay state: {error}",
+                "Xero could not decode tool call `{}` while checking approval replay state: {error}",
                 tool_call.tool_call_id
             ),
         )
@@ -742,7 +719,7 @@ fn macos_approval_action_id_for_tool_call(
         CommandError::system_fault(
             "agent_tool_replay_result_decode_failed",
             format!(
-                "Cadence could not decode tool call `{}` while checking macOS approval replay state: {error}",
+                "Xero could not decode tool call `{}` while checking macOS approval replay state: {error}",
                 tool_call.tool_call_id
             ),
         )
@@ -770,7 +747,7 @@ fn mark_interrupted_tool_calls_before_continuation(
         )
     }) {
         let message = format!(
-            "Cadence marked tool call `{}` interrupted before resuming owned-agent run `{}`.",
+            "Xero marked tool call `{}` interrupted before resuming owned-agent run `{}`.",
             tool_call.tool_call_id, run_id
         );
         project_store::finish_agent_tool_call(
@@ -968,6 +945,7 @@ fn route_provider_config_model(
     match &mut provider_config {
         AgentProviderConfig::Fake => {}
         AgentProviderConfig::OpenAiResponses(config) => config.model_id = model_id.into(),
+        AgentProviderConfig::OpenAiCodexResponses(config) => config.model_id = model_id.into(),
         AgentProviderConfig::OpenAiCompatible(config) => config.model_id = model_id.into(),
         AgentProviderConfig::Anthropic(config) => config.model_id = model_id.into(),
         AgentProviderConfig::Bedrock(config) => config.model_id = model_id.into(),

@@ -23,7 +23,7 @@ vi.mock('@/src/lib/github-auth', () => ({
   }),
 }))
 
-vi.mock('../components/cadence/code-editor', () => ({
+vi.mock('../components/xero/code-editor', () => ({
   CodeEditor: ({ filePath, onChange, onSave, value }: any) => (
     <div>
       <label>
@@ -54,21 +54,17 @@ afterEach(() => {
   }
 })
 
-import { CadenceApp } from './App'
-import { CadenceDesktopError, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
+import { XeroApp } from './App'
+import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
-  createCadenceDoctorReport,
+  createXeroDoctorReport,
   providerModelCatalogSchema,
-} from '@/src/lib/cadence-model'
+} from '@/src/lib/xero-model'
 import {
-  projectRuntimeSettingsFromProviderProfiles,
-  providerProfileSchema,
   providerProfilesSchema,
-  upsertProviderProfileRequestSchema,
   type ProviderProfileDto,
   type ProviderProfileReadinessDto,
   type ProviderProfilesDto,
-  type UpsertProviderProfileRequestDto,
 } from '@/src/test/legacy-provider-profiles'
 import type {
   AutonomousRunStateDto,
@@ -80,7 +76,6 @@ import type {
   ListProjectsResponseDto,
   McpImportDiagnosticDto,
   McpRegistryDto,
-  OperatorApprovalDto,
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
   ProviderAuthSessionDto,
@@ -88,7 +83,6 @@ import type {
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
-  ResumeHistoryEntryDto,
   RuntimeRunControlInputDto,
   RuntimeRunDto,
   RuntimeRunUpdatedPayloadDto,
@@ -101,12 +95,11 @@ import type {
   SyncNotificationAdaptersResponseDto,
   UpsertMcpServerRequestDto,
   UpsertNotificationRouteRequestDto,
-  UpsertRuntimeSettingsRequestDto,
-} from '@/src/lib/cadence-model'
+} from '@/src/lib/xero-model'
 import {
   getCloudProviderPreset,
   type CloudProviderPreset,
-} from '@/src/lib/cadence-model/provider-presets'
+} from '@/src/lib/xero-model/provider-presets'
 
 function makeProjectSummary(id: string, name: string): ListProjectsResponseDto['projects'][number] {
   return {
@@ -139,7 +132,7 @@ function makeAgentSession(projectId = 'project-1') {
   }
 }
 
-function makeSnapshot(projectId = 'project-1', name = 'Cadence'): ProjectSnapshotResponseDto {
+function makeSnapshot(projectId = 'project-1', name = 'Xero'): ProjectSnapshotResponseDto {
   return {
     project: makeProjectSummary(projectId, name),
     repository: {
@@ -161,7 +154,7 @@ function makeSnapshot(projectId = 'project-1', name = 'Cadence'): ProjectSnapsho
   }
 }
 
-function makeStatus(projectId = 'project-1', name = 'Cadence'): RepositoryStatusResponseDto {
+function makeStatus(projectId = 'project-1', name = 'Xero'): RepositoryStatusResponseDto {
   return {
     repository: {
       id: `repo-${projectId}`,
@@ -185,8 +178,8 @@ function makeDiff(projectId = 'project-1', scope: RepositoryDiffResponseDto['sco
     repository: {
       id: `repo-${projectId}`,
       projectId,
-      rootPath: '/tmp/Cadence',
-      displayName: 'Cadence',
+      rootPath: '/tmp/Xero',
+      displayName: 'Xero',
       branch: null,
       headSha: null,
       isGitRepo: true,
@@ -298,7 +291,7 @@ function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDt
           status: 'stale',
           diagnostic: {
             code: 'runtime_mcp_projection_unchecked',
-            message: 'Cadence has not checked this MCP server yet.',
+            message: 'Xero has not checked this MCP server yet.',
             retryable: true,
           },
           lastCheckedAt: null,
@@ -439,30 +432,6 @@ function applyOpenAiRuntimeReadinessToProfiles(
   })
 }
 
-function makeProviderProfile(
-  overrides: Partial<ProviderProfileDto> &
-    Pick<ProviderProfileDto, 'profileId' | 'providerId' | 'label' | 'modelId'>,
-): ProviderProfileDto {
-  const preset = getRequiredCloudProviderPreset(overrides.providerId, 'makeProviderProfile')
-
-  return providerProfileSchema.parse({
-    profileId: overrides.profileId,
-    providerId: overrides.providerId,
-    runtimeKind: overrides.runtimeKind ?? preset.runtimeKind,
-    label: overrides.label,
-    modelId: overrides.modelId,
-    presetId: overrides.presetId ?? preset.presetId ?? null,
-    baseUrl: overrides.baseUrl ?? null,
-    apiVersion: overrides.apiVersion ?? null,
-    region: overrides.region ?? null,
-    projectId: overrides.projectId ?? null,
-    active: overrides.active ?? true,
-    readiness: overrides.readiness ?? makeMissingProviderReadiness(),
-    migratedFromLegacy: overrides.migratedFromLegacy ?? false,
-    migratedAt: overrides.migratedAt ?? null,
-  })
-}
-
 function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCatalogDto {
   const preset = getRequiredCloudProviderPreset(profile.providerId, 'buildProviderModelCatalog')
   const isReady = preset.authMode === 'oauth' ? true : profile.readiness.ready
@@ -476,55 +445,55 @@ function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCa
       case 'openrouter':
         return {
           code: 'openrouter_api_key_missing',
-          message: `Cadence cannot discover OpenRouter models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
+          message: `Xero cannot discover OpenRouter models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
           retryable: false,
         }
       case 'anthropic':
         return {
           code: 'anthropic_api_key_missing',
-          message: `Cadence cannot discover Anthropic models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
+          message: `Xero cannot discover Anthropic models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
           retryable: false,
         }
       case 'github_models':
         return {
           code: 'github_models_token_missing',
-          message: `Cadence cannot discover GitHub Models for provider profile \`${profile.profileId}\` because no app-local GitHub token is configured for that profile.`,
+          message: `Xero cannot discover GitHub Models for provider profile \`${profile.profileId}\` because no app-local GitHub token is configured for that profile.`,
           retryable: false,
         }
       case 'openai_api':
         return {
           code: 'openai_api_key_missing',
-          message: `Cadence cannot discover OpenAI-compatible models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
+          message: `Xero cannot discover OpenAI-compatible models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
           retryable: false,
         }
       case 'ollama':
         return {
           code: 'local_provider_unreachable',
-          message: `Cadence cannot discover Ollama models for provider profile \`${profile.profileId}\` because the local endpoint is not ready yet.`,
+          message: `Xero cannot discover Ollama models for provider profile \`${profile.profileId}\` because the local endpoint is not ready yet.`,
           retryable: false,
         }
       case 'azure_openai':
         return {
           code: 'azure_openai_api_key_missing',
-          message: `Cadence cannot discover Azure OpenAI models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
+          message: `Xero cannot discover Azure OpenAI models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
           retryable: false,
         }
       case 'gemini_ai_studio':
         return {
           code: 'gemini_ai_studio_api_key_missing',
-          message: `Cadence cannot discover Gemini AI Studio models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
+          message: `Xero cannot discover Gemini AI Studio models for provider profile \`${profile.profileId}\` because no app-local API key is configured for that profile.`,
           retryable: false,
         }
       case 'bedrock':
         return {
           code: 'bedrock_ambient_proof_missing',
-          message: `Cadence cannot validate Amazon Bedrock model availability for provider profile \`${profile.profileId}\` because the profile is missing its ambient readiness proof link. Save the profile again so Cadence records ambient-auth intent.`,
+          message: `Xero cannot validate Amazon Bedrock model availability for provider profile \`${profile.profileId}\` because the profile is missing its ambient readiness proof link. Save the profile again so Xero records ambient-auth intent.`,
           retryable: false,
         }
       case 'vertex':
         return {
           code: 'vertex_ambient_proof_missing',
-          message: `Cadence cannot validate Google Vertex AI model availability for provider profile \`${profile.profileId}\` because the profile is missing its ambient readiness proof link. Save the profile again so Cadence records ambient-auth intent.`,
+          message: `Xero cannot validate Google Vertex AI model availability for provider profile \`${profile.profileId}\` because the profile is missing its ambient readiness proof link. Save the profile again so Xero records ambient-auth intent.`,
           retryable: false,
         }
       case 'openai_codex':
@@ -696,11 +665,11 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
     runId: 'run-1',
     runtimeKind: 'openai_codex',
     providerId: 'openai_codex',
-    supervisorKind: 'detached_pty',
+    supervisorKind: 'owned_agent',
     status: 'running',
     transport: {
-      kind: 'tcp',
-      endpoint: '127.0.0.1:4455',
+      kind: 'internal',
+      endpoint: 'xero://owned-agent',
       liveness: 'reachable',
     },
     controls: {
@@ -737,174 +706,6 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
   return runtimeRun
 }
 
-function makeRuntimeApproval(actionId: string, overrides: Partial<OperatorApprovalDto> = {}): OperatorApprovalDto {
-  return {
-    actionId,
-    sessionId: 'session-1',
-    flowId: 'flow-1',
-    actionType: 'review_command',
-    title: 'Review destructive shell command',
-    detail: 'Cadence blocked a destructive shell wrapper and needs approval before continuing.',
-    userAnswer: null,
-    status: 'pending',
-    decisionNote: null,
-    createdAt: '2026-04-22T12:07:00Z',
-    updatedAt: '2026-04-22T12:07:00Z',
-    resolvedAt: null,
-    ...overrides,
-  }
-}
-
-function makeResumeHistoryEntry(actionId: string, overrides: Partial<ResumeHistoryEntryDto> = {}): ResumeHistoryEntryDto {
-  return {
-    id: 1,
-    sourceActionId: actionId,
-    sessionId: 'session-1',
-    status: 'failed',
-    summary: 'Operator resume failed and is waiting for corrected shell input.',
-    createdAt: '2026-04-22T12:07:05Z',
-    ...overrides,
-  }
-}
-
-function makeRuntimeStreamActionRequiredEvent(options: {
-  actionId: string
-  boundaryId: string
-  detail: string
-  runId?: string
-  sequence?: number
-  title?: string
-}): RuntimeStreamEventDto {
-  const runId = options.runId ?? 'run-1'
-
-  return {
-    projectId: 'project-1',
-    agentSessionId: 'agent-session-main',
-    runtimeKind: 'openai_codex',
-    runId,
-    sessionId: 'session-1',
-    flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
-    item: {
-      kind: 'action_required',
-      runId,
-      sequence: options.sequence ?? 5,
-      sessionId: 'session-1',
-      flowId: 'flow-1',
-      text: null,
-      toolCallId: null,
-      toolName: null,
-      toolState: null,
-      actionId: options.actionId,
-      boundaryId: options.boundaryId,
-      actionType: 'review_command',
-      title: options.title ?? 'Review destructive shell command',
-      detail: options.detail,
-      code: null,
-      message: null,
-      retryable: null,
-      createdAt: '2026-04-22T12:07:10Z',
-    },
-  }
-}
-
-function makeRuntimeStreamToolEvent(options: {
-  runId?: string
-  sequence?: number
-  detail: string
-}): RuntimeStreamEventDto {
-  const runId = options.runId ?? 'run-1'
-
-  return {
-    projectId: 'project-1',
-    agentSessionId: 'agent-session-main',
-    runtimeKind: 'openai_codex',
-    runId,
-    sessionId: 'session-1',
-    flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
-    item: {
-      kind: 'tool',
-      runId,
-      sequence: options.sequence ?? 4,
-      sessionId: 'session-1',
-      flowId: 'flow-1',
-      text: null,
-      toolCallId: 'mcp-invoke-1',
-      toolName: 'mcp.invoke',
-      toolState: 'failed',
-      toolSummary: {
-        kind: 'mcp_capability',
-        serverId: 'linear',
-        capabilityKind: 'prompt',
-        capabilityId: 'summarize_context',
-        capabilityName: 'Summarize Context',
-      },
-      skillId: null,
-      skillStage: null,
-      skillResult: null,
-      skillSource: null,
-      skillCacheStatus: null,
-      skillDiagnostic: null,
-      actionId: null,
-      boundaryId: null,
-      actionType: null,
-      title: null,
-      detail: options.detail,
-      code: null,
-      message: null,
-      retryable: null,
-      createdAt: '2026-04-22T12:07:08Z',
-    },
-  }
-}
-
-function makeRuntimeStreamActivityEvent(options: {
-  runId?: string
-  sequence?: number
-  code: string
-  title: string
-  detail: string
-}): RuntimeStreamEventDto {
-  const runId = options.runId ?? 'run-1'
-
-  return {
-    projectId: 'project-1',
-    agentSessionId: 'agent-session-main',
-    runtimeKind: 'openai_codex',
-    runId,
-    sessionId: 'session-1',
-    flowId: 'flow-1',
-    subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
-    item: {
-      kind: 'activity',
-      runId,
-      sequence: options.sequence ?? 5,
-      sessionId: 'session-1',
-      flowId: 'flow-1',
-      text: null,
-      toolCallId: null,
-      toolName: null,
-      toolState: null,
-      actionId: null,
-      boundaryId: null,
-      actionType: null,
-      title: options.title,
-      detail: options.detail,
-      code: options.code,
-      message: null,
-      retryable: null,
-      skillId: null,
-      skillStage: null,
-      skillResult: null,
-      skillSource: null,
-      skillCacheStatus: null,
-      skillDiagnostic: null,
-      createdAt: '2026-04-22T12:07:09Z',
-    },
-  }
-}
-
 function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): AutonomousRunStateDto {
   return {
     run: {
@@ -913,7 +714,7 @@ function makeAutonomousRunState(projectId = 'project-1', runId = 'auto-run-1'): 
       runId,
       runtimeKind: 'openai_codex',
       providerId: 'openai_codex',
-      supervisorKind: 'detached_pty',
+      supervisorKind: 'owned_agent',
       status: 'running',
       recoveryState: 'healthy',
       duplicateStartDetected: false,
@@ -1014,8 +815,6 @@ function createAdapter(options?: {
       currentRuntimeSession,
     )
   }
-  let currentRuntimeSettings =
-    projectRuntimeSettingsFromProviderProfiles(currentProviderProfiles) ?? options?.runtimeSettings ?? makeRuntimeSettings()
   let currentProviderModelCatalogs: Record<string, ProviderModelCatalogDto> = Object.fromEntries(
     currentProviderProfiles.profiles.map((profile) => [profile.profileId, buildProviderModelCatalog(profile)]),
   )
@@ -1025,7 +824,7 @@ function createAdapter(options?: {
   let currentRuntimeRun = options?.runtimeRun ?? null
   let currentAutonomousState = options?.autonomousState ?? null
   let currentNotificationRoutes = options?.notificationRoutes ?? []
-  let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'Cadence')]
+  let currentProjects = options?.projects ?? [makeProjectSummary('project-1', 'Xero')]
   let currentProjectFiles = options?.projectFiles ?? makeProjectFiles()
   const updateAgentSessions = (agentSessions: ProjectSnapshotResponseDto['agentSessions']) => {
     currentSnapshot = {
@@ -1035,19 +834,19 @@ function createAdapter(options?: {
   }
   const pickedRepositoryPath = options?.pickedRepositoryPath ?? null
   const currentFileContents: Record<string, string> = {
-    '/README.md': '# Cadence\n',
-    '/src/App.tsx': 'export default function App() {\n  return <main>Cadence</main>\n}\n',
+    '/README.md': '# Xero\n',
+    '/src/App.tsx': 'export default function App() {\n  return <main>Xero</main>\n}\n',
   }
   let projectUpdatedHandler: ((payload: ProjectUpdatedPayloadDto) => void) | null = null
-  let projectUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+  let projectUpdatedErrorHandler: ((error: XeroDesktopError) => void) | null = null
   let runtimeUpdatedHandler: ((payload: RuntimeUpdatedPayloadDto) => void) | null = null
-  let runtimeUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+  let runtimeUpdatedErrorHandler: ((error: XeroDesktopError) => void) | null = null
   let runtimeRunUpdatedHandler: ((payload: RuntimeRunUpdatedPayloadDto) => void) | null = null
-  let runtimeRunUpdatedErrorHandler: ((error: CadenceDesktopError) => void) | null = null
+  let runtimeRunUpdatedErrorHandler: ((error: XeroDesktopError) => void) | null = null
   const streamSubscriptions: Array<{
     projectId: string
     handler: (payload: RuntimeStreamEventDto) => void
-    onError: ((error: CadenceDesktopError) => void) | null
+    onError: ((error: XeroDesktopError) => void) | null
     unsubscribe: () => void
   }> = []
 
@@ -1055,11 +854,6 @@ function createAdapter(options?: {
     currentProviderModelCatalogs = Object.fromEntries(
       currentProviderProfiles.profiles.map((profile) => [profile.profileId, buildProviderModelCatalog(profile)]),
     )
-  }
-
-  const syncRuntimeSettingsFromActiveProfile = () => {
-    currentRuntimeSettings =
-      projectRuntimeSettingsFromProviderProfiles(currentProviderProfiles) ?? currentRuntimeSettings
   }
 
   const getActiveProviderProfileSnapshot = (): ProviderProfileDto => {
@@ -1286,33 +1080,11 @@ function createAdapter(options?: {
     currentRuntimeRun = payload.run ? cloneRuntimeRun(payload.run) : null
   }
 
-  const upsertRuntimeSettings = vi.fn(async (request: UpsertRuntimeSettingsRequestDto) => {
-    currentRuntimeSettings = {
-      providerId: request.providerId,
-      modelId: request.modelId,
-      openrouterApiKeyConfigured:
-        request.providerId === 'openrouter'
-          ? request.openrouterApiKey == null
-            ? currentRuntimeSettings.openrouterApiKeyConfigured
-            : request.openrouterApiKey.trim().length > 0
-          : false,
-      anthropicApiKeyConfigured:
-        request.providerId === 'anthropic'
-          ? request.anthropicApiKey == null
-            ? currentRuntimeSettings.anthropicApiKeyConfigured
-            : request.anthropicApiKey.trim().length > 0
-          : false,
-    }
-    currentProviderProfiles = makeProviderProfilesFromRuntimeSettings(currentRuntimeSettings)
-    rebuildProviderModelCatalogs()
-    return currentRuntimeSettings
-  })
-
-  let currentProviderCredentials: { credentials: import('@/src/lib/cadence-model').ProviderCredentialDto[] } = {
+  let currentProviderCredentials: { credentials: import('@/src/lib/xero-model').ProviderCredentialDto[] } = {
     credentials: [],
   }
   const listProviderCredentials = vi.fn(async () => currentProviderCredentials)
-  const upsertProviderCredential = vi.fn(async (request: import('@/src/lib/cadence-model').UpsertProviderCredentialRequestDto) => {
+  const upsertProviderCredential = vi.fn(async (request: import('@/src/lib/xero-model').UpsertProviderCredentialRequestDto) => {
     const next = currentProviderCredentials.credentials.filter((c) => c.providerId !== request.providerId)
     next.push({
       providerId: request.providerId,
@@ -1345,111 +1117,6 @@ function createAdapter(options?: {
     return currentProviderCredentials
   })
 
-  const upsertProviderProfile = vi.fn(async (request: UpsertProviderProfileRequestDto) => {
-    const parsedRequest = upsertProviderProfileRequestSchema.parse(request)
-    const preset = getRequiredCloudProviderPreset(parsedRequest.providerId, 'createAdapter.upsertProviderProfile')
-    const existingProfile =
-      currentProviderProfiles.profiles.find((profile) => profile.profileId === parsedRequest.profileId) ?? null
-
-    const nextReadiness = (() => {
-      if (preset.authMode === 'oauth') {
-        return existingProfile?.readiness ?? makeMissingProviderReadiness()
-      }
-
-      if (preset.authMode === 'api_key') {
-        if (parsedRequest.apiKey === '') {
-          return makeMissingProviderReadiness()
-        }
-
-        if (typeof parsedRequest.apiKey === 'string' && parsedRequest.apiKey.trim().length > 0) {
-          return makeReadyProviderReadiness(preset)
-        }
-
-        return existingProfile?.readiness ?? makeMissingProviderReadiness()
-      }
-
-      if (preset.authMode === 'local') {
-        return makeReadyProviderReadiness(preset)
-      }
-
-      const hasRequiredRegion = preset.regionMode !== 'required' || Boolean(parsedRequest.region?.trim())
-      const hasRequiredProjectId =
-        preset.projectIdMode !== 'required' || Boolean(parsedRequest.projectId?.trim())
-
-      return hasRequiredRegion && hasRequiredProjectId
-        ? makeReadyProviderReadiness(preset)
-        : makeMissingProviderReadiness('malformed')
-    })()
-
-    const shouldActivate = parsedRequest.activate ?? currentProviderProfiles.profiles.length === 0
-    const nextProfile = providerProfileSchema.parse({
-      profileId: parsedRequest.profileId,
-      providerId: parsedRequest.providerId,
-      runtimeKind: parsedRequest.runtimeKind,
-      label: parsedRequest.label,
-      modelId: parsedRequest.modelId,
-      presetId: parsedRequest.presetId ?? null,
-      baseUrl: parsedRequest.baseUrl ?? null,
-      apiVersion: parsedRequest.apiVersion ?? null,
-      region: parsedRequest.region ?? null,
-      projectId: parsedRequest.projectId ?? null,
-      active: shouldActivate ? true : parsedRequest.profileId === currentProviderProfiles.activeProfileId,
-      readiness: nextReadiness,
-      migratedFromLegacy: existingProfile?.migratedFromLegacy ?? false,
-      migratedAt: existingProfile?.migratedAt ?? null,
-    })
-
-    const nextProfiles = currentProviderProfiles.profiles
-      .filter((profile) => profile.profileId !== parsedRequest.profileId)
-      .map((profile) => ({
-        ...profile,
-        active: shouldActivate ? false : profile.active,
-      }))
-
-    currentProviderProfiles = providerProfilesSchema.parse({
-      activeProfileId: shouldActivate ? parsedRequest.profileId : currentProviderProfiles.activeProfileId,
-      profiles: [...nextProfiles, nextProfile],
-      migration: currentProviderProfiles.migration ?? null,
-    })
-    syncRuntimeSettingsFromActiveProfile()
-    rebuildProviderModelCatalogs()
-    return currentProviderProfiles
-  })
-
-  const setActiveProviderProfile = vi.fn(async (profileId: string) => {
-    const nextProfiles = currentProviderProfiles.profiles.map((profile) => ({
-      ...profile,
-      active: profile.profileId === profileId,
-    }))
-    currentProviderProfiles = {
-      ...currentProviderProfiles,
-      activeProfileId: profileId,
-      profiles: nextProfiles,
-    }
-    syncRuntimeSettingsFromActiveProfile()
-    rebuildProviderModelCatalogs()
-    return currentProviderProfiles
-  })
-  const logoutProviderProfile = vi.fn(async (profileId: string) => {
-    currentProviderProfiles = {
-      ...currentProviderProfiles,
-      profiles: currentProviderProfiles.profiles.map((profile) =>
-        profile.profileId === profileId && profile.providerId === 'openai_codex'
-          ? {
-              ...profile,
-              readiness: {
-                ready: false,
-                status: 'missing',
-                proofUpdatedAt: null,
-              },
-            }
-          : profile,
-      ),
-    }
-    rebuildProviderModelCatalogs()
-    return currentProviderProfiles
-  })
-
   const listMcpServers = vi.fn(async () => currentMcpRegistry)
 
   const upsertMcpServer = vi.fn(async (request: UpsertMcpServerRequestDto) => {
@@ -1470,7 +1137,7 @@ function createAdapter(options?: {
             status: 'stale',
             diagnostic: {
               code: 'runtime_mcp_projection_unchecked',
-              message: 'Cadence has not checked this MCP server yet.',
+              message: 'Xero has not checked this MCP server yet.',
               retryable: true,
             },
             lastCheckedAt: null,
@@ -1515,7 +1182,7 @@ function createAdapter(options?: {
         status: 'failed' as const,
         diagnostic: {
           code: 'runtime_mcp_projection_decode_failed',
-          message: 'Cadence kept the last truthful MCP projection because the imported status payload was malformed.',
+          message: 'Xero kept the last truthful MCP projection because the imported status payload was malformed.',
           retryable: true,
         },
         lastCheckedAt: now,
@@ -1536,7 +1203,7 @@ function createAdapter(options?: {
         index: 0,
         serverId: 'linear',
         code: 'runtime_mcp_projection_decode_failed',
-        message: 'Cadence preserved the last truthful MCP projection while parsing imported rows.',
+        message: 'Xero preserved the last truthful MCP projection while parsing imported rows.',
       },
     ]
 
@@ -1611,7 +1278,7 @@ function createAdapter(options?: {
 
   const pickRepositoryFolder = vi.fn(async () => pickedRepositoryPath)
   const importRepository = vi.fn(async (_path: string): Promise<ImportRepositoryResponseDto> => {
-    const project = makeProjectSummary('project-1', 'Cadence')
+    const project = makeProjectSummary('project-1', 'Xero')
     currentProjects = [project]
     return {
       project,
@@ -1621,7 +1288,7 @@ function createAdapter(options?: {
   const onProjectUpdated = vi.fn(
     async (
       handler: (payload: ProjectUpdatedPayloadDto) => void,
-      onError?: (error: CadenceDesktopError) => void,
+      onError?: (error: XeroDesktopError) => void,
     ) => {
       projectUpdatedHandler = handler
       projectUpdatedErrorHandler = onError ?? null
@@ -1631,7 +1298,7 @@ function createAdapter(options?: {
   const onRuntimeUpdated = vi.fn(
     async (
       handler: (payload: RuntimeUpdatedPayloadDto) => void,
-      onError?: (error: CadenceDesktopError) => void,
+      onError?: (error: XeroDesktopError) => void,
     ) => {
       runtimeUpdatedHandler = handler
       runtimeUpdatedErrorHandler = onError ?? null
@@ -1641,7 +1308,7 @@ function createAdapter(options?: {
   const onRuntimeRunUpdated = vi.fn(
     async (
       handler: (payload: RuntimeRunUpdatedPayloadDto) => void,
-      onError?: (error: CadenceDesktopError) => void,
+      onError?: (error: XeroDesktopError) => void,
     ) => {
       runtimeRunUpdatedHandler = handler
       runtimeRunUpdatedErrorHandler = onError ?? null
@@ -1649,7 +1316,7 @@ function createAdapter(options?: {
     },
   )
 
-  const adapter: CadenceDesktopAdapter = {
+  const adapter: XeroDesktopAdapter = {
     isDesktopRuntime: () => true,
     pickRepositoryFolder,
     importRepository,
@@ -1703,6 +1370,13 @@ function createAdapter(options?: {
       path: request.path.split('/').slice(0, -1).filter(Boolean).length
         ? `/${request.path.split('/').slice(0, -1).filter(Boolean).join('/')}/${request.newName}`
         : `/${request.newName}`,
+    }),
+    moveProjectEntry: async (request) => ({
+      projectId: request.projectId,
+      path:
+        request.targetParentPath === '/'
+          ? `/${request.path.split('/').filter(Boolean).pop() ?? ''}`
+          : `${request.targetParentPath}/${request.path.split('/').filter(Boolean).pop() ?? ''}`,
     }),
     deleteProjectEntry: async (projectId, path) => ({ projectId, path }),
     searchProject: async (request) => ({
@@ -1888,7 +1562,7 @@ function createAdapter(options?: {
       }
     },
     runDoctorReport: async (request) =>
-      createCadenceDoctorReport({
+      createXeroDoctorReport({
         reportId: 'doctor-test',
         generatedAt: '2026-04-26T12:00:00Z',
         mode: request?.mode ?? 'quick_local',
@@ -2082,7 +1756,7 @@ function createAdapter(options?: {
     browserTabList: async () => [],
     browserTabFocus: async () => ({
       id: 'tab-1',
-      label: 'cadence-browser',
+      label: 'xero-browser',
       title: null,
       url: null,
       loading: false,
@@ -2100,7 +1774,7 @@ function createAdapter(options?: {
       agentSessionId: string,
       itemKinds: RuntimeStreamEventDto['subscribedItemKinds'],
       handler: (payload: RuntimeStreamEventDto) => void,
-      onError?: (error: CadenceDesktopError) => void,
+      onError?: (error: XeroDesktopError) => void,
     ) => {
       const subscription = {
         projectId,
@@ -2165,27 +1839,27 @@ function createAdapter(options?: {
       applyProjectUpdatedPayload(payload)
       projectUpdatedHandler?.(payload)
     },
-    emitProjectUpdatedError(error: CadenceDesktopError) {
+    emitProjectUpdatedError(error: XeroDesktopError) {
       projectUpdatedErrorHandler?.(error)
     },
     emitRuntimeUpdated(payload: RuntimeUpdatedPayloadDto) {
       applyRuntimeUpdatedPayload(payload)
       runtimeUpdatedHandler?.(payload)
     },
-    emitRuntimeUpdatedError(error: CadenceDesktopError) {
+    emitRuntimeUpdatedError(error: XeroDesktopError) {
       runtimeUpdatedErrorHandler?.(error)
     },
     emitRuntimeRunUpdated(payload: RuntimeRunUpdatedPayloadDto) {
       applyRuntimeRunUpdatedPayload(payload)
       runtimeRunUpdatedHandler?.(payload)
     },
-    emitRuntimeRunUpdatedError(error: CadenceDesktopError) {
+    emitRuntimeRunUpdatedError(error: XeroDesktopError) {
       runtimeRunUpdatedErrorHandler?.(error)
     },
     emitRuntimeStream(index: number, payload: RuntimeStreamEventDto) {
       streamSubscriptions[index]?.handler(payload)
     },
-    emitRuntimeStreamError(index: number, error: CadenceDesktopError) {
+    emitRuntimeStreamError(index: number, error: XeroDesktopError) {
       streamSubscriptions[index]?.onError?.(error)
     },
   }
@@ -2204,7 +1878,7 @@ function getProviderCard(label: string): HTMLElement {
   return card
 }
 
-describe('CadenceApp current UI', () => {
+describe('XeroApp current UI', () => {
   it('shows the onboarding flow on a cold-start empty state', async () => {
     const { adapter } = createAdapter({
       projects: [],
@@ -2215,9 +1889,9 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
-    expect(await screen.findByRole('heading', { name: /Welcome to Cadence/i })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: /Welcome to Xero/i })).toBeVisible()
     expect(screen.getByText('OpenAI, Anthropic, Ollama, Bedrock, Vertex, and more')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Get started' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Skip setup' })).toBeVisible()
@@ -2234,7 +1908,7 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Skip setup' }))
 
@@ -2260,7 +1934,7 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
     const card = getProviderCard('OpenRouter')
@@ -2290,7 +1964,7 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
     const card = getProviderCard('Anthropic')
@@ -2314,7 +1988,7 @@ describe('CadenceApp current UI', () => {
   it('imports a project and creates a notification route from onboarding', async () => {
     const { adapter, pickRepositoryFolder, importRepository, upsertNotificationRoute } = createAdapter({
       projects: [],
-      pickedRepositoryPath: '/tmp/Cadence',
+      pickedRepositoryPath: '/tmp/Xero',
       runtimeSession: makeRuntimeSession('project-1', {
         phase: 'idle',
         sessionId: null,
@@ -2322,7 +1996,7 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -2331,7 +2005,7 @@ describe('CadenceApp current UI', () => {
 
     await waitFor(() => expect(pickRepositoryFolder).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(importRepository).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.getByText('/tmp/Cadence')).toBeVisible())
+    await waitFor(() => expect(screen.getByText('/tmp/Xero')).toBeVisible())
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     fireEvent.click((await screen.findAllByRole('button', { name: 'Add route' }))[0])
@@ -2352,14 +2026,14 @@ describe('CadenceApp current UI', () => {
   it('renders the workflow tab as a blank slate for an imported project', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
     expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
-    expect(screen.queryByText('Cadence Desktop')).not.toBeInTheDocument()
+    expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()
   })
 
   it('renders live git footer data from desktop state while leaving mock-only fields untouched', async () => {
@@ -2374,8 +2048,8 @@ describe('CadenceApp current UI', () => {
         repository: {
           id: 'repo-project-1',
           projectId: 'project-1',
-          rootPath: '/tmp/Cadence',
-          displayName: 'Cadence',
+          rootPath: '/tmp/Xero',
+          displayName: 'Xero',
           branch: 'feature/footer-live-data',
           headSha: '1234567890abcdef1234567890abcdef12345678',
           isGitRepo: true,
@@ -2426,7 +2100,7 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2444,7 +2118,7 @@ describe('CadenceApp current UI', () => {
   it('collapses the project rail into a compact icon strip from the titlebar toggle', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2455,14 +2129,14 @@ describe('CadenceApp current UI', () => {
 
     expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
     expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
-    expect(screen.queryByRole('button', { name: 'Project actions for cadence' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /cadence/i })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Project actions for xero' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /xero/i })).toBeVisible()
   })
 
   it('opens the Solana workbench from the titlebar in the normal app shell', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2483,7 +2157,7 @@ describe('CadenceApp current UI', () => {
   it('starts GitHub auth from the titlebar without opening Account settings', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2499,7 +2173,7 @@ describe('CadenceApp current UI', () => {
   it('auto-collapses the project rail in Editor and restores it when leaving if it started expanded', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2521,7 +2195,7 @@ describe('CadenceApp current UI', () => {
   it('keeps the project rail collapsed after leaving Editor when it was already collapsed', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2547,16 +2221,16 @@ describe('CadenceApp current UI', () => {
       duplicateStartDetected: true,
       duplicateStartRunId: 'auto-run-1',
       duplicateStartReason:
-        'Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor.',
+        'Xero reused the already-active autonomous run for this project instead of launching a duplicate supervisor.',
       crashedAt: '2026-04-16T20:03:00Z',
       crashReason: {
         code: 'runtime_supervisor_connect_failed',
-        message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
+        message: 'Xero restored the same autonomous run after reload without launching a duplicate continuation.',
       },
       lastErrorCode: 'runtime_supervisor_connect_failed',
       lastError: {
         code: 'runtime_supervisor_connect_failed',
-        message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
+        message: 'Xero restored the same autonomous run after reload without launching a duplicate continuation.',
       },
       updatedAt: '2026-04-16T20:03:00Z',
     }
@@ -2569,8 +2243,8 @@ describe('CadenceApp current UI', () => {
       runtimeRun: makeRuntimeRun('project-1', {
         status: 'stale',
         transport: {
-          kind: 'tcp',
-          endpoint: '127.0.0.1:4455',
+          kind: 'internal',
+          endpoint: 'xero://owned-agent',
           liveness: 'unreachable',
         },
         lastCheckpointSequence: 2,
@@ -2591,13 +2265,13 @@ describe('CadenceApp current UI', () => {
         lastErrorCode: 'runtime_supervisor_connect_failed',
         lastError: {
           code: 'runtime_supervisor_connect_failed',
-          message: 'Cadence restored the same autonomous run after reload without launching a duplicate continuation.',
+          message: 'Xero restored the same autonomous run after reload without launching a duplicate continuation.',
         },
       }),
       autonomousState: recoveredAutonomousState,
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2619,25 +2293,25 @@ describe('CadenceApp current UI', () => {
   it('refreshes active project metadata from project:updated events without rerendering the app root', async () => {
     const setup = createAdapter()
 
-    render(<CadenceApp adapter={setup.adapter} />)
+    render(<XeroApp adapter={setup.adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
     await waitFor(() => expect(setup.onProjectUpdated).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('button', { name: 'Project actions for Cadence' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Project actions for Xero' })).toBeVisible()
 
     act(() => {
       setup.emitProjectUpdated({
-        project: makeProjectSummary('project-1', 'Cadence Prime'),
+        project: makeProjectSummary('project-1', 'Xero Prime'),
         reason: 'metadata_changed',
       })
     })
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Project actions for Cadence Prime' })).toBeVisible(),
+      expect(screen.getByRole('button', { name: 'Project actions for Xero Prime' })).toBeVisible(),
     )
-    expect(screen.queryByRole('button', { name: 'Project actions for Cadence' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Project actions for Xero' })).not.toBeInTheDocument()
   })
 
 
@@ -2664,7 +2338,7 @@ describe('CadenceApp current UI', () => {
       }),
     })
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2696,7 +2370,7 @@ describe('CadenceApp current UI', () => {
   it('switches to Editor and loads the selected project files', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2713,7 +2387,7 @@ describe('CadenceApp current UI', () => {
   it('keeps open editor tabs and unsaved edits when switching away from Editor and back', async () => {
     const { adapter } = createAdapter()
 
-    render(<CadenceApp adapter={adapter} />)
+    render(<XeroApp adapter={adapter} />)
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
@@ -2730,7 +2404,7 @@ describe('CadenceApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Auto' }))
     await waitFor(() => expect(executionPane).toHaveAttribute('aria-hidden', 'true'))
     expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
-    expect(screen.queryByText('Cadence Desktop')).not.toBeInTheDocument()
+    expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
 

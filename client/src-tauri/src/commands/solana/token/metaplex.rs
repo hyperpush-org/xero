@@ -85,7 +85,7 @@ pub struct MetaplexMintRequest {
     #[serde(default)]
     pub node_bin: Option<String>,
     /// When true, the worker is overwritten even if one already exists
-    /// — used when the bundled script changes across Cadence versions.
+    /// — used when the bundled script changes across Xero versions.
     #[serde(default)]
     pub refresh_worker: bool,
     /// Optional RPC URL override; resolved by the caller.
@@ -221,31 +221,31 @@ pub fn mint_metaplex_nft(
     // Route every sensitive / large value through env vars so the argv
     // stays short and audit-friendly.
     let envs: Vec<(OsString, OsString)> = vec![
-        ("CADENCE_RPC_URL".into(), rpc_url.into()),
+        ("XERO_RPC_URL".into(), rpc_url.into()),
         (
-            "CADENCE_AUTHORITY".into(),
+            "XERO_AUTHORITY".into(),
             authority_keypair_path.display().to_string().into(),
         ),
         (
-            "CADENCE_RECIPIENT".into(),
+            "XERO_RECIPIENT".into(),
             request.recipient.clone().unwrap_or_default().into(),
         ),
-        ("CADENCE_NAME".into(), request.name.clone().into()),
-        ("CADENCE_SYMBOL".into(), request.symbol.clone().into()),
+        ("XERO_NAME".into(), request.name.clone().into()),
+        ("XERO_SYMBOL".into(), request.symbol.clone().into()),
         (
-            "CADENCE_METADATA_URI".into(),
+            "XERO_METADATA_URI".into(),
             request.metadata_uri.clone().into(),
         ),
         (
-            "CADENCE_COLLECTION".into(),
+            "XERO_COLLECTION".into(),
             request.collection_mint.clone().unwrap_or_default().into(),
         ),
         (
-            "CADENCE_SELLER_FEE_BPS".into(),
+            "XERO_SELLER_FEE_BPS".into(),
             request.seller_fee_bps.unwrap_or(0).to_string().into(),
         ),
-        ("CADENCE_STANDARD".into(), request.standard.as_str().into()),
-        ("CADENCE_CLUSTER".into(), request.cluster.as_str().into()),
+        ("XERO_STANDARD".into(), request.standard.as_str().into()),
+        ("XERO_CLUSTER".into(), request.cluster.as_str().into()),
     ];
     let invocation = MetaplexMintInvocation {
         argv: argv.clone(),
@@ -259,7 +259,7 @@ pub fn mint_metaplex_nft(
     let start = Instant::now();
     let outcome = runner.run(&invocation)?;
     let elapsed_ms = start.elapsed().as_millis();
-    // Production runner parses CADENCE_MINT_RESULT eagerly; scripted
+    // Production runner parses XERO_MINT_RESULT eagerly; scripted
     // runners can return a bare outcome and rely on this fallback.
     let parsed_fallback = parse_worker_output(&outcome.stdout);
     let mint_address = outcome
@@ -375,12 +375,12 @@ struct ParsedWorkerOutput {
     signature: Option<String>,
 }
 
-/// The worker emits a single line of JSON on success: `CADENCE_MINT_RESULT <json>`.
+/// The worker emits a single line of JSON on success: `XERO_MINT_RESULT <json>`.
 /// Parse that sentinel out of stdout; fall back to best-effort pattern
 /// matching so a partial success still reveals the mint address.
 fn parse_worker_output(stdout: &str) -> Option<ParsedWorkerOutput> {
     for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("CADENCE_MINT_RESULT ") {
+        if let Some(rest) = line.strip_prefix("XERO_MINT_RESULT ") {
             let parsed: serde_json::Value = serde_json::from_str(rest.trim()).ok()?;
             let mint = parsed
                 .get("mint")
@@ -482,7 +482,7 @@ mod tests {
         let runner = RecordingRunner::with(MetaplexMintOutcome {
             exit_code: Some(0),
             success: true,
-            stdout: "CADENCE_MINT_RESULT {\"mint\":\"4Rf9\",\"signature\":\"Sig\"}".into(),
+            stdout: "XERO_MINT_RESULT {\"mint\":\"4Rf9\",\"signature\":\"Sig\"}".into(),
             stderr: "".into(),
             mint_address: None,
             signature: None,
@@ -507,7 +507,7 @@ mod tests {
         let runner = RecordingRunner::with(MetaplexMintOutcome {
             exit_code: Some(0),
             success: true,
-            stdout: "CADENCE_MINT_RESULT {\"mint\":\"4Rf9\",\"signature\":\"Sig\"}".into(),
+            stdout: "XERO_MINT_RESULT {\"mint\":\"4Rf9\",\"signature\":\"Sig\"}".into(),
             stderr: "".into(),
             mint_address: None,
             signature: None,
@@ -523,14 +523,14 @@ mod tests {
         let env: std::collections::BTreeMap<OsString, OsString> =
             calls[0].envs.iter().cloned().collect();
         for key in [
-            "CADENCE_RPC_URL",
-            "CADENCE_AUTHORITY",
-            "CADENCE_NAME",
-            "CADENCE_SYMBOL",
-            "CADENCE_METADATA_URI",
-            "CADENCE_STANDARD",
-            "CADENCE_SELLER_FEE_BPS",
-            "CADENCE_CLUSTER",
+            "XERO_RPC_URL",
+            "XERO_AUTHORITY",
+            "XERO_NAME",
+            "XERO_SYMBOL",
+            "XERO_METADATA_URI",
+            "XERO_STANDARD",
+            "XERO_SELLER_FEE_BPS",
+            "XERO_CLUSTER",
         ] {
             assert!(
                 env.contains_key::<OsString>(&key.into()),
@@ -538,11 +538,11 @@ mod tests {
             );
         }
         assert_eq!(
-            env[&OsString::from("CADENCE_SELLER_FEE_BPS")],
+            env[&OsString::from("XERO_SELLER_FEE_BPS")],
             OsString::from("500")
         );
         assert_eq!(
-            env[&OsString::from("CADENCE_STANDARD")],
+            env[&OsString::from("XERO_STANDARD")],
             OsString::from("non_fungible")
         );
     }
@@ -585,7 +585,8 @@ mod tests {
 
     #[test]
     fn output_parser_extracts_mint_and_signature() {
-        let stdout = "info: bootstrapping umi\nCADENCE_MINT_RESULT {\"mint\":\"4Rf9\",\"signature\":\"Sig\"}\n";
+        let stdout =
+            "info: bootstrapping umi\nXERO_MINT_RESULT {\"mint\":\"4Rf9\",\"signature\":\"Sig\"}\n";
         let parsed = parse_worker_output(stdout).unwrap();
         assert_eq!(parsed.mint.as_deref(), Some("4Rf9"));
         assert_eq!(parsed.signature.as_deref(), Some("Sig"));

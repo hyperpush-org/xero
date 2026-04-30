@@ -58,7 +58,7 @@ pub fn upsert_runtime_action_required(
             "runtime_action_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the runtime action-required transaction.",
+            "Xero could not start the runtime action-required transaction.",
         )
     })?;
 
@@ -72,7 +72,7 @@ pub fn upsert_runtime_action_required(
             CommandError::retryable(
                 "runtime_action_request_invalid",
                 format!(
-                    "Cadence could not persist action-required runtime state in {} because the selected project has no durable run row.",
+                    "Xero could not persist action-required runtime state in {} because the selected project has no durable run row.",
                     database_path.display()
                 ),
             )
@@ -82,7 +82,7 @@ pub fn upsert_runtime_action_required(
         return Err(CommandError::retryable(
             "runtime_action_request_invalid",
             format!(
-                "Cadence refused to persist runtime action-required state for run `{}` because the durable run row currently points at `{}`.",
+                "Xero refused to persist runtime action-required state for run `{}` because the durable run row currently points at `{}`.",
                 payload.run_id, runtime_row.run_id
             ),
         ));
@@ -154,7 +154,7 @@ pub fn upsert_runtime_action_required(
                         "runtime_action_persist_failed",
                         &database_path,
                         error,
-                        "Cadence could not persist the runtime action-required approval row.",
+                        "Xero could not persist the runtime action-required approval row.",
                     )
                 })?;
             false
@@ -165,7 +165,7 @@ pub fn upsert_runtime_action_required(
                 return Err(CommandError::retryable(
                     "runtime_action_sync_conflict",
                     format!(
-                        "Cadence received a retained runtime action for already-resolved operator request `{action_id}`. Refresh selected project state before retrying."
+                        "Xero received a retained runtime action for already-resolved operator request `{action_id}`. Refresh selected project state before retrying."
                     ),
                 ));
             }
@@ -205,8 +205,8 @@ pub fn upsert_runtime_action_required(
                     payload.project_id.as_str(),
                     payload.run_id.as_str(),
                     payload.runtime_kind.as_str(),
-                    "detached_pty",
-                    "tcp",
+                    crate::runtime::OWNED_AGENT_SUPERVISOR_KIND,
+                    "internal",
                     payload.transport_endpoint.as_str(),
                     i64::from(next_sequence),
                     payload.started_at.as_str(),
@@ -221,7 +221,7 @@ pub fn upsert_runtime_action_required(
                     "runtime_action_persist_failed",
                     &database_path,
                     error,
-                    "Cadence could not update the runtime run row while persisting action-required state.",
+                    "Xero could not update the runtime run row while persisting action-required state.",
                 )
             })?;
 
@@ -254,7 +254,7 @@ pub fn upsert_runtime_action_required(
                     "runtime_action_persist_failed",
                     &database_path,
                     error,
-                    "Cadence could not persist the runtime action-required checkpoint.",
+                    "Xero could not persist the runtime action-required checkpoint.",
                 )
             })?;
     }
@@ -264,7 +264,7 @@ pub fn upsert_runtime_action_required(
             "runtime_action_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the runtime action-required transaction.",
+            "Xero could not commit the runtime action-required transaction.",
         )
     })?;
 
@@ -274,7 +274,7 @@ pub fn upsert_runtime_action_required(
                 CommandError::system_fault(
                     "runtime_action_missing_after_persist",
                     format!(
-                        "Cadence persisted runtime action-required state for `{action_id}` in {} but could not read the approval row back.",
+                        "Xero persisted runtime action-required state for `{action_id}` in {} but could not read the approval row back.",
                         database_path.display()
                     ),
                 )
@@ -289,7 +289,7 @@ pub fn upsert_runtime_action_required(
             CommandError::system_fault(
                 "runtime_action_missing_after_persist",
                 format!(
-                    "Cadence persisted runtime action-required state in {} but could not read the durable runtime run back.",
+                    "Xero persisted runtime action-required state in {} but could not read the durable runtime run back.",
                     database_path.display()
                 ),
             )
@@ -310,7 +310,7 @@ pub(crate) fn classify_operator_answer_requirement(
             Err(CommandError::retryable(
                 "operator_action_runtime_identity_invalid",
                 format!(
-                    "Cadence cannot resolve runtime-scoped operator request `{}` because its durable runtime action identity is malformed.",
+                    "Xero cannot resolve runtime-scoped operator request `{}` because its durable runtime action identity is malformed.",
                     approval_request.action_id
                 ),
             ))
@@ -335,7 +335,7 @@ pub fn prepare_runtime_operator_run_resume(
                 CommandError::user_fixable(
                     "operator_action_not_found",
                     format!(
-                "Cadence could not find operator request `{action_id}` for the selected project."
+                "Xero could not find operator request `{action_id}` for the selected project."
             ),
                 )
             })?;
@@ -348,7 +348,7 @@ pub fn prepare_runtime_operator_run_resume(
         return Err(CommandError::user_fixable(
             "operator_resume_requires_approved_action",
             format!(
-                "Cadence can resume only after operator request `{action_id}` is approved. Current status: {}.",
+                "Xero can resume only after operator request `{action_id}` is approved. Current status: {}.",
                 operator_approval_status_label(&approval_request.status)
             ),
         ));
@@ -369,7 +369,7 @@ pub fn prepare_runtime_operator_run_resume(
         return Err(CommandError::retryable(
             "operator_resume_answer_conflict",
             format!(
-                "Cadence cannot resume operator request `{action_id}` because the durable approved answer metadata is inconsistent. Refresh project state and re-approve the pending runtime boundary before retrying."
+                "Xero cannot resume operator request `{action_id}` because the durable approved answer metadata is inconsistent. Refresh project state and re-approve the pending runtime boundary before retrying."
             ),
         ));
     }
@@ -395,7 +395,7 @@ pub fn prepare_runtime_operator_run_resume(
             return Err(CommandError::user_fixable(
                 "operator_resume_answer_conflict",
                 format!(
-                    "Cadence cannot resume operator request `{action_id}` because the provided `userAnswer` does not match the durable gate decision. Refresh project state and retry with the stored answer."
+                    "Xero cannot resume operator request `{action_id}` because the provided `userAnswer` does not match the durable gate decision. Refresh project state and retry with the stored answer."
                 ),
             ));
         }
@@ -405,7 +405,7 @@ pub fn prepare_runtime_operator_run_resume(
         CommandError::retryable(
             "operator_resume_session_missing",
             format!(
-                "Cadence cannot record a resume event for `{action_id}` because the durable approval is missing its runtime session id."
+                "Xero cannot record a resume event for `{action_id}` because the durable approval is missing its runtime session id."
             ),
         )
     })?;
@@ -413,7 +413,7 @@ pub fn prepare_runtime_operator_run_resume(
         CommandError::user_fixable(
             "operator_resume_answer_missing",
             format!(
-                "Cadence cannot resume operator request `{action_id}` because no approved operator answer was recorded for the pending terminal input."
+                "Xero cannot resume operator request `{action_id}` because no approved operator answer was recorded for the pending terminal input."
             ),
         )
     })?;
@@ -445,14 +445,14 @@ pub fn prepare_runtime_operator_run_resume(
             SqlError::QueryReturnedNoRows => CommandError::retryable(
                 "operator_resume_runtime_run_missing",
                 format!(
-                    "Cadence cannot resume operator request `{action_id}` because runtime run `{}` is no longer durable.",
+                    "Xero cannot resume operator request `{action_id}` because runtime run `{}` is no longer durable.",
                     runtime_target.run_id
                 ),
             ),
             other => CommandError::system_fault(
                 "runtime_run_query_failed",
                 format!(
-                    "Cadence could not read the agent session for runtime run `{}` from {}: {other}",
+                    "Xero could not read the agent session for runtime run `{}` from {}: {other}",
                     runtime_target.run_id,
                     database_path.display()
                 ),
@@ -494,7 +494,7 @@ pub fn resume_operator_run_with_user_answer(
             "operator_resume_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the operator-resume transaction.",
+            "Xero could not start the operator-resume transaction.",
         )
     })?;
 
@@ -504,8 +504,8 @@ pub fn resume_operator_run_with_user_answer(
             CommandError::user_fixable(
                 "operator_action_not_found",
                 format!(
-                "Cadence could not find operator request `{action_id}` for the selected project."
-            ),
+                    "Xero could not find operator request `{action_id}` for the selected project."
+                ),
             )
         })?;
 
@@ -513,7 +513,7 @@ pub fn resume_operator_run_with_user_answer(
         return Err(CommandError::user_fixable(
             "operator_resume_requires_approved_action",
             format!(
-                "Cadence can resume only after operator request `{action_id}` is approved. Current status: {}.",
+                "Xero can resume only after operator request `{action_id}` is approved. Current status: {}.",
                 operator_approval_status_label(&approval_request.status)
             ),
         ));
@@ -541,7 +541,7 @@ pub fn resume_operator_run_with_user_answer(
             return Err(CommandError::user_fixable(
                 "operator_resume_answer_conflict",
                 format!(
-                    "Cadence cannot resume operator request `{action_id}` because the provided `userAnswer` does not match the durable gate decision. Refresh project state and retry with the stored answer."
+                    "Xero cannot resume operator request `{action_id}` because the provided `userAnswer` does not match the durable gate decision. Refresh project state and retry with the stored answer."
                 ),
             ));
         }
@@ -551,7 +551,7 @@ pub fn resume_operator_run_with_user_answer(
         CommandError::retryable(
             "operator_resume_session_missing",
             format!(
-                "Cadence cannot record a resume event for `{action_id}` because the durable approval is missing its runtime session id."
+                "Xero cannot record a resume event for `{action_id}` because the durable approval is missing its runtime session id."
             ),
         )
     })?;
@@ -582,7 +582,7 @@ pub fn resume_operator_run_with_user_answer(
                 "operator_resume_persist_failed",
                 &database_path,
                 error,
-                "Cadence could not persist the operator resume event.",
+                "Xero could not persist the operator resume event.",
             )
         })?;
 
@@ -593,7 +593,7 @@ pub fn resume_operator_run_with_user_answer(
             "operator_resume_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the operator resume event.",
+            "Xero could not commit the operator resume event.",
         )
     })?;
 
@@ -603,7 +603,7 @@ pub fn resume_operator_run_with_user_answer(
                 CommandError::system_fault(
                     "operator_action_missing_after_resume",
                     format!(
-                        "Cadence recorded a resume event for `{action_id}` in {} but could not reload the approval row.",
+                        "Xero recorded a resume event for `{action_id}` in {} but could not reload the approval row.",
                         database_path.display()
                     ),
                 )
@@ -614,7 +614,7 @@ pub fn resume_operator_run_with_user_answer(
                 CommandError::system_fault(
                     "operator_resume_missing_after_persist",
                     format!(
-                        "Cadence persisted the operator resume entry for `{action_id}` in {} but could not read it back.",
+                        "Xero persisted the operator resume entry for `{action_id}` in {} but could not read it back.",
                         database_path.display()
                     ),
                 )
@@ -638,7 +638,7 @@ fn decode_runtime_operator_resume_target(
         CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because the durable approval is missing its session identity."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because the durable approval is missing its session identity."
             ),
         )
     })?;
@@ -648,7 +648,7 @@ fn decode_runtime_operator_resume_target(
         return Err(CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because its action scope does not match the durable session identity."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because its action scope does not match the durable session identity."
             ),
         ));
     }
@@ -658,7 +658,7 @@ fn decode_runtime_operator_resume_target(
         CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because its durable action id is malformed."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because its durable action id is malformed."
             ),
         )
     })?;
@@ -676,7 +676,7 @@ fn decode_runtime_operator_resume_target(
         return Err(CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because `action_type` contains unsupported delimiters or whitespace."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because `action_type` contains unsupported delimiters or whitespace."
             ),
         ));
     }
@@ -686,7 +686,7 @@ fn decode_runtime_operator_resume_target(
         CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because its durable action type does not match the stored action id."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because its durable action type does not match the stored action id."
             ),
         )
     })?;
@@ -704,7 +704,7 @@ fn decode_runtime_operator_resume_target(
         return Err(CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because its durable action identity is not canonical."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because its durable action identity is not canonical."
             ),
         ));
     }
@@ -726,7 +726,7 @@ fn validate_runtime_resume_identity_component(
         return Err(CommandError::retryable(
             "operator_resume_runtime_action_invalid",
             format!(
-                "Cadence cannot resume runtime-scoped operator request `{action_id}` because `{field}` contains unsupported delimiters or whitespace."
+                "Xero cannot resume runtime-scoped operator request `{action_id}` because `{field}` contains unsupported delimiters or whitespace."
             ),
         ));
     }
@@ -749,7 +749,7 @@ pub fn derive_runtime_action_id(
     if action_type.is_empty() {
         return Err(CommandError::system_fault(
             "runtime_action_request_invalid",
-            "Cadence could not persist the runtime approval because the action-required item was missing a stable action type.",
+            "Xero could not persist the runtime approval because the action-required item was missing a stable action type.",
         ));
     }
 

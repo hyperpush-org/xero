@@ -32,3 +32,8 @@ fn runtime_run_decode_fails_closed_for_malformed_status_transport_and_checkpoint
 fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
     runtime_rows::runtime_run_checkpoint_sequence_must_increase_monotonically();
 }
+
+#[test]
+fn runtime_run_rotation_clears_prior_autonomous_projection() {
+    runtime_rows::runtime_run_rotation_clears_prior_autonomous_projection();
+}

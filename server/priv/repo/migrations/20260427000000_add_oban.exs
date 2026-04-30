@@ -1,4 +1,4 @@
-defmodule Joe.Repo.Migrations.AddOban do
+defmodule Xero.Repo.Migrations.AddOban do
   use Ecto.Migration
 
   def up, do: Oban.Migration.up()

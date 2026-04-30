@@ -6,7 +6,9 @@ use std::{
 };
 
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, USER_AGENT,
+};
 use serde::Deserialize;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use tempfile::NamedTempFile;
@@ -39,11 +41,16 @@ const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
 const GITHUB_MODELS_API_VERSION: &str = "2026-03-10";
+const OPENAI_CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const OPENAI_CODEX_BETA_HEADER: &str = "responses=experimental";
+const OPENAI_CODEX_ORIGINATOR: &str = "pi";
+const OPENAI_CODEX_TEXT_VERBOSITY: &str = "medium";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentProviderConfig {
     Fake,
     OpenAiResponses(OpenAiResponsesProviderConfig),
+    OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig),
     OpenAiCompatible(OpenAiCompatibleProviderConfig),
     Anthropic(AnthropicProviderConfig),
     Bedrock(BedrockProviderConfig),
@@ -56,6 +63,17 @@ pub struct OpenAiResponsesProviderConfig {
     pub model_id: String,
     pub base_url: String,
     pub api_key: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiCodexResponsesProviderConfig {
+    pub provider_id: String,
+    pub model_id: String,
+    pub base_url: String,
+    pub access_token: String,
+    pub account_id: String,
+    pub session_id: Option<String>,
     pub timeout_ms: u64,
 }
 
@@ -102,6 +120,9 @@ pub fn create_provider_adapter(
         AgentProviderConfig::OpenAiResponses(config) => {
             OpenAiResponsesAdapter::new(config).map(|adapter| Box::new(adapter) as _)
         }
+        AgentProviderConfig::OpenAiCodexResponses(config) => {
+            OpenAiCodexResponsesAdapter::new(config).map(|adapter| Box::new(adapter) as _)
+        }
         AgentProviderConfig::OpenAiCompatible(config) => {
             OpenAiCompatibleAdapter::new(config).map(|adapter| Box::new(adapter) as _)
         }
@@ -114,6 +135,60 @@ pub fn create_provider_adapter(
         AgentProviderConfig::Vertex(config) => {
             VertexAnthropicAdapter::new(config).map(|adapter| Box::new(adapter) as _)
         }
+    }
+}
+
+#[derive(Debug)]
+struct OpenAiCodexResponsesAdapter {
+    config: OpenAiCodexResponsesProviderConfig,
+    client: Client,
+}
+
+impl OpenAiCodexResponsesAdapter {
+    fn new(mut config: OpenAiCodexResponsesProviderConfig) -> CommandResult<Self> {
+        normalize_required(&mut config.provider_id, "providerId")?;
+        normalize_required(&mut config.model_id, "modelId")?;
+        normalize_required(&mut config.base_url, "baseUrl")?;
+        normalize_required(&mut config.access_token, "accessToken")?;
+        normalize_required(&mut config.account_id, "accountId")?;
+        config.session_id = config
+            .session_id
+            .map(|session_id| session_id.trim().to_owned())
+            .filter(|session_id| !session_id.is_empty());
+        let client = provider_http_client(config.timeout_ms)?;
+        Ok(Self { config, client })
+    }
+}
+
+impl ProviderAdapter for OpenAiCodexResponsesAdapter {
+    fn provider_id(&self) -> &str {
+        self.config.provider_id.as_str()
+    }
+
+    fn model_id(&self) -> &str {
+        self.config.model_id.as_str()
+    }
+
+    fn stream_turn(
+        &self,
+        request: &ProviderTurnRequest,
+        emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+    ) -> CommandResult<ProviderTurnOutcome> {
+        let url = openai_codex_responses_url(&self.config.base_url)?;
+        let headers = openai_codex_request_headers(&self.config)?;
+        let body = openai_codex_responses_request_body(
+            self.provider_id(),
+            &self.config.model_id,
+            request,
+            self.config.session_id.as_deref(),
+        )?;
+        let response = send_provider_json_request(self.provider_id(), || {
+            self.client
+                .post(url.clone())
+                .headers(headers.clone())
+                .json(&body)
+        })?;
+        parse_openai_responses_sse(self.provider_id(), response, emit)
     }
 }
 
@@ -149,7 +224,8 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
         let url = responses_url(&self.config.base_url)?;
-        let body = openai_responses_request_body(&self.config.model_id, request)?;
+        let body =
+            openai_responses_request_body(self.provider_id(), &self.config.model_id, request)?;
         let response = send_provider_json_request(self.provider_id(), || {
             self.client
                 .post(url.clone())
@@ -201,7 +277,7 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
                 .client
                 .post(url.clone())
                 .header("Content-Type", "application/json")
-                .header("X-Title", "Cadence");
+                .header("X-Title", "Xero");
             http_request =
                 apply_openai_compatible_provider_headers(self.provider_id(), http_request);
             if let Some(api_key) = self.config.api_key.as_deref() {
@@ -295,26 +371,26 @@ impl ProviderAdapter for BedrockCliAdapter {
         let mut body_file = NamedTempFile::new().map_err(|error| {
             CommandError::retryable(
                 "bedrock_tempfile_failed",
-                format!("Cadence could not allocate a Bedrock request file: {error}"),
+                format!("Xero could not allocate a Bedrock request file: {error}"),
             )
         })?;
         serde_json::to_writer(body_file.as_file_mut(), &body).map_err(|error| {
             CommandError::retryable(
                 "bedrock_request_write_failed",
-                format!("Cadence could not write the Bedrock request body: {error}"),
+                format!("Xero could not write the Bedrock request body: {error}"),
             )
         })?;
         body_file.as_file_mut().flush().map_err(|error| {
             CommandError::retryable(
                 "bedrock_request_write_failed",
-                format!("Cadence could not flush the Bedrock request body: {error}"),
+                format!("Xero could not flush the Bedrock request body: {error}"),
             )
         })?;
         let body_arg = format!("fileb://{}", body_file.path().display());
         let output = NamedTempFile::new().map_err(|error| {
             CommandError::retryable(
                 "bedrock_tempfile_failed",
-                format!("Cadence could not allocate a Bedrock response file: {error}"),
+                format!("Xero could not allocate a Bedrock response file: {error}"),
             )
         })?;
         let output_path = output.path().to_path_buf();
@@ -340,15 +416,15 @@ impl ProviderAdapter for BedrockCliAdapter {
             .stderr(Stdio::piped());
         configure_process_tree_root(&mut command);
         let mut child = command.spawn().map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => CommandError::user_fixable(
-                    "bedrock_aws_cli_missing",
-                    "Cadence needs the AWS CLI to invoke Amazon Bedrock from the owned provider adapter.",
-                ),
-                _ => CommandError::retryable(
-                    "bedrock_invoke_spawn_failed",
-                    format!("Cadence could not start the AWS CLI Bedrock invocation: {error}"),
-                ),
-            })?;
+            std::io::ErrorKind::NotFound => CommandError::user_fixable(
+                "bedrock_aws_cli_missing",
+                "Xero needs the AWS CLI to invoke Amazon Bedrock from the owned provider adapter.",
+            ),
+            _ => CommandError::retryable(
+                "bedrock_invoke_spawn_failed",
+                format!("Xero could not start the AWS CLI Bedrock invocation: {error}"),
+            ),
+        })?;
         let status = wait_provider_cli(
             &mut child,
             Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
@@ -366,7 +442,7 @@ impl ProviderAdapter for BedrockCliAdapter {
         let response_text = std::fs::read_to_string(&output_path).map_err(|error| {
             CommandError::retryable(
                 "bedrock_response_read_failed",
-                format!("Cadence could not read the Bedrock response body: {error}"),
+                format!("Xero could not read the Bedrock response body: {error}"),
             )
         })?;
         parse_anthropic_json_response(BEDROCK_PROVIDER_ID, &response_text, emit)
@@ -415,7 +491,7 @@ impl ProviderAdapter for VertexAnthropicAdapter {
         let text = response.text().map_err(|error| {
             CommandError::retryable(
                 "vertex_response_read_failed",
-                format!("Cadence could not read the Vertex AI response body: {error}"),
+                format!("Xero could not read the Vertex AI response body: {error}"),
             )
         })?;
         parse_anthropic_json_response(VERTEX_PROVIDER_ID, &text, emit)
@@ -429,7 +505,7 @@ fn provider_http_client(timeout_ms: u64) -> CommandResult<Client> {
         .map_err(|error| {
             CommandError::system_fault(
                 "agent_provider_http_client_unavailable",
-                format!("Cadence could not build an HTTP client for the provider adapter: {error}"),
+                format!("Xero could not build an HTTP client for the provider adapter: {error}"),
             )
         })
 }
@@ -457,6 +533,25 @@ fn responses_url(base_url: &str) -> CommandResult<Url> {
     provider_url(base_url, "responses", None)
 }
 
+fn openai_codex_responses_url(base_url: &str) -> CommandResult<Url> {
+    let normalized = base_url.trim().trim_end_matches('/');
+    let raw = if normalized.ends_with("/codex/responses") {
+        normalized.to_owned()
+    } else if normalized.ends_with("/codex") {
+        format!("{normalized}/responses")
+    } else {
+        format!("{normalized}/codex/responses")
+    };
+    let url = Url::parse(&raw).map_err(|error| {
+        CommandError::user_fixable(
+            "agent_provider_url_invalid",
+            format!("Xero rejected provider base URL `{base_url}`: {error}"),
+        )
+    })?;
+    validate_provider_url_scheme(base_url, &url)?;
+    Ok(url)
+}
+
 fn anthropic_messages_url(base_url: &str) -> CommandResult<Url> {
     provider_url(base_url, "v1/messages", None)
 }
@@ -474,7 +569,7 @@ fn provider_url(base_url: &str, path: &str, api_version: Option<&str>) -> Comman
     .map_err(|error| {
         CommandError::user_fixable(
             "agent_provider_url_invalid",
-            format!("Cadence rejected provider base URL `{base_url}`: {error}"),
+            format!("Xero rejected provider base URL `{base_url}`: {error}"),
         )
     })?;
     validate_provider_url_scheme(base_url, &url)?;
@@ -492,13 +587,13 @@ fn validate_provider_url_scheme(base_url: &str, url: &Url) -> CommandResult<()> 
         "http" => Err(CommandError::user_fixable(
             "agent_provider_url_insecure",
             format!(
-                "Cadence refused provider base URL `{base_url}` because hosted provider traffic must use HTTPS. HTTP is only allowed for local providers."
+                "Xero refused provider base URL `{base_url}` because hosted provider traffic must use HTTPS. HTTP is only allowed for local providers."
             ),
         )),
         scheme => Err(CommandError::user_fixable(
             "agent_provider_url_invalid",
             format!(
-                "Cadence rejected provider base URL `{base_url}` because scheme `{scheme}` is not supported."
+                "Xero rejected provider base URL `{base_url}` because scheme `{scheme}` is not supported."
             ),
         )),
     }
@@ -523,7 +618,7 @@ fn vertex_anthropic_raw_predict_url(config: &VertexProviderConfig) -> CommandRes
     Url::parse(&raw).map_err(|error| {
         CommandError::user_fixable(
             "vertex_endpoint_invalid",
-            format!("Cadence could not build the Vertex AI Anthropic endpoint: {error}"),
+            format!("Xero could not build the Vertex AI Anthropic endpoint: {error}"),
         )
     })
 }
@@ -626,6 +721,7 @@ fn openai_chat_tool_call(tool_call: &AgentToolCall) -> JsonValue {
 }
 
 fn openai_responses_request_body(
+    provider_id: &str,
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
@@ -645,7 +741,59 @@ fn openai_responses_request_body(
     if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
         body.insert(
             "reasoning".into(),
-            json!({ "effort": thinking_effort_value(effort) }),
+            json!({ "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort) }),
+        );
+    }
+    Ok(JsonValue::Object(body))
+}
+
+fn openai_codex_responses_request_body(
+    provider_id: &str,
+    model_id: &str,
+    request: &ProviderTurnRequest,
+    prompt_cache_key: Option<&str>,
+) -> CommandResult<JsonValue> {
+    let mut body = JsonMap::new();
+    body.insert("model".into(), json!(model_id));
+    body.insert("store".into(), json!(false));
+    body.insert("stream".into(), json!(true));
+    body.insert("instructions".into(), json!(request.system_prompt));
+    body.insert(
+        "input".into(),
+        JsonValue::Array(openai_codex_response_input(request)?),
+    );
+    body.insert(
+        "text".into(),
+        json!({ "verbosity": OPENAI_CODEX_TEXT_VERBOSITY }),
+    );
+    body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+    if let Some(prompt_cache_key) = prompt_cache_key
+        .map(str::trim)
+        .filter(|prompt_cache_key| !prompt_cache_key.is_empty())
+    {
+        body.insert("prompt_cache_key".into(), json!(prompt_cache_key));
+    }
+    body.insert("tool_choice".into(), json!("auto"));
+    body.insert("parallel_tool_calls".into(), json!(true));
+    if !request.tools.is_empty() {
+        body.insert(
+            "tools".into(),
+            JsonValue::Array(
+                request
+                    .tools
+                    .iter()
+                    .map(openai_codex_response_tool)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
+        body.insert(
+            "reasoning".into(),
+            json!({
+                "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort),
+                "summary": "auto",
+            }),
         );
     }
     Ok(JsonValue::Object(body))
@@ -690,6 +838,58 @@ fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<Jso
     Ok(input)
 }
 
+fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
+    let mut input = Vec::new();
+    for (index, message) in request.messages.iter().enumerate() {
+        match message {
+            ProviderMessage::User { content } => {
+                input.push(json!({
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": content }],
+                }));
+            }
+            ProviderMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
+                if !content.trim().is_empty() {
+                    input.push(json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": content,
+                            "annotations": [],
+                        }],
+                        "status": "completed",
+                        "id": format!("msg_{index}"),
+                    }));
+                }
+                for tool_call in tool_calls {
+                    input.push(json!({
+                        "type": "function_call",
+                        "call_id": tool_call.tool_call_id,
+                        "name": tool_call.tool_name,
+                        "arguments": tool_call.input.to_string(),
+                    }));
+                }
+            }
+            ProviderMessage::Tool {
+                tool_call_id,
+                content,
+                ..
+            } => {
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": content,
+                }));
+            }
+        }
+    }
+    Ok(input)
+}
+
 fn openai_response_tool(tool: &AgentToolDescriptor) -> JsonValue {
     json!({
         "type": "function",
@@ -697,6 +897,73 @@ fn openai_response_tool(tool: &AgentToolDescriptor) -> JsonValue {
         "description": tool.description,
         "parameters": tool.input_schema,
     })
+}
+
+fn openai_codex_response_tool(tool: &AgentToolDescriptor) -> JsonValue {
+    json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.input_schema,
+        "strict": JsonValue::Null,
+    })
+}
+
+fn openai_codex_request_headers(
+    config: &OpenAiCodexResponsesProviderConfig,
+) -> CommandResult<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        provider_header_value(
+            "authorization",
+            &format!("Bearer {}", config.access_token.trim()),
+        )?,
+    );
+    headers.insert(
+        "chatgpt-account-id",
+        provider_header_value("chatgptAccountId", config.account_id.trim())?,
+    );
+    headers.insert(
+        "OpenAI-Beta",
+        provider_header_value("openaiBeta", OPENAI_CODEX_BETA_HEADER)?,
+    );
+    headers.insert(
+        "originator",
+        provider_header_value("originator", OPENAI_CODEX_ORIGINATOR)?,
+    );
+    headers.insert(
+        USER_AGENT,
+        provider_header_value("userAgent", &openai_codex_user_agent())?,
+    );
+    headers.insert(
+        ACCEPT,
+        provider_header_value("accept", "text/event-stream")?,
+    );
+    headers.insert(
+        CONTENT_TYPE,
+        provider_header_value("contentType", "application/json")?,
+    );
+    if let Some(session_id) = config
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+    {
+        headers.insert(
+            "session_id",
+            provider_header_value("sessionId", session_id)?,
+        );
+    }
+    Ok(headers)
+}
+
+fn provider_header_value(field: &'static str, value: &str) -> CommandResult<HeaderValue> {
+    HeaderValue::from_str(value).map_err(|_| CommandError::invalid_request(field))
+}
+
+fn openai_codex_user_agent() -> String {
+    format!("pi ({}; {})", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 fn apply_openai_compatible_auth_header(
@@ -738,6 +1005,43 @@ fn thinking_effort_value(effort: &ProviderModelThinkingEffortDto) -> &'static st
         ProviderModelThinkingEffortDto::High => "high",
         ProviderModelThinkingEffortDto::XHigh => "xhigh",
     }
+}
+
+fn openai_responses_thinking_effort_value(
+    provider_id: &str,
+    model_id: &str,
+    effort: &ProviderModelThinkingEffortDto,
+) -> &'static str {
+    let effort = thinking_effort_value(effort);
+    if provider_id == OPENAI_CODEX_PROVIDER_ID {
+        return clamp_openai_codex_reasoning_effort(model_id, effort);
+    }
+    effort
+}
+
+fn clamp_openai_codex_reasoning_effort(model_id: &str, effort: &'static str) -> &'static str {
+    let model_id = model_id.rsplit('/').next().unwrap_or(model_id);
+    let model_id = model_id.trim().to_ascii_lowercase();
+
+    if ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
+        .iter()
+        .any(|prefix| model_id.starts_with(prefix))
+        && effort == "minimal"
+    {
+        return "low";
+    }
+    if model_id == "gpt-5.1" && effort == "xhigh" {
+        return "high";
+    }
+    if model_id == "gpt-5.1-codex-mini" {
+        return if effort == "high" || effort == "xhigh" {
+            "high"
+        } else {
+            "medium"
+        };
+    }
+
+    effort
 }
 
 fn anthropic_request_body(
@@ -901,7 +1205,7 @@ fn parse_openai_chat_sse(
         let line = line.map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_read_failed",
-                format!("Cadence lost the {provider_id} response stream: {error}"),
+                format!("Xero lost the {provider_id} response stream: {error}"),
             )
         })?;
         let Some(data) = line.strip_prefix("data:") else {
@@ -917,7 +1221,7 @@ fn parse_openai_chat_sse(
         let chunk: OpenAiChatChunk = serde_json::from_str(data).map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_decode_failed",
-                format!("Cadence could not decode a {provider_id} stream chunk: {error}"),
+                format!("Xero could not decode a {provider_id} stream chunk: {error}"),
             )
         })?;
         if let Some(next_usage) = chunk.usage {
@@ -980,7 +1284,7 @@ fn parse_openai_responses_sse(
         let line = line.map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_read_failed",
-                format!("Cadence lost the {provider_id} Responses stream: {error}"),
+                format!("Xero lost the {provider_id} Responses stream: {error}"),
             )
         })?;
         let Some(data) = line.strip_prefix("data:") else {
@@ -993,7 +1297,7 @@ fn parse_openai_responses_sse(
         let value: JsonValue = serde_json::from_str(data).map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_decode_failed",
-                format!("Cadence could not decode a {provider_id} Responses chunk: {error}"),
+                format!("Xero could not decode a {provider_id} Responses chunk: {error}"),
             )
         })?;
         match value
@@ -1001,6 +1305,8 @@ fn parse_openai_responses_sse(
             .and_then(JsonValue::as_str)
             .unwrap_or_default()
         {
+            "error" => return Err(openai_responses_stream_error(provider_id, &value)),
+            "response.failed" => return Err(openai_responses_stream_error(provider_id, &value)),
             "response.output_text.delta" => {
                 let delta = value
                     .get("delta")
@@ -1060,7 +1366,7 @@ fn parse_openai_responses_sse(
                     completed_call_count = completed_call_count.saturating_add(1);
                 }
             }
-            "response.completed" => {
+            "response.completed" | "response.done" => {
                 if let Some(mapped) = value
                     .get("response")
                     .and_then(|response| response.get("usage"))
@@ -1075,6 +1381,57 @@ fn parse_openai_responses_sse(
     }
 
     finish_provider_turn(provider_id, message, partial_calls, usage)
+}
+
+fn openai_responses_stream_error(provider_id: &str, event: &JsonValue) -> CommandError {
+    let event_type = event
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("error");
+    let nested_error = event.get("error");
+    let response_error = event
+        .get("response")
+        .and_then(|response| response.get("error"));
+    let error_node = nested_error.or(response_error);
+    let code = error_node
+        .and_then(|error| error.get("code"))
+        .or_else(|| event.get("code"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let error_type = error_node
+        .and_then(|error| error.get("type"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let message = error_node
+        .and_then(|error| error.get("message"))
+        .or_else(|| event.get("message"))
+        .and_then(JsonValue::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| {
+            if event_type == "response.failed" {
+                "provider response failed"
+            } else {
+                "provider stream returned an error"
+            }
+        });
+    let prefix = if provider_id == OPENAI_CODEX_PROVIDER_ID {
+        if error_type.is_empty() {
+            "Codex error".to_string()
+        } else {
+            format!("Codex {error_type}")
+        }
+    } else {
+        format!("Provider `{provider_id}` stream error")
+    };
+    let suffix = if code.is_empty() {
+        String::new()
+    } else {
+        format!(" ({code})")
+    };
+    CommandError::retryable(
+        format!("{provider_id}_stream_failed"),
+        format!("{prefix}: {message}{suffix}"),
+    )
 }
 
 fn openai_responses_usage(value: &JsonValue) -> ProviderUsage {
@@ -1116,7 +1473,7 @@ fn parse_anthropic_sse(
         let line = line.map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_read_failed",
-                format!("Cadence lost the {provider_id} response stream: {error}"),
+                format!("Xero lost the {provider_id} response stream: {error}"),
             )
         })?;
         let Some(data) = line.strip_prefix("data:") else {
@@ -1129,7 +1486,7 @@ fn parse_anthropic_sse(
         let value: JsonValue = serde_json::from_str(data).map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_decode_failed",
-                format!("Cadence could not decode a {provider_id} stream chunk: {error}"),
+                format!("Xero could not decode a {provider_id} stream chunk: {error}"),
             )
         })?;
         match value
@@ -1265,7 +1622,7 @@ fn parse_anthropic_json_response(
     let value: JsonValue = serde_json::from_str(response_text).map_err(|error| {
         CommandError::retryable(
             "agent_provider_response_decode_failed",
-            format!("Cadence could not decode the {provider_id} response: {error}"),
+            format!("Xero could not decode the {provider_id} response: {error}"),
         )
     })?;
     let mut message = String::new();
@@ -1362,7 +1719,7 @@ fn finish_provider_turn(
             CommandError::retryable(
                 "agent_provider_tool_name_missing",
                 format!(
-                    "Cadence received a {provider_id} tool call at index {index} without a function name."
+                    "Xero received a {provider_id} tool call at index {index} without a function name."
                 ),
             )
         })?;
@@ -1374,7 +1731,7 @@ fn finish_provider_turn(
                 CommandError::user_fixable(
                     "agent_provider_tool_arguments_invalid",
                     format!(
-                        "Cadence could not decode {provider_id} tool call `{name}` arguments as JSON: {error}"
+                        "Xero could not decode {provider_id} tool call `{name}` arguments as JSON: {error}"
                     ),
                 )
             })?
@@ -1387,7 +1744,7 @@ fn finish_provider_turn(
             return Err(CommandError::retryable(
                 "agent_provider_tool_call_duplicate",
                 format!(
-                    "Cadence received duplicate {provider_id} tool call id `{tool_call_id}` in the same provider turn."
+                    "Xero received duplicate {provider_id} tool call id `{tool_call_id}` in the same provider turn."
                 ),
             ));
         }
@@ -1443,7 +1800,7 @@ where
     Err(CommandError::retryable(
         format!("{provider_id}_provider_unavailable"),
         format!(
-            "Cadence exhausted provider `{provider_id}` retry attempts{}.",
+            "Xero exhausted provider `{provider_id}` retry attempts{}.",
             last_transport_error
                 .map(|error| format!(" Last transport error: {error}"))
                 .unwrap_or_default()
@@ -1481,21 +1838,33 @@ fn map_provider_transport_error(provider_id: &str, error: reqwest::Error) -> Com
     if error.is_timeout() {
         return CommandError::retryable(
             format!("{provider_id}_provider_timeout"),
-            format!("Cadence timed out while waiting for provider `{provider_id}`."),
+            format!("Xero timed out while waiting for provider `{provider_id}`."),
         );
     }
     CommandError::retryable(
         format!("{provider_id}_provider_unavailable"),
-        format!("Cadence could not reach provider `{provider_id}`: {error}"),
+        format!("Xero could not reach provider `{provider_id}`: {error}"),
     )
 }
 
 fn provider_http_status_error(provider_id: &str, status: u16, body: &str) -> CommandError {
-    let excerpt = redact_provider_error_body(body);
+    let excerpt = if provider_id == OPENAI_CODEX_PROVIDER_ID {
+        openai_codex_friendly_error_message(status, body)
+            .unwrap_or_else(|| redact_provider_error_body(body))
+    } else {
+        redact_provider_error_body(body)
+    };
     let message = if excerpt.is_empty() {
         format!("Provider `{provider_id}` returned HTTP {status}.")
     } else {
         format!("Provider `{provider_id}` returned HTTP {status}: {excerpt}")
+    };
+    let message = if matches!(status, 401 | 403) && provider_id == OPENAI_CODEX_PROVIDER_ID {
+        format!(
+            "{message} Xero has a saved OpenAI Codex sign-in, but OpenAI rejected the live request. Reconnect OpenAI Codex in Settings, then retry."
+        )
+    } else {
+        message
     };
     match status {
         401 | 403 => CommandError::user_fixable(format!("{provider_id}_auth_failed"), message),
@@ -1504,6 +1873,56 @@ fn provider_http_status_error(provider_id: &str, status: u16, body: &str) -> Com
         }
         _ => CommandError::user_fixable(format!("{provider_id}_request_rejected"), message),
     }
+}
+
+fn openai_codex_friendly_error_message(status: u16, body: &str) -> Option<String> {
+    let parsed: JsonValue = serde_json::from_str(body).ok()?;
+    let error = parsed.get("error")?;
+    let code = error
+        .get("code")
+        .or_else(|| error.get("type"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    if status != 429 && !is_openai_codex_usage_limit_code(code) {
+        return error
+            .get("message")
+            .and_then(JsonValue::as_str)
+            .map(redact_provider_error_body)
+            .filter(|message| !message.is_empty());
+    }
+
+    let plan = error
+        .get("plan_type")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|plan| !plan.is_empty())
+        .map(|plan| format!(" ({} plan)", plan.to_ascii_lowercase()))
+        .unwrap_or_default();
+    let when = error
+        .get("resets_at")
+        .and_then(JsonValue::as_i64)
+        .and_then(openai_codex_usage_limit_reset_copy)
+        .unwrap_or_default();
+    Some(format!(
+        "You have hit your ChatGPT usage limit{plan}.{when}"
+    ))
+}
+
+fn is_openai_codex_usage_limit_code(code: &str) -> bool {
+    let normalized = code.to_ascii_lowercase();
+    normalized.contains("usage_limit_reached")
+        || normalized.contains("usage_not_included")
+        || normalized.contains("rate_limit_exceeded")
+}
+
+fn openai_codex_usage_limit_reset_copy(resets_at: i64) -> Option<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    let seconds = resets_at.saturating_sub(now);
+    let minutes = ((seconds as f64) / 60.0).round().max(0.0) as i64;
+    Some(format!(" Try again in ~{minutes} min."))
 }
 
 fn provider_status_error(provider_id: &str, status: i32, stderr: &str) -> CommandError {
@@ -1542,7 +1961,7 @@ fn wait_provider_cli(
                 let _ = terminate_process_tree(child);
                 return Err(CommandError::retryable(
                     format!("{provider_id}_provider_timeout"),
-                    format!("Cadence timed out while waiting for provider `{provider_id}`."),
+                    format!("Xero timed out while waiting for provider `{provider_id}`."),
                 ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
@@ -1550,7 +1969,7 @@ fn wait_provider_cli(
                 let _ = terminate_process_tree(child);
                 return Err(CommandError::retryable(
                     format!("{provider_id}_provider_wait_failed"),
-                    format!("Cadence could not observe provider `{provider_id}`: {error}"),
+                    format!("Xero could not observe provider `{provider_id}`: {error}"),
                 ));
             }
         }
@@ -1584,24 +2003,24 @@ fn vertex_access_token() -> CommandResult<String> {
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => CommandError::user_fixable(
                 "vertex_gcloud_missing",
-                "Cadence needs GOOGLE_OAUTH_ACCESS_TOKEN or the gcloud CLI to invoke Vertex AI from the owned provider adapter.",
+                "Xero needs GOOGLE_OAUTH_ACCESS_TOKEN or the gcloud CLI to invoke Vertex AI from the owned provider adapter.",
             ),
             _ => CommandError::retryable(
                 "vertex_gcloud_failed",
-                format!("Cadence could not start gcloud to obtain a Vertex AI access token: {error}"),
+                format!("Xero could not start gcloud to obtain a Vertex AI access token: {error}"),
             ),
         })?;
     if !output.status.success() {
         return Err(CommandError::user_fixable(
             "vertex_adc_missing",
-            "Cadence could not obtain a Vertex AI access token from Application Default Credentials.",
+            "Xero could not obtain a Vertex AI access token from Application Default Credentials.",
         ));
     }
     let token = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if token.is_empty() {
         return Err(CommandError::user_fixable(
             "vertex_adc_missing",
-            "Cadence received an empty Vertex AI access token from gcloud.",
+            "Xero received an empty Vertex AI access token from gcloud.",
         ));
     }
     Ok(token)
@@ -1610,10 +2029,24 @@ fn vertex_access_token() -> CommandResult<String> {
 impl Default for OpenAiResponsesProviderConfig {
     fn default() -> Self {
         Self {
-            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-            model_id: OPENAI_CODEX_DEFAULT_MODEL_ID.into(),
+            provider_id: OPENAI_API_PROVIDER_ID.into(),
+            model_id: "gpt-5.4".into(),
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
+            timeout_ms: DEFAULT_PROVIDER_TIMEOUT_MS,
+        }
+    }
+}
+
+impl Default for OpenAiCodexResponsesProviderConfig {
+    fn default() -> Self {
+        Self {
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            model_id: OPENAI_CODEX_DEFAULT_MODEL_ID.into(),
+            base_url: OPENAI_CODEX_API_BASE_URL.into(),
+            access_token: String::new(),
+            account_id: String::new(),
+            session_id: None,
             timeout_ms: DEFAULT_PROVIDER_TIMEOUT_MS,
         }
     }
@@ -1713,6 +2146,147 @@ mod tests {
                 .expect("gemini body");
         assert_eq!(gemini["stream"], true);
         assert!(gemini.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn openai_codex_responses_body_matches_gsd_reasoning_clamps() {
+        let mut request = test_request();
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::Minimal);
+
+        let gpt_5_4 = openai_codex_responses_request_body(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.4",
+            &request,
+            Some("session-1"),
+        )
+        .expect("gpt-5.4 body");
+        assert_eq!(gpt_5_4["reasoning"]["effort"], "low");
+        assert_eq!(gpt_5_4["reasoning"]["summary"], "auto");
+        assert_eq!(gpt_5_4["store"], false);
+        assert_eq!(gpt_5_4["stream"], true);
+        assert_eq!(gpt_5_4["text"]["verbosity"], "medium");
+        assert_eq!(gpt_5_4["include"][0], "reasoning.encrypted_content");
+        assert_eq!(gpt_5_4["prompt_cache_key"], "session-1");
+        assert_eq!(gpt_5_4["tool_choice"], "auto");
+        assert_eq!(gpt_5_4["parallel_tool_calls"], true);
+        assert_eq!(gpt_5_4["tools"][0]["strict"], JsonValue::Null);
+        assert_eq!(gpt_5_4["input"][0]["content"][0]["type"], "input_text");
+
+        let gpt_5_5 = openai_codex_responses_request_body(
+            OPENAI_CODEX_PROVIDER_ID,
+            "openai/gpt-5.5",
+            &request,
+            None,
+        )
+        .expect("gpt-5.5 body");
+        assert_eq!(gpt_5_5["reasoning"]["effort"], "low");
+        assert!(gpt_5_5.get("prompt_cache_key").is_none());
+
+        let openai_api = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
+            .expect("openai api body");
+        assert_eq!(openai_api["reasoning"]["effort"], "minimal");
+
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
+        let gpt_5_1 = openai_codex_responses_request_body(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.1",
+            &request,
+            None,
+        )
+        .expect("gpt-5.1 body");
+        assert_eq!(gpt_5_1["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn openai_codex_url_and_headers_match_chatgpt_backend_contract() {
+        assert_eq!(
+            openai_codex_responses_url("https://chatgpt.com/backend-api")
+                .expect("base url")
+                .as_str(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            openai_codex_responses_url("https://chatgpt.com/backend-api/codex")
+                .expect("codex url")
+                .as_str(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            openai_codex_responses_url("https://chatgpt.com/backend-api/codex/responses")
+                .expect("full url")
+                .as_str(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+
+        let config = OpenAiCodexResponsesProviderConfig {
+            access_token: "oauth-token".into(),
+            account_id: "acct_123".into(),
+            session_id: Some("session-123".into()),
+            ..OpenAiCodexResponsesProviderConfig::default()
+        };
+        let headers = openai_codex_request_headers(&config).expect("codex headers");
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .expect("authorization")
+                .to_str()
+                .expect("authorization value"),
+            "Bearer oauth-token"
+        );
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .expect("account")
+                .to_str()
+                .expect("account value"),
+            "acct_123"
+        );
+        assert_eq!(
+            headers
+                .get("OpenAI-Beta")
+                .expect("beta")
+                .to_str()
+                .expect("beta value"),
+            "responses=experimental"
+        );
+        assert_eq!(
+            headers
+                .get("originator")
+                .expect("originator")
+                .to_str()
+                .expect("originator value"),
+            "pi"
+        );
+        assert_eq!(
+            headers
+                .get(ACCEPT)
+                .expect("accept")
+                .to_str()
+                .expect("accept value"),
+            "text/event-stream"
+        );
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .expect("content type")
+                .to_str()
+                .expect("content type value"),
+            "application/json"
+        );
+        assert_eq!(
+            headers
+                .get("session_id")
+                .expect("session")
+                .to_str()
+                .expect("session value"),
+            "session-123"
+        );
+        assert!(headers
+            .get(USER_AGENT)
+            .expect("user agent")
+            .to_str()
+            .expect("user agent value")
+            .starts_with("pi ("));
     }
 
     #[test]
@@ -1850,9 +2424,18 @@ mod tests {
     #[test]
     fn provider_adapter_factory_constructs_every_supported_provider_family() {
         let configs = vec![
-            AgentProviderConfig::OpenAiResponses(OpenAiResponsesProviderConfig {
+            AgentProviderConfig::OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig {
                 provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
                 model_id: OPENAI_CODEX_DEFAULT_MODEL_ID.into(),
+                base_url: "https://chatgpt.com/backend-api".into(),
+                access_token: "test-token".into(),
+                account_id: "acct_123".into(),
+                session_id: Some("session-123".into()),
+                timeout_ms: 1_000,
+            }),
+            AgentProviderConfig::OpenAiResponses(OpenAiResponsesProviderConfig {
+                provider_id: OPENAI_API_PROVIDER_ID.into(),
+                model_id: "gpt-5.4".into(),
                 base_url: "https://api.openai.com/v1".into(),
                 api_key: "test-key".into(),
                 timeout_ms: 1_000,
@@ -1964,5 +2547,55 @@ mod tests {
             redact_provider_error_body("request failed with client-secret=abc123"),
             "provider error body redacted because it may contain credential material."
         );
+    }
+
+    #[test]
+    fn openai_codex_auth_failure_explains_saved_session_can_still_be_rejected() {
+        let error = provider_http_status_error(OPENAI_CODEX_PROVIDER_ID, 401, "unauthorized");
+
+        assert_eq!(error.code, "openai_codex_auth_failed");
+        assert!(error.message.contains("saved OpenAI Codex sign-in"));
+        assert!(error.message.contains("OpenAI rejected the live request"));
+        assert!(error.message.contains("Reconnect OpenAI Codex"));
+    }
+
+    #[test]
+    fn openai_codex_provider_errors_map_usage_limits_and_stream_failures() {
+        let usage = provider_http_status_error(
+            OPENAI_CODEX_PROVIDER_ID,
+            429,
+            r#"{"error":{"code":"usage_limit_reached","plan_type":"PLUS","resets_at":1777488000}}"#,
+        );
+        assert_eq!(usage.code, "openai_codex_provider_unavailable");
+        assert!(usage.message.contains("ChatGPT usage limit"));
+        assert!(usage.message.contains("plus plan"));
+
+        let stream_error = openai_responses_stream_error(
+            OPENAI_CODEX_PROVIDER_ID,
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "server_error",
+                    "code": "server_error",
+                    "message": "temporary outage"
+                }
+            }),
+        );
+        assert_eq!(stream_error.code, "openai_codex_stream_failed");
+        assert!(stream_error.message.contains("Codex server_error"));
+
+        let failed = openai_responses_stream_error(
+            OPENAI_CODEX_PROVIDER_ID,
+            &json!({
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "message": "bad response"
+                    }
+                }
+            }),
+        );
+        assert_eq!(failed.code, "openai_codex_stream_failed");
+        assert!(failed.message.contains("bad response"));
     }
 }

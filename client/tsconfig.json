@@ -35,9 +35,9 @@
   "exclude": [
     "node_modules",
     "dist",
-    "components/cadence/agent-panel.tsx",
-    "components/cadence/project-sidebar.tsx",
-    "components/cadence/workflow-panel.tsx",
-    "components/cadence/execution-panel.tsx"
+    "components/xero/agent-panel.tsx",
+    "components/xero/project-sidebar.tsx",
+    "components/xero/workflow-panel.tsx",
+    "components/xero/execution-panel.tsx"
   ]
 }

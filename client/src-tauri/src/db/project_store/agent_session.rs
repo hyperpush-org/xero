@@ -103,7 +103,7 @@ pub fn create_agent_session(
         CommandError::system_fault(
             "agent_session_transaction_failed",
             format!(
-                "Cadence could not start the agent-session transaction in {}: {error}",
+                "Xero could not start the agent-session transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -142,7 +142,7 @@ pub fn create_agent_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not persist an agent session in {}: {error}",
+                    "Xero could not persist an agent session in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -152,7 +152,7 @@ pub fn create_agent_session(
         CommandError::system_fault(
             "agent_session_commit_failed",
             format!(
-                "Cadence could not commit the agent-session transaction in {}: {error}",
+                "Xero could not commit the agent-session transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -168,7 +168,7 @@ pub fn create_agent_session(
         CommandError::system_fault(
             "agent_session_missing_after_persist",
             format!(
-                "Cadence persisted agent session `{agent_session_id}` in {} but could not read it back.",
+                "Xero persisted agent session `{agent_session_id}` in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -221,7 +221,7 @@ pub fn list_agent_sessions(
             CommandError::system_fault(
                 "agent_session_query_failed",
                 format!(
-                    "Cadence could not prepare the agent-session query against {}: {error}",
+                    "Xero could not prepare the agent-session query against {}: {error}",
                     database_path.display()
                 ),
             )
@@ -251,7 +251,7 @@ pub fn list_agent_sessions(
             CommandError::system_fault(
                 "agent_session_query_failed",
                 format!(
-                    "Cadence could not query agent sessions from {}: {error}",
+                    "Xero could not query agent sessions from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -264,7 +264,7 @@ pub fn list_agent_sessions(
                 CommandError::system_fault(
                     "agent_session_query_failed",
                     format!(
-                        "Cadence could not read an agent-session row from {}: {error}",
+                        "Xero could not read an agent-session row from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -326,7 +326,7 @@ pub fn update_agent_session(
         return Err(CommandError::user_fixable(
             "agent_session_archived",
             format!(
-                "Cadence cannot update archived agent session `{}` for project `{}`.",
+                "Xero cannot update archived agent session `{}` for project `{}`.",
                 payload.agent_session_id, payload.project_id
             ),
         ));
@@ -336,7 +336,7 @@ pub fn update_agent_session(
         CommandError::system_fault(
             "agent_session_transaction_failed",
             format!(
-                "Cadence could not start the agent-session update transaction in {}: {error}",
+                "Xero could not start the agent-session update transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -374,7 +374,7 @@ pub fn update_agent_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not update agent session `{}` in {}: {error}",
+                    "Xero could not update agent session `{}` in {}: {error}",
                     payload.agent_session_id,
                     database_path.display()
                 ),
@@ -385,7 +385,7 @@ pub fn update_agent_session(
         CommandError::system_fault(
             "agent_session_commit_failed",
             format!(
-                "Cadence could not commit the agent-session update transaction in {}: {error}",
+                "Xero could not commit the agent-session update transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -439,7 +439,7 @@ pub fn archive_agent_session(
             return Err(CommandError::user_fixable(
                 "agent_session_active_run",
                 format!(
-                    "Cadence cannot archive agent session `{agent_session_id}` for project `{project_id}` while run `{run_id}` is {status}. Stop the run first."
+                    "Xero cannot archive agent session `{agent_session_id}` for project `{project_id}` while run `{run_id}` is {status}. Stop the run first."
                 ),
             ))
         }
@@ -448,7 +448,7 @@ pub fn archive_agent_session(
             return Err(CommandError::system_fault(
                 "agent_session_query_failed",
                 format!(
-                    "Cadence could not inspect runtime runs for agent session `{agent_session_id}` in {}: {error}",
+                    "Xero could not inspect runtime runs for agent session `{agent_session_id}` in {}: {error}",
                     database_path.display()
                 ),
             ))
@@ -474,7 +474,7 @@ pub fn archive_agent_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not archive agent session `{agent_session_id}` in {}: {error}",
+                    "Xero could not archive agent session `{agent_session_id}` in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -525,7 +525,7 @@ pub fn restore_agent_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not restore agent session `{agent_session_id}` in {}: {error}",
+                    "Xero could not restore agent session `{agent_session_id}` in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -558,7 +558,7 @@ pub fn delete_agent_session(
         return Err(CommandError::user_fixable(
             "agent_session_not_archived",
             format!(
-                "Cadence cannot permanently delete agent session `{agent_session_id}` for project `{project_id}` because it is not archived. Archive it first."
+                "Xero cannot permanently delete agent session `{agent_session_id}` for project `{project_id}` because it is not archived. Archive it first."
             ),
         ));
     }
@@ -582,7 +582,7 @@ pub fn delete_agent_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not delete agent session `{agent_session_id}` in {}: {error}",
+                    "Xero could not delete agent session `{agent_session_id}` in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -608,7 +608,7 @@ fn read_run_ids_for_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not enumerate agent runs for cascade clearing in {}: {error}",
+                    "Xero could not enumerate agent runs for cascade clearing in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -621,7 +621,7 @@ fn read_run_ids_for_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not read agent run cascade list in {}: {error}",
+                    "Xero could not read agent run cascade list in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -630,7 +630,7 @@ fn read_run_ids_for_session(
         CommandError::system_fault(
             "agent_session_persist_failed",
             format!(
-                "Cadence could not collect agent run cascade list in {}: {error}",
+                "Xero could not collect agent run cascade list in {}: {error}",
                 database_path.display()
             ),
         )
@@ -652,7 +652,7 @@ pub(crate) fn ensure_agent_session_active(
         return Err(CommandError::user_fixable(
             "agent_session_archived",
             format!(
-                "Cadence cannot use archived agent session `{agent_session_id}` for project `{project_id}`."
+                "Xero cannot use archived agent session `{agent_session_id}` for project `{project_id}`."
             ),
         ));
     }
@@ -695,7 +695,7 @@ pub(crate) fn touch_agent_session_runtime_run(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not update agent-session runtime metadata in {}: {error}",
+                    "Xero could not update agent-session runtime metadata in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -767,7 +767,7 @@ pub(crate) fn read_agent_session_row(
         Err(error) => Err(CommandError::system_fault(
             "agent_session_query_failed",
             format!(
-                "Cadence could not read agent session `{agent_session_id}` from {}: {error}",
+                "Xero could not read agent session `{agent_session_id}` from {}: {error}",
                 database_path.display()
             ),
         )),
@@ -833,7 +833,7 @@ pub(crate) fn read_selected_agent_session_row(
         Err(error) => Err(CommandError::system_fault(
             "agent_session_query_failed",
             format!(
-                "Cadence could not read the selected agent session from {}: {error}",
+                "Xero could not read the selected agent session from {}: {error}",
                 database_path.display()
             ),
         )),
@@ -854,7 +854,7 @@ pub(crate) fn clear_selected_agent_session(
             CommandError::system_fault(
                 "agent_session_persist_failed",
                 format!(
-                    "Cadence could not clear the selected agent session in {}: {error}",
+                    "Xero could not clear the selected agent session in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -870,7 +870,7 @@ fn decode_agent_session_row(
         CommandError::system_fault(
             "agent_session_decode_failed",
             format!(
-                "Cadence found malformed agent-session metadata in {}: {details}",
+                "Xero found malformed agent-session metadata in {}: {details}",
                 database_path.display()
             ),
         )
@@ -882,7 +882,7 @@ fn decode_agent_session_row(
             return Err(CommandError::system_fault(
                 "agent_session_decode_failed",
                 format!(
-                    "Cadence found malformed agent-session selected flag `{other}` in {}.",
+                    "Xero found malformed agent-session selected flag `{other}` in {}.",
                     database_path.display()
                 ),
             ))
@@ -899,7 +899,7 @@ fn decode_agent_session_row(
         return Err(CommandError::system_fault(
             "agent_session_decode_failed",
             format!(
-                "Cadence found archived agent-session metadata without archived_at in {}.",
+                "Xero found archived agent-session metadata without archived_at in {}.",
                 database_path.display()
             ),
         ));
@@ -908,7 +908,7 @@ fn decode_agent_session_row(
         return Err(CommandError::system_fault(
             "agent_session_decode_failed",
             format!(
-                "Cadence found active agent-session metadata with archived_at in {}.",
+                "Xero found active agent-session metadata with archived_at in {}.",
                 database_path.display()
             ),
         ));
@@ -985,7 +985,7 @@ fn missing_agent_session_error(project_id: &str, agent_session_id: &str) -> Comm
     CommandError::user_fixable(
         "agent_session_missing",
         format!(
-            "Cadence could not find active agent session `{agent_session_id}` for project `{project_id}`."
+            "Xero could not find active agent session `{agent_session_id}` for project `{project_id}`."
         ),
     )
 }

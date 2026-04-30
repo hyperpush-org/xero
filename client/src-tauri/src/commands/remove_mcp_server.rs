@@ -26,7 +26,7 @@ pub fn remove_mcp_server<R: Runtime>(
     if !current.servers.iter().any(|server| server.id == server_id) {
         return Err(CommandError::user_fixable(
             "mcp_server_not_found",
-            format!("Cadence could not find MCP server `{server_id}`."),
+            format!("Xero could not find MCP server `{server_id}`."),
         ));
     }
 

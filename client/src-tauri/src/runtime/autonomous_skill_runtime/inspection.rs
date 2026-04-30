@@ -124,7 +124,7 @@ pub(crate) fn inspect_tree_for_skill(
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_skill_source_metadata_invalid",
-                "Cadence requires autonomous skill source paths to include a skill id.",
+                "Xero requires autonomous skill source paths to include a skill id.",
             )
         })?
         .to_owned();
@@ -139,7 +139,7 @@ pub(crate) fn inspect_tree_for_skill(
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_skill_not_found",
-                format!("Cadence could not find autonomous skill `{skill_id}` at `{skill_path}`."),
+                format!("Xero could not find autonomous skill `{skill_id}` at `{skill_path}`."),
             )
         })?;
 
@@ -148,7 +148,7 @@ pub(crate) fn inspect_tree_for_skill(
             return Err(CommandError::user_fixable(
                 "autonomous_skill_source_changed",
                 format!(
-                    "Cadence resolved `{skill_id}` at tree hash `{expected_tree_hash}`, but the latest source now reports `{}`.",
+                    "Xero resolved `{skill_id}` at tree hash `{expected_tree_hash}`, but the latest source now reports `{}`.",
                     root_entry.hash
                 ),
             ));
@@ -171,7 +171,7 @@ pub(crate) fn inspect_tree_for_skill(
                 return Err(CommandError::user_fixable(
                     "autonomous_skill_layout_unsupported",
                     format!(
-                        "Cadence rejected `{skill_id}` because asset `{relative_path}` exceeded the {} byte per-file limit.",
+                        "Xero rejected `{skill_id}` because asset `{relative_path}` exceeded the {} byte per-file limit.",
                         MAX_SKILL_FILE_BYTES
                     ),
                 ));
@@ -187,7 +187,7 @@ pub(crate) fn inspect_tree_for_skill(
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_missing",
             format!(
-                "Cadence rejected `{skill_id}` because the source path `{skill_path}` contained no files."
+                "Xero rejected `{skill_id}` because the source path `{skill_path}` contained no files."
             ),
         ));
     }
@@ -195,7 +195,7 @@ pub(crate) fn inspect_tree_for_skill(
         return Err(CommandError::user_fixable(
             "autonomous_skill_layout_unsupported",
             format!(
-                "Cadence rejected `{skill_id}` because it exceeded the {} file limit for autonomous skill assets.",
+                "Xero rejected `{skill_id}` because it exceeded the {} file limit for autonomous skill assets.",
                 max_skill_files
             ),
         ));
@@ -203,9 +203,7 @@ pub(crate) fn inspect_tree_for_skill(
     if !assets.iter().any(|asset| asset.relative_path == "SKILL.md") {
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_missing",
-            format!(
-                "Cadence rejected `{skill_id}` because SKILL.md was missing from `{skill_path}`."
-            ),
+            format!("Xero rejected `{skill_id}` because SKILL.md was missing from `{skill_path}`."),
         ));
     }
 
@@ -228,7 +226,7 @@ pub(crate) fn parse_skill_frontmatter(markdown: &str) -> CommandResult<SkillFron
     if lines.next() != Some("---") {
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_invalid",
-            "Cadence requires autonomous skill SKILL.md files to start with YAML frontmatter delimited by `---`.",
+            "Xero requires autonomous skill SKILL.md files to start with YAML frontmatter delimited by `---`.",
         ));
     }
 
@@ -246,7 +244,7 @@ pub(crate) fn parse_skill_frontmatter(markdown: &str) -> CommandResult<SkillFron
             return Err(CommandError::user_fixable(
                 "autonomous_skill_document_invalid",
                 format!(
-                    "Cadence rejected SKILL.md because frontmatter line `{}` was not `key: value`.",
+                    "Xero rejected SKILL.md because frontmatter line `{}` was not `key: value`.",
                     line.trim()
                 ),
             ));
@@ -257,7 +255,7 @@ pub(crate) fn parse_skill_frontmatter(markdown: &str) -> CommandResult<SkillFron
             return Err(CommandError::user_fixable(
                 "autonomous_skill_document_invalid",
                 format!(
-                    "Cadence rejected SKILL.md because frontmatter line `{}` was missing a key or value.",
+                    "Xero rejected SKILL.md because frontmatter line `{}` was missing a key or value.",
                     line.trim()
                 ),
             ));
@@ -268,27 +266,27 @@ pub(crate) fn parse_skill_frontmatter(markdown: &str) -> CommandResult<SkillFron
     if !found_closing {
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_invalid",
-            "Cadence rejected SKILL.md because the YAML frontmatter block was not closed.",
+            "Xero rejected SKILL.md because the YAML frontmatter block was not closed.",
         ));
     }
 
     let name = entries.remove("name").ok_or_else(|| {
         CommandError::user_fixable(
             "autonomous_skill_document_invalid",
-            "Cadence rejected SKILL.md because frontmatter `name` was missing.",
+            "Xero rejected SKILL.md because frontmatter `name` was missing.",
         )
     })?;
     let description = entries.remove("description").ok_or_else(|| {
         CommandError::user_fixable(
             "autonomous_skill_document_invalid",
-            "Cadence rejected SKILL.md because frontmatter `description` was missing.",
+            "Xero rejected SKILL.md because frontmatter `description` was missing.",
         )
     })?;
     let name = normalize_skill_id(&name)?;
     if description.trim().is_empty() {
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_invalid",
-            "Cadence rejected SKILL.md because frontmatter `description` was blank.",
+            "Xero rejected SKILL.md because frontmatter `description` was blank.",
         ));
     }
 
@@ -324,7 +322,7 @@ pub(crate) fn validate_cache_manifest(
 ) -> Result<(), AutonomousSkillCacheError> {
     if manifest.version != CACHE_VERSION {
         return Err(AutonomousSkillCacheError::Contract(format!(
-            "Cadence rejected cached autonomous skill manifest version `{}` because only version `{CACHE_VERSION}` is supported.",
+            "Xero rejected cached autonomous skill manifest version `{}` because only version `{CACHE_VERSION}` is supported.",
             manifest.version
         )));
     }
@@ -332,7 +330,7 @@ pub(crate) fn validate_cache_manifest(
     validate_source_metadata(&manifest.source).map_err(command_error_to_cache_contract)?;
     if manifest.name.trim().is_empty() || manifest.description.trim().is_empty() {
         return Err(AutonomousSkillCacheError::Contract(
-            "Cadence rejected a cached autonomous skill manifest because name/description were blank."
+            "Xero rejected a cached autonomous skill manifest because name/description were blank."
                 .into(),
         ));
     }
@@ -342,20 +340,20 @@ pub(crate) fn validate_cache_manifest(
             .map_err(command_error_to_cache_contract)?;
         if !seen_paths.insert(normalized.clone()) {
             return Err(AutonomousSkillCacheError::Contract(format!(
-                "Cadence rejected cached autonomous skill manifest for `{}` because `{normalized}` was duplicated.",
+                "Xero rejected cached autonomous skill manifest for `{}` because `{normalized}` was duplicated.",
                 manifest.skill_id
             )));
         }
         if record.sha256.trim().is_empty() || record.bytes == 0 {
             return Err(AutonomousSkillCacheError::Contract(format!(
-                "Cadence rejected cached autonomous skill manifest for `{}` because `{normalized}` had incomplete file metadata.",
+                "Xero rejected cached autonomous skill manifest for `{}` because `{normalized}` had incomplete file metadata.",
                 manifest.skill_id
             )));
         }
     }
     if !seen_paths.contains("SKILL.md") {
         return Err(AutonomousSkillCacheError::Contract(format!(
-            "Cadence rejected cached autonomous skill manifest for `{}` because SKILL.md was missing.",
+            "Xero rejected cached autonomous skill manifest for `{}` because SKILL.md was missing.",
             manifest.skill_id
         )));
     }
@@ -373,7 +371,7 @@ pub(crate) fn normalize_skill_id(value: &str) -> CommandResult<String> {
     {
         return Err(CommandError::user_fixable(
             "autonomous_skill_id_invalid",
-            "Cadence requires autonomous skill ids to be lowercase kebab-case values.",
+            "Xero requires autonomous skill ids to be lowercase kebab-case values.",
         ));
     }
     Ok(trimmed.to_owned())
@@ -384,7 +382,7 @@ pub(crate) fn normalize_relative_source_path(value: &str) -> CommandResult<Strin
     if value.trim().is_empty() {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_metadata_invalid",
-            "Cadence requires autonomous skill source paths to be non-empty relative paths.",
+            "Xero requires autonomous skill source paths to be non-empty relative paths.",
         ));
     }
 
@@ -395,13 +393,13 @@ pub(crate) fn normalize_relative_source_path(value: &str) -> CommandResult<Strin
                 let segment = segment.to_str().ok_or_else(|| {
                     CommandError::user_fixable(
                         "autonomous_skill_source_metadata_invalid",
-                        "Cadence requires autonomous skill source paths to be valid UTF-8.",
+                        "Xero requires autonomous skill source paths to be valid UTF-8.",
                     )
                 })?;
                 if segment.is_empty() {
                     return Err(CommandError::user_fixable(
                         "autonomous_skill_source_metadata_invalid",
-                        "Cadence rejected an autonomous skill source path with an empty segment.",
+                        "Xero rejected an autonomous skill source path with an empty segment.",
                     ));
                 }
                 normalized.push(segment.to_owned());
@@ -412,7 +410,7 @@ pub(crate) fn normalize_relative_source_path(value: &str) -> CommandResult<Strin
             | Component::Prefix(_) => {
                 return Err(CommandError::user_fixable(
                     "autonomous_skill_source_metadata_invalid",
-                    "Cadence requires autonomous skill source paths to stay within a relative skill root.",
+                    "Xero requires autonomous skill source paths to stay within a relative skill root.",
                 ));
             }
         }
@@ -421,7 +419,7 @@ pub(crate) fn normalize_relative_source_path(value: &str) -> CommandResult<Strin
     if normalized.is_empty() {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_metadata_invalid",
-            "Cadence requires autonomous skill source paths to be non-empty relative paths.",
+            "Xero requires autonomous skill source paths to be non-empty relative paths.",
         ));
     }
 
@@ -436,26 +434,26 @@ pub(crate) fn normalize_source_repo(value: &str) -> CommandResult<String> {
     if trimmed.contains("://") || trimmed.starts_with("git@") {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_repo_invalid",
-            "Cadence currently supports only GitHub `owner/repo` shorthand for autonomous skill sources.",
+            "Xero currently supports only GitHub `owner/repo` shorthand for autonomous skill sources.",
         ));
     }
     let mut segments = trimmed.split('/');
     let Some(owner) = segments.next() else {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_repo_invalid",
-            "Cadence requires autonomous skill source repositories to use `owner/repo` format.",
+            "Xero requires autonomous skill source repositories to use `owner/repo` format.",
         ));
     };
     let Some(repo) = segments.next() else {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_repo_invalid",
-            "Cadence requires autonomous skill source repositories to use `owner/repo` format.",
+            "Xero requires autonomous skill source repositories to use `owner/repo` format.",
         ));
     };
     if segments.next().is_some() || owner.trim().is_empty() || repo.trim().is_empty() {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_repo_invalid",
-            "Cadence requires autonomous skill source repositories to use `owner/repo` format.",
+            "Xero requires autonomous skill source repositories to use `owner/repo` format.",
         ));
     }
     Ok(format!("{}/{}", owner.trim(), repo.trim()))
@@ -469,7 +467,7 @@ pub(crate) fn normalize_source_ref(value: &str) -> CommandResult<String> {
     if trimmed.contains("://") || trimmed.starts_with("refs/") {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_ref_invalid",
-            "Cadence requires autonomous skill source refs to be a branch, tag, or commit identifier, not a URL or raw `refs/...` path.",
+            "Xero requires autonomous skill source refs to be a branch, tag, or commit identifier, not a URL or raw `refs/...` path.",
         ));
     }
     Ok(trimmed.to_owned())
@@ -480,7 +478,7 @@ pub(crate) fn normalize_tree_hash(value: &str) -> CommandResult<String> {
     if trimmed.len() != 40 || !trimmed.chars().all(|value| value.is_ascii_hexdigit()) {
         return Err(CommandError::user_fixable(
             "autonomous_skill_source_metadata_invalid",
-            "Cadence requires autonomous skill source tree_hash values to be 40-character hexadecimal Git tree hashes.",
+            "Xero requires autonomous skill source tree_hash values to be 40-character hexadecimal Git tree hashes.",
         ));
     }
     Ok(trimmed.to_ascii_lowercase())
@@ -505,7 +503,7 @@ fn parse_frontmatter_bool(value: &str) -> CommandResult<bool> {
         other => Err(CommandError::user_fixable(
             "autonomous_skill_document_invalid",
             format!(
-                "Cadence rejected SKILL.md because frontmatter boolean value `{other}` was invalid."
+                "Xero rejected SKILL.md because frontmatter boolean value `{other}` was invalid."
             ),
         )),
     }
@@ -520,7 +518,7 @@ pub(crate) fn validate_skill_asset_path(relative_path: &str) -> CommandResult<()
         return Err(CommandError::user_fixable(
             "autonomous_skill_layout_unsupported",
             format!(
-                "Cadence rejected skill layout because nested SKILL.md file `{normalized}` is not supported."
+                "Xero rejected skill layout because nested SKILL.md file `{normalized}` is not supported."
             ),
         ));
     }
@@ -532,7 +530,7 @@ pub(crate) fn validate_skill_asset_path(relative_path: &str) -> CommandResult<()
             CommandError::user_fixable(
                 "autonomous_skill_layout_unsupported",
                 format!(
-                    "Cadence rejected skill asset `{normalized}` because extensionless supporting files are not supported."
+                    "Xero rejected skill asset `{normalized}` because extensionless supporting files are not supported."
                 ),
             )
         })?;
@@ -540,7 +538,7 @@ pub(crate) fn validate_skill_asset_path(relative_path: &str) -> CommandResult<()
         return Err(CommandError::user_fixable(
             "autonomous_skill_layout_unsupported",
             format!(
-                "Cadence rejected skill asset `{normalized}` because `.{extension}` files are not supported in the autonomous skill cache."
+                "Xero rejected skill asset `{normalized}` because `.{extension}` files are not supported in the autonomous skill cache."
             ),
         ));
     }

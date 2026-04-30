@@ -17,13 +17,6 @@ use crate::{
 
 const DEFAULT_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
-const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
-const BEDROCK_ENABLE_ENV: &str = "CLAUDE_CODE_USE_BEDROCK";
-const BEDROCK_REGION_ENV: &str = "AWS_REGION";
-const BEDROCK_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
-const VERTEX_ENABLE_ENV: &str = "CLAUDE_CODE_USE_VERTEX";
-const VERTEX_REGION_ENV: &str = "CLOUD_ML_REGION";
-const VERTEX_PROJECT_ENV: &str = "ANTHROPIC_VERTEX_PROJECT_ID";
 
 #[derive(Debug, Clone)]
 pub struct AnthropicAuthConfig {
@@ -56,7 +49,7 @@ impl AnthropicAuthConfig {
                     "anthropic_http_client_unavailable",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not build the Anthropic HTTP client for the models probe: {error}"
+                        "Xero could not build the Anthropic HTTP client for the models probe: {error}"
                     ),
                 )
             })
@@ -220,7 +213,7 @@ pub(crate) fn bind_anthropic_runtime_session<R: Runtime>(
     if profile.provider_id == ANTHROPIC_PROVIDER_ID && profile.api_key.is_none() {
         return Ok(AnthropicBindOutcome::SignedOut(AuthDiagnostic {
             code: "anthropic_api_key_missing".into(),
-            message: "Cadence cannot bind the selected Anthropic runtime because no app-local API key is configured for the active provider profile.".into(),
+            message: "Xero cannot bind the selected Anthropic runtime because no app-local API key is configured for the active provider profile.".into(),
             retryable: false,
         }));
     }
@@ -240,7 +233,7 @@ pub(crate) fn reconcile_anthropic_runtime_session<R: Runtime>(
     if profile.provider_id == ANTHROPIC_PROVIDER_ID && profile.api_key.is_none() {
         return Ok(AnthropicReconcileOutcome::SignedOut(AuthDiagnostic {
             code: "anthropic_api_key_missing".into(),
-            message: "Cadence cannot reconcile the selected Anthropic runtime because no app-local API key is configured for the active provider profile.".into(),
+            message: "Xero cannot reconcile the selected Anthropic runtime because no app-local API key is configured for the active provider profile.".into(),
             retryable: false,
         }));
     }
@@ -271,7 +264,7 @@ pub(crate) fn discovered_anthropic_family_models(
                 return Err(AuthFlowError::terminal(
                     "anthropic_api_key_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence cannot probe Anthropic models because no app-local API key is configured for the selected provider profile.",
+                    "Xero cannot probe Anthropic models because no app-local API key is configured for the selected provider profile.",
                 ));
             };
             fetch_anthropic_models(api_key, config)
@@ -294,50 +287,7 @@ pub(crate) fn discovered_anthropic_family_models(
         other => Err(AuthFlowError::terminal(
             "runtime_provider_mismatch",
             RuntimeAuthPhase::Failed,
-            format!("Cadence cannot use the Anthropic family bridge for provider `{other}`."),
-        )),
-    }
-}
-
-pub(crate) fn resolve_anthropic_family_launch_env(
-    profile: &AnthropicFamilyProfileInput,
-) -> Result<Vec<(&'static str, String)>, AuthFlowError> {
-    match profile.provider_id.as_str() {
-        ANTHROPIC_PROVIDER_ID => {
-            let Some(api_key) = profile.api_key.as_deref() else {
-                return Err(AuthFlowError::terminal(
-                    "anthropic_api_key_missing",
-                    RuntimeAuthPhase::Failed,
-                    "Cadence cannot launch the detached Anthropic runtime because no app-local API key is configured for the active provider profile.",
-                ));
-            };
-            Ok(vec![(ANTHROPIC_API_KEY_ENV, api_key.to_owned())])
-        }
-        BEDROCK_PROVIDER_ID => {
-            let region = required_region(profile, BEDROCK_PROVIDER_ID)?;
-            validate_bedrock_ambient_auth()?;
-            Ok(vec![
-                (BEDROCK_ENABLE_ENV, "1".into()),
-                (BEDROCK_REGION_ENV, region.to_owned()),
-                (BEDROCK_DEFAULT_REGION_ENV, region.to_owned()),
-            ])
-        }
-        VERTEX_PROVIDER_ID => {
-            let region = required_region(profile, VERTEX_PROVIDER_ID)?;
-            let project_id = required_project_id(profile)?;
-            validate_vertex_ambient_auth()?;
-            Ok(vec![
-                (VERTEX_ENABLE_ENV, "1".into()),
-                (VERTEX_REGION_ENV, region.to_owned()),
-                (VERTEX_PROJECT_ENV, project_id.to_owned()),
-            ])
-        }
-        other => Err(AuthFlowError::terminal(
-            "runtime_provider_mismatch",
-            RuntimeAuthPhase::Failed,
-            format!(
-                "Cadence cannot build detached launch metadata for provider `{other}` on the Anthropic family bridge."
-            ),
+            format!("Xero cannot use the Anthropic family bridge for provider `{other}`."),
         )),
     }
 }
@@ -364,7 +314,7 @@ pub(crate) fn fetch_anthropic_models(
         AuthFlowError::terminal(
             "anthropic_models_decode_failed",
             RuntimeAuthPhase::Failed,
-            format!("Cadence could not decode the Anthropic models response: {error}"),
+            format!("Xero could not decode the Anthropic models response: {error}"),
         )
     })?;
 
@@ -385,7 +335,7 @@ fn validate_anthropic_family_models_probe(
             model_unavailable_code(profile.provider_id.as_str()),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence could not find the configured {} model `{}` in the provider models response.",
+                "Xero could not find the configured {} model `{}` in the provider models response.",
                 provider_display_label(profile.provider_id.as_str()),
                 profile.model_id,
             ),
@@ -407,7 +357,7 @@ fn normalize_anthropic_models(
             return Err(AuthFlowError::terminal(
                 "anthropic_models_decode_failed",
                 RuntimeAuthPhase::Failed,
-                "Cadence could not decode the Anthropic models response because one model id was blank.",
+                "Xero could not decode the Anthropic models response because one model id was blank.",
             ));
         }
 
@@ -416,7 +366,7 @@ fn normalize_anthropic_models(
                 "anthropic_models_decode_failed",
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence rejected the Anthropic models response because model `{id}` appeared more than once."
+                    "Xero rejected the Anthropic models response because model `{id}` appeared more than once."
                 ),
             ));
         }
@@ -474,7 +424,7 @@ fn normalize_anthropic_model_thinking(
                 "anthropic_models_decode_failed",
                 RuntimeAuthPhase::Failed,
                 format!(
-                    "Cadence rejected the Anthropic models response because model `{model_id}` declared only unsupported effort levels."
+                    "Xero rejected the Anthropic models response because model `{model_id}` declared only unsupported effort levels."
                 ),
             ));
         }
@@ -492,7 +442,7 @@ fn normalize_anthropic_model_thinking(
             "anthropic_models_decode_failed",
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected the Anthropic models response because model `{model_id}` declared thinking support without any supported thinking type."
+                "Xero rejected the Anthropic models response because model `{model_id}` declared thinking support without any supported thinking type."
             ),
         ));
     }
@@ -512,7 +462,7 @@ fn map_probe_transport_error(error: reqwest::Error) -> AuthFlowError {
     AuthFlowError::retryable(
         "anthropic_provider_unavailable",
         RuntimeAuthPhase::Failed,
-        format!("Cadence could not reach the Anthropic models endpoint: {error}"),
+        format!("Xero could not reach the Anthropic models endpoint: {error}"),
     )
 }
 
@@ -590,7 +540,7 @@ fn synthetic_binding(
                 return Err(AuthFlowError::terminal(
                     "anthropic_api_key_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence cannot derive an Anthropic runtime binding because no app-local API key is configured for the active provider profile.",
+                    "Xero cannot derive an Anthropic runtime binding because no app-local API key is configured for the active provider profile.",
                 ));
             };
             sha256_hex(format!("{}:{api_key}", provider.provider_id))
@@ -611,7 +561,7 @@ fn synthetic_binding(
                 "runtime_provider_mismatch",
                 RuntimeAuthPhase::Failed,
                 format!(
-                "Cadence cannot derive an Anthropic family runtime binding for provider `{other}`."
+                "Xero cannot derive an Anthropic family runtime binding for provider `{other}`."
             ),
             ))
         }
@@ -648,7 +598,7 @@ fn required_region<'a>(
             region_missing_code(provider_id),
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence cannot use {} provider profile metadata because field `region` is required.",
+                "Xero cannot use {} provider profile metadata because field `region` is required.",
                 provider_display_label(provider_id),
             ),
         )
@@ -660,7 +610,7 @@ fn required_project_id(profile: &AnthropicFamilyProfileInput) -> Result<&str, Au
         AuthFlowError::terminal(
             "vertex_project_id_missing",
             RuntimeAuthPhase::Failed,
-            "Cadence cannot use Google Vertex AI provider profile metadata because field `projectId` is required.",
+            "Xero cannot use Google Vertex AI provider profile metadata because field `projectId` is required.",
         )
     })
 }
@@ -673,7 +623,7 @@ fn validate_bedrock_ambient_auth() -> Result<(), AuthFlowError> {
     Err(AuthFlowError::terminal(
         "bedrock_aws_credentials_missing",
         RuntimeAuthPhase::Failed,
-        "Cadence could not find ambient AWS credentials for Amazon Bedrock. Configure the default AWS SDK credential chain (for example AWS_PROFILE, AWS access keys, SSO, or web identity) before using this provider profile.",
+        "Xero could not find ambient AWS credentials for Amazon Bedrock. Configure the default AWS SDK credential chain (for example AWS_PROFILE, AWS access keys, SSO, or web identity) before using this provider profile.",
     ))
 }
 
@@ -685,7 +635,7 @@ fn validate_vertex_ambient_auth() -> Result<(), AuthFlowError> {
     Err(AuthFlowError::terminal(
         "vertex_adc_missing",
         RuntimeAuthPhase::Failed,
-        "Cadence could not find Application Default Credentials for Google Vertex AI. Configure ADC with gcloud, a service-account key file, or GOOGLE_APPLICATION_CREDENTIALS before using this provider profile.",
+        "Xero could not find Application Default Credentials for Google Vertex AI. Configure ADC with gcloud, a service-account key file, or GOOGLE_APPLICATION_CREDENTIALS before using this provider profile.",
     ))
 }
 
@@ -764,7 +714,7 @@ fn binding_stale_diagnostic(provider_id: &str) -> AuthDiagnostic {
     AuthDiagnostic {
         code: binding_stale_code(provider_id).into(),
         message: format!(
-            "Cadence rejected the persisted {} runtime binding because the selected provider profile metadata changed. Rebind the runtime session from the active profile.",
+            "Xero rejected the persisted {} runtime binding because the selected provider profile metadata changed. Rebind the runtime session from the active profile.",
             provider_display_label(provider_id),
         ),
         retryable: false,

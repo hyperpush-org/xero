@@ -7,7 +7,7 @@ import '../styles/globals.css'
 const container = document.getElementById('root')
 
 if (!container) {
-  throw new Error('Cadence desktop shell root container was not found.')
+  throw new Error('Xero desktop shell root container was not found.')
 }
 
 createRoot(container).render(

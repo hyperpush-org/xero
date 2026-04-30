@@ -130,7 +130,7 @@ impl DictationState {
         let mut inner = self.inner.lock().map_err(|_| {
             CommandError::system_fault(
                 "dictation_state_unavailable",
-                "Cadence could not access dictation state.",
+                "Xero could not access dictation state.",
             )
         })?;
 
@@ -313,7 +313,7 @@ pub fn speech_dictation_start<R: Runtime>(
         state.take_session(&session_id, true);
         return Err(CommandError::system_fault(
             "dictation_native_session_mismatch",
-            "Cadence received a native dictation response for a different session.",
+            "Xero received a native dictation response for a different session.",
         ));
     }
 
@@ -323,7 +323,7 @@ pub fn speech_dictation_start<R: Runtime>(
     {
         return Err(CommandError::retryable(
             "dictation_session_closed",
-            "Cadence started dictation, but the session closed before the native handle could be attached.",
+            "Xero started dictation, but the session closed before the native handle could be attached.",
         ));
     }
 
@@ -435,7 +435,7 @@ fn load_dictation_settings_from_path(path: &Path) -> CommandResult<DictationSett
         CommandError::user_fixable(
             "dictation_settings_decode_failed",
             format!(
-                "Cadence could not decode dictation settings stored in the global database: {error}"
+                "Xero could not decode dictation settings stored in the global database: {error}"
             ),
         )
     })?;
@@ -451,7 +451,7 @@ fn persist_dictation_settings_file(
     let payload = serde_json::to_string(settings).map_err(|error| {
         CommandError::system_fault(
             "dictation_settings_serialize_failed",
-            format!("Cadence could not serialize dictation settings: {error}"),
+            format!("Xero could not serialize dictation settings: {error}"),
         )
     })?;
 
@@ -467,7 +467,7 @@ fn persist_dictation_settings_file(
         .map_err(|error| {
             CommandError::retryable(
                 "dictation_settings_write_failed",
-                format!("Cadence could not persist dictation settings: {error}"),
+                format!("Xero could not persist dictation settings: {error}"),
             )
         })?;
     Ok(())
@@ -496,7 +496,7 @@ fn validate_dictation_settings_file(
         return Err(CommandError::user_fixable(
             error_code,
             format!(
-                "Cadence rejected dictation settings version `{}` because only version `{DICTATION_SETTINGS_SCHEMA_VERSION}` is supported.",
+                "Xero rejected dictation settings version `{}` because only version `{DICTATION_SETTINGS_SCHEMA_VERSION}` is supported.",
                 file.schema_version
             ),
         ));
@@ -547,7 +547,7 @@ fn ensure_macos_platform(status: &DictationStatusDto) -> CommandResult<()> {
 
     Err(CommandError::user_fixable(
         "dictation_unsupported_platform",
-        "Cadence dictation is only available on macOS in this release.",
+        "Xero dictation is only available on macOS in this release.",
     ))
 }
 
@@ -580,7 +580,7 @@ fn select_engine(
         }
         DictationEnginePreferenceDto::Automatic => Err(CommandError::user_fixable(
             "dictation_engine_unavailable",
-            "Cadence could not find an available native macOS dictation engine.",
+            "Xero could not find an available native macOS dictation engine.",
         )),
     }
 }
@@ -597,7 +597,7 @@ fn engine_unavailable_error(
         .unwrap_or_default();
     CommandError::user_fixable(
         code,
-        format!("Cadence could not start the requested {engine_label} dictation engine.{detail}"),
+        format!("Xero could not start the requested {engine_label} dictation engine.{detail}"),
     )
 }
 
@@ -608,14 +608,14 @@ fn resolve_channel<R: Runtime>(
     let Some(raw_channel) = raw_channel else {
         return Err(CommandError::user_fixable(
             "dictation_channel_missing",
-            "Cadence requires a dictation channel before it can stream native speech events.",
+            "Xero requires a dictation channel before it can stream native speech events.",
         ));
     };
 
     let channel_id = JavaScriptChannelId::from_str(raw_channel).map_err(|_| {
         CommandError::user_fixable(
             "dictation_channel_invalid",
-            "Cadence received an invalid dictation channel handle from the desktop shell.",
+            "Xero received an invalid dictation channel handle from the desktop shell.",
         )
     })?;
 
@@ -754,7 +754,7 @@ fn fallback_probe(reason: String) -> DictationProbe {
         os_version: None,
         default_locale: None,
         supported_locales: Vec::new(),
-        modern_compiled: option_env!("CADENCE_DICTATION_MODERN_COMPILED") == Some("1"),
+        modern_compiled: option_env!("XERO_DICTATION_MODERN_COMPILED") == Some("1"),
         modern_runtime_supported: false,
         modern_assets: DictationModernAssetsDto {
             status: DictationModernAssetStatusDto::Unavailable,
@@ -877,7 +877,7 @@ impl NativeStartError {
         match self {
             NativeStartError::Create(error) => CommandError::system_fault(
                 "dictation_native_session_unavailable",
-                format!("Cadence could not create a native dictation session: {error}"),
+                format!("Xero could not create a native dictation session: {error}"),
             ),
             NativeStartError::Start(error) => error.into_command_error(),
         }
@@ -895,7 +895,7 @@ fn native_operation_result(
                 .code
                 .unwrap_or_else(|| "dictation_native_operation_failed".into()),
             message: response.message.unwrap_or_else(|| {
-                "Cadence could not complete the native dictation operation.".into()
+                "Xero could not complete the native dictation operation.".into()
             }),
             retryable: response.retryable.unwrap_or(false),
         })
@@ -927,9 +927,7 @@ impl NativeCallbackContext {
                 event: DictationEventDto::Error {
                     session_id: Some(self.session_id.clone()),
                     code: "dictation_native_event_malformed".into(),
-                    message: format!(
-                        "Cadence received a malformed native dictation event: {error}"
-                    ),
+                    message: format!("Xero received a malformed native dictation event: {error}"),
                     retryable: true,
                 },
                 terminal: true,
@@ -1094,7 +1092,7 @@ fn validate_native_session_id(
 
     Err(NativeOperationError {
         code: "dictation_native_session_mismatch".into(),
-        message: "Cadence received a native dictation event for a different session.".into(),
+        message: "Xero received a native dictation event for a different session.".into(),
         retryable: false,
     })
 }
@@ -1112,24 +1110,24 @@ extern "C" fn native_event_callback(context: *mut c_void, payload: *const c_char
     context.handle_payload(&payload);
 }
 
-#[cfg(all(target_os = "macos", cadence_dictation_native_shim))]
+#[cfg(all(target_os = "macos", xero_dictation_native_shim))]
 mod native_shim {
     use super::*;
 
     type EventCallback = extern "C" fn(*mut c_void, *const c_char);
 
     extern "C" {
-        fn cadence_dictation_capability_status_json() -> *mut c_char;
-        fn cadence_dictation_create_session(
+        fn xero_dictation_capability_status_json() -> *mut c_char;
+        fn xero_dictation_create_session(
             request_json: *const c_char,
             callback: EventCallback,
             context: *mut c_void,
         ) -> *mut c_void;
-        fn cadence_dictation_start_session(session: *mut c_void) -> *mut c_char;
-        fn cadence_dictation_stop_session(session: *mut c_void) -> *mut c_char;
-        fn cadence_dictation_cancel_session(session: *mut c_void) -> *mut c_char;
-        fn cadence_dictation_release_session(session: *mut c_void);
-        fn cadence_dictation_free_string(value: *mut c_char);
+        fn xero_dictation_start_session(session: *mut c_void) -> *mut c_char;
+        fn xero_dictation_stop_session(session: *mut c_void) -> *mut c_char;
+        fn xero_dictation_cancel_session(session: *mut c_void) -> *mut c_char;
+        fn xero_dictation_release_session(session: *mut c_void);
+        fn xero_dictation_free_string(value: *mut c_char);
     }
 
     pub(super) struct Session {
@@ -1159,7 +1157,7 @@ mod native_shim {
                 .map_err(|error| format!("native_session_request_contains_nul: {error}"))?;
             let context = Arc::into_raw(context);
             let ptr = unsafe {
-                cadence_dictation_create_session(
+                xero_dictation_create_session(
                     request_json.as_ptr(),
                     native_event_callback,
                     context as *mut c_void,
@@ -1176,39 +1174,37 @@ mod native_shim {
         }
 
         pub(super) fn start(&self) -> Result<NativeOperationResponse, NativeOperationError> {
-            decode_operation_response(unsafe { cadence_dictation_start_session(self.ptr.as_ptr()) })
+            decode_operation_response(unsafe { xero_dictation_start_session(self.ptr.as_ptr()) })
         }
 
         pub(super) fn stop(&self) -> Result<(), NativeOperationError> {
-            decode_operation_response(unsafe { cadence_dictation_stop_session(self.ptr.as_ptr()) })
+            decode_operation_response(unsafe { xero_dictation_stop_session(self.ptr.as_ptr()) })
                 .map(|_| ())
         }
 
         pub(super) fn cancel(&self) -> Result<(), NativeOperationError> {
-            decode_operation_response(unsafe {
-                cadence_dictation_cancel_session(self.ptr.as_ptr())
-            })
-            .map(|_| ())
+            decode_operation_response(unsafe { xero_dictation_cancel_session(self.ptr.as_ptr()) })
+                .map(|_| ())
         }
     }
 
     impl Drop for Session {
         fn drop(&mut self) {
             unsafe {
-                cadence_dictation_release_session(self.ptr.as_ptr());
+                xero_dictation_release_session(self.ptr.as_ptr());
                 drop(Arc::from_raw(self.context));
             }
         }
     }
 
     pub(super) fn capability_status_json() -> Result<String, String> {
-        let ptr = unsafe { cadence_dictation_capability_status_json() };
+        let ptr = unsafe { xero_dictation_capability_status_json() };
         if ptr.is_null() {
             return Err("native_status_unavailable".into());
         }
 
         let value = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
-        unsafe { cadence_dictation_free_string(ptr) };
+        unsafe { xero_dictation_free_string(ptr) };
         Ok(value)
     }
 
@@ -1218,19 +1214,19 @@ mod native_shim {
         if ptr.is_null() {
             return Err(NativeOperationError {
                 code: "dictation_native_response_missing".into(),
-                message: "Cadence did not receive a native dictation response.".into(),
+                message: "Xero did not receive a native dictation response.".into(),
                 retryable: true,
             });
         }
 
         let value = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
-        unsafe { cadence_dictation_free_string(ptr) };
+        unsafe { xero_dictation_free_string(ptr) };
         let response =
             serde_json::from_str::<NativeOperationResponse>(&value).map_err(|error| {
                 NativeOperationError {
                     code: "dictation_native_response_malformed".into(),
                     message: format!(
-                        "Cadence received a malformed native dictation response: {error}"
+                        "Xero received a malformed native dictation response: {error}"
                     ),
                     retryable: true,
                 }
@@ -1239,7 +1235,7 @@ mod native_shim {
     }
 }
 
-#[cfg(not(all(target_os = "macos", cadence_dictation_native_shim)))]
+#[cfg(not(all(target_os = "macos", xero_dictation_native_shim)))]
 mod native_shim {
     use super::*;
 
@@ -1279,7 +1275,7 @@ mod native_shim {
     fn native_unavailable_error() -> NativeOperationError {
         NativeOperationError {
             code: "dictation_native_shim_unavailable".into(),
-            message: "Cadence was built without the native macOS dictation shim.".into(),
+            message: "Xero was built without the native macOS dictation shim.".into(),
             retryable: false,
         }
     }

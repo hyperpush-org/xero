@@ -19,14 +19,14 @@ pub fn load_all_provider_credentials(
         .map_err(|error| {
             CommandError::retryable(
                 "provider_credentials_read_failed",
-                format!("Cadence could not prepare provider_credentials read: {error}"),
+                format!("Xero could not prepare provider_credentials read: {error}"),
             )
         })?;
 
     let rows = stmt.query_map([], map_row).map_err(|error| {
         CommandError::retryable(
             "provider_credentials_read_failed",
-            format!("Cadence could not query provider_credentials: {error}"),
+            format!("Xero could not query provider_credentials: {error}"),
         )
     })?;
 
@@ -35,7 +35,7 @@ pub fn load_all_provider_credentials(
         let row = row.map_err(|error| {
             CommandError::retryable(
                 "provider_credentials_read_failed",
-                format!("Cadence could not decode provider_credentials row: {error}"),
+                format!("Xero could not decode provider_credentials row: {error}"),
             )
         })?;
         // Skip rows whose `kind` value isn't one we recognize. Should never
@@ -63,7 +63,7 @@ pub fn load_provider_credential(
         .map_err(|error| {
             CommandError::retryable(
                 "provider_credentials_read_failed",
-                format!("Cadence could not read provider_credentials row: {error}"),
+                format!("Xero could not read provider_credentials row: {error}"),
             )
         })
         .map(|maybe_row| maybe_row.flatten())
@@ -118,7 +118,7 @@ pub fn upsert_provider_credential(
         .map_err(|error| {
             CommandError::retryable(
                 "provider_credentials_write_failed",
-                format!("Cadence could not write provider_credentials row: {error}"),
+                format!("Xero could not write provider_credentials row: {error}"),
             )
         })?;
     Ok(())
@@ -133,7 +133,7 @@ pub fn delete_provider_credential(connection: &Connection, provider_id: &str) ->
         .map_err(|error| {
             CommandError::retryable(
                 "provider_credentials_write_failed",
-                format!("Cadence could not delete provider_credentials row: {error}"),
+                format!("Xero could not delete provider_credentials row: {error}"),
             )
         })?;
     Ok(())

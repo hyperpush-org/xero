@@ -43,7 +43,9 @@ pub fn import_repository<R: Runtime>(
         .map_err(|error| {
             crate::commands::CommandError::retryable(
                 "project_updated_emit_failed",
-                format!("Cadence imported the repo but could not emit the project update event: {error}"),
+                format!(
+                    "Xero imported the repo but could not emit the project update event: {error}"
+                ),
             )
         })?;
 
@@ -56,7 +58,7 @@ pub fn import_repository<R: Runtime>(
         .map_err(|error| {
             crate::commands::CommandError::retryable(
                 "repository_status_emit_failed",
-                format!("Cadence imported the repo but could not emit the repository status event: {error}"),
+                format!("Xero imported the repo but could not emit the repository status event: {error}"),
             )
         })?;
 

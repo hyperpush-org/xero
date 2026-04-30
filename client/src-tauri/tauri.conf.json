@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Cadence",
+  "productName": "Xero",
   "version": "0.1.0",
-  "identifier": "dev.sn0w.cadence",
+  "identifier": "dev.sn0w.xero",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Cadence",
+        "title": "Xero",
         "width": 1440,
         "height": 960,
         "minWidth": 1100,

@@ -8,7 +8,7 @@ const defaultTargetDir = resolve(clientDir, 'src-tauri', 'target')
 
 const options = {
   dryRun: false,
-  maxAgeHours: Number.parseFloat(process.env.CADENCE_RUST_TARGET_MAX_AGE_HOURS ?? '6'),
+  maxAgeHours: Number.parseFloat(process.env.XERO_RUST_TARGET_MAX_AGE_HOURS ?? '6'),
   targetDir: process.env.CARGO_TARGET_DIR
     ? resolve(process.env.CARGO_TARGET_DIR)
     : defaultTargetDir,

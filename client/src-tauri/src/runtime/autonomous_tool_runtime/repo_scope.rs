@@ -59,7 +59,7 @@ impl AutonomousToolRuntime {
         let metadata = fs::symlink_metadata(scope).map_err(|error| {
             CommandError::retryable(
                 error_codes.metadata_failed,
-                format!("Cadence could not inspect {}: {error}", scope.display()),
+                format!("Xero could not inspect {}: {error}", scope.display()),
             )
         })?;
 
@@ -93,7 +93,7 @@ impl AutonomousToolRuntime {
                     "autonomous_tool_path_denied",
                     CommandErrorClass::PolicyDenied,
                     format!(
-                        "Cadence denied access to `{}` because it resolves outside the imported repository root.",
+                        "Xero denied access to `{}` because it resolves outside the imported repository root.",
                         path.display()
                     ),
                     false,
@@ -114,7 +114,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_path_not_found",
                 format!(
-                    "Cadence could not find `{}` inside the imported repository.",
+                    "Xero could not find `{}` inside the imported repository.",
                     path_to_forward_slash(relative_path)
                 ),
             ));
@@ -123,7 +123,7 @@ impl AutonomousToolRuntime {
         let resolved = fs::canonicalize(&candidate).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_path_resolve_failed",
-                format!("Cadence could not resolve {}: {error}", candidate.display()),
+                format!("Xero could not resolve {}: {error}", candidate.display()),
             )
         })?;
         self.ensure_inside_root(&resolved, relative_path)
@@ -138,7 +138,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_directory_required",
                 format!(
-                    "Cadence requires `{}` to resolve to a directory inside the imported repository.",
+                    "Xero requires `{}` to resolve to a directory inside the imported repository.",
                     path_to_forward_slash(relative_path)
                 ),
             ));
@@ -152,7 +152,7 @@ impl AutonomousToolRuntime {
             let resolved = fs::canonicalize(&candidate).map_err(|error| {
                 CommandError::retryable(
                     "autonomous_tool_path_resolve_failed",
-                    format!("Cadence could not resolve {}: {error}", candidate.display()),
+                    format!("Xero could not resolve {}: {error}", candidate.display()),
                 )
             })?;
             return self.ensure_inside_root(&resolved, relative_path);
@@ -165,7 +165,7 @@ impl AutonomousToolRuntime {
                 return Err(CommandError::new(
                     "autonomous_tool_path_denied",
                     CommandErrorClass::PolicyDenied,
-                    "Cadence denied a path that escaped the imported repository.",
+                    "Xero denied a path that escaped the imported repository.",
                     false,
                 ));
             };
@@ -174,7 +174,7 @@ impl AutonomousToolRuntime {
                 CommandError::new(
                     "autonomous_tool_path_denied",
                     CommandErrorClass::PolicyDenied,
-                    "Cadence denied a path that escaped the imported repository.",
+                    "Xero denied a path that escaped the imported repository.",
                     false,
                 )
             })?;
@@ -183,7 +183,7 @@ impl AutonomousToolRuntime {
         let resolved_ancestor = fs::canonicalize(ancestor).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_path_resolve_failed",
-                format!("Cadence could not resolve {}: {error}", ancestor.display()),
+                format!("Xero could not resolve {}: {error}", ancestor.display()),
             )
         })?;
         let mut resolved = self.ensure_inside_root(&resolved_ancestor, relative_path)?;
@@ -202,7 +202,7 @@ impl AutonomousToolRuntime {
             "autonomous_tool_path_denied",
             CommandErrorClass::PolicyDenied,
             format!(
-                "Cadence denied access to `{}` because it resolves outside the imported repository root.",
+                "Xero denied access to `{}` because it resolves outside the imported repository root.",
                 path_to_forward_slash(relative_path)
             ),
             false,
@@ -219,7 +219,7 @@ impl AutonomousToolRuntime {
                 CommandError::retryable(
                     error_code,
                     format!(
-                        "Cadence could not enumerate directory {}: {error}",
+                        "Xero could not enumerate directory {}: {error}",
                         scope.display()
                     ),
                 )
@@ -229,7 +229,7 @@ impl AutonomousToolRuntime {
                 CommandError::retryable(
                     error_code,
                     format!(
-                        "Cadence could not enumerate directory {}: {error}",
+                        "Xero could not enumerate directory {}: {error}",
                         scope.display()
                     ),
                 )
@@ -314,7 +314,7 @@ pub(super) fn normalize_relative_path(value: &str, field: &'static str) -> Comma
                     "autonomous_tool_path_denied",
                     CommandErrorClass::PolicyDenied,
                     format!(
-                        "Cadence denied `{}` because autonomous tools may only access paths relative to the imported repository root.",
+                        "Xero denied `{}` because autonomous tools may only access paths relative to the imported repository root.",
                         value.trim()
                     ),
                     false,
@@ -340,7 +340,7 @@ pub(super) fn normalize_glob_pattern(value: &str) -> CommandResult<String> {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_find_pattern_invalid",
                 format!(
-                    "Cadence requires glob pattern `{}` to use non-empty repo-relative segments.",
+                    "Xero requires glob pattern `{}` to use non-empty repo-relative segments.",
                     value.trim()
                 ),
             ));
@@ -351,7 +351,7 @@ pub(super) fn normalize_glob_pattern(value: &str) -> CommandResult<String> {
                 "autonomous_tool_path_denied",
                 CommandErrorClass::PolicyDenied,
                 format!(
-                    "Cadence denied glob pattern `{}` because autonomous tools may only access paths relative to the imported repository root.",
+                    "Xero denied glob pattern `{}` because autonomous tools may only access paths relative to the imported repository root.",
                     value.trim()
                 ),
                 false,
@@ -377,7 +377,7 @@ pub(super) fn build_glob_matcher(pattern: &str) -> CommandResult<GlobMatcher> {
         .map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_tool_find_pattern_invalid",
-                format!("Cadence could not parse glob pattern `{pattern}`: {error}"),
+                format!("Xero could not parse glob pattern `{pattern}`: {error}"),
             )
         })
 }
@@ -422,7 +422,7 @@ pub(super) fn scope_relative_match_path(
                     "autonomous_tool_path_denied",
                     CommandErrorClass::PolicyDenied,
                     format!(
-                        "Cadence denied access to `{}` because it escaped the scoped search root.",
+                        "Xero denied access to `{}` because it escaped the scoped search root.",
                         path_to_forward_slash(repo_relative)
                     ),
                     false,

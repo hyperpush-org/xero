@@ -3,7 +3,7 @@
 //! invariant holds and that snapshot restore replays the same state.
 
 use super::support::{fixture_with_scripted_launcher_and_fetcher, sample_record};
-use cadence_desktop_lib::commands::solana::{AccountFetcher, ClusterKind, StartOpts};
+use xero_desktop_lib::commands::solana::{AccountFetcher, ClusterKind, StartOpts};
 
 pub fn spin_restore_cycle_runs_three_consecutive_times() {
     let fixture = fixture_with_scripted_launcher_and_fetcher();
@@ -55,9 +55,7 @@ pub fn spin_restore_cycle_runs_three_consecutive_times() {
             )
             .expect("fetcher replay");
         assert!(
-            cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(
-                &manifest, &replayed
-            ),
+            xero_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replayed),
             "snapshot restore must be bit-identical on cycle {cycle}"
         );
 
@@ -104,7 +102,7 @@ pub fn snapshot_restore_is_bit_identical_across_process_boundary() {
         .fetch(&manifest.rpc_url, &["A".into(), "B".into()])
         .unwrap();
     assert!(
-        cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replay),
+        xero_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replay),
         "round-trip must still be identical after a simulated restart"
     );
 
@@ -117,7 +115,7 @@ pub fn snapshot_restore_is_bit_identical_across_process_boundary() {
         .fetch(&manifest.rpc_url, &["A".into(), "B".into()])
         .unwrap();
     assert!(
-        !cadence_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replay),
+        !xero_desktop_lib::commands::solana::snapshot::verify_round_trip(&manifest, &replay),
         "mutated account must fail the round-trip check"
     );
 }

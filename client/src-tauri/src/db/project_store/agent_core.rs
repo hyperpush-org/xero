@@ -864,7 +864,7 @@ pub fn load_agent_run(
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "agent_run_not_found",
-                format!("Cadence could not find owned agent run `{run_id}`."),
+                format!("Xero could not find owned agent run `{run_id}`."),
             )
         })?;
 
@@ -1708,7 +1708,7 @@ fn map_agent_store_query_error(
     CommandError::retryable(
         code,
         format!(
-            "Cadence could not read owned-agent state from {}: {error}",
+            "Xero could not read owned-agent state from {}: {error}",
             database_path_for_repo(repo_root).display()
         ),
     )
@@ -1722,7 +1722,7 @@ fn map_agent_store_write_error(
     CommandError::retryable(
         code,
         format!(
-            "Cadence could not persist owned-agent state to {}: {error}",
+            "Xero could not persist owned-agent state to {}: {error}",
             database_path_for_repo(repo_root).display()
         ),
     )

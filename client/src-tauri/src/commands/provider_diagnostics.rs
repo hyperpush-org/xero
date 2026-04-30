@@ -10,9 +10,9 @@ use crate::{
     provider_credentials::ProviderCredentialProfile,
     provider_models::load_provider_model_catalog,
     runtime::{
-        provider_model_catalog_diagnostic, provider_validation_diagnostics, CadenceDiagnosticCheck,
-        CadenceDiagnosticCheckInput, CadenceDiagnosticSeverity, CadenceDiagnosticStatus,
-        CadenceDiagnosticSubject, OPENAI_CODEX_PROVIDER_ID,
+        provider_model_catalog_diagnostic, provider_validation_diagnostics, XeroDiagnosticCheck,
+        XeroDiagnosticCheckInput, XeroDiagnosticSeverity, XeroDiagnosticStatus,
+        XeroDiagnosticSubject, OPENAI_CODEX_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -32,7 +32,7 @@ pub fn check_provider_profile<R: Runtime>(
     let profile = snapshot.profile(profile_id).cloned().ok_or_else(|| {
         CommandError::user_fixable(
             "provider_not_found",
-            format!("Cadence could not find provider `{profile_id}`."),
+            format!("Xero could not find provider `{profile_id}`."),
         )
     })?;
 
@@ -69,7 +69,7 @@ fn openai_codex_session_check<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     profile: &ProviderCredentialProfile,
-) -> CommandResult<Option<CadenceDiagnosticCheck>> {
+) -> CommandResult<Option<XeroDiagnosticCheck>> {
     if profile.provider_id != OPENAI_CODEX_PROVIDER_ID {
         return Ok(None);
     }
@@ -81,10 +81,10 @@ fn openai_codex_session_check<R: Runtime>(
     let auth_store_path = state.global_db_path(app)?;
 
     match load_openai_codex_session_for_profile_link(&auth_store_path, link) {
-        Ok(Some(session)) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderCredential,
-            status: CadenceDiagnosticStatus::Passed,
-            severity: CadenceDiagnosticSeverity::Info,
+        Ok(Some(session)) => XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ProviderCredential,
+            status: XeroDiagnosticStatus::Passed,
+            severity: XeroDiagnosticSeverity::Info,
             retryable: false,
             code: "provider_openai_session_ready".into(),
             message: format!(
@@ -97,10 +97,10 @@ fn openai_codex_session_check<R: Runtime>(
             remediation: None,
         })
         .map(Some),
-        Ok(None) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderCredential,
-            status: CadenceDiagnosticStatus::Failed,
-            severity: CadenceDiagnosticSeverity::Error,
+        Ok(None) => XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ProviderCredential,
+            status: XeroDiagnosticStatus::Failed,
+            severity: XeroDiagnosticSeverity::Error,
             retryable: false,
             code: "provider_openai_session_missing".into(),
             message: "OpenAI Codex points at an auth session that is no longer present.".into(),
@@ -113,10 +113,10 @@ fn openai_codex_session_check<R: Runtime>(
             ),
         })
         .map(Some),
-        Err(error) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderCredential,
-            status: CadenceDiagnosticStatus::Failed,
-            severity: CadenceDiagnosticSeverity::Error,
+        Err(error) => XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ProviderCredential,
+            status: XeroDiagnosticStatus::Failed,
+            severity: XeroDiagnosticSeverity::Error,
             retryable: error.retryable,
             code: error.code,
             message: error.message,
@@ -124,7 +124,7 @@ fn openai_codex_session_check<R: Runtime>(
             affected_provider_id: Some(profile.provider_id.clone()),
             endpoint: None,
             remediation: Some(
-                "Reconnect or resave OpenAI Codex so Cadence can rebuild the app-local auth link."
+                "Reconnect or resave OpenAI Codex so Xero can rebuild the app-local auth link."
                     .into(),
             ),
         })
@@ -135,11 +135,11 @@ fn openai_codex_session_check<R: Runtime>(
 fn command_error_to_model_catalog_check(
     profile: &ProviderCredentialProfile,
     error: CommandError,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ModelCatalog,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ModelCatalog,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: error.retryable,
         code: error.code,
         message: error.message,

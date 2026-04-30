@@ -1,6 +1,6 @@
 # Provider Setup And Diagnostics
 
-Cadence keeps provider setup app-local and desktop-first. Provider profiles store non-secret metadata in the provider profile registry, while API keys and token links stay in the app-local credential store. Diagnostics and copied doctor reports are designed to show enough setup state to repair a profile without exposing raw keys, OAuth tokens, bearer headers, local credential file contents, or secret-bearing paths.
+Xero keeps provider setup app-local and desktop-first. Provider profiles store non-secret metadata in the provider profile registry, while API keys and token links stay in the app-local credential store. Diagnostics and copied doctor reports are designed to show enough setup state to repair a profile without exposing raw keys, OAuth tokens, bearer headers, local credential file contents, or secret-bearing paths.
 
 ## Supported Provider Paths
 
@@ -8,7 +8,7 @@ Use the first-class provider presets when your provider is listed directly in Pr
 
 | Provider | Auth mode | Setup notes |
 | --- | --- | --- |
-| OpenAI Codex | OAuth | Sign in from Providers or runtime bind. Cadence stores a redacted app-local session link rather than a checked-in token. |
+| OpenAI Codex | OAuth | Sign in from Providers or runtime bind. Xero stores a redacted app-local session link rather than a checked-in token. |
 | OpenRouter | API key | Add an app-local key, choose a model, then run Check connection for live catalog and reachability diagnostics. |
 | Anthropic | API key | Add an app-local Anthropic key. Manual model entry remains available if catalog discovery is unavailable. |
 | GitHub Models | API token | Add a GitHub token in Providers settings. Device-flow onboarding is intentionally out of scope for this phase. |
@@ -16,10 +16,10 @@ Use the first-class provider presets when your provider is listed directly in Pr
 | Ollama | Local | Start Ollama and use the default local endpoint or an edited local base URL. No placeholder API key is stored. |
 | Azure OpenAI | API key | Use for deployment URLs that need Azure `api-version` metadata. Model ID should match the deployment name. |
 | Gemini AI Studio | API key | Add an app-local Gemini key and use the built-in Gemini runtime path. |
-| Amazon Bedrock | Ambient AWS | Provide region metadata. Cadence checks ambient AWS readiness and does not store cloud keys. |
-| Google Vertex AI | Ambient ADC | Provide region and project metadata. Cadence checks ambient ADC readiness and does not store cloud keys. |
+| Amazon Bedrock | Ambient AWS | Provide region metadata. Xero checks ambient AWS readiness and does not store cloud keys. |
+| Google Vertex AI | Ambient ADC | Provide region and project metadata. Xero checks ambient ADC readiness and does not store cloud keys. |
 
-For a common cloud setup, pick the provider preset, fill the required key or ambient metadata, save the profile, then run Check connection. For a local setup, start the local server first, confirm its base URL, save the profile without a fake key, then run Check connection. For a custom gateway, use an OpenAI-compatible recipe so Cadence can prefill the correct runtime shape.
+For a common cloud setup, pick the provider preset, fill the required key or ambient metadata, save the profile, then run Check connection. For a local setup, start the local server first, confirm its base URL, save the profile without a fake key, then run Check connection. For a custom gateway, use an OpenAI-compatible recipe so Xero can prefill the correct runtime shape.
 
 ## OpenAI-Compatible Recipes
 
@@ -45,7 +45,7 @@ Azure AI Foundry uses the OpenAI-compatible endpoint route. If the endpoint is a
 
 ## GitHub Models Onboarding
 
-Cadence supports GitHub Models through a saved app-local token on the `github_models` provider profile. GitHub device-flow onboarding is intentionally out of scope for the current desktop auth model because it would need a dedicated auth flow, cancellation handling, token-link storage, and redaction coverage.
+Xero supports GitHub Models through a saved app-local token on the `github_models` provider profile. GitHub device-flow onboarding is intentionally out of scope for the current desktop auth model because it would need a dedicated auth flow, cancellation handling, token-link storage, and redaction coverage.
 
 Set up GitHub Models by adding a token in Providers settings, saving the profile, then running Check connection or an extended doctor report. Diagnostics use the same provider readiness, catalog, runtime binding, and stale-token checks as other API-key providers.
 
@@ -59,10 +59,10 @@ Use extended diagnostics when reachability, hosted provider auth, model catalogs
 
 Diagnostic states mean:
 
-- Passed: Cadence could validate the checked dependency.
-- Warning: Cadence found a recoverable issue or stale-but-usable state, such as a cached model catalog after a retryable refresh failure.
-- Failed: Cadence found a blocking issue, such as missing credentials, malformed profile metadata, bad endpoint shape, failed runtime binding, or an unavailable required file.
-- Skipped: Cadence intentionally did not run the check, usually because the related feature is not configured or quick mode skipped network probing.
+- Passed: Xero could validate the checked dependency.
+- Warning: Xero found a recoverable issue or stale-but-usable state, such as a cached model catalog after a retryable refresh failure.
+- Failed: Xero found a blocking issue, such as missing credentials, malformed profile metadata, bad endpoint shape, failed runtime binding, or an unavailable required file.
+- Skipped: Xero intentionally did not run the check, usually because the related feature is not configured or quick mode skipped network probing.
 
 Support engineers should start with the report summary, then inspect failed and warning groups in this order: provider profiles, model catalogs, runtime supervisor, MCP dependencies, and settings dependencies. A single provider problem can cascade into runtime failures, so repair provider-profile failures first and re-run diagnostics before chasing secondary runtime messages.
 

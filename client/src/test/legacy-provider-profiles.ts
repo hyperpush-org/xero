@@ -5,7 +5,7 @@
 // deleted, this file can be removed.
 
 import { z } from 'zod'
-import type { RuntimeProviderIdDto } from '@/src/lib/cadence-model'
+import type { RuntimeProviderIdDto } from '@/src/lib/xero-model'
 
 export type ProviderProfileReadinessStatusDto = 'ready' | 'missing' | 'malformed'
 export type ProviderProfileReadinessProofDto =

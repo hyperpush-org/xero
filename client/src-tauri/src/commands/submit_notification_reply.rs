@@ -85,7 +85,7 @@ fn parse_decision(value: &str) -> CommandResult<&'static str> {
         other => Err(CommandError::user_fixable(
             "notification_reply_decision_unsupported",
             format!(
-                "Cadence does not support notification reply decision `{other}`. Allowed decisions: approve, reject."
+                "Xero does not support notification reply decision `{other}`. Allowed decisions: approve, reject."
             ),
         )),
     }

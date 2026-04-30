@@ -8,19 +8,19 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use cadence_desktop_lib::commands::solana::persona::fund::{
+use xero_desktop_lib::commands::solana::persona::fund::{
     FundingBackend, FundingContext, FundingStep,
 };
-use cadence_desktop_lib::commands::solana::persona::keygen::{KeypairBytes, KeypairProvider};
-use cadence_desktop_lib::commands::solana::{
+use xero_desktop_lib::commands::solana::persona::keygen::{KeypairBytes, KeypairProvider};
+use xero_desktop_lib::commands::solana::{
     AccountFetcher, AccountRecord, ClusterHandle, ClusterKind, KeypairStore, PersonaStore,
     RpcRouter, SnapshotStore, SolanaState, StartOpts, ValidatorLauncher, ValidatorSession,
     ValidatorSupervisor,
 };
-use cadence_desktop_lib::commands::CommandResult;
+use xero_desktop_lib::commands::CommandResult;
 
-pub use cadence_desktop_lib::commands::solana::rpc_router::{EndpointSpec, RpcHealthCheck};
-pub use cadence_desktop_lib::commands::CommandError;
+pub use xero_desktop_lib::commands::solana::rpc_router::{EndpointSpec, RpcHealthCheck};
+pub use xero_desktop_lib::commands::CommandError;
 
 pub use tempfile::TempDir;
 
@@ -109,15 +109,13 @@ impl ValidatorLauncher for ScriptedLauncher {
             .arg("3600")
             .spawn()
             .expect("sleep should spawn in test environment");
-        let guard = cadence_desktop_lib::commands::emulator::process::ChildGuard::new(
-            "test-validator",
-            child,
-        );
+        let guard =
+            xero_desktop_lib::commands::emulator::process::ChildGuard::new("test-validator", child);
 
         let ledger = opts
             .ledger_dir
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("cadence-solana-int-test"));
+            .unwrap_or_else(|| std::env::temp_dir().join("xero-solana-int-test"));
         let handle = ClusterHandle {
             kind,
             rpc_url: "http://127.0.0.1:8899".into(),

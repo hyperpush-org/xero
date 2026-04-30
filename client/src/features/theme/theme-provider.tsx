@@ -27,7 +27,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 /**
  * Read the stored theme id synchronously. Safe in the browser only — callers
- * must guard for SSR environments, but Cadence is desktop-only so we assume a
+ * must guard for SSR environments, but Xero is desktop-only so we assume a
  * DOM is available after mount.
  */
 function readStoredThemeId(): string {

@@ -254,7 +254,7 @@ pub fn replace_in_project<R: Runtime>(
                 CommandError::retryable(
                     "project_file_write_failed",
                     format!(
-                        "Cadence could not write replacements to `{}`: {error}",
+                        "Xero could not write replacements to `{}`: {error}",
                         virtual_path
                     ),
                 )
@@ -293,7 +293,7 @@ fn build_pattern(
         .map_err(|error| {
             CommandError::user_fixable(
                 "search_invalid_pattern",
-                format!("Cadence could not compile the search pattern: {error}"),
+                format!("Xero could not compile the search pattern: {error}"),
             )
         })
 }
@@ -311,7 +311,7 @@ fn build_globset(globs: &[String], field: &'static str) -> CommandResult<Option<
         let glob = Glob::new(trimmed).map_err(|error| {
             CommandError::user_fixable(
                 "search_invalid_glob",
-                format!("Cadence could not parse the `{field}` pattern `{trimmed}`: {error}"),
+                format!("Xero could not parse the `{field}` pattern `{trimmed}`: {error}"),
             )
         })?;
         builder.add(glob);
@@ -319,7 +319,7 @@ fn build_globset(globs: &[String], field: &'static str) -> CommandResult<Option<
     let set = builder.build().map_err(|error| {
         CommandError::user_fixable(
             "search_invalid_glob",
-            format!("Cadence could not build the `{field}` pattern set: {error}"),
+            format!("Xero could not build the `{field}` pattern set: {error}"),
         )
     })?;
     if set.is_empty() {

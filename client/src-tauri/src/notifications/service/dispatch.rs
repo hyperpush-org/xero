@@ -68,7 +68,7 @@ where
                         None,
                         DISPATCH_ATTEMPTED_DIAGNOSTIC.to_string(),
                         format!(
-                            "Cadence sent notification dispatch `{}` for route `{}`.",
+                            "Xero sent notification dispatch `{}` for route `{}`.",
                             dispatch.id, dispatch.route_id
                         ),
                     ),
@@ -135,8 +135,7 @@ where
                             outcome_status: NotificationDispatchStatus::Failed,
                             diagnostic_code: DISPATCH_FAILED_DIAGNOSTIC.into(),
                             diagnostic_message:
-                                "Cadence could not persist the notification dispatch outcome."
-                                    .into(),
+                                "Xero could not persist the notification dispatch outcome.".into(),
                             durable_error_code: Some(
                                 "notification_adapter_outcome_persist_failed".into(),
                             ),
@@ -149,7 +148,7 @@ where
         if !persistence_errors.is_empty() {
             return Err(CommandError::retryable(
                 "notification_adapter_outcome_persist_failed",
-                "Cadence could not persist one or more notification dispatch outcomes.",
+                "Xero could not persist one or more notification dispatch outcomes.",
             ));
         }
 
@@ -164,7 +163,7 @@ where
     ) -> Result<(), NotificationAdapterError> {
         let route = route.ok_or_else(|| {
             NotificationAdapterError::payload_invalid(format!(
-                "Cadence could not send dispatch `{}` because route `{}` no longer exists.",
+                "Xero could not send dispatch `{}` because route `{}` no longer exists.",
                 dispatch.id, dispatch.route_id
             ))
         })?;
@@ -173,7 +172,7 @@ where
             return Err(NotificationAdapterError::new(
                 "notification_adapter_route_disabled",
                 format!(
-                    "Cadence skipped dispatch `{}` because route `{}` is disabled.",
+                    "Xero skipped dispatch `{}` because route `{}` is disabled.",
                     dispatch.id, dispatch.route_id
                 ),
                 false,
@@ -199,7 +198,7 @@ where
                 self.discord_transport.send_message(&credentials, &message)
             }
             (expected_kind, _) => Err(NotificationAdapterError::credentials_malformed(format!(
-                "Cadence found malformed app-local credentials for route `{}` because expected `{}` credentials were missing.",
+                "Xero found malformed app-local credentials for route `{}` because expected `{}` credentials were missing.",
                 dispatch.route_id,
                 expected_kind.as_str(),
             ))),
@@ -247,10 +246,10 @@ fn format_dispatch_message(
     let detail = action
         .map(|action| action.detail.trim())
         .filter(|value| !value.is_empty())
-        .unwrap_or("Cadence paused and requires a coarse operator answer to continue.");
+        .unwrap_or("Xero paused and requires a coarse operator answer to continue.");
 
     format!(
-        "Cadence requires operator input.\n\nRoute: {}:{}\nAction ID: {}\nAction Type: {}\nTitle: {}\nDetail: {}\n\nCorrelation key: {}\nReply with one line:\napprove {} <answer>\nreject {} <answer>",
+        "Xero requires operator input.\n\nRoute: {}:{}\nAction ID: {}\nAction Type: {}\nTitle: {}\nDetail: {}\n\nCorrelation key: {}\nReply with one line:\napprove {} <answer>\nreject {} <answer>",
         route_kind.as_str(),
         channel_target,
         dispatch.action_id,

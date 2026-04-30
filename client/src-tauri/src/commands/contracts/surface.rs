@@ -34,6 +34,7 @@ pub const READ_PROJECT_FILE_COMMAND: &str = "read_project_file";
 pub const WRITE_PROJECT_FILE_COMMAND: &str = "write_project_file";
 pub const CREATE_PROJECT_ENTRY_COMMAND: &str = "create_project_entry";
 pub const RENAME_PROJECT_ENTRY_COMMAND: &str = "rename_project_entry";
+pub const MOVE_PROJECT_ENTRY_COMMAND: &str = "move_project_entry";
 pub const DELETE_PROJECT_ENTRY_COMMAND: &str = "delete_project_entry";
 pub const GET_RUNTIME_RUN_COMMAND: &str = "get_runtime_run";
 pub const GET_RUNTIME_SESSION_COMMAND: &str = "get_runtime_session";
@@ -105,6 +106,7 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     WRITE_PROJECT_FILE_COMMAND,
     CREATE_PROJECT_ENTRY_COMMAND,
     RENAME_PROJECT_ENTRY_COMMAND,
+    MOVE_PROJECT_ENTRY_COMMAND,
     DELETE_PROJECT_ENTRY_COMMAND,
     GET_RUNTIME_RUN_COMMAND,
     GET_RUNTIME_SESSION_COMMAND,
@@ -254,6 +256,14 @@ pub struct RenameProjectEntryRequestDto {
     pub project_id: String,
     pub path: String,
     pub new_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MoveProjectEntryRequestDto {
+    pub project_id: String,
+    pub path: String,
+    pub target_parent_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -487,6 +497,13 @@ pub struct CreateProjectEntryResponseDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenameProjectEntryResponseDto {
+    pub project_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MoveProjectEntryResponseDto {
     pub project_id: String,
     pub path: String,
 }

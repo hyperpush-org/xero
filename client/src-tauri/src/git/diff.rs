@@ -117,7 +117,7 @@ fn render_patch(
     let index = repository.index().map_err(|error| {
         CommandError::retryable(
             "git_index_read_failed",
-            format!("Cadence could not read the repository index: {error}"),
+            format!("Xero could not read the repository index: {error}"),
         )
     })?;
 
@@ -136,7 +136,7 @@ fn render_patch(
         CommandError::retryable(
             "git_diff_read_failed",
             format!(
-                "Cadence could not inspect the {} diff: {error}",
+                "Xero could not inspect the {} diff: {error}",
                 scope_label(scope)
             ),
         )
@@ -187,7 +187,7 @@ fn render_patch(
             return Err(CommandError::retryable(
                 "git_diff_render_failed",
                 format!(
-                    "Cadence could not render the {} diff: {error}",
+                    "Xero could not render the {} diff: {error}",
                     scope_label(scope)
                 ),
             ));

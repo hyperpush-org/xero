@@ -3,14 +3,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use cadence_desktop_lib::commands::CommandError;
-use cadence_desktop_lib::runtime::autonomous_tool_runtime::{
+use serde_json::json;
+use tempfile::TempDir;
+use xero_desktop_lib::commands::CommandError;
+use xero_desktop_lib::runtime::autonomous_tool_runtime::{
     AutonomousEmulatorAction, AutonomousEmulatorOutput, AutonomousEmulatorRequest,
     AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime, EmulatorExecutor,
     UnavailableEmulatorExecutor,
 };
-use serde_json::json;
-use tempfile::TempDir;
 
 #[derive(Debug)]
 struct RecordingEmulatorExecutor {

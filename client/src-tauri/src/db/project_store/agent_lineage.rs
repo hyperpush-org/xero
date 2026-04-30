@@ -145,7 +145,7 @@ pub fn create_agent_session_branch(
         CommandError::user_fixable(
             "agent_session_not_found",
             format!(
-                "Cadence could not find source agent session `{}` for project `{}`.",
+                "Xero could not find source agent session `{}` for project `{}`.",
                 request.source_agent_session_id, request.project_id
             ),
         )
@@ -182,7 +182,7 @@ pub fn create_agent_session_branch(
         CommandError::system_fault(
             "agent_session_branch_transaction_failed",
             format!(
-                "Cadence could not start the agent-session branch transaction in {}: {error}",
+                "Xero could not start the agent-session branch transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -347,7 +347,7 @@ pub fn create_agent_session_branch(
         CommandError::system_fault(
             "agent_session_branch_commit_failed",
             format!(
-                "Cadence could not commit the agent-session branch transaction in {}: {error}",
+                "Xero could not commit the agent-session branch transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -363,7 +363,7 @@ pub fn create_agent_session_branch(
         CommandError::system_fault(
             "agent_session_branch_missing_after_persist",
             format!(
-                "Cadence created branch session `{child_agent_session_id}` in {} but could not read it back.",
+                "Xero created branch session `{child_agent_session_id}` in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -378,7 +378,7 @@ pub fn create_agent_session_branch(
         CommandError::system_fault(
             "agent_session_lineage_missing_after_persist",
             format!(
-                "Cadence created branch lineage `{lineage_id}` in {} but could not read it back.",
+                "Xero created branch lineage `{lineage_id}` in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -430,7 +430,7 @@ pub(crate) fn read_agent_session_lineage_for_child(
             CommandError::system_fault(
                 "agent_session_lineage_query_failed",
                 format!(
-                    "Cadence could not read agent-session lineage from {}: {error}",
+                    "Xero could not read agent-session lineage from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -484,7 +484,7 @@ fn resolve_branch_boundary(
                     CommandError::user_fixable(
                         "agent_rewind_boundary_not_found",
                         format!(
-                            "Cadence could not find message boundary `{message_id}` in owned-agent run `{}`.",
+                            "Xero could not find message boundary `{message_id}` in owned-agent run `{}`.",
                             snapshot.run.run_id
                         ),
                     )
@@ -492,7 +492,7 @@ fn resolve_branch_boundary(
             if message.role == AgentMessageRole::System {
                 return Err(CommandError::user_fixable(
                     "agent_rewind_boundary_invalid",
-                    "Cadence cannot rewind to a system-prompt boundary. Choose a user, assistant, or tool message instead.",
+                    "Xero cannot rewind to a system-prompt boundary. Choose a user, assistant, or tool message instead.",
                 ));
             }
             Ok(ResolvedBranchBoundary {
@@ -515,7 +515,7 @@ fn resolve_branch_boundary(
                     CommandError::user_fixable(
                         "agent_rewind_boundary_not_found",
                         format!(
-                            "Cadence could not find checkpoint boundary `{checkpoint_id}` in owned-agent run `{}`.",
+                            "Xero could not find checkpoint boundary `{checkpoint_id}` in owned-agent run `{}`.",
                             snapshot.run.run_id
                         ),
                     )
@@ -578,7 +578,7 @@ fn insert_replay_run(
         .map_err(|error| {
             CommandError::system_fault(
                 "agent_session_branch_run_insert_failed",
-                format!("Cadence could not create the branch replay run: {error}"),
+                format!("Xero could not create the branch replay run: {error}"),
             )
         })
 }
@@ -612,7 +612,7 @@ fn copy_replay_messages(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_message_copy_failed",
-                    format!("Cadence could not copy a branch replay message: {error}"),
+                    format!("Xero could not copy a branch replay message: {error}"),
                 )
             })?;
         copied.push(CopiedMessageRecord {
@@ -654,7 +654,7 @@ fn copy_replay_events(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_event_copy_failed",
-                    format!("Cadence could not copy a branch replay event: {error}"),
+                    format!("Xero could not copy a branch replay event: {error}"),
                 )
             })?;
         copied.push(CopiedEventRecord {
@@ -722,7 +722,7 @@ fn copy_replay_tool_calls(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_tool_copy_failed",
-                    format!("Cadence could not copy a branch replay tool call: {error}"),
+                    format!("Xero could not copy a branch replay tool call: {error}"),
                 )
             })?;
     }
@@ -767,7 +767,7 @@ fn copy_replay_file_changes(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_file_change_copy_failed",
-                    format!("Cadence could not copy branch replay file-change metadata: {error}"),
+                    format!("Xero could not copy branch replay file-change metadata: {error}"),
                 )
             })?;
     }
@@ -808,7 +808,7 @@ fn copy_replay_checkpoints(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_checkpoint_copy_failed",
-                    format!("Cadence could not copy branch replay checkpoint metadata: {error}"),
+                    format!("Xero could not copy branch replay checkpoint metadata: {error}"),
                 )
             })?;
     }
@@ -860,9 +860,7 @@ fn copy_replay_action_requests(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_action_copy_failed",
-                    format!(
-                        "Cadence could not copy branch replay action-request metadata: {error}"
-                    ),
+                    format!("Xero could not copy branch replay action-request metadata: {error}"),
                 )
             })?;
     }
@@ -974,7 +972,7 @@ fn copy_replay_compaction_if_available(
                 serde_json::to_string(&vec![replay_run_id.to_string()]).map_err(|error| {
                     CommandError::system_fault(
                         "agent_session_branch_compaction_serialize_failed",
-                        format!("Cadence could not serialize branch compaction coverage: {error}"),
+                        format!("Xero could not serialize branch compaction coverage: {error}"),
                     )
                 })?,
                 covered_message_start_id,
@@ -994,7 +992,7 @@ fn copy_replay_compaction_if_available(
         .map_err(|error| {
             CommandError::system_fault(
                 "agent_session_branch_compaction_copy_failed",
-                format!("Cadence could not copy active compaction summary into branch replay: {error}"),
+                format!("Xero could not copy active compaction summary into branch replay: {error}"),
             )
         })?;
     Ok(Some(compaction.compaction_id.clone()))
@@ -1084,7 +1082,7 @@ fn copied_tool_result_ids(
             CommandError::system_fault(
                 "agent_session_branch_tool_result_decode_failed",
                 format!(
-                    "Cadence could not decode a copied tool-result message before branching: {error}"
+                    "Xero could not decode a copied tool-result message before branching: {error}"
                 ),
             )
         })?;
@@ -1184,7 +1182,7 @@ fn decode_agent_session_lineage_row(
         .map_err(|error| {
             CommandError::system_fault(
                 "agent_session_lineage_diagnostic_decode_failed",
-                format!("Cadence could not decode branch lineage diagnostics: {error}"),
+                format!("Xero could not decode branch lineage diagnostics: {error}"),
             )
         })?;
     Ok(AgentSessionLineageRecord {
@@ -1249,7 +1247,7 @@ fn diagnostic_json(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_session_branch_diagnostic_serialize_failed",
-                    format!("Cadence could not serialize branch diagnostic metadata: {error}"),
+                    format!("Xero could not serialize branch diagnostic metadata: {error}"),
                 )
             })
         })
@@ -1340,7 +1338,7 @@ fn map_lineage_write_error(
     CommandError::system_fault(
         code,
         format!(
-            "Cadence could not persist agent-session branch state in {}: {error}",
+            "Xero could not persist agent-session branch state in {}: {error}",
             database_path.display()
         ),
     )

@@ -1,6 +1,6 @@
 //! Child-process lifecycle helpers shared between the Android and iOS
 //! pipelines. The main export, [`ChildGuard`], owns a spawned process and
-//! guarantees it is killed when dropped — which is critical given Cadence
+//! guarantees it is killed when dropped — which is critical given Xero
 //! may terminate while an `emulator` or `idb_companion` child is running.
 
 use std::io::{BufRead, BufReader, Read};

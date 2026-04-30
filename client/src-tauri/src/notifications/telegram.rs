@@ -27,7 +27,7 @@ impl ReqwestTelegramTransport {
             .build()
             .map_err(|error| {
                 NotificationAdapterError::transport_failed(format!(
-                    "Cadence could not initialize the Telegram notification client: {error}"
+                    "Xero could not initialize the Telegram notification client: {error}"
                 ))
             })?;
 
@@ -69,11 +69,11 @@ impl TelegramTransport for ReqwestTelegramTransport {
             .map_err(|error| {
                 if error.is_timeout() {
                     NotificationAdapterError::transport_timeout(
-                        "Cadence timed out while sending a Telegram notification dispatch.",
+                        "Xero timed out while sending a Telegram notification dispatch.",
                     )
                 } else {
                     NotificationAdapterError::transport_failed(
-                        "Cadence could not send a Telegram notification dispatch.",
+                        "Xero could not send a Telegram notification dispatch.",
                     )
                 }
             })?;
@@ -84,7 +84,7 @@ impl TelegramTransport for ReqwestTelegramTransport {
         if !status.is_success() {
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let message = format!(
-                "Cadence received HTTP {} while sending a Telegram notification dispatch.",
+                "Xero received HTTP {} while sending a Telegram notification dispatch.",
                 status.as_u16()
             );
 
@@ -101,13 +101,13 @@ impl TelegramTransport for ReqwestTelegramTransport {
 
         let payload: TelegramSendMessageResponse = serde_json::from_str(&body).map_err(|_| {
             NotificationAdapterError::payload_invalid(
-                "Cadence could not decode Telegram sendMessage response payload.",
+                "Xero could not decode Telegram sendMessage response payload.",
             )
         })?;
 
         if !payload.ok {
             return Err(NotificationAdapterError::transport_failed(
-                "Cadence received a rejected Telegram sendMessage response.",
+                "Xero received a rejected Telegram sendMessage response.",
             ));
         }
 
@@ -145,11 +145,11 @@ impl TelegramTransport for ReqwestTelegramTransport {
             .map_err(|error| {
                 if error.is_timeout() {
                     NotificationAdapterError::transport_timeout(
-                        "Cadence timed out while polling Telegram notification replies.",
+                        "Xero timed out while polling Telegram notification replies.",
                     )
                 } else {
                     NotificationAdapterError::transport_failed(
-                        "Cadence could not poll Telegram notification replies.",
+                        "Xero could not poll Telegram notification replies.",
                     )
                 }
             })?;
@@ -160,7 +160,7 @@ impl TelegramTransport for ReqwestTelegramTransport {
         if !status.is_success() {
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let message = format!(
-                "Cadence received HTTP {} while polling Telegram notification replies.",
+                "Xero received HTTP {} while polling Telegram notification replies.",
                 status.as_u16()
             );
 
@@ -177,13 +177,13 @@ impl TelegramTransport for ReqwestTelegramTransport {
 
         let payload: TelegramGetUpdatesResponse = serde_json::from_str(&body).map_err(|_| {
             NotificationAdapterError::payload_invalid(
-                "Cadence could not decode Telegram getUpdates response payload.",
+                "Xero could not decode Telegram getUpdates response payload.",
             )
         })?;
 
         if !payload.ok {
             return Err(NotificationAdapterError::transport_failed(
-                "Cadence received a rejected Telegram getUpdates response.",
+                "Xero received a rejected Telegram getUpdates response.",
             ));
         }
 
@@ -248,9 +248,7 @@ fn parse_reply_envelope_for_channel(
         .ok_or_else(|| {
             NotificationAdapterError::new(
                 "notification_reply_request_invalid",
-                format!(
-                    "Cadence rejected a {channel_name} reply because the message body was empty."
-                ),
+                format!("Xero rejected a {channel_name} reply because the message body was empty."),
                 false,
             )
         })?;
@@ -259,7 +257,7 @@ fn parse_reply_envelope_for_channel(
         NotificationAdapterError::new(
             "notification_reply_request_invalid",
             format!(
-                "Cadence rejected a {channel_name} reply because it must follow `<decision> <correlation-key> <answer>` grammar."
+                "Xero rejected a {channel_name} reply because it must follow `<decision> <correlation-key> <answer>` grammar."
             ),
             false,
         )
@@ -269,7 +267,7 @@ fn parse_reply_envelope_for_channel(
         return Err(NotificationAdapterError::new(
             "notification_reply_decision_unsupported",
             format!(
-                "Cadence rejected a {channel_name} reply because decision `{decision}` is unsupported. Allowed decisions: approve, reject."
+                "Xero rejected a {channel_name} reply because decision `{decision}` is unsupported. Allowed decisions: approve, reject."
             ),
             false,
         ));
@@ -279,7 +277,7 @@ fn parse_reply_envelope_for_channel(
         return Err(NotificationAdapterError::new(
             "notification_reply_correlation_invalid",
             format!(
-                "Cadence rejected a {channel_name} reply because correlation key `{correlation_key}` is malformed."
+                "Xero rejected a {channel_name} reply because correlation key `{correlation_key}` is malformed."
             ),
             false,
         ));
@@ -289,7 +287,7 @@ fn parse_reply_envelope_for_channel(
         return Err(NotificationAdapterError::new(
             "notification_reply_request_invalid",
             format!(
-                "Cadence rejected a {channel_name} reply because required-input answers cannot be empty."
+                "Xero rejected a {channel_name} reply because required-input answers cannot be empty."
             ),
             false,
         ));
@@ -333,13 +331,13 @@ fn is_valid_correlation_key(value: &str) -> bool {
 fn parse_cursor_offset(value: &str) -> Result<i64, NotificationAdapterError> {
     let parsed = value.trim().parse::<i64>().map_err(|_| {
         NotificationAdapterError::payload_invalid(
-            "Cadence requires numeric Telegram inbound cursor values.",
+            "Xero requires numeric Telegram inbound cursor values.",
         )
     })?;
 
     if parsed < 0 {
         return Err(NotificationAdapterError::payload_invalid(
-            "Cadence requires Telegram inbound cursor values greater than or equal to zero.",
+            "Xero requires Telegram inbound cursor values greater than or equal to zero.",
         ));
     }
 

@@ -324,7 +324,7 @@ fn validate_non_empty_text(value: &str, field: &'static str) -> Result<(), Comma
 fn missing_agent_memory_error(project_id: &str, memory_id: &str) -> CommandError {
     CommandError::user_fixable(
         "agent_memory_not_found",
-        format!("Cadence could not find memory `{memory_id}` for project `{project_id}`."),
+        format!("Xero could not find memory `{memory_id}` for project `{project_id}`."),
     )
 }
 

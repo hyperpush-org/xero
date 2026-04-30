@@ -8,9 +8,9 @@ use crate::{
     commands::{CommandError, CommandResult},
     db::database_path_for_repo,
     runtime::{
-        plugin_command_stable_id, CadenceDiscoveredPlugin, CadencePluginCommandAvailability,
-        CadencePluginCommandContribution, CadencePluginManifest, CadenceSkillSourceLocator,
-        CadenceSkillSourceState, CadenceSkillTrustState,
+        plugin_command_stable_id, XeroDiscoveredPlugin, XeroPluginCommandAvailability,
+        XeroPluginCommandContribution, XeroPluginManifest, XeroSkillSourceLocator,
+        XeroSkillSourceState, XeroSkillTrustState,
     },
 };
 
@@ -27,9 +27,9 @@ pub struct InstalledPluginRecord {
     pub name: String,
     pub version: String,
     pub description: String,
-    pub state: CadenceSkillSourceState,
-    pub trust: CadenceSkillTrustState,
-    pub manifest: CadencePluginManifest,
+    pub state: XeroSkillSourceState,
+    pub trust: XeroSkillTrustState,
+    pub manifest: XeroPluginManifest,
     pub installed_at: String,
     pub updated_at: String,
     pub last_reloaded_at: Option<String>,
@@ -53,13 +53,13 @@ pub struct PluginCommandRegistryRecord {
     pub label: String,
     pub description: String,
     pub entry: String,
-    pub availability: CadencePluginCommandAvailability,
-    pub risk_level: crate::runtime::CadencePluginCommandRiskLevel,
-    pub approval_policy: crate::runtime::CadencePluginCommandApprovalPolicy,
-    pub state_policy: crate::runtime::CadencePluginCommandStatePolicy,
+    pub availability: XeroPluginCommandAvailability,
+    pub risk_level: crate::runtime::XeroPluginCommandRiskLevel,
+    pub approval_policy: crate::runtime::XeroPluginCommandApprovalPolicy,
+    pub state_policy: crate::runtime::XeroPluginCommandStatePolicy,
     pub redaction_required: bool,
-    pub state: CadenceSkillSourceState,
-    pub trust: CadenceSkillTrustState,
+    pub state: XeroSkillSourceState,
+    pub trust: XeroSkillTrustState,
     pub plugin_name: String,
     pub plugin_version: String,
 }
@@ -85,14 +85,14 @@ struct RawInstalledPluginRow {
 
 impl InstalledPluginRecord {
     pub fn from_discovered(
-        discovered: &CadenceDiscoveredPlugin,
+        discovered: &XeroDiscoveredPlugin,
         timestamp: impl Into<String>,
     ) -> CommandResult<Self> {
         let timestamp = timestamp.into();
-        let state = if discovered.trust == CadenceSkillTrustState::Blocked {
-            CadenceSkillSourceState::Blocked
+        let state = if discovered.trust == XeroSkillTrustState::Blocked {
+            XeroSkillSourceState::Blocked
         } else {
-            CadenceSkillSourceState::Enabled
+            XeroSkillSourceState::Enabled
         };
         Self {
             plugin_id: discovered.plugin_id.clone(),
@@ -117,7 +117,7 @@ impl InstalledPluginRecord {
 
     fn merge_discovered(
         mut self,
-        discovered: &CadenceDiscoveredPlugin,
+        discovered: &XeroDiscoveredPlugin,
         timestamp: String,
     ) -> CommandResult<Self> {
         let previous_state = self.state;
@@ -126,15 +126,13 @@ impl InstalledPluginRecord {
         self = Self::from_discovered(discovered, timestamp.clone())?;
         self.installed_at = installed_at;
         self.state = match previous_state {
-            CadenceSkillSourceState::Disabled
-            | CadenceSkillSourceState::Blocked
-            | CadenceSkillSourceState::Stale => previous_state,
+            XeroSkillSourceState::Disabled
+            | XeroSkillSourceState::Blocked
+            | XeroSkillSourceState::Stale => previous_state,
             _ => self.state,
         };
         self.trust = match previous_trust {
-            CadenceSkillTrustState::UserApproved | CadenceSkillTrustState::Blocked => {
-                previous_trust
-            }
+            XeroSkillTrustState::UserApproved | XeroSkillTrustState::Blocked => previous_trust,
             _ => self.trust,
         };
         self.updated_at = timestamp.clone();
@@ -157,15 +155,15 @@ impl InstalledPluginRecord {
             return Err(CommandError::user_fixable(
                 "installed_plugin_manifest_mismatch",
                 format!(
-                    "Cadence rejected installed plugin `{plugin_id}` because its manifest names `{}`.",
+                    "Xero rejected installed plugin `{plugin_id}` because its manifest names `{}`.",
                     self.manifest.id
                 ),
             ));
         }
-        if self.state == CadenceSkillSourceState::Discoverable {
+        if self.state == XeroSkillSourceState::Discoverable {
             return Err(CommandError::user_fixable(
                 "installed_plugin_state_invalid",
-                "Cadence durable plugin records cannot remain in the discoverable-only state.",
+                "Xero durable plugin records cannot remain in the discoverable-only state.",
             ));
         }
         let installed_at = validate_required_text(self.installed_at, "installedAt")?;
@@ -209,7 +207,7 @@ pub fn upsert_installed_plugin(
     load_installed_plugin_by_id(repo_root, &record.plugin_id)?.ok_or_else(|| {
         CommandError::system_fault(
             "installed_plugin_missing",
-            "Cadence persisted an installed plugin but could not reload it.",
+            "Xero persisted an installed plugin but could not reload it.",
         )
     })
 }
@@ -243,7 +241,7 @@ pub fn list_installed_plugins(repo_root: &Path) -> CommandResult<Vec<InstalledPl
 
 pub fn sync_discovered_plugins(
     repo_root: &Path,
-    discovered: &[CadenceDiscoveredPlugin],
+    discovered: &[XeroDiscoveredPlugin],
     mark_missing_stale: bool,
 ) -> CommandResult<Vec<InstalledPluginRecord>> {
     let timestamp = now_timestamp();
@@ -265,13 +263,13 @@ pub fn sync_discovered_plugins(
             if discovered_ids.contains(record.plugin_id.as_str()) {
                 continue;
             }
-            if record.state != CadenceSkillSourceState::Blocked {
-                record.state = CadenceSkillSourceState::Stale;
+            if record.state != XeroSkillSourceState::Blocked {
+                record.state = XeroSkillSourceState::Stale;
             }
             record.updated_at = timestamp.clone();
             record.last_diagnostic = Some(InstalledPluginDiagnosticRecord {
-                code: "cadence_plugin_source_missing".into(),
-                message: "Cadence marked this plugin stale because it was not found during reload."
+                code: "xero_plugin_source_missing".into(),
+                message: "Xero marked this plugin stale because it was not found during reload."
                     .into(),
                 retryable: false,
                 recorded_at: timestamp.clone(),
@@ -281,9 +279,9 @@ pub fn sync_discovered_plugins(
             mark_plugin_contributed_skills_unavailable(
                 repo_root,
                 &plugin_id,
-                CadenceSkillSourceState::Stale,
-                Some("cadence_plugin_source_missing"),
-                Some("Cadence marked this plugin skill stale because its plugin was not found during reload."),
+                XeroSkillSourceState::Stale,
+                Some("xero_plugin_source_missing"),
+                Some("Xero marked this plugin skill stale because its plugin was not found during reload."),
             )?;
         }
     }
@@ -299,19 +297,19 @@ pub fn set_installed_plugin_enabled(
     let mut record = load_installed_plugin_by_id(repo_root, plugin_id)?.ok_or_else(|| {
         CommandError::user_fixable(
             "installed_plugin_not_found",
-            format!("Cadence could not find installed plugin `{plugin_id}`."),
+            format!("Xero could not find installed plugin `{plugin_id}`."),
         )
     })?;
-    if record.trust == CadenceSkillTrustState::Blocked && enabled {
+    if record.trust == XeroSkillTrustState::Blocked && enabled {
         return Err(CommandError::user_fixable(
             "installed_plugin_blocked",
-            format!("Cadence cannot enable blocked plugin `{plugin_id}`."),
+            format!("Xero cannot enable blocked plugin `{plugin_id}`."),
         ));
     }
     record.state = if enabled {
-        CadenceSkillSourceState::Enabled
+        XeroSkillSourceState::Enabled
     } else {
-        CadenceSkillSourceState::Disabled
+        XeroSkillSourceState::Disabled
     };
     record.updated_at = now_timestamp();
     record.last_diagnostic = None;
@@ -320,9 +318,9 @@ pub fn set_installed_plugin_enabled(
         repo_root,
         &record.plugin_id,
         if enabled {
-            CadenceSkillSourceState::Enabled
+            XeroSkillSourceState::Enabled
         } else {
-            CadenceSkillSourceState::Disabled
+            XeroSkillSourceState::Disabled
         },
         None,
         None,
@@ -337,15 +335,15 @@ pub fn mark_installed_plugin_removed(
     let mut record = load_installed_plugin_by_id(repo_root, plugin_id)?.ok_or_else(|| {
         CommandError::user_fixable(
             "installed_plugin_not_found",
-            format!("Cadence could not find installed plugin `{plugin_id}`."),
+            format!("Xero could not find installed plugin `{plugin_id}`."),
         )
     })?;
     let timestamp = now_timestamp();
-    record.state = CadenceSkillSourceState::Stale;
+    record.state = XeroSkillSourceState::Stale;
     record.updated_at = timestamp.clone();
     record.last_diagnostic = Some(InstalledPluginDiagnosticRecord {
-        code: "cadence_plugin_removed".into(),
-        message: "Cadence marked this plugin unavailable at the user's request.".into(),
+        code: "xero_plugin_removed".into(),
+        message: "Xero marked this plugin unavailable at the user's request.".into(),
         retryable: false,
         recorded_at: timestamp,
     });
@@ -353,9 +351,9 @@ pub fn mark_installed_plugin_removed(
     mark_plugin_contributed_skills_unavailable(
         repo_root,
         &record.plugin_id,
-        CadenceSkillSourceState::Stale,
-        Some("cadence_plugin_removed"),
-        Some("Cadence marked this plugin skill unavailable because the plugin was removed."),
+        XeroSkillSourceState::Stale,
+        Some("xero_plugin_removed"),
+        Some("Xero marked this plugin skill unavailable because the plugin was removed."),
     )?;
     Ok(record)
 }
@@ -367,8 +365,8 @@ pub fn plugin_command_descriptors(
     let mut commands = Vec::new();
     for record in records {
         if !include_unavailable
-            && (record.state != CadenceSkillSourceState::Enabled
-                || record.trust == CadenceSkillTrustState::Blocked)
+            && (record.state != XeroSkillSourceState::Enabled
+                || record.trust == XeroSkillTrustState::Blocked)
         {
             continue;
         }
@@ -382,7 +380,7 @@ pub fn plugin_command_descriptors(
 
 fn plugin_command_descriptor(
     record: &InstalledPluginRecord,
-    command: &CadencePluginCommandContribution,
+    command: &XeroPluginCommandContribution,
 ) -> CommandResult<PluginCommandRegistryRecord> {
     Ok(PluginCommandRegistryRecord {
         command_id: plugin_command_stable_id(&record.plugin_id, &command.id)?,
@@ -406,7 +404,7 @@ fn plugin_command_descriptor(
 fn mark_plugin_contributed_skills_unavailable(
     repo_root: &Path,
     plugin_id: &str,
-    next_state: CadenceSkillSourceState,
+    next_state: XeroSkillSourceState,
     diagnostic_code: Option<&str>,
     diagnostic_message: Option<&str>,
 ) -> CommandResult<()> {
@@ -414,7 +412,7 @@ fn mark_plugin_contributed_skills_unavailable(
         super::list_installed_skills(repo_root, super::InstalledSkillScopeFilter::All)?;
     let timestamp = now_timestamp();
     for mut record in records.drain(..) {
-        let CadenceSkillSourceLocator::Plugin {
+        let XeroSkillSourceLocator::Plugin {
             plugin_id: source_plugin_id,
             ..
         } = &record.source.locator
@@ -424,7 +422,7 @@ fn mark_plugin_contributed_skills_unavailable(
         if source_plugin_id != plugin_id {
             continue;
         }
-        if record.source.state == CadenceSkillSourceState::Blocked {
+        if record.source.state == XeroSkillSourceState::Blocked {
             continue;
         }
         record.source.state = next_state;
@@ -451,7 +449,7 @@ fn upsert_installed_plugin_with_connection(
         CommandError::system_fault(
             "installed_plugin_encode_failed",
             format!(
-                "Cadence could not encode installed plugin manifest `{}`: {error}",
+                "Xero could not encode installed plugin manifest `{}`: {error}",
                 record.plugin_id
             ),
         )
@@ -465,7 +463,7 @@ fn upsert_installed_plugin_with_connection(
             CommandError::system_fault(
                 "installed_plugin_encode_failed",
                 format!(
-                    "Cadence could not encode installed plugin diagnostic `{}`: {error}",
+                    "Xero could not encode installed plugin diagnostic `{}`: {error}",
                     record.plugin_id
                 ),
             )
@@ -600,11 +598,11 @@ fn read_raw_installed_plugin_row(row: &Row<'_>) -> rusqlite::Result<RawInstalled
 
 fn decode_installed_plugin_row(raw: RawInstalledPluginRow) -> CommandResult<InstalledPluginRecord> {
     let manifest =
-        serde_json::from_str::<CadencePluginManifest>(&raw.manifest_json).map_err(|error| {
+        serde_json::from_str::<XeroPluginManifest>(&raw.manifest_json).map_err(|error| {
             CommandError::system_fault(
                 "installed_plugin_record_corrupt",
                 format!(
-                    "Cadence could not decode installed plugin manifest `{}`: {error}",
+                    "Xero could not decode installed plugin manifest `{}`: {error}",
                     raw.plugin_id
                 ),
             )
@@ -619,7 +617,7 @@ fn decode_installed_plugin_row(raw: RawInstalledPluginRow) -> CommandResult<Inst
             CommandError::system_fault(
                 "installed_plugin_record_corrupt",
                 format!(
-                    "Cadence could not decode installed plugin diagnostic `{}`: {error}",
+                    "Xero could not decode installed plugin diagnostic `{}`: {error}",
                     raw.plugin_id
                 ),
             )
@@ -669,34 +667,34 @@ fn validate_hash(value: String, field: &'static str) -> CommandResult<String> {
     if value.len() != 64 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
         return Err(CommandError::user_fixable(
             "installed_plugin_hash_invalid",
-            format!("Cadence requires `{field}` to be a 64-character hex digest."),
+            format!("Xero requires `{field}` to be a 64-character hex digest."),
         ));
     }
     Ok(value.to_ascii_lowercase())
 }
 
-fn skill_state_sql_value(state: CadenceSkillSourceState) -> CommandResult<String> {
+fn skill_state_sql_value(state: XeroSkillSourceState) -> CommandResult<String> {
     serde_json_string_value(state, "plugin state")
 }
 
-fn trust_state_sql_value(trust: CadenceSkillTrustState) -> CommandResult<String> {
+fn trust_state_sql_value(trust: XeroSkillTrustState) -> CommandResult<String> {
     serde_json_string_value(trust, "plugin trust state")
 }
 
-fn skill_state_from_sql_value(value: &str) -> CommandResult<CadenceSkillSourceState> {
-    serde_json::from_str::<CadenceSkillSourceState>(&format!("\"{value}\"")).map_err(|error| {
+fn skill_state_from_sql_value(value: &str) -> CommandResult<XeroSkillSourceState> {
+    serde_json::from_str::<XeroSkillSourceState>(&format!("\"{value}\"")).map_err(|error| {
         CommandError::system_fault(
             "installed_plugin_record_corrupt",
-            format!("Cadence could not decode plugin state `{value}`: {error}"),
+            format!("Xero could not decode plugin state `{value}`: {error}"),
         )
     })
 }
 
-fn trust_state_from_sql_value(value: &str) -> CommandResult<CadenceSkillTrustState> {
-    serde_json::from_str::<CadenceSkillTrustState>(&format!("\"{value}\"")).map_err(|error| {
+fn trust_state_from_sql_value(value: &str) -> CommandResult<XeroSkillTrustState> {
+    serde_json::from_str::<XeroSkillTrustState>(&format!("\"{value}\"")).map_err(|error| {
         CommandError::system_fault(
             "installed_plugin_record_corrupt",
-            format!("Cadence could not decode plugin trust state `{value}`: {error}"),
+            format!("Xero could not decode plugin trust state `{value}`: {error}"),
         )
     })
 }
@@ -708,7 +706,7 @@ fn serde_json_string_value<T: Serialize>(value: T, label: &'static str) -> Comma
         .ok_or_else(|| {
             CommandError::system_fault(
                 "installed_plugin_encode_failed",
-                format!("Cadence could not encode {label} as a stable string."),
+                format!("Xero could not encode {label} as a stable string."),
             )
         })
 }
@@ -716,13 +714,13 @@ fn serde_json_string_value<T: Serialize>(value: T, label: &'static str) -> Comma
 fn map_installed_plugin_read_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "installed_plugin_read_failed",
-        format!("Cadence could not read installed plugin records: {error}"),
+        format!("Xero could not read installed plugin records: {error}"),
     )
 }
 
 fn map_installed_plugin_write_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "installed_plugin_write_failed",
-        format!("Cadence could not persist installed plugin records: {error}"),
+        format!("Xero could not persist installed plugin records: {error}"),
     )
 }

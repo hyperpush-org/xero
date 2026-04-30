@@ -95,7 +95,7 @@ impl NotificationCredentialReadinessProjector {
 
         let Some(store) = self.store.as_ref() else {
             return projection_from_store_error(NotificationAdapterError::credentials_read_failed(
-                "Cadence could not load app-local credential readiness projection state.",
+                "Xero could not load app-local credential readiness projection state.",
             ));
         };
 
@@ -120,7 +120,7 @@ fn project_route_readiness_from_store(
             false,
             NotificationCredentialReadinessStatus::Missing,
             NotificationAdapterError::credentials_missing(format!(
-                "Cadence has no app-local credentials for notification route `{route_id}` in project `{project_id}`."
+                "Xero has no app-local credentials for notification route `{route_id}` in project `{project_id}`."
             )),
         );
     };
@@ -134,7 +134,7 @@ fn project_route_readiness_from_store(
                 false,
                 NotificationCredentialReadinessStatus::Malformed,
                 NotificationAdapterError::credentials_malformed(format!(
-                    "Cadence found malformed app-local credentials for route `{route_id}` because `route_kind` was not `telegram` or `discord`."
+                    "Xero found malformed app-local credentials for route `{route_id}` because `route_kind` was not `telegram` or `discord`."
                 )),
             )
         }
@@ -147,7 +147,7 @@ fn project_route_readiness_from_store(
             false,
             NotificationCredentialReadinessStatus::Malformed,
             NotificationAdapterError::credentials_malformed(format!(
-                "Cadence found app-local credentials for route `{route_id}` with kind `{}` but expected `{}`.",
+                "Xero found app-local credentials for route `{route_id}` with kind `{}` but expected `{}`.",
                 parsed_entry_kind.as_str(),
                 route_kind.as_str()
             )),
@@ -167,7 +167,7 @@ fn project_route_readiness_from_store(
                     has_webhook_url,
                     NotificationCredentialReadinessStatus::Malformed,
                     NotificationAdapterError::credentials_malformed(format!(
-                        "Cadence found malformed app-local credentials for route `{route_id}` because Telegram routes must not define `webhookUrl`."
+                        "Xero found malformed app-local credentials for route `{route_id}` because Telegram routes must not define `webhookUrl`."
                     )),
                 );
             }
@@ -186,7 +186,7 @@ fn project_route_readiness_from_store(
                 has_webhook_url,
                 NotificationCredentialReadinessStatus::Missing,
                 NotificationAdapterError::credentials_missing(format!(
-                    "Cadence requires both app-local `botToken` and `chatId` credentials for Telegram route `{route_id}` in project `{project_id}`."
+                    "Xero requires both app-local `botToken` and `chatId` credentials for Telegram route `{route_id}` in project `{project_id}`."
                 )),
             )
         }
@@ -198,7 +198,7 @@ fn project_route_readiness_from_store(
                     has_webhook_url,
                     NotificationCredentialReadinessStatus::Malformed,
                     NotificationAdapterError::credentials_malformed(format!(
-                        "Cadence found malformed app-local credentials for route `{route_id}` because Discord routes must not define `chatId`."
+                        "Xero found malformed app-local credentials for route `{route_id}` because Discord routes must not define `chatId`."
                     )),
                 );
             }
@@ -234,7 +234,7 @@ fn project_route_readiness_from_store(
                 has_webhook_url,
                 NotificationCredentialReadinessStatus::Missing,
                 NotificationAdapterError::credentials_missing(format!(
-                    "Cadence requires app-local `webhookUrl` and `botToken` credentials for Discord route `{route_id}` in project `{project_id}` to support autonomous dispatch + reply handling."
+                    "Xero requires app-local `webhookUrl` and `botToken` credentials for Discord route `{route_id}` in project `{project_id}` to support autonomous dispatch + reply handling."
                 )),
             )
         }

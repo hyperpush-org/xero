@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use super::support::{EndpointSpec, ScriptedHealthCheck, ScriptedHealthCheckHandle};
-use cadence_desktop_lib::commands::solana::{ClusterKind, RpcRouter};
+use xero_desktop_lib::commands::solana::{ClusterKind, RpcRouter};
 
 fn router_with_three_mainnet_endpoints() -> (RpcRouter, Arc<ScriptedHealthCheck>) {
     let check = Arc::new(ScriptedHealthCheck::new());

@@ -8,7 +8,9 @@ use std::{
     thread,
 };
 
-use cadence_desktop_lib::{
+use rusqlite::Connection;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto,
     },
@@ -26,13 +28,11 @@ use cadence_desktop_lib::{
         AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse,
         AutonomousSkillToolStatus, AutonomousToolAccessAction, AutonomousToolAccessRequest,
         AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime,
-        AutonomousToolSearchRequest, CadenceSkillSourceKind, CadenceSkillSourceState,
-        CadenceSkillToolDynamicAssetInput, CadenceSkillToolInput, CadenceSkillTrustState,
-        FilesystemAutonomousSkillCacheStore, ToolRegistry, ToolRegistryOptions,
+        AutonomousToolSearchRequest, FilesystemAutonomousSkillCacheStore, ToolRegistry,
+        ToolRegistryOptions, XeroSkillSourceKind, XeroSkillSourceState,
+        XeroSkillToolDynamicAssetInput, XeroSkillToolInput, XeroSkillTrustState,
     },
 };
-use rusqlite::Connection;
-use tempfile::TempDir;
 
 #[derive(Default)]
 struct FixtureSkillSource {
@@ -138,7 +138,7 @@ fn runtime_with_skills(
             "project-1",
             skill_runtime(root, source),
             vec![AutonomousBundledSkillRoot {
-                bundle_id: "cadence".into(),
+                bundle_id: "xero".into(),
                 version: "2026.04.25".into(),
                 root_path: bundled_root.to_path_buf(),
             }],
@@ -161,7 +161,7 @@ fn runtime_with_bundled_version(
             "project-1",
             skill_runtime(root, source),
             vec![AutonomousBundledSkillRoot {
-                bundle_id: "cadence".into(),
+                bundle_id: "xero".into(),
                 version: version.into(),
                 root_path: bundled_root.to_path_buf(),
             }],
@@ -181,12 +181,12 @@ fn write_skill(root: &Path, directory: &str, name: &str, description: &str) {
 }
 
 fn init_project_state(repo_root: &Path) {
-    db::configure_project_database_paths(&repo_root.join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&repo_root.join("app-data").join("xero.db"));
     let database_path = db::database_path_for_repo(repo_root);
     fs::create_dir_all(database_path.parent().expect("project state parent"))
         .expect("create project state dir");
     let mut connection = Connection::open(database_path).expect("open project state db");
-    cadence_desktop_lib::db::migrations::migrations()
+    xero_desktop_lib::db::migrations::migrations()
         .to_latest(&mut connection)
         .expect("migrate project state db");
     connection
@@ -319,7 +319,7 @@ fn spawn_mcp_skill_server() -> String {
                             "description": "Review skill from an MCP resource.",
                             "mimeType": "text/markdown",
                             "metadata": {
-                                "cadenceSkill": true,
+                                "xeroSkill": true,
                                 "userInvocable": true
                             }
                         },
@@ -335,7 +335,7 @@ fn spawn_mcp_skill_server() -> String {
                         {
                             "name": "skill:deploy-helper",
                             "description": "Deployment helper prompt.",
-                            "_meta": { "cadenceSkill": true }
+                            "_meta": { "xeroSkill": true }
                         },
                         {
                             "name": "generic-prompt",
@@ -564,7 +564,7 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
     let runtime = runtime_with_skills(&root, source, &local_root, &bundled_root);
 
     let list = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("skill".into()),
             include_unavailable: false,
             limit: Some(10),
@@ -592,7 +592,7 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
     );
     assert!(candidates
         .iter()
-        .any(|candidate| candidate.source_kind == CadenceSkillSourceKind::Github));
+        .any(|candidate| candidate.source_kind == XeroSkillSourceKind::Github));
 
     let bundled_source_id = candidates
         .iter()
@@ -608,13 +608,11 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
         .clone();
 
     let approval_required = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: local_source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: local_source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke local skill without approval returns a typed boundary");
     match approval_required.output {
         AutonomousToolOutput::Skill(output) => {
@@ -625,13 +623,11 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
     }
 
     let bundled = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: bundled_source_id,
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: bundled_source_id,
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke bundled skill");
     match bundled.output {
         AutonomousToolOutput::Skill(output) => {
@@ -645,24 +641,22 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
     }
 
     let local = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: local_source_id.clone(),
-                approval_grant_id: Some("approval-1".into()),
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: local_source_id.clone(),
+            approval_grant_id: Some("approval-1".into()),
+            include_supporting_assets: true,
+        }))
         .expect("invoke approved local skill");
     match local.output {
         AutonomousToolOutput::Skill(output) => {
             assert_eq!(output.status, AutonomousSkillToolStatus::Succeeded);
             assert_eq!(
                 output.selected.as_ref().map(|candidate| candidate.trust),
-                Some(CadenceSkillTrustState::UserApproved)
+                Some(XeroSkillTrustState::UserApproved)
             );
             assert_eq!(
                 output.selected.as_ref().map(|candidate| candidate.state),
-                Some(CadenceSkillSourceState::Enabled)
+                Some(XeroSkillSourceState::Enabled)
             );
             assert!(output
                 .context
@@ -681,7 +675,7 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
     )
     .expect("disable local skill");
     let hidden = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("local".into()),
             include_unavailable: false,
             limit: Some(10),
@@ -697,7 +691,7 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
         other => panic!("unexpected output: {other:?}"),
     }
     let visible_for_diagnostics = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("local".into()),
             include_unavailable: true,
             limit: Some(10),
@@ -710,27 +704,25 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
                 .iter()
                 .find(|candidate| candidate.skill_id == "local-skill")
                 .expect("disabled local skill appears with diagnostics requested");
-            assert_eq!(local.state, CadenceSkillSourceState::Disabled);
+            assert_eq!(local.state, XeroSkillSourceState::Disabled);
         }
         other => panic!("unexpected output: {other:?}"),
     }
 
-    let github_source = cadence_desktop_lib::runtime::CadenceSkillSourceRecord::github_autonomous(
-        cadence_desktop_lib::runtime::CadenceSkillSourceScope::project("project-1").unwrap(),
+    let github_source = xero_desktop_lib::runtime::XeroSkillSourceRecord::github_autonomous(
+        xero_desktop_lib::runtime::XeroSkillSourceScope::project("project-1").unwrap(),
         &github_source_metadata("find-skills", tree_hash),
-        CadenceSkillSourceState::Discoverable,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Discoverable,
+        XeroSkillTrustState::Trusted,
     )
     .expect("github source")
     .source_id;
     let github = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: github_source,
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: github_source,
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke github skill from discovery cache");
     match github.output {
         AutonomousToolOutput::Skill(output) => {
@@ -754,7 +746,7 @@ fn skill_tool_redacts_candidate_metadata_and_source_diagnostics_before_model_pro
         &local_root,
         "leaky-skill",
         "leaky-skill",
-        "Reads /Users/sn0w/.config/cadence with github_pat_1234567890.",
+        "Reads /Users/sn0w/.config/xero with github_pat_1234567890.",
     );
 
     let source = Arc::new(FixtureSkillSource::default());
@@ -767,7 +759,7 @@ fn skill_tool_redacts_candidate_metadata_and_source_diagnostics_before_model_pro
             "project-1",
             skill_runtime(&root, source),
             vec![AutonomousBundledSkillRoot {
-                bundle_id: "cadence".into(),
+                bundle_id: "xero".into(),
                 version: "2026.04.25".into(),
                 root_path: bundled_root,
             }],
@@ -784,7 +776,7 @@ fn skill_tool_redacts_candidate_metadata_and_source_diagnostics_before_model_pro
         );
 
     let list = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("leaky".into()),
             include_unavailable: true,
             limit: Some(20),
@@ -805,7 +797,7 @@ fn skill_tool_redacts_candidate_metadata_and_source_diagnostics_before_model_pro
             let plugin_diagnostic = output
                 .diagnostics
                 .iter()
-                .find(|diagnostic| diagnostic.code == "cadence_plugin_root_unavailable")
+                .find(|diagnostic| diagnostic.code == "xero_plugin_root_unavailable")
                 .expect("plugin root diagnostic");
             assert!(plugin_diagnostic.redacted);
             assert!(!plugin_diagnostic
@@ -837,7 +829,7 @@ fn skill_tool_refreshes_stale_bundled_skill_before_invocation() {
         runtime_with_bundled_version(&root, source.clone(), &bundled_root, "2026.04.25");
 
     let list_v1 = runtime_v1
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("bundled".into()),
             include_unavailable: false,
             limit: Some(10),
@@ -855,13 +847,11 @@ fn skill_tool_refreshes_stale_bundled_skill_before_invocation() {
     };
 
     runtime_v1
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: false,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: false,
+        }))
         .expect("invoke bundled v1");
 
     write_skill(
@@ -872,7 +862,7 @@ fn skill_tool_refreshes_stale_bundled_skill_before_invocation() {
     );
     let runtime_v2 = runtime_with_bundled_version(&root, source, &bundled_root, "2026.04.26");
     let stale = runtime_v2
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("bundled".into()),
             include_unavailable: false,
             limit: Some(10),
@@ -885,20 +875,18 @@ fn skill_tool_refreshes_stale_bundled_skill_before_invocation() {
                 .iter()
                 .find(|candidate| candidate.skill_id == "bundled-skill")
                 .expect("stale bundled candidate");
-            assert_eq!(candidate.state, CadenceSkillSourceState::Stale);
-            assert_eq!(candidate.source_kind, CadenceSkillSourceKind::Bundled);
+            assert_eq!(candidate.state, XeroSkillSourceState::Stale);
+            assert_eq!(candidate.source_kind, XeroSkillSourceKind::Bundled);
         }
         other => panic!("unexpected output: {other:?}"),
     }
 
     let refreshed = runtime_v2
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id,
-                approval_grant_id: None,
-                include_supporting_assets: false,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id,
+            approval_grant_id: None,
+            include_supporting_assets: false,
+        }))
         .expect("refresh stale bundled skill");
     match refreshed.output {
         AutonomousToolOutput::Skill(output) => {
@@ -932,7 +920,7 @@ fn skill_tool_reload_marks_changed_and_deleted_filesystem_sources_stale_idempote
     }));
     let runtime = runtime_with_bundled_version(&root, source.clone(), &bundled_root, "2026.04.25");
     let list = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("bundled".into()),
             include_unavailable: false,
             limit: Some(10),
@@ -943,18 +931,16 @@ fn skill_tool_reload_marks_changed_and_deleted_filesystem_sources_stale_idempote
         other => panic!("unexpected output: {other:?}"),
     };
     runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: false,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: false,
+        }))
         .expect("install bundled skill through invoke");
     let installed_v1 = project_store::load_installed_skill_by_source_id(root.path(), &source_id)
         .expect("load installed bundled skill")
         .expect("installed skill");
-    assert_eq!(installed_v1.source.state, CadenceSkillSourceState::Enabled);
+    assert_eq!(installed_v1.source.state, XeroSkillSourceState::Enabled);
 
     write_skill(
         &bundled_root,
@@ -964,24 +950,22 @@ fn skill_tool_reload_marks_changed_and_deleted_filesystem_sources_stale_idempote
     );
     let runtime_v2 = runtime_with_bundled_version(&root, source, &bundled_root, "2026.04.25");
     let reloaded = runtime_v2
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Reload {
-                source_id: Some(source_id.clone()),
-                source_kind: None,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Reload {
+            source_id: Some(source_id.clone()),
+            source_kind: None,
+        }))
         .expect("reload changed bundled skill");
     match reloaded.output {
         AutonomousToolOutput::Skill(output) => {
             assert_eq!(output.candidates.len(), 1);
-            assert_eq!(output.candidates[0].state, CadenceSkillSourceState::Stale);
+            assert_eq!(output.candidates[0].state, XeroSkillSourceState::Stale);
         }
         other => panic!("unexpected output: {other:?}"),
     }
     let changed = project_store::load_installed_skill_by_source_id(root.path(), &source_id)
         .expect("load changed bundled skill")
         .expect("changed skill");
-    assert_eq!(changed.source.state, CadenceSkillSourceState::Stale);
+    assert_eq!(changed.source.state, XeroSkillSourceState::Stale);
     assert_ne!(changed.version_hash, installed_v1.version_hash);
     assert_eq!(
         changed
@@ -992,12 +976,10 @@ fn skill_tool_reload_marks_changed_and_deleted_filesystem_sources_stale_idempote
     );
 
     let repeated = runtime_v2
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Reload {
-                source_id: Some(source_id.clone()),
-                source_kind: None,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Reload {
+            source_id: Some(source_id.clone()),
+            source_kind: None,
+        }))
         .expect("repeat reload");
     match repeated.output {
         AutonomousToolOutput::Skill(output) => assert_eq!(output.candidates.len(), 1),
@@ -1020,17 +1002,15 @@ fn skill_tool_reload_marks_changed_and_deleted_filesystem_sources_stale_idempote
     fs::remove_file(bundled_root.join("bundled-skill").join("SKILL.md"))
         .expect("remove bundled skill");
     runtime_v2
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Reload {
-                source_id: Some(source_id.clone()),
-                source_kind: None,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Reload {
+            source_id: Some(source_id.clone()),
+            source_kind: None,
+        }))
         .expect("reload deleted bundled skill");
     let deleted = project_store::load_installed_skill_by_source_id(root.path(), &source_id)
         .expect("load deleted bundled skill")
         .expect("deleted skill");
-    assert_eq!(deleted.source.state, CadenceSkillSourceState::Stale);
+    assert_eq!(deleted.source.state, XeroSkillSourceState::Stale);
     assert_eq!(
         deleted
             .last_diagnostic
@@ -1059,12 +1039,12 @@ fn skill_tool_dynamic_candidates_start_disabled_untrusted_and_non_invocable() {
 
     let created = runtime
         .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::CreateDynamic {
+            XeroSkillToolInput::CreateDynamic {
                 skill_id: "dynamic-skill".into(),
                 markdown:
                     "---\nname: dynamic-skill\ndescription: Dynamic skill.\n---\n\n# Dynamic\n"
                         .into(),
-                supporting_assets: vec![CadenceSkillToolDynamicAssetInput {
+                supporting_assets: vec![XeroSkillToolDynamicAssetInput {
                     relative_path: "notes.md".into(),
                     content: "# Notes\n".into(),
                 }],
@@ -1077,8 +1057,8 @@ fn skill_tool_dynamic_candidates_start_disabled_untrusted_and_non_invocable() {
         AutonomousToolOutput::Skill(output) => {
             assert_eq!(output.status, AutonomousSkillToolStatus::Succeeded);
             let selected = output.selected.expect("dynamic candidate");
-            assert_eq!(selected.state, CadenceSkillSourceState::Disabled);
-            assert_eq!(selected.trust, CadenceSkillTrustState::Untrusted);
+            assert_eq!(selected.state, XeroSkillSourceState::Disabled);
+            assert_eq!(selected.trust, XeroSkillTrustState::Untrusted);
             selected.source_id
         }
         other => panic!("unexpected output: {other:?}"),
@@ -1086,11 +1066,11 @@ fn skill_tool_dynamic_candidates_start_disabled_untrusted_and_non_invocable() {
 
     let duplicate = runtime
         .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::CreateDynamic {
+            XeroSkillToolInput::CreateDynamic {
                 skill_id: "dynamic-skill".into(),
                 markdown: "---\nname: dynamic-skill\ndescription: Dynamic skill updated.\n---\n\n# Dynamic\n"
                     .into(),
-                supporting_assets: vec![CadenceSkillToolDynamicAssetInput {
+                supporting_assets: vec![XeroSkillToolDynamicAssetInput {
                     relative_path: "notes.md".into(),
                     content: "# Notes updated\n".into(),
                 }],
@@ -1114,7 +1094,7 @@ fn skill_tool_dynamic_candidates_start_disabled_untrusted_and_non_invocable() {
     }
 
     let hidden = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("dynamic".into()),
             include_unavailable: false,
             limit: Some(10),
@@ -1126,7 +1106,7 @@ fn skill_tool_dynamic_candidates_start_disabled_untrusted_and_non_invocable() {
     }
 
     let diagnostic = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("dynamic".into()),
             include_unavailable: true,
             limit: Some(10),
@@ -1137,20 +1117,18 @@ fn skill_tool_dynamic_candidates_start_disabled_untrusted_and_non_invocable() {
             assert_eq!(output.candidates.len(), 1);
             assert_eq!(
                 output.candidates[0].source_kind,
-                CadenceSkillSourceKind::Dynamic
+                XeroSkillSourceKind::Dynamic
             );
         }
         other => panic!("unexpected output: {other:?}"),
     }
 
     let rejected = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id,
-                approval_grant_id: Some("approval-1".into()),
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id,
+            approval_grant_id: Some("approval-1".into()),
+            include_supporting_assets: true,
+        }))
         .expect("dynamic invoke returns typed failure");
     match rejected.output {
         AutonomousToolOutput::Skill(output) => {
@@ -1207,7 +1185,7 @@ fn skill_tool_projects_mcp_resource_and_prompt_skills_from_connected_servers_onl
     let runtime = runtime_with_mcp_skills(&root, source, &mcp_registry_path);
 
     let list = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: None,
             include_unavailable: true,
             limit: Some(20),
@@ -1222,8 +1200,8 @@ fn skill_tool_projects_mcp_resource_and_prompt_skills_from_connected_servers_onl
                 .collect::<BTreeSet<_>>();
             assert_eq!(ids, BTreeSet::from(["deploy-helper", "review-skill"]));
             assert!(output.candidates.iter().all(|candidate| {
-                candidate.source_kind == CadenceSkillSourceKind::Mcp
-                    && candidate.trust == CadenceSkillTrustState::Trusted
+                candidate.source_kind == XeroSkillSourceKind::Mcp
+                    && candidate.trust == XeroSkillTrustState::Trusted
                     && candidate.description.contains("Skills MCP")
                     && candidate.description.contains("skills-mcp")
             }));
@@ -1267,7 +1245,7 @@ fn skill_tool_invokes_mcp_skills_and_keeps_them_out_of_installed_state() {
     let runtime = runtime_with_mcp_skills(&root, source, &mcp_registry_path);
 
     let list = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: None,
             include_unavailable: false,
             limit: Some(20),
@@ -1291,13 +1269,11 @@ fn skill_tool_invokes_mcp_skills_and_keeps_them_out_of_installed_state() {
         .clone();
 
     let resource = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: review_source_id,
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: review_source_id,
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke mcp resource skill");
     match resource.output {
         AutonomousToolOutput::Skill(output) => {
@@ -1312,13 +1288,11 @@ fn skill_tool_invokes_mcp_skills_and_keeps_them_out_of_installed_state() {
     }
 
     let prompt = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: prompt_source_id,
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: prompt_source_id,
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke mcp prompt skill");
     match prompt.output {
         AutonomousToolOutput::Skill(output) => {
@@ -1366,7 +1340,7 @@ fn skill_tool_reports_mcp_invocation_failures_without_corrupting_installed_state
     );
     let runtime = runtime_with_mcp_skills(&root, source, &mcp_registry_path);
     let list = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: Some("review".into()),
             include_unavailable: false,
             limit: Some(20),
@@ -1394,7 +1368,7 @@ fn skill_tool_reports_mcp_invocation_failures_without_corrupting_installed_state
             },
             env: vec![McpEnvironmentReference {
                 key: "MCP_TOKEN".into(),
-                from_env: "__CADENCE_TEST_MISSING_MCP_SKILL_TOKEN__".into(),
+                from_env: "__XERO_TEST_MISSING_MCP_SKILL_TOKEN__".into(),
             }],
             cwd: None,
             connection: connected_mcp_connection(),
@@ -1402,13 +1376,11 @@ fn skill_tool_reports_mcp_invocation_failures_without_corrupting_installed_state
         }],
     );
     let auth_failure = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: false,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: false,
+        }))
         .expect("mcp auth failure is typed output");
     match auth_failure.output {
         AutonomousToolOutput::Skill(output) => {
@@ -1433,13 +1405,11 @@ fn skill_tool_reports_mcp_invocation_failures_without_corrupting_installed_state
         )],
     );
     let disconnected = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: false,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: false,
+        }))
         .expect("mcp disconnected failure is typed output");
     match disconnected.output {
         AutonomousToolOutput::Skill(output) => {
@@ -1463,13 +1433,11 @@ fn skill_tool_reports_mcp_invocation_failures_without_corrupting_installed_state
         )],
     );
     let transport_failure = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id,
-                approval_grant_id: None,
-                include_supporting_assets: false,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id,
+            approval_grant_id: None,
+            include_supporting_assets: false,
+        }))
         .expect("mcp transport failure is typed output");
     match transport_failure.output {
         AutonomousToolOutput::Skill(output) => {

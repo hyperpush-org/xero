@@ -5,7 +5,10 @@
 
 use std::{fs, path::Path};
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature};
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{get_project_usage_summary::get_project_usage_summary, ProjectIdRequestDto},
     configure_builder_with_state,
     db::{self, project_store},
@@ -13,9 +16,6 @@ use cadence_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
-use git2::{IndexAddOption, Repository, Signature};
-use tauri::Manager;
-use tempfile::TempDir;
 
 const PROJECT_ID: &str = "project-usage-summary";
 const REPO_ID: &str = "repo-usage-summary";
@@ -29,7 +29,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
+        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
 }
 
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> std::path::PathBuf {
@@ -45,7 +45,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> s
     index.write().expect("write index");
     let tree_id = index.write_tree().expect("write tree");
     let tree = git_repository.find_tree(tree_id).expect("tree");
-    let signature = Signature::now("Cadence", "cadence@example.com").expect("sig");
+    let signature = Signature::now("Xero", "xero@example.com").expect("sig");
     git_repository
         .commit(Some("HEAD"), &signature, &signature, "init", &tree, &[])
         .expect("commit");
@@ -101,7 +101,7 @@ fn seed_run(repo_root: &Path, run_id: &str, provider_id: &str, model_id: &str, s
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             prompt: "test".into(),
-            system_prompt: "You are Cadence.".into(),
+            system_prompt: "You are Xero.".into(),
             now: started_at.into(),
         },
     )

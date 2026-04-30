@@ -1,6 +1,6 @@
-# Cadence (Tauri Desktop)
+# Xero (Tauri Desktop)
 
-Cadence is a **Tauri desktop app** for agentic development workflows, with a React/Vite frontend and a Rust backend command surface.
+Xero is a **Tauri desktop app** for agentic development workflows, with a React/Vite frontend and a Rust backend command surface.
 
 It combines:
 
@@ -23,7 +23,7 @@ It combines:
 .
 ├─ client/                 # Main desktop app (React + Vite + Tauri + Rust)
 │  ├─ src/                 # App entry + feature hooks
-│  ├─ components/cadence/  # Main UI shell + sidebars + views
+│  ├─ components/xero/  # Main UI shell + sidebars + views
 │  ├─ src-tauri/           # Rust backend, commands, state, tests
 │  └─ package.json
 ├─ landing/                # Separate Next.js marketing site
@@ -34,7 +34,7 @@ It combines:
 
 ### Key top-level projects
 
-- `client/`: production desktop app (`productName: Cadence`, `identifier: dev.sn0w.cadence`)
+- `client/`: production desktop app (`productName: Xero`, `identifier: dev.sn0w.xero`)
 - `landing/`: separate website, run on port `3001` in root dev workflow
 
 ### Non-runtime/reference content
@@ -96,7 +96,7 @@ Onboarding flow covers:
 #### Android
 
 - Android SDK tooling (`adb`, `emulator`) and at least one AVD
-- If missing, Cadence can provision a managed SDK in app data via backend provisioning flow
+- If missing, Xero can provision a managed SDK in app data via backend provisioning flow
 
 #### iOS (macOS only)
 
@@ -201,7 +201,7 @@ pnpm --dir landing lint
 
 ## Runtime Provider Support (Desktop)
 
-Cadence supports provider profiles for:
+Xero supports provider profiles for:
 
 - `openai_codex` (OAuth flow)
 - `openrouter`
@@ -221,7 +221,7 @@ OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Togethe
 
 ## Session Memory And Context
 
-Cadence supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, reviewed memory, branch, and rewind workflows. See `docs/session-memory-and-context.md` for the user workflow, privacy guarantees, and support triage guidance.
+Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, reviewed memory, branch, and rewind workflows. See `docs/session-memory-and-context.md` for the user workflow, privacy guarantees, and support triage guidance.
 
 ---
 
@@ -254,9 +254,9 @@ If `emulator-live` is not enabled, H.264 decode path reports decoder unavailable
 
 ### `build.rs` behavior (important)
 
-On build, Cadence can:
+On build, Xero can:
 
-1. Build and stage `cadence-cookie-importer` helper binary
+1. Build and stage `xero-cookie-importer` helper binary
 2. Fetch and verify checksum for `scrcpy-server-v2.7.jar`
 3. On macOS, fetch and verify `idb-companion` universal bundle
 4. Compile `proto/idb.proto` when `ios-grpc` is enabled
@@ -264,7 +264,7 @@ On build, Cadence can:
 ### Build-time env var
 
 ```bash
-CADENCE_SKIP_SIDECAR_FETCH=1
+XERO_SKIP_SIDECAR_FETCH=1
 ```
 
 Skips sidecar download steps (useful for CI/offline/pre-cached environments).
@@ -275,8 +275,8 @@ These are optional and only needed for specific runtime integrations:
 
 ```bash
 # Custom web-search provider used by autonomous web tools
-CADENCE_AUTONOMOUS_WEB_SEARCH_URL=https://...
-CADENCE_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN=...
+XERO_AUTONOMOUS_WEB_SEARCH_URL=https://...
+XERO_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN=...
 ```
 
 ---
@@ -285,21 +285,21 @@ CADENCE_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN=...
 
 ### SQLite state
 
-Cadence stores application and project state under the OS app-data directory:
+Xero stores application and project state under the OS app-data directory:
 
-- `cadence.db` for global state
+- `xero.db` for global state
 - `projects/<project-id>/state.db` for per-project state
 
-New imports do not create `<repo>/.cadence/`. That directory is legacy.
+New imports do not create `<repo>/.xero/`. That directory is legacy.
 Project skill artifacts also live in app data, under `projects/<project-id>/skills` and `projects/<project-id>/dynamic-skills`.
 
 ### App-level JSON state
 
-Cadence also stores UI/runtime-adjacent JSON files like:
+Xero also stores UI/runtime-adjacent JSON files like:
 
 - `window-state.json`
 
-Solana stores also use OS data dirs under `cadence/solana/...` for personas/snapshots.
+Solana stores also use OS data dirs under `xero/solana/...` for personas/snapshots.
 
 ---
 
@@ -332,7 +332,7 @@ Cookie import helper supports detection/import from common browsers, including:
 
 ### Sidecar download issues
 
-- Use `CADENCE_SKIP_SIDECAR_FETCH=1` with pre-populated resources
+- Use `XERO_SKIP_SIDECAR_FETCH=1` with pre-populated resources
 - Or allow network access during first build so `build.rs` can fetch pinned artifacts
 
 ### Solana local cluster start failures
@@ -347,9 +347,9 @@ Cookie import helper supports detection/import from common browsers, including:
 If you’re new to this repo, start here:
 
 1. `client/src/App.tsx` (top-level app orchestration)
-2. `client/components/cadence/shell.tsx` (window shell + sidebar buttons)
-3. `client/src/features/cadence/use-cadence-desktop-state.ts` (state orchestration)
-4. `client/src/lib/cadence-desktop.ts` (frontend adapter + invoke/event contract)
+2. `client/components/xero/shell.tsx` (window shell + sidebar buttons)
+3. `client/src/features/xero/use-xero-desktop-state.ts` (state orchestration)
+4. `client/src/lib/xero-desktop.ts` (frontend adapter + invoke/event contract)
 5. `client/src-tauri/src/lib.rs` (backend command registration)
 6. `client/src-tauri/src/commands/` (backend command namespaces)
 

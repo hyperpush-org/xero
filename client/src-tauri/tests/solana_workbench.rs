@@ -1,6 +1,6 @@
 //! Integration tests for the Solana workbench Phase 1 surface.
 //!
-//! These tests drive the public API in `cadence_desktop_lib::commands::solana`
+//! These tests drive the public API in `xero_desktop_lib::commands::solana`
 //! end-to-end — they do not spawn a real `solana-test-validator`. Instead
 //! they swap in an injectable launcher and account fetcher so we can run in
 //! CI without a Solana toolchain.

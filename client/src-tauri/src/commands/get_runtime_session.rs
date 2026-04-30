@@ -119,7 +119,7 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
                 return Err(signed_out_runtime(
                     runtime,
                     "provider_not_found",
-                    &format!("Cadence could not bind the selected runtime because provider `{profile_id}` no longer exists."),
+                    &format!("Xero could not bind the selected runtime because provider `{profile_id}` no longer exists."),
                     false,
                 ));
             }
@@ -130,7 +130,7 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
                 return Err(signed_out_runtime(
                     runtime,
                     "provider_credentials_invalid",
-                    "Cadence could not bind the selected runtime because the selected provider is missing.",
+                    "Xero could not bind the selected runtime because the selected provider is missing.",
                     false,
                 ));
             }
@@ -202,7 +202,7 @@ pub(crate) fn reconcile_prepared_runtime_session<R: Runtime>(
             last_error: Some(RuntimeDiagnosticDto {
                 code: "auth_flow_unavailable".into(),
                 message: format!(
-                    "Cadence no longer has the in-memory {} login flow for this project. Start login again.",
+                    "Xero no longer has the in-memory {} login flow for this project. Start login again.",
                     runtime_provider_label(&runtime)
                 ),
                 retryable: false,

@@ -39,9 +39,9 @@ export interface UseGitHubAuthResult {
   refresh: () => Promise<void>
 }
 
-const GITHUB_SESSION_ID_STORAGE_KEY = "cadence.github.sessionId"
+const GITHUB_SESSION_ID_STORAGE_KEY = "xero.github.sessionId"
 const SERVER_BASE_URL =
-  (import.meta.env.VITE_CADENCE_SERVER_URL as string | undefined)?.replace(/\/+$/, "") ??
+  (import.meta.env.VITE_XERO_SERVER_URL as string | undefined)?.replace(/\/+$/, "") ??
   "http://127.0.0.1:4000"
 
 type FlowSessionResponse =
@@ -232,7 +232,7 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
 
     throw {
       code: "github_server_error",
-      message: `Cadence server returned HTTP ${response.status} for GitHub auth.`,
+      message: `Xero server returned HTTP ${response.status} for GitHub auth.`,
     } satisfies GitHubAuthError
   }
 
@@ -240,7 +240,7 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
 }
 
 function sessionHeaders(sessionId: string): Record<string, string> {
-  return { "x-cadence-github-session-id": sessionId }
+  return { "x-xero-github-session-id": sessionId }
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {

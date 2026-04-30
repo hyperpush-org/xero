@@ -31,11 +31,11 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
     assert_eq!(first.controls.active.model_id, "openai_codex");
     assert_eq!(
         first.controls.active.thinking_effort,
-        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium)
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium)
     );
     assert_eq!(
         first.controls.active.approval_mode,
-        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest
     );
     assert!(first.controls.pending.is_none());
 
@@ -175,8 +175,8 @@ pub(crate) fn runtime_run_persists_active_and_pending_control_snapshots_with_que
     let run_id = "run-controls";
     let control_state = project_store::build_runtime_run_control_state(
         "openai_codex",
-        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::High),
-        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit,
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::High),
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit,
         "2099-04-15T19:00:00Z",
         Some("Summarize the active worktree and propose the next action."),
     )
@@ -201,11 +201,11 @@ pub(crate) fn runtime_run_persists_active_and_pending_control_snapshots_with_que
     assert_eq!(pending.model_id, "openai_codex");
     assert_eq!(
         pending.thinking_effort,
-        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::High)
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::High)
     );
     assert_eq!(
         pending.approval_mode,
-        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit
     );
     assert_eq!(pending.revision, 2);
     assert_eq!(
@@ -236,7 +236,7 @@ pub(crate) fn runtime_run_persistence_isolates_runs_by_agent_session() {
         &project_store::AgentSessionCreateRecord {
             project_id: project_id.into(),
             title: "Parallel".into(),
-            summary: "Independent supervised run".into(),
+            summary: "Independent owned-agent run".into(),
             selected: false,
         },
     )
@@ -587,4 +587,92 @@ pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
     assert_eq!(recovered.checkpoints.len(), 1);
     assert_eq!(recovered.checkpoints[0].summary, "First checkpoint.");
     assert_eq!(recovered.controls.active.model_id, "openai_codex");
+}
+
+pub(crate) fn runtime_run_rotation_clears_prior_autonomous_projection() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let project_id = "project-1";
+    let repo_root = seed_project(&root, project_id, "repo-1", "repo");
+    let first_run_id = "run-1";
+
+    project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, first_run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                first_run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "First run launched.",
+                "2099-04-15T19:00:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+        },
+    )
+    .expect("persist first runtime run");
+
+    let connection = open_state_connection(&repo_root);
+    connection
+        .execute(
+            r#"
+            INSERT INTO autonomous_runs (
+                project_id,
+                agent_session_id,
+                run_id,
+                runtime_kind,
+                provider_id,
+                supervisor_kind,
+                status,
+                duplicate_start_detected,
+                started_at,
+                last_heartbeat_at,
+                stopped_at,
+                last_error_code,
+                last_error_message,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, 'openai_codex', 'openai_codex', 'owned_agent', 'failed', 0, ?4, ?5, ?6, 'openai_codex_auth_failed', 'Provider returned HTTP 401.', ?6)
+            "#,
+            params![
+                project_id,
+                project_store::DEFAULT_AGENT_SESSION_ID,
+                first_run_id,
+                "2099-04-15T19:00:00Z",
+                "2099-04-15T19:00:20Z",
+                "2099-04-15T19:00:30Z",
+            ],
+        )
+        .expect("seed prior autonomous projection");
+    drop(connection);
+
+    let second_run_id = "run-2";
+    let rotated = project_store::upsert_runtime_run(
+        &repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: sample_run(project_id, second_run_id),
+            checkpoint: Some(sample_checkpoint(
+                project_id,
+                second_run_id,
+                1,
+                project_store::RuntimeRunCheckpointKind::Bootstrap,
+                "Replacement run launched.",
+                "2099-04-15T19:01:20Z",
+            )),
+            control_state: Some(sample_control_state("2099-04-15T19:01:00Z")),
+        },
+    )
+    .expect("rotate runtime run after prior autonomous projection");
+
+    assert_eq!(rotated.run.run_id, second_run_id);
+
+    let connection = open_state_connection(&repo_root);
+    let autonomous_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM autonomous_runs WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .expect("count autonomous projections");
+    assert_eq!(autonomous_count, 0);
 }

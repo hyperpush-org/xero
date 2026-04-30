@@ -1,6 +1,6 @@
 pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
 ;(function () {
-  if (window.__cadenceBridge__ && window.__cadenceBridge__.__installed) return;
+  if (window.__xeroBridge__ && window.__xeroBridge__.__installed) return;
 
   const invoke = (name, args) => {
     try {
@@ -64,7 +64,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
     },
   };
 
-  Object.defineProperty(window, '__cadenceBridge__', {
+  Object.defineProperty(window, '__xeroBridge__', {
     value: bridge,
     writable: false,
     configurable: false,
@@ -94,13 +94,13 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
 
   const wrapHistory = (name) => {
     const original = history[name];
-    if (typeof original !== 'function' || original.__cadence_wrapped__) return;
+    if (typeof original !== 'function' || original.__xero_wrapped__) return;
     const wrapped = function () {
       const result = original.apply(this, arguments);
       try { emitPage(); } catch (_e) { /* swallow */ }
       return result;
     };
-    wrapped.__cadence_wrapped__ = true;
+    wrapped.__xero_wrapped__ = true;
     history[name] = wrapped;
   };
   wrapHistory('pushState');
@@ -108,7 +108,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
 
   const forwardConsole = (level) => {
     const original = console[level];
-    if (typeof original !== 'function' || original.__cadence_wrapped__) return;
+    if (typeof original !== 'function' || original.__xero_wrapped__) return;
     const wrapped = function () {
       try {
         const args = Array.prototype.slice.call(arguments).map((item) => {
@@ -124,7 +124,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
       }
       return original.apply(this, arguments);
     };
-    wrapped.__cadence_wrapped__ = true;
+    wrapped.__xero_wrapped__ = true;
     console[level] = wrapped;
   };
   ['log', 'info', 'warn', 'error', 'debug'].forEach(forwardConsole);
@@ -148,7 +148,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
     }
   };
 
-  if (typeof window.fetch === 'function' && !window.fetch.__cadence_wrapped__) {
+  if (typeof window.fetch === 'function' && !window.fetch.__xero_wrapped__) {
     const originalFetch = window.fetch;
     const wrappedFetch = async function () {
       const started = Date.now();
@@ -186,17 +186,17 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
         throw error;
       }
     };
-    wrappedFetch.__cadence_wrapped__ = true;
+    wrappedFetch.__xero_wrapped__ = true;
     window.fetch = wrappedFetch;
   }
 
   if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
     const proto = window.XMLHttpRequest.prototype;
-    if (!proto.__cadence_network_wrapped__) {
+    if (!proto.__xero_network_wrapped__) {
       const originalOpen = proto.open;
       const originalSend = proto.send;
       proto.open = function (method, url) {
-        this.__cadenceRequestInfo = {
+        this.__xeroRequestInfo = {
           method: method || 'GET',
           url: sanitizeNetworkUrl(url || ''),
         };
@@ -205,7 +205,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
       proto.send = function () {
         const xhr = this;
         const started = Date.now();
-        const info = xhr.__cadenceRequestInfo || {};
+        const info = xhr.__xeroRequestInfo || {};
         const emitDone = () => {
           emitNetwork({
             type: 'xhr',
@@ -233,7 +233,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
         }
         return originalSend.apply(this, arguments);
       };
-      proto.__cadence_network_wrapped__ = true;
+      proto.__xero_network_wrapped__ = true;
     }
   }
 

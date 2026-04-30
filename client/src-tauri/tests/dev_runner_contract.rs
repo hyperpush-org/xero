@@ -9,7 +9,7 @@ fn macos_dev_runner_launches_signed_app_bundle_for_tcc_privacy_prompts() {
         "Info.plist must keep microphone and speech-recognition privacy strings for native dictation"
     );
     assert!(
-        dev_runner.contains("Cadence Dev.app")
+        dev_runner.contains("Xero Dev.app")
             && dev_runner.contains("contents_dir=\"$app_bundle/Contents\"")
             && dev_runner.contains("macos_dir=\"$contents_dir/MacOS\"")
             && dev_runner.contains("info_plist=\"$contents_dir/Info.plist\"")

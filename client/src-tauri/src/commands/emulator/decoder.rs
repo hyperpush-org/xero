@@ -6,7 +6,7 @@
 //! the JPEG frames the webview consumes via `emulator://frame`.
 //!
 //! The actual decoder implementation lives behind the `emulator-live` Cargo
-//! feature so Cadence's default build is independent of the `openh264-sys2`
+//! feature so Xero's default build is independent of the `openh264-sys2`
 //! C++ toolchain. Without that feature the decoder returns a clear error
 //! that the sidecar pipelines surface as an `emulator:status` error — the
 //! rest of the pipeline (process spawn, ADB push, socket plumbing, control
@@ -16,7 +16,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DecodeError {
-    #[error("decoder unavailable: Cadence was built without the `emulator-live` feature")]
+    #[error("decoder unavailable: Xero was built without the `emulator-live` feature")]
     Unavailable,
     #[error("h264 decode failed: {0}")]
     Decode(String),

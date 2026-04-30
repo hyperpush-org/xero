@@ -1,8 +1,8 @@
-use cadence_desktop_lib::runtime::{
+use xero_desktop_lib::runtime::{
     merge_skill_source_records, validate_skill_source_state_transition,
-    AutonomousSkillSourceMetadata, CadenceSkillSourceKind, CadenceSkillSourceLocator,
-    CadenceSkillSourceRecord, CadenceSkillSourceScope, CadenceSkillSourceState,
-    CadenceSkillTrustState, CADENCE_SKILL_SOURCE_CONTRACT_VERSION,
+    AutonomousSkillSourceMetadata, XeroSkillSourceKind, XeroSkillSourceLocator,
+    XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState, XeroSkillTrustState,
+    XERO_SKILL_SOURCE_CONTRACT_VERSION,
 };
 
 fn github_source(tree_hash: &str) -> AutonomousSkillSourceMetadata {
@@ -17,78 +17,78 @@ fn github_source(tree_hash: &str) -> AutonomousSkillSourceMetadata {
 #[test]
 fn skill_source_contract_names_every_taxonomy_source_and_scope() {
     let sources = [
-        CadenceSkillSourceRecord::new(
-            CadenceSkillSourceScope::global(),
-            CadenceSkillSourceLocator::Bundled {
-                bundle_id: "cadence".into(),
+        XeroSkillSourceRecord::new(
+            XeroSkillSourceScope::global(),
+            XeroSkillSourceLocator::Bundled {
+                bundle_id: "xero".into(),
                 skill_id: "write-docs".into(),
                 version: "2026.04.25".into(),
             },
-            CadenceSkillSourceState::Enabled,
-            CadenceSkillTrustState::Trusted,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Trusted,
         )
         .expect("bundled source"),
-        CadenceSkillSourceRecord::new(
-            CadenceSkillSourceScope::global(),
-            CadenceSkillSourceLocator::Local {
+        XeroSkillSourceRecord::new(
+            XeroSkillSourceScope::global(),
+            XeroSkillSourceLocator::Local {
                 root_id: "personal-skills".into(),
-                root_path: "/Users/sn0w/Library/Application Support/dev.sn0w.cadence/skills".into(),
+                root_path: "/Users/sn0w/Library/Application Support/dev.sn0w.xero/skills".into(),
                 relative_path: "write-docs".into(),
                 skill_id: "write-docs".into(),
             },
-            CadenceSkillSourceState::Discoverable,
-            CadenceSkillTrustState::ApprovalRequired,
+            XeroSkillSourceState::Discoverable,
+            XeroSkillTrustState::ApprovalRequired,
         )
         .expect("local source"),
-        CadenceSkillSourceRecord::new(
-            CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
-            CadenceSkillSourceLocator::Project {
+        XeroSkillSourceRecord::new(
+            XeroSkillSourceScope::project("project-alpha").expect("project scope"),
+            XeroSkillSourceLocator::Project {
                 relative_path: "skills/write-docs".into(),
                 skill_id: "write-docs".into(),
             },
-            CadenceSkillSourceState::Discoverable,
-            CadenceSkillTrustState::ApprovalRequired,
+            XeroSkillSourceState::Discoverable,
+            XeroSkillTrustState::ApprovalRequired,
         )
         .expect("project source"),
-        CadenceSkillSourceRecord::github_autonomous(
-            CadenceSkillSourceScope::global(),
+        XeroSkillSourceRecord::github_autonomous(
+            XeroSkillSourceScope::global(),
             &github_source("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            CadenceSkillSourceState::Installed,
-            CadenceSkillTrustState::Trusted,
+            XeroSkillSourceState::Installed,
+            XeroSkillTrustState::Trusted,
         )
         .expect("GitHub source"),
-        CadenceSkillSourceRecord::new(
-            CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
-            CadenceSkillSourceLocator::Dynamic {
+        XeroSkillSourceRecord::new(
+            XeroSkillSourceScope::project("project-alpha").expect("project scope"),
+            XeroSkillSourceLocator::Dynamic {
                 run_id: "run-1".into(),
                 artifact_id: "artifact-1".into(),
                 skill_id: "captured-debugging".into(),
             },
-            CadenceSkillSourceState::Disabled,
-            CadenceSkillTrustState::Untrusted,
+            XeroSkillSourceState::Disabled,
+            XeroSkillTrustState::Untrusted,
         )
         .expect("dynamic source"),
-        CadenceSkillSourceRecord::new(
-            CadenceSkillSourceScope::global(),
-            CadenceSkillSourceLocator::Mcp {
+        XeroSkillSourceRecord::new(
+            XeroSkillSourceScope::global(),
+            XeroSkillSourceLocator::Mcp {
                 server_id: "docs-server".into(),
                 capability_id: "prompt:write-docs".into(),
                 skill_id: "write-docs".into(),
             },
-            CadenceSkillSourceState::Discoverable,
-            CadenceSkillTrustState::ApprovalRequired,
+            XeroSkillSourceState::Discoverable,
+            XeroSkillTrustState::ApprovalRequired,
         )
         .expect("MCP source"),
-        CadenceSkillSourceRecord::new(
-            CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
-            CadenceSkillSourceLocator::Plugin {
+        XeroSkillSourceRecord::new(
+            XeroSkillSourceScope::project("project-alpha").expect("project scope"),
+            XeroSkillSourceLocator::Plugin {
                 plugin_id: "com.example.skills".into(),
                 contribution_id: "write-docs".into(),
                 skill_path: "skills/write-docs".into(),
                 skill_id: "write-docs".into(),
             },
-            CadenceSkillSourceState::Discoverable,
-            CadenceSkillTrustState::ApprovalRequired,
+            XeroSkillSourceState::Discoverable,
+            XeroSkillTrustState::ApprovalRequired,
         )
         .expect("plugin source"),
     ];
@@ -100,13 +100,13 @@ fn skill_source_contract_names_every_taxonomy_source_and_scope() {
     assert_eq!(
         kinds,
         vec![
-            CadenceSkillSourceKind::Bundled,
-            CadenceSkillSourceKind::Local,
-            CadenceSkillSourceKind::Project,
-            CadenceSkillSourceKind::Github,
-            CadenceSkillSourceKind::Dynamic,
-            CadenceSkillSourceKind::Mcp,
-            CadenceSkillSourceKind::Plugin,
+            XeroSkillSourceKind::Bundled,
+            XeroSkillSourceKind::Local,
+            XeroSkillSourceKind::Project,
+            XeroSkillSourceKind::Github,
+            XeroSkillSourceKind::Dynamic,
+            XeroSkillSourceKind::Mcp,
+            XeroSkillSourceKind::Plugin,
         ]
     );
 
@@ -116,11 +116,11 @@ fn skill_source_contract_names_every_taxonomy_source_and_scope() {
 
 #[test]
 fn skill_source_contract_assigns_canonical_ids_and_round_trips_github_runtime_metadata() {
-    let record = CadenceSkillSourceRecord::github_autonomous(
-        CadenceSkillSourceScope::global(),
+    let record = XeroSkillSourceRecord::github_autonomous(
+        XeroSkillSourceScope::global(),
         &github_source("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-        CadenceSkillSourceState::Installed,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Installed,
+        XeroSkillTrustState::Trusted,
     )
     .expect("GitHub autonomous skill source should normalize");
 
@@ -136,14 +136,14 @@ fn skill_source_contract_assigns_canonical_ids_and_round_trips_github_runtime_me
         github_source("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     );
 
-    let project_record = CadenceSkillSourceRecord::new(
-        CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
-        CadenceSkillSourceLocator::Project {
+    let project_record = XeroSkillSourceRecord::new(
+        XeroSkillSourceScope::project("project-alpha").expect("project scope"),
+        XeroSkillSourceLocator::Project {
             relative_path: "skills/write-docs".into(),
             skill_id: "write-docs".into(),
         },
-        CadenceSkillSourceState::Discoverable,
-        CadenceSkillTrustState::ApprovalRequired,
+        XeroSkillSourceState::Discoverable,
+        XeroSkillTrustState::ApprovalRequired,
     )
     .expect("project skill source should normalize");
 
@@ -153,42 +153,42 @@ fn skill_source_contract_assigns_canonical_ids_and_round_trips_github_runtime_me
     );
     assert_eq!(
         project_record.contract_version,
-        CADENCE_SKILL_SOURCE_CONTRACT_VERSION
+        XERO_SKILL_SOURCE_CONTRACT_VERSION
     );
 }
 
 #[test]
 fn skill_source_contract_requires_kind_specific_scope_and_fields() {
-    let bundled_project_error = CadenceSkillSourceRecord::new(
-        CadenceSkillSourceScope::project("project-alpha").expect("project scope"),
-        CadenceSkillSourceLocator::Bundled {
-            bundle_id: "cadence".into(),
+    let bundled_project_error = XeroSkillSourceRecord::new(
+        XeroSkillSourceScope::project("project-alpha").expect("project scope"),
+        XeroSkillSourceLocator::Bundled {
+            bundle_id: "xero".into(),
             skill_id: "write-docs".into(),
             version: "2026.04.25".into(),
         },
-        CadenceSkillSourceState::Enabled,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Enabled,
+        XeroSkillTrustState::Trusted,
     )
     .expect_err("bundled skills must be global");
     assert_eq!(bundled_project_error.code, "skill_source_scope_invalid");
 
-    let global_project_error = CadenceSkillSourceRecord::new(
-        CadenceSkillSourceScope::global(),
-        CadenceSkillSourceLocator::Project {
+    let global_project_error = XeroSkillSourceRecord::new(
+        XeroSkillSourceScope::global(),
+        XeroSkillSourceLocator::Project {
             relative_path: "skills/write-docs".into(),
             skill_id: "write-docs".into(),
         },
-        CadenceSkillSourceState::Discoverable,
-        CadenceSkillTrustState::ApprovalRequired,
+        XeroSkillSourceState::Discoverable,
+        XeroSkillTrustState::ApprovalRequired,
     )
     .expect_err("project skills must be project-scoped");
     assert_eq!(global_project_error.code, "skill_source_scope_invalid");
 
-    let bad_github_error = CadenceSkillSourceRecord::github_autonomous(
-        CadenceSkillSourceScope::global(),
+    let bad_github_error = XeroSkillSourceRecord::github_autonomous(
+        XeroSkillSourceScope::global(),
         &github_source("not-a-tree-hash"),
-        CadenceSkillSourceState::Installed,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Installed,
+        XeroSkillTrustState::Trusted,
     )
     .expect_err("GitHub sources require tree hashes for runtime compatibility");
     assert_eq!(
@@ -199,18 +199,18 @@ fn skill_source_contract_requires_kind_specific_scope_and_fields() {
 
 #[test]
 fn skill_source_contract_merges_duplicates_by_source_identity() {
-    let discovered = CadenceSkillSourceRecord::github_autonomous(
-        CadenceSkillSourceScope::global(),
+    let discovered = XeroSkillSourceRecord::github_autonomous(
+        XeroSkillSourceScope::global(),
         &github_source("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        CadenceSkillSourceState::Discoverable,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Discoverable,
+        XeroSkillTrustState::Trusted,
     )
     .expect("GitHub source");
-    let installed_new_tree = CadenceSkillSourceRecord::github_autonomous(
-        CadenceSkillSourceScope::global(),
+    let installed_new_tree = XeroSkillSourceRecord::github_autonomous(
+        XeroSkillSourceScope::global(),
         &github_source("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-        CadenceSkillSourceState::Installed,
-        CadenceSkillTrustState::ApprovalRequired,
+        XeroSkillSourceState::Installed,
+        XeroSkillTrustState::ApprovalRequired,
     )
     .expect("GitHub source");
 
@@ -220,8 +220,8 @@ fn skill_source_contract_merges_duplicates_by_source_identity() {
         merge_skill_source_records([discovered, installed_new_tree]).expect("merge sources");
 
     assert_eq!(merged.len(), 1);
-    assert_eq!(merged[0].state, CadenceSkillSourceState::Stale);
-    assert_eq!(merged[0].trust, CadenceSkillTrustState::ApprovalRequired);
+    assert_eq!(merged[0].state, XeroSkillSourceState::Stale);
+    assert_eq!(merged[0].trust, XeroSkillTrustState::ApprovalRequired);
     assert_eq!(
         merged[0]
             .locator
@@ -235,19 +235,19 @@ fn skill_source_contract_merges_duplicates_by_source_identity() {
 #[test]
 fn skill_source_contract_rejects_unsupported_state_transitions() {
     validate_skill_source_state_transition(
-        CadenceSkillSourceState::Installed,
-        CadenceSkillSourceState::Enabled,
+        XeroSkillSourceState::Installed,
+        XeroSkillSourceState::Enabled,
     )
     .expect("installed sources can be enabled");
     validate_skill_source_state_transition(
-        CadenceSkillSourceState::Enabled,
-        CadenceSkillSourceState::Disabled,
+        XeroSkillSourceState::Enabled,
+        XeroSkillSourceState::Disabled,
     )
     .expect("enabled sources can be disabled");
 
     let discoverable_to_enabled = validate_skill_source_state_transition(
-        CadenceSkillSourceState::Discoverable,
-        CadenceSkillSourceState::Enabled,
+        XeroSkillSourceState::Discoverable,
+        XeroSkillSourceState::Enabled,
     )
     .expect_err("discoverable sources must install or be reviewed first");
     assert_eq!(
@@ -256,8 +256,8 @@ fn skill_source_contract_rejects_unsupported_state_transitions() {
     );
 
     let blocked_to_enabled = validate_skill_source_state_transition(
-        CadenceSkillSourceState::Blocked,
-        CadenceSkillSourceState::Enabled,
+        XeroSkillSourceState::Blocked,
+        XeroSkillSourceState::Enabled,
     )
     .expect_err("blocked sources cannot be enabled directly");
     assert_eq!(

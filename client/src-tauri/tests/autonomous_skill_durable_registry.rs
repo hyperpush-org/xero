@@ -4,7 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cadence_desktop_lib::{
+use tempfile::TempDir;
+use xero_desktop_lib::{
     db::{self, database_path_for_repo, project_store},
     git::repository::CanonicalRepository,
     runtime::{
@@ -15,12 +16,11 @@ use cadence_desktop_lib::{
         AutonomousSkillSourceFileRequest, AutonomousSkillSourceFileResponse,
         AutonomousSkillSourceMetadata, AutonomousSkillSourceTreeEntry,
         AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse,
-        CadenceSkillSourceLocator, CadenceSkillSourceRecord, CadenceSkillSourceScope,
-        CadenceSkillSourceState, CadenceSkillTrustState, FilesystemAutonomousSkillCacheStore,
+        FilesystemAutonomousSkillCacheStore, XeroSkillSourceLocator, XeroSkillSourceRecord,
+        XeroSkillSourceScope, XeroSkillSourceState, XeroSkillTrustState,
     },
     state::DesktopState,
 };
-use tempfile::TempDir;
 
 #[derive(Clone, Default)]
 struct FixtureSkillSource {
@@ -93,7 +93,7 @@ impl AutonomousSkillSource for FixtureSkillSource {
 }
 
 fn seed_project(root: &TempDir, project_id: &str) -> PathBuf {
-    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
     let repo_root = root.path().join("repo");
     std::fs::create_dir_all(&repo_root).expect("create repo root");
     let canonical_root = std::fs::canonicalize(&repo_root).expect("canonical repo root");
@@ -178,15 +178,15 @@ fn write_skill(root: &Path, directory: &str, name: &str, description: &str) -> P
 
 fn registry_record(
     source: AutonomousSkillSourceMetadata,
-    state: CadenceSkillSourceState,
+    state: XeroSkillSourceState,
     timestamp: &str,
 ) -> project_store::InstalledSkillRecord {
     project_store::InstalledSkillRecord {
-        source: CadenceSkillSourceRecord::github_autonomous(
-            CadenceSkillSourceScope::global(),
+        source: XeroSkillSourceRecord::github_autonomous(
+            XeroSkillSourceScope::global(),
             &source,
             state,
-            CadenceSkillTrustState::Trusted,
+            XeroSkillTrustState::Trusted,
         )
         .expect("source record"),
         skill_id: "find-skills".into(),
@@ -194,7 +194,7 @@ fn registry_record(
         description: "Find installable skills.".into(),
         user_invocable: Some(false),
         cache_key: Some("find-skills-cache".into()),
-        local_location: Some("/tmp/cadence-cache/find-skills".into()),
+        local_location: Some("/tmp/xero-cache/find-skills".into()),
         version_hash: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
         installed_at: timestamp.into(),
         updated_at: timestamp.into(),
@@ -212,10 +212,10 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
 
     let installed = project_store::upsert_installed_skill(
         &repo_root,
-        registry_record(source.clone(), CadenceSkillSourceState::Enabled, timestamp),
+        registry_record(source.clone(), XeroSkillSourceState::Enabled, timestamp),
     )
     .expect("upsert installed skill");
-    assert_eq!(installed.source.state, CadenceSkillSourceState::Enabled);
+    assert_eq!(installed.source.state, XeroSkillSourceState::Enabled);
 
     let project_skill = write_skill(
         &db::project_app_data_dir_for_repo(&repo_root).join("skills"),
@@ -231,8 +231,8 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
     assert_eq!(discovered.candidates.len(), 1);
     let project_record = project_store::InstalledSkillRecord::from_discovered_skill(
         &discovered.candidates[0],
-        CadenceSkillSourceState::Installed,
-        CadenceSkillTrustState::UserApproved,
+        XeroSkillSourceState::Installed,
+        XeroSkillTrustState::UserApproved,
         "2026-04-25T12:01:00Z",
     )
     .expect("build project installed skill");
@@ -275,7 +275,7 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
         skill_source_metadata("find-skills", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let mut refreshed = registry_record(
         refreshed_source,
-        CadenceSkillSourceState::Enabled,
+        XeroSkillSourceState::Enabled,
         "2026-04-25T12:02:00Z",
     );
     refreshed.version_hash = Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into());
@@ -302,7 +302,7 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
         "2026-04-25T12:03:00Z",
     )
     .expect("disable skill");
-    assert_eq!(disabled.source.state, CadenceSkillSourceState::Disabled);
+    assert_eq!(disabled.source.state, XeroSkillSourceState::Disabled);
     let reenabled = project_store::set_installed_skill_enabled(
         &repo_root,
         &installed.source.source_id,
@@ -310,7 +310,7 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
         "2026-04-25T12:04:00Z",
     )
     .expect("re-enable skill");
-    assert_eq!(reenabled.source.state, CadenceSkillSourceState::Enabled);
+    assert_eq!(reenabled.source.state, XeroSkillSourceState::Enabled);
 
     assert!(
         project_store::remove_installed_skill(&repo_root, &installed.source.source_id)
@@ -327,7 +327,7 @@ fn installed_skill_registry_persists_updates_scopes_and_rejects_corrupt_rows() {
         &repo_root,
         registry_record(
             source,
-            CadenceSkillSourceState::Enabled,
+            XeroSkillSourceState::Enabled,
             "2026-04-25T12:05:00Z",
         ),
     )
@@ -355,13 +355,13 @@ fn installed_skill_registry_refuses_blocked_source_reenable() {
     let timestamp = "2026-04-25T12:00:00Z";
     let mut record = registry_record(
         skill_source_metadata("find-skills", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        CadenceSkillSourceState::Disabled,
+        XeroSkillSourceState::Disabled,
         timestamp,
     );
-    record.source.trust = CadenceSkillTrustState::Blocked;
+    record.source.trust = XeroSkillTrustState::Blocked;
     let persisted =
         project_store::upsert_installed_skill(&repo_root, record).expect("persist blocked skill");
-    assert_eq!(persisted.source.trust, CadenceSkillTrustState::Blocked);
+    assert_eq!(persisted.source.trust, XeroSkillTrustState::Blocked);
 
     let error = project_store::set_installed_skill_enabled(
         &repo_root,
@@ -376,8 +376,8 @@ fn installed_skill_registry_refuses_blocked_source_reenable() {
         project_store::load_installed_skill_by_source_id(&repo_root, &persisted.source.source_id)
             .expect("reload blocked skill")
             .expect("blocked skill");
-    assert_eq!(unchanged.source.state, CadenceSkillSourceState::Disabled);
-    assert_eq!(unchanged.source.trust, CadenceSkillTrustState::Blocked);
+    assert_eq!(unchanged.source.state, XeroSkillSourceState::Disabled);
+    assert_eq!(unchanged.source.trust, XeroSkillTrustState::Blocked);
 }
 
 #[test]
@@ -415,25 +415,21 @@ fn github_autonomous_skill_runtime_registers_cache_hits_refreshes_and_failures()
         skill_source_metadata("find-skills", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     let miss = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: initial_source.clone(),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: initial_source.clone(),
+            timeout_ms: Some(1_000),
+        })
         .expect("cache miss install");
     assert_eq!(miss.cache_status, AutonomousSkillCacheStatus::Miss);
     let hit = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: initial_source.clone(),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: initial_source.clone(),
+            timeout_ms: Some(1_000),
+        })
         .expect("cache hit install");
     assert_eq!(hit.cache_status, AutonomousSkillCacheStatus::Hit);
     let invoked = runtime
-        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+        .invoke(xero_desktop_lib::runtime::AutonomousSkillInvokeRequest {
             source: initial_source,
             timeout_ms: Some(1_000),
         })
@@ -457,15 +453,13 @@ fn github_autonomous_skill_runtime_registers_cache_hits_refreshes_and_failures()
         "# Refreshed Guide\n",
     );
     let refreshed = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: skill_source_metadata(
-                    "find-skills",
-                    "cccccccccccccccccccccccccccccccccccccccc",
-                ),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "cccccccccccccccccccccccccccccccccccccccc",
+            ),
+            timeout_ms: Some(1_000),
+        })
         .expect("cache refresh install");
     assert_eq!(
         refreshed.cache_status,
@@ -478,7 +472,7 @@ fn github_autonomous_skill_runtime_registers_cache_hits_refreshes_and_failures()
     )
     .expect("list registered skills");
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].source.state, CadenceSkillSourceState::Enabled);
+    assert_eq!(records[0].source.state, XeroSkillSourceState::Enabled);
     assert_eq!(
         records[0].version_hash.as_deref(),
         Some("cccccccccccccccccccccccccccccccccccccccc")
@@ -489,15 +483,13 @@ fn github_autonomous_skill_runtime_registers_cache_hits_refreshes_and_failures()
         "simulated timeout".into(),
     )));
     let failed = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: skill_source_metadata(
-                    "find-skills",
-                    "dddddddddddddddddddddddddddddddddddddddd",
-                ),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "dddddddddddddddddddddddddddddddddddddddd",
+            ),
+            timeout_ms: Some(1_000),
+        })
         .expect_err("failed install should surface source error");
     assert_eq!(failed.code, "autonomous_skill_source_timeout");
     let failed_record = project_store::list_installed_skills(
@@ -507,7 +499,7 @@ fn github_autonomous_skill_runtime_registers_cache_hits_refreshes_and_failures()
     .expect("list failed registered skill")
     .pop()
     .expect("failed skill record");
-    assert_eq!(failed_record.source.state, CadenceSkillSourceState::Failed);
+    assert_eq!(failed_record.source.state, XeroSkillSourceState::Failed);
     assert_eq!(
         failed_record
             .last_diagnostic
@@ -566,7 +558,7 @@ fn local_and_project_skill_scanning_returns_candidates_and_typed_diagnostics() {
     assert_eq!(skill_ids, vec!["duplicate-skill", "write-docs"]);
     assert!(discovered.candidates.iter().any(|candidate| matches!(
         candidate.source.locator,
-        CadenceSkillSourceLocator::Local { .. }
+        XeroSkillSourceLocator::Local { .. }
     )));
     let diagnostic_codes = discovered
         .diagnostics
@@ -578,7 +570,7 @@ fn local_and_project_skill_scanning_returns_candidates_and_typed_diagnostics() {
     assert!(diagnostic_codes.contains(&"autonomous_skill_layout_unsupported"));
     assert!(diagnostic_codes.contains(&"autonomous_skill_path_outside_root"));
 
-    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
     let project_root = root.path().join("project");
     std::fs::create_dir_all(&project_root).expect("create project root");
     let project_skill_root = db::project_app_data_dir_for_repo(&project_root).join("skills");
@@ -598,7 +590,7 @@ fn local_and_project_skill_scanning_returns_candidates_and_typed_diagnostics() {
     assert_eq!(project_discovery.candidates[0].skill_id, "project-helper");
     assert!(matches!(
         project_discovery.candidates[0].source.scope,
-        CadenceSkillSourceScope::Project { .. }
+        XeroSkillSourceScope::Project { .. }
     ));
     assert!(project_discovery.candidates[0]
         .source
@@ -624,7 +616,7 @@ fn bundled_skill_discovery_is_deterministic_and_loads_invocation_context_without
         "Alpha bundled skill.",
     );
 
-    let discovered = discover_bundled_skill_directory("cadence", "2026.04.25", &bundled_root)
+    let discovered = discover_bundled_skill_directory("xero", "2026.04.25", &bundled_root)
         .expect("discover bundled skills");
     assert_eq!(discovered.diagnostics, Vec::new());
     let skill_ids = discovered
@@ -636,7 +628,7 @@ fn bundled_skill_discovery_is_deterministic_and_loads_invocation_context_without
     assert!(discovered
         .candidates
         .iter()
-        .all(|candidate| candidate.source.trust == CadenceSkillTrustState::Trusted));
+        .all(|candidate| candidate.source.trust == XeroSkillTrustState::Trusted));
     assert!(discovered
         .candidates
         .iter()

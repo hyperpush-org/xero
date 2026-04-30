@@ -1,77 +1,54 @@
-use std::{path::Path, path::PathBuf, thread, time::Duration};
+use std::{path::Path, path::PathBuf, thread};
 
 use rand::RngCore;
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::{
     auth::{
-        anthropic::{resolve_anthropic_family_launch_env, AnthropicFamilyProfileInput},
-        load_latest_openai_codex_session, load_openai_codex_session_for_profile_link,
-        now_timestamp,
-        openai_compatible::{
-            resolve_openai_compatible_endpoint_for_profile, resolve_openai_compatible_launch_env,
-        },
+        load_latest_openai_codex_session, load_openai_codex_session,
+        load_openai_codex_session_for_profile_link, now_timestamp,
+        openai_compatible::resolve_openai_compatible_endpoint_for_profile,
+        refresh_provider_auth_session, StoredOpenAiCodexSession,
     },
     commands::{
-        get_runtime_session::reconcile_runtime_session_for_profile,
-        get_runtime_settings::{
-            runtime_settings_file_from_request, runtime_settings_snapshot_for_provider_profile,
-        },
-        provider_credentials::load_provider_credentials_view,
-        CommandError, CommandResult, RuntimeAuthPhase, RuntimeRunActiveControlSnapshotDto,
-        RuntimeRunApprovalModeDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
-        RuntimeRunControlInputDto, RuntimeRunControlStateDto, RuntimeRunDiagnosticDto,
-        RuntimeRunDto, RuntimeRunPendingControlSnapshotDto, RuntimeRunStatusDto,
-        RuntimeRunTransportDto, RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto,
-        RUNTIME_RUN_UPDATED_EVENT,
+        get_runtime_settings::runtime_settings_snapshot_for_provider_profile,
+        provider_credentials::load_provider_credentials_view, CommandError, CommandResult,
+        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunCheckpointDto,
+        RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+        RuntimeRunDiagnosticDto, RuntimeRunDto, RuntimeRunPendingControlSnapshotDto,
+        RuntimeRunStatusDto, RuntimeRunTransportDto, RuntimeRunTransportLivenessDto,
+        RuntimeRunUpdatedPayloadDto, RUNTIME_RUN_UPDATED_EVENT,
     },
     db::project_store::{
-        self, build_runtime_run_control_state_with_profile, RuntimeRunCheckpointKind,
-        RuntimeRunCheckpointRecord, RuntimeRunControlStateRecord, RuntimeRunDiagnosticRecord,
-        RuntimeRunRecord, RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness,
+        self, build_runtime_run_control_state_with_profile, RuntimeRunActiveControlSnapshotRecord,
+        RuntimeRunCheckpointKind, RuntimeRunCheckpointRecord, RuntimeRunControlStateRecord,
+        RuntimeRunDiagnosticRecord, RuntimeRunPendingControlSnapshotRecord, RuntimeRunRecord,
+        RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness,
         RuntimeRunTransportRecord, RuntimeRunUpsertRecord,
     },
-    mcp::{materialize_runtime_mcp_projection_for_run, RUNTIME_MCP_PROJECTION_DIRECTORY_NAME},
-    provider_credentials::ProviderCredentialReadinessStatus,
-    provider_models::{
-        load_provider_model_catalog, ProviderModelCatalog, ProviderModelCatalogSource,
-        ProviderModelRecord, ProviderModelThinkingEffort,
-    },
     runtime::{
-        create_owned_agent_run, drive_owned_agent_run, launch_detached_runtime_supervisor,
-        normalize_openai_codex_model_id, probe_runtime_run, resolve_runtime_shell_selection,
+        create_owned_agent_run, drive_owned_agent_run, normalize_openai_codex_model_id,
         AgentProviderConfig, AnthropicProviderConfig, AutonomousToolRuntime, BedrockProviderConfig,
-        OpenAiCompatibleProviderConfig, OpenAiResponsesProviderConfig, OwnedAgentRunRequest,
-        RuntimeSupervisorLaunchContext, RuntimeSupervisorLaunchEnv, RuntimeSupervisorLaunchRequest,
-        RuntimeSupervisorProbeRequest, VertexProviderConfig, ANTHROPIC_PROVIDER_ID,
-        AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
-        OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID,
+        OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
+        OpenAiResponsesProviderConfig, OwnedAgentRunRequest, RuntimeProvider, VertexProviderConfig,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+        OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID,
     },
     state::DesktopState,
 };
 
-use super::{
-    project::resolve_project_root,
-    session::{command_error_from_auth, load_runtime_session_status},
-};
+use super::{project::resolve_project_root, session::command_error_from_auth};
 
-pub(crate) const DEFAULT_RUNTIME_RUN_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-pub(crate) const DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT: Duration = Duration::from_millis(750);
-pub(crate) const DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
-const DEFAULT_OPENAI_RESPONSES_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const OPENAI_CODEX_REFRESH_SKEW_SECONDS: i64 = 60;
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub(crate) struct RuntimeRunLaunchOutcome {
     pub repo_root: PathBuf,
     pub snapshot: RuntimeRunSnapshotRecord,
     pub reconnected: bool,
-}
-
-struct PreparedRuntimeSupervisorLaunch {
-    launch_context: RuntimeSupervisorLaunchContext,
-    launch_env: RuntimeSupervisorLaunchEnv,
 }
 
 struct ActiveProviderProfileSelection {
@@ -89,25 +66,14 @@ pub(crate) fn load_persisted_runtime_run(
 }
 
 pub(crate) fn load_runtime_run_status(
-    state: &DesktopState,
+    _state: &DesktopState,
     repo_root: &Path,
     project_id: &str,
     agent_session_id: &str,
 ) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
-    if let Some(snapshot) = load_persisted_runtime_run(repo_root, project_id, agent_session_id)? {
-        if snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND {
-            return Ok(Some(snapshot));
-        }
-    }
-
-    probe_runtime_run(
-        state,
-        RuntimeSupervisorProbeRequest {
-            project_id: project_id.into(),
-            agent_session_id: agent_session_id.into(),
-            repo_root: repo_root.to_path_buf(),
-            control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-        },
+    Ok(
+        load_persisted_runtime_run(repo_root, project_id, agent_session_id)?
+            .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND),
     )
 }
 
@@ -178,7 +144,7 @@ pub(crate) fn emit_runtime_run_updated<R: Runtime>(
         CommandError::retryable(
             "runtime_run_updated_emit_failed",
             format!(
-                "Cadence updated durable runtime-run metadata but could not emit the runtime-run update event: {error}"
+                "Xero updated durable runtime-run metadata but could not emit the runtime-run update event: {error}"
             ),
         )
     })
@@ -212,7 +178,7 @@ pub(crate) fn emit_runtime_run_updated_if_changed<R: Runtime>(
         CommandError::retryable(
             "runtime_run_updated_emit_failed",
             format!(
-                "Cadence updated durable runtime-run metadata but could not emit the runtime-run update event: {error}"
+                "Xero updated durable runtime-run metadata but could not emit the runtime-run update event: {error}"
             ),
         )
     })
@@ -226,18 +192,7 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
     requested_controls: Option<RuntimeRunControlInputDto>,
     initial_prompt: Option<String>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
-    if state.owned_agent_provider_config_override().is_some() {
-        return launch_owned_runtime_run(
-            app,
-            state,
-            project_id,
-            agent_session_id,
-            requested_controls,
-            initial_prompt,
-        );
-    }
-
-    launch_or_reconnect_detached_runtime_run(
+    launch_owned_runtime_run(
         app,
         state,
         project_id,
@@ -271,28 +226,8 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         });
     }
 
-    if let Some(existing) = before
-        .as_ref()
-        .filter(|snapshot| requires_matching_provider_for_new_launch(snapshot))
-    {
-        if existing.run.supervisor_kind != OWNED_AGENT_SUPERVISOR_KIND {
-            return Err(CommandError::user_fixable(
-                "runtime_supervisor_kind_mismatch",
-                format!(
-                    "Cadence cannot start the owned runtime because project `{project_id}` is still bound to {} runtime run `{}`. Stop that run before switching to the owned agent runtime.",
-                    existing.run.supervisor_kind,
-                    existing.run.run_id
-                ),
-            ));
-        }
-    }
-
-    let active_profile = load_provider_profile_selection(
-        app,
-        state,
-        requested_controls.as_ref(),
-        state.owned_agent_provider_config_override().is_none(),
-    )?;
+    let active_profile =
+        resolve_owned_runtime_profile_selection(app, state, requested_controls.as_ref())?;
     let run_controls = resolve_owned_runtime_run_control_state(
         &active_profile,
         requested_controls.as_ref(),
@@ -365,7 +300,15 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         let agent_session_id_for_task = agent_session_id.to_string();
         let run_id_for_task = run_id.clone();
         let provider_id_for_task = active_profile.provider_id.clone();
-        let run_controls_for_task = run_controls.clone();
+        snapshot = apply_owned_runtime_run_pending_controls(
+            &repo_root,
+            &snapshot,
+            "Owned agent runtime accepted the initial prompt.",
+        )?;
+        let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
+        emit_runtime_run_updated(app, Some(&runtime_run))?;
+
+        let run_controls_for_task = snapshot.controls.clone();
         let runtime_snapshot_for_task = snapshot.clone();
         thread::spawn(move || {
             let token = lease.token();
@@ -420,172 +363,6 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     })
 }
 
-pub(crate) fn launch_or_reconnect_detached_runtime_run<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    project_id: &str,
-    agent_session_id: &str,
-    requested_controls: Option<RuntimeRunControlInputDto>,
-    initial_prompt: Option<String>,
-) -> CommandResult<RuntimeRunLaunchOutcome> {
-    let repo_root = resolve_project_root(app, state, project_id)?;
-    project_store::ensure_agent_session_active(&repo_root, project_id, agent_session_id)?;
-    let before = load_persisted_runtime_run(&repo_root, project_id, agent_session_id)?;
-    let current = if before
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND)
-    {
-        before.clone()
-    } else {
-        probe_runtime_run(
-            state,
-            RuntimeSupervisorProbeRequest {
-                project_id: project_id.into(),
-                agent_session_id: agent_session_id.into(),
-                repo_root: repo_root.clone(),
-                control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-            },
-        )?
-    };
-    emit_runtime_run_updated_if_changed(app, project_id, agent_session_id, &before, &current)?;
-
-    if let Some(existing) = current.as_ref().filter(|snapshot| {
-        snapshot.run.supervisor_kind != OWNED_AGENT_SUPERVISOR_KIND
-            && is_reconnectable_runtime_run(snapshot)
-    }) {
-        reject_runtime_run_provider_profile_switch(existing, requested_controls.as_ref())?;
-        return Ok(RuntimeRunLaunchOutcome {
-            repo_root,
-            snapshot: existing.clone(),
-            reconnected: true,
-        });
-    }
-
-    let active_profile =
-        load_provider_profile_selection(app, state, requested_controls.as_ref(), true)?;
-    if let Some(existing) = current
-        .as_ref()
-        .filter(|snapshot| requires_matching_provider_for_new_launch(snapshot))
-    {
-        if existing.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND {
-            return Err(CommandError::user_fixable(
-                "runtime_supervisor_kind_mismatch",
-                format!(
-                    "Cadence cannot start the detached runtime because project `{project_id}` is still bound to owned runtime run `{}`. Stop that run before switching to the detached terminal adapter.",
-                    existing.run.run_id
-                ),
-            ));
-        }
-        if existing.run.provider_id != active_profile.provider_id {
-            return Err(runtime_supervisor_existing_run_provider_mismatch(
-                &active_profile,
-                existing,
-            ));
-        }
-    }
-
-    let runtime = load_runtime_session_status(state, &repo_root, project_id)?;
-    if runtime.phase == RuntimeAuthPhase::Authenticated
-        && runtime.provider_id != active_profile.provider_id
-    {
-        return Err(runtime_supervisor_session_provider_mismatch(
-            &active_profile,
-            &runtime,
-        ));
-    }
-
-    let runtime = reconcile_runtime_session_for_profile(
-        app,
-        state,
-        &repo_root,
-        runtime,
-        Some(&active_profile.profile_id),
-    )?;
-    ensure_runtime_run_auth_ready(&runtime.phase)?;
-    let session_id = runtime.session_id.clone().ok_or_else(|| {
-        CommandError::retryable(
-            "runtime_run_session_missing",
-            "Cadence cannot start a runtime run until the selected project's authenticated runtime session exposes a stable session id.",
-        )
-    })?;
-
-    let shell = resolve_runtime_shell_selection();
-    let run_controls = resolve_initial_runtime_run_control_state(
-        app,
-        state,
-        &active_profile,
-        requested_controls.as_ref(),
-        initial_prompt.as_deref(),
-    )?;
-    let run_id = generate_runtime_run_id();
-    let prepared_launch = prepare_runtime_supervisor_launch(
-        app,
-        state,
-        &active_profile,
-        &runtime,
-        &session_id,
-        &run_controls,
-        &run_id,
-    )?;
-
-    let launched = launch_detached_runtime_supervisor(
-        state,
-        RuntimeSupervisorLaunchRequest {
-            project_id: project_id.into(),
-            agent_session_id: agent_session_id.into(),
-            repo_root: repo_root.clone(),
-            runtime_kind: runtime.runtime_kind.clone(),
-            run_id,
-            session_id,
-            flow_id: runtime.flow_id.clone(),
-            launch_context: prepared_launch.launch_context,
-            launch_env: prepared_launch.launch_env,
-            program: shell.program,
-            args: shell.args,
-            startup_timeout: DEFAULT_RUNTIME_RUN_STARTUP_TIMEOUT,
-            control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-            supervisor_binary: state.runtime_supervisor_binary_override().cloned(),
-            run_controls,
-        },
-    )?;
-
-    let runtime_run = runtime_run_dto_from_snapshot(&launched);
-    emit_runtime_run_updated(app, Some(&runtime_run))?;
-
-    Ok(RuntimeRunLaunchOutcome {
-        repo_root,
-        snapshot: launched,
-        reconnected: false,
-    })
-}
-
-pub(crate) fn normalize_requested_runtime_run_controls<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    requested_controls: &RuntimeRunControlInputDto,
-) -> CommandResult<RuntimeRunControlInputDto> {
-    let active_profile = load_provider_profile_selection(
-        app,
-        state,
-        Some(requested_controls),
-        state.owned_agent_provider_config_override().is_none(),
-    )?;
-    let control_state = resolve_initial_runtime_run_control_state(
-        app,
-        state,
-        &active_profile,
-        Some(requested_controls),
-        None,
-    )?;
-    Ok(RuntimeRunControlInputDto {
-        provider_profile_id: control_state.active.provider_profile_id,
-        model_id: control_state.active.model_id,
-        thinking_effort: control_state.active.thinking_effort,
-        approval_mode: control_state.active.approval_mode,
-        plan_mode_required: control_state.active.plan_mode_required,
-    })
-}
-
 pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -605,14 +382,14 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             CommandError::user_fixable(
                 "provider_not_found",
                 format!(
-                    "Cadence could not resolve the owned-agent provider because provider `{profile_id}` is missing.",
+                    "Xero could not resolve the owned-agent provider because provider `{profile_id}` is missing.",
                 ),
             )
         })?,
         None => provider_profiles.active_profile().ok_or_else(|| {
             CommandError::user_fixable(
                 "provider_credentials_invalid",
-                "Cadence could not resolve the owned-agent provider because the selected provider is missing.",
+                "Xero could not resolve the owned-agent provider because the selected provider is missing.",
             )
         })?,
     };
@@ -636,19 +413,15 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                     CommandError::user_fixable(
                         "openai_codex_auth_missing",
                         format!(
-                            "Cadence cannot start the owned OpenAI Codex adapter because no global app-local auth session is available for provider `{}`.",
+                            "Xero cannot start the owned OpenAI Codex adapter because no global app-local auth session is available for provider `{}`.",
                             active_profile.provider_id
                         ),
                     )
                 })?;
-            Ok(AgentProviderConfig::OpenAiResponses(
-                OpenAiResponsesProviderConfig {
-                    provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-                    model_id: normalize_openai_codex_model_id(model_id.as_str()),
-                    base_url: DEFAULT_OPENAI_RESPONSES_BASE_URL.into(),
-                    api_key: session.access_token,
-                    timeout_ms: 0,
-                },
+            let session = refresh_openai_codex_session_before_run(app, state, session)?;
+            Ok(openai_codex_provider_config_from_session(
+                model_id.as_str(),
+                session,
             ))
         }
         OPENAI_API_PROVIDER_ID => {
@@ -676,7 +449,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                     return Err(CommandError::user_fixable(
                         "openai_api_key_missing",
                         format!(
-                            "Cadence cannot start the owned OpenAI-compatible adapter because provider `{}` targets hosted endpoint `{}` without an app-local API key.",
+                            "Xero cannot start the owned OpenAI-compatible adapter because provider `{}` targets hosted endpoint `{}` without an app-local API key.",
                             active_profile.provider_id, endpoint.effective_base_url
                         ),
                     ));
@@ -700,7 +473,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 .ok_or_else(|| {
                     CommandError::user_fixable(
                         "openrouter_api_key_missing",
-                        "Cadence cannot start the owned OpenRouter adapter because no OpenRouter API key is configured.",
+                        "Xero cannot start the owned OpenRouter adapter because no OpenRouter API key is configured.",
                     )
                 })?;
             Ok(AgentProviderConfig::OpenAiCompatible(
@@ -722,7 +495,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                     CommandError::user_fixable(
                         "anthropic_api_key_missing",
                         format!(
-                            "Cadence cannot start the owned Anthropic adapter because provider `{}` has no app-local API key.",
+                            "Xero cannot start the owned Anthropic adapter because provider `{}` has no app-local API key.",
                             active_profile.provider_id
                         ),
                     )
@@ -744,7 +517,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 CommandError::user_fixable(
                     format!("{}_api_key_missing", active_profile.provider_id),
                     format!(
-                        "Cadence cannot start the owned `{}` adapter because provider `{}` has no app-local API key.",
+                        "Xero cannot start the owned `{}` adapter because provider `{}` has no app-local API key.",
                         active_profile.provider_id, active_profile.provider_id
                     ),
                 )
@@ -781,7 +554,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             let region = runtime_settings.region.clone().ok_or_else(|| {
                 CommandError::user_fixable(
                     "bedrock_region_missing",
-                    "Cadence cannot start the owned Bedrock adapter because the selected provider has no AWS region.",
+                    "Xero cannot start the owned Bedrock adapter because the selected provider has no AWS region.",
                 )
             })?;
             Ok(AgentProviderConfig::Bedrock(BedrockProviderConfig {
@@ -794,13 +567,13 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             let region = runtime_settings.region.clone().ok_or_else(|| {
                 CommandError::user_fixable(
                     "vertex_region_missing",
-                    "Cadence cannot start the owned Vertex AI adapter because the selected provider has no Google Cloud region.",
+                    "Xero cannot start the owned Vertex AI adapter because the selected provider has no Google Cloud region.",
                 )
             })?;
             let project_id = runtime_settings.project_id.clone().ok_or_else(|| {
                 CommandError::user_fixable(
                     "vertex_project_id_missing",
-                    "Cadence cannot start the owned Vertex AI adapter because the selected provider has no Google Cloud project id.",
+                    "Xero cannot start the owned Vertex AI adapter because the selected provider has no Google Cloud project id.",
                 )
             })?;
             Ok(AgentProviderConfig::Vertex(VertexProviderConfig {
@@ -812,9 +585,62 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
         }
         other => Err(CommandError::user_fixable(
             "owned_agent_provider_unsupported",
-            format!("Cadence cannot start the owned agent with unsupported provider `{other}`."),
+            format!("Xero cannot start the owned agent with unsupported provider `{other}`."),
         )),
     }
+}
+
+fn refresh_openai_codex_session_before_run<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    session: StoredOpenAiCodexSession,
+) -> CommandResult<StoredOpenAiCodexSession> {
+    if !openai_codex_session_needs_refresh(&session, current_unix_timestamp()) {
+        return Ok(session);
+    }
+
+    let refreshed = refresh_provider_auth_session(
+        app,
+        state,
+        RuntimeProvider::OpenAiCodex,
+        session.account_id.as_str(),
+    )
+    .map_err(command_error_from_auth)?;
+    let auth_store_path = state.global_db_path(app)?;
+    load_openai_codex_session(&auth_store_path, refreshed.account_id.as_str())
+        .map_err(command_error_from_auth)?
+        .ok_or_else(|| {
+            CommandError::retryable(
+                "openai_codex_auth_refresh_missing",
+                "Xero refreshed OpenAI Codex auth, but the refreshed session was not available in the app-local auth store.",
+            )
+        })
+}
+
+fn openai_codex_session_needs_refresh(session: &StoredOpenAiCodexSession, now: i64) -> bool {
+    session.expires_at <= now.saturating_add(OPENAI_CODEX_REFRESH_SKEW_SECONDS)
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn openai_codex_provider_config_from_session(
+    model_id: &str,
+    session: StoredOpenAiCodexSession,
+) -> AgentProviderConfig {
+    AgentProviderConfig::OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig {
+        provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+        model_id: normalize_openai_codex_model_id(model_id),
+        base_url: DEFAULT_OPENAI_CODEX_BASE_URL.into(),
+        access_token: session.access_token,
+        account_id: session.account_id,
+        session_id: Some(session.session_id),
+        timeout_ms: 0,
+    })
 }
 
 fn is_openai_responses_model(model_id: &str) -> bool {
@@ -846,28 +672,6 @@ pub(crate) fn generate_runtime_run_id() -> String {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
-    )
-}
-
-pub(crate) fn is_reconnectable_runtime_run(
-    snapshot: &crate::db::project_store::RuntimeRunSnapshotRecord,
-) -> bool {
-    matches!(
-        snapshot.run.status,
-        crate::db::project_store::RuntimeRunStatus::Starting
-            | crate::db::project_store::RuntimeRunStatus::Running
-    ) && snapshot.run.transport.liveness
-        == crate::db::project_store::RuntimeRunTransportLiveness::Reachable
-}
-
-fn requires_matching_provider_for_new_launch(
-    snapshot: &crate::db::project_store::RuntimeRunSnapshotRecord,
-) -> bool {
-    matches!(
-        snapshot.run.status,
-        crate::db::project_store::RuntimeRunStatus::Starting
-            | crate::db::project_store::RuntimeRunStatus::Running
-            | crate::db::project_store::RuntimeRunStatus::Stale
     )
 }
 
@@ -943,7 +747,7 @@ fn persist_owned_runtime_run(
                 status,
                 transport: RuntimeRunTransportRecord {
                     kind: "internal".into(),
-                    endpoint: "cadence://owned-agent".into(),
+                    endpoint: "xero://owned-agent".into(),
                     liveness: RuntimeRunTransportLiveness::Reachable,
                 },
                 started_at,
@@ -991,35 +795,72 @@ pub(crate) fn update_owned_runtime_run_controls(
     prompt: Option<String>,
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
     let active = &snapshot.controls.active;
+    let base_pending = snapshot.controls.pending.as_ref();
     let model_id = controls
         .as_ref()
         .map(|controls| controls.model_id.clone())
+        .or_else(|| base_pending.map(|pending| pending.model_id.clone()))
         .unwrap_or_else(|| active.model_id.clone());
     let provider_profile_id = controls
         .as_ref()
         .and_then(|controls| controls.provider_profile_id.as_deref())
+        .or_else(|| base_pending.and_then(|pending| pending.provider_profile_id.as_deref()))
         .or(active.provider_profile_id.as_deref());
     let thinking_effort = controls
         .as_ref()
         .and_then(|controls| controls.thinking_effort.clone())
+        .or_else(|| base_pending.and_then(|pending| pending.thinking_effort.clone()))
         .or_else(|| active.thinking_effort.clone());
     let approval_mode = controls
         .as_ref()
         .map(|controls| controls.approval_mode.clone())
+        .or_else(|| base_pending.map(|pending| pending.approval_mode.clone()))
         .unwrap_or_else(|| active.approval_mode.clone());
     let plan_mode_required = controls
         .as_ref()
         .map(|controls| controls.plan_mode_required)
+        .or_else(|| base_pending.map(|pending| pending.plan_mode_required))
         .unwrap_or(active.plan_mode_required);
-    let run_controls = build_runtime_run_control_state_with_profile(
-        provider_profile_id,
-        &model_id,
-        thinking_effort,
-        approval_mode,
-        plan_mode_required,
-        &now_timestamp(),
-        prompt.as_deref(),
-    )?;
+    let queued_prompt = prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| base_pending.and_then(|pending| pending.queued_prompt.clone()));
+    let now = now_timestamp();
+    let queued_prompt_at = if queued_prompt.is_some() {
+        prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map(|_| now.clone())
+            .or_else(|| base_pending.and_then(|pending| pending.queued_prompt_at.clone()))
+            .or_else(|| Some(now.clone()))
+    } else {
+        None
+    };
+    let next_revision = base_pending
+        .map(|pending| pending.revision)
+        .unwrap_or(active.revision)
+        .max(active.revision)
+        .saturating_add(1);
+    let run_controls = RuntimeRunControlStateRecord {
+        active: active.clone(),
+        pending: Some(RuntimeRunPendingControlSnapshotRecord {
+            provider_profile_id: provider_profile_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            model_id,
+            thinking_effort,
+            approval_mode,
+            plan_mode_required,
+            revision: next_revision,
+            queued_at: now,
+            queued_prompt,
+            queued_prompt_at,
+        }),
+    };
 
     persist_owned_runtime_run(
         repo_root,
@@ -1034,6 +875,98 @@ pub(crate) fn update_owned_runtime_run_controls(
         snapshot.last_checkpoint_sequence.saturating_add(1),
         Some(snapshot),
     )
+}
+
+pub(crate) fn apply_owned_runtime_run_pending_controls(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    let Some(pending) = snapshot.controls.pending.as_ref() else {
+        return Ok(snapshot.clone());
+    };
+
+    let run_controls = RuntimeRunControlStateRecord {
+        active: RuntimeRunActiveControlSnapshotRecord {
+            provider_profile_id: pending.provider_profile_id.clone(),
+            model_id: pending.model_id.clone(),
+            thinking_effort: pending.thinking_effort.clone(),
+            approval_mode: pending.approval_mode.clone(),
+            plan_mode_required: pending.plan_mode_required,
+            revision: pending.revision,
+            applied_at: now_timestamp(),
+        },
+        pending: None,
+    };
+
+    persist_owned_runtime_run(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+        &snapshot.run.run_id,
+        &snapshot.run.provider_id,
+        &run_controls,
+        snapshot.run.status.clone(),
+        snapshot.run.last_error.clone(),
+        checkpoint_summary,
+        snapshot.last_checkpoint_sequence.saturating_add(1),
+        Some(snapshot),
+    )
+}
+
+fn resolve_owned_runtime_profile_selection<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    requested_controls: Option<&RuntimeRunControlInputDto>,
+) -> CommandResult<ActiveProviderProfileSelection> {
+    if let Some(config) = state.owned_agent_provider_config_override() {
+        return Ok(active_profile_selection_from_override(
+            config,
+            requested_controls,
+        ));
+    }
+
+    load_provider_profile_selection(app, state, requested_controls, true)
+}
+
+fn active_profile_selection_from_override(
+    config: AgentProviderConfig,
+    requested_controls: Option<&RuntimeRunControlInputDto>,
+) -> ActiveProviderProfileSelection {
+    let provider_id = match &config {
+        AgentProviderConfig::Fake => OPENAI_CODEX_PROVIDER_ID.to_string(),
+        AgentProviderConfig::OpenAiResponses(config) => config.provider_id.clone(),
+        AgentProviderConfig::OpenAiCodexResponses(config) => config.provider_id.clone(),
+        AgentProviderConfig::OpenAiCompatible(config) => config.provider_id.clone(),
+        AgentProviderConfig::Anthropic(config) => config.provider_id.clone(),
+        AgentProviderConfig::Bedrock(_) => BEDROCK_PROVIDER_ID.to_string(),
+        AgentProviderConfig::Vertex(_) => VERTEX_PROVIDER_ID.to_string(),
+    };
+    let model_id = requested_controls
+        .map(|controls| controls.model_id.trim().to_owned())
+        .filter(|model_id| !model_id.is_empty())
+        .or_else(|| match config {
+            AgentProviderConfig::Fake => Some("test-model".to_string()),
+            AgentProviderConfig::OpenAiResponses(config) => Some(config.model_id),
+            AgentProviderConfig::OpenAiCodexResponses(config) => Some(config.model_id),
+            AgentProviderConfig::OpenAiCompatible(config) => Some(config.model_id),
+            AgentProviderConfig::Anthropic(config) => Some(config.model_id),
+            AgentProviderConfig::Bedrock(config) => Some(config.model_id),
+            AgentProviderConfig::Vertex(config) => Some(config.model_id),
+        })
+        .unwrap_or_else(|| "model-unavailable".to_string());
+    let profile_id = requested_controls
+        .and_then(|controls| controls.provider_profile_id.as_deref())
+        .map(str::trim)
+        .filter(|profile_id| !profile_id.is_empty())
+        .unwrap_or("owned-agent-override")
+        .to_string();
+
+    ActiveProviderProfileSelection {
+        profile_id,
+        provider_id,
+        model_id,
+    }
 }
 
 fn load_provider_profile_selection<R: Runtime>(
@@ -1052,14 +985,14 @@ fn load_provider_profile_selection<R: Runtime>(
             CommandError::user_fixable(
                 "provider_not_found",
                 format!(
-                    "Cadence could not determine the selected provider `{profile_id}` before launching or reconnecting a runtime run.",
+                    "Xero could not determine the selected provider `{profile_id}` before launching or reconnecting a runtime run.",
                 ),
             )
         })?,
         None => provider_profiles.active_profile().ok_or_else(|| {
             CommandError::user_fixable(
                 "provider_credentials_invalid",
-                "Cadence could not determine a provider before launching or reconnecting a runtime run.",
+                "Xero could not determine a provider before launching or reconnecting a runtime run.",
             )
         })?,
     };
@@ -1084,7 +1017,7 @@ fn load_provider_profile_selection<R: Runtime>(
             return Err(CommandError::user_fixable(
                 "provider_not_ready",
                 format!(
-                    "Cadence cannot launch a runtime run with provider `{}` because global OpenAI auth is not ready.",
+                    "Xero cannot launch a runtime run with provider `{}` because global OpenAI auth is not ready.",
                     active_profile.provider_id
                 ),
             ));
@@ -1093,7 +1026,7 @@ fn load_provider_profile_selection<R: Runtime>(
         return Err(CommandError::user_fixable(
             "provider_not_ready",
             format!(
-                "Cadence cannot launch a runtime run with provider `{}` because it is not ready.",
+                "Xero cannot launch a runtime run with provider `{}` because it is not ready.",
                 active_profile.provider_id
             ),
         ));
@@ -1104,39 +1037,6 @@ fn load_provider_profile_selection<R: Runtime>(
         provider_id: active_profile.provider_id.clone(),
         model_id: active_profile.model_id.clone(),
     })
-}
-
-fn runtime_supervisor_existing_run_provider_mismatch(
-    active_profile: &ActiveProviderProfileSelection,
-    snapshot: &crate::db::project_store::RuntimeRunSnapshotRecord,
-) -> CommandError {
-    CommandError::user_fixable(
-        "runtime_supervisor_provider_mismatch",
-        format!(
-            "Cadence cannot launch runtime run `{}` because selected provider `{}` targets `{}` while durable runtime run `{}` is still attributable to `{}`. Reconnect or stop the existing run before switching providers.",
-            active_profile.model_id,
-            active_profile.provider_id,
-            active_profile.provider_id,
-            snapshot.run.run_id,
-            snapshot.run.provider_id,
-        ),
-    )
-}
-
-fn runtime_supervisor_session_provider_mismatch(
-    active_profile: &ActiveProviderProfileSelection,
-    runtime: &crate::commands::RuntimeSessionDto,
-) -> CommandError {
-    CommandError::user_fixable(
-        "runtime_supervisor_provider_mismatch",
-        format!(
-            "Cadence cannot launch runtime run `{}` because selected provider `{}` targets `{}` while the authenticated runtime session is still bound to `{}`. Rebind the runtime session or switch back to the matching provider.",
-            active_profile.model_id,
-            active_profile.provider_id,
-            active_profile.provider_id,
-            runtime.provider_id,
-        ),
-    )
 }
 
 fn reject_runtime_run_provider_profile_switch(
@@ -1160,7 +1060,7 @@ fn reject_runtime_run_provider_profile_switch(
             return Err(CommandError::user_fixable(
                 "runtime_run_provider_switch_blocked",
                 format!(
-                    "Cadence cannot switch active runtime run `{}` from provider `{active}` to `{requested}`. Stop the current run before changing providers.",
+                    "Xero cannot switch active runtime run `{}` from provider `{active}` to `{requested}`. Stop the current run before changing providers.",
                     snapshot.run.run_id
                 ),
             ));
@@ -1168,26 +1068,6 @@ fn reject_runtime_run_provider_profile_switch(
     }
 
     Ok(())
-}
-
-pub(crate) fn ensure_runtime_run_auth_ready(phase: &RuntimeAuthPhase) -> CommandResult<()> {
-    match phase {
-        RuntimeAuthPhase::Authenticated => Ok(()),
-        RuntimeAuthPhase::Starting
-        | RuntimeAuthPhase::AwaitingBrowserCallback
-        | RuntimeAuthPhase::AwaitingManualInput
-        | RuntimeAuthPhase::ExchangingCode
-        | RuntimeAuthPhase::Refreshing => Err(CommandError::retryable(
-            "runtime_run_auth_in_progress",
-            "Cadence cannot start a runtime run until the selected project's authenticated runtime session finishes its auth transition.",
-        )),
-        RuntimeAuthPhase::Idle | RuntimeAuthPhase::Cancelled | RuntimeAuthPhase::Failed => {
-            Err(CommandError::user_fixable(
-                "runtime_run_auth_required",
-                "Cadence cannot start a runtime run until the selected project has an authenticated runtime session.",
-            ))
-        }
-    }
 }
 
 pub(super) fn runtime_run_diagnostic_dto(
@@ -1205,315 +1085,6 @@ pub(super) fn runtime_reason_dto(
     crate::commands::AutonomousLifecycleReasonDto {
         code: reason.code.clone(),
         message: reason.message.clone(),
-    }
-}
-
-fn resolve_initial_runtime_run_control_state<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    active_profile: &ActiveProviderProfileSelection,
-    requested_controls: Option<&RuntimeRunControlInputDto>,
-    initial_prompt: Option<&str>,
-) -> CommandResult<RuntimeRunControlStateRecord> {
-    let catalog = load_provider_model_catalog(app, state, &active_profile.profile_id, false)?;
-    let model_id = resolve_initial_runtime_run_model_id(
-        active_profile.provider_id.as_str(),
-        active_profile.model_id.as_str(),
-        requested_controls,
-    )?;
-    let model = resolve_initial_runtime_run_model(&catalog, &model_id)?;
-    let thinking_effort = resolve_initial_runtime_run_thinking_effort(model, requested_controls)?;
-    let approval_mode = requested_controls
-        .map(|controls| controls.approval_mode.clone())
-        .unwrap_or(RuntimeRunApprovalModeDto::Suggest);
-    let plan_mode_required = requested_controls
-        .map(|controls| controls.plan_mode_required)
-        .unwrap_or(false);
-    let timestamp = crate::auth::now_timestamp();
-
-    build_runtime_run_control_state_with_profile(
-        Some(&active_profile.profile_id),
-        &model_id,
-        thinking_effort,
-        approval_mode,
-        plan_mode_required,
-        &timestamp,
-        initial_prompt,
-    )
-}
-
-fn prepare_runtime_supervisor_launch<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    selected_profile: &ActiveProviderProfileSelection,
-    runtime: &crate::commands::RuntimeSessionDto,
-    session_id: &str,
-    run_controls: &RuntimeRunControlStateRecord,
-    run_id: &str,
-) -> CommandResult<PreparedRuntimeSupervisorLaunch> {
-    let provider_profiles = load_provider_credentials_view(app, state)?;
-    let active_profile = provider_profiles
-        .profile(&selected_profile.profile_id)
-        .ok_or_else(|| {
-            CommandError::user_fixable(
-                "provider_not_found",
-                format!(
-                    "Cadence could not launch a runtime run because provider `{}` is missing.",
-                    selected_profile.profile_id
-                ),
-            )
-        })?;
-
-    if active_profile.provider_id != runtime.provider_id {
-        return Err(CommandError::user_fixable(
-            "runtime_supervisor_provider_mismatch",
-            format!(
-                "Cadence cannot launch runtime run `{}` because the selected provider is `{}` while the authenticated runtime session is bound to `{}`.",
-                run_controls.active.model_id, active_profile.provider_id, runtime.provider_id
-            ),
-        ));
-    }
-
-    let mut launch_env = RuntimeSupervisorLaunchEnv::default();
-    launch_env.insert(
-        crate::runtime::supervisor::CADENCE_GLOBAL_DB_PATH_ENV,
-        state.global_db_path(app)?.to_string_lossy().to_string(),
-    );
-    if matches!(
-        runtime.provider_id.as_str(),
-        ANTHROPIC_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID
-    ) {
-        if runtime.provider_id == ANTHROPIC_PROVIDER_ID {
-            match active_profile.readiness().status {
-                ProviderCredentialReadinessStatus::Ready => {}
-                ProviderCredentialReadinessStatus::Missing => {
-                    return Err(CommandError::user_fixable(
-                        "anthropic_api_key_missing",
-                        format!(
-                            "Cadence cannot launch the detached Anthropic runtime because provider `{}` has no app-local API key configured.",
-                            active_profile.provider_id
-                        ),
-                    ));
-                }
-                ProviderCredentialReadinessStatus::Malformed => {
-                    return Err(CommandError::user_fixable(
-                        "provider_credentials_unavailable",
-                        format!(
-                            "Cadence cannot launch the detached Anthropic runtime because provider `{}` no longer matches the saved app-local secret state.",
-                            active_profile.provider_id
-                        ),
-                    ));
-                }
-            }
-        }
-
-        let runtime_settings =
-            runtime_settings_snapshot_for_provider_profile(&provider_profiles, active_profile)
-                .map_err(|error| CommandError::user_fixable(error.code, error.message))?;
-        let profile_input = AnthropicFamilyProfileInput::from(&runtime_settings);
-        let launch_vars =
-            resolve_anthropic_family_launch_env(&profile_input).map_err(command_error_from_auth)?;
-        for (key, value) in launch_vars {
-            launch_env.insert(key, value);
-        }
-    } else if matches!(
-        runtime.provider_id.as_str(),
-        OPENAI_API_PROVIDER_ID
-            | OLLAMA_PROVIDER_ID
-            | AZURE_OPENAI_PROVIDER_ID
-            | GITHUB_MODELS_PROVIDER_ID
-            | GEMINI_AI_STUDIO_PROVIDER_ID
-    ) {
-        let endpoint = resolve_openai_compatible_endpoint_for_profile(
-            active_profile,
-            &state.openai_compatible_auth_config(),
-        )
-        .map_err(command_error_from_auth)?;
-        let readiness = active_profile.readiness();
-        let api_key = match readiness.status {
-            ProviderCredentialReadinessStatus::Ready => provider_profiles
-                .matched_api_key_credential_for_profile(&active_profile.profile_id)
-                .map(|secret| secret.api_key.as_str()),
-            ProviderCredentialReadinessStatus::Missing => None,
-            ProviderCredentialReadinessStatus::Malformed => {
-                return Err(CommandError::user_fixable(
-                    "provider_credentials_unavailable",
-                    format!(
-                        "Cadence cannot launch the detached {} runtime because provider `{}` no longer matches the saved app-local secret state.",
-                        runtime.provider_id, active_profile.provider_id
-                    ),
-                ));
-            }
-        };
-
-        let env = resolve_openai_compatible_launch_env(api_key, &endpoint)
-            .map_err(command_error_from_auth)?;
-        if let Some(api_key) = env.api_key {
-            launch_env.insert("OPENAI_API_KEY", api_key);
-        }
-        launch_env.insert("OPENAI_BASE_URL", env.base_url);
-        if let Some(api_version) = env.api_version {
-            launch_env.insert("OPENAI_API_VERSION", api_version);
-        }
-    }
-
-    let mcp_registry_path = state.global_db_path(app)?;
-    let mcp_projection_root = state
-        .app_data_dir(app)?
-        .join(RUNTIME_MCP_PROJECTION_DIRECTORY_NAME);
-    let mcp_projection = materialize_runtime_mcp_projection_for_run(
-        &mcp_registry_path,
-        &mcp_projection_root,
-        run_id,
-    )
-    .map_err(|error| {
-        let message = format!(
-            "Cadence rejected detached runtime launch because MCP projection could not be built safely: {} ({})",
-            error.message, error.code
-        );
-        if error.retryable {
-            CommandError::retryable("runtime_mcp_projection_failed", message)
-        } else {
-            CommandError::user_fixable("runtime_mcp_projection_failed", message)
-        }
-    })?;
-
-    launch_env.insert(
-        crate::runtime::supervisor::CADENCE_RUNTIME_MCP_CONFIG_PATH_ENV,
-        mcp_projection.projection_path.to_string_lossy().to_string(),
-    );
-    launch_env.insert(
-        crate::runtime::supervisor::CADENCE_RUNTIME_MCP_CONTRACT_REQUIRED_ENV,
-        "1",
-    );
-
-    Ok(PreparedRuntimeSupervisorLaunch {
-        launch_context: RuntimeSupervisorLaunchContext {
-            provider_id: runtime.provider_id.clone(),
-            session_id: session_id.to_owned(),
-            flow_id: runtime.flow_id.clone(),
-            model_id: run_controls.active.model_id.clone(),
-            thinking_effort: run_controls.active.thinking_effort.clone(),
-        },
-        launch_env,
-    })
-}
-
-fn resolve_initial_runtime_run_model_id(
-    provider_id: &str,
-    configured_model_id: &str,
-    requested_controls: Option<&RuntimeRunControlInputDto>,
-) -> CommandResult<String> {
-    match requested_controls {
-        Some(requested) => runtime_settings_file_from_request(provider_id, &requested.model_id)
-            .map(|settings| settings.model_id),
-        None => Ok(configured_model_id.trim().to_owned()),
-    }
-}
-
-fn resolve_initial_runtime_run_model<'a>(
-    catalog: &'a ProviderModelCatalog,
-    model_id: &str,
-) -> CommandResult<&'a ProviderModelRecord> {
-    if matches!(catalog.source, ProviderModelCatalogSource::Unavailable)
-        || catalog.models.is_empty()
-    {
-        return Err(CommandError::user_fixable(
-            "runtime_run_initial_controls_unavailable",
-            format!(
-                "Cadence could not derive runtime-run controls because the active provider-model catalog for provider `{}` is unavailable.",
-                catalog.provider_id
-            ),
-        ));
-    }
-
-    catalog.models.iter().find(|model| model.model_id == model_id).ok_or_else(|| {
-        CommandError::user_fixable(
-            "runtime_run_initial_controls_invalid",
-            format!(
-                "Cadence could not seed runtime-run controls because model `{model_id}` is not present in the active provider-model catalog for provider `{}`.",
-                catalog.provider_id
-            ),
-        )
-    })
-}
-
-fn resolve_initial_runtime_run_thinking_effort(
-    model: &ProviderModelRecord,
-    requested_controls: Option<&RuntimeRunControlInputDto>,
-) -> CommandResult<Option<crate::commands::ProviderModelThinkingEffortDto>> {
-    let requested_effort = requested_controls.and_then(|controls| controls.thinking_effort.clone());
-    if !model.thinking.supported {
-        if requested_effort.is_some() {
-            return Err(CommandError::user_fixable(
-                "runtime_run_initial_controls_invalid",
-                format!(
-                    "Cadence could not seed runtime-run controls because model `{}` does not support configurable thinking.",
-                    model.model_id
-                ),
-            ));
-        }
-        return Ok(None);
-    }
-
-    if let Some(requested_effort) = requested_effort {
-        let mapped_requested_effort = provider_model_thinking_effort_from_dto(&requested_effort);
-        if model
-            .thinking
-            .effort_options
-            .contains(&mapped_requested_effort)
-        {
-            return Ok(Some(requested_effort));
-        }
-        return Err(CommandError::user_fixable(
-            "runtime_run_initial_controls_invalid",
-            format!(
-                "Cadence could not seed runtime-run controls because thinking effort is unsupported for model `{}`.",
-                model.model_id
-            ),
-        ));
-    }
-
-    Ok(model
-        .thinking
-        .default_effort
-        .or_else(|| model.thinking.effort_options.first().copied())
-        .map(provider_model_thinking_effort_dto))
-}
-
-fn provider_model_thinking_effort_from_dto(
-    effort: &crate::commands::ProviderModelThinkingEffortDto,
-) -> ProviderModelThinkingEffort {
-    match effort {
-        crate::commands::ProviderModelThinkingEffortDto::Minimal => {
-            ProviderModelThinkingEffort::Minimal
-        }
-        crate::commands::ProviderModelThinkingEffortDto::Low => ProviderModelThinkingEffort::Low,
-        crate::commands::ProviderModelThinkingEffortDto::Medium => {
-            ProviderModelThinkingEffort::Medium
-        }
-        crate::commands::ProviderModelThinkingEffortDto::High => ProviderModelThinkingEffort::High,
-        crate::commands::ProviderModelThinkingEffortDto::XHigh => {
-            ProviderModelThinkingEffort::XHigh
-        }
-    }
-}
-
-fn provider_model_thinking_effort_dto(
-    effort: ProviderModelThinkingEffort,
-) -> crate::commands::ProviderModelThinkingEffortDto {
-    match effort {
-        ProviderModelThinkingEffort::Minimal => {
-            crate::commands::ProviderModelThinkingEffortDto::Minimal
-        }
-        ProviderModelThinkingEffort::Low => crate::commands::ProviderModelThinkingEffortDto::Low,
-        ProviderModelThinkingEffort::Medium => {
-            crate::commands::ProviderModelThinkingEffortDto::Medium
-        }
-        ProviderModelThinkingEffort::High => crate::commands::ProviderModelThinkingEffortDto::High,
-        ProviderModelThinkingEffort::XHigh => {
-            crate::commands::ProviderModelThinkingEffortDto::XHigh
-        }
     }
 }
 
@@ -1574,5 +1145,57 @@ fn runtime_run_checkpoint_kind_dto(kind: RuntimeRunCheckpointKind) -> RuntimeRun
         RuntimeRunCheckpointKind::Tool => RuntimeRunCheckpointKindDto::Tool,
         RuntimeRunCheckpointKind::ActionRequired => RuntimeRunCheckpointKindDto::ActionRequired,
         RuntimeRunCheckpointKind::Diagnostic => RuntimeRunCheckpointKindDto::Diagnostic,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored_codex_session(expires_at: i64) -> StoredOpenAiCodexSession {
+        StoredOpenAiCodexSession {
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            session_id: "session-123".into(),
+            account_id: "acct_123".into(),
+            access_token: "oauth-access-token".into(),
+            refresh_token: "oauth-refresh-token".into(),
+            expires_at,
+            updated_at: "2026-04-29T18:14:27Z".into(),
+        }
+    }
+
+    #[test]
+    fn openai_codex_provider_config_uses_chatgpt_backend_contract() {
+        let config =
+            openai_codex_provider_config_from_session("gpt-5.5", stored_codex_session(100));
+
+        match config {
+            AgentProviderConfig::OpenAiCodexResponses(config) => {
+                assert_eq!(config.provider_id, OPENAI_CODEX_PROVIDER_ID);
+                assert_eq!(config.model_id, "gpt-5.5");
+                assert_eq!(config.base_url, DEFAULT_OPENAI_CODEX_BASE_URL);
+                assert_eq!(config.access_token, "oauth-access-token");
+                assert_eq!(config.account_id, "acct_123");
+                assert_eq!(config.session_id.as_deref(), Some("session-123"));
+            }
+            other => panic!("expected OpenAiCodexResponses config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_codex_session_refresh_uses_expiry_skew() {
+        let now = 1_000;
+        assert!(openai_codex_session_needs_refresh(
+            &stored_codex_session(now),
+            now
+        ));
+        assert!(openai_codex_session_needs_refresh(
+            &stored_codex_session(now + OPENAI_CODEX_REFRESH_SKEW_SECONDS),
+            now
+        ));
+        assert!(!openai_codex_session_needs_refresh(
+            &stored_codex_session(now + OPENAI_CODEX_REFRESH_SKEW_SECONDS + 1),
+            now
+        ));
     }
 }

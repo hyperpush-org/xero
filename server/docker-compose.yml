@@ -1,21 +1,21 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: joe-postgres
+    container_name: xero-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: joe_dev
+      POSTGRES_DB: xero_dev
     ports:
       - "5432:5432"
     volumes:
-      - joe_postgres_data:/var/lib/postgresql/data
+      - xero_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d joe_dev"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d xero_dev"]
       interval: 5s
       timeout: 5s
       retries: 10
 
 volumes:
-  joe_postgres_data:
+  xero_postgres_data:

@@ -1,12 +1,12 @@
 name: Bug report
-description: Report a reproducible problem in Cadence.
+description: Report a reproducible problem in Xero.
 title: "bug: "
 labels:
   - bug
 body:
   - type: markdown
     attributes:
-      value: "Thanks for helping improve Cadence. Please include enough detail for someone else to reproduce the problem."
+      value: "Thanks for helping improve Xero. Please include enough detail for someone else to reproduce the problem."
   - type: textarea
     id: summary
     attributes:
@@ -65,7 +65,7 @@ body:
       description: Include OS, app build, relevant tooling, and device/simulator details.
       placeholder: |
         - OS:
-        - Cadence build:
+        - Xero build:
         - Relevant tools/devices:
     validations:
       required: false

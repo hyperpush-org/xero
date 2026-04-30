@@ -20,7 +20,7 @@ impl AutonomousWebRuntime {
         let url = parse_http_url(
             &request.url,
             "autonomous_web_fetch_url_invalid",
-            "Cadence requires `web_fetch` URLs to be valid absolute HTTP or HTTPS URLs.",
+            "Xero requires `web_fetch` URLs to be valid absolute HTTP or HTTPS URLs.",
         )?;
         let timeout_ms = normalize_timeout_ms(
             request.timeout_ms,
@@ -54,7 +54,7 @@ impl AutonomousWebRuntime {
             &response.body,
             response.body_truncated,
             "autonomous_web_fetch_decode_failed",
-            "Cadence could not decode the fetched response body as UTF-8 text.",
+            "Xero could not decode the fetched response body as UTF-8 text.",
         )?;
 
         let (title, extracted_content) = match content_kind {
@@ -84,15 +84,15 @@ fn map_fetch_status_error(status: u16) -> CommandError {
     match status {
         408 | 429 => CommandError::retryable(
             "autonomous_web_fetch_rate_limited",
-            format!("Cadence received HTTP {status} while fetching the requested URL."),
+            format!("Xero received HTTP {status} while fetching the requested URL."),
         ),
         500..=599 => CommandError::retryable(
             "autonomous_web_fetch_provider_unavailable",
-            format!("Cadence received HTTP {status} while fetching the requested URL."),
+            format!("Xero received HTTP {status} while fetching the requested URL."),
         ),
         _ => CommandError::user_fixable(
             "autonomous_web_fetch_status_error",
-            format!("Cadence received HTTP {status} while fetching the requested URL."),
+            format!("Xero received HTTP {status} while fetching the requested URL."),
         ),
     }
 }
@@ -124,7 +124,7 @@ fn classify_fetch_content_kind(
         Some(other) => Err(CommandError::user_fixable(
             "autonomous_web_fetch_content_type_unsupported",
             format!(
-                "Cadence only supports `text/plain`, `text/html`, or `application/xhtml+xml` responses for `web_fetch`; received `{other}`."
+                "Xero only supports `text/plain`, `text/html`, or `application/xhtml+xml` responses for `web_fetch`; received `{other}`."
             ),
         )),
     }

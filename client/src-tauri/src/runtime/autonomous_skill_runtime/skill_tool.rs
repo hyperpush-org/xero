@@ -9,24 +9,23 @@ use crate::{
 
 use super::{
     contract::{
-        CadenceSkillSourceKind, CadenceSkillSourceRecord, CadenceSkillSourceState,
-        CadenceSkillTrustState,
+        XeroSkillSourceKind, XeroSkillSourceRecord, XeroSkillSourceState, XeroSkillTrustState,
     },
     inspection::{normalize_relative_source_path, normalize_skill_id},
     runtime::{ALLOWED_TEXT_EXTENSIONS, MAX_SKILL_FILE_BYTES},
 };
 
-pub const CADENCE_SKILL_TOOL_CONTRACT_VERSION: u32 = 1;
-pub const CADENCE_SKILL_TOOL_MAX_QUERY_CHARS: usize = 128;
-pub const CADENCE_SKILL_TOOL_DEFAULT_LIMIT: usize = 25;
-pub const CADENCE_SKILL_TOOL_MAX_LIMIT: usize = 100;
-pub const CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS: usize = 32;
-pub const CADENCE_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES: usize = MAX_SKILL_FILE_BYTES;
-pub const CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES: usize = MAX_SKILL_FILE_BYTES;
+pub const XERO_SKILL_TOOL_CONTRACT_VERSION: u32 = 1;
+pub const XERO_SKILL_TOOL_MAX_QUERY_CHARS: usize = 128;
+pub const XERO_SKILL_TOOL_DEFAULT_LIMIT: usize = 25;
+pub const XERO_SKILL_TOOL_MAX_LIMIT: usize = 100;
+pub const XERO_SKILL_TOOL_MAX_CONTEXT_ASSETS: usize = 32;
+pub const XERO_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES: usize = MAX_SKILL_FILE_BYTES;
+pub const XERO_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES: usize = MAX_SKILL_FILE_BYTES;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceSkillToolOperation {
+pub enum XeroSkillToolOperation {
     List,
     Resolve,
     Install,
@@ -37,7 +36,7 @@ pub enum CadenceSkillToolOperation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CadenceSkillToolInput {
+pub enum XeroSkillToolInput {
     #[serde(rename_all = "camelCase")]
     List {
         query: Option<String>,
@@ -64,13 +63,13 @@ pub enum CadenceSkillToolInput {
     #[serde(rename_all = "camelCase")]
     Reload {
         source_id: Option<String>,
-        source_kind: Option<CadenceSkillSourceKind>,
+        source_kind: Option<XeroSkillSourceKind>,
     },
     #[serde(rename_all = "camelCase")]
     CreateDynamic {
         skill_id: String,
         markdown: String,
-        supporting_assets: Vec<CadenceSkillToolDynamicAssetInput>,
+        supporting_assets: Vec<XeroSkillToolDynamicAssetInput>,
         source_run_id: Option<String>,
         source_artifact_id: Option<String>,
     },
@@ -78,7 +77,7 @@ pub enum CadenceSkillToolInput {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceSkillToolAccessStatus {
+pub enum XeroSkillToolAccessStatus {
     Allowed,
     ApprovalRequired,
     Denied,
@@ -86,17 +85,17 @@ pub enum CadenceSkillToolAccessStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolAccessDecision {
-    pub operation: CadenceSkillToolOperation,
+pub struct XeroSkillToolAccessDecision {
+    pub operation: XeroSkillToolOperation,
     pub source_id: String,
-    pub status: CadenceSkillToolAccessStatus,
+    pub status: XeroSkillToolAccessStatus,
     pub model_visible: bool,
-    pub reason: Option<CadenceSkillToolDiagnostic>,
+    pub reason: Option<XeroSkillToolDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolDiagnostic {
+pub struct XeroSkillToolDiagnostic {
     pub code: String,
     pub message: String,
     pub retryable: bool,
@@ -105,7 +104,7 @@ pub struct CadenceSkillToolDiagnostic {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceSkillToolLifecycleResult {
+pub enum XeroSkillToolLifecycleResult {
     Succeeded,
     Failed,
     ApprovalRequired,
@@ -113,30 +112,30 @@ pub enum CadenceSkillToolLifecycleResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolLifecycleEvent {
+pub struct XeroSkillToolLifecycleEvent {
     pub contract_version: u32,
-    pub operation: CadenceSkillToolOperation,
-    pub result: CadenceSkillToolLifecycleResult,
+    pub operation: XeroSkillToolOperation,
+    pub result: XeroSkillToolLifecycleResult,
     pub source_id: Option<String>,
     pub skill_id: Option<String>,
     pub detail: String,
-    pub diagnostic: Option<CadenceSkillToolDiagnostic>,
+    pub diagnostic: Option<XeroSkillToolDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolContextPayload {
+pub struct XeroSkillToolContextPayload {
     pub contract_version: u32,
     pub source_id: String,
     pub skill_id: String,
-    pub markdown: CadenceSkillToolContextDocument,
+    pub markdown: XeroSkillToolContextDocument,
     #[serde(default)]
-    pub supporting_assets: Vec<CadenceSkillToolContextAsset>,
+    pub supporting_assets: Vec<XeroSkillToolContextAsset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolContextDocument {
+pub struct XeroSkillToolContextDocument {
     pub relative_path: String,
     pub sha256: String,
     pub bytes: usize,
@@ -145,7 +144,7 @@ pub struct CadenceSkillToolContextDocument {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolContextAsset {
+pub struct XeroSkillToolContextAsset {
     pub relative_path: String,
     pub sha256: String,
     pub bytes: usize,
@@ -154,35 +153,35 @@ pub struct CadenceSkillToolContextAsset {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceSkillToolDynamicAssetInput {
+pub struct XeroSkillToolDynamicAssetInput {
     pub relative_path: String,
     pub content: String,
 }
 
-impl CadenceSkillToolInput {
-    pub fn operation(&self) -> CadenceSkillToolOperation {
+impl XeroSkillToolInput {
+    pub fn operation(&self) -> XeroSkillToolOperation {
         match self {
-            Self::List { .. } => CadenceSkillToolOperation::List,
-            Self::Resolve { .. } => CadenceSkillToolOperation::Resolve,
-            Self::Install { .. } => CadenceSkillToolOperation::Install,
-            Self::Invoke { .. } => CadenceSkillToolOperation::Invoke,
-            Self::Reload { .. } => CadenceSkillToolOperation::Reload,
-            Self::CreateDynamic { .. } => CadenceSkillToolOperation::CreateDynamic,
+            Self::List { .. } => XeroSkillToolOperation::List,
+            Self::Resolve { .. } => XeroSkillToolOperation::Resolve,
+            Self::Install { .. } => XeroSkillToolOperation::Install,
+            Self::Invoke { .. } => XeroSkillToolOperation::Invoke,
+            Self::Reload { .. } => XeroSkillToolOperation::Reload,
+            Self::CreateDynamic { .. } => XeroSkillToolOperation::CreateDynamic,
         }
     }
 }
 
-impl CadenceSkillToolLifecycleEvent {
+impl XeroSkillToolLifecycleEvent {
     pub fn succeeded(
-        operation: CadenceSkillToolOperation,
+        operation: XeroSkillToolOperation,
         source_id: Option<String>,
         skill_id: Option<String>,
         detail: impl Into<String>,
     ) -> CommandResult<Self> {
         validate_non_empty_text(detail.into(), "detail").map(|detail| Self {
-            contract_version: CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+            contract_version: XERO_SKILL_TOOL_CONTRACT_VERSION,
             operation,
-            result: CadenceSkillToolLifecycleResult::Succeeded,
+            result: XeroSkillToolLifecycleResult::Succeeded,
             source_id,
             skill_id,
             detail,
@@ -191,7 +190,7 @@ impl CadenceSkillToolLifecycleEvent {
     }
 
     pub fn failed(
-        operation: CadenceSkillToolOperation,
+        operation: XeroSkillToolOperation,
         source_id: Option<String>,
         skill_id: Option<String>,
         detail: impl Into<String>,
@@ -199,9 +198,9 @@ impl CadenceSkillToolLifecycleEvent {
     ) -> CommandResult<Self> {
         let detail = validate_non_empty_text(detail.into(), "detail")?;
         Ok(Self {
-            contract_version: CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+            contract_version: XERO_SKILL_TOOL_CONTRACT_VERSION,
             operation,
-            result: CadenceSkillToolLifecycleResult::Failed,
+            result: XeroSkillToolLifecycleResult::Failed,
             source_id,
             skill_id,
             detail,
@@ -210,17 +209,17 @@ impl CadenceSkillToolLifecycleEvent {
     }
 
     pub fn approval_required(
-        operation: CadenceSkillToolOperation,
+        operation: XeroSkillToolOperation,
         source_id: Option<String>,
         skill_id: Option<String>,
         detail: impl Into<String>,
-        diagnostic: CadenceSkillToolDiagnostic,
+        diagnostic: XeroSkillToolDiagnostic,
     ) -> CommandResult<Self> {
         let detail = validate_non_empty_text(detail.into(), "detail")?;
         Ok(Self {
-            contract_version: CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+            contract_version: XERO_SKILL_TOOL_CONTRACT_VERSION,
             operation,
-            result: CadenceSkillToolLifecycleResult::ApprovalRequired,
+            result: XeroSkillToolLifecycleResult::ApprovalRequired,
             source_id,
             skill_id,
             detail,
@@ -229,20 +228,18 @@ impl CadenceSkillToolLifecycleEvent {
     }
 }
 
-pub fn validate_skill_tool_input(
-    input: CadenceSkillToolInput,
-) -> CommandResult<CadenceSkillToolInput> {
+pub fn validate_skill_tool_input(input: XeroSkillToolInput) -> CommandResult<XeroSkillToolInput> {
     match input {
-        CadenceSkillToolInput::List {
+        XeroSkillToolInput::List {
             query,
             include_unavailable,
             limit,
-        } => Ok(CadenceSkillToolInput::List {
+        } => Ok(XeroSkillToolInput::List {
             query: normalize_optional_query(query)?,
             include_unavailable,
             limit: normalize_limit(limit)?,
         }),
-        CadenceSkillToolInput::Resolve {
+        XeroSkillToolInput::Resolve {
             source_id,
             skill_id,
             include_unavailable,
@@ -253,43 +250,43 @@ pub fn validate_skill_tool_input(
                 (None, None) => Err(CommandError::invalid_request("sourceId or skillId")),
                 (Some(_), Some(_)) => Err(CommandError::user_fixable(
                     "skill_tool_selector_ambiguous",
-                    "Cadence SkillTool resolve requests must select by sourceId or skillId, not both.",
+                    "Xero SkillTool resolve requests must select by sourceId or skillId, not both.",
                 )),
-                _ => Ok(CadenceSkillToolInput::Resolve {
+                _ => Ok(XeroSkillToolInput::Resolve {
                     source_id,
                     skill_id,
                     include_unavailable,
                 }),
             }
         }
-        CadenceSkillToolInput::Install {
+        XeroSkillToolInput::Install {
             source_id,
             approval_grant_id,
-        } => Ok(CadenceSkillToolInput::Install {
+        } => Ok(XeroSkillToolInput::Install {
             source_id: normalize_source_id(source_id)?,
             approval_grant_id: approval_grant_id
                 .map(|value| validate_non_empty_text(value, "approvalGrantId"))
                 .transpose()?,
         }),
-        CadenceSkillToolInput::Invoke {
+        XeroSkillToolInput::Invoke {
             source_id,
             approval_grant_id,
             include_supporting_assets,
-        } => Ok(CadenceSkillToolInput::Invoke {
+        } => Ok(XeroSkillToolInput::Invoke {
             source_id: normalize_source_id(source_id)?,
             approval_grant_id: approval_grant_id
                 .map(|value| validate_non_empty_text(value, "approvalGrantId"))
                 .transpose()?,
             include_supporting_assets,
         }),
-        CadenceSkillToolInput::Reload {
+        XeroSkillToolInput::Reload {
             source_id,
             source_kind,
-        } => Ok(CadenceSkillToolInput::Reload {
+        } => Ok(XeroSkillToolInput::Reload {
             source_id: source_id.map(normalize_source_id).transpose()?,
             source_kind,
         }),
-        CadenceSkillToolInput::CreateDynamic {
+        XeroSkillToolInput::CreateDynamic {
             skill_id,
             markdown,
             supporting_assets,
@@ -298,38 +295,38 @@ pub fn validate_skill_tool_input(
         } => {
             let skill_id = normalize_skill_id(&skill_id)?;
             let markdown = validate_non_empty_text(markdown, "markdown")?;
-            if markdown.len() > CADENCE_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES {
+            if markdown.len() > XERO_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES {
                 return Err(CommandError::user_fixable(
                     "skill_tool_context_too_large",
                     format!(
-                        "Cadence requires dynamic SkillTool markdown to be {} bytes or smaller.",
-                        CADENCE_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES
+                        "Xero requires dynamic SkillTool markdown to be {} bytes or smaller.",
+                        XERO_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES
                     ),
                 ));
             }
             let mut normalized_assets = Vec::with_capacity(supporting_assets.len());
-            if supporting_assets.len() > CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS {
+            if supporting_assets.len() > XERO_SKILL_TOOL_MAX_CONTEXT_ASSETS {
                 return Err(CommandError::user_fixable(
                     "skill_tool_context_too_large",
                     format!(
-                        "Cadence rejected dynamic SkillTool input because it contained more than {CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS} supporting assets."
+                        "Xero rejected dynamic SkillTool input because it contained more than {XERO_SKILL_TOOL_MAX_CONTEXT_ASSETS} supporting assets."
                     ),
                 ));
             }
             for asset in supporting_assets {
                 let relative_path = normalize_relative_source_path(&asset.relative_path)?;
-                validate_context_asset(CadenceSkillToolContextAsset {
+                validate_context_asset(XeroSkillToolContextAsset {
                     relative_path: relative_path.clone(),
                     sha256: "0".repeat(64),
                     bytes: asset.content.len(),
                     content: asset.content.clone(),
                 })?;
-                normalized_assets.push(CadenceSkillToolDynamicAssetInput {
+                normalized_assets.push(XeroSkillToolDynamicAssetInput {
                     relative_path,
                     content: asset.content,
                 });
             }
-            Ok(CadenceSkillToolInput::CreateDynamic {
+            Ok(XeroSkillToolInput::CreateDynamic {
                 skill_id,
                 markdown,
                 supporting_assets: normalized_assets,
@@ -344,33 +341,32 @@ pub fn validate_skill_tool_input(
     }
 }
 
-pub fn model_may_discover_skill_source(record: &CadenceSkillSourceRecord) -> bool {
-    record.trust != CadenceSkillTrustState::Blocked
+pub fn model_may_discover_skill_source(record: &XeroSkillSourceRecord) -> bool {
+    record.trust != XeroSkillTrustState::Blocked
         && !matches!(
             record.state,
-            CadenceSkillSourceState::Disabled | CadenceSkillSourceState::Blocked
+            XeroSkillSourceState::Disabled | XeroSkillSourceState::Blocked
         )
 }
 
 pub fn decide_skill_tool_access(
-    record: &CadenceSkillSourceRecord,
-    operation: CadenceSkillToolOperation,
-) -> CommandResult<CadenceSkillToolAccessDecision> {
+    record: &XeroSkillSourceRecord,
+    operation: XeroSkillToolOperation,
+) -> CommandResult<XeroSkillToolAccessDecision> {
     let record = record.clone().validate()?;
     let source_id = record.source_id.clone();
     let model_visible = model_may_discover_skill_source(&record);
 
-    if record.state == CadenceSkillSourceState::Blocked
-        || record.trust == CadenceSkillTrustState::Blocked
+    if record.state == XeroSkillSourceState::Blocked || record.trust == XeroSkillTrustState::Blocked
     {
         return Ok(access_decision(
             operation,
             source_id,
-            CadenceSkillToolAccessStatus::Denied,
+            XeroSkillToolAccessStatus::Denied,
             false,
             Some(diagnostic(
                 "skill_tool_source_blocked",
-                "Cadence blocked this skill source and will not expose it to the model.",
+                "Xero blocked this skill source and will not expose it to the model.",
                 false,
                 false,
             )?),
@@ -378,12 +374,12 @@ pub fn decide_skill_tool_access(
     }
 
     match operation {
-        CadenceSkillToolOperation::List | CadenceSkillToolOperation::Resolve => {
+        XeroSkillToolOperation::List | XeroSkillToolOperation::Resolve => {
             if model_visible {
                 Ok(access_decision(
                     operation,
                     source_id,
-                    CadenceSkillToolAccessStatus::Allowed,
+                    XeroSkillToolAccessStatus::Allowed,
                     true,
                     None,
                 ))
@@ -391,27 +387,27 @@ pub fn decide_skill_tool_access(
                 Ok(access_decision(
                     operation,
                     source_id,
-                    CadenceSkillToolAccessStatus::Denied,
+                    XeroSkillToolAccessStatus::Denied,
                     false,
                     Some(diagnostic(
                         "skill_tool_source_hidden",
-                        "Cadence will not expose disabled skill sources to the model unless a user-facing diagnostic flow asks for them.",
+                        "Xero will not expose disabled skill sources to the model unless a user-facing diagnostic flow asks for them.",
                         false,
                         false,
                     )?),
                 ))
             }
         }
-        CadenceSkillToolOperation::Install | CadenceSkillToolOperation::Reload => {
-            if record.state == CadenceSkillSourceState::Disabled {
+        XeroSkillToolOperation::Install | XeroSkillToolOperation::Reload => {
+            if record.state == XeroSkillSourceState::Disabled {
                 return Ok(access_decision(
                     operation,
                     source_id,
-                    CadenceSkillToolAccessStatus::Denied,
+                    XeroSkillToolAccessStatus::Denied,
                     false,
                     Some(diagnostic(
                         "skill_tool_source_disabled",
-                        "Cadence requires the user to re-enable this skill source before installation or reload.",
+                        "Xero requires the user to re-enable this skill source before installation or reload.",
                         false,
                         false,
                     )?),
@@ -424,16 +420,16 @@ pub fn decide_skill_tool_access(
                 record.trust,
             )?)
         }
-        CadenceSkillToolOperation::Invoke => {
-            if record.state != CadenceSkillSourceState::Enabled {
+        XeroSkillToolOperation::Invoke => {
+            if record.state != XeroSkillSourceState::Enabled {
                 return Ok(access_decision(
                     operation,
                     source_id,
-                    CadenceSkillToolAccessStatus::Denied,
+                    XeroSkillToolAccessStatus::Denied,
                     model_visible,
                     Some(diagnostic(
                         "skill_tool_source_not_enabled",
-                        "Cadence requires a skill source to be enabled before model invocation.",
+                        "Xero requires a skill source to be enabled before model invocation.",
                         false,
                         false,
                     )?),
@@ -446,10 +442,10 @@ pub fn decide_skill_tool_access(
                 record.trust,
             )?)
         }
-        CadenceSkillToolOperation::CreateDynamic => Ok(access_decision(
+        XeroSkillToolOperation::CreateDynamic => Ok(access_decision(
             operation,
             source_id,
-            CadenceSkillToolAccessStatus::Allowed,
+            XeroSkillToolAccessStatus::Allowed,
             true,
             None,
         )),
@@ -457,22 +453,22 @@ pub fn decide_skill_tool_access(
 }
 
 pub fn validate_skill_tool_context_payload(
-    payload: CadenceSkillToolContextPayload,
-) -> CommandResult<CadenceSkillToolContextPayload> {
-    if payload.contract_version != CADENCE_SKILL_TOOL_CONTRACT_VERSION {
+    payload: XeroSkillToolContextPayload,
+) -> CommandResult<XeroSkillToolContextPayload> {
+    if payload.contract_version != XERO_SKILL_TOOL_CONTRACT_VERSION {
         return Err(CommandError::user_fixable(
             "skill_tool_contract_version_unsupported",
             format!(
-                "Cadence rejected SkillTool context contract version `{}` because only version `{CADENCE_SKILL_TOOL_CONTRACT_VERSION}` is supported.",
+                "Xero rejected SkillTool context contract version `{}` because only version `{XERO_SKILL_TOOL_CONTRACT_VERSION}` is supported.",
                 payload.contract_version
             ),
         ));
     }
-    if payload.supporting_assets.len() > CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS {
+    if payload.supporting_assets.len() > XERO_SKILL_TOOL_MAX_CONTEXT_ASSETS {
         return Err(CommandError::user_fixable(
             "skill_tool_context_too_large",
             format!(
-                "Cadence rejected SkillTool context because it contained more than {CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSETS} supporting assets."
+                "Xero rejected SkillTool context because it contained more than {XERO_SKILL_TOOL_MAX_CONTEXT_ASSETS} supporting assets."
             ),
         ));
     }
@@ -480,15 +476,15 @@ pub fn validate_skill_tool_context_payload(
     let markdown = validate_context_document(
         payload.markdown,
         true,
-        CADENCE_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES,
+        XERO_SKILL_TOOL_MAX_CONTEXT_MARKDOWN_BYTES,
     )?;
     let mut supporting_assets = Vec::with_capacity(payload.supporting_assets.len());
     for asset in payload.supporting_assets {
         supporting_assets.push(validate_context_asset(asset)?);
     }
 
-    Ok(CadenceSkillToolContextPayload {
-        contract_version: CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+    Ok(XeroSkillToolContextPayload {
+        contract_version: XERO_SKILL_TOOL_CONTRACT_VERSION,
         source_id: normalize_source_id(payload.source_id)?,
         skill_id: normalize_skill_id(&payload.skill_id)?,
         markdown,
@@ -496,11 +492,9 @@ pub fn validate_skill_tool_context_payload(
     })
 }
 
-pub fn skill_tool_diagnostic_from_command_error(
-    error: &CommandError,
-) -> CadenceSkillToolDiagnostic {
+pub fn skill_tool_diagnostic_from_command_error(error: &CommandError) -> XeroSkillToolDiagnostic {
     let (message, redacted) = sanitize_skill_tool_model_text(&error.message);
-    CadenceSkillToolDiagnostic {
+    XeroSkillToolDiagnostic {
         code: if error.code.trim().is_empty() {
             "skill_tool_failed".into()
         } else {
@@ -517,13 +511,13 @@ pub fn sanitize_skill_tool_model_text(value: &str) -> (String, bool) {
 }
 
 pub fn validate_skill_tool_lifecycle_event(
-    event: CadenceSkillToolLifecycleEvent,
-) -> CommandResult<CadenceSkillToolLifecycleEvent> {
-    if event.contract_version != CADENCE_SKILL_TOOL_CONTRACT_VERSION {
+    event: XeroSkillToolLifecycleEvent,
+) -> CommandResult<XeroSkillToolLifecycleEvent> {
+    if event.contract_version != XERO_SKILL_TOOL_CONTRACT_VERSION {
         return Err(CommandError::user_fixable(
             "skill_tool_contract_version_unsupported",
             format!(
-                "Cadence rejected SkillTool lifecycle contract version `{}` because only version `{CADENCE_SKILL_TOOL_CONTRACT_VERSION}` is supported.",
+                "Xero rejected SkillTool lifecycle contract version `{}` because only version `{XERO_SKILL_TOOL_CONTRACT_VERSION}` is supported.",
                 event.contract_version
             ),
         ));
@@ -538,24 +532,24 @@ pub fn validate_skill_tool_lifecycle_event(
         .transpose()?;
 
     match (&event.result, &event.diagnostic) {
-        (CadenceSkillToolLifecycleResult::Succeeded, Some(_)) => {
+        (XeroSkillToolLifecycleResult::Succeeded, Some(_)) => {
             return Err(CommandError::user_fixable(
                 "skill_tool_lifecycle_invalid",
-                "Cadence rejected a successful SkillTool lifecycle event with failure diagnostics.",
+                "Xero rejected a successful SkillTool lifecycle event with failure diagnostics.",
             ));
         }
-        (CadenceSkillToolLifecycleResult::Failed, None)
-        | (CadenceSkillToolLifecycleResult::ApprovalRequired, None) => {
+        (XeroSkillToolLifecycleResult::Failed, None)
+        | (XeroSkillToolLifecycleResult::ApprovalRequired, None) => {
             return Err(CommandError::user_fixable(
                 "skill_tool_lifecycle_invalid",
-                "Cadence rejected a SkillTool lifecycle event that requires typed diagnostics but omitted them.",
+                "Xero rejected a SkillTool lifecycle event that requires typed diagnostics but omitted them.",
             ));
         }
         _ => {}
     }
 
-    Ok(CadenceSkillToolLifecycleEvent {
-        contract_version: CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+    Ok(XeroSkillToolLifecycleEvent {
+        contract_version: XERO_SKILL_TOOL_CONTRACT_VERSION,
         operation: event.operation,
         result: event.result,
         source_id,
@@ -566,41 +560,41 @@ pub fn validate_skill_tool_lifecycle_event(
 }
 
 fn approval_aware_access_decision(
-    operation: CadenceSkillToolOperation,
+    operation: XeroSkillToolOperation,
     source_id: String,
     model_visible: bool,
-    trust: CadenceSkillTrustState,
-) -> CommandResult<CadenceSkillToolAccessDecision> {
+    trust: XeroSkillTrustState,
+) -> CommandResult<XeroSkillToolAccessDecision> {
     match trust {
-        CadenceSkillTrustState::Trusted | CadenceSkillTrustState::UserApproved => Ok(access_decision(
+        XeroSkillTrustState::Trusted | XeroSkillTrustState::UserApproved => Ok(access_decision(
             operation,
             source_id,
-            CadenceSkillToolAccessStatus::Allowed,
+            XeroSkillToolAccessStatus::Allowed,
             model_visible,
             None,
         )),
-        CadenceSkillTrustState::ApprovalRequired | CadenceSkillTrustState::Untrusted => {
+        XeroSkillTrustState::ApprovalRequired | XeroSkillTrustState::Untrusted => {
             Ok(access_decision(
                 operation,
                 source_id,
-                CadenceSkillToolAccessStatus::ApprovalRequired,
+                XeroSkillToolAccessStatus::ApprovalRequired,
                 model_visible,
                 Some(diagnostic(
                     "skill_tool_user_approval_required",
-                    "Cadence requires user approval before this skill source can be installed, reloaded, or invoked by the model.",
+                    "Xero requires user approval before this skill source can be installed, reloaded, or invoked by the model.",
                     false,
                     false,
                 )?),
             ))
         }
-        CadenceSkillTrustState::Blocked => Ok(access_decision(
+        XeroSkillTrustState::Blocked => Ok(access_decision(
             operation,
             source_id,
-            CadenceSkillToolAccessStatus::Denied,
+            XeroSkillToolAccessStatus::Denied,
             false,
             Some(diagnostic(
                 "skill_tool_source_blocked",
-                "Cadence blocked this skill source and will not expose it to the model.",
+                "Xero blocked this skill source and will not expose it to the model.",
                 false,
                 false,
             )?),
@@ -609,13 +603,13 @@ fn approval_aware_access_decision(
 }
 
 fn access_decision(
-    operation: CadenceSkillToolOperation,
+    operation: XeroSkillToolOperation,
     source_id: String,
-    status: CadenceSkillToolAccessStatus,
+    status: XeroSkillToolAccessStatus,
     model_visible: bool,
-    reason: Option<CadenceSkillToolDiagnostic>,
-) -> CadenceSkillToolAccessDecision {
-    CadenceSkillToolAccessDecision {
+    reason: Option<XeroSkillToolDiagnostic>,
+) -> XeroSkillToolAccessDecision {
+    XeroSkillToolAccessDecision {
         operation,
         source_id,
         status,
@@ -629,8 +623,8 @@ fn diagnostic(
     message: impl Into<String>,
     retryable: bool,
     redacted: bool,
-) -> CommandResult<CadenceSkillToolDiagnostic> {
-    Ok(CadenceSkillToolDiagnostic {
+) -> CommandResult<XeroSkillToolDiagnostic> {
+    Ok(XeroSkillToolDiagnostic {
         code: validate_non_empty_text(code.into(), "code")?,
         message: validate_non_empty_text(message.into(), "message")?,
         retryable,
@@ -639,21 +633,21 @@ fn diagnostic(
 }
 
 fn validate_context_document(
-    document: CadenceSkillToolContextDocument,
+    document: XeroSkillToolContextDocument,
     is_markdown: bool,
     max_bytes: usize,
-) -> CommandResult<CadenceSkillToolContextDocument> {
+) -> CommandResult<XeroSkillToolContextDocument> {
     let relative_path = normalize_relative_source_path(&document.relative_path)?;
     if is_markdown && relative_path != "SKILL.md" {
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
-            "Cadence requires SkillTool markdown context to come from SKILL.md.",
+            "Xero requires SkillTool markdown context to come from SKILL.md.",
         ));
     }
     if !is_markdown && relative_path == "SKILL.md" {
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
-            "Cadence requires SKILL.md to be represented as markdown context, not a supporting asset.",
+            "Xero requires SKILL.md to be represented as markdown context, not a supporting asset.",
         ));
     }
     validate_context_file_shape(
@@ -663,7 +657,7 @@ fn validate_context_document(
         &document.content,
         max_bytes,
     )?;
-    Ok(CadenceSkillToolContextDocument {
+    Ok(XeroSkillToolContextDocument {
         relative_path,
         sha256: document.sha256.to_ascii_lowercase(),
         bytes: document.bytes,
@@ -672,17 +666,17 @@ fn validate_context_document(
 }
 
 fn validate_context_asset(
-    asset: CadenceSkillToolContextAsset,
-) -> CommandResult<CadenceSkillToolContextAsset> {
+    asset: XeroSkillToolContextAsset,
+) -> CommandResult<XeroSkillToolContextAsset> {
     let document = validate_context_document(
-        CadenceSkillToolContextDocument {
+        XeroSkillToolContextDocument {
             relative_path: asset.relative_path,
             sha256: asset.sha256,
             bytes: asset.bytes,
             content: asset.content,
         },
         false,
-        CADENCE_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES,
+        XERO_SKILL_TOOL_MAX_CONTEXT_ASSET_BYTES,
     )?;
     let extension = Path::new(&document.relative_path)
         .extension()
@@ -692,7 +686,7 @@ fn validate_context_asset(
             CommandError::user_fixable(
                 "skill_tool_context_invalid",
                 format!(
-                    "Cadence rejected SkillTool supporting asset `{}` because extensionless assets are not allowed into model context.",
+                    "Xero rejected SkillTool supporting asset `{}` because extensionless assets are not allowed into model context.",
                     document.relative_path
                 ),
             )
@@ -701,12 +695,12 @@ fn validate_context_asset(
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
             format!(
-                "Cadence rejected SkillTool supporting asset `{}` because `.{extension}` assets are not allowed into model context.",
+                "Xero rejected SkillTool supporting asset `{}` because `.{extension}` assets are not allowed into model context.",
                 document.relative_path
             ),
         ));
     }
-    Ok(CadenceSkillToolContextAsset {
+    Ok(XeroSkillToolContextAsset {
         relative_path: document.relative_path,
         sha256: document.sha256,
         bytes: document.bytes,
@@ -726,14 +720,14 @@ fn validate_context_file_shape(
     if actual_bytes == 0 {
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
-            format!("Cadence rejected empty SkillTool context file `{relative_path}`."),
+            format!("Xero rejected empty SkillTool context file `{relative_path}`."),
         ));
     }
     if actual_bytes > max_bytes {
         return Err(CommandError::user_fixable(
             "skill_tool_context_too_large",
             format!(
-                "Cadence rejected SkillTool context file `{relative_path}` because it exceeded the {max_bytes} byte limit."
+                "Xero rejected SkillTool context file `{relative_path}` because it exceeded the {max_bytes} byte limit."
             ),
         ));
     }
@@ -741,7 +735,7 @@ fn validate_context_file_shape(
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
             format!(
-                "Cadence rejected SkillTool context file `{relative_path}` because declared bytes did not match content bytes."
+                "Xero rejected SkillTool context file `{relative_path}` because declared bytes did not match content bytes."
             ),
         ));
     }
@@ -757,7 +751,7 @@ fn validate_sha256(value: &str, field: &'static str) -> CommandResult<String> {
     {
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
-            format!("Cadence requires SkillTool context `{field}` values to be lowercase SHA-256 hex digests."),
+            format!("Xero requires SkillTool context `{field}` values to be lowercase SHA-256 hex digests."),
         ));
     }
     Ok(trimmed.to_ascii_lowercase())
@@ -771,11 +765,11 @@ fn normalize_optional_query(query: Option<String>) -> CommandResult<Option<Strin
             if trimmed.is_empty() {
                 return Ok(None);
             }
-            if trimmed.chars().count() > CADENCE_SKILL_TOOL_MAX_QUERY_CHARS {
+            if trimmed.chars().count() > XERO_SKILL_TOOL_MAX_QUERY_CHARS {
                 return Err(CommandError::user_fixable(
                     "skill_tool_query_too_long",
                     format!(
-                        "Cadence requires SkillTool list queries to be {CADENCE_SKILL_TOOL_MAX_QUERY_CHARS} characters or fewer."
+                        "Xero requires SkillTool list queries to be {XERO_SKILL_TOOL_MAX_QUERY_CHARS} characters or fewer."
                     ),
                 ));
             }
@@ -786,12 +780,12 @@ fn normalize_optional_query(query: Option<String>) -> CommandResult<Option<Strin
 
 fn normalize_limit(limit: Option<usize>) -> CommandResult<Option<usize>> {
     match limit {
-        None => Ok(Some(CADENCE_SKILL_TOOL_DEFAULT_LIMIT)),
-        Some(value) if (1..=CADENCE_SKILL_TOOL_MAX_LIMIT).contains(&value) => Ok(Some(value)),
+        None => Ok(Some(XERO_SKILL_TOOL_DEFAULT_LIMIT)),
+        Some(value) if (1..=XERO_SKILL_TOOL_MAX_LIMIT).contains(&value) => Ok(Some(value)),
         Some(_) => Err(CommandError::user_fixable(
             "skill_tool_limit_invalid",
             format!(
-                "Cadence requires SkillTool list limits to be between 1 and {CADENCE_SKILL_TOOL_MAX_LIMIT}."
+                "Xero requires SkillTool list limits to be between 1 and {XERO_SKILL_TOOL_MAX_LIMIT}."
             ),
         )),
     }
@@ -802,7 +796,7 @@ fn normalize_source_id(value: String) -> CommandResult<String> {
     if !trimmed.starts_with("skill-source:v") {
         return Err(CommandError::user_fixable(
             "skill_tool_source_id_invalid",
-            "Cadence requires SkillTool source ids to use the canonical skill-source contract prefix.",
+            "Xero requires SkillTool source ids to use the canonical skill-source contract prefix.",
         ));
     }
     Ok(trimmed)
@@ -842,7 +836,7 @@ fn redact_skill_tool_model_text(value: &str) -> (String, bool) {
 
     if find_prohibited_persistence_content(&joined).is_some() {
         (
-            "Cadence redacted sensitive SkillTool failure details.".into(),
+            "Xero redacted sensitive SkillTool failure details.".into(),
             true,
         )
     } else {

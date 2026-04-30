@@ -17,32 +17,32 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use cadence_desktop_lib::commands::solana::audit::coverage::{
+use tempfile::TempDir;
+use xero_desktop_lib::commands::solana::audit::coverage::{
     CoverageInvocation, CoverageOutcome, CoverageRunner,
 };
-use cadence_desktop_lib::commands::solana::audit::replay::{
+use xero_desktop_lib::commands::solana::audit::replay::{
     ReplayContext, ReplayRunner, ReplayStep, ReplayStepTrace,
 };
-use cadence_desktop_lib::commands::solana::audit::sec3::{
+use xero_desktop_lib::commands::solana::audit::sec3::{
     AnalyzerInvocation, AnalyzerOutcome, AnalyzerProbe, ExternalAnalyzerReport,
     ExternalAnalyzerRequest, ExternalAnalyzerRunner,
 };
-use cadence_desktop_lib::commands::solana::audit::static_lints::{
+use xero_desktop_lib::commands::solana::audit::static_lints::{
     StaticLintReport, StaticLintRequest,
 };
-use cadence_desktop_lib::commands::solana::audit::trident::{
+use xero_desktop_lib::commands::solana::audit::trident::{
     FuzzReport, FuzzRequest, TridentInvocation, TridentOutcome, TridentProbe, TridentRunner,
 };
-use cadence_desktop_lib::commands::solana::audit::{
+use xero_desktop_lib::commands::solana::audit::{
     AuditEngine, AuditEventPayload, AuditEventPhase, AuditEventSink, AuditRunKind, ReplayOutcome,
     ReplayReport, ReplayRequest,
 };
-use cadence_desktop_lib::commands::solana::{
+use xero_desktop_lib::commands::solana::{
     AnalyzerKind, ClusterKind, CoverageReport, CoverageRequest, ExploitKey, Finding,
     FindingSeverity, NullAuditEventSink,
 };
-use cadence_desktop_lib::commands::{CommandErrorClass, CommandResult};
-use tempfile::TempDir;
+use xero_desktop_lib::commands::{CommandErrorClass, CommandResult};
 
 const FIXTURE_LCOV: &str = "SF:programs/p/src/lib.rs\nFN:10,prog::deposit\nFN:30,prog::withdraw\nFNDA:4,prog::deposit\nFNDA:0,prog::withdraw\nFNF:2\nFNH:1\nLF:20\nLH:12\nBRF:4\nBRH:2\nend_of_record\n";
 

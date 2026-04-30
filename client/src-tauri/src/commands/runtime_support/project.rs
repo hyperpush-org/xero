@@ -35,7 +35,7 @@ pub(crate) fn emit_project_updated<R: Runtime>(
         CommandError::retryable(
             "project_updated_emit_failed",
             format!(
-                "Cadence updated selected-project metadata but could not emit the project update event: {error}"
+                "Xero updated selected-project metadata but could not emit the project update event: {error}"
             ),
         )
     })

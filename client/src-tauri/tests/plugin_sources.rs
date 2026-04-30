@@ -4,7 +4,10 @@ use std::{
     sync::Arc,
 };
 
-use cadence_desktop_lib::{
+use rusqlite::Connection;
+use serde_json::json;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     db::{self, project_store},
     runtime::{
         discover_plugin_roots, parse_plugin_manifest, AutonomousPluginRoot,
@@ -12,15 +15,12 @@ use cadence_desktop_lib::{
         AutonomousSkillSource, AutonomousSkillSourceError, AutonomousSkillSourceFileRequest,
         AutonomousSkillSourceFileResponse, AutonomousSkillSourceTreeRequest,
         AutonomousSkillSourceTreeResponse, AutonomousSkillToolStatus, AutonomousToolOutput,
-        AutonomousToolRequest, AutonomousToolRuntime, CadencePluginRoot, CadenceSkillSourceKind,
-        CadenceSkillSourceLocator, CadenceSkillSourceRecord, CadenceSkillSourceScope,
-        CadenceSkillSourceState, CadenceSkillToolAccessStatus, CadenceSkillToolInput,
-        CadenceSkillTrustState, FilesystemAutonomousSkillCacheStore,
+        AutonomousToolRequest, AutonomousToolRuntime, FilesystemAutonomousSkillCacheStore,
+        XeroPluginRoot, XeroSkillSourceKind, XeroSkillSourceLocator, XeroSkillSourceRecord,
+        XeroSkillSourceScope, XeroSkillSourceState, XeroSkillToolAccessStatus, XeroSkillToolInput,
+        XeroSkillTrustState,
     },
 };
-use rusqlite::Connection;
-use serde_json::json;
-use tempfile::TempDir;
 
 #[derive(Default)]
 struct NoopSkillSource;
@@ -47,12 +47,12 @@ impl AutonomousSkillSource for NoopSkillSource {
 }
 
 fn init_project_state(repo_root: &Path) {
-    db::configure_project_database_paths(&repo_root.join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&repo_root.join("app-data").join("xero.db"));
     let database_path = db::database_path_for_repo(repo_root);
     fs::create_dir_all(database_path.parent().expect("project state parent"))
         .expect("create project state dir");
     let mut connection = Connection::open(database_path).expect("open project state db");
-    cadence_desktop_lib::db::migrations::migrations()
+    xero_desktop_lib::db::migrations::migrations()
         .to_latest(&mut connection)
         .expect("migrate project state db");
     connection
@@ -154,7 +154,7 @@ fn write_plugin(
     });
     fs::create_dir_all(&plugin_dir).expect("create plugin dir");
     fs::write(
-        plugin_dir.join("cadence-plugin.json"),
+        plugin_dir.join("xero-plugin.json"),
         serde_json::to_vec_pretty(&manifest).expect("manifest json"),
     )
     .expect("write manifest");
@@ -165,9 +165,9 @@ fn list_skill_output(
     runtime: &AutonomousToolRuntime,
     query: Option<&str>,
     include_unavailable: bool,
-) -> cadence_desktop_lib::runtime::AutonomousSkillToolOutput {
+) -> xero_desktop_lib::runtime::AutonomousSkillToolOutput {
     let result = runtime
-        .execute(AutonomousToolRequest::Skill(CadenceSkillToolInput::List {
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
             query: query.map(str::to_owned),
             include_unavailable,
             limit: Some(20),
@@ -192,7 +192,7 @@ fn plugin_manifest_validation_accepts_strict_valid_manifests_and_rejects_bad_sha
         Some("open-panel"),
         false,
     );
-    let manifest_path = plugin_dir.join("cadence-plugin.json");
+    let manifest_path = plugin_dir.join("xero-plugin.json");
     let manifest_bytes = fs::read(&manifest_path).expect("read manifest");
 
     let manifest =
@@ -210,7 +210,7 @@ fn plugin_manifest_validation_accepts_strict_valid_manifests_and_rejects_bad_sha
     });
     let error = parse_plugin_manifest(&serde_json::to_vec(&missing_id).expect("json"), &plugin_dir)
         .expect_err("missing id should fail");
-    assert_eq!(error.code, "cadence_plugin_manifest_invalid");
+    assert_eq!(error.code, "xero_plugin_manifest_invalid");
 
     let duplicate_skill = json!({
         "schemaVersion": 1,
@@ -229,7 +229,7 @@ fn plugin_manifest_validation_accepts_strict_valid_manifests_and_rejects_bad_sha
         &plugin_dir,
     )
     .expect_err("duplicate skills should fail");
-    assert_eq!(error.code, "cadence_plugin_manifest_duplicate_id");
+    assert_eq!(error.code, "xero_plugin_manifest_duplicate_id");
 
     let bad_version = json!({
         "schemaVersion": 1,
@@ -244,7 +244,7 @@ fn plugin_manifest_validation_accepts_strict_valid_manifests_and_rejects_bad_sha
         &plugin_dir,
     )
     .expect_err("bad version should fail");
-    assert_eq!(error.code, "cadence_plugin_version_invalid");
+    assert_eq!(error.code, "xero_plugin_version_invalid");
 
     let unknown_field = json!({
         "schemaVersion": 1,
@@ -260,7 +260,7 @@ fn plugin_manifest_validation_accepts_strict_valid_manifests_and_rejects_bad_sha
         &plugin_dir,
     )
     .expect_err("unknown fields should fail");
-    assert_eq!(error.code, "cadence_plugin_manifest_invalid");
+    assert_eq!(error.code, "xero_plugin_manifest_invalid");
 
     let path_escape = json!({
         "schemaVersion": 1,
@@ -278,7 +278,7 @@ fn plugin_manifest_validation_accepts_strict_valid_manifests_and_rejects_bad_sha
         &plugin_dir,
     )
     .expect_err("path escape should fail");
-    assert_eq!(error.code, "cadence_plugin_path_outside_root");
+    assert_eq!(error.code, "xero_plugin_path_outside_root");
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn plugin_registry_persists_disables_enables_removes_marks_stale_and_projects_co
         false,
     );
 
-    let discovery = discover_plugin_roots(vec![CadencePluginRoot {
+    let discovery = discover_plugin_roots(vec![XeroPluginRoot {
         root_id: "team-plugins".into(),
         root_path: plugin_root.clone(),
     }])
@@ -309,7 +309,7 @@ fn plugin_registry_persists_disables_enables_removes_marks_stale_and_projects_co
     let records = project_store::sync_discovered_plugins(&repo_root, &discovery.plugins, true)
         .expect("persist discovered plugins");
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].state, CadenceSkillSourceState::Enabled);
+    assert_eq!(records[0].state, XeroSkillSourceState::Enabled);
 
     let commands = project_store::plugin_command_descriptors(&records, false)
         .expect("project enabled plugin commands");
@@ -319,16 +319,16 @@ fn plugin_registry_persists_disables_enables_removes_marks_stale_and_projects_co
         "plugin:com.acme.tools:command:open-panel"
     );
 
-    let source = CadenceSkillSourceRecord::new(
-        CadenceSkillSourceScope::project("project-1").expect("project scope"),
-        CadenceSkillSourceLocator::Plugin {
+    let source = XeroSkillSourceRecord::new(
+        XeroSkillSourceScope::project("project-1").expect("project scope"),
+        XeroSkillSourceLocator::Plugin {
             plugin_id: "com.acme.tools".into(),
             contribution_id: "review-kit".into(),
             skill_path: "skills/review-kit".into(),
             skill_id: "review-kit".into(),
         },
-        CadenceSkillSourceState::Enabled,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Enabled,
+        XeroSkillTrustState::Trusted,
     )
     .expect("plugin source record");
     let source_id = source.source_id.clone();
@@ -359,7 +359,7 @@ fn plugin_registry_persists_disables_enables_removes_marks_stale_and_projects_co
 
     let disabled = project_store::set_installed_plugin_enabled(&repo_root, "com.acme.tools", false)
         .expect("disable plugin");
-    assert_eq!(disabled.state, CadenceSkillSourceState::Disabled);
+    assert_eq!(disabled.state, XeroSkillSourceState::Disabled);
     let disabled_records =
         project_store::list_installed_plugins(&repo_root).expect("list disabled plugins");
     assert!(
@@ -376,28 +376,25 @@ fn plugin_registry_persists_disables_enables_removes_marks_stale_and_projects_co
     let disabled_skill = project_store::load_installed_skill_by_source_id(&repo_root, &source_id)
         .expect("load disabled plugin skill")
         .expect("plugin skill");
-    assert_eq!(
-        disabled_skill.source.state,
-        CadenceSkillSourceState::Disabled
-    );
+    assert_eq!(disabled_skill.source.state, XeroSkillSourceState::Disabled);
 
     let enabled = project_store::set_installed_plugin_enabled(&repo_root, "com.acme.tools", true)
         .expect("enable plugin");
-    assert_eq!(enabled.state, CadenceSkillSourceState::Enabled);
+    assert_eq!(enabled.state, XeroSkillSourceState::Enabled);
     let enabled_skill = project_store::load_installed_skill_by_source_id(&repo_root, &source_id)
         .expect("load enabled plugin skill")
         .expect("plugin skill");
-    assert_eq!(enabled_skill.source.state, CadenceSkillSourceState::Enabled);
+    assert_eq!(enabled_skill.source.state, XeroSkillSourceState::Enabled);
 
     let removed = project_store::mark_installed_plugin_removed(&repo_root, "com.acme.tools")
         .expect("remove plugin");
-    assert_eq!(removed.state, CadenceSkillSourceState::Stale);
+    assert_eq!(removed.state, XeroSkillSourceState::Stale);
     assert_eq!(
         removed
             .last_diagnostic
             .as_ref()
             .map(|diagnostic| diagnostic.code.as_str()),
-        Some("cadence_plugin_removed")
+        Some("xero_plugin_removed")
     );
     let removed_records =
         project_store::list_installed_plugins(&repo_root).expect("list removed plugin");
@@ -409,23 +406,19 @@ fn plugin_registry_persists_disables_enables_removes_marks_stale_and_projects_co
     let removed_skill = project_store::load_installed_skill_by_source_id(&repo_root, &source_id)
         .expect("load removed plugin skill")
         .expect("plugin skill");
-    assert_eq!(removed_skill.source.state, CadenceSkillSourceState::Stale);
+    assert_eq!(removed_skill.source.state, XeroSkillSourceState::Stale);
 
-    fs::remove_file(
-        plugin_root
-            .join("com-acme-tools")
-            .join("cadence-plugin.json"),
-    )
-    .expect("remove manifest");
+    fs::remove_file(plugin_root.join("com-acme-tools").join("xero-plugin.json"))
+        .expect("remove manifest");
     let stale_records =
         project_store::sync_discovered_plugins(&repo_root, &[], true).expect("mark stale plugins");
-    assert_eq!(stale_records[0].state, CadenceSkillSourceState::Stale);
+    assert_eq!(stale_records[0].state, XeroSkillSourceState::Stale);
     assert_eq!(
         stale_records[0]
             .last_diagnostic
             .as_ref()
             .map(|diagnostic| diagnostic.code.as_str()),
-        Some("cadence_plugin_source_missing")
+        Some("xero_plugin_source_missing")
     );
 }
 
@@ -463,7 +456,7 @@ fn plugin_command_registry_uses_stable_ids_and_reports_duplicate_plugin_conflict
         Some("open-panel"),
         false,
     );
-    let duplicate_manifest_path = duplicate_dir.join("cadence-plugin.json");
+    let duplicate_manifest_path = duplicate_dir.join("xero-plugin.json");
     let mut duplicate_manifest: serde_json::Value = serde_json::from_slice(
         &fs::read(&duplicate_manifest_path).expect("read duplicate plugin manifest"),
     )
@@ -475,7 +468,7 @@ fn plugin_command_registry_uses_stable_ids_and_reports_duplicate_plugin_conflict
     )
     .expect("rewrite duplicate plugin manifest");
 
-    let discovery = discover_plugin_roots(vec![CadencePluginRoot {
+    let discovery = discover_plugin_roots(vec![XeroPluginRoot {
         root_id: "team-plugins".into(),
         root_path: plugin_root,
     }])
@@ -484,7 +477,7 @@ fn plugin_command_registry_uses_stable_ids_and_reports_duplicate_plugin_conflict
     assert!(discovery
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.code == "cadence_plugin_duplicate_id"));
+        .any(|diagnostic| diagnostic.code == "xero_plugin_duplicate_id"));
 
     let records = project_store::sync_discovered_plugins(&repo_root, &discovery.plugins, true)
         .expect("persist discovered plugins");
@@ -547,25 +540,23 @@ fn skill_tool_projects_plugin_skills_trust_disable_and_asset_diagnostics() {
         .iter()
         .find(|candidate| candidate.skill_id == "review-kit")
         .expect("trusted plugin skill");
-    assert_eq!(trusted.source_kind, CadenceSkillSourceKind::Plugin);
-    assert_eq!(trusted.trust, CadenceSkillTrustState::Trusted);
-    assert_eq!(trusted.access.status, CadenceSkillToolAccessStatus::Allowed);
+    assert_eq!(trusted.source_kind, XeroSkillSourceKind::Plugin);
+    assert_eq!(trusted.trust, XeroSkillTrustState::Trusted);
+    assert_eq!(trusted.access.status, XeroSkillToolAccessStatus::Allowed);
 
     let untrusted = output
         .candidates
         .iter()
         .find(|candidate| candidate.skill_id == "untrusted-kit")
         .expect("untrusted plugin skill");
-    assert_eq!(untrusted.trust, CadenceSkillTrustState::Untrusted);
+    assert_eq!(untrusted.trust, XeroSkillTrustState::Untrusted);
 
     let invoke_untrusted = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: untrusted.source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: untrusted.source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke untrusted plugin skill");
     match invoke_untrusted.output {
         AutonomousToolOutput::Skill(output) => {
@@ -576,13 +567,11 @@ fn skill_tool_projects_plugin_skills_trust_disable_and_asset_diagnostics() {
     }
 
     let invoke_trusted = runtime
-        .execute(AutonomousToolRequest::Skill(
-            CadenceSkillToolInput::Invoke {
-                source_id: trusted.source_id.clone(),
-                approval_grant_id: None,
-                include_supporting_assets: true,
-            },
-        ))
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id: trusted.source_id.clone(),
+            approval_grant_id: None,
+            include_supporting_assets: true,
+        }))
         .expect("invoke trusted plugin skill");
     match invoke_trusted.output {
         AutonomousToolOutput::Skill(output) => {
@@ -608,5 +597,5 @@ fn skill_tool_projects_plugin_skills_trust_disable_and_asset_diagnostics() {
         .iter()
         .find(|candidate| candidate.skill_id == "review-kit")
         .expect("disabled plugin skill visible to diagnostics");
-    assert_eq!(disabled.state, CadenceSkillSourceState::Disabled);
+    assert_eq!(disabled.state, XeroSkillSourceState::Disabled);
 }

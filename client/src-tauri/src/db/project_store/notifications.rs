@@ -90,7 +90,7 @@ pub fn upsert_notification_route(
             "notification_route_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the notification-route transaction.",
+            "Xero could not start the notification-route transaction.",
         )
     })?;
 
@@ -135,7 +135,7 @@ pub fn upsert_notification_route(
                 "notification_route_upsert_failed",
                 &database_path,
                 error,
-                "Cadence could not persist notification-route metadata.",
+                "Xero could not persist notification-route metadata.",
             )
         })?;
 
@@ -144,7 +144,7 @@ pub fn upsert_notification_route(
             "notification_route_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the notification-route transaction.",
+            "Xero could not commit the notification-route transaction.",
         )
     })?;
 
@@ -158,7 +158,7 @@ pub fn upsert_notification_route(
         CommandError::system_fault(
             "notification_route_missing_after_persist",
             format!(
-                "Cadence persisted notification route `{}` in {} but could not read it back.",
+                "Xero persisted notification route `{}` in {} but could not read it back.",
                 route.route_id,
                 database_path.display()
             ),
@@ -206,7 +206,7 @@ fn enqueue_notification_dispatches_with_connection(
             "notification_dispatch_transaction_failed",
             database_path,
             error,
-            "Cadence could not start the notification-dispatch enqueue transaction.",
+            "Xero could not start the notification-dispatch enqueue transaction.",
         )
     })?;
 
@@ -220,7 +220,7 @@ fn enqueue_notification_dispatches_with_connection(
         CommandError::user_fixable(
             "notification_dispatch_action_not_found",
             format!(
-                "Cadence could not enqueue notification dispatches because operator action `{}` was not found for project `{}`.",
+                "Xero could not enqueue notification dispatches because operator action `{}` was not found for project `{}`.",
                 enqueue.action_id, enqueue.project_id
             ),
         )
@@ -230,7 +230,7 @@ fn enqueue_notification_dispatches_with_connection(
         return Err(CommandError::user_fixable(
             "notification_dispatch_action_not_pending",
             format!(
-                "Cadence can only enqueue notification dispatches for pending operator actions. Action `{}` is currently {}.",
+                "Xero can only enqueue notification dispatches for pending operator actions. Action `{}` is currently {}.",
                 enqueue.action_id,
                 operator_approval_status_label(&approval.status)
             ),
@@ -294,7 +294,7 @@ fn enqueue_notification_dispatches_with_connection(
                     "notification_dispatch_enqueue_failed",
                     database_path,
                     error,
-                    "Cadence could not persist notification dispatch fan-out rows.",
+                    "Xero could not persist notification dispatch fan-out rows.",
                 )
             })?;
     }
@@ -304,7 +304,7 @@ fn enqueue_notification_dispatches_with_connection(
             "notification_dispatch_commit_failed",
             database_path,
             error,
-            "Cadence could not commit notification dispatch fan-out rows.",
+            "Xero could not commit notification dispatch fan-out rows.",
         )
     })?;
 
@@ -379,7 +379,7 @@ pub fn record_notification_dispatch_outcome(
             "notification_dispatch_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the notification-dispatch outcome transaction.",
+            "Xero could not start the notification-dispatch outcome transaction.",
         )
     })?;
 
@@ -394,7 +394,7 @@ pub fn record_notification_dispatch_outcome(
         CommandError::user_fixable(
             "notification_dispatch_not_found",
             format!(
-                "Cadence could not record dispatch outcome because `{}`/`{}`/`{}` was not found.",
+                "Xero could not record dispatch outcome because `{}`/`{}`/`{}` was not found.",
                 outcome.project_id, outcome.action_id, outcome.route_id
             ),
         )
@@ -404,7 +404,7 @@ pub fn record_notification_dispatch_outcome(
         return Err(CommandError::user_fixable(
             "notification_dispatch_already_claimed",
             format!(
-                "Cadence refused to overwrite dispatch outcome for route `{}` because action `{}` has already been claimed for reply correlation.",
+                "Xero refused to overwrite dispatch outcome for route `{}` because action `{}` has already been claimed for reply correlation.",
                 existing.route_id, existing.action_id
             ),
         ));
@@ -454,7 +454,7 @@ pub fn record_notification_dispatch_outcome(
                 "notification_dispatch_update_failed",
                 &database_path,
                 error,
-                "Cadence could not persist notification dispatch outcome metadata.",
+                "Xero could not persist notification dispatch outcome metadata.",
             )
         })?;
 
@@ -463,7 +463,7 @@ pub fn record_notification_dispatch_outcome(
             "notification_dispatch_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit notification dispatch outcome metadata.",
+            "Xero could not commit notification dispatch outcome metadata.",
         )
     })?;
 
@@ -471,7 +471,7 @@ pub fn record_notification_dispatch_outcome(
         CommandError::system_fault(
             "notification_dispatch_missing_after_persist",
             format!(
-                "Cadence persisted notification dispatch outcome in {} but could not read row {} back.",
+                "Xero persisted notification dispatch outcome in {} but could not read row {} back.",
                 database_path.display(),
                 existing.id
             ),
@@ -494,7 +494,7 @@ pub fn claim_notification_reply(
             "notification_reply_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the notification-reply claim transaction.",
+            "Xero could not start the notification-reply claim transaction.",
         )
     })?;
 
@@ -507,7 +507,7 @@ pub fn claim_notification_reply(
 
     if approval.is_none() {
         let message = format!(
-            "Cadence rejected the notification reply because action `{}` is not pending for project `{}`.",
+            "Xero rejected the notification reply because action `{}` is not pending for project `{}`.",
             request.action_id, request.project_id
         );
         persist_notification_reply_rejection(
@@ -522,7 +522,7 @@ pub fn claim_notification_reply(
                 "notification_reply_commit_failed",
                 &database_path,
                 error,
-                "Cadence could not commit the rejected notification reply claim.",
+                "Xero could not commit the rejected notification reply claim.",
             )
         })?;
 
@@ -535,7 +535,7 @@ pub fn claim_notification_reply(
     let approval = approval.expect("checked above");
     if approval.status != OperatorApprovalStatus::Pending {
         let message = format!(
-            "Cadence rejected the notification reply because action `{}` is already {}.",
+            "Xero rejected the notification reply because action `{}` is already {}.",
             request.action_id,
             operator_approval_status_label(&approval.status)
         );
@@ -551,7 +551,7 @@ pub fn claim_notification_reply(
                 "notification_reply_commit_failed",
                 &database_path,
                 error,
-                "Cadence could not commit the rejected notification reply claim.",
+                "Xero could not commit the rejected notification reply claim.",
             )
         })?;
 
@@ -570,7 +570,7 @@ pub fn claim_notification_reply(
     )?
     else {
         let message = format!(
-            "Cadence rejected the notification reply because route `{}` is not linked to action `{}` for project `{}`.",
+            "Xero rejected the notification reply because route `{}` is not linked to action `{}` for project `{}`.",
             request.route_id, request.action_id, request.project_id
         );
         persist_notification_reply_rejection(
@@ -585,7 +585,7 @@ pub fn claim_notification_reply(
                 "notification_reply_commit_failed",
                 &database_path,
                 error,
-                "Cadence could not commit the rejected notification reply claim.",
+                "Xero could not commit the rejected notification reply claim.",
             )
         })?;
 
@@ -597,7 +597,7 @@ pub fn claim_notification_reply(
 
     if dispatch.correlation_key != request.correlation_key {
         let message = format!(
-            "Cadence rejected the notification reply because correlation key `{}` does not match route `{}` for action `{}`.",
+            "Xero rejected the notification reply because correlation key `{}` does not match route `{}` for action `{}`.",
             request.correlation_key, request.route_id, request.action_id
         );
         persist_notification_reply_rejection(
@@ -612,7 +612,7 @@ pub fn claim_notification_reply(
                 "notification_reply_commit_failed",
                 &database_path,
                 error,
-                "Cadence could not commit the rejected notification reply claim.",
+                "Xero could not commit the rejected notification reply claim.",
             )
         })?;
 
@@ -629,7 +629,7 @@ pub fn claim_notification_reply(
         &request.action_id,
     )? {
         let message = format!(
-            "Cadence rejected the notification reply because action `{}` was already claimed by route `{}` at {}.",
+            "Xero rejected the notification reply because action `{}` was already claimed by route `{}` at {}.",
             request.action_id, existing_winner.route_id, existing_winner.created_at
         );
         persist_notification_reply_rejection(
@@ -644,7 +644,7 @@ pub fn claim_notification_reply(
                 "notification_reply_commit_failed",
                 &database_path,
                 error,
-                "Cadence could not commit the rejected notification reply claim.",
+                "Xero could not commit the rejected notification reply claim.",
             )
         })?;
 
@@ -684,7 +684,7 @@ pub fn claim_notification_reply(
     if let Err(error) = accepted_insert {
         if is_unique_constraint_violation(&error) {
             let message = format!(
-                "Cadence rejected the notification reply because action `{}` was already claimed by another route.",
+                "Xero rejected the notification reply because action `{}` was already claimed by another route.",
                 request.action_id
             );
             persist_notification_reply_rejection(
@@ -699,7 +699,7 @@ pub fn claim_notification_reply(
                     "notification_reply_commit_failed",
                     &database_path,
                     commit_error,
-                    "Cadence could not commit the rejected notification reply claim.",
+                    "Xero could not commit the rejected notification reply claim.",
                 )
             })?;
 
@@ -713,7 +713,7 @@ pub fn claim_notification_reply(
             "notification_reply_claim_persist_failed",
             &database_path,
             error,
-            "Cadence could not persist the accepted notification reply claim.",
+            "Xero could not persist the accepted notification reply claim.",
         ));
     }
 
@@ -735,7 +735,7 @@ pub fn claim_notification_reply(
                 "notification_reply_dispatch_update_failed",
                 &database_path,
                 error,
-                "Cadence could not persist notification-dispatch claim metadata.",
+                "Xero could not persist notification-dispatch claim metadata.",
             )
         })?;
 
@@ -744,7 +744,7 @@ pub fn claim_notification_reply(
             "notification_reply_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the notification reply claim transaction.",
+            "Xero could not commit the notification reply claim transaction.",
         )
     })?;
 
@@ -753,7 +753,7 @@ pub fn claim_notification_reply(
             CommandError::system_fault(
                 "notification_reply_missing_after_persist",
                 format!(
-                    "Cadence persisted accepted notification reply claim `{accepted_claim_id}` in {} but could not read it back.",
+                    "Xero persisted accepted notification reply claim `{accepted_claim_id}` in {} but could not read it back.",
                     database_path.display()
                 ),
             )
@@ -764,7 +764,7 @@ pub fn claim_notification_reply(
                 CommandError::system_fault(
                     "notification_dispatch_missing_after_persist",
                     format!(
-                        "Cadence persisted notification dispatch claim metadata in {} but could not read row {} back.",
+                        "Xero persisted notification dispatch claim metadata in {} but could not read row {} back.",
                         database_path.display(),
                         dispatch.id
                     ),
@@ -823,7 +823,7 @@ fn read_notification_routes(
             CommandError::system_fault(
                 "notification_route_query_failed",
                 format!(
-                    "Cadence could not prepare notification-route rows from {}: {error}",
+                    "Xero could not prepare notification-route rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -846,7 +846,7 @@ fn read_notification_routes(
             CommandError::system_fault(
                 "notification_route_query_failed",
                 format!(
-                    "Cadence could not query notification-route rows from {}: {error}",
+                    "Xero could not query notification-route rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -859,7 +859,7 @@ fn read_notification_routes(
                     CommandError::system_fault(
                         "notification_route_decode_failed",
                         format!(
-                            "Cadence could not decode notification-route rows from {}: {error}",
+                            "Xero could not decode notification-route rows from {}: {error}",
                             database_path.display()
                         ),
                     )
@@ -897,7 +897,7 @@ fn read_notification_route_by_id(
             CommandError::system_fault(
                 "notification_route_query_failed",
                 format!(
-                    "Cadence could not prepare notification-route lookup from {}: {error}",
+                    "Xero could not prepare notification-route lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -909,7 +909,7 @@ fn read_notification_route_by_id(
             CommandError::system_fault(
                 "notification_route_query_failed",
                 format!(
-                    "Cadence could not query notification-route lookup from {}: {error}",
+                    "Xero could not query notification-route lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -919,7 +919,7 @@ fn read_notification_route_by_id(
         CommandError::system_fault(
             "notification_route_query_failed",
             format!(
-                "Cadence could not read notification-route lookup rows from {}: {error}",
+                "Xero could not read notification-route lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -934,7 +934,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -943,7 +943,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -952,7 +952,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -961,7 +961,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -970,7 +970,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -979,7 +979,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -988,7 +988,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -997,7 +997,7 @@ fn read_notification_route_by_id(
                 CommandError::system_fault(
                     "notification_route_decode_failed",
                     format!(
-                        "Cadence could not decode notification-route lookup rows from {}: {error}",
+                        "Xero could not decode notification-route lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1044,7 +1044,7 @@ fn read_notification_dispatches(
                 CommandError::system_fault(
                     "notification_dispatch_query_failed",
                     format!(
-                        "Cadence could not prepare notification-dispatch rows from {}: {error}",
+                        "Xero could not prepare notification-dispatch rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1078,7 +1078,7 @@ fn read_notification_dispatches(
                 CommandError::system_fault(
                     "notification_dispatch_query_failed",
                     format!(
-                        "Cadence could not prepare notification-dispatch rows from {}: {error}",
+                        "Xero could not prepare notification-dispatch rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1112,7 +1112,7 @@ fn read_notification_dispatches(
                 CommandError::system_fault(
                     "notification_dispatch_query_failed",
                     format!(
-                        "Cadence could not query notification-dispatch rows from {}: {error}",
+                        "Xero could not query notification-dispatch rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1125,7 +1125,7 @@ fn read_notification_dispatches(
                         CommandError::system_fault(
                             "notification_dispatch_decode_failed",
                             format!(
-                                "Cadence could not decode notification-dispatch rows from {}: {error}",
+                                "Xero could not decode notification-dispatch rows from {}: {error}",
                                 database_path.display()
                             ),
                         )
@@ -1157,7 +1157,7 @@ fn read_notification_dispatches(
                 CommandError::system_fault(
                     "notification_dispatch_query_failed",
                     format!(
-                        "Cadence could not query notification-dispatch rows from {}: {error}",
+                        "Xero could not query notification-dispatch rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1170,7 +1170,7 @@ fn read_notification_dispatches(
                         CommandError::system_fault(
                             "notification_dispatch_decode_failed",
                             format!(
-                                "Cadence could not decode notification-dispatch rows from {}: {error}",
+                                "Xero could not decode notification-dispatch rows from {}: {error}",
                                 database_path.display()
                             ),
                         )
@@ -1219,7 +1219,7 @@ fn read_pending_notification_dispatches(
             CommandError::system_fault(
                 "notification_dispatch_query_failed",
                 format!(
-                    "Cadence could not prepare pending notification-dispatch query from {}: {error}",
+                    "Xero could not prepare pending notification-dispatch query from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1248,7 +1248,7 @@ fn read_pending_notification_dispatches(
             CommandError::system_fault(
                 "notification_dispatch_query_failed",
                 format!(
-                    "Cadence could not query pending notification-dispatch rows from {}: {error}",
+                    "Xero could not query pending notification-dispatch rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1261,7 +1261,7 @@ fn read_pending_notification_dispatches(
                     CommandError::system_fault(
                         "notification_dispatch_decode_failed",
                         format!(
-                            "Cadence could not decode pending notification-dispatch rows from {}: {error}",
+                            "Xero could not decode pending notification-dispatch rows from {}: {error}",
                             database_path.display()
                         ),
                     )
@@ -1307,7 +1307,7 @@ fn read_notification_dispatch_by_route(
             CommandError::system_fault(
                 "notification_dispatch_query_failed",
                 format!(
-                    "Cadence could not prepare notification-dispatch lookup from {}: {error}",
+                    "Xero could not prepare notification-dispatch lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1319,7 +1319,7 @@ fn read_notification_dispatch_by_route(
             CommandError::system_fault(
                 "notification_dispatch_query_failed",
                 format!(
-                    "Cadence could not query notification-dispatch lookup from {}: {error}",
+                    "Xero could not query notification-dispatch lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1329,7 +1329,7 @@ fn read_notification_dispatch_by_route(
         CommandError::system_fault(
             "notification_dispatch_query_failed",
             format!(
-                "Cadence could not read notification-dispatch lookup rows from {}: {error}",
+                "Xero could not read notification-dispatch lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1344,7 +1344,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1353,7 +1353,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1362,7 +1362,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1371,7 +1371,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1380,7 +1380,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1389,7 +1389,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1398,7 +1398,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1407,7 +1407,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1416,7 +1416,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1425,7 +1425,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1434,7 +1434,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1443,7 +1443,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1452,7 +1452,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1461,7 +1461,7 @@ fn read_notification_dispatch_by_route(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1504,7 +1504,7 @@ fn read_notification_dispatch_by_id(
             CommandError::system_fault(
                 "notification_dispatch_query_failed",
                 format!(
-                    "Cadence could not prepare notification-dispatch id lookup from {}: {error}",
+                    "Xero could not prepare notification-dispatch id lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1514,7 +1514,7 @@ fn read_notification_dispatch_by_id(
         CommandError::system_fault(
             "notification_dispatch_query_failed",
             format!(
-                "Cadence could not query notification-dispatch id lookup from {}: {error}",
+                "Xero could not query notification-dispatch id lookup from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1524,7 +1524,7 @@ fn read_notification_dispatch_by_id(
         CommandError::system_fault(
             "notification_dispatch_query_failed",
             format!(
-                "Cadence could not read notification-dispatch id lookup rows from {}: {error}",
+                "Xero could not read notification-dispatch id lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1539,7 +1539,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1548,7 +1548,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1557,7 +1557,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1566,7 +1566,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1575,7 +1575,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1584,7 +1584,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1593,7 +1593,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1602,7 +1602,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1611,7 +1611,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1620,7 +1620,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1629,7 +1629,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1638,7 +1638,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1647,7 +1647,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1656,7 +1656,7 @@ fn read_notification_dispatch_by_id(
                 CommandError::system_fault(
                     "notification_dispatch_decode_failed",
                     format!(
-                        "Cadence could not decode notification-dispatch id lookup rows from {}: {error}",
+                        "Xero could not decode notification-dispatch id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1700,7 +1700,7 @@ fn read_notification_reply_claims(
                 CommandError::system_fault(
                     "notification_reply_query_failed",
                     format!(
-                        "Cadence could not prepare notification-reply claim rows from {}: {error}",
+                        "Xero could not prepare notification-reply claim rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1731,7 +1731,7 @@ fn read_notification_reply_claims(
                 CommandError::system_fault(
                     "notification_reply_query_failed",
                     format!(
-                        "Cadence could not prepare notification-reply claim rows from {}: {error}",
+                        "Xero could not prepare notification-reply claim rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1762,7 +1762,7 @@ fn read_notification_reply_claims(
                 CommandError::system_fault(
                     "notification_reply_query_failed",
                     format!(
-                        "Cadence could not query notification-reply claim rows from {}: {error}",
+                        "Xero could not query notification-reply claim rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1775,7 +1775,7 @@ fn read_notification_reply_claims(
                         CommandError::system_fault(
                             "notification_reply_decode_failed",
                             format!(
-                                "Cadence could not decode notification-reply claim rows from {}: {error}",
+                                "Xero could not decode notification-reply claim rows from {}: {error}",
                                 database_path.display()
                             ),
                         )
@@ -1807,7 +1807,7 @@ fn read_notification_reply_claims(
                 CommandError::system_fault(
                     "notification_reply_query_failed",
                     format!(
-                        "Cadence could not query notification-reply claim rows from {}: {error}",
+                        "Xero could not query notification-reply claim rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1820,7 +1820,7 @@ fn read_notification_reply_claims(
                         CommandError::system_fault(
                             "notification_reply_decode_failed",
                             format!(
-                                "Cadence could not decode notification-reply claim rows from {}: {error}",
+                                "Xero could not decode notification-reply claim rows from {}: {error}",
                                 database_path.display()
                             ),
                         )
@@ -1860,7 +1860,7 @@ fn read_notification_reply_claim_by_id(
             CommandError::system_fault(
                 "notification_reply_query_failed",
                 format!(
-                    "Cadence could not prepare notification-reply claim id lookup from {}: {error}",
+                    "Xero could not prepare notification-reply claim id lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1870,7 +1870,7 @@ fn read_notification_reply_claim_by_id(
         CommandError::system_fault(
             "notification_reply_query_failed",
             format!(
-                "Cadence could not query notification-reply claim id lookup from {}: {error}",
+                "Xero could not query notification-reply claim id lookup from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1880,7 +1880,7 @@ fn read_notification_reply_claim_by_id(
         CommandError::system_fault(
             "notification_reply_query_failed",
             format!(
-                "Cadence could not read notification-reply claim id lookup rows from {}: {error}",
+                "Xero could not read notification-reply claim id lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1895,7 +1895,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1904,7 +1904,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1913,7 +1913,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1922,7 +1922,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1931,7 +1931,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1940,7 +1940,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1949,7 +1949,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1958,7 +1958,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1967,7 +1967,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1976,7 +1976,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1985,7 +1985,7 @@ fn read_notification_reply_claim_by_id(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode notification-reply claim id lookup rows from {}: {error}",
+                        "Xero could not decode notification-reply claim id lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2029,7 +2029,7 @@ fn read_notification_winning_reply_claim(
             CommandError::system_fault(
                 "notification_reply_query_failed",
                 format!(
-                    "Cadence could not prepare winning notification-reply lookup from {}: {error}",
+                    "Xero could not prepare winning notification-reply lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -2041,7 +2041,7 @@ fn read_notification_winning_reply_claim(
             CommandError::system_fault(
                 "notification_reply_query_failed",
                 format!(
-                    "Cadence could not query winning notification-reply lookup from {}: {error}",
+                    "Xero could not query winning notification-reply lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -2051,7 +2051,7 @@ fn read_notification_winning_reply_claim(
         CommandError::system_fault(
             "notification_reply_query_failed",
             format!(
-                "Cadence could not read winning notification-reply lookup rows from {}: {error}",
+                "Xero could not read winning notification-reply lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -2066,7 +2066,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2075,7 +2075,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2084,7 +2084,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2093,7 +2093,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2102,7 +2102,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2111,7 +2111,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2120,7 +2120,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2129,7 +2129,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2138,7 +2138,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2147,7 +2147,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2156,7 +2156,7 @@ fn read_notification_winning_reply_claim(
                 CommandError::system_fault(
                     "notification_reply_decode_failed",
                     format!(
-                        "Cadence could not decode winning notification-reply lookup rows from {}: {error}",
+                        "Xero could not decode winning notification-reply lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -2208,7 +2208,7 @@ fn persist_notification_reply_rejection(
                 "notification_reply_claim_persist_failed",
                 database_path,
                 error,
-                "Cadence could not persist the rejected notification reply claim.",
+                "Xero could not persist the rejected notification reply claim.",
             )
         })?;
 
@@ -2641,7 +2641,7 @@ fn normalize_optional_notification_metadata_json(
     serde_json::to_string(&value).map(Some).map_err(|error| {
         CommandError::system_fault(
             code,
-            format!("Cadence could not canonicalize notification route metadata JSON: {error}"),
+            format!("Xero could not canonicalize notification route metadata JSON: {error}"),
         )
     })
 }

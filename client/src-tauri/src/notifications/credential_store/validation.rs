@@ -21,7 +21,7 @@ pub(crate) fn require_identifier(
     let value = value.trim();
     if value.is_empty() {
         return Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires non-empty `{field}` values before persisting app-local notification credentials.",
+            "Xero requires non-empty `{field}` values before persisting app-local notification credentials.",
         )));
     }
 
@@ -69,7 +69,7 @@ pub(crate) fn sanitize_upsert_credentials(
             Ok((bot_token, None, Some(webhook_url)))
         }
         (expected_kind, _) => Err(NotificationAdapterError::payload_invalid(format!(
-            "Cadence requires `{}` credentials for route `{route_id}` in project `{project_id}`.",
+            "Xero requires `{}` credentials for route `{route_id}` in project `{project_id}`.",
             expected_kind.as_str()
         ))),
     }
@@ -83,7 +83,7 @@ pub(crate) fn require_non_empty(
 ) -> Result<String, NotificationAdapterError> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Err(NotificationAdapterError::credentials_missing(format!(
-            "Cadence has no app-local `{field}` credential for notification route `{route_id}` in project `{project_id}`."
+            "Xero has no app-local `{field}` credential for notification route `{route_id}` in project `{project_id}`."
         )));
     };
 
@@ -97,13 +97,13 @@ pub(crate) fn validate_webhook_url(
 ) -> Result<(), NotificationAdapterError> {
     let parsed = Url::parse(webhook_url).map_err(|_| {
         NotificationAdapterError::credentials_malformed(format!(
-            "Cadence found malformed `webhookUrl` credentials for route `{route_id}` in project `{project_id}`."
+            "Xero found malformed `webhookUrl` credentials for route `{route_id}` in project `{project_id}`."
         ))
     })?;
 
     if parsed.scheme() != "https" {
         return Err(NotificationAdapterError::credentials_malformed(format!(
-            "Cadence requires `https` Discord webhook credentials for route `{route_id}` in project `{project_id}`."
+            "Xero requires `https` Discord webhook credentials for route `{route_id}` in project `{project_id}`."
         )));
     }
 

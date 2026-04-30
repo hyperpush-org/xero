@@ -4,7 +4,7 @@ import Foundation
 import Security
 import Speech
 
-struct CadenceDictationCapabilityStatus: Encodable {
+struct XeroDictationCapabilityStatus: Encodable {
     let platform: String
     let osVersion: String
     let defaultLocale: String?
@@ -20,18 +20,18 @@ struct CadenceDictationCapabilityStatus: Encodable {
     let speechPermission: String
 }
 
-@_cdecl("cadence_dictation_capability_status_json")
-public func cadenceDictationCapabilityStatusJson() -> UnsafeMutablePointer<CChar>? {
+@_cdecl("xero_dictation_capability_status_json")
+public func xeroDictationCapabilityStatusJson() -> UnsafeMutablePointer<CChar>? {
     let localeIdentifier = Locale.current.identifier
     let legacy = legacySpeechAvailability(localeIdentifier: localeIdentifier)
-    let modernAssets = cadenceDictationModernAssetProbe(localeIdentifier: localeIdentifier)
-    let status = CadenceDictationCapabilityStatus(
+    let modernAssets = xeroDictationModernAssetProbe(localeIdentifier: localeIdentifier)
+    let status = XeroDictationCapabilityStatus(
         platform: "macos",
         osVersion: operatingSystemVersionString(),
         defaultLocale: localeIdentifier,
         supportedLocales: supportedSpeechLocaleIdentifiers(),
-        modernCompiled: cadenceDictationModernCompiled(),
-        modernRuntimeSupported: cadenceDictationModernRuntimeSupported(),
+        modernCompiled: xeroDictationModernCompiled(),
+        modernRuntimeSupported: xeroDictationModernRuntimeSupported(),
         modernAssetsStatus: modernAssets.status,
         modernAssetLocale: modernAssets.localeIdentifier,
         modernAssetsReason: modernAssets.reason,
@@ -49,8 +49,8 @@ public func cadenceDictationCapabilityStatusJson() -> UnsafeMutablePointer<CChar
     return duplicateCString(json)
 }
 
-@_cdecl("cadence_dictation_free_string")
-public func cadenceDictationFreeString(_ value: UnsafeMutablePointer<CChar>?) {
+@_cdecl("xero_dictation_free_string")
+public func xeroDictationFreeString(_ value: UnsafeMutablePointer<CChar>?) {
     if let value = value {
         free(value)
     }

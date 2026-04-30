@@ -65,10 +65,10 @@ const MAX_PROCESS_HIGHLIGHTS: usize = 32;
 const MAX_SYSTEM_PROCESS_RESULTS: usize = 200;
 const MAX_SYSTEM_TREE_PROCESSES: usize = 512;
 const MAX_SYSTEM_PORT_RESULTS: usize = 200;
-const ASYNC_JOB_ARTIFACT_DIR: &str = "cadence-process-artifacts";
+const ASYNC_JOB_ARTIFACT_DIR: &str = "xero-process-artifacts";
 const REDACTED_PROCESS_OUTPUT_SUMMARY: &str =
     "Process output was redacted before durable persistence.";
-const INTERNAL_MARKER_PREFIX: &str = "__CADENCE_";
+const INTERNAL_MARKER_PREFIX: &str = "__XERO_";
 
 #[derive(Debug, Default)]
 pub(super) struct OwnedProcessRegistry {
@@ -89,7 +89,7 @@ impl OwnedProcessRegistry {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_limit_reached",
                 format!(
-                    "Cadence limits the process manager to {MAX_OWNED_PROCESSES} concurrent owned process(es). Kill an existing process before starting another."
+                    "Xero limits the process manager to {MAX_OWNED_PROCESSES} concurrent owned process(es). Kill an existing process before starting another."
                 ),
             ));
         }
@@ -103,7 +103,7 @@ impl OwnedProcessRegistry {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_limit_reached",
                 format!(
-                    "Cadence limits the process manager to {MAX_OWNED_PROCESSES} concurrent owned process(es). Kill an existing process before starting another."
+                    "Xero limits the process manager to {MAX_OWNED_PROCESSES} concurrent owned process(es). Kill an existing process before starting another."
                 ),
             ));
         }
@@ -116,7 +116,7 @@ impl OwnedProcessRegistry {
         processes.get(process_id).cloned().ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_not_found",
-                format!("Cadence could not find owned process `{process_id}`."),
+                format!("Xero could not find owned process `{process_id}`."),
             )
         })
     }
@@ -131,7 +131,7 @@ impl OwnedProcessRegistry {
         processes.remove(process_id).ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_not_found",
-                format!("Cadence could not find owned process `{process_id}`."),
+                format!("Xero could not find owned process `{process_id}`."),
             )
         })
     }
@@ -170,7 +170,7 @@ impl Drop for OwnedProcessRegistry {
 fn process_registry_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock the owned process registry.",
+        "Xero could not lock the owned process registry.",
     )
 }
 
@@ -257,7 +257,7 @@ impl OwnedProcess {
                 session_id: None,
                 repo_id: None,
                 user_id: None,
-                scope: AutonomousProcessOwnershipScope::CadenceOwned,
+                scope: AutonomousProcessOwnershipScope::XeroOwned,
             },
             launch_config,
             command,
@@ -484,7 +484,7 @@ impl OwnedProcess {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_stdin_closed",
                 format!(
-                    "Cadence cannot send stdin to owned process `{}` because it has exited.",
+                    "Xero cannot send stdin to owned process `{}` because it has exited.",
                     self.process_id
                 ),
             ));
@@ -496,7 +496,7 @@ impl OwnedProcess {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_stdin_unavailable",
                 format!(
-                    "Cadence cannot send stdin to owned process `{}` because stdin is {state:?}. Start the process with interactive=true or shellMode=true.",
+                    "Xero cannot send stdin to owned process `{}` because stdin is {state:?}. Start the process with interactive=true or shellMode=true.",
                     self.process_id
                 ),
             ));
@@ -506,7 +506,7 @@ impl OwnedProcess {
             CommandError::retryable(
                 "autonomous_tool_process_manager_stdin_write_failed",
                 format!(
-                    "Cadence could not write stdin to owned process `{}`: {error}",
+                    "Xero could not write stdin to owned process `{}`: {error}",
                     self.process_id
                 ),
             )
@@ -515,7 +515,7 @@ impl OwnedProcess {
             CommandError::retryable(
                 "autonomous_tool_process_manager_stdin_flush_failed",
                 format!(
-                    "Cadence could not flush stdin for owned process `{}`: {error}",
+                    "Xero could not flush stdin for owned process `{}`: {error}",
                     self.process_id
                 ),
             )
@@ -555,7 +555,7 @@ impl OwnedProcess {
             Err(error) => Err(CommandError::retryable(
                 "autonomous_tool_process_manager_wait_failed",
                 format!(
-                    "Cadence could not observe owned process `{}`: {error}",
+                    "Xero could not observe owned process `{}`: {error}",
                     self.process_id
                 ),
             )),
@@ -588,7 +588,7 @@ impl OwnedProcess {
                     CommandError::retryable(
                         "autonomous_tool_process_manager_kill_failed",
                         format!(
-                            "Cadence could not kill owned process `{}`: {error}",
+                            "Xero could not kill owned process `{}`: {error}",
                             self.process_id
                         ),
                     )
@@ -604,7 +604,7 @@ impl OwnedProcess {
             Err(error) => Err(CommandError::retryable(
                 "autonomous_tool_process_manager_wait_failed",
                 format!(
-                    "Cadence could not observe owned process `{}` before killing it: {error}",
+                    "Xero could not observe owned process `{}` before killing it: {error}",
                     self.process_id
                 ),
             )),
@@ -647,7 +647,7 @@ impl OwnedProcess {
             CommandError::system_fault(
                 "autonomous_tool_process_manager_artifact_failed",
                 format!(
-                    "Cadence could not create async job artifact directory {}: {error}",
+                    "Xero could not create async job artifact directory {}: {error}",
                     dir.display()
                 ),
             )
@@ -660,7 +660,7 @@ impl OwnedProcess {
             CommandError::system_fault(
                 "autonomous_tool_process_manager_artifact_failed",
                 format!(
-                    "Cadence could not write async job artifact {}: {error}",
+                    "Xero could not write async job artifact {}: {error}",
                     path.display()
                 ),
             )
@@ -768,42 +768,42 @@ impl OwnedProcess {
 fn process_state_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock owned process state.",
+        "Xero could not lock owned process state.",
     )
 }
 
 fn process_status_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock owned process status.",
+        "Xero could not lock owned process status.",
     )
 }
 
 fn process_readiness_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock owned process readiness state.",
+        "Xero could not lock owned process readiness state.",
     )
 }
 
 fn process_exit_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock owned process exit state.",
+        "Xero could not lock owned process exit state.",
     )
 }
 
 fn process_output_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock owned process output.",
+        "Xero could not lock owned process output.",
     )
 }
 
 fn process_stdin_lock_error(_error: std::sync::PoisonError<impl Sized>) -> CommandError {
     CommandError::system_fault(
         "autonomous_tool_process_manager_lock_failed",
-        "Cadence could not lock owned process stdin.",
+        "Xero could not lock owned process stdin.",
     )
 }
 
@@ -920,7 +920,7 @@ impl AutonomousToolRuntime {
             }
             AutonomousProcessManagerAction::Signal => Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_signal_unsupported",
-                "Cadence phase 5 supports external signaling through system_signal; owned generic signal is not implemented yet.",
+                "Xero phase 5 supports external signaling through system_signal; owned generic signal is not implemented yet.",
             )),
         }
     }
@@ -1049,12 +1049,12 @@ impl AutonomousToolRuntime {
         let mut child = command.spawn().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => CommandError::user_fixable(
                 "autonomous_tool_process_manager_not_found",
-                format!("Cadence could not find command `{}`.", prepared.argv[0]),
+                format!("Xero could not find command `{}`.", prepared.argv[0]),
             ),
             _ => CommandError::system_fault(
                 "autonomous_tool_process_manager_spawn_failed",
                 format!(
-                    "Cadence could not launch owned process `{}`: {error}",
+                    "Xero could not launch owned process `{}`: {error}",
                     prepared.argv[0]
                 ),
             ),
@@ -1069,14 +1069,14 @@ impl AutonomousToolRuntime {
             let _ = terminate_process_tree(&mut child);
             CommandError::system_fault(
                 "autonomous_tool_process_manager_stdout_missing",
-                "Cadence could not capture owned process stdout.",
+                "Xero could not capture owned process stdout.",
             )
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
             let _ = terminate_process_tree(&mut child);
             CommandError::system_fault(
                 "autonomous_tool_process_manager_stderr_missing",
-                "Cadence could not capture owned process stderr.",
+                "Xero could not capture owned process stderr.",
             )
         })?;
 
@@ -1197,7 +1197,7 @@ impl AutonomousToolRuntime {
             .unwrap_or_else(|| ".".into());
         let policy = process_policy_requiring_command_approval(command_policy);
         let message = format!(
-            "Owned process `{}` requires operator review before Cadence can start it.",
+            "Owned process `{}` requires operator review before Xero can start it.",
             render_command_for_summary(&prepared.argv)
         );
         Ok(process_manager_result(ProcessManagerResultInput {
@@ -1229,7 +1229,7 @@ impl AutonomousToolRuntime {
             let _ = process.poll_exit()?;
             metadata.push(process.metadata()?);
         }
-        let message = format!("Listed {} Cadence-owned process(es).", metadata.len());
+        let message = format!("Listed {} Xero-owned process(es).", metadata.len());
         Ok(process_manager_result(ProcessManagerResultInput {
             action: AutonomousProcessManagerAction::List,
             spawned: true,
@@ -1343,7 +1343,7 @@ impl AutonomousToolRuntime {
             })
             .sum::<usize>();
         let message = format!(
-            "Returned {highlight_count} process highlight(s) from {} Cadence-owned process(es).",
+            "Returned {highlight_count} process highlight(s) from {} Xero-owned process(es).",
             metadata.len()
         );
         Ok(process_manager_result(ProcessManagerResultInput {
@@ -1665,7 +1665,7 @@ impl AutonomousToolRuntime {
         let group = normalized_group(&request)?;
         let metadata = self.process_metadata_for_group(&group)?;
         let digest = if metadata.is_empty() {
-            format!("No Cadence-owned processes are registered in group `{group}`.")
+            format!("No Xero-owned processes are registered in group `{group}`.")
         } else {
             process_digest(&metadata)
         };
@@ -1708,7 +1708,7 @@ impl AutonomousToolRuntime {
             metadata.push(process.metadata()?);
         }
         let message = format!(
-            "Killed {} Cadence-owned process(es) in group `{group}`.",
+            "Killed {} Xero-owned process(es) in group `{group}`.",
             metadata.len()
         );
         Ok(process_manager_result(ProcessManagerResultInput {
@@ -1756,7 +1756,7 @@ impl AutonomousToolRuntime {
                         request.target_ownership,
                         false,
                     ),
-                    message: "No Cadence-owned async jobs are registered.".into(),
+                    message: "No Xero-owned async jobs are registered.".into(),
                 }));
             }
 
@@ -1812,7 +1812,7 @@ impl AutonomousToolRuntime {
                         request.target_ownership,
                         false,
                     ),
-                    message: "Timed out waiting for Cadence-owned async job completion.".into(),
+                    message: "Timed out waiting for Xero-owned async job completion.".into(),
                 }));
             }
 
@@ -2028,7 +2028,7 @@ impl AutonomousToolRuntime {
                 next_cursor: request.after_cursor,
                 policy: approval_policy,
                 message: format!(
-                    "External process PID {pid} requires operator review before Cadence can send signal {}.",
+                    "External process PID {pid} requires operator review before Xero can send signal {}.",
                     signal.label
                 ),
             }));
@@ -2090,7 +2090,7 @@ impl AutonomousToolRuntime {
                 next_cursor: request.after_cursor,
                 policy: approval_policy,
                 message: format!(
-                    "External process tree rooted at PID {pid} requires operator review before Cadence can kill it."
+                    "External process tree rooted at PID {pid} requires operator review before Xero can kill it."
                 ),
             }));
         }
@@ -2187,7 +2187,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_timeout_invalid",
                 format!(
-                    "Cadence requires process_manager timeoutMs to be between 1 and {}.",
+                    "Xero requires process_manager timeoutMs to be between 1 and {}.",
                     self.limits.max_command_timeout_ms
                 ),
             ));
@@ -2449,7 +2449,7 @@ impl AutonomousToolRuntime {
             .map_err(|error| {
                 CommandError::system_fault(
                     "autonomous_tool_process_manager_http_client_failed",
-                    format!("Cadence could not create a readiness HTTP client: {error}"),
+                    format!("Xero could not create a readiness HTTP client: {error}"),
                 )
             })?;
         let started = Instant::now();
@@ -2516,7 +2516,7 @@ fn validate_process_manager_request(
             {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_process_manager_start_invalid",
-                    "Cadence requires process_manager start requests to include a non-empty argv[0].",
+                    "Xero requires process_manager start requests to include a non-empty argv[0].",
                 ));
             }
             if !request.argv.is_empty() {
@@ -2549,7 +2549,7 @@ fn validate_process_manager_request(
             {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_process_manager_pid_required",
-                    "Cadence requires system process actions to include pid or a numeric processId.",
+                    "Xero requires system process actions to include pid or a numeric processId.",
                 ));
             }
         }
@@ -2591,7 +2591,7 @@ fn validate_process_manager_request(
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_tail_lines_invalid",
                 format!(
-                    "Cadence requires process_manager tailLines to be between 1 and {MAX_PROCESS_OUTPUT_TAIL_LINES}."
+                    "Xero requires process_manager tailLines to be between 1 and {MAX_PROCESS_OUTPUT_TAIL_LINES}."
                 ),
             ));
         }
@@ -2606,14 +2606,14 @@ fn validate_process_manager_request(
     {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_wait_pattern_required",
-            "Cadence requires send_and_wait requests to include waitPattern.",
+            "Xero requires send_and_wait requests to include waitPattern.",
         ));
     }
     if request.action == AutonomousProcessManagerAction::AsyncStart && request.timeout_ms == Some(0)
     {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_timeout_invalid",
-            "Cadence requires async_start timeoutMs to be greater than zero when provided.",
+            "Xero requires async_start timeoutMs to be greater than zero when provided.",
         ));
     }
     if let Some(wait_url) = request.wait_url.as_deref() {
@@ -2637,13 +2637,13 @@ fn validate_phase_5_scope(request: &AutonomousProcessManagerRequest) -> CommandR
     {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_external_unsupported",
-            "Cadence process_manager external ownership is only supported by the phase 5 system_* actions.",
+            "Xero process_manager external ownership is only supported by the phase 5 system_* actions.",
         ));
     }
     if request.persistent {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_persistent_unsupported",
-            "Cadence phase 5 process_manager does not support durable background persistence yet.",
+            "Xero phase 5 process_manager does not support durable background persistence yet.",
         ));
     }
     match request.action {
@@ -2672,7 +2672,7 @@ fn validate_phase_5_scope(request: &AutonomousProcessManagerRequest) -> CommandR
         | AutonomousProcessManagerAction::SystemKillTree => Ok(()),
         AutonomousProcessManagerAction::Signal => Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_signal_unsupported",
-            "Cadence phase 5 supports external signaling through system_signal; owned generic signal is not implemented yet.",
+            "Xero phase 5 supports external signaling through system_signal; owned generic signal is not implemented yet.",
         )),
     }
 }
@@ -2681,7 +2681,7 @@ fn validate_argv_contract(argv: &[String]) -> CommandResult<()> {
     if argv.iter().any(|argument| argument.contains('\0')) {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_start_invalid",
-            "Cadence refused a process_manager command that contained a NUL byte.",
+            "Xero refused a process_manager command that contained a NUL byte.",
         ));
     }
 
@@ -2750,7 +2750,7 @@ pub(super) fn process_manager_contract() -> AutonomousProcessManagerContract {
             full_output_artifacts: true,
         },
         lifecycle: AutonomousProcessLifecycleContract {
-            app_shutdown: "terminate_non_persistent_cadence_owned_process_trees".into(),
+            app_shutdown: "terminate_non_persistent_xero_owned_process_trees".into(),
             thread_switch: "reinject_owned_process_digest_without_granting_new_control".into(),
             session_compaction: "persist_metadata_and_reinject_digest_with_output_cursors".into(),
             crash_recovery: "owned_processes_marked_unknown_until_reobserved".into(),
@@ -2805,14 +2805,14 @@ fn normalized_stdin_input(request: &AutonomousProcessManagerRequest) -> CommandR
     if input.contains('\0') {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_input_invalid",
-            "Cadence refused a process_manager stdin payload that contained a NUL byte.",
+            "Xero refused a process_manager stdin payload that contained a NUL byte.",
         ));
     }
     if input.len() > MAX_PROCESS_STDIN_INPUT_BYTES {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_input_too_large",
             format!(
-                "Cadence limits process_manager stdin payloads to {MAX_PROCESS_STDIN_INPUT_BYTES} bytes."
+                "Xero limits process_manager stdin payloads to {MAX_PROCESS_STDIN_INPUT_BYTES} bytes."
             ),
         ));
     }
@@ -2827,7 +2827,7 @@ fn ensure_shell_process(process: &OwnedProcess) -> CommandResult<()> {
     Err(CommandError::user_fixable(
         "autonomous_tool_process_manager_shell_required",
         format!(
-            "Cadence can only use this action with a shell-mode owned process; `{}` was started as argv mode.",
+            "Xero can only use this action with a shell-mode owned process; `{}` was started as argv mode.",
             process.process_id
         ),
     ))
@@ -2841,7 +2841,7 @@ fn ensure_async_job(process: &OwnedProcess) -> CommandResult<()> {
     Err(CommandError::user_fixable(
         "autonomous_tool_process_manager_async_job_required",
         format!(
-            "Cadence can only use this action with an async job; `{}` is a managed process.",
+            "Xero can only use this action with an async job; `{}` is a managed process.",
             process.process_id
         ),
     ))
@@ -2931,7 +2931,7 @@ fn list_system_processes() -> CommandResult<Vec<SystemProcessInfo>> {
     {
         Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_system_process_unsupported",
-            "Cadence system process inspection is not supported on this platform yet.",
+            "Xero system process inspection is not supported on this platform yet.",
         ))
     }
 }
@@ -2941,7 +2941,7 @@ fn linux_system_processes() -> CommandResult<Vec<SystemProcessInfo>> {
     let entries = fs::read_dir("/proc").map_err(|error| {
         CommandError::system_fault(
             "autonomous_tool_process_manager_system_process_failed",
-            format!("Cadence could not read /proc for process inspection: {error}"),
+            format!("Xero could not read /proc for process inspection: {error}"),
         )
     })?;
     let mut processes = Vec::new();
@@ -3019,7 +3019,7 @@ fn ps_system_processes() -> CommandResult<Vec<SystemProcessInfo>> {
         .map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_process_manager_system_process_failed",
-                format!("Cadence could not execute ps for process inspection: {error}"),
+                format!("Xero could not execute ps for process inspection: {error}"),
             )
         })?;
     if !output.status.success() {
@@ -3130,7 +3130,7 @@ fn filter_system_processes(
         let regex = Regex::new(filter).map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_filter_invalid",
-                format!("Cadence could not compile system process filter regex: {error}"),
+                format!("Xero could not compile system process filter regex: {error}"),
             )
         })?;
         processes.retain(|process| {
@@ -3160,7 +3160,7 @@ fn system_process_by_pid(
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_system_process_not_found",
-                format!("Cadence could not find external/system process PID {pid}."),
+                format!("Xero could not find external/system process PID {pid}."),
             )
         })
 }
@@ -3242,7 +3242,7 @@ fn system_process_metadata(
     ports_by_pid: &BTreeMap<u32, Vec<u16>>,
 ) -> AutonomousProcessMetadata {
     let scope = if owned_pids.contains(&process.pid) {
-        AutonomousProcessOwnershipScope::CadenceOwned
+        AutonomousProcessOwnershipScope::XeroOwned
     } else {
         AutonomousProcessOwnershipScope::External
     };
@@ -3306,13 +3306,13 @@ fn normalized_system_pid(request: &AutonomousProcessManagerRequest) -> CommandRe
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_pid_required",
-                "Cadence requires system process actions to include pid or a numeric processId.",
+                "Xero requires system process actions to include pid or a numeric processId.",
             )
         })?;
     if pid == 0 {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_pid_invalid",
-            "Cadence requires system process pid to be greater than zero.",
+            "Xero requires system process pid to be greater than zero.",
         ));
     }
     Ok(pid)
@@ -3360,7 +3360,7 @@ fn list_system_ports() -> CommandResult<Vec<SystemPortInfo>> {
     {
         Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_system_ports_unsupported",
-            "Cadence system port inspection is not supported on this platform yet.",
+            "Xero system port inspection is not supported on this platform yet.",
         ))
     }
 }
@@ -3417,7 +3417,7 @@ fn linux_tcp_ports(
     let content = fs::read_to_string(path).map_err(|error| {
         CommandError::system_fault(
             "autonomous_tool_process_manager_system_ports_failed",
-            format!("Cadence could not read {path} for listening ports: {error}"),
+            format!("Xero could not read {path} for listening ports: {error}"),
         )
     })?;
     let mut ports = Vec::new();
@@ -3490,7 +3490,7 @@ fn lsof_system_ports() -> CommandResult<Vec<SystemPortInfo>> {
         .map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_process_manager_system_ports_failed",
-                format!("Cadence could not execute lsof for listening ports: {error}"),
+                format!("Xero could not execute lsof for listening ports: {error}"),
             )
         })?;
     if !output.status.success() && output.stdout.is_empty() {
@@ -3567,7 +3567,7 @@ fn filter_system_ports(
         let regex = Regex::new(filter).map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_filter_invalid",
-                format!("Cadence could not compile system port filter regex: {error}"),
+                format!("Xero could not compile system port filter regex: {error}"),
             )
         })?;
         ports.retain(|entry| {
@@ -3642,7 +3642,7 @@ fn normalized_external_signal(signal: Option<&str>) -> CommandResult<ExternalSig
             _ => {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_process_manager_signal_invalid",
-                    "Cadence supports external signals TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, and CONT.",
+                    "Xero supports external signals TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, and CONT.",
                 ))
             }
         };
@@ -3653,7 +3653,7 @@ fn normalized_external_signal(signal: Option<&str>) -> CommandResult<ExternalSig
         let _ = normalized;
         Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_signal_unsupported",
-            "Cadence external process signals are not supported on this platform yet.",
+            "Xero external process signals are not supported on this platform yet.",
         ))
     }
 }
@@ -3667,24 +3667,24 @@ fn ensure_external_signal_target(
     if owned_pids.contains(&target_pid) {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_owned_target_refused",
-            "Cadence refused an external signal request for a Cadence-owned process. Use the owned kill/group actions instead.",
+            "Xero refused an external signal request for a Xero-owned process. Use the owned kill/group actions instead.",
         ));
     }
     let current_pid = std::process::id();
     if target_pid == current_pid {
         return Err(CommandError::policy_denied(
-            "Cadence refused to signal its own desktop process.",
+            "Xero refused to signal its own desktop process.",
         ));
     }
     if current_process_ancestors(processes).contains(&target_pid) {
         return Err(CommandError::policy_denied(
-            "Cadence refused to signal an ancestor of its own desktop process.",
+            "Xero refused to signal an ancestor of its own desktop process.",
         ));
     }
     if include_descendants {
         if is_descendant(processes, target_pid, current_pid) {
             return Err(CommandError::policy_denied(
-                "Cadence refused to kill a process tree that contains its own desktop process.",
+                "Xero refused to kill a process tree that contains its own desktop process.",
             ));
         }
         if owned_pids
@@ -3693,7 +3693,7 @@ fn ensure_external_signal_target(
         {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_process_manager_owned_target_refused",
-                "Cadence refused an external tree kill that includes Cadence-owned processes. Use owned process-manager actions for those targets.",
+                "Xero refused an external tree kill that includes Xero-owned processes. Use owned process-manager actions for those targets.",
             ));
         }
     }
@@ -3726,7 +3726,7 @@ fn signal_external_pid(pid: u32, signal: i32) -> CommandResult<()> {
         let error = std::io::Error::last_os_error();
         Err(CommandError::retryable(
             "autonomous_tool_process_manager_system_signal_failed",
-            format!("Cadence could not signal external PID {pid}: {error}"),
+            format!("Xero could not signal external PID {pid}: {error}"),
         ))
     }
     #[cfg(not(unix))]
@@ -3734,7 +3734,7 @@ fn signal_external_pid(pid: u32, signal: i32) -> CommandResult<()> {
         let _ = (pid, signal);
         Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_signal_unsupported",
-            "Cadence external process signals are not supported on this platform yet.",
+            "Xero external process signals are not supported on this platform yet.",
         ))
     }
 }
@@ -3820,7 +3820,7 @@ fn read_process_output_for_request(
         let regex = Regex::new(filter).map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_tool_process_manager_filter_invalid",
-                format!("Cadence could not compile process_manager filter regex: {error}"),
+                format!("Xero could not compile process_manager filter regex: {error}"),
             )
         })?;
         chunks.retain(|chunk| {
@@ -3909,7 +3909,7 @@ fn wait_for_output_match(
     let regex = Regex::new(wait_pattern).map_err(|error| {
         CommandError::user_fixable(
             "autonomous_tool_process_manager_wait_pattern_invalid",
-            format!("Cadence could not compile process_manager waitPattern regex: {error}"),
+            format!("Xero could not compile process_manager waitPattern regex: {error}"),
         )
     })?;
     let started = Instant::now();
@@ -3951,7 +3951,7 @@ fn combine_raw_chunk_text(chunks: &[RawProcessOutputChunk]) -> String {
 
 fn process_digest(processes: &[AutonomousProcessMetadata]) -> String {
     if processes.is_empty() {
-        return "No Cadence-owned processes are registered.".into();
+        return "No Xero-owned processes are registered.".into();
     }
 
     processes
@@ -4443,20 +4443,20 @@ fn parse_local_http_url(value: &str) -> CommandResult<Url> {
     let url = Url::parse(value).map_err(|error| {
         CommandError::user_fixable(
             "autonomous_tool_process_manager_wait_url_invalid",
-            format!("Cadence could not parse process_manager waitUrl: {error}"),
+            format!("Xero could not parse process_manager waitUrl: {error}"),
         )
     })?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_wait_url_invalid",
-            "Cadence requires process_manager waitUrl to use http or https.",
+            "Xero requires process_manager waitUrl to use http or https.",
         ));
     }
     let host = url.host_str().unwrap_or_default();
     if !is_local_readiness_host(host) {
         return Err(CommandError::user_fixable(
             "autonomous_tool_process_manager_wait_url_non_local",
-            "Cadence only probes local HTTP readiness URLs for managed processes.",
+            "Xero only probes local HTTP readiness URLs for managed processes.",
         ));
     }
     Ok(url)
@@ -4537,7 +4537,7 @@ fn marker_safe(value: &str) -> String {
 
 fn shell_run_payload(input: &str, marker: &str) -> String {
     format!(
-        "{}\n__cadence_status=$?\nprintf '\\n{}:%s\\n' \"$__cadence_status\"\n",
+        "{}\n__xero_status=$?\nprintf '\\n{}:%s\\n' \"$__xero_status\"\n",
         input.trim_end_matches('\n'),
         marker
     )
@@ -4598,7 +4598,7 @@ fn sanitized_env_summary() -> Vec<String> {
     if env::var_os("PATH").is_none() {
         keys.push("PATH".into());
     }
-    keys.push("CADENCE_AGENT_SANITIZED_ENV".into());
+    keys.push("XERO_AGENT_SANITIZED_ENV".into());
     keys.sort();
     keys.dedup();
     keys
@@ -4638,7 +4638,7 @@ fn process_interaction_policy_allowed(
     policy.approval_required = false;
     policy.code = "process_policy_owned_interaction_allowed".into();
     policy.reason =
-        "Interacting with a Cadence-owned process is allowed after ownership verification and shell-input policy checks.".into();
+        "Interacting with a Xero-owned process is allowed after ownership verification and shell-input policy checks.".into();
     policy
 }
 
@@ -4654,7 +4654,7 @@ fn external_signal_policy_allowed(
     policy.approval_required = false;
     policy.code = "process_policy_external_signal_allowed_after_operator_approval".into();
     policy.reason = format!(
-        "Operator approval allowed Cadence to apply external process signal action `{}` with signal {signal_label}.",
+        "Operator approval allowed Xero to apply external process signal action `{}` with signal {signal_label}.",
         process_manager_action_label(action)
     );
     policy
@@ -4693,7 +4693,7 @@ fn shell_mode_requires_operator_policy(
     policy.outcome = AutonomousCommandPolicyOutcome::Escalated;
     policy.code = "policy_escalated_interactive_shell".into();
     policy.reason = format!(
-        "Cadence requires operator review before starting interactive shell process `{}`.",
+        "Xero requires operator review before starting interactive shell process `{}`.",
         render_command_for_summary(argv)
     );
     policy
@@ -4726,7 +4726,7 @@ fn unstarted_process_metadata(
             session_id: None,
             repo_id: None,
             user_id: None,
-            scope: AutonomousProcessOwnershipScope::CadenceOwned,
+            scope: AutonomousProcessOwnershipScope::XeroOwned,
         },
         command: AutonomousProcessCommandMetadata {
             argv: redact_command_argv_for_persistence(argv),

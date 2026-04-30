@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::runtime_support::{
-    launch_or_reconnect_detached_runtime_run, sync_autonomous_run_state, AutonomousSyncIntent,
+    launch_or_reconnect_runtime_run, sync_autonomous_run_state, AutonomousSyncIntent,
 };
 
 #[tauri::command]
@@ -20,7 +20,7 @@ pub fn start_autonomous_run<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
 
-    let outcome = launch_or_reconnect_detached_runtime_run(
+    let outcome = launch_or_reconnect_runtime_run(
         &app,
         state.inner(),
         &request.project_id,

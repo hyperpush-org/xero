@@ -1,10 +1,10 @@
 /**
- * Theme registry for the Cadence desktop shell.
+ * Theme registry for the Xero desktop shell.
  *
  * Each theme defines three coordinated layers:
  *   1. `colors` — CSS custom property values applied via a `.theme-<id>` class
  *      on the `<html>` element. These drive the entire UI palette.
- *   2. `editor` — the CodeMirror palette used by `components/cadence/code-editor`.
+ *   2. `editor` — the CodeMirror palette used by `components/xero/code-editor`.
  *      Every token color is explicit so each theme renders self-consistent syntax
  *      highlighting rather than leaking across themes.
  *   3. `shiki` — the bundled Shiki theme id used by `lib/shiki` when tokenizing
@@ -117,8 +117,8 @@ export interface ThemeDefinition {
 
 const DUSK: ThemeDefinition = {
   id: 'dusk',
-  name: 'Cadence Dusk',
-  description: 'Warm gold on near-black — the original Cadence palette.',
+  name: 'Xero Dusk',
+  description: 'Warm gold on near-black — the original Xero palette.',
   appearance: 'dark',
   shiki: 'github-dark',
   colors: {
@@ -776,4 +776,4 @@ export function themeClassName(id: string): string {
   return `theme-${id}`
 }
 
-export const THEME_STORAGE_KEY = 'cadence:theme'
+export const THEME_STORAGE_KEY = 'xero:theme'

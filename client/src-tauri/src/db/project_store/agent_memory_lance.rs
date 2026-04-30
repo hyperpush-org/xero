@@ -152,10 +152,10 @@ fn runtime() -> &'static Runtime {
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("cadence-lance")
+            .thread_name("xero-lance")
             .enable_all()
             .build()
-            .expect("cadence lance tokio runtime")
+            .expect("xero lance tokio runtime")
     })
 }
 
@@ -182,7 +182,7 @@ pub fn reset_connection_cache_for_tests() {
 fn map_lance_error<E: std::fmt::Display>(code: &'static str, error: E) -> CommandError {
     CommandError::retryable(
         code,
-        format!("Cadence agent_memory lance store failed: {error}"),
+        format!("Xero agent_memory lance store failed: {error}"),
     )
 }
 
@@ -191,7 +191,7 @@ async fn connect_dataset(dataset_dir: &Path) -> Result<Connection, CommandError>
         CommandError::retryable(
             "agent_memory_lance_dir_unavailable",
             format!(
-                "Cadence could not prepare the lance dataset directory at {}: {error}",
+                "Xero could not prepare the lance dataset directory at {}: {error}",
                 dataset_dir.display()
             ),
         )
@@ -202,7 +202,7 @@ async fn connect_dataset(dataset_dir: &Path) -> Result<Connection, CommandError>
             CommandError::system_fault(
                 "agent_memory_lance_dir_non_utf8",
                 format!(
-                    "Cadence cannot use non-UTF8 lance dataset path {}.",
+                    "Xero cannot use non-UTF8 lance dataset path {}.",
                     dataset_dir.display()
                 ),
             )
@@ -292,7 +292,7 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
             CommandError::system_fault(
                 "agent_memory_lance_serialize_failed",
                 format!(
-                    "Cadence could not serialize memory source item ids for `{}`: {error}",
+                    "Xero could not serialize memory source item ids for `{}`: {error}",
                     row.memory_id
                 ),
             )
@@ -308,7 +308,7 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
                     CommandError::system_fault(
                         "agent_memory_lance_serialize_failed",
                         format!(
-                            "Cadence could not serialize memory diagnostic for `{}`: {error}",
+                            "Xero could not serialize memory diagnostic for `{}`: {error}",
                             row.memory_id
                         ),
                     )
@@ -348,7 +348,7 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
     RecordBatch::try_new(schema, columns).map_err(|error| {
         CommandError::system_fault(
             "agent_memory_lance_record_batch_failed",
-            format!("Cadence could not assemble lance record batch: {error}"),
+            format!("Xero could not assemble lance record batch: {error}"),
         )
     })
 }
@@ -448,7 +448,7 @@ fn column_u8<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt8Array, C
 fn missing_column(name: &str) -> CommandError {
     CommandError::system_fault(
         "agent_memory_lance_schema_drift",
-        format!("Cadence lance dataset is missing expected column `{name}`."),
+        format!("Xero lance dataset is missing expected column `{name}`."),
     )
 }
 
@@ -460,7 +460,7 @@ fn require_str<'a>(
     if array.is_null(index) {
         return Err(CommandError::system_fault(
             "agent_memory_lance_unexpected_null",
-            format!("Cadence lance dataset has unexpected null in column `{column}`."),
+            format!("Xero lance dataset has unexpected null in column `{column}`."),
         ));
     }
     Ok(array.value(index))
@@ -478,7 +478,7 @@ fn decode_source_item_ids(value: &str) -> Result<Vec<String>, CommandError> {
     serde_json::from_str(value).map_err(|error| {
         CommandError::system_fault(
             "agent_memory_lance_decode_failed",
-            format!("Cadence could not decode lance source_item_ids_json: {error}"),
+            format!("Xero could not decode lance source_item_ids_json: {error}"),
         )
     })
 }
@@ -487,7 +487,7 @@ fn decode_diagnostic(value: &str) -> Result<AgentRunDiagnosticRecord, CommandErr
     let parsed: serde_json::Value = serde_json::from_str(value).map_err(|error| {
         CommandError::system_fault(
             "agent_memory_lance_decode_failed",
-            format!("Cadence could not decode lance diagnostic_json: {error}"),
+            format!("Xero could not decode lance diagnostic_json: {error}"),
         )
     })?;
     Ok(AgentRunDiagnosticRecord {
@@ -499,7 +499,7 @@ fn decode_diagnostic(value: &str) -> Result<AgentRunDiagnosticRecord, CommandErr
         message: parsed
             .get("message")
             .and_then(|value| value.as_str())
-            .unwrap_or("Cadence could not decode memory diagnostic details.")
+            .unwrap_or("Xero could not decode memory diagnostic details.")
             .to_string(),
     })
 }
@@ -751,7 +751,7 @@ impl ProjectMemoryStore {
                     row.diagnostic = Some(AgentRunDiagnosticRecord {
                         code: "memory_source_deleted".to_string(),
                         message:
-                            "The source run for this memory was deleted, so Cadence cleared its provenance reference."
+                            "The source run for this memory was deleted, so Xero cleared its provenance reference."
                                 .to_string(),
                     });
                     row.updated_at = now.clone();
@@ -956,7 +956,7 @@ fn quote_string_literal(value: &str) -> String {
 fn missing_memory_error(project_id: &str, memory_id: &str) -> CommandError {
     CommandError::user_fixable(
         "agent_memory_not_found",
-        format!("Cadence could not find memory `{memory_id}` for project `{project_id}`."),
+        format!("Xero could not find memory `{memory_id}` for project `{project_id}`."),
     )
 }
 

@@ -23,7 +23,7 @@ pub struct NotificationCredentialUpsertReceipt {
     pub updated_at: String,
 }
 
-/// Backed by the global `cadence.db` database. Phase 2.3 swapped the JSON I/O for SQL writes
+/// Backed by the global `xero.db` database. Phase 2.3 swapped the JSON I/O for SQL writes
 /// against `notification_credentials` and `notification_inbound_cursors`. The struct still owns a
 /// path so the existing call sites remain untouched; that path is now the global database file.
 #[derive(Debug, Clone)]

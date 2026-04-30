@@ -43,7 +43,7 @@ pub fn read_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
         .map_err(|error| {
             CommandError::retryable(
                 "registry_read_failed",
-                format!("Cadence could not prepare the desktop registry read: {error}"),
+                format!("Xero could not prepare the desktop registry read: {error}"),
             )
         })?;
 
@@ -58,7 +58,7 @@ pub fn read_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
         .map_err(|error| {
             CommandError::retryable(
                 "registry_read_failed",
-                format!("Cadence could not read the desktop project registry: {error}"),
+                format!("Xero could not read the desktop project registry: {error}"),
             )
         })?;
 
@@ -67,7 +67,7 @@ pub fn read_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
         projects.push(row.map_err(|error| {
             CommandError::retryable(
                 "registry_read_failed",
-                format!("Cadence could not decode a desktop project registry row: {error}"),
+                format!("Xero could not decode a desktop project registry row: {error}"),
             )
         })?);
     }
@@ -94,7 +94,7 @@ pub fn upsert_project(
     let tx = connection.transaction().map_err(|error| {
         CommandError::retryable(
             "registry_write_failed",
-            format!("Cadence could not begin the registry transaction: {error}"),
+            format!("Xero could not begin the registry transaction: {error}"),
         )
     })?;
 
@@ -135,7 +135,7 @@ pub fn upsert_project(
     tx.commit().map_err(|error| {
         CommandError::retryable(
             "registry_write_failed",
-            format!("Cadence could not commit the desktop registry update: {error}"),
+            format!("Xero could not commit the desktop registry update: {error}"),
         )
     })?;
 
@@ -151,7 +151,7 @@ pub fn replace_projects(
     let tx = connection.transaction().map_err(|error| {
         CommandError::retryable(
             "registry_write_failed",
-            format!("Cadence could not begin the registry transaction: {error}"),
+            format!("Xero could not begin the registry transaction: {error}"),
         )
     })?;
 
@@ -185,7 +185,7 @@ pub fn replace_projects(
     tx.commit().map_err(|error| {
         CommandError::retryable(
             "registry_write_failed",
-            format!("Cadence could not commit the desktop registry update: {error}"),
+            format!("Xero could not commit the desktop registry update: {error}"),
         )
     })?;
 
@@ -204,6 +204,6 @@ fn derive_display_name(root_path: &str) -> String {
 fn map_write_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "registry_write_failed",
-        format!("Cadence could not write the desktop registry: {error}"),
+        format!("Xero could not write the desktop registry: {error}"),
     )
 }

@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::commands::{ProviderModelThinkingEffortDto, RuntimeRunControlInputDto};
 
 pub const SUPERVISOR_PROTOCOL_VERSION: u8 = 1;
-pub const SUPERVISOR_KIND_DETACHED_PTY: &str = "detached_pty";
-pub const SUPERVISOR_TRANSPORT_KIND_TCP: &str = "tcp";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -18,8 +18,8 @@ pub use transport::{
 pub const AUTONOMOUS_TOOL_WEB_SEARCH: &str = "web_search";
 pub const AUTONOMOUS_TOOL_WEB_FETCH: &str = "web_fetch";
 
-const SEARCH_PROVIDER_URL_ENV: &str = "CADENCE_AUTONOMOUS_WEB_SEARCH_URL";
-const SEARCH_PROVIDER_BEARER_TOKEN_ENV: &str = "CADENCE_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN";
+const SEARCH_PROVIDER_URL_ENV: &str = "XERO_AUTONOMOUS_WEB_SEARCH_URL";
+const SEARCH_PROVIDER_BEARER_TOKEN_ENV: &str = "XERO_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN";
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
 const MAX_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_SEARCH_RESULT_COUNT: usize = 5;
@@ -219,7 +219,7 @@ fn parse_http_url(
                 error_code
             },
             if error_code == "autonomous_web_fetch_url_invalid" {
-                "Cadence requires `web_fetch` URLs to use the HTTP or HTTPS scheme."
+                "Xero requires `web_fetch` URLs to use the HTTP or HTTPS scheme."
             } else {
                 message
             },
@@ -240,7 +240,7 @@ fn normalize_timeout_ms(
     if timeout_ms == 0 || timeout_ms > max_timeout_ms {
         return Err(CommandError::user_fixable(
             error_code,
-            format!("Cadence requires {label} to be between 1 and {max_timeout_ms}."),
+            format!("Xero requires {label} to be between 1 and {max_timeout_ms}."),
         ));
     }
     Ok(timeout_ms)
@@ -257,7 +257,7 @@ fn normalize_bounded_usize(
     if value == 0 || value > max_value {
         return Err(CommandError::user_fixable(
             error_code,
-            format!("Cadence requires {label} to be between 1 and {max_value}."),
+            format!("Xero requires {label} to be between 1 and {max_value}."),
         ));
     }
     Ok(value)

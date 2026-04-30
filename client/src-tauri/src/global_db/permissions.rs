@@ -1,7 +1,7 @@
 //! Phase 6 file-mode hardening.
 //!
 //! At app start, set restrictive permissions on the app-data directory and on every
-//! Cadence database file (`cadence.db` plus its WAL/SHM sidecars, and any per-project
+//! Xero database file (`xero.db` plus its WAL/SHM sidecars, and any per-project
 //! `state.db`). The directory is `0700` so peers on a multi-user box cannot enumerate
 //! credentials; database files are `0600` so peers cannot read or replace them.
 //!
@@ -139,7 +139,7 @@ fn chmod_file_if_present(path: &Path, mode: u32) -> Result<(), PermissionError> 
         }
     };
 
-    // Skip symlinks: hardening is meant for the actual file Cadence owns. Following a
+    // Skip symlinks: hardening is meant for the actual file Xero owns. Following a
     // symlink could relax permissions on a target the user did not intend to modify.
     if metadata.file_type().is_symlink() {
         return Ok(());
@@ -188,7 +188,7 @@ mod tests {
         fs::create_dir(&app_data).expect("mkdir");
         fs::set_permissions(&app_data, Permissions::from_mode(0o755)).expect("seed mode");
 
-        let database = app_data.join("cadence.db");
+        let database = app_data.join("xero.db");
         File::create(&database).expect("create db");
 
         harden_global_paths(&app_data, &database).expect("harden");
@@ -199,9 +199,9 @@ mod tests {
     #[test]
     fn hardens_wal_and_shm_sidecars() {
         let dir = tempdir().expect("tempdir");
-        let database = dir.path().join("cadence.db");
-        let wal = dir.path().join("cadence.db-wal");
-        let shm = dir.path().join("cadence.db-shm");
+        let database = dir.path().join("xero.db");
+        let wal = dir.path().join("xero.db-wal");
+        let shm = dir.path().join("xero.db-shm");
         File::create(&database).expect("db");
         File::create(&wal).expect("wal");
         File::create(&shm).expect("shm");
@@ -218,19 +218,19 @@ mod tests {
     #[test]
     fn missing_sidecars_are_skipped() {
         let dir = tempdir().expect("tempdir");
-        let database = dir.path().join("cadence.db");
+        let database = dir.path().join("xero.db");
         File::create(&database).expect("db");
 
         harden_global_paths(dir.path(), &database).expect("harden");
         assert_eq!(mode_of(&database), 0o600);
-        assert!(!dir.path().join("cadence.db-wal").exists());
-        assert!(!dir.path().join("cadence.db-shm").exists());
+        assert!(!dir.path().join("xero.db-wal").exists());
+        assert!(!dir.path().join("xero.db-shm").exists());
     }
 
     #[test]
     fn missing_database_is_no_op() {
         let dir = tempdir().expect("tempdir");
-        let database = dir.path().join("cadence.db");
+        let database = dir.path().join("xero.db");
 
         harden_global_paths(dir.path(), &database).expect("harden");
         assert!(!database.exists());
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn idempotent_when_already_hardened() {
         let dir = tempdir().expect("tempdir");
-        let database = dir.path().join("cadence.db");
+        let database = dir.path().join("xero.db");
         File::create(&database).expect("db");
         fs::set_permissions(&database, Permissions::from_mode(0o600)).expect("seed");
         fs::set_permissions(dir.path(), Permissions::from_mode(0o700)).expect("seed dir");
@@ -277,7 +277,7 @@ mod tests {
 
         // chmod_directory is private; exercise it by passing a file path to harden_global_paths
         // as the first argument. The file should be left alone (not chmod'd to 0o700).
-        let database = dir.path().join("cadence.db");
+        let database = dir.path().join("xero.db");
         File::create(&database).expect("db");
         harden_global_paths(&file, &database).expect("harden");
         assert_eq!(mode_of(&file), 0o644);
@@ -291,7 +291,7 @@ mod tests {
         File::create(&real_target).expect("create real target");
         fs::set_permissions(&real_target, Permissions::from_mode(0o644)).expect("seed");
 
-        let database_link = dir.path().join("cadence.db");
+        let database_link = dir.path().join("xero.db");
         std::os::unix::fs::symlink(&real_target, &database_link).expect("symlink");
 
         harden_global_paths(dir.path(), &database_link).expect("harden");

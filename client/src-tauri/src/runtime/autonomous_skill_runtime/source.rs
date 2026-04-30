@@ -12,7 +12,7 @@ use url::Url;
 use crate::commands::CommandError;
 
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
-const GITHUB_USER_AGENT_VALUE: &str = "Cadence-autonomous-skill-runtime";
+const GITHUB_USER_AGENT_VALUE: &str = "Xero-autonomous-skill-runtime";
 const MAX_REDIRECTS: usize = 5;
 const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "GH_TOKEN"];
 
@@ -112,7 +112,7 @@ impl GithubAutonomousSkillSource {
             .build()
             .map_err(|error| {
                 AutonomousSkillSourceError::Setup(format!(
-                    "Cadence could not initialize the autonomous skill source client: {error}"
+                    "Xero could not initialize the autonomous skill source client: {error}"
                 ))
             })
     }
@@ -158,13 +158,13 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
         let (owner, repo) = split_github_repo(&request.repo)?;
         let mut url = Url::parse(&self.api_base_url).map_err(|error| {
             AutonomousSkillSourceError::Setup(format!(
-                "Cadence could not parse the autonomous skill API base URL: {error}"
+                "Xero could not parse the autonomous skill API base URL: {error}"
             ))
         })?;
         {
             let mut segments = url.path_segments_mut().map_err(|_| {
                 AutonomousSkillSourceError::Setup(
-                    "Cadence could not build the autonomous skill tree API URL.".into(),
+                    "Xero could not build the autonomous skill tree API URL.".into(),
                 )
             })?;
             segments.pop_if_empty();
@@ -189,7 +189,7 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
             return Err(AutonomousSkillSourceError::Status {
                 status,
                 message: format!(
-                    "Cadence received HTTP {status} while listing autonomous skill source tree `{}` at ref `{}`.",
+                    "Xero received HTTP {status} while listing autonomous skill source tree `{}` at ref `{}`.",
                     request.repo, request.reference
                 ),
             });
@@ -197,12 +197,12 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
 
         let payload = response.text().map_err(|error| {
             AutonomousSkillSourceError::Transport(format!(
-                "Cadence could not read the autonomous skill tree response: {error}"
+                "Xero could not read the autonomous skill tree response: {error}"
             ))
         })?;
         let decoded: GithubTreeResponse = serde_json::from_str(&payload).map_err(|error| {
             AutonomousSkillSourceError::Decode(format!(
-                "Cadence could not decode the autonomous skill tree response: {error}"
+                "Xero could not decode the autonomous skill tree response: {error}"
             ))
         })?;
 
@@ -213,14 +213,14 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
                 "tree" => AutonomousSkillSourceEntryKind::Tree,
                 other => {
                     return Err(AutonomousSkillSourceError::Decode(format!(
-                        "Cadence received unsupported source tree entry kind `{other}` for `{}`.",
+                        "Xero received unsupported source tree entry kind `{other}` for `{}`.",
                         entry.path
                     )));
                 }
             };
             let hash = entry.sha.ok_or_else(|| {
                 AutonomousSkillSourceError::Decode(format!(
-                    "Cadence received source metadata for `{}` without a tree/blob hash.",
+                    "Xero received source metadata for `{}` without a tree/blob hash.",
                     entry.path
                 ))
             })?;
@@ -242,13 +242,13 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
         let (owner, repo) = split_github_repo(&request.repo)?;
         let mut url = Url::parse(&self.api_base_url).map_err(|error| {
             AutonomousSkillSourceError::Setup(format!(
-                "Cadence could not parse the autonomous skill API base URL: {error}"
+                "Xero could not parse the autonomous skill API base URL: {error}"
             ))
         })?;
         {
             let mut segments = url.path_segments_mut().map_err(|_| {
                 AutonomousSkillSourceError::Setup(
-                    "Cadence could not build the autonomous skill contents API URL.".into(),
+                    "Xero could not build the autonomous skill contents API URL.".into(),
                 )
             })?;
             segments.pop_if_empty();
@@ -270,7 +270,7 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
             return Err(AutonomousSkillSourceError::Status {
                 status,
                 message: format!(
-                    "Cadence received HTTP {status} while fetching autonomous skill file `{}` from `{}` at ref `{}`.",
+                    "Xero received HTTP {status} while fetching autonomous skill file `{}` from `{}` at ref `{}`.",
                     request.path, request.repo, request.reference
                 ),
             });
@@ -278,23 +278,23 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
 
         let payload = response.text().map_err(|error| {
             AutonomousSkillSourceError::Transport(format!(
-                "Cadence could not read the autonomous skill contents response: {error}"
+                "Xero could not read the autonomous skill contents response: {error}"
             ))
         })?;
         let decoded: GithubContentsResponse = serde_json::from_str(&payload).map_err(|error| {
             AutonomousSkillSourceError::Decode(format!(
-                "Cadence could not decode the autonomous skill contents response: {error}"
+                "Xero could not decode the autonomous skill contents response: {error}"
             ))
         })?;
         if decoded.kind != "file" {
             return Err(AutonomousSkillSourceError::Decode(format!(
-                "Cadence expected `{}` to resolve to a file but received `{}`.",
+                "Xero expected `{}` to resolve to a file but received `{}`.",
                 request.path, decoded.kind
             )));
         }
         if decoded.encoding != "base64" {
             return Err(AutonomousSkillSourceError::Decode(format!(
-                "Cadence expected `{}` to be base64 encoded but received `{}`.",
+                "Xero expected `{}` to be base64 encoded but received `{}`.",
                 request.path, decoded.encoding
             )));
         }
@@ -304,7 +304,7 @@ impl AutonomousSkillSource for GithubAutonomousSkillSource {
             .decode(normalized.as_bytes())
             .map_err(|error| {
                 AutonomousSkillSourceError::Decode(format!(
-                    "Cadence could not decode base64 skill content for `{}`: {error}",
+                    "Xero could not decode base64 skill content for `{}`: {error}",
                     request.path
                 ))
             })?;
@@ -402,8 +402,7 @@ pub(crate) fn github_token_from_env() -> Option<String> {
 fn split_github_repo(repo: &str) -> Result<(&str, &str), AutonomousSkillSourceError> {
     let (owner, name) = repo.split_once('/').ok_or_else(|| {
         AutonomousSkillSourceError::Setup(
-            "Cadence requires autonomous skill source repositories to use `owner/repo` format."
-                .into(),
+            "Xero requires autonomous skill source repositories to use `owner/repo` format.".into(),
         )
     })?;
     Ok((owner, name))
@@ -412,11 +411,11 @@ fn split_github_repo(repo: &str) -> Result<(&str, &str), AutonomousSkillSourceEr
 fn map_reqwest_source_error(error: reqwest::Error) -> AutonomousSkillSourceError {
     if error.is_timeout() {
         return AutonomousSkillSourceError::Timeout(
-            "Cadence timed out while contacting the autonomous skill source.".into(),
+            "Xero timed out while contacting the autonomous skill source.".into(),
         );
     }
 
     AutonomousSkillSourceError::Transport(format!(
-        "Cadence could not contact the autonomous skill source: {error}"
+        "Xero could not contact the autonomous skill source: {error}"
     ))
 }

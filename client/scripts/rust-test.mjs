@@ -37,7 +37,7 @@ const env = {
 const cargo = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
 const result = await run(cargo, cargoArgs, { env })
 
-if (process.env.CADENCE_RUST_TARGET_PRUNE !== '0') {
+if (process.env.XERO_RUST_TARGET_PRUNE !== '0') {
   await run(process.execPath, [pruneScript], { env })
 }
 

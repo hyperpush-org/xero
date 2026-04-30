@@ -26,7 +26,7 @@ impl ReqwestDiscordTransport {
             .build()
             .map_err(|error| {
                 NotificationAdapterError::transport_failed(format!(
-                    "Cadence could not initialize the Discord notification client: {error}"
+                    "Xero could not initialize the Discord notification client: {error}"
                 ))
             })?;
 
@@ -59,11 +59,11 @@ impl DiscordTransport for ReqwestDiscordTransport {
             .map_err(|error| {
                 if error.is_timeout() {
                     NotificationAdapterError::transport_timeout(
-                        "Cadence timed out while sending a Discord notification dispatch.",
+                        "Xero timed out while sending a Discord notification dispatch.",
                     )
                 } else {
                     NotificationAdapterError::transport_failed(
-                        "Cadence could not send a Discord notification dispatch.",
+                        "Xero could not send a Discord notification dispatch.",
                     )
                 }
             })?;
@@ -74,7 +74,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
         if !status.is_success() {
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let message = format!(
-                "Cadence received HTTP {} while sending a Discord notification dispatch.",
+                "Xero received HTTP {} while sending a Discord notification dispatch.",
                 status.as_u16()
             );
 
@@ -92,7 +92,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
         if !body.trim().is_empty() {
             serde_json::from_str::<serde_json::Value>(&body).map_err(|_| {
                 NotificationAdapterError::payload_invalid(
-                    "Cadence could not decode Discord webhook response payload.",
+                    "Xero could not decode Discord webhook response payload.",
                 )
             })?;
         }
@@ -109,7 +109,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
         let channel_target = channel_target.trim();
         if channel_target.is_empty() {
             return Err(NotificationAdapterError::payload_invalid(
-                "Cadence requires a non-empty Discord channel target to poll inbound replies.",
+                "Xero requires a non-empty Discord channel target to poll inbound replies.",
             ));
         }
 
@@ -120,7 +120,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 NotificationAdapterError::credentials_missing(
-                    "Cadence could not poll Discord replies because app-local `botToken` credentials are missing for this route.",
+                    "Xero could not poll Discord replies because app-local `botToken` credentials are missing for this route.",
                 )
             })?;
 
@@ -128,7 +128,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
         if let Some(after_cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
             if !is_valid_cursor(after_cursor) {
                 return Err(NotificationAdapterError::payload_invalid(
-                    "Cadence requires Discord inbound cursor values to be numeric snowflake ids.",
+                    "Xero requires Discord inbound cursor values to be numeric snowflake ids.",
                 ));
             }
 
@@ -146,11 +146,11 @@ impl DiscordTransport for ReqwestDiscordTransport {
             .map_err(|error| {
                 if error.is_timeout() {
                     NotificationAdapterError::transport_timeout(
-                        "Cadence timed out while polling Discord notification replies.",
+                        "Xero timed out while polling Discord notification replies.",
                     )
                 } else {
                     NotificationAdapterError::transport_failed(
-                        "Cadence could not poll Discord notification replies.",
+                        "Xero could not poll Discord notification replies.",
                     )
                 }
             })?;
@@ -161,7 +161,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
         if !status.is_success() {
             let retryable = status.as_u16() == 429 || status.is_server_error();
             let message = format!(
-                "Cadence received HTTP {} while polling Discord notification replies.",
+                "Xero received HTTP {} while polling Discord notification replies.",
                 status.as_u16()
             );
 
@@ -178,7 +178,7 @@ impl DiscordTransport for ReqwestDiscordTransport {
 
         let mut payload: Vec<DiscordMessage> = serde_json::from_str(&body).map_err(|_| {
             NotificationAdapterError::payload_invalid(
-                "Cadence could not decode Discord inbound message payload.",
+                "Xero could not decode Discord inbound message payload.",
             )
         })?;
 
@@ -250,9 +250,7 @@ fn parse_reply_envelope_for_channel(
         .ok_or_else(|| {
             NotificationAdapterError::new(
                 "notification_reply_request_invalid",
-                format!(
-                    "Cadence rejected a {channel_name} reply because the message body was empty."
-                ),
+                format!("Xero rejected a {channel_name} reply because the message body was empty."),
                 false,
             )
         })?;
@@ -261,7 +259,7 @@ fn parse_reply_envelope_for_channel(
         NotificationAdapterError::new(
             "notification_reply_request_invalid",
             format!(
-                "Cadence rejected a {channel_name} reply because it must follow `<decision> <correlation-key> <answer>` grammar."
+                "Xero rejected a {channel_name} reply because it must follow `<decision> <correlation-key> <answer>` grammar."
             ),
             false,
         )
@@ -271,7 +269,7 @@ fn parse_reply_envelope_for_channel(
         return Err(NotificationAdapterError::new(
             "notification_reply_decision_unsupported",
             format!(
-                "Cadence rejected a {channel_name} reply because decision `{decision}` is unsupported. Allowed decisions: approve, reject."
+                "Xero rejected a {channel_name} reply because decision `{decision}` is unsupported. Allowed decisions: approve, reject."
             ),
             false,
         ));
@@ -281,7 +279,7 @@ fn parse_reply_envelope_for_channel(
         return Err(NotificationAdapterError::new(
             "notification_reply_correlation_invalid",
             format!(
-                "Cadence rejected a {channel_name} reply because correlation key `{correlation_key}` is malformed."
+                "Xero rejected a {channel_name} reply because correlation key `{correlation_key}` is malformed."
             ),
             false,
         ));
@@ -291,7 +289,7 @@ fn parse_reply_envelope_for_channel(
         return Err(NotificationAdapterError::new(
             "notification_reply_request_invalid",
             format!(
-                "Cadence rejected a {channel_name} reply because required-input answers cannot be empty."
+                "Xero rejected a {channel_name} reply because required-input answers cannot be empty."
             ),
             false,
         ));

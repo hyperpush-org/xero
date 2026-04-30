@@ -1,6 +1,6 @@
 # Solana toolchain resources
 
-Cadence resolves Solana workbench tools in this order:
+Xero resolves Solana workbench tools in this order:
 
 1. Files bundled here inside the Tauri resource directory.
 2. Files installed on first use into the app data directory under `solana-toolchain/`.

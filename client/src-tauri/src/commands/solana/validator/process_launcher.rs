@@ -91,7 +91,7 @@ pub fn surfpool_args(opts: &StartOpts, ledger_dir: &Path) -> Vec<String> {
 pub fn resolve_ledger_dir(opts: &StartOpts, tag: &str) -> PathBuf {
     opts.ledger_dir
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("cadence-solana-{tag}")))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("xero-solana-{tag}")))
 }
 
 #[cfg(test)]
@@ -106,13 +106,13 @@ mod tests {
             reset: Some(true),
             ..StartOpts::default()
         };
-        let ledger = PathBuf::from("/tmp/cadence-test");
+        let ledger = PathBuf::from("/tmp/xero-test");
         let args = test_validator_args(&opts, &ledger);
 
         let rpc_pos = args.iter().position(|a| a == "--rpc-port").unwrap();
         assert_eq!(args[rpc_pos + 1], "12345");
         assert!(args.contains(&"--reset".to_string()));
-        assert!(args.contains(&"/tmp/cadence-test".to_string()));
+        assert!(args.contains(&"/tmp/xero-test".to_string()));
     }
 
     #[test]

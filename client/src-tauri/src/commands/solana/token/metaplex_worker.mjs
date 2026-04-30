@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Metaplex NFT mint worker — driven by Cadence's Solana workbench.
+// Metaplex NFT mint worker — driven by Xero's Solana workbench.
 //
-// Reads every input from CADENCE_* env vars so nothing sensitive ever
+// Reads every input from XERO_* env vars so nothing sensitive ever
 // lands in the argv. Emits a single sentinel line:
 //
-//   CADENCE_MINT_RESULT {"mint":"...","signature":"..."}
+//   XERO_MINT_RESULT {"mint":"...","signature":"..."}
 //
 // The parent process parses the sentinel and surfaces both values to
 // the UI / agent.
@@ -48,18 +48,18 @@ function parseStandard(raw) {
 }
 
 async function main() {
-  const rpcUrl = requireEnv("CADENCE_RPC_URL")
-  const authorityPath = requireEnv("CADENCE_AUTHORITY")
-  const name = requireEnv("CADENCE_NAME")
-  const symbol = requireEnv("CADENCE_SYMBOL")
-  const metadataUri = requireEnv("CADENCE_METADATA_URI")
-  const standard = parseStandard(requireEnv("CADENCE_STANDARD"))
-  const sellerFeeBps = Number.parseInt(requireEnv("CADENCE_SELLER_FEE_BPS"), 10)
-  const recipient = optionalEnv("CADENCE_RECIPIENT")
-  const collection = optionalEnv("CADENCE_COLLECTION")
+  const rpcUrl = requireEnv("XERO_RPC_URL")
+  const authorityPath = requireEnv("XERO_AUTHORITY")
+  const name = requireEnv("XERO_NAME")
+  const symbol = requireEnv("XERO_SYMBOL")
+  const metadataUri = requireEnv("XERO_METADATA_URI")
+  const standard = parseStandard(requireEnv("XERO_STANDARD"))
+  const sellerFeeBps = Number.parseInt(requireEnv("XERO_SELLER_FEE_BPS"), 10)
+  const recipient = optionalEnv("XERO_RECIPIENT")
+  const collection = optionalEnv("XERO_COLLECTION")
 
   if (!Number.isFinite(sellerFeeBps) || sellerFeeBps < 0 || sellerFeeBps > 10000) {
-    throw new Error(`invalid CADENCE_SELLER_FEE_BPS: ${process.env.CADENCE_SELLER_FEE_BPS}`)
+    throw new Error(`invalid XERO_SELLER_FEE_BPS: ${process.env.XERO_SELLER_FEE_BPS}`)
   }
 
   const keypairBytes = JSON.parse(fs.readFileSync(authorityPath, "utf8"))
@@ -112,10 +112,10 @@ async function main() {
     signature: mintSignature,
     createSignature,
   }
-  console.log(`CADENCE_MINT_RESULT ${JSON.stringify(payload)}`)
+  console.log(`XERO_MINT_RESULT ${JSON.stringify(payload)}`)
 }
 
 main().catch((err) => {
-  console.error(`cadence-metaplex-worker fatal: ${err?.stack ?? err}`)
+  console.error(`xero-metaplex-worker fatal: ${err?.stack ?? err}`)
   process.exitCode = 1
 })

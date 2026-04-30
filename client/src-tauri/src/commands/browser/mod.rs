@@ -224,7 +224,7 @@ fn ensure_browser_webview<R: Runtime>(
             .map_err(|error| {
                 CommandError::system_fault(
                     "browser_set_position_failed",
-                    format!("Cadence could not move the browser webview: {error}"),
+                    format!("Xero could not move the browser webview: {error}"),
                 )
             })?;
         existing
@@ -232,13 +232,13 @@ fn ensure_browser_webview<R: Runtime>(
             .map_err(|error| {
                 CommandError::system_fault(
                     "browser_set_size_failed",
-                    format!("Cadence could not resize the browser webview: {error}"),
+                    format!("Xero could not resize the browser webview: {error}"),
                 )
             })?;
         existing.navigate(target.clone()).map_err(|error| {
             CommandError::system_fault(
                 "browser_navigate_failed",
-                format!("Cadence could not navigate the browser webview: {error}"),
+                format!("Xero could not navigate the browser webview: {error}"),
             )
         })?;
         return Ok(());
@@ -247,7 +247,7 @@ fn ensure_browser_webview<R: Runtime>(
     let window = app.get_window(BROWSER_MAIN_WINDOW_LABEL).ok_or_else(|| {
         CommandError::system_fault(
             "browser_main_window_missing",
-            "Cadence could not locate the main window to attach the browser webview.",
+            "Xero could not locate the main window to attach the browser webview.",
         )
     })?;
 
@@ -311,7 +311,7 @@ fn ensure_browser_webview<R: Runtime>(
         .map_err(|error| {
             CommandError::system_fault(
                 "browser_create_failed",
-                format!("Cadence could not create the browser webview: {error}"),
+                format!("Xero could not create the browser webview: {error}"),
             )
         })?;
     Ok(())
@@ -366,7 +366,7 @@ pub fn browser_resize<R: Runtime>(
         .map_err(|error| {
             CommandError::system_fault(
                 "browser_set_position_failed",
-                format!("Cadence could not move the browser webview: {error}"),
+                format!("Xero could not move the browser webview: {error}"),
             )
         })?;
     webview
@@ -374,7 +374,7 @@ pub fn browser_resize<R: Runtime>(
         .map_err(|error| {
             CommandError::system_fault(
                 "browser_set_size_failed",
-                format!("Cadence could not resize the browser webview: {error}"),
+                format!("Xero could not resize the browser webview: {error}"),
             )
         })?;
     Ok(())
@@ -403,7 +403,7 @@ pub fn browser_hide<R: Runtime>(
                 .map_err(|error| {
                     CommandError::system_fault(
                         "browser_set_position_failed",
-                        format!("Cadence could not hide the browser webview: {error}"),
+                        format!("Xero could not hide the browser webview: {error}"),
                     )
                 })?;
         }
@@ -444,7 +444,7 @@ pub fn browser_current_url<R: Runtime>(
     let url = webview.url().map_err(|error| {
         CommandError::system_fault(
             "browser_url_failed",
-            format!("Cadence could not read the browser URL: {error}"),
+            format!("Xero could not read the browser URL: {error}"),
         )
     })?;
     Ok(Some(url.to_string()))
@@ -478,7 +478,7 @@ pub fn browser_navigate<R: Runtime>(
     webview.navigate(target).map_err(|error| {
         CommandError::system_fault(
             "browser_navigate_failed",
-            format!("Cadence could not navigate the browser webview: {error}"),
+            format!("Xero could not navigate the browser webview: {error}"),
         )
     })?;
     Ok(())
@@ -517,13 +517,13 @@ pub fn browser_reload<R: Runtime>(
     let current = webview.url().map_err(|error| {
         CommandError::system_fault(
             "browser_url_failed",
-            format!("Cadence could not read the browser URL: {error}"),
+            format!("Xero could not read the browser URL: {error}"),
         )
     })?;
     webview.navigate(current).map_err(|error| {
         CommandError::system_fault(
             "browser_navigate_failed",
-            format!("Cadence could not reload the browser webview: {error}"),
+            format!("Xero could not reload the browser webview: {error}"),
         )
     })?;
     Ok(())

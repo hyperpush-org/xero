@@ -383,7 +383,7 @@ pub(crate) fn parse_notification_route_kind(
         other => Err(CommandError::user_fixable(
             code,
             format!(
-                "Cadence does not support notification route kind `{other}`. Allowed kinds: telegram, discord."
+                "Xero does not support notification route kind `{other}`. Allowed kinds: telegram, discord."
             ),
         )),
     }

@@ -10,10 +10,7 @@ use crate::{
     commands::CommandError,
     global_db::global_database_path,
     provider_models::ProviderModelCatalogRefreshRegistry,
-    runtime::{
-        AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig, RuntimeStreamController,
-        RuntimeSupervisorController,
-    },
+    runtime::{AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig},
 };
 
 pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
@@ -35,7 +32,6 @@ pub struct RuntimeStreamFailpoints {
 pub struct DesktopState {
     global_db_path_override: Option<PathBuf>,
     autonomous_skill_cache_dir_override: Option<PathBuf>,
-    runtime_supervisor_binary_override: Option<PathBuf>,
     openai_auth_config_override: Option<OpenAiCodexAuthConfig>,
     openai_compatible_auth_config_override: Option<OpenAiCompatibleAuthConfig>,
     openrouter_auth_config_override: Option<OpenRouterAuthConfig>,
@@ -44,8 +40,6 @@ pub struct DesktopState {
     owned_agent_provider_config_override: Option<AgentProviderConfig>,
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
-    runtime_stream_controller: RuntimeStreamController,
-    runtime_supervisor_controller: RuntimeSupervisorController,
     agent_run_supervisor: AgentRunSupervisor,
     provider_model_catalog_refresh_registry: ProviderModelCatalogRefreshRegistry,
     active_auth_flows: ActiveAuthFlowRegistry,
@@ -59,11 +53,6 @@ impl DesktopState {
 
     pub fn with_autonomous_skill_cache_dir_override(mut self, path: PathBuf) -> Self {
         self.autonomous_skill_cache_dir_override = Some(path);
-        self
-    }
-
-    pub fn with_runtime_supervisor_binary_override(mut self, path: PathBuf) -> Self {
-        self.runtime_supervisor_binary_override = Some(path);
         self
     }
 
@@ -121,24 +110,12 @@ impl DesktopState {
         &self.runtime_stream_failpoints
     }
 
-    pub fn runtime_stream_controller(&self) -> &RuntimeStreamController {
-        &self.runtime_stream_controller
-    }
-
-    pub fn runtime_supervisor_controller(&self) -> &RuntimeSupervisorController {
-        &self.runtime_supervisor_controller
-    }
-
     pub fn agent_run_supervisor(&self) -> &AgentRunSupervisor {
         &self.agent_run_supervisor
     }
 
     pub fn provider_model_catalog_refresh_registry(&self) -> &ProviderModelCatalogRefreshRegistry {
         &self.provider_model_catalog_refresh_registry
-    }
-
-    pub fn runtime_supervisor_binary_override(&self) -> Option<&PathBuf> {
-        self.runtime_supervisor_binary_override.as_ref()
     }
 
     pub fn openai_auth_config(&self) -> OpenAiCodexAuthConfig {
@@ -183,7 +160,7 @@ impl DesktopState {
         app.path().app_data_dir().map_err(|error| {
             CommandError::system_fault(
                 "app_data_dir_unavailable",
-                format!("Cadence could not resolve the app-data directory: {error}"),
+                format!("Xero could not resolve the app-data directory: {error}"),
             )
         })
     }

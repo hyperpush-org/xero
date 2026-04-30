@@ -344,7 +344,7 @@ impl IdlRegistry {
         let path_for_thread = canonical.clone();
 
         let thread = thread::Builder::new()
-            .name(format!("cadence-solana-idl-watch-{id}"))
+            .name(format!("xero-solana-idl-watch-{id}"))
             .spawn(move || {
                 watcher_loop(
                     token_clone,

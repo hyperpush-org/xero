@@ -331,7 +331,7 @@ fn spawn_decoder_thread<R: Runtime + 'static>(
                                 .with_platform("android")
                                 .with_device(device_id.clone())
                                 .with_message(
-                                    "H.264 decoder unavailable: rebuild Cadence with --features emulator-live to stream Android frames"
+                                    "H.264 decoder unavailable: rebuild Xero with --features emulator-live to stream Android frames"
                                         .to_string(),
                                 ),
                         );

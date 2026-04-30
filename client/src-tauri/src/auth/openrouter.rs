@@ -43,7 +43,7 @@ impl OpenRouterAuthConfig {
                     "openrouter_http_client_unavailable",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not build the OpenRouter HTTP client for the models probe: {error}"
+                        "Xero could not build the OpenRouter HTTP client for the models probe: {error}"
                     ),
                 )
             })
@@ -100,7 +100,7 @@ pub(crate) fn bind_openrouter_runtime_session<R: Runtime>(
     let Some(api_key) = settings.provider_api_key.as_deref() else {
         return Ok(OpenRouterBindOutcome::SignedOut(AuthDiagnostic {
             code: "openrouter_api_key_missing".into(),
-            message: "Cadence cannot bind the selected OpenRouter runtime because no app-global API key is configured in Settings.".into(),
+            message: "Xero cannot bind the selected OpenRouter runtime because no app-global API key is configured in Settings.".into(),
             retryable: false,
         }));
     };
@@ -125,7 +125,7 @@ pub(crate) fn reconcile_openrouter_runtime_session<R: Runtime>(
     let Some(api_key) = settings.provider_api_key.as_deref() else {
         return Ok(OpenRouterReconcileOutcome::SignedOut(AuthDiagnostic {
             code: "openrouter_api_key_missing".into(),
-            message: "Cadence cannot reconcile the selected OpenRouter runtime because no app-global API key is configured in Settings.".into(),
+            message: "Xero cannot reconcile the selected OpenRouter runtime because no app-global API key is configured in Settings.".into(),
             retryable: false,
         }));
     };
@@ -138,7 +138,7 @@ pub(crate) fn reconcile_openrouter_runtime_session<R: Runtime>(
     {
         return Ok(OpenRouterReconcileOutcome::SignedOut(AuthDiagnostic {
             code: "openrouter_binding_stale".into(),
-            message: "Cadence rejected the persisted OpenRouter runtime binding because the saved app-global provider settings or API key changed. Rebind the runtime session from Settings.".into(),
+            message: "Xero rejected the persisted OpenRouter runtime binding because the saved app-global provider settings or API key changed. Rebind the runtime session from Settings.".into(),
             retryable: false,
         }));
     }
@@ -173,7 +173,7 @@ pub(crate) fn fetch_openrouter_models(
         AuthFlowError::terminal(
             "openrouter_models_decode_failed",
             RuntimeAuthPhase::Failed,
-            format!("Cadence could not decode the OpenRouter models response: {error}"),
+            format!("Xero could not decode the OpenRouter models response: {error}"),
         )
     })?;
 
@@ -192,7 +192,7 @@ fn validate_openrouter_models_probe(
             "openrouter_model_unavailable",
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence could not find the configured OpenRouter model `{model_id}` in the provider models response."
+                "Xero could not find the configured OpenRouter model `{model_id}` in the provider models response."
             ),
         ));
     }
@@ -212,7 +212,7 @@ fn normalize_openrouter_models(
                 return Err(AuthFlowError::terminal(
                     "openrouter_models_decode_failed",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not decode the OpenRouter models response because one model id was blank.",
+                    "Xero could not decode the OpenRouter models response because one model id was blank.",
                 ));
             }
 
@@ -233,7 +233,7 @@ fn normalize_openrouter_models(
                     "openrouter_models_decode_failed",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not decode the OpenRouter models response because model `{id}` declared a blank supported parameter."
+                        "Xero could not decode the OpenRouter models response because model `{id}` declared a blank supported parameter."
                     ),
                 ));
             }
@@ -259,7 +259,7 @@ fn map_probe_transport_error(error: reqwest::Error) -> AuthFlowError {
     AuthFlowError::retryable(
         "openrouter_provider_unavailable",
         RuntimeAuthPhase::Failed,
-        format!("Cadence could not reach the OpenRouter models endpoint: {error}"),
+        format!("Xero could not reach the OpenRouter models endpoint: {error}"),
     )
 }
 

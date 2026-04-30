@@ -52,7 +52,7 @@ impl AgentRunSupervisor {
         let mut state = self.inner.lock().map_err(|_| {
             CommandError::system_fault(
                 "agent_run_supervisor_lock_failed",
-                "Cadence could not lock the owned-agent run supervisor.",
+                "Xero could not lock the owned-agent run supervisor.",
             )
         })?;
 
@@ -60,7 +60,7 @@ impl AgentRunSupervisor {
             return Err(CommandError::user_fixable(
                 "agent_run_already_active",
                 format!(
-                    "Cadence is already driving owned-agent run `{}` for project `{}` session `{}`.",
+                    "Xero is already driving owned-agent run `{}` for project `{}` session `{}`.",
                     active.run_id, active.project_id, active.agent_session_id
                 ),
             ));
@@ -90,7 +90,7 @@ impl AgentRunSupervisor {
         let state = self.inner.lock().map_err(|_| {
             CommandError::system_fault(
                 "agent_run_supervisor_lock_failed",
-                "Cadence could not lock the owned-agent run supervisor.",
+                "Xero could not lock the owned-agent run supervisor.",
             )
         })?;
         let Some(active) = state.active.get(run_id) else {
@@ -104,7 +104,7 @@ impl AgentRunSupervisor {
         let state = self.inner.lock().map_err(|_| {
             CommandError::system_fault(
                 "agent_run_supervisor_lock_failed",
-                "Cadence could not lock the owned-agent run supervisor.",
+                "Xero could not lock the owned-agent run supervisor.",
             )
         })?;
         Ok(state.active.contains_key(run_id))

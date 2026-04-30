@@ -3,7 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature};
+use serde_json::json;
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         branch_agent_session, compact_session_history, delete_session_memory,
         export_session_transcript, extract_session_memory_candidates, get_session_context_snapshot,
@@ -30,10 +34,6 @@ use cadence_desktop_lib::{
     runtime::AgentProviderConfig,
     state::DesktopState,
 };
-use git2::{IndexAddOption, Repository, Signature};
-use serde_json::json;
-use tauri::Manager;
-use tempfile::TempDir;
 
 const PROVIDER_ID: &str = "openrouter";
 const MODEL_ID: &str = "openai/gpt-5.4";
@@ -49,7 +49,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
+        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
 }
 
 fn create_fake_provider_state(root: &TempDir) -> DesktopState {
@@ -121,7 +121,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "cadence@example.com").expect("signature");
+    let signature = Signature::now("Xero", "xero@example.com").expect("signature");
 
     repository
         .commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
@@ -1306,7 +1306,7 @@ fn session_context_privacy_hardening_covers_exports_search_compaction_and_memory
         .expect("unsafe memory candidate listed");
     assert_eq!(
         unsafe_dto.text,
-        "Cadence redacted sensitive session-context text."
+        "Xero redacted sensitive session-context text."
     );
 
     let blocked = update_session_memory(
@@ -1449,7 +1449,7 @@ fn seed_history_run_with_provider(
         &project_store::NewAgentFileChangeRecord {
             project_id: project_id.into(),
             run_id: run_id.into(),
-            path: "/Users/sn0w/.config/cadence/token.json".into(),
+            path: "/Users/sn0w/.config/xero/token.json".into(),
             operation: "write".into(),
             old_hash: None,
             new_hash: None,
@@ -1540,7 +1540,7 @@ fn seed_minimal_run_with_provider(
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             prompt: prompt.into(),
-            system_prompt: "You are Cadence.".into(),
+            system_prompt: "You are Xero.".into(),
             now: started_at.into(),
         },
     )
@@ -1558,7 +1558,7 @@ fn seed_memory_candidate_run(repo_root: &Path, project_id: &str) {
         FAKE_MODEL_ID,
         run_id,
         started_at,
-        "Project fact: Cadence stores reviewed memory in app-data LanceDB.",
+        "Project fact: Xero stores reviewed memory in app-data LanceDB.",
     );
 
     let messages = [

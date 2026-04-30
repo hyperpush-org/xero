@@ -107,7 +107,7 @@ pub fn upsert_pending_operator_approval(
             "operator_approval_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the operator-approval transaction.",
+            "Xero could not start the operator-approval transaction.",
         )
     })?;
 
@@ -167,7 +167,7 @@ pub fn upsert_pending_operator_approval(
                         "operator_approval_upsert_failed",
                         &database_path,
                         error,
-                        "Cadence could not persist the pending operator approval.",
+                        "Xero could not persist the pending operator approval.",
                     )
                 })?;
         }
@@ -195,7 +195,7 @@ pub fn upsert_pending_operator_approval(
                             "operator_approval_upsert_failed",
                             &database_path,
                             error,
-                            "Cadence could not refresh the pending operator approval.",
+                            "Xero could not refresh the pending operator approval.",
                         )
                     })?;
             }
@@ -203,7 +203,7 @@ pub fn upsert_pending_operator_approval(
                 return Err(CommandError::retryable(
                     "runtime_action_sync_conflict",
                     format!(
-                        "Cadence received a retained runtime action for already-resolved operator request `{action_id}`. Reopen or refresh the selected project before retrying."
+                        "Xero received a retained runtime action for already-resolved operator request `{action_id}`. Reopen or refresh the selected project before retrying."
                     ),
                 ));
             }
@@ -215,19 +215,20 @@ pub fn upsert_pending_operator_approval(
             "operator_approval_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the pending operator approval.",
+            "Xero could not commit the pending operator approval.",
         )
     })?;
 
-    read_operator_approval_by_action_id(&connection, &database_path, project_id, &action_id)?.ok_or_else(|| {
-        CommandError::system_fault(
-            "operator_approval_missing_after_persist",
-            format!(
-                "Cadence persisted operator approval `{action_id}` in {} but could not read it back.",
+    read_operator_approval_by_action_id(&connection, &database_path, project_id, &action_id)?
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "operator_approval_missing_after_persist",
+                format!(
+                "Xero persisted operator approval `{action_id}` in {} but could not read it back.",
                 database_path.display()
             ),
-        )
-    })
+            )
+        })
 }
 
 pub fn resolve_operator_action(
@@ -246,7 +247,7 @@ pub fn resolve_operator_action(
             "operator_action_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the operator-action transaction.",
+            "Xero could not start the operator-action transaction.",
         )
     })?;
 
@@ -256,8 +257,8 @@ pub fn resolve_operator_action(
             CommandError::user_fixable(
                 "operator_action_not_found",
                 format!(
-                "Cadence could not find operator request `{action_id}` for the selected project."
-            ),
+                    "Xero could not find operator request `{action_id}` for the selected project."
+                ),
             )
         })?;
 
@@ -265,7 +266,7 @@ pub fn resolve_operator_action(
         return Err(CommandError::user_fixable(
             "operator_action_already_resolved",
             format!(
-                "Cadence cannot change operator request `{action_id}` because it is already {}.",
+                "Xero cannot change operator request `{action_id}` because it is already {}.",
                 operator_approval_status_label(&existing.status)
             ),
         ));
@@ -290,7 +291,7 @@ pub fn resolve_operator_action(
         return Err(CommandError::user_fixable(
             "operator_action_answer_required",
             format!(
-                "Cadence requires a non-empty user answer before approving required-input operator request `{action_id}`."
+                "Xero requires a non-empty user answer before approving required-input operator request `{action_id}`."
             ),
         ));
     }
@@ -336,7 +337,7 @@ pub fn resolve_operator_action(
                 "operator_action_resolve_failed",
                 &database_path,
                 error,
-                "Cadence could not persist the operator decision.",
+                "Xero could not persist the operator decision.",
             )
         })?;
 
@@ -367,7 +368,7 @@ pub fn resolve_operator_action(
                 "operator_verification_persist_failed",
                 &database_path,
                 error,
-                "Cadence could not persist the operator verification record.",
+                "Xero could not persist the operator verification record.",
             )
         })?;
 
@@ -379,7 +380,7 @@ pub fn resolve_operator_action(
             "operator_action_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the operator decision.",
+            "Xero could not commit the operator decision.",
         )
     })?;
 
@@ -389,7 +390,7 @@ pub fn resolve_operator_action(
                 CommandError::system_fault(
                     "operator_action_missing_after_persist",
                     format!(
-                "Cadence resolved operator request `{action_id}` in {} but could not read it back.",
+                "Xero resolved operator request `{action_id}` in {} but could not read it back.",
                 database_path.display()
             ),
                 )
@@ -404,7 +405,7 @@ pub fn resolve_operator_action(
         CommandError::system_fault(
             "operator_verification_missing_after_persist",
             format!(
-                "Cadence persisted the operator verification record for `{action_id}` in {} but could not read it back.",
+                "Xero persisted the operator verification record for `{action_id}` in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -431,7 +432,7 @@ pub fn record_runtime_operator_resume_outcome(
             "operator_resume_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the operator-resume transaction.",
+            "Xero could not start the operator-resume transaction.",
         )
     })?;
 
@@ -442,7 +443,7 @@ pub fn record_runtime_operator_resume_outcome(
             resume.approval_request.title
         ),
         ResumeHistoryStatus::Failed => format!(
-            "Cadence could not resume the selected project's runtime session after approving {}.",
+            "Xero could not resume the selected project's runtime session after approving {}.",
             resume.approval_request.title
         ),
     };
@@ -475,7 +476,7 @@ pub fn record_runtime_operator_resume_outcome(
                 "operator_resume_persist_failed",
                 &database_path,
                 error,
-                "Cadence could not persist the operator resume event.",
+                "Xero could not persist the operator resume event.",
             )
         })?;
 
@@ -486,7 +487,7 @@ pub fn record_runtime_operator_resume_outcome(
             "operator_resume_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the operator resume event.",
+            "Xero could not commit the operator resume event.",
         )
     })?;
 
@@ -500,7 +501,7 @@ pub fn record_runtime_operator_resume_outcome(
         CommandError::system_fault(
             "operator_action_missing_after_resume",
             format!(
-                "Cadence recorded a resume event for `{}` in {} but could not reload the approval row.",
+                "Xero recorded a resume event for `{}` in {} but could not reload the approval row.",
                 resume.approval_request.action_id,
                 database_path.display()
             ),
@@ -516,7 +517,7 @@ pub fn record_runtime_operator_resume_outcome(
         CommandError::system_fault(
             "operator_resume_missing_after_persist",
             format!(
-                "Cadence persisted the operator resume entry for `{}` in {} but could not read it back.",
+                "Xero persisted the operator resume entry for `{}` in {} but could not read it back.",
                 resume.approval_request.action_id,
                 database_path.display()
             ),
@@ -563,7 +564,7 @@ pub(crate) fn read_operator_approvals(
             CommandError::system_fault(
                 "operator_approval_query_failed",
                 format!(
-                    "Cadence could not prepare operator-approval rows from {}: {error}",
+                    "Xero could not prepare operator-approval rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -593,7 +594,7 @@ pub(crate) fn read_operator_approvals(
             CommandError::system_fault(
                 "operator_approval_query_failed",
                 format!(
-                    "Cadence could not query operator-approval rows from {}: {error}",
+                    "Xero could not query operator-approval rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -606,7 +607,7 @@ pub(crate) fn read_operator_approvals(
                     CommandError::system_fault(
                         "operator_approval_decode_failed",
                         format!(
-                            "Cadence could not decode operator-approval rows from {}: {error}",
+                            "Xero could not decode operator-approval rows from {}: {error}",
                             database_path.display()
                         ),
                     )
@@ -641,7 +642,7 @@ pub(crate) fn read_verification_records(
             CommandError::system_fault(
                 "verification_record_query_failed",
                 format!(
-                    "Cadence could not prepare verification rows from {}: {error}",
+                    "Xero could not prepare verification rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -665,7 +666,7 @@ pub(crate) fn read_verification_records(
             CommandError::system_fault(
                 "verification_record_query_failed",
                 format!(
-                    "Cadence could not query verification rows from {}: {error}",
+                    "Xero could not query verification rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -678,7 +679,7 @@ pub(crate) fn read_verification_records(
                     CommandError::system_fault(
                         "verification_record_decode_failed",
                         format!(
-                            "Cadence could not decode verification rows from {}: {error}",
+                            "Xero could not decode verification rows from {}: {error}",
                             database_path.display()
                         ),
                     )
@@ -713,7 +714,7 @@ pub(crate) fn read_resume_history(
             CommandError::system_fault(
                 "resume_history_query_failed",
                 format!(
-                    "Cadence could not prepare resume-history rows from {}: {error}",
+                    "Xero could not prepare resume-history rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -737,7 +738,7 @@ pub(crate) fn read_resume_history(
             CommandError::system_fault(
                 "resume_history_query_failed",
                 format!(
-                    "Cadence could not query resume-history rows from {}: {error}",
+                    "Xero could not query resume-history rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -750,7 +751,7 @@ pub(crate) fn read_resume_history(
                     CommandError::system_fault(
                         "resume_history_decode_failed",
                         format!(
-                            "Cadence could not decode resume-history rows from {}: {error}",
+                            "Xero could not decode resume-history rows from {}: {error}",
                             database_path.display()
                         ),
                     )
@@ -792,7 +793,7 @@ pub(crate) fn read_operator_approval_by_action_id(
             CommandError::system_fault(
                 "operator_approval_query_failed",
                 format!(
-                    "Cadence could not prepare operator-approval lookup from {}: {error}",
+                    "Xero could not prepare operator-approval lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -804,7 +805,7 @@ pub(crate) fn read_operator_approval_by_action_id(
             CommandError::system_fault(
                 "operator_approval_query_failed",
                 format!(
-                    "Cadence could not query operator-approval lookup from {}: {error}",
+                    "Xero could not query operator-approval lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -814,7 +815,7 @@ pub(crate) fn read_operator_approval_by_action_id(
         CommandError::system_fault(
             "operator_approval_query_failed",
             format!(
-                "Cadence could not read operator-approval lookup rows from {}: {error}",
+                "Xero could not read operator-approval lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -828,7 +829,7 @@ pub(crate) fn read_operator_approval_by_action_id(
             CommandError::system_fault(
                 "operator_approval_decode_failed",
                 format!(
-                    "Cadence could not decode operator-approval lookup rows from {}: {error}",
+                    "Xero could not decode operator-approval lookup rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -839,7 +840,7 @@ pub(crate) fn read_operator_approval_by_action_id(
             CommandError::system_fault(
                 "operator_approval_decode_failed",
                 format!(
-                    "Cadence could not decode operator-approval lookup rows from {}: {error}",
+                    "Xero could not decode operator-approval lookup rows from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -892,7 +893,7 @@ pub(crate) fn read_verification_record_by_id(
             CommandError::system_fault(
                 "verification_record_query_failed",
                 format!(
-                    "Cadence could not prepare verification-record lookup from {}: {error}",
+                    "Xero could not prepare verification-record lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -902,7 +903,7 @@ pub(crate) fn read_verification_record_by_id(
         CommandError::system_fault(
             "verification_record_query_failed",
             format!(
-                "Cadence could not query verification-record lookup from {}: {error}",
+                "Xero could not query verification-record lookup from {}: {error}",
                 database_path.display()
             ),
         )
@@ -912,7 +913,7 @@ pub(crate) fn read_verification_record_by_id(
         CommandError::system_fault(
             "verification_record_query_failed",
             format!(
-                "Cadence could not read verification-record lookup rows from {}: {error}",
+                "Xero could not read verification-record lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -927,7 +928,7 @@ pub(crate) fn read_verification_record_by_id(
                 CommandError::system_fault(
                     "verification_record_decode_failed",
                     format!(
-                        "Cadence could not decode verification-record lookup rows from {}: {error}",
+                        "Xero could not decode verification-record lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -936,7 +937,7 @@ pub(crate) fn read_verification_record_by_id(
                 CommandError::system_fault(
                     "verification_record_decode_failed",
                     format!(
-                        "Cadence could not decode verification-record lookup rows from {}: {error}",
+                        "Xero could not decode verification-record lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -945,7 +946,7 @@ pub(crate) fn read_verification_record_by_id(
                 CommandError::system_fault(
                     "verification_record_decode_failed",
                     format!(
-                        "Cadence could not decode verification-record lookup rows from {}: {error}",
+                        "Xero could not decode verification-record lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -954,7 +955,7 @@ pub(crate) fn read_verification_record_by_id(
                 CommandError::system_fault(
                     "verification_record_decode_failed",
                     format!(
-                        "Cadence could not decode verification-record lookup rows from {}: {error}",
+                        "Xero could not decode verification-record lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -963,7 +964,7 @@ pub(crate) fn read_verification_record_by_id(
                 CommandError::system_fault(
                     "verification_record_decode_failed",
                     format!(
-                        "Cadence could not decode verification-record lookup rows from {}: {error}",
+                        "Xero could not decode verification-record lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -972,7 +973,7 @@ pub(crate) fn read_verification_record_by_id(
                 CommandError::system_fault(
                     "verification_record_decode_failed",
                     format!(
-                        "Cadence could not decode verification-record lookup rows from {}: {error}",
+                        "Xero could not decode verification-record lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1009,7 +1010,7 @@ pub(crate) fn read_resume_history_entry_by_id(
             CommandError::system_fault(
                 "resume_history_query_failed",
                 format!(
-                    "Cadence could not prepare resume-history lookup from {}: {error}",
+                    "Xero could not prepare resume-history lookup from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1019,7 +1020,7 @@ pub(crate) fn read_resume_history_entry_by_id(
         CommandError::system_fault(
             "resume_history_query_failed",
             format!(
-                "Cadence could not query resume-history lookup from {}: {error}",
+                "Xero could not query resume-history lookup from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1029,7 +1030,7 @@ pub(crate) fn read_resume_history_entry_by_id(
         CommandError::system_fault(
             "resume_history_query_failed",
             format!(
-                "Cadence could not read resume-history lookup rows from {}: {error}",
+                "Xero could not read resume-history lookup rows from {}: {error}",
                 database_path.display()
             ),
         )
@@ -1044,7 +1045,7 @@ pub(crate) fn read_resume_history_entry_by_id(
                 CommandError::system_fault(
                     "resume_history_decode_failed",
                     format!(
-                        "Cadence could not decode resume-history lookup rows from {}: {error}",
+                        "Xero could not decode resume-history lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1053,7 +1054,7 @@ pub(crate) fn read_resume_history_entry_by_id(
                 CommandError::system_fault(
                     "resume_history_decode_failed",
                     format!(
-                        "Cadence could not decode resume-history lookup rows from {}: {error}",
+                        "Xero could not decode resume-history lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1062,7 +1063,7 @@ pub(crate) fn read_resume_history_entry_by_id(
                 CommandError::system_fault(
                     "resume_history_decode_failed",
                     format!(
-                        "Cadence could not decode resume-history lookup rows from {}: {error}",
+                        "Xero could not decode resume-history lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1071,7 +1072,7 @@ pub(crate) fn read_resume_history_entry_by_id(
                 CommandError::system_fault(
                     "resume_history_decode_failed",
                     format!(
-                        "Cadence could not decode resume-history lookup rows from {}: {error}",
+                        "Xero could not decode resume-history lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1080,7 +1081,7 @@ pub(crate) fn read_resume_history_entry_by_id(
                 CommandError::system_fault(
                     "resume_history_decode_failed",
                     format!(
-                        "Cadence could not decode resume-history lookup rows from {}: {error}",
+                        "Xero could not decode resume-history lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1089,7 +1090,7 @@ pub(crate) fn read_resume_history_entry_by_id(
                 CommandError::system_fault(
                     "resume_history_decode_failed",
                     format!(
-                        "Cadence could not decode resume-history lookup rows from {}: {error}",
+                        "Xero could not decode resume-history lookup rows from {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -1377,7 +1378,7 @@ pub(crate) fn derive_operator_scope_prefix(
         .ok_or_else(|| {
             CommandError::system_fault(
                 "runtime_action_request_invalid",
-                "Cadence could not persist the runtime approval because the action-required item was missing both flow and session identifiers.",
+                "Xero could not persist the runtime approval because the action-required item was missing both flow and session identifiers.",
             )
         })
 }
@@ -1391,7 +1392,7 @@ pub(crate) fn derive_operator_action_id(
     if action_type.is_empty() {
         return Err(CommandError::system_fault(
             "runtime_action_request_invalid",
-            "Cadence could not persist the runtime approval because the action-required item was missing a stable action type.",
+            "Xero could not persist the runtime approval because the action-required item was missing a stable action type.",
         ));
     }
 
@@ -1561,7 +1562,7 @@ pub(crate) fn map_snapshot_decode_error(
     CommandError::system_fault(
         code,
         format!(
-            "Cadence could not decode selected-project operator-loop metadata from {}: {details}",
+            "Xero could not decode selected-project operator-loop metadata from {}: {details}",
             database_path.display()
         ),
     )
@@ -1585,7 +1586,7 @@ pub(crate) fn map_project_query_error(
         other => CommandError::system_fault(
             "project_summary_query_failed",
             format!(
-                "Cadence could not read the project summary from {}: {other}",
+                "Xero could not read the project summary from {}: {other}",
                 database_path.display()
             ),
         ),

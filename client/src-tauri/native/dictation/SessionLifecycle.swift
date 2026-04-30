@@ -2,12 +2,12 @@ import Darwin
 import Dispatch
 import Foundation
 
-public typealias CadenceDictationEventCallback = @convention(c) (
+public typealias XeroDictationEventCallback = @convention(c) (
     UnsafeMutableRawPointer?,
     UnsafePointer<CChar>?
 ) -> Void
 
-private struct CadenceDictationSessionRequest: Decodable {
+private struct XeroDictationSessionRequest: Decodable {
     let sessionId: String
     let engine: String
     let locale: String
@@ -15,7 +15,7 @@ private struct CadenceDictationSessionRequest: Decodable {
     let contextualPhrases: [String]?
 }
 
-struct CadenceDictationOperationResponse: Encodable {
+struct XeroDictationOperationResponse: Encodable {
     let ok: Bool
     let sessionId: String?
     let engine: String?
@@ -49,7 +49,7 @@ struct CadenceDictationOperationResponse: Encodable {
     }
 }
 
-private final class CadenceDictationSession {
+private final class XeroDictationSession {
     private enum LifecycleState {
         case created
         case started
@@ -61,15 +61,15 @@ private final class CadenceDictationSession {
     private let locale: String
     private let privacyMode: String
     private let contextualPhrases: [String]
-    private let callback: CadenceDictationEventCallback?
+    private let callback: XeroDictationEventCallback?
     private let context: UnsafeMutableRawPointer?
     private let queue: DispatchQueue
     private let callbackQueue: DispatchQueue
     private var state: LifecycleState = .created
-    private var modernEngine: CadenceModernDictationEngine?
-    private var legacyEngine: CadenceLegacyDictationEngine?
+    private var modernEngine: XeroModernDictationEngine?
+    private var legacyEngine: XeroLegacyDictationEngine?
 
-    init(request: CadenceDictationSessionRequest, callback: CadenceDictationEventCallback?, context: UnsafeMutableRawPointer?) {
+    init(request: XeroDictationSessionRequest, callback: XeroDictationEventCallback?, context: UnsafeMutableRawPointer?) {
         self.sessionId = request.sessionId
         self.engine = request.engine
         self.locale = request.locale
@@ -77,8 +77,8 @@ private final class CadenceDictationSession {
         self.contextualPhrases = request.contextualPhrases ?? []
         self.callback = callback
         self.context = context
-        self.queue = DispatchQueue(label: "dev.cadence.dictation.session.\(request.sessionId)")
-        self.callbackQueue = DispatchQueue(label: "dev.cadence.dictation.session.\(request.sessionId).events")
+        self.queue = DispatchQueue(label: "dev.xero.dictation.session.\(request.sessionId)")
+        self.callbackQueue = DispatchQueue(label: "dev.xero.dictation.session.\(request.sessionId).events")
     }
 
     deinit {
@@ -90,13 +90,13 @@ private final class CadenceDictationSession {
         }
     }
 
-    func start() -> CadenceDictationOperationResponse {
+    func start() -> XeroDictationOperationResponse {
         queue.sync {
             switch state {
             case .created:
                 if engine == "modern" {
                     if #available(macOS 26.0, *) {
-                        let modernEngine = CadenceModernDictationEngine(
+                        let modernEngine = XeroModernDictationEngine(
                             sessionId: sessionId,
                             localeIdentifier: locale,
                             privacyMode: privacyMode,
@@ -119,11 +119,11 @@ private final class CadenceDictationSession {
                     state = .stopped
                     return .failure(
                         code: "dictation_modern_runtime_unavailable",
-                        message: "Cadence could not start modern dictation because macOS 26 SpeechAnalyzer is unavailable.",
+                        message: "Xero could not start modern dictation because macOS 26 SpeechAnalyzer is unavailable.",
                         retryable: false
                     )
                 } else {
-                    let legacyEngine = CadenceLegacyDictationEngine(
+                    let legacyEngine = XeroLegacyDictationEngine(
                         sessionId: sessionId,
                         localeIdentifier: locale,
                         privacyMode: privacyMode,
@@ -147,7 +147,7 @@ private final class CadenceDictationSession {
             case .stopped:
                 return .failure(
                     code: "dictation_session_stopped",
-                    message: "Cadence cannot start a dictation session after it has already stopped."
+                    message: "Xero cannot start a dictation session after it has already stopped."
                 )
             }
 
@@ -155,7 +155,7 @@ private final class CadenceDictationSession {
         }
     }
 
-    func stop() -> CadenceDictationOperationResponse {
+    func stop() -> XeroDictationOperationResponse {
         if engine == "modern" {
             return endModern(reason: "user")
         }
@@ -163,7 +163,7 @@ private final class CadenceDictationSession {
         return endLegacy(reason: "user")
     }
 
-    func cancel() -> CadenceDictationOperationResponse {
+    func cancel() -> XeroDictationOperationResponse {
         if engine == "modern" {
             return endModern(reason: "cancelled")
         }
@@ -171,12 +171,12 @@ private final class CadenceDictationSession {
         return endLegacy(reason: "cancelled")
     }
 
-    private func endModern(reason: String) -> CadenceDictationOperationResponse {
+    private func endModern(reason: String) -> XeroDictationOperationResponse {
         queue.sync {
             switch state {
             case .created, .started:
                 state = .stopped
-                let response: CadenceDictationOperationResponse
+                let response: XeroDictationOperationResponse
                 if reason == "cancelled" {
                     response = modernEngine?.cancel() ?? .success()
                 } else {
@@ -190,12 +190,12 @@ private final class CadenceDictationSession {
         }
     }
 
-    private func endLegacy(reason: String) -> CadenceDictationOperationResponse {
+    private func endLegacy(reason: String) -> XeroDictationOperationResponse {
         queue.sync {
             switch state {
             case .created, .started:
                 state = .stopped
-                let response: CadenceDictationOperationResponse
+                let response: XeroDictationOperationResponse
                 if reason == "cancelled" {
                     response = legacyEngine?.cancel() ?? .success()
                 } else {
@@ -217,7 +217,7 @@ private final class CadenceDictationSession {
             guard JSONSerialization.isValidJSONObject(payload),
                   let data = try? JSONSerialization.data(withJSONObject: payload),
                   let json = String(data: data, encoding: .utf8) else {
-                let fallback = #"{"kind":"error","sessionId":null,"code":"native_event_encoding_failed","message":"Cadence could not encode a native dictation event.","retryable":false}"#
+                let fallback = #"{"kind":"error","sessionId":null,"code":"native_event_encoding_failed","message":"Xero could not encode a native dictation event.","retryable":false}"#
                 fallback.withCString { pointer in
                     callback(context, pointer)
                 }
@@ -231,10 +231,10 @@ private final class CadenceDictationSession {
     }
 }
 
-@_cdecl("cadence_dictation_create_session")
-public func cadenceDictationCreateSession(
+@_cdecl("xero_dictation_create_session")
+public func xeroDictationCreateSession(
     _ requestJson: UnsafePointer<CChar>?,
-    _ callback: CadenceDictationEventCallback?,
+    _ callback: XeroDictationEventCallback?,
     _ context: UnsafeMutableRawPointer?
 ) -> UnsafeMutableRawPointer? {
     guard let requestJson else {
@@ -243,60 +243,60 @@ public func cadenceDictationCreateSession(
 
     let json = String(cString: requestJson)
     guard let data = json.data(using: .utf8),
-          let request = try? JSONDecoder().decode(CadenceDictationSessionRequest.self, from: data) else {
+          let request = try? JSONDecoder().decode(XeroDictationSessionRequest.self, from: data) else {
         return nil
     }
 
-    let session = CadenceDictationSession(request: request, callback: callback, context: context)
+    let session = XeroDictationSession(request: request, callback: callback, context: context)
     return Unmanaged.passRetained(session).toOpaque()
 }
 
-@_cdecl("cadence_dictation_start_session")
-public func cadenceDictationStartSession(_ session: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? {
+@_cdecl("xero_dictation_start_session")
+public func xeroDictationStartSession(_ session: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? {
     guard let session else {
         return operationResponseString(.failure(
             code: "native_session_missing",
-            message: "Cadence could not start dictation because the native session was unavailable."
+            message: "Xero could not start dictation because the native session was unavailable."
         ))
     }
 
-    let instance = Unmanaged<CadenceDictationSession>.fromOpaque(session).takeUnretainedValue()
+    let instance = Unmanaged<XeroDictationSession>.fromOpaque(session).takeUnretainedValue()
     return operationResponseString(instance.start())
 }
 
-@_cdecl("cadence_dictation_stop_session")
-public func cadenceDictationStopSession(_ session: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? {
+@_cdecl("xero_dictation_stop_session")
+public func xeroDictationStopSession(_ session: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? {
     guard let session else {
         return operationResponseString(.success())
     }
 
-    let instance = Unmanaged<CadenceDictationSession>.fromOpaque(session).takeUnretainedValue()
+    let instance = Unmanaged<XeroDictationSession>.fromOpaque(session).takeUnretainedValue()
     return operationResponseString(instance.stop())
 }
 
-@_cdecl("cadence_dictation_cancel_session")
-public func cadenceDictationCancelSession(_ session: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? {
+@_cdecl("xero_dictation_cancel_session")
+public func xeroDictationCancelSession(_ session: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>? {
     guard let session else {
         return operationResponseString(.success())
     }
 
-    let instance = Unmanaged<CadenceDictationSession>.fromOpaque(session).takeUnretainedValue()
+    let instance = Unmanaged<XeroDictationSession>.fromOpaque(session).takeUnretainedValue()
     return operationResponseString(instance.cancel())
 }
 
-@_cdecl("cadence_dictation_release_session")
-public func cadenceDictationReleaseSession(_ session: UnsafeMutableRawPointer?) {
+@_cdecl("xero_dictation_release_session")
+public func xeroDictationReleaseSession(_ session: UnsafeMutableRawPointer?) {
     guard let session else {
         return
     }
 
-    Unmanaged<CadenceDictationSession>.fromOpaque(session).release()
+    Unmanaged<XeroDictationSession>.fromOpaque(session).release()
 }
 
-private func operationResponseString(_ response: CadenceDictationOperationResponse) -> UnsafeMutablePointer<CChar>? {
+private func operationResponseString(_ response: XeroDictationOperationResponse) -> UnsafeMutablePointer<CChar>? {
     guard let data = try? JSONEncoder().encode(response),
           let json = String(data: data, encoding: .utf8) else {
-        return duplicateCString(#"{"ok":false,"code":"native_response_encoding_failed","message":"Cadence could not encode a native dictation response.","retryable":false}"#)
+        return duplicateCString(#"{"ok":false,"code":"native_response_encoding_failed","message":"Xero could not encode a native dictation response.","retryable":false}"#)
     }
 
     return duplicateCString(json)

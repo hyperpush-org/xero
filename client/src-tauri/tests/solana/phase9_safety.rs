@@ -6,29 +6,29 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use cadence_desktop_lib::commands::solana::cost::{
+use serde_json::{json, Value};
+use tempfile::TempDir;
+use xero_desktop_lib::commands::solana::cost::{
     ProviderHealth, ProviderKind, ProviderUsage, ProviderUsageProbeRequest, ProviderUsageRunner,
 };
-use cadence_desktop_lib::commands::solana::drift::{
+use xero_desktop_lib::commands::solana::drift::{
     check as drift_check, DriftCheckRequest, DriftStatus, TrackedProgram,
 };
-use cadence_desktop_lib::commands::solana::program::{
+use xero_desktop_lib::commands::solana::program::{
     self,
     deploy::{DeployInvocation, DeployOutcome, DeployRunner},
     DeployAuthority,
 };
-use cadence_desktop_lib::commands::solana::secrets::{
+use xero_desktop_lib::commands::solana::secrets::{
     builtin_patterns, scan_project as secrets_scan, ScanRequest as SecretsScanRequest,
     SecretSeverity,
 };
-use cadence_desktop_lib::commands::solana::tx::RpcTransport;
-use cadence_desktop_lib::commands::solana::{
+use xero_desktop_lib::commands::solana::tx::RpcTransport;
+use xero_desktop_lib::commands::solana::{
     builtin_doc_catalog, builtin_tracked_programs, doc_snippets_for, ClusterKind, LocalCostLedger,
     TxCostRecord,
 };
-use cadence_desktop_lib::commands::CommandError;
-use serde_json::{json, Value};
-use tempfile::TempDir;
+use xero_desktop_lib::commands::CommandError;
 
 // -----------------------------------------------------------------------
 // Test doubles
@@ -50,7 +50,7 @@ impl DeployRunner for MockDeployRunner {
     fn run(
         &self,
         invocation: &DeployInvocation,
-    ) -> Result<DeployOutcome, cadence_desktop_lib::commands::CommandError> {
+    ) -> Result<DeployOutcome, xero_desktop_lib::commands::CommandError> {
         self.calls.lock().unwrap().push(invocation.clone());
         Ok(self
             .outcomes
@@ -87,7 +87,7 @@ impl RpcTransport for ScriptedTransport {
         &self,
         url: &str,
         _body: Value,
-    ) -> Result<Value, cadence_desktop_lib::commands::CommandError> {
+    ) -> Result<Value, xero_desktop_lib::commands::CommandError> {
         let mut guard = self.responses.lock().unwrap();
         let queue = guard.get_mut(url).ok_or_else(|| {
             CommandError::system_fault("scripted_transport_unknown_url", url.to_string())
@@ -239,8 +239,7 @@ pub fn drift_check_flags_metaplex_version_delta_between_devnet_and_mainnet() {
         ),
     );
 
-    let router =
-        Arc::new(cadence_desktop_lib::commands::solana::RpcRouter::new_with_default_pool());
+    let router = Arc::new(xero_desktop_lib::commands::solana::RpcRouter::new_with_default_pool());
     let transport: Arc<dyn RpcTransport> = scripted.clone();
     let mut rpc_urls = BTreeMap::new();
     rpc_urls.insert(ClusterKind::Devnet, devnet_url.to_string());
@@ -306,7 +305,7 @@ pub fn cost_snapshot_rolls_up_local_ledger_activity() {
             priority_fee_lamports: 2_000,
             compute_units_consumed: 200_000,
             rent_lamports: 0,
-            timestamp_ms: cadence_desktop_lib::commands::solana::cost::ledger::now_ms(),
+            timestamp_ms: xero_desktop_lib::commands::solana::cost::ledger::now_ms(),
         });
     }
     for i in 0..5 {
@@ -317,12 +316,11 @@ pub fn cost_snapshot_rolls_up_local_ledger_activity() {
             priority_fee_lamports: 0,
             compute_units_consumed: 50_000,
             rent_lamports: 100_000,
-            timestamp_ms: cadence_desktop_lib::commands::solana::cost::ledger::now_ms(),
+            timestamp_ms: xero_desktop_lib::commands::solana::cost::ledger::now_ms(),
         });
     }
 
-    let router =
-        Arc::new(cadence_desktop_lib::commands::solana::RpcRouter::new_with_default_pool());
+    let router = Arc::new(xero_desktop_lib::commands::solana::RpcRouter::new_with_default_pool());
     let runner = ScriptedProviderRunner {
         usage: ProviderUsage {
             cluster: ClusterKind::Mainnet,
@@ -338,8 +336,8 @@ pub fn cost_snapshot_rolls_up_local_ledger_activity() {
         },
     };
 
-    let snap = cadence_desktop_lib::commands::solana::cost::snapshot(
-        &cadence_desktop_lib::commands::solana::CostSnapshotRequest {
+    let snap = xero_desktop_lib::commands::solana::cost::snapshot(
+        &xero_desktop_lib::commands::solana::CostSnapshotRequest {
             clusters: vec![ClusterKind::Mainnet, ClusterKind::Devnet],
             window_s: Some(3_600),
             skip_provider_probes: true,
@@ -370,7 +368,7 @@ pub fn cost_snapshot_matches_provider_dashboard_within_5_percent() {
             priority_fee_lamports: 100,
             compute_units_consumed: 1_000,
             rent_lamports: 0,
-            timestamp_ms: cadence_desktop_lib::commands::solana::cost::ledger::now_ms(),
+            timestamp_ms: xero_desktop_lib::commands::solana::cost::ledger::now_ms(),
         });
     }
     let summary = ledger.summary(&[ClusterKind::Mainnet], None);
@@ -427,8 +425,8 @@ pub fn doc_snippets_for_known_tool_has_non_empty_body_and_url() {
 // -----------------------------------------------------------------------
 
 pub fn deploy_gate_blocks_on_committed_mainnet_keypair() {
-    use cadence_desktop_lib::commands::solana::idl::publish::NullProgressSink;
-    use cadence_desktop_lib::commands::solana::program::DeploySpec;
+    use xero_desktop_lib::commands::solana::idl::publish::NullProgressSink;
+    use xero_desktop_lib::commands::solana::program::DeploySpec;
 
     // Project tree with a committed id.json.
     let project = TempDir::new().unwrap();
@@ -449,13 +447,13 @@ pub fn deploy_gate_blocks_on_committed_mainnet_keypair() {
     fs::write(&kp, b"[1,2,3]").unwrap();
 
     let runner = Arc::new(MockDeployRunner::default());
-    let services = cadence_desktop_lib::commands::solana::DeployServices {
+    let services = xero_desktop_lib::commands::solana::DeployServices {
         runner: runner.clone(),
         idl_runner: Arc::new(
-            cadence_desktop_lib::commands::solana::idl::publish::SystemAnchorIdlRunner::new(),
+            xero_desktop_lib::commands::solana::idl::publish::SystemAnchorIdlRunner::new(),
         ),
         codama_runner: Arc::new(
-            cadence_desktop_lib::commands::solana::idl::codama::SystemCodamaRunner::new(),
+            xero_desktop_lib::commands::solana::idl::codama::SystemCodamaRunner::new(),
         ),
     };
 
@@ -478,7 +476,7 @@ pub fn deploy_gate_blocks_on_committed_mainnet_keypair() {
     let err = program::deploy::deploy(&services, &sink, &spec).unwrap_err();
     assert_eq!(
         err.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied,
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied,
         "expected policy_denied, got {err:?}"
     );
     assert!(
@@ -496,8 +494,8 @@ pub fn deploy_gate_blocks_on_committed_mainnet_keypair() {
 }
 
 pub fn deploy_gate_is_silent_when_project_root_is_none() {
-    use cadence_desktop_lib::commands::solana::idl::publish::NullProgressSink;
-    use cadence_desktop_lib::commands::solana::program::DeploySpec;
+    use xero_desktop_lib::commands::solana::idl::publish::NullProgressSink;
+    use xero_desktop_lib::commands::solana::program::DeploySpec;
 
     let project = TempDir::new().unwrap();
     let so_path = project.path().join("p.so");
@@ -512,13 +510,13 @@ pub fn deploy_gate_is_silent_when_project_root_is_none() {
         stdout: "Signature: SIG\n".into(),
         stderr: String::new(),
     });
-    let services = cadence_desktop_lib::commands::solana::DeployServices {
+    let services = xero_desktop_lib::commands::solana::DeployServices {
         runner: runner.clone(),
         idl_runner: Arc::new(
-            cadence_desktop_lib::commands::solana::idl::publish::SystemAnchorIdlRunner::new(),
+            xero_desktop_lib::commands::solana::idl::publish::SystemAnchorIdlRunner::new(),
         ),
         codama_runner: Arc::new(
-            cadence_desktop_lib::commands::solana::idl::codama::SystemCodamaRunner::new(),
+            xero_desktop_lib::commands::solana::idl::codama::SystemCodamaRunner::new(),
         ),
     };
 
@@ -532,7 +530,7 @@ pub fn deploy_gate_is_silent_when_project_root_is_none() {
             keypair_path: kp.display().to_string(),
         },
         is_first_deploy: true,
-        post: cadence_desktop_lib::commands::solana::PostDeployOptions {
+        post: xero_desktop_lib::commands::solana::PostDeployOptions {
             archive_artifact: false,
             publish_idl: false,
             run_codama: false,

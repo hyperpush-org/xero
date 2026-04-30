@@ -284,12 +284,12 @@ pub fn start_provider_auth_flow(
         RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence binds OpenRouter runtime sessions from the saved app-global API key and does not support a browser login flow for that provider.",
+            "Xero binds OpenRouter runtime sessions from the saved app-global API key and does not support a browser login flow for that provider.",
         )),
         RuntimeProvider::Anthropic => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence binds Anthropic runtime sessions from the saved app-local provider-profile API key and does not support a browser login flow for that provider.",
+            "Xero binds Anthropic runtime sessions from the saved app-local provider-profile API key and does not support a browser login flow for that provider.",
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::Ollama
@@ -300,7 +300,7 @@ pub fn start_provider_auth_flow(
         | RuntimeProvider::Vertex => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not support a browser login flow for provider-profile cloud runtimes that bind through shared transport families.",
+            "Xero does not support a browser login flow for provider-profile cloud runtimes that bind through shared transport families.",
         )),
     }
 }
@@ -356,12 +356,12 @@ pub fn complete_provider_auth_flow<R: Runtime>(
         RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not complete an OpenRouter browser login flow because OpenRouter runtime sessions bind from the saved app-global API key instead.",
+            "Xero does not complete an OpenRouter browser login flow because OpenRouter runtime sessions bind from the saved app-global API key instead.",
         )),
         RuntimeProvider::Anthropic => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not complete an Anthropic browser login flow because Anthropic runtime sessions bind from the saved app-local provider-profile API key instead.",
+            "Xero does not complete an Anthropic browser login flow because Anthropic runtime sessions bind from the saved app-local provider-profile API key instead.",
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::Ollama
@@ -372,7 +372,7 @@ pub fn complete_provider_auth_flow<R: Runtime>(
         | RuntimeProvider::Vertex => Err(AuthFlowError::terminal(
             "auth_flow_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not complete browser login flows for provider-profile cloud runtimes that bind through shared transport families.",
+            "Xero does not complete browser login flows for provider-profile cloud runtimes that bind through shared transport families.",
         )),
     }
 }
@@ -394,12 +394,12 @@ pub fn refresh_provider_auth_session<R: Runtime>(
         RuntimeProvider::OpenRouter => Err(AuthFlowError::terminal(
             "auth_refresh_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not refresh OpenRouter runtime sessions through a browser auth store. Rebind from the saved app-global API key instead.",
+            "Xero does not refresh OpenRouter runtime sessions through a browser auth store. Rebind from the saved app-global API key instead.",
         )),
         RuntimeProvider::Anthropic => Err(AuthFlowError::terminal(
             "auth_refresh_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not refresh Anthropic runtime sessions through a browser auth store. Rebind from the saved app-local provider-profile API key instead.",
+            "Xero does not refresh Anthropic runtime sessions through a browser auth store. Rebind from the saved app-local provider-profile API key instead.",
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::Ollama
@@ -410,7 +410,7 @@ pub fn refresh_provider_auth_session<R: Runtime>(
         | RuntimeProvider::Vertex => Err(AuthFlowError::terminal(
             "auth_refresh_unavailable",
             RuntimeAuthPhase::Failed,
-            "Cadence does not refresh provider-profile cloud runtimes through a browser auth store for shared transport families.",
+            "Xero does not refresh provider-profile cloud runtimes through a browser auth store for shared transport families.",
         )),
     }
 }
@@ -420,7 +420,7 @@ fn auth_flow_not_found_error(flow_id: &str, provider: ResolvedRuntimeProvider) -
         "auth_flow_not_found",
         RuntimeAuthPhase::Failed,
         format!(
-            "Cadence could not find the active {} auth flow `{flow_id}`.",
+            "Xero could not find the active {} auth flow `{flow_id}`.",
             provider.provider_id
         ),
     )
@@ -435,7 +435,7 @@ fn auth_flow_provider_mismatch_error(
         "auth_flow_provider_mismatch",
         RuntimeAuthPhase::Failed,
         format!(
-            "Cadence rejected auth flow `{flow_id}` because it belongs to provider `{}` instead of `{}`. Start a fresh login.",
+            "Xero rejected auth flow `{flow_id}` because it belongs to provider `{}` instead of `{}`. Start a fresh login.",
             actual_provider.provider_id, requested_provider.provider_id
         ),
     )
@@ -450,7 +450,7 @@ fn auth_flow_scope_mismatch_error(
         "auth_flow_scope_mismatch",
         RuntimeAuthPhase::Failed,
         format!(
-            "Cadence rejected auth flow `{flow_id}` because it belongs to auth scope `{actual_scope_id}` instead of `{requested_scope_id}`. Start a fresh provider login."
+            "Xero rejected auth flow `{flow_id}` because it belongs to auth scope `{actual_scope_id}` instead of `{requested_scope_id}`. Start a fresh provider login."
         ),
     )
 }
@@ -464,7 +464,7 @@ fn auth_flow_profile_mismatch_error(
         "auth_flow_profile_mismatch",
         RuntimeAuthPhase::Failed,
         format!(
-            "Cadence rejected auth flow `{flow_id}` because it was started for provider profile `{actual_profile_id}` instead of provider profile `{requested_profile_id}`. Start a fresh login for that profile."
+            "Xero rejected auth flow `{flow_id}` because it was started for provider profile `{actual_profile_id}` instead of provider profile `{requested_profile_id}`. Start a fresh login for that profile."
         ),
     )
 }

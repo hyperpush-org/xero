@@ -1,29 +1,29 @@
 # Agent Harness Audit And Production Plan
 
-Audience: Cadence engineers turning the owned-agent path into a production-grade coding harness.
+Audience: Xero engineers turning the owned-agent path into a production-grade coding harness.
 
 Post-read action: use this as the implementation plan for replacing the current prototype-grade agent loop with a reliable harness comparable in ambition to OpenCode, Claude Code, and Codex.
 
 ## Executive Summary
 
-Cadence already has the bones of a real coding-agent harness: a durable owned-agent run loop, provider adapters, tool-call streaming, repo-scoped filesystem tools, command policy, app-local browser/emulator/MCP/Solana bridges, session compaction, memory review, and action-request persistence.
+Xero already has the bones of a real coding-agent harness: a durable owned-agent run loop, provider adapters, tool-call streaming, repo-scoped filesystem tools, command policy, app-local browser/emulator/MCP/Solana bridges, session compaction, memory review, and action-request persistence.
 
 The current harness is not yet production-grade. The largest weaknesses are prompt construction, tool disclosure, planning discipline, tool activation, state-machine rigor, and verification. The system prompt is assembled as one string, project instructions are injected without a clear priority boundary, tool disclosure is mostly keyword-selected, tool discovery is coarse, subagents are synchronous, and there is no harness-level contract that forces plan, edit, verify, and final-evidence behavior across models.
 
-The right direction is not to add more ad hoc prompt text. Cadence needs a versioned prompt compiler, a progressive tool catalog, a stricter run state machine, a richer approval/sandbox model, first-class planning and verification loops, and an eval suite that catches regressions in tool use, safety, and task completion.
+The right direction is not to add more ad hoc prompt text. Xero needs a versioned prompt compiler, a progressive tool catalog, a stricter run state machine, a richer approval/sandbox model, first-class planning and verification loops, and an eval suite that catches regressions in tool use, safety, and task completion.
 
 ## How The Agent Works Today
 
 ### Runtime Shape
 
-Cadence has two runtime paths:
+Xero has two runtime paths:
 
 - Detached runtime supervisor: launches an external runtime shell/sidecar path for existing provider CLIs.
-- Owned agent runtime: Cadence drives the model loop itself through Rust provider adapters and executes tools through its own tool runtime.
+- Owned agent runtime: Xero drives the model loop itself through Rust provider adapters and executes tools through its own tool runtime.
 
-This audit focuses on the owned agent runtime because that is the in-app harness Cadence controls.
+This audit focuses on the owned agent runtime because that is the in-app harness Xero controls.
 
-An owned run starts from either the agent task commands or the runtime-run control path. Cadence resolves the project root, active provider profile, model, approval mode, optional thinking effort, and tool runtime. It creates a durable run row, stores the system and user messages, emits preflight events, and then starts the provider loop.
+An owned run starts from either the agent task commands or the runtime-run control path. Xero resolves the project root, active provider profile, model, approval mode, optional thinking effort, and tool runtime. It creates a durable run row, stores the system and user messages, emits preflight events, and then starts the provider loop.
 
 The provider loop runs up to 32 turns. Each turn:
 
@@ -43,21 +43,21 @@ The provider loop runs up to 32 turns. Each turn:
 The current prompt version is:
 
 ```text
-cadence-owned-agent-v1
+xero-owned-agent-v1
 ```
 
 The prompt body is assembled from:
 
-- A fixed Cadence-owned-agent instruction string.
+- A fixed Xero-owned-agent instruction string.
 - The comma-separated names of currently selected tools.
 - The root project instruction file, currently `AGENTS.md`.
 - Approved memory for the project/session, after redaction.
-- A per-turn owned-process lifecycle summary when Cadence-owned processes exist.
+- A per-turn owned-process lifecycle summary when Xero-owned processes exist.
 
 The current prompt template is effectively:
 
 ```text
-cadence-owned-agent-v1
+xero-owned-agent-v1
 
 You are Xero's owned software-building agent. Work directly in the imported repository, use tools for filesystem and command work, record evidence, and stop only when the task is done or a configured safety boundary requires user input.
 
@@ -74,17 +74,17 @@ Approved memory:
 {approved redacted memory or "(none)"}
 ```
 
-On turns where Cadence owns live processes, this is appended:
+On turns where Xero owns live processes, this is appended:
 
 ```text
-Cadence-owned process state for this turn (read-only digest; call `process_manager` for fresh output or control):
+Xero-owned process state for this turn (read-only digest; call `process_manager` for fresh output or control):
 {summary}
 ```
 
 Important observations:
 
-- The prompt says "Xero" while the product and codebase are Cadence. That is a brand/identity mismatch.
-- Repository instructions are inserted into the system prompt string, but the prompt does not explicitly say they are lower-priority than Cadence safety policy.
+- The prompt says "Xero" while the product and codebase are Xero. That is a brand/identity mismatch.
+- Repository instructions are inserted into the system prompt string, but the prompt does not explicitly say they are lower-priority than Xero safety policy.
 - Only the root instruction file is used by the owned prompt path. The context docs talk about supported instruction files, but current owned prompt assembly only reads root `AGENTS.md`.
 - Memory has a priority warning and secret redaction. Repository instructions do not get the same injection-boundary treatment.
 - Tool names are listed in the prompt, but full tool schemas are disclosed separately through provider-native function/tool descriptors.
@@ -112,7 +112,7 @@ The registry starts with the `core` group on every prompt:
 - `list`
 - `file_hash`
 
-Cadence then uses prompt keyword matching to add groups:
+Xero then uses prompt keyword matching to add groups:
 
 | Group | When selected | Tools |
 | --- | --- | --- |
@@ -249,10 +249,10 @@ Replace string assembly with a versioned `PromptCompiler`.
 Deliverables:
 
 - Prompt fragments with stable IDs, priorities, hashes, token estimates, and provenance.
-- Explicit hierarchy: Cadence system policy, developer/runtime policy, project instructions, selected skills, approved memory, task transcript, tool policy.
+- Explicit hierarchy: Xero system policy, developer/runtime policy, project instructions, selected skills, approved memory, task transcript, tool policy.
 - Strong injection boundaries for project instructions, memory, MCP text, web text, skill text, and tool output.
 - Root and nested instruction-file support with deterministic precedence.
-- Brand cleanup: Cadence identity everywhere unless product branding intentionally changes.
+- Brand cleanup: Xero identity everywhere unless product branding intentionally changes.
 - A model-facing final response contract: summary, files changed, verification run, blockers.
 - Snapshot tests for prompt assembly across empty repo, dirty repo, nested instructions, memory, compaction, and selected tools.
 
@@ -260,7 +260,7 @@ Acceptance criteria:
 
 - Prompt construction is deterministic and testable.
 - Context visualization and provider replay use the same prompt compiler.
-- Project-owned text cannot silently override Cadence safety policy.
+- Project-owned text cannot silently override Xero safety policy.
 - Every prompt fragment can be explained in the Context panel.
 
 ### Milestone 2: Progressive Tool Catalog
@@ -456,7 +456,7 @@ Start with a narrow but high-leverage slice:
 3. Add `tool_search` to the always-on core tools.
 4. Persist the active tool registry for each provider turn.
 5. Add snapshot tests for the current prompt output so behavior changes are explicit.
-6. Fix the Cadence/Xero identity mismatch.
+6. Fix the Xero/Xero identity mismatch.
 7. Add an explicit lower-priority boundary around repository instructions.
 
-This slice does not need to redesign every tool. It gives Cadence a stable foundation for the rest of the harness.
+This slice does not need to redesign every tool. It gives Xero a stable foundation for the rest of the harness.

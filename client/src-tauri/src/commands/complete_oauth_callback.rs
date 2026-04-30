@@ -30,7 +30,7 @@ pub fn complete_oauth_callback<R: Runtime>(
         return Err(CommandError::user_fixable(
             "oauth_login_provider_unsupported",
             format!(
-                "Cadence does not support browser-based OAuth for provider `{}`. Only `{}` is wired today.",
+                "Xero does not support browser-based OAuth for provider `{}`. Only `{}` is wired today.",
                 request.provider_id, OPENAI_CODEX_PROVIDER_ID
             ),
         ));

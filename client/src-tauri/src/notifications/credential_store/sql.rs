@@ -14,7 +14,7 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection, NotificationAdapterErro
         NotificationAdapterError::new(
             error.code,
             format!(
-                "Cadence could not open the notification credential store database at {}: {}",
+                "Xero could not open the notification credential store database at {}: {}",
                 path.display(),
                 error.message
             ),
@@ -142,14 +142,14 @@ pub(crate) fn write_store(
 
 fn map_read_error(error: rusqlite::Error) -> NotificationAdapterError {
     NotificationAdapterError::credentials_read_failed(format!(
-        "Cadence could not read notification credentials from the global database: {error}"
+        "Xero could not read notification credentials from the global database: {error}"
     ))
 }
 
 fn map_write_error(error: rusqlite::Error) -> NotificationAdapterError {
     NotificationAdapterError::new(
         "notification_adapter_credentials_write_failed",
-        format!("Cadence could not write notification credentials to the global database: {error}"),
+        format!("Xero could not write notification credentials to the global database: {error}"),
         true,
     )
 }

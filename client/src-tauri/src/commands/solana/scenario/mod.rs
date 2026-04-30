@@ -202,7 +202,7 @@ impl ScenarioEngine {
                             .params
                             .get("collection")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("cadence-mint-list")
+                            .unwrap_or("xero-mint-list")
                             .to_string(),
                         count: nft_count,
                     }],
@@ -388,7 +388,7 @@ mod tests {
                 .expect("sleep should spawn in test env");
             let guard =
                 crate::commands::emulator::process::ChildGuard::new("test-validator", child);
-            let ledger = std::env::temp_dir().join("cadence-scenario-test");
+            let ledger = std::env::temp_dir().join("xero-scenario-test");
             let handle = ClusterHandle {
                 kind,
                 rpc_url: "http://127.0.0.1:8899".into(),

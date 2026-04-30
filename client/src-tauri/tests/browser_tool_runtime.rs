@@ -3,13 +3,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use cadence_desktop_lib::commands::CommandError;
-use cadence_desktop_lib::runtime::autonomous_tool_runtime::{
+use tempfile::TempDir;
+use xero_desktop_lib::commands::CommandError;
+use xero_desktop_lib::runtime::autonomous_tool_runtime::{
     AutonomousBrowserAction, AutonomousBrowserOutput, AutonomousBrowserRequest,
     AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime, BrowserExecutor,
     UnavailableBrowserExecutor,
 };
-use tempfile::TempDir;
 
 #[derive(Debug)]
 struct RecordingExecutor {

@@ -1,6 +1,6 @@
 //! External-analyzer wrapper — Sec3 / Soteria / Aderyn.
 //!
-//! None of these ship with Cadence; each is `cargo install`d (Aderyn)
+//! None of these ship with Xero; each is `cargo install`d (Aderyn)
 //! or distributed as a single binary by its vendor. We probe PATH for
 //! the binary, run it if present, and parse its JSON output into our
 //! unified `Finding` shape. When the binary is absent we return a

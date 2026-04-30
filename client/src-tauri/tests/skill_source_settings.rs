@@ -1,6 +1,6 @@
 use std::fs;
 
-use cadence_desktop_lib::runtime::{
+use xero_desktop_lib::runtime::{
     load_skill_source_settings_from_path, persist_skill_source_settings, SkillLocalRootSetting,
     SkillPluginRootSetting, SkillSourceSettings,
 };

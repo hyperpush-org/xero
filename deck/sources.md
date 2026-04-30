@@ -2,7 +2,7 @@
 
 Project-local evidence:
 
-- `README.md`: Cadence/Xero desktop app scope, Tauri/React/Rust stack, Solana workbench, notification routing, MCP, emulator sidebars.
+- `README.md`: Xero/Xero desktop app scope, Tauri/React/Rust stack, Solana workbench, notification routing, MCP, emulator sidebars.
 - `SOLANA_WORKBENCH_PLAN.md`: local-first Solana workbench architecture, Surfpool/mainnet-fork, personas, TxPipeline, DeployManager, AuditEngine, IDL/Codama, PDA/ALT/Token-2022.
 - `client/src-tauri/src/lib.rs`: 78 registered `solana_*` Tauri commands.
 - `landing/components/landing/pricing.tsx`: Free, Pro, and Solana Pro pricing shape.

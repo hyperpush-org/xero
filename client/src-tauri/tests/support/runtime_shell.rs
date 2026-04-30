@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use cadence_desktop_lib::runtime::{
+use xero_desktop_lib::runtime::{
     resolve_runtime_shell_selection_for_platform, RuntimePlatform, RuntimeShellSelection,
     RuntimeShellSource,
 };
@@ -166,7 +166,7 @@ pub fn script_prompt_read_echo_and_sleep(
 fn resolve_current_shell_selection() -> RuntimeShellSelection {
     let platform = RuntimePlatform::detect();
     let comspec = std::env::var("COMSPEC").ok();
-    let explicit_test_shell = std::env::var("CADENCE_TEST_SHELL").ok();
+    let explicit_test_shell = std::env::var("XERO_TEST_SHELL").ok();
 
     // Keep test fixtures deterministic by default: shells like zsh source user startup files
     // even in non-interactive mode, which can inject unrelated transcript lines.

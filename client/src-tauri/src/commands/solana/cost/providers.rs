@@ -16,7 +16,7 @@ use crate::commands::solana::cluster::ClusterKind;
 use crate::commands::solana::rpc_router::EndpointSpec;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(4);
-const USER_AGENT: &str = "cadence-solana-workbench-cost/0.1";
+const USER_AGENT: &str = "xero-solana-workbench-cost/0.1";
 
 /// Known provider categories. Scripted tests pass `Unknown` to
 /// exercise the fallback path.

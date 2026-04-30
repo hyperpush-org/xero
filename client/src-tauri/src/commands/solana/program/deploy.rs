@@ -110,7 +110,7 @@ pub struct PostDeployOptions {
     #[serde(default = "default_archive_artifact")]
     pub archive_artifact: bool,
     /// Override directory for the `.so` archive. Defaults to the OS
-    /// data dir under `cadence-solana-program-archive/`.
+    /// data dir under `xero-solana-program-archive/`.
     #[serde(default)]
     pub program_archive_root: Option<String>,
 }
@@ -811,9 +811,9 @@ fn archive_so(spec: &DeploySpec) -> CommandResult<ArchiveRecord> {
 
 fn default_archive_root() -> PathBuf {
     if let Some(d) = dirs::data_dir() {
-        return d.join("cadence/solana/program-archive");
+        return d.join("xero/solana/program-archive");
     }
-    std::env::temp_dir().join("cadence-solana-program-archive")
+    std::env::temp_dir().join("xero-solana-program-archive")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 //! App-close + startup hooks.
 //!
 //! On **app close**, we tear down any active emulator session so the
-//! emulator child / idb_companion don't outlive Cadence and leak AVD locks.
+//! emulator child / idb_companion don't outlive Xero and leak AVD locks.
 //!
 //! On **app startup**, we sweep leftover `emulator-*` / `idb_companion`
 //! processes from previous crashes. This is intentionally best-effort: we
@@ -131,6 +131,6 @@ mod tests {
         ));
         assert!(is_emulator_relevant("idb_companion"));
         assert!(!is_emulator_relevant("Safari"));
-        assert!(!is_emulator_relevant("Cadence"));
+        assert!(!is_emulator_relevant("Xero"));
     }
 }

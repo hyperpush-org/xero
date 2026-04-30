@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature, StatusOptions};
+use rusqlite::{params, Connection};
+use tauri::{Listener, Manager};
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         get_project_snapshot, import_repository, list_projects, remove_project, CommandError,
         CommandErrorClass, ImportRepositoryRequestDto, ListProjectsResponseDto,
@@ -18,10 +22,6 @@ use cadence_desktop_lib::{
     registry::{self, ProjectRegistry},
     state::{DesktopState, ImportFailpoints},
 };
-use git2::{IndexAddOption, Repository, Signature, StatusOptions};
-use rusqlite::{params, Connection};
-use tauri::{Listener, Manager};
-use tempfile::TempDir;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -70,7 +70,7 @@ fn attach_event_recorders(app: &tauri::App<tauri::test::MockRuntime>) -> EventRe
 }
 
 fn registry_path(root: &TempDir) -> PathBuf {
-    root.path().join("app-data").join("cadence.db")
+    root.path().join("app-data").join("xero.db")
 }
 
 fn create_state(registry_root: &TempDir) -> DesktopState {
@@ -80,7 +80,7 @@ fn create_state(registry_root: &TempDir) -> DesktopState {
 fn import_with_raw_path(
     app: &tauri::App<tauri::test::MockRuntime>,
     path: &str,
-) -> Result<cadence_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
     import_repository(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -93,7 +93,7 @@ fn import_with_raw_path(
 fn import_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     path: impl AsRef<Path>,
-) -> Result<cadence_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
     import_with_raw_path(app, &path.as_ref().to_string_lossy())
 }
 
@@ -130,7 +130,7 @@ fn snapshot_with_app(
 }
 
 fn assert_summary_counts_match_snapshot(
-    listed_project: &cadence_desktop_lib::commands::ProjectSummaryDto,
+    listed_project: &xero_desktop_lib::commands::ProjectSummaryDto,
     snapshot: &ProjectSnapshotResponseDto,
 ) {
     assert_eq!(listed_project.id, snapshot.project.id);
@@ -146,7 +146,7 @@ fn init_git_repo() -> TempDir {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let repository = Repository::init(temp_dir.path()).expect("git repo");
 
-    fs::write(temp_dir.path().join("README.md"), "Cadence\n").expect("write README");
+    fs::write(temp_dir.path().join("README.md"), "Xero\n").expect("write README");
     commit_all(&repository, "initial commit");
 
     temp_dir
@@ -158,7 +158,7 @@ fn init_git_worktree() -> (TempDir, PathBuf, PathBuf) {
     let worktree_root = temp_dir.path().join("linked-worktree");
     let repository = Repository::init(&main_repo_root).expect("git repo");
 
-    fs::write(main_repo_root.join("README.md"), "Cadence\n").expect("write README");
+    fs::write(main_repo_root.join("README.md"), "Xero\n").expect("write README");
     commit_all(&repository, "initial commit");
 
     let output = Command::new("git")
@@ -167,7 +167,7 @@ fn init_git_worktree() -> (TempDir, PathBuf, PathBuf) {
         .arg("worktree")
         .arg("add")
         .arg("-b")
-        .arg("Cadence-worktree")
+        .arg("Xero-worktree")
         .arg(&worktree_root)
         .output()
         .expect("git worktree add");
@@ -190,7 +190,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
+    let signature = Signature::now("Xero", "Xero@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -455,13 +455,13 @@ fn import_repository_rejects_empty_missing_and_non_git_paths_without_creating_st
     let missing_error = import_with_app(&app, &missing_path).expect_err("missing path should fail");
     assert_eq!(missing_error.code, "repository_path_not_found");
     assert_eq!(missing_error.class, CommandErrorClass::UserFixable);
-    assert!(!missing_path.join(".cadence").exists());
+    assert!(!missing_path.join(".xero").exists());
 
     let non_git_dir = tempfile::tempdir().expect("non git dir");
     let non_git_error =
         import_with_app(&app, non_git_dir.path()).expect_err("non-git path should fail");
     assert_eq!(non_git_error.code, "git_repository_not_found");
-    assert!(!non_git_dir.path().join(".cadence").exists());
+    assert!(!non_git_dir.path().join(".xero").exists());
     assert!(!registry_path(&registry_root).exists());
 }
 
@@ -675,7 +675,7 @@ fn import_repository_does_not_write_repo_local_state() {
             .expect("restore repo permissions");
 
         assert!(database_path(read_only_repo.path()).exists());
-        assert!(!read_only_repo.path().join(".cadence").exists());
+        assert!(!read_only_repo.path().join(".xero").exists());
 
         let registry = read_registry(&registry_path(&registry_root));
         assert_eq!(registry.projects.len(), 1);

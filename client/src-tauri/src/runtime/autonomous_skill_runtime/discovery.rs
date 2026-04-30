@@ -9,31 +9,31 @@ use crate::commands::{CommandError, CommandResult};
 use super::{
     cache::sha256_hex,
     contract::{
-        CadenceSkillSourceLocator, CadenceSkillSourceRecord, CadenceSkillSourceScope,
-        CadenceSkillSourceState, CadenceSkillTrustState,
+        XeroSkillSourceLocator, XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState,
+        XeroSkillTrustState,
     },
     inspection::{
         normalize_relative_source_path, parse_skill_frontmatter, validate_skill_asset_path,
     },
     runtime::{MAX_SKILL_FILES, MAX_SKILL_FILE_BYTES, MAX_TOTAL_SKILL_BYTES},
     skill_tool::{
-        validate_skill_tool_context_payload, CadenceSkillToolContextAsset,
-        CadenceSkillToolContextDocument, CadenceSkillToolContextPayload,
-        CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+        validate_skill_tool_context_payload, XeroSkillToolContextAsset,
+        XeroSkillToolContextDocument, XeroSkillToolContextPayload,
+        XERO_SKILL_TOOL_CONTRACT_VERSION,
     },
 };
 
 pub const PROJECT_SKILL_DIRECTORY: &str = "skills";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CadenceSkillDirectoryDiscovery {
-    pub candidates: Vec<CadenceDiscoveredSkill>,
-    pub diagnostics: Vec<CadenceSkillDiscoveryDiagnostic>,
+pub struct XeroSkillDirectoryDiscovery {
+    pub candidates: Vec<XeroDiscoveredSkill>,
+    pub diagnostics: Vec<XeroSkillDiscoveryDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CadenceDiscoveredSkill {
-    pub source: CadenceSkillSourceRecord,
+pub struct XeroDiscoveredSkill {
+    pub source: XeroSkillSourceRecord,
     pub skill_id: String,
     pub name: String,
     pub description: String,
@@ -46,7 +46,7 @@ pub struct CadenceDiscoveredSkill {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CadenceSkillDiscoveryDiagnostic {
+pub struct XeroSkillDiscoveryDiagnostic {
     pub code: String,
     pub message: String,
     pub relative_path: Option<String>,
@@ -72,8 +72,8 @@ enum SkillDiscoveryRoot {
         contribution_id: String,
         skill_path: String,
         root_path: PathBuf,
-        source_state: CadenceSkillSourceState,
-        trust: CadenceSkillTrustState,
+        source_state: XeroSkillSourceState,
+        trust: XeroSkillTrustState,
     },
 }
 
@@ -96,42 +96,42 @@ impl SkillDiscoveryRoot {
         root_canonical: &Path,
         skill_directory: &Path,
         skill_id: &str,
-    ) -> CommandResult<CadenceSkillSourceRecord> {
+    ) -> CommandResult<XeroSkillSourceRecord> {
         let source_relative_path = path_to_relative_source_path(scan_root, skill_directory)?;
         match self {
-            Self::Local { root_id, .. } => CadenceSkillSourceRecord::new(
-                CadenceSkillSourceScope::global(),
-                CadenceSkillSourceLocator::Local {
+            Self::Local { root_id, .. } => XeroSkillSourceRecord::new(
+                XeroSkillSourceScope::global(),
+                XeroSkillSourceLocator::Local {
                     root_id: root_id.clone(),
                     root_path: root_canonical.display().to_string(),
                     relative_path: source_relative_path,
                     skill_id: skill_id.to_owned(),
                 },
-                CadenceSkillSourceState::Discoverable,
-                CadenceSkillTrustState::ApprovalRequired,
+                XeroSkillSourceState::Discoverable,
+                XeroSkillTrustState::ApprovalRequired,
             ),
-            Self::Project { project_id, .. } => CadenceSkillSourceRecord::new(
-                CadenceSkillSourceScope::project(project_id.clone())?,
-                CadenceSkillSourceLocator::Project {
+            Self::Project { project_id, .. } => XeroSkillSourceRecord::new(
+                XeroSkillSourceScope::project(project_id.clone())?,
+                XeroSkillSourceLocator::Project {
                     relative_path: normalize_relative_source_path(&format!(
                         "{PROJECT_SKILL_DIRECTORY}/{source_relative_path}"
                     ))?,
                     skill_id: skill_id.to_owned(),
                 },
-                CadenceSkillSourceState::Discoverable,
-                CadenceSkillTrustState::ApprovalRequired,
+                XeroSkillSourceState::Discoverable,
+                XeroSkillTrustState::ApprovalRequired,
             ),
             Self::Bundled {
                 bundle_id, version, ..
-            } => CadenceSkillSourceRecord::new(
-                CadenceSkillSourceScope::global(),
-                CadenceSkillSourceLocator::Bundled {
+            } => XeroSkillSourceRecord::new(
+                XeroSkillSourceScope::global(),
+                XeroSkillSourceLocator::Bundled {
                     bundle_id: bundle_id.clone(),
                     skill_id: skill_id.to_owned(),
                     version: version.clone(),
                 },
-                CadenceSkillSourceState::Discoverable,
-                CadenceSkillTrustState::Trusted,
+                XeroSkillSourceState::Discoverable,
+                XeroSkillTrustState::Trusted,
             ),
             Self::Plugin {
                 project_id,
@@ -141,9 +141,9 @@ impl SkillDiscoveryRoot {
                 source_state,
                 trust,
                 ..
-            } => CadenceSkillSourceRecord::new(
-                CadenceSkillSourceScope::project(project_id.clone())?,
-                CadenceSkillSourceLocator::Plugin {
+            } => XeroSkillSourceRecord::new(
+                XeroSkillSourceScope::project(project_id.clone())?,
+                XeroSkillSourceLocator::Plugin {
                     plugin_id: plugin_id.clone(),
                     contribution_id: contribution_id.clone(),
                     skill_path: skill_path.clone(),
@@ -159,7 +159,7 @@ impl SkillDiscoveryRoot {
 pub fn discover_local_skill_directory(
     root_id: impl Into<String>,
     root_path: impl AsRef<Path>,
-) -> CommandResult<CadenceSkillDirectoryDiscovery> {
+) -> CommandResult<XeroSkillDirectoryDiscovery> {
     let root_id = normalize_required(root_id.into(), "rootId")?;
     discover_skill_directory(SkillDiscoveryRoot::Local {
         root_id,
@@ -170,7 +170,7 @@ pub fn discover_local_skill_directory(
 pub fn discover_project_skill_directory(
     project_id: impl Into<String>,
     project_app_data_dir: impl AsRef<Path>,
-) -> CommandResult<CadenceSkillDirectoryDiscovery> {
+) -> CommandResult<XeroSkillDirectoryDiscovery> {
     let project_id = normalize_required(project_id.into(), "projectId")?;
     discover_skill_directory(SkillDiscoveryRoot::Project {
         project_id,
@@ -182,7 +182,7 @@ pub fn discover_bundled_skill_directory(
     bundle_id: impl Into<String>,
     version: impl Into<String>,
     root_path: impl AsRef<Path>,
-) -> CommandResult<CadenceSkillDirectoryDiscovery> {
+) -> CommandResult<XeroSkillDirectoryDiscovery> {
     let bundle_id = normalize_required(bundle_id.into(), "bundleId")?;
     let version = normalize_required(version.into(), "version")?;
     discover_skill_directory(SkillDiscoveryRoot::Bundled {
@@ -198,9 +198,9 @@ pub fn discover_plugin_skill_contribution(
     contribution_id: impl Into<String>,
     plugin_root: impl AsRef<Path>,
     skill_path: impl Into<String>,
-    source_state: CadenceSkillSourceState,
-    trust: CadenceSkillTrustState,
-) -> CommandResult<CadenceSkillDirectoryDiscovery> {
+    source_state: XeroSkillSourceState,
+    trust: XeroSkillTrustState,
+) -> CommandResult<XeroSkillDirectoryDiscovery> {
     let project_id = normalize_required(project_id.into(), "projectId")?;
     let plugin_id = normalize_required(plugin_id.into(), "pluginId")?;
     let contribution_id = normalize_required(contribution_id.into(), "contributionId")?;
@@ -217,56 +217,56 @@ pub fn discover_plugin_skill_contribution(
     };
     let mut diagnostics = Vec::new();
     if !plugin_root.is_dir() {
-        diagnostics.push(CadenceSkillDiscoveryDiagnostic {
-            code: "cadence_plugin_root_unavailable".into(),
+        diagnostics.push(XeroSkillDiscoveryDiagnostic {
+            code: "xero_plugin_root_unavailable".into(),
             message: format!(
-                "Cadence could not scan plugin skill root {} because it is not available.",
+                "Xero could not scan plugin skill root {} because it is not available.",
                 plugin_root.display()
             ),
             relative_path: None,
         });
-        return Ok(CadenceSkillDirectoryDiscovery {
+        return Ok(XeroSkillDirectoryDiscovery {
             candidates: Vec::new(),
             diagnostics,
         });
     }
     let root_canonical = fs::canonicalize(&plugin_root).map_err(|error| {
         CommandError::retryable(
-            "cadence_plugin_root_unavailable",
+            "xero_plugin_root_unavailable",
             format!(
-                "Cadence could not resolve plugin skill root {}: {error}",
+                "Xero could not resolve plugin skill root {}: {error}",
                 plugin_root.display()
             ),
         )
     })?;
     let skill_directory = plugin_root.join(&skill_path);
     if !skill_directory.is_dir() {
-        diagnostics.push(CadenceSkillDiscoveryDiagnostic {
-            code: "cadence_plugin_skill_unavailable".into(),
+        diagnostics.push(XeroSkillDiscoveryDiagnostic {
+            code: "xero_plugin_skill_unavailable".into(),
             message: format!(
-                "Cadence could not find plugin skill contribution `{skill_path}` under {}.",
+                "Xero could not find plugin skill contribution `{skill_path}` under {}.",
                 plugin_root.display()
             ),
             relative_path: Some(skill_path),
         });
-        return Ok(CadenceSkillDirectoryDiscovery {
+        return Ok(XeroSkillDirectoryDiscovery {
             candidates: Vec::new(),
             diagnostics,
         });
     }
 
     match inspect_filesystem_skill(&root, &plugin_root, &root_canonical, &skill_directory) {
-        Ok(candidate) => Ok(CadenceSkillDirectoryDiscovery {
+        Ok(candidate) => Ok(XeroSkillDirectoryDiscovery {
             candidates: vec![candidate],
             diagnostics,
         }),
         Err(error) => {
-            diagnostics.push(CadenceSkillDiscoveryDiagnostic {
+            diagnostics.push(XeroSkillDiscoveryDiagnostic {
                 code: error.code,
                 message: error.message,
                 relative_path: path_to_relative_source_path(&plugin_root, &skill_directory).ok(),
             });
-            Ok(CadenceSkillDirectoryDiscovery {
+            Ok(XeroSkillDirectoryDiscovery {
                 candidates: Vec::new(),
                 diagnostics,
             })
@@ -275,9 +275,9 @@ pub fn discover_plugin_skill_contribution(
 }
 
 pub fn load_discovered_skill_context(
-    candidate: &CadenceDiscoveredSkill,
+    candidate: &XeroDiscoveredSkill,
     include_supporting_assets: bool,
-) -> CommandResult<CadenceSkillToolContextPayload> {
+) -> CommandResult<XeroSkillToolContextPayload> {
     load_skill_context_from_directory(
         &candidate.source.source_id,
         &candidate.skill_id,
@@ -293,7 +293,7 @@ pub fn load_skill_context_from_directory(
     skill_directory: impl AsRef<Path>,
     expected_asset_paths: Option<&[String]>,
     include_supporting_assets: bool,
-) -> CommandResult<CadenceSkillToolContextPayload> {
+) -> CommandResult<XeroSkillToolContextPayload> {
     let skill_directory = skill_directory.as_ref();
     let asset_paths = match expected_asset_paths {
         Some(paths) => paths.to_vec(),
@@ -312,7 +312,7 @@ pub fn load_skill_context_from_directory(
         CommandError::retryable(
             "autonomous_skill_document_read_failed",
             format!(
-                "Cadence could not read discovered skill document {}: {error}",
+                "Xero could not read discovered skill document {}: {error}",
                 markdown_path.display()
             ),
         )
@@ -321,7 +321,7 @@ pub fn load_skill_context_from_directory(
         CommandError::user_fixable(
             "autonomous_skill_document_invalid",
             format!(
-                "Cadence rejected discovered skill `{}` because SKILL.md was not valid UTF-8 text: {error}",
+                "Xero rejected discovered skill `{}` because SKILL.md was not valid UTF-8 text: {error}",
                 skill_id
             ),
         )
@@ -331,7 +331,7 @@ pub fn load_skill_context_from_directory(
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_invalid",
             format!(
-                "Cadence rejected discovered skill `{skill_id}` because SKILL.md frontmatter name `{}` did not match.",
+                "Xero rejected discovered skill `{skill_id}` because SKILL.md frontmatter name `{}` did not match.",
                 frontmatter.name
             ),
         ));
@@ -349,7 +349,7 @@ pub fn load_skill_context_from_directory(
                 CommandError::retryable(
                     "autonomous_skill_asset_read_failed",
                     format!(
-                        "Cadence could not read discovered skill asset {}: {error}",
+                        "Xero could not read discovered skill asset {}: {error}",
                         path.display()
                     ),
                 )
@@ -358,11 +358,11 @@ pub fn load_skill_context_from_directory(
                 CommandError::user_fixable(
                     "autonomous_skill_layout_unsupported",
                     format!(
-                        "Cadence rejected discovered skill asset `{relative_path}` because it was not valid UTF-8 text: {error}"
+                        "Xero rejected discovered skill asset `{relative_path}` because it was not valid UTF-8 text: {error}"
                     ),
                 )
             })?;
-            supporting_assets.push(CadenceSkillToolContextAsset {
+            supporting_assets.push(XeroSkillToolContextAsset {
                 relative_path: relative_path.clone(),
                 sha256: sha256_hex(&bytes),
                 bytes: bytes.len(),
@@ -371,11 +371,11 @@ pub fn load_skill_context_from_directory(
         }
     }
 
-    validate_skill_tool_context_payload(CadenceSkillToolContextPayload {
-        contract_version: CADENCE_SKILL_TOOL_CONTRACT_VERSION,
+    validate_skill_tool_context_payload(XeroSkillToolContextPayload {
+        contract_version: XERO_SKILL_TOOL_CONTRACT_VERSION,
         source_id: source_id.to_owned(),
         skill_id: skill_id.to_owned(),
-        markdown: CadenceSkillToolContextDocument {
+        markdown: XeroSkillToolContextDocument {
             relative_path: "SKILL.md".into(),
             sha256: sha256_hex(&markdown_bytes),
             bytes: markdown_bytes.len(),
@@ -387,19 +387,19 @@ pub fn load_skill_context_from_directory(
 
 fn discover_skill_directory(
     root: SkillDiscoveryRoot,
-) -> CommandResult<CadenceSkillDirectoryDiscovery> {
+) -> CommandResult<XeroSkillDirectoryDiscovery> {
     let scan_root = root.scan_root();
     let mut diagnostics = Vec::new();
     if !scan_root.is_dir() {
-        diagnostics.push(CadenceSkillDiscoveryDiagnostic {
+        diagnostics.push(XeroSkillDiscoveryDiagnostic {
             code: "autonomous_skill_directory_unavailable".into(),
             message: format!(
-                "Cadence could not scan skill directory {} because it is not available.",
+                "Xero could not scan skill directory {} because it is not available.",
                 scan_root.display()
             ),
             relative_path: None,
         });
-        return Ok(CadenceSkillDirectoryDiscovery {
+        return Ok(XeroSkillDirectoryDiscovery {
             candidates: Vec::new(),
             diagnostics,
         });
@@ -409,7 +409,7 @@ fn discover_skill_directory(
         CommandError::retryable(
             "autonomous_skill_directory_unavailable",
             format!(
-                "Cadence could not resolve skill directory {}: {error}",
+                "Xero could not resolve skill directory {}: {error}",
                 scan_root.display()
             ),
         )
@@ -431,10 +431,10 @@ fn discover_skill_directory(
         match inspect_filesystem_skill(&root, &scan_root, &root_canonical, &skill_directory) {
             Ok(candidate) => {
                 if !seen_skill_ids.insert(candidate.skill_id.clone()) {
-                    diagnostics.push(CadenceSkillDiscoveryDiagnostic {
+                    diagnostics.push(XeroSkillDiscoveryDiagnostic {
                         code: "autonomous_skill_duplicate_id".into(),
                         message: format!(
-                            "Cadence skipped duplicate discovered skill id `{}` under {}.",
+                            "Xero skipped duplicate discovered skill id `{}` under {}.",
                             candidate.skill_id,
                             scan_root.display()
                         ),
@@ -445,7 +445,7 @@ fn discover_skill_directory(
                 }
                 candidates.push(candidate);
             }
-            Err(error) => diagnostics.push(CadenceSkillDiscoveryDiagnostic {
+            Err(error) => diagnostics.push(XeroSkillDiscoveryDiagnostic {
                 code: error.code,
                 message: error.message,
                 relative_path: path_to_relative_source_path(&scan_root, &skill_directory).ok(),
@@ -454,7 +454,7 @@ fn discover_skill_directory(
     }
 
     candidates.sort_by(|left, right| left.source.source_id.cmp(&right.source.source_id));
-    Ok(CadenceSkillDirectoryDiscovery {
+    Ok(XeroSkillDirectoryDiscovery {
         candidates,
         diagnostics,
     })
@@ -465,12 +465,12 @@ fn inspect_filesystem_skill(
     scan_root: &Path,
     root_canonical: &Path,
     skill_directory: &Path,
-) -> CommandResult<CadenceDiscoveredSkill> {
+) -> CommandResult<XeroDiscoveredSkill> {
     let skill_canonical = fs::canonicalize(skill_directory).map_err(|error| {
         CommandError::retryable(
             "autonomous_skill_directory_unavailable",
             format!(
-                "Cadence could not resolve discovered skill directory {}: {error}",
+                "Xero could not resolve discovered skill directory {}: {error}",
                 skill_directory.display()
             ),
         )
@@ -479,7 +479,7 @@ fn inspect_filesystem_skill(
         return Err(CommandError::user_fixable(
             "autonomous_skill_path_outside_root",
             format!(
-                "Cadence rejected discovered skill directory {} because it resolves outside the declared skill root.",
+                "Xero rejected discovered skill directory {} because it resolves outside the declared skill root.",
                 skill_directory.display()
             ),
         ));
@@ -491,14 +491,14 @@ fn inspect_filesystem_skill(
     if files.is_empty() {
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_missing",
-            "Cadence rejected discovered skill because the skill directory contained no files.",
+            "Xero rejected discovered skill because the skill directory contained no files.",
         ));
     }
     if files.len() > MAX_SKILL_FILES {
         return Err(CommandError::user_fixable(
             "autonomous_skill_layout_unsupported",
             format!(
-                "Cadence rejected discovered skill because it exceeded the {MAX_SKILL_FILES} file limit."
+                "Xero rejected discovered skill because it exceeded the {MAX_SKILL_FILES} file limit."
             ),
         ));
     }
@@ -515,7 +515,7 @@ fn inspect_filesystem_skill(
             CommandError::retryable(
                 "autonomous_skill_asset_read_failed",
                 format!(
-                    "Cadence could not read skill asset {}: {error}",
+                    "Xero could not read skill asset {}: {error}",
                     path.display()
                 ),
             )
@@ -524,7 +524,7 @@ fn inspect_filesystem_skill(
             return Err(CommandError::user_fixable(
                 "autonomous_skill_layout_unsupported",
                 format!(
-                    "Cadence rejected discovered skill asset `{relative_path}` because assets must be between 1 and {MAX_SKILL_FILE_BYTES} bytes."
+                    "Xero rejected discovered skill asset `{relative_path}` because assets must be between 1 and {MAX_SKILL_FILE_BYTES} bytes."
                 ),
             ));
         }
@@ -533,7 +533,7 @@ fn inspect_filesystem_skill(
             return Err(CommandError::user_fixable(
                 "autonomous_skill_layout_unsupported",
                 format!(
-                    "Cadence rejected discovered skill because it exceeded the {MAX_TOTAL_SKILL_BYTES} byte total skill budget."
+                    "Xero rejected discovered skill because it exceeded the {MAX_TOTAL_SKILL_BYTES} byte total skill budget."
                 ),
             ));
         }
@@ -543,7 +543,7 @@ fn inspect_filesystem_skill(
                 CommandError::user_fixable(
                     "autonomous_skill_document_invalid",
                     format!(
-                        "Cadence rejected discovered skill because SKILL.md was not valid UTF-8 text: {error}"
+                        "Xero rejected discovered skill because SKILL.md was not valid UTF-8 text: {error}"
                     ),
                 )
             })?);
@@ -552,7 +552,7 @@ fn inspect_filesystem_skill(
                 CommandError::user_fixable(
                     "autonomous_skill_layout_unsupported",
                     format!(
-                        "Cadence rejected discovered skill asset `{relative_path}` because it was not valid UTF-8 text: {error}"
+                        "Xero rejected discovered skill asset `{relative_path}` because it was not valid UTF-8 text: {error}"
                     ),
                 )
             })?;
@@ -567,7 +567,7 @@ fn inspect_filesystem_skill(
     if !has_skill_markdown {
         return Err(CommandError::user_fixable(
             "autonomous_skill_document_missing",
-            "Cadence rejected discovered skill because SKILL.md was missing.",
+            "Xero rejected discovered skill because SKILL.md was missing.",
         ));
     }
 
@@ -583,7 +583,7 @@ fn inspect_filesystem_skill(
         &frontmatter.name,
     )?;
 
-    Ok(CadenceDiscoveredSkill {
+    Ok(XeroDiscoveredSkill {
         skill_id: frontmatter.name.clone(),
         name: frontmatter.name,
         description: frontmatter.description,
@@ -602,13 +602,13 @@ fn collect_skill_directories(
     root_canonical: &Path,
     current: &Path,
     skill_directories: &mut Vec<PathBuf>,
-    diagnostics: &mut Vec<CadenceSkillDiscoveryDiagnostic>,
+    diagnostics: &mut Vec<XeroSkillDiscoveryDiagnostic>,
 ) -> CommandResult<()> {
     let mut entries = fs::read_dir(current)
         .map_err(|error| {
             CommandError::retryable(
                 "autonomous_skill_directory_read_failed",
-                format!("Cadence could not enumerate {}: {error}", current.display()),
+                format!("Xero could not enumerate {}: {error}", current.display()),
             )
         })?
         .collect::<Result<Vec<_>, _>>()
@@ -616,7 +616,7 @@ fn collect_skill_directories(
             CommandError::retryable(
                 "autonomous_skill_directory_read_failed",
                 format!(
-                    "Cadence could not inspect an entry under {}: {error}",
+                    "Xero could not inspect an entry under {}: {error}",
                     current.display()
                 ),
             )
@@ -628,14 +628,14 @@ fn collect_skill_directories(
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_skill_directory_read_failed",
-                format!("Cadence could not inspect {}: {error}", path.display()),
+                format!("Xero could not inspect {}: {error}", path.display()),
             )
         })?;
         if metadata.file_type().is_symlink() {
-            diagnostics.push(CadenceSkillDiscoveryDiagnostic {
+            diagnostics.push(XeroSkillDiscoveryDiagnostic {
                 code: "autonomous_skill_path_outside_root".into(),
                 message: format!(
-                    "Cadence skipped {} because skill scanning does not follow symlinks.",
+                    "Xero skipped {} because skill scanning does not follow symlinks.",
                     path.display()
                 ),
                 relative_path: path_to_relative_source_path(scan_root, &path).ok(),
@@ -648,14 +648,14 @@ fn collect_skill_directories(
         let canonical = fs::canonicalize(&path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_skill_directory_unavailable",
-                format!("Cadence could not resolve {}: {error}", path.display()),
+                format!("Xero could not resolve {}: {error}", path.display()),
             )
         })?;
         if !canonical.starts_with(root_canonical) {
-            diagnostics.push(CadenceSkillDiscoveryDiagnostic {
+            diagnostics.push(XeroSkillDiscoveryDiagnostic {
                 code: "autonomous_skill_path_outside_root".into(),
                 message: format!(
-                    "Cadence skipped {} because it resolves outside the declared skill root.",
+                    "Xero skipped {} because it resolves outside the declared skill root.",
                     path.display()
                 ),
                 relative_path: path_to_relative_source_path(scan_root, &path).ok(),
@@ -687,7 +687,7 @@ fn collect_skill_files(
         .map_err(|error| {
             CommandError::retryable(
                 "autonomous_skill_directory_read_failed",
-                format!("Cadence could not enumerate {}: {error}", current.display()),
+                format!("Xero could not enumerate {}: {error}", current.display()),
             )
         })?
         .collect::<Result<Vec<_>, _>>()
@@ -695,7 +695,7 @@ fn collect_skill_files(
             CommandError::retryable(
                 "autonomous_skill_directory_read_failed",
                 format!(
-                    "Cadence could not inspect an entry under {}: {error}",
+                    "Xero could not inspect an entry under {}: {error}",
                     current.display()
                 ),
             )
@@ -707,14 +707,14 @@ fn collect_skill_files(
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_skill_directory_read_failed",
-                format!("Cadence could not inspect {}: {error}", path.display()),
+                format!("Xero could not inspect {}: {error}", path.display()),
             )
         })?;
         if metadata.file_type().is_symlink() {
             return Err(CommandError::user_fixable(
                 "autonomous_skill_path_outside_root",
                 format!(
-                    "Cadence rejected discovered skill because asset {} is a symlink.",
+                    "Xero rejected discovered skill because asset {} is a symlink.",
                     path.display()
                 ),
             ));
@@ -738,7 +738,7 @@ fn path_to_relative_source_path(root: &Path, path: &Path) -> CommandResult<Strin
         CommandError::user_fixable(
             "autonomous_skill_path_outside_root",
             format!(
-                "Cadence rejected skill path {} because it is outside declared root {}.",
+                "Xero rejected skill path {} because it is outside declared root {}.",
                 path.display(),
                 root.display()
             ),

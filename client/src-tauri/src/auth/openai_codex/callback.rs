@@ -11,7 +11,7 @@ use super::super::AuthDiagnostic;
 use super::flow::ActiveOpenAiCodexFlow;
 use crate::commands::RuntimeAuthPhase;
 
-const SUCCESS_HTML: &str = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>Authentication successful</title></head><body><p>Authentication successful. Return to Cadence to continue.</p></body></html>";
+const SUCCESS_HTML: &str = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>Authentication successful</title></head><body><p>Authentication successful. Return to Xero to continue.</p></body></html>";
 
 pub(super) fn spawn_callback_listener(listener: TcpListener, flow: ActiveOpenAiCodexFlow) {
     thread::spawn(move || {
@@ -19,8 +19,7 @@ pub(super) fn spawn_callback_listener(listener: TcpListener, flow: ActiveOpenAiC
             flow.set_callback_diagnostic(
                 AuthDiagnostic {
                     code: "callback_listener_configuration_failed".into(),
-                    message: "Cadence could not configure the local OpenAI callback listener."
-                        .into(),
+                    message: "Xero could not configure the local OpenAI callback listener.".into(),
                     retryable: false,
                 },
                 RuntimeAuthPhase::AwaitingManualInput,
@@ -47,7 +46,7 @@ pub(super) fn spawn_callback_listener(listener: TcpListener, flow: ActiveOpenAiC
                         AuthDiagnostic {
                             code: "callback_listener_accept_failed".into(),
                             message: format!(
-                                "Cadence could not accept the OpenAI callback connection: {error}"
+                                "Xero could not accept the OpenAI callback connection: {error}"
                             ),
                             retryable: false,
                         },
@@ -69,7 +68,7 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
             flow.set_callback_diagnostic(
                 AuthDiagnostic {
                     code: "callback_request_read_failed".into(),
-                    message: "Cadence could not read the OpenAI callback request.".into(),
+                    message: "Xero could not read the OpenAI callback request.".into(),
                     retryable: false,
                 },
                 RuntimeAuthPhase::AwaitingBrowserCallback,
@@ -95,7 +94,7 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
             flow.set_callback_diagnostic(
                 AuthDiagnostic {
                     code: "callback_request_malformed".into(),
-                    message: "Cadence received a malformed OpenAI callback request line.".into(),
+                    message: "Xero received a malformed OpenAI callback request line.".into(),
                     retryable: false,
                 },
                 RuntimeAuthPhase::AwaitingBrowserCallback,
@@ -111,7 +110,7 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
             flow.set_callback_diagnostic(
                 AuthDiagnostic {
                     code: "callback_query_malformed".into(),
-                    message: "Cadence received a malformed OpenAI callback query string.".into(),
+                    message: "Xero received a malformed OpenAI callback query string.".into(),
                     retryable: false,
                 },
                 RuntimeAuthPhase::AwaitingBrowserCallback,
@@ -133,9 +132,8 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
         flow.set_callback_diagnostic(
             AuthDiagnostic {
                 code: "callback_state_mismatch".into(),
-                message:
-                    "Cadence rejected the OpenAI callback because the OAuth state did not match."
-                        .into(),
+                message: "Xero rejected the OpenAI callback because the OAuth state did not match."
+                    .into(),
                 retryable: false,
             },
             RuntimeAuthPhase::AwaitingBrowserCallback,
@@ -151,7 +149,9 @@ fn handle_callback_connection(mut stream: TcpStream, flow: &ActiveOpenAiCodexFlo
         flow.set_callback_diagnostic(
             AuthDiagnostic {
                 code: "callback_code_missing".into(),
-                message: "Cadence rejected the OpenAI callback because the authorization code was missing.".into(),
+                message:
+                    "Xero rejected the OpenAI callback because the authorization code was missing."
+                        .into(),
                 retryable: false,
             },
             RuntimeAuthPhase::AwaitingBrowserCallback,

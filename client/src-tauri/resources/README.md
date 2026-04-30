@@ -1,6 +1,6 @@
 # Bundled sidecars
 
-This directory holds binaries we embed into the Cadence desktop bundle at
+This directory holds binaries we embed into the Xero desktop bundle at
 build time. They are resolved at runtime via `app.path().resolve(..., Resource)`.
 
 ## scrcpy-server-v2.7.jar
@@ -14,14 +14,14 @@ keep them in lockstep with `src/commands/emulator/android/scrcpy.rs::SCRCPY_VERS
 
 To skip the fetch in a CI environment that handles sidecar caching
 itself (or to iterate offline once the jar is present), set
-`CADENCE_SKIP_SIDECAR_FETCH=1` in the build environment.
+`XERO_SKIP_SIDECAR_FETCH=1` in the build environment.
 
 Manual override: drop `scrcpy-server-v2.7.jar` into this directory and
 the verification step will pick it up without fetching. SHA mismatch
 triggers a re-fetch.
 
 Apache 2.0 licensed (Genymobile) — a matching `NOTICE` entry ships in
-Cadence's About dialog as required.
+Xero's About dialog as required.
 
 ## idb-companion.universal/ (macOS-only)
 
@@ -45,7 +45,7 @@ under the directory into the bundle's `Resources/resources/`, preserving
 that layout.
 
 The pinned version and digest live in `build.rs::IDB_COMPANION_VERSION` /
-`IDB_COMPANION_SHA256`. A `.cadence-version` sentinel inside the
+`IDB_COMPANION_SHA256`. A `.xero-version` sentinel inside the
 extracted directory lets incremental builds skip the refetch. Bumping
 the pin means:
 
@@ -53,7 +53,7 @@ the pin means:
 2. `rm -rf resources/idb-companion.universal resources/*.tar.gz` once so
    the sentinel mismatches and the fetcher re-runs on the next build.
 
-Set `CADENCE_SKIP_SIDECAR_FETCH=1` to bypass the fetcher entirely.
+Set `XERO_SKIP_SIDECAR_FETCH=1` to bypass the fetcher entirely.
 
 Manual override: drop a compatible `idb-companion.universal/` tree into
 this directory (for example, the one Homebrew installs at
@@ -79,13 +79,13 @@ build, smoke-test with:
 
 ```
 codesign --verify --deep --strict \
-  target/release/bundle/macos/Cadence.app
+  target/release/bundle/macos/Xero.app
 ```
 
 and check that `spctl --assess --type execute --verbose` returns
 "accepted". Both should pass without additional entitlements — the
 frameworks are already signed by Meta, and Tauri's codesign pass
-re-signs them under the Cadence identity.
+re-signs them under the Xero identity.
 
 ### Required host state
 
@@ -98,7 +98,7 @@ install. The titlebar discovery UI surfaces an "Install Xcode" CTA when
 
 ## solana-toolchain/
 
-Optional Solana workbench resource root. Cadence checks this directory before
+Optional Solana workbench resource root. Xero checks this directory before
 the first-run managed install location and before host PATH, so release builds
 can ship pre-hydrated Solana tools without relying on a user's shell setup.
 

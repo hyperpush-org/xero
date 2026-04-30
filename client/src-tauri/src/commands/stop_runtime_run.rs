@@ -5,14 +5,12 @@ use crate::{
         validate_non_empty, CommandError, CommandResult, RuntimeRunDto, StopRuntimeRunRequestDto,
     },
     db::project_store,
-    runtime::{stop_runtime_run as stop_supervised_runtime_run, RuntimeSupervisorStopRequest},
     state::DesktopState,
 };
 
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run, resolve_project_root,
-    runtime_run_dto_from_snapshot, stop_owned_runtime_run, DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-    DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
+    runtime_run_dto_from_snapshot, stop_owned_runtime_run,
 };
 
 #[tauri::command]
@@ -34,7 +32,7 @@ pub fn stop_runtime_run<R: Runtime>(
             return Err(CommandError::user_fixable(
                 "runtime_run_mismatch",
                 format!(
-                    "Cadence refused to stop run `{}` because project `{}` is currently bound to durable run `{}`.",
+                    "Xero refused to stop run `{}` because project `{}` is currently bound to durable run `{}`.",
                     request.run_id, request.project_id, snapshot.run.run_id
                 ),
             ));
@@ -70,16 +68,7 @@ pub fn stop_runtime_run<R: Runtime>(
         return Ok(Some(runtime_run_dto_from_snapshot(&after)));
     }
 
-    let after = stop_supervised_runtime_run(
-        state.inner(),
-        RuntimeSupervisorStopRequest {
-            project_id: request.project_id.clone(),
-            agent_session_id: request.agent_session_id.clone(),
-            repo_root,
-            control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-            shutdown_timeout: DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
-        },
-    )?;
+    let after = None;
     emit_runtime_run_updated_if_changed(
         &app,
         &request.project_id,

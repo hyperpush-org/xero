@@ -6,7 +6,9 @@ use std::{
     time::Duration,
 };
 
-use cadence_desktop_lib::{
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         import_mcp_servers::import_mcp_servers,
         list_mcp_servers::{list_mcp_servers, refresh_mcp_server_statuses},
@@ -24,8 +26,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use tauri::Manager;
-use tempfile::TempDir;
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
@@ -36,11 +36,11 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 fn create_state(root: &TempDir) -> DesktopState {
     let app_data = root.path().join("app-data");
 
-    DesktopState::default().with_global_db_path_override(app_data.join("cadence.db"))
+    DesktopState::default().with_global_db_path_override(app_data.join("xero.db"))
 }
 
 fn mcp_registry_path(root: &TempDir) -> PathBuf {
-    root.path().join("app-data").join("cadence.db")
+    root.path().join("app-data").join("xero.db")
 }
 
 fn spawn_single_response_server(
@@ -97,7 +97,7 @@ fn stale_connection() -> McpConnectionState {
         status: McpConnectionStatus::Stale,
         diagnostic: Some(McpConnectionDiagnostic {
             code: "mcp_status_unchecked".into(),
-            message: "Cadence has not checked this MCP server yet.".into(),
+            message: "Xero has not checked this MCP server yet.".into(),
             retryable: true,
         }),
         last_checked_at: None,
@@ -350,7 +350,7 @@ fn refresh_mcp_server_statuses_projects_fail_closed_truth_and_preserves_last_hea
                 McpTransport::Http { url: connected_url },
                 vec![McpEnvironmentReference {
                     key: "API_TOKEN".into(),
-                    from_env: "__CADENCE_TEST_MCP_MISSING_ENV_53D9E7F2__".into(),
+                    from_env: "__XERO_TEST_MCP_MISSING_ENV_53D9E7F2__".into(),
                 }],
                 stale_connection(),
             ),
@@ -367,7 +367,7 @@ fn refresh_mcp_server_statuses_projects_fail_closed_truth_and_preserves_last_hea
                 "failed-stdio",
                 "Failed Stdio",
                 McpTransport::Stdio {
-                    command: "cadence-mcp-this-command-should-not-exist".into(),
+                    command: "xero-mcp-this-command-should-not-exist".into(),
                     args: Vec::new(),
                 },
                 Vec::new(),
@@ -384,7 +384,7 @@ fn refresh_mcp_server_statuses_projects_fail_closed_truth_and_preserves_last_hea
                 "previously-healthy",
                 "Previously Healthy",
                 McpTransport::Stdio {
-                    command: "cadence-mcp-this-command-should-not-exist-2".into(),
+                    command: "xero-mcp-this-command-should-not-exist-2".into(),
                     args: Vec::new(),
                 },
                 Vec::new(),

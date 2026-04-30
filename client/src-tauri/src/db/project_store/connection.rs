@@ -35,7 +35,7 @@ fn open_state_database(repo_root: &Path, database_path: &Path) -> Result<Connect
         CommandError::retryable(
             "project_state_open_failed",
             format!(
-                "Cadence could not open the project state database at {} for {}: {error}",
+                "Xero could not open the project state database at {} for {}: {error}",
                 database_path.display(),
                 repo_root.display()
             ),
@@ -61,7 +61,7 @@ pub(crate) fn open_project_database(
             return Err(CommandError::retryable(
                 "project_state_migration_failed",
                 format!(
-                    "Cadence could not initialize selected-project state at {}. The local project state may need to be reset: {error}",
+                    "Xero could not initialize selected-project state at {}. The local project state may need to be reset: {error}",
                     database_path.display()
                 ),
             ));
@@ -85,7 +85,7 @@ pub(crate) fn open_runtime_database(
             return Err(CommandError::retryable(
                 "runtime_session_migration_failed",
                 format!(
-                    "Cadence could not initialize runtime-session tables at {}. The local project state may need to be reset: {error}",
+                    "Xero could not initialize runtime-session tables at {}. The local project state may need to be reset: {error}",
                     database_path.display()
                 ),
             ));

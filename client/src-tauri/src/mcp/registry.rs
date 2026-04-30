@@ -131,7 +131,7 @@ pub fn load_mcp_registry_from_path(path: &Path) -> CommandResult<McpRegistry> {
         .map_err(|error| {
             CommandError::retryable(
                 "mcp_registry_read_failed",
-                format!("Cadence could not prepare MCP registry read: {error}"),
+                format!("Xero could not prepare MCP registry read: {error}"),
             )
         })?;
 
@@ -142,7 +142,7 @@ pub fn load_mcp_registry_from_path(path: &Path) -> CommandResult<McpRegistry> {
         .map_err(|error| {
             CommandError::retryable(
                 "mcp_registry_read_failed",
-                format!("Cadence could not query MCP registry rows: {error}"),
+                format!("Xero could not query MCP registry rows: {error}"),
             )
         })?;
 
@@ -152,13 +152,13 @@ pub fn load_mcp_registry_from_path(path: &Path) -> CommandResult<McpRegistry> {
         let (payload, updated_at) = row.map_err(|error| {
             CommandError::retryable(
                 "mcp_registry_read_failed",
-                format!("Cadence could not decode MCP registry row: {error}"),
+                format!("Xero could not decode MCP registry row: {error}"),
             )
         })?;
         let server: McpServerRecord = serde_json::from_str(&payload).map_err(|error| {
             CommandError::user_fixable(
                 "mcp_registry_decode_failed",
-                format!("Cadence could not decode MCP registry payload: {error}"),
+                format!("Xero could not decode MCP registry payload: {error}"),
             )
         })?;
         servers.push(server);
@@ -188,7 +188,7 @@ pub fn persist_mcp_registry(path: &Path, next: &McpRegistry) -> CommandResult<Mc
     let tx = connection.transaction().map_err(|error| {
         CommandError::retryable(
             "mcp_registry_write_failed",
-            format!("Cadence could not begin MCP registry transaction: {error}"),
+            format!("Xero could not begin MCP registry transaction: {error}"),
         )
     })?;
 
@@ -220,7 +220,7 @@ pub fn persist_mcp_registry(path: &Path, next: &McpRegistry) -> CommandResult<Mc
             CommandError::system_fault(
                 "mcp_registry_serialize_failed",
                 format!(
-                    "Cadence could not serialize MCP server `{}`: {error}",
+                    "Xero could not serialize MCP server `{}`: {error}",
                     server.id
                 ),
             )
@@ -238,7 +238,7 @@ pub fn persist_mcp_registry(path: &Path, next: &McpRegistry) -> CommandResult<Mc
     tx.commit().map_err(|error| {
         CommandError::retryable(
             "mcp_registry_write_failed",
-            format!("Cadence could not commit MCP registry transaction: {error}"),
+            format!("Xero could not commit MCP registry transaction: {error}"),
         )
     })?;
 
@@ -248,7 +248,7 @@ pub fn persist_mcp_registry(path: &Path, next: &McpRegistry) -> CommandResult<Mc
 fn map_mcp_registry_write_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "mcp_registry_write_failed",
-        format!("Cadence could not write MCP registry: {error}"),
+        format!("Xero could not write MCP registry: {error}"),
     )
 }
 
@@ -257,7 +257,7 @@ pub fn parse_mcp_registry_import_file(path: &Path) -> CommandResult<Vec<Value>> 
         CommandError::user_fixable(
             MCP_IMPORT_DIAGNOSTIC_CODE,
             format!(
-                "Cadence could not read MCP import JSON from {}: {error}",
+                "Xero could not read MCP import JSON from {}: {error}",
                 path.display()
             ),
         )
@@ -267,7 +267,7 @@ pub fn parse_mcp_registry_import_file(path: &Path) -> CommandResult<Vec<Value>> 
         CommandError::user_fixable(
             MCP_IMPORT_DIAGNOSTIC_CODE,
             format!(
-                "Cadence could not parse MCP import JSON from {}: {error}",
+                "Xero could not parse MCP import JSON from {}: {error}",
                 path.display()
             ),
         )
@@ -283,7 +283,7 @@ pub fn parse_mcp_registry_import_file(path: &Path) -> CommandResult<Vec<Value>> 
                 CommandError::user_fixable(
                     MCP_IMPORT_DIAGNOSTIC_CODE,
                     format!(
-                        "Cadence expected MCP import JSON at {} to be an array or an object containing `servers`.",
+                        "Xero expected MCP import JSON at {} to be an array or an object containing `servers`.",
                         path.display()
                     ),
                 )
@@ -291,7 +291,7 @@ pub fn parse_mcp_registry_import_file(path: &Path) -> CommandResult<Vec<Value>> 
         _ => Err(CommandError::user_fixable(
             MCP_IMPORT_DIAGNOSTIC_CODE,
             format!(
-                "Cadence expected MCP import JSON at {} to be an array or an object containing `servers`.",
+                "Xero expected MCP import JSON at {} to be an array or an object containing `servers`.",
                 path.display()
             ),
         )),
@@ -328,7 +328,7 @@ pub fn apply_mcp_registry_import(
                     index,
                     server_id_hint,
                     format!(
-                        "Cadence rejected MCP import entry #{index} from {}: {error}",
+                        "Xero rejected MCP import entry #{index} from {}: {error}",
                         source_path.display()
                     ),
                 );
@@ -347,7 +347,7 @@ pub fn apply_mcp_registry_import(
                     index,
                     server_id_hint,
                     format!(
-                        "Cadence rejected MCP import entry #{index} from {}: {}",
+                        "Xero rejected MCP import entry #{index} from {}: {}",
                         source_path.display(),
                         error.message
                     ),
@@ -362,7 +362,7 @@ pub fn apply_mcp_registry_import(
                 index,
                 Some(validated.id.clone()),
                 format!(
-                    "Cadence rejected MCP import entry #{index} from {} because id `{}` was duplicated in the import batch.",
+                    "Xero rejected MCP import entry #{index} from {} because id `{}` was duplicated in the import batch.",
                     source_path.display(), validated.id
                 ),
             );
@@ -410,7 +410,7 @@ fn validate_registry(registry: McpRegistry, source: &str) -> CommandResult<McpRe
         return Err(CommandError::user_fixable(
             "mcp_registry_invalid",
             format!(
-                "Cadence rejected MCP registry data from {source} because schema version {} is unsupported.",
+                "Xero rejected MCP registry data from {source} because schema version {} is unsupported.",
                 registry.version
             ),
         ));
@@ -424,7 +424,7 @@ fn validate_registry(registry: McpRegistry, source: &str) -> CommandResult<McpRe
             return Err(CommandError::user_fixable(
                 "mcp_registry_invalid",
                 format!(
-                    "Cadence rejected MCP registry data from {source} because server id `{}` was duplicated.",
+                    "Xero rejected MCP registry data from {source} because server id `{}` was duplicated.",
                     validated.id
                 ),
             ));
@@ -447,7 +447,7 @@ fn validate_server_record(server: McpServerRecord, source: &str) -> CommandResul
         return Err(CommandError::user_fixable(
             "mcp_registry_invalid",
             format!(
-                "Cadence rejected MCP server `{id}` from {source} because ids may only contain letters, numbers, hyphen, underscore, or dot.",
+                "Xero rejected MCP server `{id}` from {source} because ids may only contain letters, numbers, hyphen, underscore, or dot.",
             ),
         ));
     }
@@ -493,7 +493,7 @@ fn validate_transport(
                     return Err(CommandError::user_fixable(
                         "mcp_registry_invalid",
                         format!(
-                            "Cadence rejected MCP server `{id}` from {source} because transport args cannot be blank.",
+                            "Xero rejected MCP server `{id}` from {source} because transport args cannot be blank.",
                         ),
                     ));
                 }
@@ -520,7 +520,7 @@ fn validate_transport_url(url: String, id: &str, source: &str) -> CommandResult<
         CommandError::user_fixable(
             "mcp_registry_invalid",
             format!(
-                "Cadence rejected MCP server `{id}` from {source} because URL `{url}` was invalid: {error}",
+                "Xero rejected MCP server `{id}` from {source} because URL `{url}` was invalid: {error}",
             ),
         )
     })?;
@@ -531,7 +531,7 @@ fn validate_transport_url(url: String, id: &str, source: &str) -> CommandResult<
             return Err(CommandError::user_fixable(
                 "mcp_registry_invalid",
                 format!(
-                    "Cadence rejected MCP server `{id}` from {source} because URL `{url}` used unsupported scheme `{other}`.",
+                    "Xero rejected MCP server `{id}` from {source} because URL `{url}` used unsupported scheme `{other}`.",
                 ),
             ));
         }
@@ -541,7 +541,7 @@ fn validate_transport_url(url: String, id: &str, source: &str) -> CommandResult<
         return Err(CommandError::user_fixable(
             "mcp_registry_invalid",
             format!(
-                "Cadence rejected MCP server `{id}` from {source} because transport URLs must not embed credentials.",
+                "Xero rejected MCP server `{id}` from {source} because transport URLs must not embed credentials.",
             ),
         ));
     }
@@ -565,7 +565,7 @@ fn validate_environment(
             return Err(CommandError::user_fixable(
                 "mcp_registry_invalid",
                 format!(
-                    "Cadence rejected MCP server `{id}` from {source} because env key `{key}` was not a valid environment variable name.",
+                    "Xero rejected MCP server `{id}` from {source} because env key `{key}` was not a valid environment variable name.",
                 ),
             ));
         }
@@ -574,7 +574,7 @@ fn validate_environment(
             return Err(CommandError::user_fixable(
                 "mcp_registry_invalid",
                 format!(
-                    "Cadence rejected MCP server `{id}` from {source} because env source `{from_env}` was not a valid environment variable name.",
+                    "Xero rejected MCP server `{id}` from {source} because env source `{from_env}` was not a valid environment variable name.",
                 ),
             ));
         }
@@ -583,7 +583,7 @@ fn validate_environment(
             return Err(CommandError::user_fixable(
                 "mcp_registry_invalid",
                 format!(
-                    "Cadence rejected MCP server `{id}` from {source} because env key `{key}` was duplicated.",
+                    "Xero rejected MCP server `{id}` from {source} because env key `{key}` was duplicated.",
                 ),
             ));
         }
@@ -607,7 +607,7 @@ fn validate_connection(
             return Err(CommandError::user_fixable(
                 "mcp_registry_invalid",
                 format!(
-                    "Cadence rejected MCP server `{id}` from {source} because connection diagnostics require non-empty code and message.",
+                    "Xero rejected MCP server `{id}` from {source} because connection diagnostics require non-empty code and message.",
                 ),
             ));
         }
@@ -632,9 +632,7 @@ fn normalize_non_empty(value: String, field: &str, source: &str) -> CommandResul
     if trimmed.is_empty() {
         return Err(CommandError::user_fixable(
             "mcp_registry_invalid",
-            format!(
-                "Cadence rejected MCP registry data from {source} because `{field}` was blank.",
-            ),
+            format!("Xero rejected MCP registry data from {source} because `{field}` was blank.",),
         ));
     }
     Ok(trimmed.to_owned())
@@ -676,7 +674,7 @@ fn default_connection_state() -> McpConnectionState {
         status: McpConnectionStatus::Stale,
         diagnostic: Some(McpConnectionDiagnostic {
             code: "mcp_status_unchecked".into(),
-            message: "Cadence has not checked this MCP server yet.".into(),
+            message: "Xero has not checked this MCP server yet.".into(),
             retryable: true,
         }),
         last_checked_at: None,

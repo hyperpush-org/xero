@@ -10,20 +10,18 @@ use crate::{
     db::project_store::{self, RuntimeRunSnapshotRecord},
     runtime::{
         create_owned_agent_run, drive_owned_agent_continuation, drive_owned_agent_run,
-        prepare_owned_agent_continuation,
-        update_runtime_run_controls as update_supervised_runtime_run_controls,
-        AgentAutoCompactPreference, AgentRunSupervisor, AutonomousToolRuntime,
-        ContinueOwnedAgentRunRequest, OwnedAgentRunRequest, RuntimeSupervisorUpdateControlsRequest,
+        prepare_owned_agent_continuation, AgentAutoCompactPreference, AgentRunSupervisor,
+        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
     },
     state::DesktopState,
 };
 
 use super::agent_task::auto_compact_preference;
 use super::runtime_support::{
-    emit_runtime_run_updated_if_changed, load_persisted_runtime_run,
-    normalize_requested_runtime_run_controls, resolve_owned_agent_provider_config,
-    resolve_project_root, runtime_run_dto_from_snapshot, update_owned_runtime_run_controls,
-    DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
+    apply_owned_runtime_run_pending_controls, emit_runtime_run_updated_if_changed,
+    launch_or_reconnect_runtime_run, load_persisted_runtime_run,
+    resolve_owned_agent_provider_config, resolve_project_root, runtime_run_dto_from_snapshot,
+    update_owned_runtime_run_controls,
 };
 
 #[tauri::command]
@@ -43,7 +41,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         return Err(CommandError::retryable(
             "runtime_run_missing",
             format!(
-                "Cadence cannot queue runtime-run controls because project `{}` has no durable runtime run.",
+                "Xero cannot queue runtime-run controls because project `{}` has no durable runtime run.",
                 request.project_id
             ),
         ));
@@ -53,19 +51,18 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         return Err(CommandError::user_fixable(
             "runtime_run_mismatch",
             format!(
-                "Cadence refused to queue controls for run `{}` because project `{}` is currently bound to durable run `{}`.",
+                "Xero refused to queue controls for run `{}` because project `{}` is currently bound to durable run `{}`.",
                 request.run_id, request.project_id, existing.run.run_id
             ),
         ));
     }
 
-    reject_provider_profile_change(existing, request.controls.as_ref())?;
-
-    if existing.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
-        let auto_compact = auto_compact_preference(request.auto_compact.clone())?;
-        let after = update_owned_runtime_run_controls(
-            &repo_root,
-            existing,
+    if existing.run.supervisor_kind != crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
+        let outcome = launch_or_reconnect_runtime_run(
+            &app,
+            state.inner(),
+            &request.project_id,
+            &request.agent_session_id,
             request.controls.clone(),
             request.prompt.clone(),
         )?;
@@ -74,38 +71,19 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
             &request.project_id,
             &request.agent_session_id,
             &before,
-            &Some(after.clone()),
+            &Some(outcome.snapshot.clone()),
         )?;
-        if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
-            drive_owned_runtime_prompt(
-                &app,
-                state.inner(),
-                &repo_root,
-                &after,
-                prompt,
-                auto_compact,
-            )?;
-        }
-        return Ok(runtime_run_dto_from_snapshot(&after));
+        return Ok(runtime_run_dto_from_snapshot(&outcome.snapshot));
     }
 
-    let normalized_controls = request
-        .controls
-        .as_ref()
-        .map(|controls| normalize_requested_runtime_run_controls(&app, state.inner(), controls))
-        .transpose()?;
+    reject_provider_profile_change(existing, request.controls.as_ref())?;
 
-    let after = update_supervised_runtime_run_controls(
-        state.inner(),
-        RuntimeSupervisorUpdateControlsRequest {
-            project_id: request.project_id.clone(),
-            agent_session_id: request.agent_session_id.clone(),
-            repo_root,
-            run_id: request.run_id.clone(),
-            controls: normalized_controls,
-            prompt: request.prompt.clone(),
-            control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-        },
+    let auto_compact = auto_compact_preference(request.auto_compact.clone())?;
+    let after = update_owned_runtime_run_controls(
+        &repo_root,
+        existing,
+        request.controls.clone(),
+        request.prompt.clone(),
     )?;
     emit_runtime_run_updated_if_changed(
         &app,
@@ -114,8 +92,32 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         &before,
         &Some(after.clone()),
     )?;
+    let mut response_snapshot = after.clone();
+    if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
+        drive_owned_runtime_prompt(
+            &app,
+            state.inner(),
+            &repo_root,
+            &after,
+            prompt,
+            auto_compact,
+        )?;
+        let before_apply = Some(after.clone());
+        response_snapshot = apply_owned_runtime_run_pending_controls(
+            &repo_root,
+            &after,
+            "Owned agent runtime accepted the queued prompt.",
+        )?;
+        emit_runtime_run_updated_if_changed(
+            &app,
+            &request.project_id,
+            &request.agent_session_id,
+            &before_apply,
+            &Some(response_snapshot.clone()),
+        )?;
+    }
 
-    Ok(runtime_run_dto_from_snapshot(&after))
+    Ok(runtime_run_dto_from_snapshot(&response_snapshot))
 }
 
 fn drive_owned_runtime_prompt<R: Runtime + 'static>(
@@ -133,7 +135,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
         return Err(CommandError::user_fixable(
             "agent_run_already_active",
             format!(
-                "Cadence is already driving owned-agent run `{}`. Wait for it to finish or cancel it before sending another message.",
+                "Xero is already driving owned-agent run `{}`. Wait for it to finish or cancel it before sending another message.",
                 snapshot.run.run_id
             ),
         ));
@@ -218,6 +220,16 @@ fn spawn_owned_agent_continuation(
 fn runtime_run_controls_as_input(
     snapshot: &RuntimeRunSnapshotRecord,
 ) -> crate::commands::RuntimeRunControlInputDto {
+    if let Some(pending) = snapshot.controls.pending.as_ref() {
+        return crate::commands::RuntimeRunControlInputDto {
+            provider_profile_id: pending.provider_profile_id.clone(),
+            model_id: pending.model_id.clone(),
+            thinking_effort: pending.thinking_effort.clone(),
+            approval_mode: pending.approval_mode.clone(),
+            plan_mode_required: pending.plan_mode_required,
+        };
+    }
+
     crate::commands::RuntimeRunControlInputDto {
         provider_profile_id: snapshot.controls.active.provider_profile_id.clone(),
         model_id: snapshot.controls.active.model_id.clone(),
@@ -248,7 +260,7 @@ fn reject_provider_profile_change(
             return Err(CommandError::user_fixable(
                 "runtime_run_provider_profile_switch_blocked",
                 format!(
-                    "Cadence cannot switch active runtime run `{}` from provider profile `{active}` to `{requested}`. Stop the current run before changing providers.",
+                    "Xero cannot switch active runtime run `{}` from provider profile `{active}` to `{requested}`. Stop the current run before changing providers.",
                     existing.run.run_id
                 ),
             ));

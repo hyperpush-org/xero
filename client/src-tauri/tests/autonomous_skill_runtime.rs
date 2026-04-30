@@ -4,7 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cadence_desktop_lib::{
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     configure_builder_with_state,
     runtime::{
         AutonomousSkillCacheError, AutonomousSkillCacheManifest, AutonomousSkillCacheStatus,
@@ -17,8 +19,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use tauri::Manager;
-use tempfile::TempDir;
 
 #[derive(Clone, Default)]
 struct FixtureSkillSource {
@@ -131,7 +131,7 @@ impl AutonomousSkillCacheStore for FailingCacheStore {
         &self,
         _cache_key: &str,
         _manifest: &AutonomousSkillCacheManifest,
-        _files: &[cadence_desktop_lib::runtime::AutonomousSkillCacheInstallFile],
+        _files: &[xero_desktop_lib::runtime::AutonomousSkillCacheInstallFile],
     ) -> Result<String, AutonomousSkillCacheError> {
         Err(AutonomousSkillCacheError::Write(
             "simulated cache write failure".into(),
@@ -285,7 +285,7 @@ fn skill_runtime_discovers_candidates_from_source_tree() {
 
 #[test]
 #[allow(non_snake_case)]
-fn skill_runtime_installs_into_Cadence_owned_cache_and_reuses_existing_tree() {
+fn skill_runtime_installs_into_Xero_owned_cache_and_reuses_existing_tree() {
     let source = FixtureSkillSource::default();
     source.set_tree_response(Ok(standard_skill_tree(
         "find-skills",
@@ -310,12 +310,10 @@ fn skill_runtime_installs_into_Cadence_owned_cache_and_reuses_existing_tree() {
         skill_source_metadata("find-skills", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     let install = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: source_metadata.clone(),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: source_metadata.clone(),
+            timeout_ms: Some(1_000),
+        })
         .expect("initial install should succeed");
 
     assert_eq!(install.cache_status, AutonomousSkillCacheStatus::Miss);
@@ -330,7 +328,7 @@ fn skill_runtime_installs_into_Cadence_owned_cache_and_reuses_existing_tree() {
     assert_eq!(source.file_request_count(), 2);
 
     let invoke = runtime
-        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+        .invoke(xero_desktop_lib::runtime::AutonomousSkillInvokeRequest {
             source: skill_source_metadata(
                 "find-skills",
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -371,15 +369,13 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
     let root = tempfile::tempdir().expect("temp dir");
     let (_app, runtime, cache_root) = runtime_with_state(&root, source.clone());
     let initial = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: skill_source_metadata(
-                    "find-skills",
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            timeout_ms: Some(1_000),
+        })
         .expect("first install should succeed");
 
     assert_eq!(initial.cache_status, AutonomousSkillCacheStatus::Miss);
@@ -409,15 +405,13 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
     );
 
     let refreshed = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: skill_source_metadata(
-                    "find-skills",
-                    "cccccccccccccccccccccccccccccccccccccccc",
-                ),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "cccccccccccccccccccccccccccccccccccccccc",
+            ),
+            timeout_ms: Some(1_000),
+        })
         .expect("refresh install should succeed");
 
     assert_eq!(
@@ -438,7 +432,7 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
             .join("trees")
             .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .is_dir(),
-        "expected the original tree revision to remain available under the Cadence cache key"
+        "expected the original tree revision to remain available under the Xero cache key"
     );
     assert!(
         cache_root
@@ -446,7 +440,7 @@ fn skill_runtime_refreshes_cache_when_tree_hash_changes() {
             .join("trees")
             .join("cccccccccccccccccccccccccccccccccccccccc")
             .is_dir(),
-        "expected the refreshed tree revision to be written under the same Cadence cache key"
+        "expected the refreshed tree revision to be written under the same Xero cache key"
     );
     let manifest = read_manifest(&cache_root, &refreshed.cache_key);
     assert_eq!(
@@ -487,7 +481,7 @@ fn skill_runtime_rejects_malformed_skill_documents_during_invoke() {
     let root = tempfile::tempdir().expect("temp dir");
     let runtime = runtime_with_cache_root(root.path(), source);
     let error = runtime
-        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+        .invoke(xero_desktop_lib::runtime::AutonomousSkillInvokeRequest {
             source: skill_source_metadata("bad-skill", "dddddddddddddddddddddddddddddddddddddddd"),
             timeout_ms: Some(1_000),
         })
@@ -526,7 +520,7 @@ fn skill_runtime_rejects_unsupported_asset_layouts() {
     let root = tempfile::tempdir().expect("temp dir");
     let runtime = runtime_with_cache_root(root.path(), source);
     let error = runtime
-        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+        .invoke(xero_desktop_lib::runtime::AutonomousSkillInvokeRequest {
             source: skill_source_metadata(
                 "find-skills",
                 "ffffffffffffffffffffffffffffffffffffffff",
@@ -588,15 +582,13 @@ fn skill_runtime_surfaces_typed_cache_write_failures() {
         Arc::new(FailingCacheStore),
     );
     let error = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: skill_source_metadata(
-                    "find-skills",
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                ),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            timeout_ms: Some(1_000),
+        })
         .expect_err("cache write failures should be surfaced");
 
     assert_eq!(error.code, "autonomous_skill_cache_write_failed");

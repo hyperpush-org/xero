@@ -9,9 +9,8 @@ use crate::{
     db::database_path_for_repo,
     runtime::{
         AutonomousSkillRegistryFailure, AutonomousSkillRegistryOperation,
-        AutonomousSkillRegistrySink, AutonomousSkillRegistrySuccess, CadenceDiscoveredSkill,
-        CadenceSkillSourceRecord, CadenceSkillSourceScope, CadenceSkillSourceState,
-        CadenceSkillTrustState,
+        AutonomousSkillRegistrySink, AutonomousSkillRegistrySuccess, XeroDiscoveredSkill,
+        XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState, XeroSkillTrustState,
     },
 };
 
@@ -19,7 +18,7 @@ use super::open_project_database;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledSkillRecord {
-    pub source: CadenceSkillSourceRecord,
+    pub source: XeroSkillSourceRecord,
     pub skill_id: String,
     pub name: String,
     pub description: String,
@@ -55,7 +54,7 @@ pub enum InstalledSkillScopeFilter {
 #[derive(Debug, Clone)]
 pub struct ProjectStoreInstalledSkillRegistry {
     repo_root: PathBuf,
-    scope: CadenceSkillSourceScope,
+    scope: XeroSkillSourceScope,
 }
 
 struct RawInstalledSkillRow {
@@ -81,9 +80,9 @@ struct RawInstalledSkillRow {
 
 impl InstalledSkillRecord {
     pub fn from_discovered_skill(
-        candidate: &CadenceDiscoveredSkill,
-        state: CadenceSkillSourceState,
-        trust: CadenceSkillTrustState,
+        candidate: &XeroDiscoveredSkill,
+        state: XeroSkillSourceState,
+        trust: XeroSkillTrustState,
         timestamp: impl Into<String>,
     ) -> CommandResult<Self> {
         let mut source = candidate.source.clone();
@@ -109,10 +108,10 @@ impl InstalledSkillRecord {
 
     fn validate(self) -> CommandResult<Self> {
         let source = self.source.validate()?;
-        if source.state == CadenceSkillSourceState::Discoverable {
+        if source.state == XeroSkillSourceState::Discoverable {
             return Err(CommandError::user_fixable(
                 "installed_skill_state_invalid",
-                "Cadence durable installed-skill records cannot remain in the discoverable-only state.",
+                "Xero durable installed-skill records cannot remain in the discoverable-only state.",
             ));
         }
         let skill_id = validate_required_text(self.skill_id, "skillId")?;
@@ -120,7 +119,7 @@ impl InstalledSkillRecord {
             return Err(CommandError::user_fixable(
                 "installed_skill_metadata_invalid",
                 format!(
-                    "Cadence rejected installed skill metadata for `{skill_id}` because its source locator names `{}`.",
+                    "Xero rejected installed skill metadata for `{skill_id}` because its source locator names `{}`.",
                     source.locator.skill_id()
                 ),
             ));
@@ -132,17 +131,17 @@ impl InstalledSkillRecord {
         if cache_key.is_none() && local_location.is_none() {
             return Err(CommandError::user_fixable(
                 "installed_skill_location_missing",
-                "Cadence requires installed skill records to keep a cache key or local location.",
+                "Xero requires installed skill records to keep a cache key or local location.",
             ));
         }
         if matches!(
             &source.locator,
-            crate::runtime::CadenceSkillSourceLocator::Github { .. }
+            crate::runtime::XeroSkillSourceLocator::Github { .. }
         ) && cache_key.is_none()
         {
             return Err(CommandError::user_fixable(
                 "installed_skill_location_missing",
-                "Cadence requires GitHub-backed installed skills to keep their autonomous cache key.",
+                "Xero requires GitHub-backed installed skills to keep their autonomous cache key.",
             ));
         }
         let version_hash = normalize_optional_text(self.version_hash, "versionHash")?;
@@ -184,7 +183,7 @@ impl ProjectStoreInstalledSkillRegistry {
     pub fn global(repo_root: impl Into<PathBuf>) -> Self {
         Self {
             repo_root: repo_root.into(),
-            scope: CadenceSkillSourceScope::global(),
+            scope: XeroSkillSourceScope::global(),
         }
     }
 
@@ -194,18 +193,18 @@ impl ProjectStoreInstalledSkillRegistry {
     ) -> CommandResult<Self> {
         Ok(Self {
             repo_root: repo_root.into(),
-            scope: CadenceSkillSourceScope::project(project_id.into())?,
+            scope: XeroSkillSourceScope::project(project_id.into())?,
         })
     }
 }
 
 impl AutonomousSkillRegistrySink for ProjectStoreInstalledSkillRegistry {
     fn record_success(&self, event: &AutonomousSkillRegistrySuccess) -> CommandResult<()> {
-        let source = CadenceSkillSourceRecord::github_autonomous(
+        let source = XeroSkillSourceRecord::github_autonomous(
             self.scope.clone(),
             &event.source,
-            CadenceSkillSourceState::Enabled,
-            CadenceSkillTrustState::Trusted,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Trusted,
         )?;
         let timestamp = now_timestamp();
         upsert_installed_skill(
@@ -247,7 +246,7 @@ pub fn upsert_installed_skill(
     load_installed_skill_by_source_id(repo_root, &record.source.source_id)?.ok_or_else(|| {
         CommandError::system_fault(
             "installed_skill_missing",
-            "Cadence persisted an installed skill but could not reload it.",
+            "Xero persisted an installed skill but could not reload it.",
         )
     })
 }
@@ -320,22 +319,22 @@ pub fn set_installed_skill_enabled(
     let mut record = load_installed_skill_by_source_id(repo_root, source_id)?.ok_or_else(|| {
         CommandError::user_fixable(
             "installed_skill_not_found",
-            format!("Cadence could not find installed skill source `{source_id}`."),
+            format!("Xero could not find installed skill source `{source_id}`."),
         )
     })?;
     if enabled
-        && (record.source.state == CadenceSkillSourceState::Blocked
-            || record.source.trust == CadenceSkillTrustState::Blocked)
+        && (record.source.state == XeroSkillSourceState::Blocked
+            || record.source.trust == XeroSkillTrustState::Blocked)
     {
         return Err(CommandError::user_fixable(
             "installed_skill_blocked",
-            format!("Cadence cannot enable blocked skill source `{source_id}`."),
+            format!("Xero cannot enable blocked skill source `{source_id}`."),
         ));
     }
     let next_state = if enabled {
-        CadenceSkillSourceState::Enabled
+        XeroSkillSourceState::Enabled
     } else {
-        CadenceSkillSourceState::Disabled
+        XeroSkillSourceState::Disabled
     };
     crate::runtime::validate_skill_source_state_transition(record.source.state, next_state)?;
     record.source.state = next_state;
@@ -358,14 +357,14 @@ pub fn remove_installed_skill(repo_root: &Path, source_id: &str) -> CommandResul
 
 fn record_installed_skill_failure(
     repo_root: &Path,
-    scope: &CadenceSkillSourceScope,
+    scope: &XeroSkillSourceScope,
     event: &AutonomousSkillRegistryFailure,
 ) -> CommandResult<()> {
-    let source = CadenceSkillSourceRecord::github_autonomous(
+    let source = XeroSkillSourceRecord::github_autonomous(
         scope.clone(),
         &event.source,
-        CadenceSkillSourceState::Failed,
-        CadenceSkillTrustState::Trusted,
+        XeroSkillSourceState::Failed,
+        XeroSkillTrustState::Trusted,
     )?;
     let timestamp = now_timestamp();
     let diagnostic = InstalledSkillDiagnosticRecord {
@@ -379,7 +378,7 @@ fn record_installed_skill_failure(
             source: source.clone(),
             skill_id: event.skill_id.clone(),
             name: event.skill_id.clone(),
-            description: "Skill install failed before Cadence resolved metadata.".into(),
+            description: "Skill install failed before Xero resolved metadata.".into(),
             user_invocable: None,
             cache_key: Some(event.cache_key.clone()),
             local_location: None,
@@ -409,7 +408,7 @@ fn upsert_installed_skill_with_connection(
         CommandError::system_fault(
             "installed_skill_encode_failed",
             format!(
-                "Cadence could not encode installed skill source `{}`: {error}",
+                "Xero could not encode installed skill source `{}`: {error}",
                 record.source.source_id
             ),
         )
@@ -423,7 +422,7 @@ fn upsert_installed_skill_with_connection(
             CommandError::system_fault(
                 "installed_skill_encode_failed",
                 format!(
-                    "Cadence could not encode installed skill diagnostic `{}`: {error}",
+                    "Xero could not encode installed skill diagnostic `{}`: {error}",
                     record.source.source_id
                 ),
             )
@@ -574,11 +573,11 @@ fn read_raw_installed_skill_row(row: &Row<'_>) -> rusqlite::Result<RawInstalledS
 
 fn decode_installed_skill_row(raw: RawInstalledSkillRow) -> CommandResult<InstalledSkillRecord> {
     let source =
-        serde_json::from_str::<CadenceSkillSourceRecord>(&raw.source_json).map_err(|error| {
+        serde_json::from_str::<XeroSkillSourceRecord>(&raw.source_json).map_err(|error| {
             CommandError::system_fault(
                 "installed_skill_record_corrupt",
                 format!(
-                    "Cadence could not decode installed skill source `{}`: {error}",
+                    "Xero could not decode installed skill source `{}`: {error}",
                     raw.source_id
                 ),
             )
@@ -594,7 +593,7 @@ fn decode_installed_skill_row(raw: RawInstalledSkillRow) -> CommandResult<Instal
         return Err(CommandError::system_fault(
             "installed_skill_record_corrupt",
             format!(
-                "Cadence rejected installed skill row `{}` because its indexed columns no longer match the source contract.",
+                "Xero rejected installed skill row `{}` because its indexed columns no longer match the source contract.",
                 raw.source_id
             ),
         ));
@@ -607,7 +606,7 @@ fn decode_installed_skill_row(raw: RawInstalledSkillRow) -> CommandResult<Instal
             CommandError::system_fault(
                 "installed_skill_record_corrupt",
                 format!(
-                    "Cadence could not decode installed skill diagnostic `{}`: {error}",
+                    "Xero could not decode installed skill diagnostic `{}`: {error}",
                     raw.source_id
                 ),
             )
@@ -657,25 +656,25 @@ fn validate_required_text(value: String, field: &'static str) -> CommandResult<S
     Ok(trimmed.to_owned())
 }
 
-fn scope_kind_sql_value(scope: &CadenceSkillSourceScope) -> &'static str {
+fn scope_kind_sql_value(scope: &XeroSkillSourceScope) -> &'static str {
     match scope {
-        CadenceSkillSourceScope::Global => "global",
-        CadenceSkillSourceScope::Project { .. } => "project",
+        XeroSkillSourceScope::Global => "global",
+        XeroSkillSourceScope::Project { .. } => "project",
     }
 }
 
-fn scope_project_id(scope: &CadenceSkillSourceScope) -> Option<String> {
+fn scope_project_id(scope: &XeroSkillSourceScope) -> Option<String> {
     match scope {
-        CadenceSkillSourceScope::Global => None,
-        CadenceSkillSourceScope::Project { project_id } => Some(project_id.clone()),
+        XeroSkillSourceScope::Global => None,
+        XeroSkillSourceScope::Project { project_id } => Some(project_id.clone()),
     }
 }
 
-fn skill_state_sql_value(state: CadenceSkillSourceState) -> CommandResult<String> {
+fn skill_state_sql_value(state: XeroSkillSourceState) -> CommandResult<String> {
     serde_json_string_value(state, "skill source state")
 }
 
-fn trust_state_sql_value(trust: CadenceSkillTrustState) -> CommandResult<String> {
+fn trust_state_sql_value(trust: XeroSkillTrustState) -> CommandResult<String> {
     serde_json_string_value(trust, "skill trust state")
 }
 
@@ -686,7 +685,7 @@ fn serde_json_string_value<T: Serialize>(value: T, label: &'static str) -> Comma
         .ok_or_else(|| {
             CommandError::system_fault(
                 "installed_skill_encode_failed",
-                format!("Cadence could not encode {label} as a stable string."),
+                format!("Xero could not encode {label} as a stable string."),
             )
         })
 }
@@ -694,13 +693,13 @@ fn serde_json_string_value<T: Serialize>(value: T, label: &'static str) -> Comma
 fn map_installed_skill_read_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "installed_skill_read_failed",
-        format!("Cadence could not read installed skill records: {error}"),
+        format!("Xero could not read installed skill records: {error}"),
     )
 }
 
 fn map_installed_skill_write_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "installed_skill_write_failed",
-        format!("Cadence could not persist installed skill records: {error}"),
+        format!("Xero could not persist installed skill records: {error}"),
     )
 }

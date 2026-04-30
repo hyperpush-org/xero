@@ -53,7 +53,7 @@ export default function App() {
   return (
     <main className={cn('min-h-screen bg-background p-8')}>
       <Card className="mx-auto max-w-md p-6">
-        <h1 className="text-2xl font-semibold">Hello, Cadence</h1>
+        <h1 className="text-2xl font-semibold">Hello, Xero</h1>
         <p className="mt-2 text-muted-foreground">
           Clicked {count} {count === 1 ? 'time' : 'times'}
         </p>
@@ -240,7 +240,7 @@ export function useTheme(): [Theme, (t: Theme) => void] {
     file(
       'package.json',
       `{
-  "name": "cadence-sandbox",
+  "name": "xero-sandbox",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -298,9 +298,9 @@ export default defineConfig({
     ),
     file(
       'README.md',
-      `# Cadence Sandbox
+      `# Xero Sandbox
 
-A minimal React + Vite playground used to explore the Cadence editor surface.
+A minimal React + Vite playground used to explore the Xero editor surface.
 
 ## Getting started
 

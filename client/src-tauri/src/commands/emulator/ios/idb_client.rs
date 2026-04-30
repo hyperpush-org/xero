@@ -177,7 +177,7 @@ impl LogStreamHandle {
 fn grpc_unimplemented(method: &str, detail: &str) -> CommandError {
     CommandError::system_fault(
         "ios_idb_proto_missing",
-        format!("idb gRPC `{method}` is not yet wired up in this Cadence build. {detail}."),
+        format!("idb gRPC `{method}` is not yet wired up in this Xero build. {detail}."),
     )
 }
 
@@ -205,7 +205,7 @@ fn send_hid_applescript(udid: &str, event: HidEvent) -> Result<(), CommandError>
             HardwareButton::VolumeUp | HardwareButton::VolumeDown => {
                 Err(CommandError::user_fixable(
                     "ios_input_unsupported",
-                    "Volume buttons aren't available in this build. Rebuild Cadence with \
+                    "Volume buttons aren't available in this build. Rebuild Xero with \
                      `--features ios-grpc` to route HID through idb_companion.",
                 ))
             }
@@ -213,7 +213,7 @@ fn send_hid_applescript(udid: &str, event: HidEvent) -> Result<(), CommandError>
         HidEvent::Text { text } => hid_fallback::type_text(udid, &text).map_err(map_err),
         HidEvent::Touch { .. } | HidEvent::Swipe { .. } => Err(CommandError::user_fixable(
             "ios_input_unsupported",
-            "Touch and swipe gestures require idb_companion's HID RPC. Rebuild Cadence \
+            "Touch and swipe gestures require idb_companion's HID RPC. Rebuild Xero \
              with `--features ios-grpc` to enable it.",
         )),
     }

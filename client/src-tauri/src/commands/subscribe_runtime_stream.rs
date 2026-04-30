@@ -7,27 +7,19 @@ use tauri::{
 
 use crate::{
     commands::{
-        validate_non_empty, CommandError, CommandResult, RuntimeAuthPhase, RuntimeStreamItemDto,
-        RuntimeStreamItemKind, RuntimeToolCallState, SubscribeRuntimeStreamRequestDto,
-        SubscribeRuntimeStreamResponseDto,
+        validate_non_empty, CommandError, CommandResult, RuntimeStreamItemDto,
+        RuntimeStreamItemKind, RuntimeStreamTranscriptRole, RuntimeToolCallState,
+        SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
-        RuntimeRunStatus, RuntimeRunTransportLiveness,
+        RuntimeRunStatus,
     },
-    runtime::{
-        start_runtime_stream, subscribe_agent_events, AgentEventSubscription, RuntimeStreamRequest,
-        OWNED_AGENT_SUPERVISOR_KIND,
-    },
+    runtime::{subscribe_agent_events, AgentEventSubscription, OWNED_AGENT_SUPERVISOR_KIND},
     state::DesktopState,
 };
 
-use super::{
-    get_runtime_session::reconcile_runtime_session,
-    runtime_support::{
-        load_persisted_runtime_run, load_runtime_session_status, resolve_project_root,
-    },
-};
+use super::runtime_support::{load_persisted_runtime_run, resolve_project_root};
 
 #[tauri::command]
 pub fn subscribe_runtime_stream<R: Runtime>(
@@ -43,74 +35,17 @@ pub fn subscribe_runtime_stream<R: Runtime>(
     let channel = resolve_channel(&webview, request.channel.as_deref())?;
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let owned_runtime_run =
+    let runtime_run =
         load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?
-            .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND);
-    if let Some(runtime_run) = owned_runtime_run {
-        return subscribe_owned_runtime_stream(
-            &repo_root,
-            &request,
-            runtime_run,
-            item_kinds,
-            channel,
-        );
-    }
+            .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND)
+            .ok_or_else(|| {
+                CommandError::retryable(
+                    "runtime_stream_run_unavailable",
+                    "Xero cannot start a live runtime stream until the selected project has a Xero-owned agent run.",
+                )
+            })?;
 
-    let runtime = load_runtime_session_status(state.inner(), &repo_root, &request.project_id)?;
-    let runtime = reconcile_runtime_session(&app, state.inner(), &repo_root, runtime)?;
-
-    if runtime.phase != RuntimeAuthPhase::Authenticated {
-        return Err(runtime_stream_precondition_error(
-            &runtime.phase,
-            runtime.last_error.as_ref(),
-        ));
-    }
-
-    let Some(session_id) = runtime.session_id else {
-        return Err(CommandError::system_fault(
-            "runtime_stream_session_missing",
-            "Cadence could not start a runtime stream because the authenticated runtime session did not include a session id.",
-        ));
-    };
-
-    let runtime_run = load_persisted_runtime_run(
-        &repo_root,
-        &request.project_id,
-        &request.agent_session_id,
-    )?
-        .ok_or_else(|| {
-            CommandError::retryable(
-                "runtime_stream_run_unavailable",
-                "Cadence cannot start a live runtime stream until the selected project has an attachable durable run.",
-            )
-        })?;
-    ensure_attachable_runtime_run(&runtime_run)?;
-
-    start_runtime_stream(
-        app,
-        state.inner().clone(),
-        RuntimeStreamRequest {
-            project_id: runtime.project_id.clone(),
-            agent_session_id: request.agent_session_id.clone(),
-            repo_root,
-            session_id: session_id.clone(),
-            flow_id: runtime.flow_id.clone(),
-            runtime_kind: runtime.runtime_kind.clone(),
-            run_id: runtime_run.run.run_id.clone(),
-            requested_item_kinds: item_kinds.clone(),
-        },
-        channel,
-    );
-
-    Ok(SubscribeRuntimeStreamResponseDto {
-        project_id: runtime.project_id,
-        agent_session_id: request.agent_session_id,
-        runtime_kind: runtime.runtime_kind,
-        run_id: runtime_run.run.run_id,
-        session_id,
-        flow_id: runtime.flow_id,
-        subscribed_item_kinds: item_kinds,
-    })
+    subscribe_owned_runtime_stream(&repo_root, &request, runtime_run, item_kinds, channel)
 }
 
 fn parse_requested_item_kinds(item_kinds: &[String]) -> CommandResult<Vec<RuntimeStreamItemKind>> {
@@ -144,7 +79,7 @@ fn parse_runtime_stream_item_kind(value: &str) -> CommandResult<RuntimeStreamIte
         other => Err(CommandError::user_fixable(
             "runtime_stream_item_kind_unsupported",
             format!(
-                "Cadence does not support runtime stream item kind `{other}`. Allowed kinds: {}.",
+                "Xero does not support runtime stream item kind `{other}`. Allowed kinds: {}.",
                 RuntimeStreamItemDto::allowed_kind_names().join(", ")
             ),
         )),
@@ -229,7 +164,7 @@ fn replay_owned_agent_events(
                     CommandError::retryable(
                         "runtime_stream_channel_closed",
                         format!(
-                            "Cadence could not deliver an owned-agent runtime stream replay item because the desktop channel closed: {error}"
+                            "Xero could not deliver an owned-agent runtime stream replay item because the desktop channel closed: {error}"
                         ),
                     )
                 })?;
@@ -287,7 +222,7 @@ fn owned_agent_event_runtime_item(
         |error| {
             serde_json::json!({
                 "code": "owned_agent_event_decode_failed",
-                "message": format!("Cadence could not decode owned-agent event payload {event_id}: {error}"),
+                "message": format!("Xero could not decode owned-agent event payload {event_id}: {error}"),
                 "retryable": false,
             })
         },
@@ -299,6 +234,7 @@ fn owned_agent_event_runtime_item(
         session_id: Some(session_id.to_string()),
         flow_id,
         text: None,
+        transcript_role: None,
         tool_call_id: None,
         tool_name: None,
         tool_state: None,
@@ -324,6 +260,7 @@ fn owned_agent_event_runtime_item(
         AgentRunEventKind::MessageDelta => {
             item.kind = RuntimeStreamItemKind::Transcript;
             item.text = payload_string(&payload, "text");
+            item.transcript_role = payload_transcript_role(&payload);
         }
         AgentRunEventKind::ReasoningSummary => {
             item.kind = RuntimeStreamItemKind::Activity;
@@ -466,6 +403,16 @@ fn payload_bool(payload: &serde_json::Value, key: &str) -> Option<bool> {
     payload.get(key).and_then(|value| value.as_bool())
 }
 
+fn payload_transcript_role(payload: &serde_json::Value) -> Option<RuntimeStreamTranscriptRole> {
+    match payload_string(payload, "role")?.as_str() {
+        "user" => Some(RuntimeStreamTranscriptRole::User),
+        "assistant" => Some(RuntimeStreamTranscriptRole::Assistant),
+        "system" => Some(RuntimeStreamTranscriptRole::System),
+        "tool" => Some(RuntimeStreamTranscriptRole::Tool),
+        _ => None,
+    }
+}
+
 fn command_output_summary(payload: &serde_json::Value) -> String {
     let argv = payload
         .get("argv")
@@ -491,47 +438,6 @@ fn command_output_summary(payload: &serde_json::Value) -> String {
     }
 }
 
-fn ensure_attachable_runtime_run(snapshot: &RuntimeRunSnapshotRecord) -> CommandResult<()> {
-    let reachable = snapshot.run.transport.liveness == RuntimeRunTransportLiveness::Reachable;
-    let active = matches!(
-        snapshot.run.status,
-        RuntimeRunStatus::Starting | RuntimeRunStatus::Running
-    );
-
-    if active && reachable {
-        return Ok(());
-    }
-
-    let last_error_message = snapshot
-        .run
-        .last_error
-        .as_ref()
-        .map(|error| error.message.clone());
-
-    match snapshot.run.status {
-        RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed => Err(CommandError::user_fixable(
-            "runtime_stream_run_unavailable",
-            last_error_message.unwrap_or_else(|| {
-                format!(
-                    "Cadence cannot start a live runtime stream because run `{}` is already terminal.",
-                    snapshot.run.run_id
-                )
-            }),
-        )),
-        RuntimeRunStatus::Starting | RuntimeRunStatus::Running | RuntimeRunStatus::Stale => {
-            Err(CommandError::retryable(
-                "runtime_stream_run_stale",
-                last_error_message.unwrap_or_else(|| {
-                    format!(
-                        "Cadence cannot attach to run `{}` because the detached supervisor is not currently reachable.",
-                        snapshot.run.run_id
-                    )
-                }),
-            ))
-        }
-    }
-}
-
 fn resolve_channel<R: Runtime>(
     webview: &Webview<R>,
     raw_channel: Option<&str>,
@@ -539,72 +445,18 @@ fn resolve_channel<R: Runtime>(
     let Some(raw_channel) = raw_channel else {
         return Err(CommandError::user_fixable(
             "runtime_stream_channel_missing",
-            "Cadence requires a runtime stream channel before it can start streaming selected-project runtime items.",
+            "Xero requires a runtime stream channel before it can start streaming selected-project runtime items.",
         ));
     };
 
     let channel_id = JavaScriptChannelId::from_str(raw_channel).map_err(|_| {
         CommandError::user_fixable(
             "runtime_stream_channel_invalid",
-            "Cadence received an invalid runtime stream channel handle from the desktop shell.",
+            "Xero received an invalid runtime stream channel handle from the desktop shell.",
         )
     })?;
 
     Ok(channel_id.channel_on(webview.clone()))
-}
-
-fn runtime_stream_precondition_error(
-    phase: &RuntimeAuthPhase,
-    diagnostic: Option<&crate::commands::RuntimeDiagnosticDto>,
-) -> CommandError {
-    let default_message = match phase {
-        RuntimeAuthPhase::Idle => {
-            "Cadence cannot start a runtime stream until the selected project has an authenticated runtime session."
-        }
-        RuntimeAuthPhase::Starting
-        | RuntimeAuthPhase::AwaitingBrowserCallback
-        | RuntimeAuthPhase::AwaitingManualInput
-        | RuntimeAuthPhase::ExchangingCode
-        | RuntimeAuthPhase::Refreshing => {
-            "Cadence cannot start a runtime stream until the selected project's runtime session finishes its auth transition."
-        }
-        RuntimeAuthPhase::Cancelled | RuntimeAuthPhase::Failed => {
-            "Cadence cannot start a runtime stream because the selected project's runtime session is unavailable."
-        }
-        RuntimeAuthPhase::Authenticated => {
-            "Cadence cannot start a runtime stream because the selected project's runtime session is incomplete."
-        }
-    };
-
-    let code = match phase {
-        RuntimeAuthPhase::Idle => "runtime_stream_auth_required",
-        RuntimeAuthPhase::Starting
-        | RuntimeAuthPhase::AwaitingBrowserCallback
-        | RuntimeAuthPhase::AwaitingManualInput
-        | RuntimeAuthPhase::ExchangingCode
-        | RuntimeAuthPhase::Refreshing => "runtime_stream_not_ready",
-        RuntimeAuthPhase::Cancelled | RuntimeAuthPhase::Failed => "runtime_stream_unavailable",
-        RuntimeAuthPhase::Authenticated => "runtime_stream_session_missing",
-    };
-
-    let retryable = matches!(
-        phase,
-        RuntimeAuthPhase::Starting
-            | RuntimeAuthPhase::AwaitingBrowserCallback
-            | RuntimeAuthPhase::AwaitingManualInput
-            | RuntimeAuthPhase::ExchangingCode
-            | RuntimeAuthPhase::Refreshing
-    );
-
-    let message = diagnostic
-        .map(|diagnostic| diagnostic.message.clone())
-        .unwrap_or_else(|| default_message.into());
-
-    if retryable {
-        CommandError::retryable(code, message)
-    } else {
-        CommandError::user_fixable(code, message)
-    }
 }
 
 #[cfg(test)]
@@ -697,6 +549,41 @@ mod tests {
         assert_eq!(
             complete.detail.as_deref(),
             Some("Owned agent run completed.")
+        );
+    }
+
+    #[test]
+    fn owned_agent_event_projection_preserves_transcript_role() {
+        let user = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"user","text":"Review this diff."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("user transcript item");
+
+        assert_eq!(user.kind, RuntimeStreamItemKind::Transcript);
+        assert_eq!(
+            user.transcript_role,
+            Some(RuntimeStreamTranscriptRole::User)
+        );
+        assert_eq!(user.text.as_deref(), Some("Review this diff."));
+
+        let assistant = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"assistant","text":"I'll take a look."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("assistant transcript item");
+
+        assert_eq!(
+            assistant.transcript_role,
+            Some(RuntimeStreamTranscriptRole::Assistant)
         );
     }
 }

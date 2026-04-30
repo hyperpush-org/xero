@@ -194,7 +194,7 @@ pub fn execute_action_with_app<R: Runtime>(
             webview.navigate(target.clone()).map_err(|error| {
                 CommandError::system_fault(
                     "browser_navigate_failed",
-                    format!("Cadence could not navigate the browser webview: {error}"),
+                    format!("Xero could not navigate the browser webview: {error}"),
                 )
             })?;
             JsonValue::String(target.to_string())
@@ -211,13 +211,13 @@ pub fn execute_action_with_app<R: Runtime>(
             let current = webview.url().map_err(|error| {
                 CommandError::system_fault(
                     "browser_url_failed",
-                    format!("Cadence could not read the browser URL: {error}"),
+                    format!("Xero could not read the browser URL: {error}"),
                 )
             })?;
             webview.navigate(current.clone()).map_err(|error| {
                 CommandError::system_fault(
                     "browser_navigate_failed",
-                    format!("Cadence could not reload the browser webview: {error}"),
+                    format!("Xero could not reload the browser webview: {error}"),
                 )
             })?;
             JsonValue::String(current.to_string())
@@ -290,7 +290,7 @@ pub fn execute_action_with_app<R: Runtime>(
                 let url = webview.url().map_err(|error| {
                     CommandError::system_fault(
                         "browser_url_failed",
-                        format!("Cadence could not read the browser URL: {error}"),
+                        format!("Xero could not read the browser URL: {error}"),
                     )
                 })?;
                 JsonValue::String(url.to_string())
@@ -605,7 +605,7 @@ fn harness_extension_contract_json() -> JsonValue {
             "blocked"
         ],
         "policyBoundary": {
-            "filesystem": "Extension tools must call Cadence repo/system file APIs; direct path access is not part of the privileged harness contract.",
+            "filesystem": "Extension tools must call Xero repo/system file APIs; direct path access is not part of the privileged harness contract.",
             "process": "Extension tools must call the process_manager or command policy layer for process work.",
             "network": "Network-capable extension tools must declare network risk and use approved transports.",
             "redaction": "Extension output marked durable must be redacted before persistence."

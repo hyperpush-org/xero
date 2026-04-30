@@ -107,7 +107,7 @@ fn durable_run_payload(
     let duplicate_start_run_id =
         duplicate_start_detected.then(|| runtime_snapshot.run.run_id.clone());
     let duplicate_start_reason = duplicate_start_detected.then_some(
-        "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
+        "Xero reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
             .to_string(),
     );
 
@@ -169,7 +169,7 @@ fn durable_run_payload(
             project_id: runtime_snapshot.run.project_id.clone(),
             agent_session_id: runtime_snapshot.run.agent_session_id.clone(),
             run_id: runtime_snapshot.run.run_id.clone(),
-            runtime_kind: runtime_snapshot.run.runtime_kind.clone(),
+            runtime_kind: autonomous_runtime_kind(runtime_snapshot),
             provider_id: runtime_snapshot.run.provider_id.clone(),
             supervisor_kind: runtime_snapshot.run.supervisor_kind.clone(),
             status,
@@ -191,6 +191,19 @@ fn durable_run_payload(
             updated_at: base_updated_at,
         },
     }
+}
+
+fn autonomous_runtime_kind(runtime_snapshot: &RuntimeRunSnapshotRecord) -> String {
+    if runtime_snapshot.run.runtime_kind == crate::runtime::OWNED_AGENT_RUNTIME_KIND {
+        return crate::runtime::resolve_runtime_provider_identity(
+            Some(runtime_snapshot.run.provider_id.as_str()),
+            None,
+        )
+        .map(|provider| provider.runtime_kind.to_string())
+        .unwrap_or_else(|_| runtime_snapshot.run.runtime_kind.clone());
+    }
+
+    runtime_snapshot.run.runtime_kind.clone()
 }
 
 fn autonomous_run_dto_from_snapshot(snapshot: &AutonomousRunSnapshotRecord) -> AutonomousRunDto {
@@ -262,5 +275,65 @@ fn autonomous_run_recovery_state_dto(
         AutonomousRunStatus::Failed | AutonomousRunStatus::Crashed => {
             AutonomousRunRecoveryStateDto::Failed
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::RuntimeRunApprovalModeDto;
+
+    fn owned_agent_runtime_snapshot() -> RuntimeRunSnapshotRecord {
+        RuntimeRunSnapshotRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: "project-1".into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-1".into(),
+                runtime_kind: crate::runtime::OWNED_AGENT_RUNTIME_KIND.into(),
+                provider_id: crate::runtime::OPENAI_CODEX_PROVIDER_ID.into(),
+                supervisor_kind: crate::runtime::OWNED_AGENT_SUPERVISOR_KIND.into(),
+                status: RuntimeRunStatus::Running,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "internal".into(),
+                    endpoint: "xero://owned-agent".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Reachable,
+                },
+                started_at: "2026-04-29T00:00:00Z".into(),
+                last_heartbeat_at: Some("2026-04-29T00:00:01Z".into()),
+                stopped_at: None,
+                last_error: None,
+                updated_at: "2026-04-29T00:00:01Z".into(),
+            },
+            controls: project_store::build_runtime_run_control_state(
+                "gpt-5.4",
+                None,
+                RuntimeRunApprovalModeDto::Suggest,
+                "2026-04-29T00:00:00Z",
+                None,
+            )
+            .expect("build runtime controls"),
+            checkpoints: Vec::new(),
+            last_checkpoint_sequence: 0,
+            last_checkpoint_at: None,
+        }
+    }
+
+    #[test]
+    fn autonomous_projection_uses_provider_runtime_kind_for_owned_agent_rows() {
+        let snapshot = owned_agent_runtime_snapshot();
+        let payload = durable_run_payload(None, &snapshot, AutonomousSyncIntent::Observe);
+
+        assert_eq!(
+            payload.run.runtime_kind,
+            crate::runtime::OPENAI_CODEX_PROVIDER_ID
+        );
+        assert_eq!(
+            payload.run.provider_id,
+            crate::runtime::OPENAI_CODEX_PROVIDER_ID
+        );
+        assert_eq!(
+            payload.run.supervisor_kind,
+            crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
+        );
     }
 }

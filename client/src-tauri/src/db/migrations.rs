@@ -803,7 +803,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             source_deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
             diagnostic_json = json_object(
                 'code', 'branch_source_deleted',
-                'message', 'The source run for this branch was deleted. Cadence preserved the branch replay copy and cleared the source reference.'
+                'message', 'The source run for this branch was deleted. Xero preserved the branch replay copy and cleared the source reference.'
             )
         WHERE project_id = old.project_id
           AND source_run_id = old.run_id;
@@ -821,7 +821,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             source_deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
             diagnostic_json = json_object(
                 'code', 'branch_source_deleted',
-                'message', 'The source session for this branch was deleted. Cadence preserved the branch replay copy and cleared the source reference.'
+                'message', 'The source session for this branch was deleted. Xero preserved the branch replay copy and cleared the source reference.'
             )
         WHERE project_id = old.project_id
           AND source_agent_session_id = old.agent_session_id;

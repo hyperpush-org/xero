@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use cadence_desktop_lib::commands::solana::{
+use xero_desktop_lib::commands::solana::{
     ClusterKind, FundingDelta, PersonaRole, PersonaSpec, ScenarioSpec, ScenarioStatus, StartOpts,
     TokenAllocation,
 };
@@ -97,12 +97,12 @@ pub fn persona_mainnet_operations_are_policy_denied() {
         .unwrap_err();
     assert_eq!(
         err.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied,
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied,
     );
 
     // Import keypair must be rejected on mainnet too.
-    let provider = cadence_desktop_lib::commands::solana::OsRngKeypairProvider;
-    use cadence_desktop_lib::commands::solana::persona::keygen::KeypairProvider;
+    let provider = xero_desktop_lib::commands::solana::OsRngKeypairProvider;
+    use xero_desktop_lib::commands::solana::persona::keygen::KeypairProvider;
     let bytes = provider.generate().unwrap();
     let err = fixture
         .state
@@ -117,14 +117,14 @@ pub fn persona_mainnet_operations_are_policy_denied() {
         .unwrap_err();
     assert_eq!(
         err.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied,
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied,
     );
 }
 
 pub fn localnet_keypair_import_works() {
     let fixture = fixture_with_persona_store();
-    let provider = cadence_desktop_lib::commands::solana::OsRngKeypairProvider;
-    use cadence_desktop_lib::commands::solana::persona::keygen::KeypairProvider;
+    let provider = xero_desktop_lib::commands::solana::OsRngKeypairProvider;
+    use xero_desktop_lib::commands::solana::persona::keygen::KeypairProvider;
     let bytes = provider.generate().unwrap();
     let pubkey = bytes.pubkey_base58();
 

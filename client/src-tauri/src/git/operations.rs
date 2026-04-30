@@ -26,7 +26,7 @@ pub fn stage_paths(
     let mut index = repo.index().map_err(|error| {
         CommandError::retryable(
             "git_index_read_failed",
-            format!("Cadence could not open the repository index: {error}"),
+            format!("Xero could not open the repository index: {error}"),
         )
     })?;
 
@@ -36,7 +36,7 @@ pub fn stage_paths(
             .map_err(|error| {
                 CommandError::retryable(
                     "git_index_stage_failed",
-                    format!("Cadence could not stage all changes: {error}"),
+                    format!("Xero could not stage all changes: {error}"),
                 )
             })?;
     } else {
@@ -50,14 +50,14 @@ pub fn stage_paths(
                 index.remove_path(Path::new(trimmed)).map_err(|error| {
                     CommandError::retryable(
                         "git_index_stage_failed",
-                        format!("Cadence could not stage `{trimmed}`: {error}"),
+                        format!("Xero could not stage `{trimmed}`: {error}"),
                     )
                 })?;
             } else {
                 index.add_path(Path::new(trimmed)).map_err(|error| {
                     CommandError::retryable(
                         "git_index_stage_failed",
-                        format!("Cadence could not stage `{trimmed}`: {error}"),
+                        format!("Xero could not stage `{trimmed}`: {error}"),
                     )
                 })?;
             }
@@ -67,7 +67,7 @@ pub fn stage_paths(
     index.write().map_err(|error| {
         CommandError::retryable(
             "git_index_write_failed",
-            format!("Cadence could not persist the repository index: {error}"),
+            format!("Xero could not persist the repository index: {error}"),
         )
     })?;
 
@@ -104,14 +104,14 @@ pub fn unstage_paths(
             .map_err(|error| {
                 CommandError::retryable(
                     "git_index_unstage_failed",
-                    format!("Cadence could not unstage changes: {error}"),
+                    format!("Xero could not unstage changes: {error}"),
                 )
             })?;
     } else {
         let mut index = repo.index().map_err(|error| {
             CommandError::retryable(
                 "git_index_read_failed",
-                format!("Cadence could not open the repository index: {error}"),
+                format!("Xero could not open the repository index: {error}"),
             )
         })?;
         for path in &target_paths {
@@ -119,7 +119,7 @@ pub fn unstage_paths(
                 index.clear().map_err(|error| {
                     CommandError::retryable(
                         "git_index_unstage_failed",
-                        format!("Cadence could not unstage all changes: {error}"),
+                        format!("Xero could not unstage all changes: {error}"),
                     )
                 })?;
                 break;
@@ -129,7 +129,7 @@ pub fn unstage_paths(
         index.write().map_err(|error| {
             CommandError::retryable(
                 "git_index_write_failed",
-                format!("Cadence could not persist the repository index: {error}"),
+                format!("Xero could not persist the repository index: {error}"),
             )
         })?;
     }
@@ -161,7 +161,7 @@ pub fn discard_changes(
     repo.checkout_head(Some(&mut checkout)).map_err(|error| {
         CommandError::retryable(
             "git_discard_failed",
-            format!("Cadence could not discard local changes: {error}"),
+            format!("Xero could not discard local changes: {error}"),
         )
     })?;
 
@@ -189,19 +189,19 @@ pub fn commit(
     let mut index = repo.index().map_err(|error| {
         CommandError::retryable(
             "git_index_read_failed",
-            format!("Cadence could not open the repository index: {error}"),
+            format!("Xero could not open the repository index: {error}"),
         )
     })?;
     let tree_oid = index.write_tree().map_err(|error| {
         CommandError::retryable(
             "git_commit_tree_failed",
-            format!("Cadence could not write the staged tree: {error}"),
+            format!("Xero could not write the staged tree: {error}"),
         )
     })?;
     let tree = repo.find_tree(tree_oid).map_err(|error| {
         CommandError::retryable(
             "git_commit_tree_failed",
-            format!("Cadence could not load the staged tree: {error}"),
+            format!("Xero could not load the staged tree: {error}"),
         )
     })?;
 
@@ -226,7 +226,7 @@ pub fn commit(
         .map_err(|error| {
             CommandError::retryable(
                 "git_commit_failed",
-                format!("Cadence could not create the commit: {error}"),
+                format!("Xero could not create the commit: {error}"),
             )
         })?;
 
@@ -297,7 +297,7 @@ pub fn pull(
     let head_ref = repo.head().map_err(|error| {
         CommandError::user_fixable(
             "git_pull_no_head",
-            format!("Cadence could not resolve HEAD: {error}"),
+            format!("Xero could not resolve HEAD: {error}"),
         )
     })?;
     if !head_ref.is_branch() {
@@ -335,13 +335,13 @@ pub fn pull(
     let fetch_head = repo.find_reference("FETCH_HEAD").map_err(|error| {
         CommandError::retryable(
             "git_pull_failed",
-            format!("Cadence could not read FETCH_HEAD after fetching: {error}"),
+            format!("Xero could not read FETCH_HEAD after fetching: {error}"),
         )
     })?;
     let fetch_commit = fetch_head.peel_to_commit().map_err(|error| {
         CommandError::retryable(
             "git_pull_failed",
-            format!("Cadence could not resolve the fetched commit: {error}"),
+            format!("Xero could not resolve the fetched commit: {error}"),
         )
     })?;
     let fetch_annotated = repo
@@ -349,14 +349,14 @@ pub fn pull(
         .map_err(|error| {
             CommandError::retryable(
                 "git_pull_failed",
-                format!("Cadence could not annotate the fetched commit: {error}"),
+                format!("Xero could not annotate the fetched commit: {error}"),
             )
         })?;
 
     let (analysis, _) = repo.merge_analysis(&[&fetch_annotated]).map_err(|error| {
         CommandError::retryable(
             "git_pull_failed",
-            format!("Cadence could not analyse the merge: {error}"),
+            format!("Xero could not analyse the merge: {error}"),
         )
     })?;
 
@@ -371,7 +371,7 @@ pub fn pull(
         let mut reference = repo.find_reference(&refname).map_err(|error| {
             CommandError::retryable(
                 "git_pull_failed",
-                format!("Cadence could not resolve `{refname}`: {error}"),
+                format!("Xero could not resolve `{refname}`: {error}"),
             )
         })?;
         reference
@@ -379,13 +379,13 @@ pub fn pull(
             .map_err(|error| {
                 CommandError::retryable(
                     "git_pull_failed",
-                    format!("Cadence could not advance `{refname}`: {error}"),
+                    format!("Xero could not advance `{refname}`: {error}"),
                 )
             })?;
         repo.set_head(&refname).map_err(|error| {
             CommandError::retryable(
                 "git_pull_failed",
-                format!("Cadence could not update HEAD: {error}"),
+                format!("Xero could not update HEAD: {error}"),
             )
         })?;
         let mut checkout = CheckoutBuilder::new();
@@ -393,7 +393,7 @@ pub fn pull(
         repo.checkout_head(Some(&mut checkout)).map_err(|error| {
             CommandError::retryable(
                 "git_pull_failed",
-                format!("Cadence could not checkout the fast-forwarded tree: {error}"),
+                format!("Xero could not checkout the fast-forwarded tree: {error}"),
             )
         })?;
         updated = true;
@@ -402,7 +402,7 @@ pub fn pull(
     } else {
         return Err(CommandError::user_fixable(
             "git_pull_merge_required",
-            "Pull would require a merge — resolve manually before pulling from Cadence.",
+            "Pull would require a merge — resolve manually before pulling from Xero.",
         ));
     }
 
@@ -427,7 +427,7 @@ pub fn push(
     let head_ref = repo.head().map_err(|error| {
         CommandError::user_fixable(
             "git_push_no_head",
-            format!("Cadence could not resolve HEAD: {error}"),
+            format!("Xero could not resolve HEAD: {error}"),
         )
     })?;
     if !head_ref.is_branch() {
@@ -516,7 +516,7 @@ fn resolve_remote_name(repo: &Repository, requested: Option<&str>) -> CommandRes
     let remotes = repo.remotes().map_err(|error| {
         CommandError::user_fixable(
             "git_remote_lookup_failed",
-            format!("Cadence could not list remotes: {error}"),
+            format!("Xero could not list remotes: {error}"),
         )
     })?;
 
@@ -581,21 +581,21 @@ fn map_network_error(
             git2::ErrorClass::Net | git2::ErrorClass::Http | git2::ErrorClass::Ssh
         ) || matches!(error.code(), git2::ErrorCode::Auth)
         {
-            CommandError::user_fixable(code, format!("Cadence could not {op}: {message}"))
+            CommandError::user_fixable(code, format!("Xero could not {op}: {message}"))
         } else {
-            CommandError::retryable(code, format!("Cadence could not {op}: {message}"))
+            CommandError::retryable(code, format!("Xero could not {op}: {message}"))
         }
     }
 }
 
 fn resolve_signature(repo: &Repository) -> CommandResult<Signature<'static>> {
     if let Ok(sig) = repo.signature() {
-        let name = sig.name().unwrap_or("Cadence User").to_string();
-        let email = sig.email().unwrap_or("user@cadence.local").to_string();
+        let name = sig.name().unwrap_or("Xero User").to_string();
+        let email = sig.email().unwrap_or("user@xero.local").to_string();
         return Signature::now(&name, &email).map_err(|error| {
             CommandError::system_fault(
                 "git_signature_failed",
-                format!("Cadence could not build a commit signature: {error}"),
+                format!("Xero could not build a commit signature: {error}"),
             )
         });
     }
@@ -603,20 +603,20 @@ fn resolve_signature(repo: &Repository) -> CommandResult<Signature<'static>> {
     let config = repo.config().map_err(|error| {
         CommandError::system_fault(
             "git_config_failed",
-            format!("Cadence could not read the git config: {error}"),
+            format!("Xero could not read the git config: {error}"),
         )
     })?;
     let name = config
         .get_string("user.name")
-        .unwrap_or_else(|_| "Cadence User".to_string());
+        .unwrap_or_else(|_| "Xero User".to_string());
     let email = config
         .get_string("user.email")
-        .unwrap_or_else(|_| "user@cadence.local".to_string());
+        .unwrap_or_else(|_| "user@xero.local".to_string());
 
     Signature::now(&name, &email).map_err(|error| {
         CommandError::system_fault(
             "git_signature_failed",
-            format!("Cadence could not build a commit signature: {error}"),
+            format!("Xero could not build a commit signature: {error}"),
         )
     })
 }

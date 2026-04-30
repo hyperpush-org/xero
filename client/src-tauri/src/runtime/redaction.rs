@@ -131,7 +131,7 @@ pub(crate) fn find_prohibited_persistence_content(value: &str) -> Option<&'stati
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
     {
-        return Some("raw PTY byte sequences");
+        return Some("raw terminal byte sequences");
     }
 
     None

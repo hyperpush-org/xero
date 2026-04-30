@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::commands::{CommandError, CommandResult};
 
-const DEFAULT_USER_AGENT: &str = "cadence-solana-workbench/0.1";
+const DEFAULT_USER_AGENT: &str = "xero-solana-workbench/0.1";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Abstract JSON-RPC transport. Every Solana RPC the pipeline needs is a

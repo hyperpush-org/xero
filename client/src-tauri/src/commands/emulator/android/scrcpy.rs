@@ -350,7 +350,7 @@ pub fn bundled_jar_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        "scrcpy-server.jar not bundled with Cadence. Drop the jar into client/src-tauri/resources/.",
+        "scrcpy-server.jar not bundled with Xero. Drop the jar into client/src-tauri/resources/.",
     ))
 }
 

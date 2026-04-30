@@ -26,7 +26,7 @@ pub fn parse_url(input: &str) -> CommandResult<Url> {
     Url::parse(trimmed).map_err(|error| {
         CommandError::user_fixable(
             "browser_invalid_url",
-            format!("Cadence could not parse the requested URL: {error}"),
+            format!("Xero could not parse the requested URL: {error}"),
         )
     })
 }
@@ -324,7 +324,7 @@ pub fn history_navigate<R: Runtime>(
     webview.eval(&script).map_err(|error| {
         CommandError::system_fault(
             "browser_history_navigate_failed",
-            format!("Cadence could not run the browser history action: {error}"),
+            format!("Xero could not run the browser history action: {error}"),
         )
     })?;
     Ok(serde_json::json!({ "delta": delta }))
@@ -343,7 +343,7 @@ pub fn stop<R: Runtime>(
         .map_err(|error| {
             CommandError::system_fault(
                 "browser_stop_failed",
-                format!("Cadence could not run window.stop(): {error}"),
+                format!("Xero could not run window.stop(): {error}"),
             )
         })?;
     Ok(serde_json::json!({ "stopped": true }))
@@ -600,7 +600,7 @@ pub fn state_restore<R: Runtime>(
     let snapshot = serde_json::from_str::<JsonValue>(snapshot_json).map_err(|error| {
         CommandError::user_fixable(
             "browser_state_snapshot_invalid",
-            format!("Cadence could not parse browser state snapshot JSON: {error}"),
+            format!("Xero could not parse browser state snapshot JSON: {error}"),
         )
     })?;
     let snapshot = validate_state_restore_snapshot(snapshot)?;
@@ -635,7 +635,7 @@ fn validate_state_restore_snapshot(mut snapshot: JsonValue) -> CommandResult<Jso
     if !snapshot.is_object() {
         return Err(CommandError::user_fixable(
             "browser_state_snapshot_invalid",
-            "Cadence requires browser state restore snapshots to be JSON objects.",
+            "Xero requires browser state restore snapshots to be JSON objects.",
         ));
     }
 
@@ -646,7 +646,7 @@ fn validate_state_restore_snapshot(mut snapshot: JsonValue) -> CommandResult<Jso
         let cookies_array = cookies.as_array_mut().ok_or_else(|| {
             CommandError::user_fixable(
                 "browser_state_snapshot_invalid",
-                "Cadence requires browser state restore cookies to be an array.",
+                "Xero requires browser state restore cookies to be an array.",
             )
         })?;
 
@@ -662,7 +662,7 @@ fn validate_state_restore_cookie(cookie: &mut JsonValue) -> CommandResult<()> {
     let object = cookie.as_object_mut().ok_or_else(|| {
         CommandError::user_fixable(
             "browser_state_cookie_invalid",
-            "Cadence requires each browser state restore cookie to be an object.",
+            "Xero requires each browser state restore cookie to be an object.",
         )
     })?;
     let name = object
@@ -671,7 +671,7 @@ fn validate_state_restore_cookie(cookie: &mut JsonValue) -> CommandResult<()> {
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "browser_state_cookie_invalid",
-                "Cadence requires each browser state restore cookie to include a string name.",
+                "Xero requires each browser state restore cookie to include a string name.",
             )
         })?;
     let value = object
@@ -682,13 +682,13 @@ fn validate_state_restore_cookie(cookie: &mut JsonValue) -> CommandResult<()> {
     if !is_valid_cookie_name(name) {
         return Err(CommandError::user_fixable(
             "browser_state_cookie_invalid",
-            "Cadence refused a browser state restore cookie with a malformed name.",
+            "Xero refused a browser state restore cookie with a malformed name.",
         ));
     }
     if !is_valid_cookie_value(value) {
         return Err(CommandError::user_fixable(
             "browser_state_cookie_invalid",
-            "Cadence refused a browser state restore cookie with a value that could inject cookie attributes.",
+            "Xero refused a browser state restore cookie with a value that could inject cookie attributes.",
         ));
     }
 
@@ -719,7 +719,7 @@ pub enum StorageArea {
 fn encode_err(error: serde_json::Error) -> CommandError {
     CommandError::system_fault(
         "browser_payload_encode_failed",
-        format!("Cadence could not encode browser bridge payload: {error}"),
+        format!("Xero could not encode browser bridge payload: {error}"),
     )
 }
 

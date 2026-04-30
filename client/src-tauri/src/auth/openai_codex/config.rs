@@ -55,7 +55,7 @@ impl OpenAiCodexAuthConfig {
                 AuthFlowError::terminal(
                     "oauth_http_client_unavailable",
                     RuntimeAuthPhase::Failed,
-                    format!("Cadence could not build the OpenAI OAuth HTTP client: {error}"),
+                    format!("Xero could not build the OpenAI OAuth HTTP client: {error}"),
                 )
             })
     }

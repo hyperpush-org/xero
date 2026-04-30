@@ -262,9 +262,9 @@ fn build_idl_registry(transport: Arc<dyn RpcTransport>) -> Arc<IdlRegistry> {
 
 fn default_metaplex_worker_root() -> PathBuf {
     if let Some(dir) = dirs::data_dir() {
-        dir.join("cadence-solana-metaplex-worker")
+        dir.join("xero-solana-metaplex-worker")
     } else {
-        std::env::temp_dir().join("cadence-solana-metaplex-worker")
+        std::env::temp_dir().join("xero-solana-metaplex-worker")
     }
 }
 
@@ -288,14 +288,14 @@ impl Default for SolanaState {
             .unwrap_or_else(|_| {
                 // Fall back to an in-temp scratch dir if the OS data dir
                 // can't be resolved so the app still boots.
-                let scratch = std::env::temp_dir().join("cadence-solana-snapshots");
+                let scratch = std::env::temp_dir().join("xero-solana-snapshots");
                 SnapshotStore::new(scratch, Box::new(RpcAccountFetcher))
             });
         let supervisor = Arc::new(ValidatorSupervisor::with_default_launcher());
         let personas = PersonaStore::with_default_root().unwrap_or_else(|_| {
             // Same fallback reasoning as snapshots: never block the app
             // from booting because the OS data dir is missing.
-            let scratch = std::env::temp_dir().join("cadence-solana-personas");
+            let scratch = std::env::temp_dir().join("xero-solana-personas");
             let keypairs =
                 KeypairStore::new(scratch.join("keypairs"), Box::new(OsRngKeypairProvider));
             PersonaStore::new(scratch, keypairs, Box::new(DefaultFundingBackend::new()))
@@ -340,7 +340,7 @@ impl SolanaState {
         snapshots: Arc<SnapshotStore>,
     ) -> Self {
         let personas = PersonaStore::with_default_root().unwrap_or_else(|_| {
-            let scratch = std::env::temp_dir().join("cadence-solana-personas-test");
+            let scratch = std::env::temp_dir().join("xero-solana-personas-test");
             let keypairs =
                 KeypairStore::new(scratch.join("keypairs"), Box::new(OsRngKeypairProvider));
             PersonaStore::new(scratch, keypairs, Box::new(DefaultFundingBackend::new()))

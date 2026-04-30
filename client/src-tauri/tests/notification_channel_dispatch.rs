@@ -4,7 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cadence_desktop_lib::{
+use rusqlite::{params, Connection};
+use tempfile::TempDir;
+use xero_desktop_lib::{
     db::{self, database_path_for_repo, project_store},
     git::repository::CanonicalRepository,
     notifications::{
@@ -15,8 +17,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use rusqlite::{params, Connection};
-use tempfile::TempDir;
 
 #[derive(Debug, Clone, Default)]
 struct MockCredentialStore {
@@ -156,7 +156,7 @@ fn seed_project(root: &TempDir, project_id: &str, repo_name: &str) -> PathBuf {
         deletions: 0,
     };
 
-    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
     db::import_project(&repository, DesktopState::default().import_failpoints())
         .expect("import seeded project");
 

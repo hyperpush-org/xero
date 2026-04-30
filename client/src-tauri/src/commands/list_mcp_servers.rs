@@ -169,7 +169,7 @@ fn parse_refresh_selection(
         if !registry.servers.iter().any(|server| server.id == server_id) {
             return Err(CommandError::user_fixable(
                 "mcp_server_not_found",
-                format!("Cadence could not find MCP server `{server_id}`."),
+                format!("Xero could not find MCP server `{server_id}`."),
             ));
         }
 

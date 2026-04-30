@@ -1,5 +1,5 @@
 {
-  "name": "joe-dev-root",
+  "name": "xero-dev-root",
   "private": true,
   "scripts": {
     "dev": "node scripts/dev-preflight.mjs && concurrently -n DB,PHX,TAURI,LANDING -c blue,green,magenta,cyan -k \"pnpm run dev:db:logs\" \"pnpm run dev:server\" \"pnpm run dev:tauri\" \"pnpm run dev:landing\"",

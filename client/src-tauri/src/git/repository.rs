@@ -144,7 +144,7 @@ fn open_repository_internal(selected_path: &str) -> CommandResult<RepositoryHand
             ),
             _ => CommandError::user_fixable(
                 "repository_path_invalid",
-                format!("Cadence could not read repository path `{selected_path}`: {error}"),
+                format!("Xero could not read repository path `{selected_path}`: {error}"),
             ),
         })?;
 
@@ -158,7 +158,7 @@ fn open_repository_internal(selected_path: &str) -> CommandResult<RepositoryHand
     let workdir = repository.workdir().ok_or_else(|| {
         CommandError::user_fixable(
             "git_worktree_required",
-            "Cadence can only import repositories with a working tree.",
+            "Xero can only import repositories with a working tree.",
         )
     })?;
 
@@ -166,7 +166,7 @@ fn open_repository_internal(selected_path: &str) -> CommandResult<RepositoryHand
         CommandError::system_fault(
             "repository_root_canonicalize_failed",
             format!(
-                "Cadence could not canonicalize the repository root at {}: {error}",
+                "Xero could not canonicalize the repository root at {}: {error}",
                 workdir.display()
             ),
         )
@@ -364,7 +364,7 @@ fn read_status_entries(
     let statuses = repository.statuses(Some(&mut options)).map_err(|error| {
         CommandError::retryable(
             "git_status_read_failed",
-            format!("Cadence could not read repository status: {error}"),
+            format!("Xero could not read repository status: {error}"),
         )
     })?;
 

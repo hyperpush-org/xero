@@ -7,7 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cadence_desktop_lib::{
+use git2::{Repository, Status, StatusOptions};
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     auth::{persist_openai_codex_session, sync_openai_profile_link, StoredOpenAiCodexSession},
     commands::{
         cancel_autonomous_run::cancel_autonomous_run, get_autonomous_run::get_autonomous_run,
@@ -36,12 +39,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use git2::{Repository, Status, StatusOptions};
-use tauri::Manager;
-use tempfile::TempDir;
-
-#[path = "support/supervisor_test_lock.rs"]
-mod supervisor_test_lock;
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
@@ -50,7 +47,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
-    let global_db_path = root.path().join("app-data").join("cadence.db");
+    let global_db_path = root.path().join("app-data").join("xero.db");
     let auth_store_path = global_db_path.clone();
 
     (
@@ -58,14 +55,9 @@ fn create_state(root: &TempDir) -> (DesktopState, PathBuf) {
             .with_global_db_path_override(global_db_path)
             .with_autonomous_skill_cache_dir_override(
                 root.path().join("app-data").join("autonomous-skills"),
-            )
-            .with_runtime_supervisor_binary_override(supervisor_binary_path()),
+            ),
         auth_store_path,
     )
-}
-
-fn supervisor_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_Cadence-runtime-supervisor"))
 }
 
 fn current_unix_timestamp() -> i64 {
@@ -111,7 +103,7 @@ fn commit_all(repo_root: &Path, message: &str) {
     let tree_id = index.write_tree().expect("write tree");
     let tree = repo.find_tree(tree_id).expect("find tree");
     let signature =
-        git2::Signature::now("Cadence Test", "Cadence@example.com").expect("create test signature");
+        git2::Signature::now("Xero Test", "Xero@example.com").expect("create test signature");
 
     let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
     match parent.as_ref() {
@@ -468,7 +460,6 @@ fn read_manifest(cache_root: &Path, cache_key: &str) -> AutonomousSkillCacheMani
 
 #[test]
 fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_changes() {
-    let _guard = supervisor_test_lock::lock_supervisor_test_process();
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _auth_store_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -563,11 +554,11 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
             assert!(!output.has_untracked_changes);
             assert!(output.entries.iter().any(|entry| {
                 entry.path == "README.md"
-                    && entry.unstaged == Some(cadence_desktop_lib::commands::ChangeKind::Modified)
+                    && entry.unstaged == Some(xero_desktop_lib::commands::ChangeKind::Modified)
             }));
             assert!(output.entries.iter().any(|entry| {
                 entry.path == "notes/proof.txt"
-                    && entry.staged == Some(cadence_desktop_lib::commands::ChangeKind::Added)
+                    && entry.staged == Some(xero_desktop_lib::commands::ChangeKind::Added)
             }));
         }
         other => panic!("unexpected git status output: {other:?}"),
@@ -716,7 +707,6 @@ fn imported_repo_runtime_session_reconciles_stored_provider_session_on_reload() 
 
 #[test]
 fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuation() {
-    let _guard = supervisor_test_lock::lock_supervisor_test_process();
     let root = tempfile::tempdir().expect("temp dir");
     let (state, auth_store_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -791,7 +781,7 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
     assert_eq!(
         duplicate_run.duplicate_start_reason.as_deref(),
         Some(
-            "Cadence reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
+            "Xero reused the already-active autonomous run for this project instead of launching a duplicate supervisor."
         )
     );
 
@@ -840,8 +830,7 @@ fn imported_repo_bridge_start_once_survives_reload_without_duplicate_continuatio
 
 #[test]
 #[allow(non_snake_case)]
-fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean() {
-    let _guard = supervisor_test_lock::lock_supervisor_test_process();
+fn imported_repo_skill_runtime_uses_Xero_cache_boundary_and_keeps_repo_clean() {
     let root = tempfile::tempdir().expect("temp dir");
     let (state, _auth_store_path) = create_state(&root);
     let app = build_mock_app(state);
@@ -878,15 +867,13 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
     let initial_source =
         skill_source_metadata("find-skills", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let first_install = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: initial_source.clone(),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: initial_source.clone(),
+            timeout_ms: Some(1_000),
+        })
         .expect("initial imported-repo skill install should succeed");
     let cached_invoke = runtime
-        .invoke(cadence_desktop_lib::runtime::AutonomousSkillInvokeRequest {
+        .invoke(xero_desktop_lib::runtime::AutonomousSkillInvokeRequest {
             source: initial_source,
             timeout_ms: Some(1_000),
         })
@@ -910,15 +897,13 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
     );
 
     let refreshed = runtime
-        .install(
-            cadence_desktop_lib::runtime::AutonomousSkillInstallRequest {
-                source: skill_source_metadata(
-                    "find-skills",
-                    "cccccccccccccccccccccccccccccccccccccccc",
-                ),
-                timeout_ms: Some(1_000),
-            },
-        )
+        .install(xero_desktop_lib::runtime::AutonomousSkillInstallRequest {
+            source: skill_source_metadata(
+                "find-skills",
+                "cccccccccccccccccccccccccccccccccccccccc",
+            ),
+            timeout_ms: Some(1_000),
+        })
         .expect("refreshed imported-repo skill install should succeed");
 
     assert_eq!(project_id, "project-1");
@@ -931,7 +916,7 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
     assert_eq!(first_install.cache_key, refreshed.cache_key);
     assert!(
         Path::new(&first_install.cache_directory).starts_with(&cache_root),
-        "expected Cadence to install imported-repo skills under app data, got {}",
+        "expected Xero to install imported-repo skills under app data, got {}",
         first_install.cache_directory
     );
     assert!(
@@ -947,19 +932,19 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
         let global_pi = home.join(".pi").join("agent").join("skills");
         assert!(
             !Path::new(&first_install.cache_directory).starts_with(&global_agents),
-            "Cadence must never install imported-repo skills into ~/.agents/skills"
+            "Xero must never install imported-repo skills into ~/.agents/skills"
         );
         assert!(
             !Path::new(&first_install.cache_directory).starts_with(&global_pi),
-            "Cadence must never install imported-repo skills into ~/.pi/agent/skills"
+            "Xero must never install imported-repo skills into ~/.pi/agent/skills"
         );
         assert!(
             !Path::new(&refreshed.cache_directory).starts_with(&global_agents),
-            "Cadence must never refresh imported-repo skills inside ~/.agents/skills"
+            "Xero must never refresh imported-repo skills inside ~/.agents/skills"
         );
         assert!(
             !Path::new(&refreshed.cache_directory).starts_with(&global_pi),
-            "Cadence must never refresh imported-repo skills inside ~/.pi/agent/skills"
+            "Xero must never refresh imported-repo skills inside ~/.pi/agent/skills"
         );
     }
 
@@ -976,7 +961,7 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
             .join("trees")
             .join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             .is_dir(),
-        "expected the initial tree revision to remain addressable inside the Cadence cache"
+        "expected the initial tree revision to remain addressable inside the Xero cache"
     );
     assert!(
         cache_root
@@ -984,7 +969,7 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
             .join("trees")
             .join("cccccccccccccccccccccccccccccccccccccccc")
             .is_dir(),
-        "expected the refreshed tree revision to be written under the same Cadence cache key"
+        "expected the refreshed tree revision to be written under the same Xero cache key"
     );
     assert_eq!(source.tree_request_count(), 2);
     assert_eq!(source.file_request_count(), 4);
@@ -996,8 +981,5 @@ fn imported_repo_skill_runtime_uses_Cadence_cache_boundary_and_keeps_repo_clean(
     );
     assert!(!repo_root.join(".agents").exists());
     assert!(!repo_root.join(".pi").exists());
-    assert!(!repo_root
-        .join(".cadence")
-        .join("autonomous-skills")
-        .exists());
+    assert!(!repo_root.join(".xero").join("autonomous-skills").exists());
 }

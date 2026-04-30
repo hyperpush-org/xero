@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Cadence dev runner expected the path to the compiled Tauri binary." >&2
+  echo "Xero dev runner expected the path to the compiled Tauri binary." >&2
   exit 64
 fi
 
@@ -23,7 +23,7 @@ sign_code() {
       2>&1
   ); then
     echo "$output" >&2
-    echo "Cadence dev runner could not sign $path for macOS privacy prompts." >&2
+    echo "Xero dev runner could not sign $path for macOS privacy prompts." >&2
     exit 65
   fi
 }
@@ -84,8 +84,8 @@ prepare_macos_dev_bundle() {
   target_dir="$(cd "$(dirname "$source_executable")" && pwd)"
   local executable_name
   executable_name="$(basename "$source_executable")"
-  local identifier="${CADENCE_DEV_CODESIGN_IDENTIFIER:-dev.sn0w.cadence}"
-  local app_bundle="$target_dir/Cadence Dev.app"
+  local identifier="${XERO_DEV_CODESIGN_IDENTIFIER:-dev.sn0w.xero}"
+  local app_bundle="$target_dir/Xero Dev.app"
   local contents_dir="$app_bundle/Contents"
   local macos_dir="$contents_dir/MacOS"
   local resources_dir="$contents_dir/Resources"
@@ -93,7 +93,7 @@ prepare_macos_dev_bundle() {
   local info_plist="$contents_dir/Info.plist"
 
   if [[ ! -f "$info_template" ]]; then
-    echo "Cadence dev runner could not find $info_template for macOS privacy prompts." >&2
+    echo "Xero dev runner could not find $info_template for macOS privacy prompts." >&2
     exit 66
   fi
 
@@ -108,17 +108,17 @@ prepare_macos_dev_bundle() {
   plist_set_string "$info_plist" CFBundleExecutable "$executable_name"
   plist_set_string "$info_plist" CFBundleIdentifier "$identifier"
   plist_set_string "$info_plist" CFBundleInfoDictionaryVersion 6.0
-  plist_set_string "$info_plist" CFBundleName Cadence
-  plist_set_string "$info_plist" CFBundleDisplayName Cadence
+  plist_set_string "$info_plist" CFBundleName Xero
+  plist_set_string "$info_plist" CFBundleDisplayName Xero
   plist_set_string "$info_plist" CFBundlePackageType APPL
-  plist_set_string "$info_plist" CFBundleShortVersionString "${CADENCE_DEV_BUNDLE_VERSION:-0.1.0}"
-  plist_set_string "$info_plist" CFBundleVersion "${CADENCE_DEV_BUNDLE_VERSION:-0.1.0}"
+  plist_set_string "$info_plist" CFBundleShortVersionString "${XERO_DEV_BUNDLE_VERSION:-0.1.0}"
+  plist_set_string "$info_plist" CFBundleVersion "${XERO_DEV_BUNDLE_VERSION:-0.1.0}"
   plist_set_string "$info_plist" LSMinimumSystemVersion 10.15
 
   sync_resources_if_present "$target_dir/resources" "$resources_dir/resources"
 
-  copy_sidecar_if_present "$target_dir/cadence-cookie-importer" "$macos_dir" "$identifier"
-  for sidecar in "$target_dir"/Cadence-runtime-supervisor*; do
+  copy_sidecar_if_present "$target_dir/xero-cookie-importer" "$macos_dir" "$identifier"
+  for sidecar in "$target_dir"/Xero-runtime-supervisor*; do
     copy_sidecar_if_present "$sidecar" "$macos_dir" "$identifier"
   done
 
@@ -130,7 +130,7 @@ prepare_macos_dev_bundle() {
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   if ! command -v codesign >/dev/null 2>&1; then
-    echo "Cadence dev runner requires codesign so macOS privacy prompts can read Info.plist." >&2
+    echo "Xero dev runner requires codesign so macOS privacy prompts can read Info.plist." >&2
     exit 69
   fi
 

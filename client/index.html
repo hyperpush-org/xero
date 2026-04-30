@@ -24,7 +24,7 @@
           // `client/src/features/theme/theme-definitions.ts`. Mismatch only
           // causes a one-frame appearance flicker on cold start, not a bug.
           var LIGHT_THEMES = ['daylight']
-          var stored = window.localStorage.getItem('cadence:theme')
+          var stored = window.localStorage.getItem('xero:theme')
           var themeId = stored || 'dusk'
           var appearance = LIGHT_THEMES.indexOf(themeId) >= 0 ? 'light' : 'dark'
           document.documentElement.classList.add('theme-' + themeId)
@@ -74,10 +74,93 @@
       .titlebar-no-drag {
         -webkit-app-region: no-drag;
       }
+
+      /* Boot splash — mirrors <LoadingScreen /> so the JS bundle parse window
+       * (between first paint and React mount) shows the same visual. Once React
+       * mounts, createRoot replaces #root's children and the React loading
+       * screen takes over with effectively no visible transition. Dusk-palette
+       * hex fallbacks back up the theme tokens if globals.css loads late. */
+      .boot-loading {
+        display: flex;
+        flex: 1 1 auto;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        background: var(--background, #121212);
+      }
+      .boot-loading-mark {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 5rem;
+        height: 5rem;
+      }
+      .boot-loading-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 9999px;
+        border: 1px solid
+          color-mix(in oklab, var(--primary, #d4a574) 40%, transparent);
+        animation: boot-loading-ring 2200ms cubic-bezier(0.2, 0, 0, 1) infinite;
+        will-change: transform, opacity;
+      }
+      .boot-loading-mark img {
+        width: 1.75rem;
+        height: 1.75rem;
+        user-select: none;
+        -webkit-user-drag: none;
+        animation: boot-loading-breathe 2200ms ease-in-out infinite;
+        will-change: opacity;
+      }
+
+      @keyframes boot-loading-ring {
+        0% {
+          transform: scale(0.6);
+          opacity: 0;
+        }
+        25% {
+          opacity: 1;
+        }
+        100% {
+          transform: scale(1.5);
+          opacity: 0;
+        }
+      }
+      @keyframes boot-loading-breathe {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .boot-loading-ring,
+        .boot-loading-mark img {
+          animation: none;
+        }
+      }
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        class="boot-loading"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        aria-label="Loading"
+      >
+        <div class="boot-loading-mark">
+          <span class="boot-loading-ring" aria-hidden="true"></span>
+          <img src="/icon-logo.svg" alt="" draggable="false" />
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

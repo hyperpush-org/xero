@@ -38,7 +38,7 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
     let input_json = serde_json::to_string(&tool_call.input).map_err(|error| {
         CommandError::system_fault(
             "agent_tool_input_serialize_failed",
-            format!("Cadence could not serialize owned-agent tool input: {error}"),
+            format!("Xero could not serialize owned-agent tool input: {error}"),
         )
     })?;
     project_store::start_agent_tool_call(
@@ -95,13 +95,13 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
             let output = serde_json::to_value(&tool_result).map_err(|error| {
                 CommandError::system_fault(
                     "agent_tool_result_serialize_failed",
-                    format!("Cadence could not serialize owned-agent tool output: {error}"),
+                    format!("Xero could not serialize owned-agent tool output: {error}"),
                 )
             })?;
             let result_json = serde_json::to_string(&output).map_err(|error| {
                 CommandError::system_fault(
                     "agent_tool_result_serialize_failed",
-                    format!("Cadence could not persist owned-agent tool output: {error}"),
+                    format!("Xero could not persist owned-agent tool output: {error}"),
                 )
             })?;
             project_store::finish_agent_tool_call(

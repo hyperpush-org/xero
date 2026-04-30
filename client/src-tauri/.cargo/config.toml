@@ -10,7 +10,7 @@
 # macOS 26+, so older-OS compatibility is preserved at the app level.
 #
 # If you need to target an older macOS version for distribution, set
-# CADENCE_SKIP_DICTATION_SHIM=1 to compile only the legacy
+# XERO_SKIP_DICTATION_SHIM=1 to compile only the legacy
 # SFSpeechRecognizer path (which works on all deployment targets).
 [env]
 MACOSX_DEPLOYMENT_TARGET = "26.0"

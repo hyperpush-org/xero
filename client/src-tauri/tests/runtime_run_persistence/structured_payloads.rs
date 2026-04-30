@@ -125,11 +125,11 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_mcp_tool_result_payloads_
         tool.tool_name = "mcp.invoke".into();
         tool.command_result = None;
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
-                cadence_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
+                xero_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
                     server_id: "workspace-mcp".into(),
                     capability_kind:
-                        cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt,
+                        xero_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt,
                     capability_id: "prompt://summarize".into(),
                     capability_name: Some("Summarize".into()),
                 },
@@ -204,10 +204,10 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_mcp_tool_result_payloads_
         .expect("MCP tool summary should be present after reload");
     assert!(matches!(
         recovered_summary,
-        cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(summary)
+        xero_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(summary)
             if summary.server_id == "workspace-mcp"
                 && summary.capability_kind
-                    == cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt
+                    == xero_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt
                 && summary.capability_id == "prompt://summarize"
                 && summary.capability_name.as_deref() == Some("Summarize")
     ));
@@ -245,7 +245,7 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
          tool_call_id: &str,
          tool_name: &str,
          tool_state: project_store::AutonomousToolCallStateRecord,
-         summary: cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary,
+         summary: xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary,
          action_id: Option<&str>,
          boundary_id: Option<&str>,
          created_at: &str| {
@@ -264,7 +264,7 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
                 payload.tool_state = tool_state;
                 payload.command_result = None;
                 payload.tool_summary = Some(
-                    cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                    xero_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
                         summary,
                     ),
                 );
@@ -280,11 +280,11 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
         "tool-browser-open",
         "browser.open",
         project_store::AutonomousToolCallStateRecord::Succeeded,
-        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
-            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+        xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
             action: "open".into(),
             status:
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
             target: Some("https://example.com".into()),
             outcome: Some("Opened browser context".into()),
         },
@@ -298,11 +298,11 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
         "tool-browser-tab-open",
         "browser.tab_open",
         project_store::AutonomousToolCallStateRecord::Succeeded,
-        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
-            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+        xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
             action: "tab_open".into(),
             status:
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
             target: Some("https://example.com/docs".into()),
             outcome: Some("Opened tab tab-2".into()),
         },
@@ -316,10 +316,10 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
         "tool-browser-tab-focus",
         "browser.tab_focus",
         project_store::AutonomousToolCallStateRecord::Failed,
-        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
-            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+        xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
             action: "tab_focus".into(),
-            status: cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked,
+            status: xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked,
             target: Some("tab-2".into()),
             outcome: Some(
                 "advanced_browser_failure_policy_permission: Browser/computer-use action was blocked by policy or permissions. Grant the required access or approve the boundary before retrying.".into(),
@@ -335,11 +335,11 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
         "tool-browser-current-url",
         "browser.current_url",
         project_store::AutonomousToolCallStateRecord::Succeeded,
-        cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
-            surface: cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+        xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            surface: xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
             action: "current_url".into(),
             status:
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
             target: Some("tab-2".into()),
             outcome: Some("https://example.com/docs".into()),
         },
@@ -462,7 +462,7 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
                 return None;
             };
             let Some(
-                cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                xero_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
                     summary,
                 ),
             ) = payload.tool_summary.as_ref()
@@ -502,7 +502,7 @@ pub(crate) fn autonomous_run_persistence_canonicalizes_browser_computer_use_tool
     ));
     assert!(matches!(
         tab_focus_step.4,
-        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
+        xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Blocked
     ));
     assert_eq!(
         tab_focus_step.5.as_deref(),
@@ -895,11 +895,11 @@ pub(crate) fn autonomous_run_persistence_rejects_mcp_tool_summary_with_command_r
     {
         tool.tool_name = "mcp.invoke".into();
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
-                cadence_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
+                xero_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
                     server_id: "workspace-mcp".into(),
                     capability_kind:
-                        cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Tool,
+                        xero_desktop_lib::runtime::protocol::McpCapabilityKind::Tool,
                     capability_id: "workspace/list".into(),
                     capability_name: Some("list".into()),
                 },
@@ -945,13 +945,13 @@ pub(crate) fn autonomous_run_persistence_rejects_browser_computer_use_tool_summa
     {
         tool.tool_name = "browser.click".into();
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
                     surface:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
                     action: "click".into(),
                     status:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
                     target: Some("button#primary".into()),
                     outcome: None,
                 },
@@ -998,13 +998,13 @@ pub(crate) fn autonomous_run_persistence_rejects_browser_computer_use_status_too
         tool.tool_state = project_store::AutonomousToolCallStateRecord::Failed;
         tool.command_result = None;
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
                     surface:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
                     action: "click".into(),
                     status:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Succeeded,
                     target: Some("button#primary".into()),
                     outcome: Some("Clicked".into()),
                 },
@@ -1051,13 +1051,13 @@ pub(crate) fn autonomous_run_persistence_rejects_oversized_browser_computer_use_
         tool.tool_state = project_store::AutonomousToolCallStateRecord::Running;
         tool.command_result = None;
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
                     surface:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
                     action: "x".repeat(513),
                     status:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
                     target: Some("button#primary".into()),
                     outcome: None,
                 },
@@ -1103,11 +1103,11 @@ pub(crate) fn autonomous_run_decode_fails_closed_when_mcp_capability_kind_is_tam
         tool.tool_name = "mcp.invoke".into();
         tool.command_result = None;
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
-                cadence_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::McpCapability(
+                xero_desktop_lib::runtime::protocol::McpCapabilityToolResultSummary {
                     server_id: "workspace-mcp".into(),
                     capability_kind:
-                        cadence_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt,
+                        xero_desktop_lib::runtime::protocol::McpCapabilityKind::Prompt,
                     capability_id: "prompt://summarize".into(),
                     capability_name: Some("Summarize".into()),
                 },
@@ -1186,13 +1186,13 @@ pub(crate) fn autonomous_run_decode_fails_closed_when_browser_computer_use_summa
         tool.tool_state = project_store::AutonomousToolCallStateRecord::Running;
         tool.command_result = None;
         tool.tool_summary = Some(
-            cadence_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
-                cadence_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
+            xero_desktop_lib::runtime::protocol::ToolResultSummary::BrowserComputerUse(
+                xero_desktop_lib::runtime::protocol::BrowserComputerUseToolResultSummary {
                     surface:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseSurface::Browser,
                     action: "click".into(),
                     status:
-                        cadence_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
+                        xero_desktop_lib::runtime::protocol::BrowserComputerUseActionStatus::Running,
                     target: Some("button#primary".into()),
                     outcome: None,
                 },
@@ -1382,7 +1382,7 @@ pub(crate) fn autonomous_run_persistence_rejects_successful_skill_lifecycle_payl
     {
         skill.diagnostic = Some(project_store::AutonomousSkillLifecycleDiagnosticRecord {
             code: "autonomous_skill_source_timeout".into(),
-            message: "Cadence timed out while contacting the autonomous skill source.".into(),
+            message: "Xero timed out while contacting the autonomous skill source.".into(),
             retryable: true,
         });
     }

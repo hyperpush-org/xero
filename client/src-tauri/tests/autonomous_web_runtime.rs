@@ -3,13 +3,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cadence_desktop_lib::runtime::{
+use serde_json::json;
+use xero_desktop_lib::runtime::{
     AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
     AutonomousWebRuntime, AutonomousWebRuntimeLimits, AutonomousWebSearchProviderConfig,
     AutonomousWebSearchRequest, AutonomousWebTransport, AutonomousWebTransportError,
     AutonomousWebTransportRequest, AutonomousWebTransportResponse,
 };
-use serde_json::json;
 
 #[derive(Clone, Default)]
 struct FixtureTransport {

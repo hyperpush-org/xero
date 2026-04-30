@@ -1,12 +1,12 @@
 pub(crate) use std::path::{Path, PathBuf};
 
-pub(crate) use cadence_desktop_lib::{
+pub(crate) use rusqlite::{params, Connection};
+pub(crate) use tempfile::TempDir;
+pub(crate) use xero_desktop_lib::{
     db::{self, database_path_for_repo, project_store},
     git::repository::CanonicalRepository,
     state::DesktopState,
 };
-pub(crate) use rusqlite::{params, Connection};
-pub(crate) use tempfile::TempDir;
 
 pub(crate) fn seed_project(
     root: &TempDir,
@@ -38,7 +38,7 @@ pub(crate) fn seed_project(
         deletions: 0,
     };
 
-    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
     let state = DesktopState::default();
     db::import_project(&repository, state.import_failpoints()).expect("import project");
 
@@ -56,11 +56,11 @@ pub(crate) fn sample_run(project_id: &str, run_id: &str) -> project_store::Runti
         run_id: run_id.into(),
         runtime_kind: "openai_codex".into(),
         provider_id: "openai_codex".into(),
-        supervisor_kind: "detached_pty".into(),
+        supervisor_kind: "owned_agent".into(),
         status: project_store::RuntimeRunStatus::Running,
         transport: project_store::RuntimeRunTransportRecord {
-            kind: "tcp".into(),
-            endpoint: "127.0.0.1:4455".into(),
+            kind: "internal".into(),
+            endpoint: "xero://owned-agent".into(),
             liveness: project_store::RuntimeRunTransportLiveness::Unknown,
         },
         started_at: "2026-04-15T19:00:00Z".into(),
@@ -74,8 +74,8 @@ pub(crate) fn sample_run(project_id: &str, run_id: &str) -> project_store::Runti
 pub(crate) fn sample_control_state(timestamp: &str) -> project_store::RuntimeRunControlStateRecord {
     project_store::build_runtime_run_control_state(
         "openai_codex",
-        Some(cadence_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
-        cadence_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
         timestamp,
         None,
     )

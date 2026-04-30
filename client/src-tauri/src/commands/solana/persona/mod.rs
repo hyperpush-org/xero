@@ -502,7 +502,7 @@ fn default_root() -> CommandResult<PathBuf> {
             "Could not resolve OS data directory for persona store.",
         )
     })?;
-    Ok(data_dir.join("cadence").join("solana").join("personas"))
+    Ok(data_dir.join("xero").join("solana").join("personas"))
 }
 
 fn now_ms() -> u64 {

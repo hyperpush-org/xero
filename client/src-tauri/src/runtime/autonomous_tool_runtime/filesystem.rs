@@ -61,17 +61,14 @@ impl AutonomousToolRuntime {
         let metadata = fs::metadata(&target.path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_read_metadata_failed",
-                format!(
-                    "Cadence could not inspect {}: {error}",
-                    target.path.display()
-                ),
+                format!("Xero could not inspect {}: {error}", target.path.display()),
             )
         })?;
         if metadata.is_dir() {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_read_directory",
                 format!(
-                    "Cadence cannot read `{}` because it is a directory.",
+                    "Xero cannot read `{}` because it is a directory.",
                     target.display_path
                 ),
             ));
@@ -121,7 +118,7 @@ impl AutonomousToolRuntime {
             Err(_) if matches!(mode, AutonomousReadMode::Text) => Err(CommandError::user_fixable(
                 "autonomous_tool_file_not_text",
                 format!(
-                    "Cadence refused to read `{}` as text because it is not valid UTF-8 text.",
+                    "Xero refused to read `{}` as text because it is not valid UTF-8 text.",
                     target.display_path
                 ),
             )),
@@ -159,7 +156,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_read_line_count_invalid",
                 format!(
-                    "Cadence requires read line_count to be between 1 and {}.",
+                    "Xero requires read line_count to be between 1 and {}.",
                     self.limits.max_read_line_count
                 ),
             ));
@@ -171,14 +168,14 @@ impl AutonomousToolRuntime {
             if start_line != 1 {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_read_range_invalid",
-                    "Cadence cannot start reading past the end of an empty file.",
+                    "Xero cannot start reading past the end of an empty file.",
                 ));
             }
         } else if start_line == 0 || start_line > total_lines {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_read_range_invalid",
                 format!(
-                    "Cadence requires read start_line to stay within the file's 1..={total_lines} line range."
+                    "Xero requires read start_line to stay within the file's 1..={total_lines} line range."
                 ),
             ));
         }
@@ -236,7 +233,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_search_query_too_large",
                 format!(
-                    "Cadence requires search queries to be {} characters or fewer.",
+                    "Xero requires search queries to be {} characters or fewer.",
                     self.limits.max_search_query_chars
                 ),
             ));
@@ -316,7 +313,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_find_pattern_too_large",
                 format!(
-                    "Cadence requires find patterns to be {} characters or fewer.",
+                    "Xero requires find patterns to be {} characters or fewer.",
                     self.limits.max_search_query_chars
                 ),
             ));
@@ -404,7 +401,7 @@ impl AutonomousToolRuntime {
         {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_edit_range_invalid",
-                "Cadence requires edit start_line/end_line to describe a non-empty inclusive range.",
+                "Xero requires edit start_line/end_line to describe a non-empty inclusive range.",
             ));
         }
 
@@ -420,7 +417,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_edit_range_invalid",
                 format!(
-                    "Cadence requires edit ranges to stay within the file's 1..={total_lines} line range."
+                    "Xero requires edit ranges to stay within the file's 1..={total_lines} line range."
                 ),
             ));
         }
@@ -445,7 +442,7 @@ impl AutonomousToolRuntime {
         if current != request.expected {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_edit_expected_text_mismatch",
-                "Cadence refused to apply the edit because the requested line range no longer matches the expected text.",
+                "Xero refused to apply the edit because the requested line range no longer matches the expected text.",
             ));
         }
 
@@ -461,7 +458,7 @@ impl AutonomousToolRuntime {
             CommandError::retryable(
                 "autonomous_tool_edit_write_failed",
                 format!(
-                    "Cadence could not persist the edit to {}: {error}",
+                    "Xero could not persist the edit to {}: {error}",
                     resolved_path.display()
                 ),
             )
@@ -503,7 +500,7 @@ impl AutonomousToolRuntime {
                 CommandError::retryable(
                     "autonomous_tool_write_prepare_failed",
                     format!(
-                        "Cadence could not prepare the parent directory for {}: {error}",
+                        "Xero could not prepare the parent directory for {}: {error}",
                         resolved_path.display()
                     ),
                 )
@@ -513,10 +510,7 @@ impl AutonomousToolRuntime {
         fs::write(&resolved_path, request.content.as_bytes()).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_write_failed",
-                format!(
-                    "Cadence could not write {}: {error}",
-                    resolved_path.display()
-                ),
+                format!("Xero could not write {}: {error}", resolved_path.display()),
             )
         })?;
 
@@ -555,13 +549,13 @@ impl AutonomousToolRuntime {
         if matches == 0 {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_patch_search_not_found",
-                "Cadence refused to patch the file because the search text was not found.",
+                "Xero refused to patch the file because the search text was not found.",
             ));
         }
         if matches > 1 && !request.replace_all {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_patch_search_ambiguous",
-                "Cadence refused to patch the file because the search text matched more than once. Set replaceAll to true or use a more specific search string.",
+                "Xero refused to patch the file because the search text matched more than once. Set replaceAll to true or use a more specific search string.",
             ));
         }
 
@@ -575,7 +569,7 @@ impl AutonomousToolRuntime {
             CommandError::retryable(
                 "autonomous_tool_patch_write_failed",
                 format!(
-                    "Cadence could not persist the patch to {}: {error}",
+                    "Xero could not persist the patch to {}: {error}",
                     resolved_path.display()
                 ),
             )
@@ -610,7 +604,7 @@ impl AutonomousToolRuntime {
         if resolved_path.is_dir() && !request.recursive {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_delete_recursive_required",
-                "Cadence requires recursive=true before deleting a directory.",
+                "Xero requires recursive=true before deleting a directory.",
             ));
         }
         if resolved_path.is_file() {
@@ -623,7 +617,7 @@ impl AutonomousToolRuntime {
         } else if request.expected_hash.is_some() {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_delete_expected_hash_invalid",
-                "Cadence only accepts expectedHash for file deletes.",
+                "Xero only accepts expectedHash for file deletes.",
             ));
         }
 
@@ -631,20 +625,14 @@ impl AutonomousToolRuntime {
             fs::remove_dir_all(&resolved_path).map_err(|error| {
                 CommandError::retryable(
                     "autonomous_tool_delete_failed",
-                    format!(
-                        "Cadence could not delete {}: {error}",
-                        resolved_path.display()
-                    ),
+                    format!("Xero could not delete {}: {error}", resolved_path.display()),
                 )
             })?;
         } else {
             fs::remove_file(&resolved_path).map_err(|error| {
                 CommandError::retryable(
                     "autonomous_tool_delete_failed",
-                    format!(
-                        "Cadence could not delete {}: {error}",
-                        resolved_path.display()
-                    ),
+                    format!("Xero could not delete {}: {error}", resolved_path.display()),
                 )
             })?;
         }
@@ -673,7 +661,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_rename_target_exists",
                 format!(
-                    "Cadence refused to rename because `{}` already exists.",
+                    "Xero refused to rename because `{}` already exists.",
                     path_to_forward_slash(&to_relative)
                 ),
             ));
@@ -691,7 +679,7 @@ impl AutonomousToolRuntime {
                 CommandError::retryable(
                     "autonomous_tool_rename_prepare_failed",
                     format!(
-                        "Cadence could not prepare the target directory for {}: {error}",
+                        "Xero could not prepare the target directory for {}: {error}",
                         to_resolved.display()
                     ),
                 )
@@ -701,7 +689,7 @@ impl AutonomousToolRuntime {
             CommandError::retryable(
                 "autonomous_tool_rename_failed",
                 format!(
-                    "Cadence could not rename {} to {}: {error}",
+                    "Xero could not rename {} to {}: {error}",
                     from_resolved.display(),
                     to_resolved.display()
                 ),
@@ -727,7 +715,7 @@ impl AutonomousToolRuntime {
             CommandError::retryable(
                 "autonomous_tool_mkdir_failed",
                 format!(
-                    "Cadence could not create directory {}: {error}",
+                    "Xero could not create directory {}: {error}",
                     resolved_path.display()
                 ),
             )
@@ -793,10 +781,7 @@ impl AutonomousToolRuntime {
         let bytes = fs::read(&resolved_path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_hash_read_failed",
-                format!(
-                    "Cadence could not hash {}: {error}",
-                    resolved_path.display()
-                ),
+                format!("Xero could not hash {}: {error}", resolved_path.display()),
             )
         })?;
         let display_path = path_to_forward_slash(&relative_path);
@@ -983,7 +968,7 @@ impl AutonomousToolRuntime {
         let metadata = fs::symlink_metadata(path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_list_metadata_failed",
-                format!("Cadence could not inspect {}: {error}", path.display()),
+                format!("Xero could not inspect {}: {error}", path.display()),
             )
         })?;
         if metadata.file_type().is_symlink() {
@@ -1052,7 +1037,7 @@ impl AutonomousToolRuntime {
                 return Err(CommandError::new(
                     "autonomous_tool_system_read_requires_approval",
                     CommandErrorClass::PolicyDenied,
-                    "Cadence requires operator approval before reading an absolute system path outside the imported repository.",
+                    "Xero requires operator approval before reading an absolute system path outside the imported repository.",
                     false,
                 ));
             }
@@ -1060,14 +1045,14 @@ impl AutonomousToolRuntime {
             if !expanded.is_absolute() {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_system_read_path_invalid",
-                    "Cadence requires system read paths to be absolute or `~`-relative.",
+                    "Xero requires system read paths to be absolute or `~`-relative.",
                 ));
             }
             let resolved = fs::canonicalize(&expanded).map_err(|error| {
                 CommandError::retryable(
                     "autonomous_tool_system_read_resolve_failed",
                     format!(
-                        "Cadence could not resolve system path {}: {error}",
+                        "Xero could not resolve system path {}: {error}",
                         expanded.display()
                     ),
                 )
@@ -1098,7 +1083,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_read_byte_offset_invalid",
                 format!(
-                    "Cadence requires byteOffset to stay within the file's 0..={total_bytes} byte range."
+                    "Xero requires byteOffset to stay within the file's 0..={total_bytes} byte range."
                 ),
             ));
         }
@@ -1109,7 +1094,7 @@ impl AutonomousToolRuntime {
         if requested_count == 0 {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_read_byte_count_invalid",
-                "Cadence requires byteCount to be at least 1.",
+                "Xero requires byteCount to be at least 1.",
             ));
         }
         let bytes = read_file_byte_range(&target.path, byte_offset, requested_count)?;
@@ -1128,7 +1113,7 @@ impl AutonomousToolRuntime {
         let decoded = decode_text_bytes(bytes.clone()).map_err(|_| {
             CommandError::user_fixable(
                 "autonomous_tool_file_not_text",
-                "Cadence refused to decode the requested byte range because it is not valid UTF-8 text.",
+                "Xero refused to decode the requested byte range because it is not valid UTF-8 text.",
             )
         })?;
         let total_lines = count_lines(&decoded.text);
@@ -1179,7 +1164,7 @@ impl AutonomousToolRuntime {
         strict: bool,
     ) -> CommandResult<AutonomousToolResult> {
         let image = image::load_from_memory(&bytes).map_err(|error| {
-            let message = format!("Cadence could not decode `{display_path}` as an image: {error}");
+            let message = format!("Xero could not decode `{display_path}` as an image: {error}");
             if strict {
                 CommandError::user_fixable("autonomous_tool_image_decode_failed", message)
             } else {
@@ -1194,9 +1179,7 @@ impl AutonomousToolRuntime {
             .map_err(|error| {
                 CommandError::retryable(
                     "autonomous_tool_image_preview_failed",
-                    format!(
-                        "Cadence could not encode an image preview for `{display_path}`: {error}"
-                    ),
+                    format!("Xero could not encode an image preview for `{display_path}`: {error}"),
                 )
             })?;
         let preview = encoded.into_inner();
@@ -1280,14 +1263,14 @@ impl AutonomousToolRuntime {
         let metadata = fs::metadata(path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_read_metadata_failed",
-                format!("Cadence could not inspect {}: {error}", path.display()),
+                format!("Xero could not inspect {}: {error}", path.display()),
             )
         })?;
         if metadata.len() as usize > self.limits.max_text_file_bytes {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_file_too_large",
                 format!(
-                    "Cadence refused to read {} because it exceeds the {} byte text limit.",
+                    "Xero refused to read {} because it exceeds the {} byte text limit.",
                     path.display(),
                     self.limits.max_text_file_bytes
                 ),
@@ -1298,7 +1281,7 @@ impl AutonomousToolRuntime {
             CommandError::user_fixable(
                 "autonomous_tool_file_not_text",
                 format!(
-                    "Cadence refused to read {} because it is not valid UTF-8 text.",
+                    "Xero refused to read {} because it is not valid UTF-8 text.",
                     path.display()
                 ),
             )
@@ -1343,7 +1326,7 @@ impl SearchOptions {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_search_context_too_large",
                 format!(
-                    "Cadence requires search contextLines to be between 0 and {MAX_SEARCH_CONTEXT_LINES}."
+                    "Xero requires search contextLines to be between 0 and {MAX_SEARCH_CONTEXT_LINES}."
                 ),
             ));
         }
@@ -1352,7 +1335,7 @@ impl SearchOptions {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_search_max_results_invalid",
                 format!(
-                    "Cadence requires search maxResults to be between 1 and {default_max_results}."
+                    "Xero requires search maxResults to be between 1 and {default_max_results}."
                 ),
             ));
         }
@@ -1387,7 +1370,7 @@ fn slice_lines(
     if requested_line_count == 0 {
         return Err(CommandError::user_fixable(
             "autonomous_tool_read_line_count_invalid",
-            "Cadence requires read line_count to be at least 1.",
+            "Xero requires read line_count to be at least 1.",
         ));
     }
 
@@ -1400,7 +1383,7 @@ fn slice_lines(
         return Err(CommandError::user_fixable(
             "autonomous_tool_read_range_invalid",
             format!(
-                "Cadence requires read start_line to stay within the file's 1..={total_lines} line range."
+                "Xero requires read start_line to stay within the file's 1..={total_lines} line range."
             ),
         ));
     }
@@ -1425,7 +1408,7 @@ fn line_byte_range(
         return Err(CommandError::user_fixable(
             "autonomous_tool_edit_range_invalid",
             format!(
-                "Cadence requires edit ranges to stay within the file's 1..={total_lines} line range."
+                "Xero requires edit ranges to stay within the file's 1..={total_lines} line range."
             ),
         ));
     }
@@ -1473,7 +1456,7 @@ fn read_file_bytes(path: &Path, error_code: &'static str) -> CommandResult<Vec<u
     fs::read(path).map_err(|error| {
         CommandError::retryable(
             error_code,
-            format!("Cadence could not read {}: {error}", path.display()),
+            format!("Xero could not read {}: {error}", path.display()),
         )
     })
 }
@@ -1482,20 +1465,20 @@ fn read_file_byte_range(path: &Path, offset: u64, byte_count: usize) -> CommandR
     let mut file = File::open(path).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_read_failed",
-            format!("Cadence could not open {}: {error}", path.display()),
+            format!("Xero could not open {}: {error}", path.display()),
         )
     })?;
     file.seek(SeekFrom::Start(offset)).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_read_seek_failed",
-            format!("Cadence could not seek in {}: {error}", path.display()),
+            format!("Xero could not seek in {}: {error}", path.display()),
         )
     })?;
     let mut buffer = vec![0_u8; byte_count];
     let read = file.read(&mut buffer).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_read_failed",
-            format!("Cadence could not read {}: {error}", path.display()),
+            format!("Xero could not read {}: {error}", path.display()),
         )
     })?;
     buffer.truncate(read);
@@ -1567,7 +1550,7 @@ fn build_search_regex(query: &str, is_regex: bool, ignore_case: bool) -> Command
         .map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_tool_search_regex_invalid",
-                format!("Cadence could not compile search regex `{query}`: {error}"),
+                format!("Xero could not compile search regex `{query}`: {error}"),
             )
         })
 }
@@ -1585,7 +1568,7 @@ fn build_search_globset(
             CommandError::user_fixable(
                 "autonomous_tool_search_glob_invalid",
                 format!(
-                    "Cadence could not parse {field} entry `{raw}`: {}",
+                    "Xero could not parse {field} entry `{raw}`: {}",
                     error.message
                 ),
             )
@@ -1596,7 +1579,7 @@ fn build_search_globset(
             .map_err(|error| {
                 CommandError::user_fixable(
                     "autonomous_tool_search_glob_invalid",
-                    format!("Cadence could not parse {field} entry `{raw}`: {error}"),
+                    format!("Xero could not parse {field} entry `{raw}`: {error}"),
                 )
             })?;
         builder.add(glob);
@@ -1604,7 +1587,7 @@ fn build_search_globset(
     let set = builder.build().map_err(|error| {
         CommandError::user_fixable(
             "autonomous_tool_search_glob_invalid",
-            format!("Cadence could not build {field}: {error}"),
+            format!("Xero could not build {field}: {error}"),
         )
     })?;
     Ok(Some(set))
@@ -1715,7 +1698,7 @@ fn validate_optional_line_hash(
     if actual != expected_hash {
         return Err(CommandError::user_fixable(
             error_code,
-            format!("Cadence refused the edit because {field} no longer matches line {line}."),
+            format!("Xero refused the edit because {field} no longer matches line {line}."),
         ));
     }
     Ok(())
@@ -1746,7 +1729,7 @@ fn expand_system_path(value: &str) -> CommandResult<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_system_read_home_unavailable",
-                "Cadence could not resolve the current user's home directory.",
+                "Xero could not resolve the current user's home directory.",
             )
         })?;
         if trimmed == "~" {
@@ -1798,7 +1781,7 @@ fn validate_expected_hash_for_bytes(
     if actual != expected_hash.trim() {
         return Err(CommandError::user_fixable(
             error_code,
-            "Cadence refused the file operation because expectedHash no longer matches the current file contents.",
+            "Xero refused the file operation because expectedHash no longer matches the current file contents.",
         ));
     }
     Ok(())
@@ -1813,7 +1796,7 @@ fn validate_sha256(value: &str, field: &'static str) -> CommandResult<()> {
     {
         return Err(CommandError::user_fixable(
             "autonomous_tool_expected_hash_invalid",
-            format!("Cadence requires {field} to be a lowercase SHA-256 hex digest."),
+            format!("Xero requires {field} to be a lowercase SHA-256 hex digest."),
         ));
     }
     Ok(())

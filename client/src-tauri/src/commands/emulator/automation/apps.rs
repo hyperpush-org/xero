@@ -51,7 +51,7 @@ pub fn android_launch(adb: &Adb, bundle_id: &str, args: &[String]) -> Result<(),
         ];
         for arg in args {
             cmd.push("--es".to_string());
-            cmd.push("cadence_arg".to_string());
+            cmd.push("xero_arg".to_string());
             cmd.push(arg.clone());
         }
         adb.shell(cmd)

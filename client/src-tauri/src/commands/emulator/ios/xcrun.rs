@@ -368,7 +368,7 @@ end tell"#
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let message = if stderr.contains("1743") || stderr.contains("not authorized") {
-            "Cadence is not allowed to drive the iOS Simulator. Grant Accessibility permission \
+            "Xero is not allowed to drive the iOS Simulator. Grant Accessibility permission \
              in System Settings → Privacy & Security → Accessibility, then try again."
                 .to_string()
         } else {
@@ -389,7 +389,7 @@ end tell"#
 /// notifications a real device would fire. We drive that via
 /// AppleScript.
 ///
-/// This requires the user to grant Accessibility permission to Cadence
+/// This requires the user to grant Accessibility permission to Xero
 /// (System Settings → Privacy & Security → Accessibility). If it's
 /// denied we surface a typed error pointing at the setting.
 pub fn set_orientation(udid: &str, value: &str) -> Result<()> {

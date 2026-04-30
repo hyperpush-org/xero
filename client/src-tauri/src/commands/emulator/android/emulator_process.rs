@@ -129,7 +129,7 @@ pub fn spawn(
 
 /// Pick a fresh emulator console port. We don't coordinate with other
 /// emulator instances so this is a best-effort: try 5554 first, then walk up
-/// by 2. In practice Cadence runs one emulator at a time, so the default will
+/// by 2. In practice Xero runs one emulator at a time, so the default will
 /// usually work.
 fn pick_console_port() -> u16 {
     use std::net::{SocketAddrV4, TcpListener};

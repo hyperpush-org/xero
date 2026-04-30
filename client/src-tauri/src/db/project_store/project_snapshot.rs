@@ -139,7 +139,7 @@ fn read_repository_summary(
             other => Err(CommandError::system_fault(
                 "project_repository_query_failed",
                 format!(
-                    "Cadence could not read repository metadata from {}: {other}",
+                    "Xero could not read repository metadata from {}: {other}",
                     database_path.display()
                 ),
             )),

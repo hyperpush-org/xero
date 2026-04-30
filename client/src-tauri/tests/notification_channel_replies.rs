@@ -4,7 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cadence_desktop_lib::{
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         submit_notification_reply::submit_notification_reply,
         sync_notification_adapters::sync_notification_adapters_with_service,
@@ -23,8 +25,6 @@ use cadence_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
-use tauri::Manager;
-use tempfile::TempDir;
 
 type RouteKey = (String, String);
 type CursorKey = (String, String, String);
@@ -275,7 +275,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
+        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
 }
 
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {

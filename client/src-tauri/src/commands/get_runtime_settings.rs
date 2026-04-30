@@ -6,10 +6,6 @@ use tempfile::NamedTempFile;
 use crate::{
     commands::{CommandError, CommandResult},
     provider_credentials::{ProviderCredentialProfile, ProviderCredentialsView},
-    runtime::{
-        normalize_openai_codex_model_id, resolve_runtime_provider_identity,
-        OPENAI_CODEX_PROVIDER_ID,
-    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,38 +29,6 @@ pub(crate) struct RuntimeSettingsSnapshot {
     pub project_id: Option<String>,
 }
 
-pub(crate) fn runtime_settings_file_from_request(
-    provider_id: &str,
-    model_id: &str,
-) -> CommandResult<RuntimeSettingsFile> {
-    let provider_id = provider_id.trim();
-    if provider_id.is_empty() {
-        return Err(CommandError::invalid_request("providerId"));
-    }
-
-    let model_id = model_id.trim();
-    if model_id.is_empty() {
-        return Err(CommandError::invalid_request("modelId"));
-    }
-
-    let provider = resolve_runtime_provider_identity(Some(provider_id), Some(provider_id))
-        .map_err(|diagnostic| {
-            CommandError::user_fixable("runtime_settings_request_invalid", diagnostic.message)
-        })?;
-
-    let model_id = if provider.provider_id == OPENAI_CODEX_PROVIDER_ID {
-        normalize_openai_codex_model_id(model_id)
-    } else {
-        model_id.to_owned()
-    };
-
-    Ok(RuntimeSettingsFile {
-        provider_id: provider.provider_id.to_owned(),
-        model_id,
-        updated_at: crate::auth::now_timestamp(),
-    })
-}
-
 pub(crate) fn write_json_file_atomically(
     path: &Path,
     json: &[u8],
@@ -74,7 +38,7 @@ pub(crate) fn write_json_file_atomically(
         CommandError::system_fault(
             format!("{operation}_parent_missing"),
             format!(
-                "Cadence could not determine the parent directory for {}.",
+                "Xero could not determine the parent directory for {}.",
                 path.display()
             ),
         )
@@ -84,7 +48,7 @@ pub(crate) fn write_json_file_atomically(
         CommandError::retryable(
             format!("{operation}_directory_unavailable"),
             format!(
-                "Cadence could not prepare the app-local settings directory at {}: {error}",
+                "Xero could not prepare the app-local settings directory at {}: {error}",
                 parent.display()
             ),
         )
@@ -93,20 +57,20 @@ pub(crate) fn write_json_file_atomically(
     let mut temp_file = NamedTempFile::new_in(parent).map_err(|error| {
         CommandError::retryable(
             format!("{operation}_tempfile_failed"),
-            format!("Cadence could not stage the app-local settings update: {error}"),
+            format!("Xero could not stage the app-local settings update: {error}"),
         )
     })?;
 
     temp_file.write_all(json).map_err(|error| {
         CommandError::retryable(
             format!("{operation}_write_failed"),
-            format!("Cadence could not write the staged app-local settings update: {error}"),
+            format!("Xero could not write the staged app-local settings update: {error}"),
         )
     })?;
     temp_file.flush().map_err(|error| {
         CommandError::retryable(
             format!("{operation}_write_failed"),
-            format!("Cadence could not flush the staged app-local settings update: {error}"),
+            format!("Xero could not flush the staged app-local settings update: {error}"),
         )
     })?;
 
@@ -114,7 +78,7 @@ pub(crate) fn write_json_file_atomically(
         CommandError::retryable(
             format!("{operation}_write_failed"),
             format!(
-                "Cadence could not atomically persist the app-local settings file at {}: {}",
+                "Xero could not atomically persist the app-local settings file at {}: {}",
                 path.display(),
                 error.error
             ),

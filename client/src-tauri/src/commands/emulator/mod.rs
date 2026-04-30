@@ -255,7 +255,7 @@ pub fn emulator_ios_request_ax_permission<R: Runtime>(app: AppHandle<R>) -> Comm
 }
 
 /// Open the Privacy & Security → Accessibility pane in System Settings so
-/// the user can enable Cadence. macOS-only; on other hosts this is a
+/// the user can enable Xero. macOS-only; on other hosts this is a
 /// no-op.
 #[tauri::command]
 pub fn emulator_ios_open_accessibility_settings() -> CommandResult<()> {
@@ -394,7 +394,7 @@ fn start_android<R: Runtime>(
         CommandError::user_fixable(
             "scrcpy_jar_missing",
             format!(
-                "scrcpy-server.jar is not bundled with this Cadence build: {err}. Drop the jar \
+                "scrcpy-server.jar is not bundled with this Xero build: {err}. Drop the jar \
                  into client/src-tauri/resources/ and rebuild."
             ),
         )

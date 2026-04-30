@@ -144,7 +144,7 @@ pub fn upsert_autonomous_run(
             "autonomous_run_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the durable autonomous-run transaction.",
+            "Xero could not start the durable autonomous-run transaction.",
         )
     })?;
 
@@ -158,7 +158,7 @@ pub fn upsert_autonomous_run(
         CommandError::retryable(
             "autonomous_run_missing_runtime_row",
             format!(
-                "Cadence could not persist autonomous-run metadata in {} because the selected project has no durable runtime-run row.",
+                "Xero could not persist autonomous-run metadata in {} because the selected project has no durable runtime-run row.",
                 database_path.display()
             ),
         )
@@ -168,19 +168,22 @@ pub fn upsert_autonomous_run(
         return Err(CommandError::retryable(
             "autonomous_run_mismatch",
             format!(
-                "Cadence refused to persist autonomous-run metadata for run `{}` because the durable runtime-run row currently points at `{}`.",
+                "Xero refused to persist autonomous-run metadata for run `{}` because the durable runtime-run row currently points at `{}`.",
                 payload.run.run_id, runtime_row.run_id
             ),
         ));
     }
 
-    if runtime_row.runtime_kind != payload.run.runtime_kind
-        || runtime_row.provider_id != payload.run.provider_id
-    {
+    if !runtime_run_identity_matches_autonomous_projection(
+        &runtime_row.provider_id,
+        &runtime_row.runtime_kind,
+        &payload.run.provider_id,
+        &payload.run.runtime_kind,
+    ) {
         return Err(CommandError::retryable(
             "autonomous_run_mismatch",
             format!(
-                "Cadence refused to persist autonomous-run metadata for run `{}` because the durable runtime-run identity is `{}`/`{}` instead of `{}`/`{}`.",
+                "Xero refused to persist autonomous-run metadata for run `{}` because the durable runtime-run identity is `{}`/`{}` instead of `{}`/`{}`.",
                 payload.run.run_id,
                 runtime_row.provider_id,
                 runtime_row.runtime_kind,
@@ -329,7 +332,7 @@ pub fn upsert_autonomous_run(
                 "autonomous_run_persist_failed",
                 &database_path,
                 error,
-                "Cadence could not persist durable autonomous-run metadata.",
+                "Xero could not persist durable autonomous-run metadata.",
             )
         })?;
 
@@ -338,7 +341,7 @@ pub fn upsert_autonomous_run(
             "autonomous_run_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the durable autonomous-run transaction.",
+            "Xero could not commit the durable autonomous-run transaction.",
         )
     })?;
 
@@ -352,7 +355,7 @@ pub fn upsert_autonomous_run(
         CommandError::system_fault(
             "autonomous_run_missing_after_persist",
             format!(
-                "Cadence persisted durable autonomous-run metadata in {} but could not read it back.",
+                "Xero persisted durable autonomous-run metadata in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -440,7 +443,7 @@ fn read_autonomous_run_snapshot(
             return Err(CommandError::system_fault(
                 "autonomous_run_query_failed",
                 format!(
-                    "Cadence could not read durable autonomous-run metadata from {}: {other}",
+                    "Xero could not read durable autonomous-run metadata from {}: {other}",
                     database_path.display()
                 ),
             ))
@@ -449,6 +452,27 @@ fn read_autonomous_run_snapshot(
 
     decode_autonomous_run_row(raw_row, database_path)
         .map(|run| Some(AutonomousRunSnapshotRecord { run }))
+}
+
+fn runtime_run_identity_matches_autonomous_projection(
+    runtime_provider_id: &str,
+    runtime_kind: &str,
+    autonomous_provider_id: &str,
+    autonomous_runtime_kind: &str,
+) -> bool {
+    runtime_provider_id == autonomous_provider_id
+        && autonomous_projection_runtime_kind(runtime_provider_id, runtime_kind)
+            == autonomous_runtime_kind
+}
+
+fn autonomous_projection_runtime_kind(provider_id: &str, runtime_kind: &str) -> String {
+    if runtime_kind == crate::runtime::OWNED_AGENT_RUNTIME_KIND {
+        return crate::runtime::resolve_runtime_provider_identity(Some(provider_id), None)
+            .map(|provider| provider.runtime_kind.to_string())
+            .unwrap_or_else(|_| runtime_kind.to_string());
+    }
+
+    runtime_kind.to_string()
 }
 
 fn validate_autonomous_run_payload(payload: &AutonomousRunRecord) -> Result<(), CommandError> {
@@ -481,7 +505,7 @@ fn validate_autonomous_run_payload(payload: &AutonomousRunRecord) -> Result<(), 
         CommandError::user_fixable(
             "autonomous_run_request_invalid",
             format!(
-                "Cadence rejected the durable autonomous-run identity because {}",
+                "Xero rejected the durable autonomous-run identity because {}",
                 diagnostic.message
             ),
         )
@@ -744,5 +768,30 @@ fn autonomous_run_status_sql_value(value: &AutonomousRunStatus) -> &'static str 
         AutonomousRunStatus::Stopped => "stopped",
         AutonomousRunStatus::Crashed => "crashed",
         AutonomousRunStatus::Completed => "completed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autonomous_identity_match_accepts_owned_agent_runtime_rows() {
+        assert!(runtime_run_identity_matches_autonomous_projection(
+            crate::runtime::OPENAI_CODEX_PROVIDER_ID,
+            crate::runtime::OWNED_AGENT_RUNTIME_KIND,
+            crate::runtime::OPENAI_CODEX_PROVIDER_ID,
+            crate::runtime::OPENAI_CODEX_PROVIDER_ID,
+        ));
+    }
+
+    #[test]
+    fn autonomous_identity_match_rejects_provider_mismatch() {
+        assert!(!runtime_run_identity_matches_autonomous_projection(
+            crate::runtime::OPENAI_CODEX_PROVIDER_ID,
+            crate::runtime::OWNED_AGENT_RUNTIME_KIND,
+            crate::runtime::OPENROUTER_PROVIDER_ID,
+            crate::runtime::OPENROUTER_PROVIDER_ID,
+        ));
     }
 }

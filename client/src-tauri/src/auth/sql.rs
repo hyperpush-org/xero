@@ -15,7 +15,7 @@ pub fn load_openai_codex_session_by_account(
             map_row,
         )
         .optional()
-        .map_err(|error| read_error(format!("Cadence could not read openai_codex_sessions: {error}")))
+        .map_err(|error| read_error(format!("Xero could not read openai_codex_sessions: {error}")))
 }
 
 pub fn load_latest_openai_codex_session(
@@ -29,7 +29,7 @@ pub fn load_latest_openai_codex_session(
             map_row,
         )
         .optional()
-        .map_err(|error| read_error(format!("Cadence could not read openai_codex_sessions: {error}")))
+        .map_err(|error| read_error(format!("Xero could not read openai_codex_sessions: {error}")))
 }
 
 pub fn load_openai_codex_session_by_session_id(
@@ -44,7 +44,7 @@ pub fn load_openai_codex_session_by_session_id(
             map_row,
         )
         .optional()
-        .map_err(|error| read_error(format!("Cadence could not read openai_codex_sessions: {error}")))
+        .map_err(|error| read_error(format!("Xero could not read openai_codex_sessions: {error}")))
 }
 
 pub fn upsert_openai_codex_session(
@@ -75,7 +75,7 @@ pub fn upsert_openai_codex_session(
         )
         .map_err(|error| {
             write_error(format!(
-                "Cadence could not write openai_codex_sessions: {error}"
+                "Xero could not write openai_codex_sessions: {error}"
             ))
         })?;
     Ok(())
@@ -92,7 +92,7 @@ pub fn remove_openai_codex_session(
         )
         .map_err(|error| {
             write_error(format!(
-                "Cadence could not delete openai_codex_sessions row: {error}"
+                "Xero could not delete openai_codex_sessions row: {error}"
             ))
         })?;
     Ok(())
@@ -103,7 +103,7 @@ pub fn clear_openai_codex_sessions(connection: &Connection) -> Result<(), AuthFl
         .execute("DELETE FROM openai_codex_sessions", [])
         .map_err(|error| {
             write_error(format!(
-                "Cadence could not clear openai_codex_sessions: {error}"
+                "Xero could not clear openai_codex_sessions: {error}"
             ))
         })?;
     Ok(())

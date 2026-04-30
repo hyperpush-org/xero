@@ -14,7 +14,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '..')
 const composeFile = resolve(repoRoot, 'server/docker-compose.yml')
 const serverDir = resolve(repoRoot, 'server')
-const containerName = 'joe-postgres'
+const containerName = 'xero-postgres'
 
 const DOCKER_DAEMON_TIMEOUT_MS = 90_000
 const CONTAINER_HEALTHY_TIMEOUT_MS = 90_000
@@ -195,7 +195,7 @@ async function ensurePostgresUp() {
       }
     }
     if (status === 'unhealthy') {
-      fail('Postgres healthcheck reports unhealthy. Inspect with `docker logs joe-postgres`.')
+      fail('Postgres healthcheck reports unhealthy. Inspect with `docker logs xero-postgres`.')
       process.exit(1)
     }
     await sleep(POLL_INTERVAL_MS)

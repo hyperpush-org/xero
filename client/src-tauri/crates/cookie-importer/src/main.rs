@@ -47,7 +47,7 @@ fn run() -> Output {
         Some(s) => s,
         None => {
             return Output::Err {
-                message: "usage: cadence-cookie-importer <probe|import> <source> [domain ...]"
+                message: "usage: xero-cookie-importer <probe|import> <source> [domain ...]"
                     .into(),
             }
         }
@@ -72,7 +72,7 @@ fn run() -> Output {
             // Use a made-up hostname as the filter — rookie only returns matches,
             // so an empty list is fine; what we care about is whether it reached
             // the DB at all.
-            available: fetch(&source, Some(vec!["__cadence_probe__.invalid".into()])).is_ok(),
+            available: fetch(&source, Some(vec!["__xero_probe__.invalid".into()])).is_ok(),
         },
         "import" => match fetch(&source, domains) {
             Ok(cookies) => Output::Ok {

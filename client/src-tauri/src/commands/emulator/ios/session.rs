@@ -341,7 +341,7 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<IosSession, Com
     let device_name = xcrun::device_name(&device_id).unwrap_or_else(|_| device_id.clone());
 
     // Make sure Simulator.app is running so its window exists for CGEvent
-    // dispatch. `open -g` keeps Cadence frontmost on most recent macOS
+    // dispatch. `open -g` keeps Xero frontmost on most recent macOS
     // releases; brief sleep gives the window server time to register the
     // new window before we hand control back to the frontend.
     let _ = xcrun::focus_simulator(&device_id);

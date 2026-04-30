@@ -60,7 +60,7 @@ impl PersonaRole {
                     TokenAllocation::by_symbol("mSOL", 5_000_000_000_000), // 5k mSOL (9 decimals)
                 ],
                 nfts: vec![NftAllocation {
-                    collection: "cadence-whale-fixture".to_string(),
+                    collection: "xero-whale-fixture".to_string(),
                     count: 3,
                 }],
             },

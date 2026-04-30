@@ -357,7 +357,7 @@ pub fn upsert_runtime_session(
         CommandError::system_fault(
             "runtime_session_transaction_failed",
             format!(
-                "Cadence could not start the runtime-session transaction for {}: {error}",
+                "Xero could not start the runtime-session transaction for {}: {error}",
                 database_path.display()
             ),
         )
@@ -377,7 +377,7 @@ pub fn upsert_runtime_session(
             CommandError::system_fault(
                 "runtime_project_update_failed",
                 format!(
-                    "Cadence could not persist runtime kind for project `{}` in {}: {error}",
+                    "Xero could not persist runtime kind for project `{}` in {}: {error}",
                     session.project_id,
                     database_path.display()
                 ),
@@ -443,7 +443,7 @@ pub fn upsert_runtime_session(
             CommandError::system_fault(
                 "runtime_session_persist_failed",
                 format!(
-                    "Cadence could not persist runtime-session metadata in {}: {error}",
+                    "Xero could not persist runtime-session metadata in {}: {error}",
                     database_path.display()
                 ),
             )
@@ -453,7 +453,7 @@ pub fn upsert_runtime_session(
         CommandError::system_fault(
             "runtime_session_commit_failed",
             format!(
-                "Cadence could not commit runtime-session metadata in {}: {error}",
+                "Xero could not commit runtime-session metadata in {}: {error}",
                 database_path.display()
             ),
         )
@@ -463,7 +463,7 @@ pub fn upsert_runtime_session(
         CommandError::system_fault(
             "runtime_session_missing_after_persist",
             format!(
-                "Cadence persisted runtime-session metadata in {} but could not read it back.",
+                "Xero persisted runtime-session metadata in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -484,7 +484,7 @@ pub fn load_runtime_run(
             "runtime_run_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the durable runtime-run read transaction.",
+            "Xero could not start the durable runtime-run read transaction.",
         )
     })?;
 
@@ -499,7 +499,7 @@ pub fn load_runtime_run(
             "runtime_run_commit_failed",
             &database_path,
             error,
-            "Cadence could not close the durable runtime-run read transaction.",
+            "Xero could not close the durable runtime-run read transaction.",
         )
     })?;
 
@@ -526,7 +526,7 @@ pub fn upsert_runtime_run(
             "runtime_run_transaction_failed",
             &database_path,
             error,
-            "Cadence could not start the durable runtime-run transaction.",
+            "Xero could not start the durable runtime-run transaction.",
         )
     })?;
 
@@ -561,6 +561,20 @@ pub fn upsert_runtime_run(
     if let Some(run_id) = existing_run_id.filter(|run_id| *run_id != payload.run.run_id.as_str()) {
         transaction
             .execute(
+                "DELETE FROM autonomous_runs WHERE project_id = ?1 AND run_id = ?2",
+                params![payload.run.project_id.as_str(), run_id],
+            )
+            .map_err(|error| {
+                map_runtime_run_write_error(
+                    "runtime_run_autonomous_reset_failed",
+                    &database_path,
+                    error,
+                    "Xero could not clear the prior autonomous-run projection before rotating the run id.",
+                )
+            })?;
+
+        transaction
+            .execute(
                 "DELETE FROM runtime_run_checkpoints WHERE project_id = ?1 AND run_id = ?2",
                 params![payload.run.project_id.as_str(), run_id],
             )
@@ -569,7 +583,7 @@ pub fn upsert_runtime_run(
                     "runtime_run_checkpoint_reset_failed",
                     &database_path,
                     error,
-                    "Cadence could not clear the prior runtime-run checkpoints before rotating the run id.",
+                    "Xero could not clear the prior runtime-run checkpoints before rotating the run id.",
                 )
             })?;
     }
@@ -581,7 +595,7 @@ pub fn upsert_runtime_run(
             return Err(CommandError::system_fault(
                 "runtime_run_checkpoint_sequence_invalid",
                 format!(
-                    "Cadence refused to persist runtime-run checkpoint sequence {} for run `{}` because the prior durable sequence is {} in {}.",
+                    "Xero refused to persist runtime-run checkpoint sequence {} for run `{}` because the prior durable sequence is {} in {}.",
                     checkpoint.sequence,
                     payload.run.run_id,
                     existing_last_checkpoint_sequence,
@@ -607,7 +621,7 @@ pub fn upsert_runtime_run(
                 CommandError::system_fault(
                     "runtime_run_control_state_missing",
                     format!(
-                        "Cadence refused to rewrite runtime-run `{}` in {} because the durable control snapshot was missing.",
+                        "Xero refused to rewrite runtime-run `{}` in {} because the durable control snapshot was missing.",
                         payload.run.run_id,
                         database_path.display()
                     ),
@@ -618,7 +632,7 @@ pub fn upsert_runtime_run(
             return Err(CommandError::system_fault(
                 "runtime_run_control_state_missing",
                 format!(
-                    "Cadence requires a durable control snapshot before it can persist runtime-run `{}` in {}.",
+                    "Xero requires a durable control snapshot before it can persist runtime-run `{}` in {}.",
                     payload.run.run_id,
                     database_path.display()
                 ),
@@ -704,7 +718,7 @@ pub fn upsert_runtime_run(
                 "runtime_run_persist_failed",
                 &database_path,
                 error,
-                "Cadence could not persist the durable runtime-run row.",
+                "Xero could not persist the durable runtime-run row.",
             )
         })?;
 
@@ -736,7 +750,7 @@ pub fn upsert_runtime_run(
                     "runtime_run_checkpoint_persist_failed",
                     &database_path,
                     error,
-                    "Cadence could not persist the durable runtime-run checkpoint.",
+                    "Xero could not persist the durable runtime-run checkpoint.",
                 )
             })?;
     }
@@ -746,7 +760,7 @@ pub fn upsert_runtime_run(
             "runtime_run_commit_failed",
             &database_path,
             error,
-            "Cadence could not commit the durable runtime-run transaction.",
+            "Xero could not commit the durable runtime-run transaction.",
         )
     })?;
 
@@ -760,7 +774,7 @@ pub fn upsert_runtime_run(
         CommandError::system_fault(
             "runtime_run_missing_after_persist",
             format!(
-                "Cadence persisted durable runtime-run metadata in {} but could not read it back.",
+                "Xero persisted durable runtime-run metadata in {} but could not read it back.",
                 database_path.display()
             ),
         )
@@ -813,7 +827,7 @@ pub(crate) fn read_runtime_session_row(
         Err(other) => Err(CommandError::system_fault(
             "runtime_session_query_failed",
             format!(
-                "Cadence could not read runtime-session metadata from {}: {other}",
+                "Xero could not read runtime-session metadata from {}: {other}",
                 database_path.display()
             ),
         )),
@@ -958,7 +972,7 @@ pub(crate) fn read_runtime_run_snapshot(
             return Err(CommandError::system_fault(
                 "runtime_run_query_failed",
                 format!(
-                    "Cadence could not read durable runtime-run metadata from {}: {other}",
+                    "Xero could not read durable runtime-run metadata from {}: {other}",
                     database_path.display()
                 ),
             ))
@@ -1097,7 +1111,7 @@ pub(crate) fn read_runtime_run_row(
         Err(other) => Err(CommandError::system_fault(
             "runtime_run_query_failed",
             format!(
-                "Cadence could not read durable runtime-run metadata from {}: {other}",
+                "Xero could not read durable runtime-run metadata from {}: {other}",
                 database_path.display()
             ),
         )),
@@ -1131,7 +1145,7 @@ fn read_runtime_run_checkpoints(
             CommandError::system_fault(
                 "runtime_run_checkpoint_query_failed",
                 format!(
-                    "Cadence could not prepare the durable runtime-run checkpoint query against {}: {error}",
+                    "Xero could not prepare the durable runtime-run checkpoint query against {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1155,7 +1169,7 @@ fn read_runtime_run_checkpoints(
             CommandError::system_fault(
                 "runtime_run_checkpoint_query_failed",
                 format!(
-                    "Cadence could not query durable runtime-run checkpoints from {}: {error}",
+                    "Xero could not query durable runtime-run checkpoints from {}: {error}",
                     database_path.display()
                 ),
             )
@@ -1169,9 +1183,9 @@ fn read_runtime_run_checkpoints(
                 CommandError::system_fault(
                     "runtime_run_checkpoint_query_failed",
                     format!(
-                    "Cadence could not read a durable runtime-run checkpoint row from {}: {error}",
-                    database_path.display()
-                ),
+                        "Xero could not read a durable runtime-run checkpoint row from {}: {error}",
+                        database_path.display()
+                    ),
                 )
             })?,
             database_path,
@@ -1483,7 +1497,7 @@ fn validate_runtime_run_upsert_payload(
         CommandError::user_fixable(
             "runtime_run_request_invalid",
             format!(
-                "Cadence rejected the durable runtime-run identity because {}",
+                "Xero rejected the durable runtime-run identity because {}",
                 diagnostic.message
             ),
         )
@@ -1557,21 +1571,21 @@ fn validate_runtime_run_upsert_payload(
         if checkpoint.project_id != payload.run.project_id {
             return Err(CommandError::system_fault(
                 "runtime_run_checkpoint_invalid",
-                "Cadence could not persist a runtime-run checkpoint whose project id does not match the parent run.",
+                "Xero could not persist a runtime-run checkpoint whose project id does not match the parent run.",
             ));
         }
 
         if checkpoint.run_id != payload.run.run_id {
             return Err(CommandError::system_fault(
                 "runtime_run_checkpoint_invalid",
-                "Cadence could not persist a runtime-run checkpoint whose run id does not match the parent run.",
+                "Xero could not persist a runtime-run checkpoint whose run id does not match the parent run.",
             ));
         }
 
         if checkpoint.sequence == 0 {
             return Err(CommandError::system_fault(
                 "runtime_run_checkpoint_invalid",
-                "Cadence requires runtime-run checkpoint sequences to start at 1.",
+                "Xero requires runtime-run checkpoint sequences to start at 1.",
             ));
         }
 
@@ -1645,7 +1659,7 @@ fn validate_runtime_run_active_control_snapshot(
     if active.revision == 0 {
         return Err(CommandError::system_fault(
             "runtime_run_request_invalid",
-            "Cadence requires runtime-run active control revisions to start at 1.",
+            "Xero requires runtime-run active control revisions to start at 1.",
         ));
     }
     Ok(())
@@ -1676,7 +1690,7 @@ fn validate_runtime_run_pending_control_snapshot(
     if pending.revision <= active_revision {
         return Err(CommandError::system_fault(
             "runtime_run_request_invalid",
-            "Cadence requires pending runtime-run control revisions to advance beyond the active revision.",
+            "Xero requires pending runtime-run control revisions to advance beyond the active revision.",
         ));
     }
 
@@ -1707,7 +1721,7 @@ fn validate_runtime_run_pending_control_snapshot(
         _ => {
             return Err(CommandError::system_fault(
                 "runtime_run_request_invalid",
-                "Cadence requires queuedPrompt and queuedPromptAt to be populated together.",
+                "Xero requires queuedPrompt and queuedPromptAt to be populated together.",
             ))
         }
     }
@@ -1719,7 +1733,7 @@ fn validate_runtime_run_control_timestamp(value: &str, field: &str) -> Result<()
     OffsetDateTime::parse(value, &Rfc3339).map_err(|error| {
         CommandError::system_fault(
             "runtime_run_request_invalid",
-            format!("Cadence requires {field} to be valid RFC3339 text: {error}"),
+            format!("Xero requires {field} to be valid RFC3339 text: {error}"),
         )
     })?;
     Ok(())
@@ -1815,9 +1829,7 @@ fn serialize_runtime_run_control_state(
     serde_json::to_string(control_state).map_err(|error| {
         CommandError::system_fault(
             "runtime_run_control_state_serialize_failed",
-            format!(
-                "Cadence could not serialize the durable runtime-run control snapshot: {error}"
-            ),
+            format!("Xero could not serialize the durable runtime-run control snapshot: {error}"),
         )
     })
 }
@@ -1912,7 +1924,7 @@ pub(crate) fn find_prohibited_runtime_persistence_content(value: &str) -> Option
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
     {
-        return Some("raw PTY byte sequences");
+        return Some("raw terminal byte sequences");
     }
 
     None
@@ -2245,7 +2257,7 @@ pub(crate) fn map_runtime_decode_error(database_path: &Path, details: String) ->
     CommandError::system_fault(
         "runtime_session_decode_failed",
         format!(
-            "Cadence could not decode runtime-session metadata from {}: {details}",
+            "Xero could not decode runtime-session metadata from {}: {details}",
             database_path.display()
         ),
     )
@@ -2255,7 +2267,7 @@ pub(crate) fn map_runtime_run_decode_error(database_path: &Path, details: String
     CommandError::system_fault(
         "runtime_run_decode_failed",
         format!(
-            "Cadence could not decode durable runtime-run metadata from {}: {details}",
+            "Xero could not decode durable runtime-run metadata from {}: {details}",
             database_path.display()
         ),
     )
@@ -2268,7 +2280,7 @@ pub(crate) fn map_runtime_run_checkpoint_decode_error(
     CommandError::system_fault(
         "runtime_run_checkpoint_decode_failed",
         format!(
-            "Cadence could not decode durable runtime-run checkpoints from {}: {details}",
+            "Xero could not decode durable runtime-run checkpoints from {}: {details}",
             database_path.display()
         ),
     )

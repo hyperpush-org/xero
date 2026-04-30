@@ -154,9 +154,7 @@ fn normalize_environment_request(
         if !keys.insert(key.to_owned()) {
             return Err(CommandError::user_fixable(
                 "mcp_registry_request_invalid",
-                format!(
-                    "Cadence rejected MCP server request because env key `{key}` was duplicated."
-                ),
+                format!("Xero rejected MCP server request because env key `{key}` was duplicated."),
             ));
         }
 
@@ -186,7 +184,7 @@ fn default_unchecked_connection_state() -> McpConnectionState {
         status: McpConnectionStatus::Stale,
         diagnostic: Some(McpConnectionDiagnostic {
             code: "mcp_status_unchecked".into(),
-            message: "Cadence has not checked this MCP server yet.".into(),
+            message: "Xero has not checked this MCP server yet.".into(),
             retryable: true,
         }),
         last_checked_at: None,

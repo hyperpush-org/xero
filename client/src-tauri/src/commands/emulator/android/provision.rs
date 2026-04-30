@@ -1,7 +1,7 @@
 //! First-run Android SDK auto-provisioning.
 //!
 //! When the host has neither Android Studio nor `ANDROID_HOME` on
-//! `PATH`, Cadence offers to download just enough of the Android SDK
+//! `PATH`, Xero offers to download just enough of the Android SDK
 //! into the app's data dir to boot an emulator. This module owns that
 //! flow:
 //!
@@ -92,7 +92,7 @@ const TEMURIN_JRE_WIN_X64_SHA: &str =
 /// automation test apps need root for many real-world scenarios.
 const SYSTEM_IMAGE_API: &str = "android-34";
 const SYSTEM_IMAGE_VARIANT: &str = "google_apis";
-const DEFAULT_AVD_NAME: &str = "CadenceDefault";
+const DEFAULT_AVD_NAME: &str = "XeroDefault";
 const DEFAULT_DEVICE_PROFILE: &str = "pixel_6";
 
 /// Tauri event for the frontend progress panel. Distinct from

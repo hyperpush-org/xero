@@ -384,7 +384,7 @@ fn default_root() -> CommandResult<PathBuf> {
             "Could not resolve the OS data directory.",
         )
     })?;
-    Ok(data_dir.join("cadence").join("solana").join("snapshots"))
+    Ok(data_dir.join("xero").join("solana").join("snapshots"))
 }
 
 fn now_ms() -> u64 {

@@ -188,6 +188,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::project_files::write_project_file,
             commands::project_files::create_project_entry,
             commands::project_files::rename_project_entry,
+            commands::project_files::move_project_entry,
             commands::project_files::delete_project_entry,
             commands::search_project::search_project,
             commands::search_project::replace_in_project,
@@ -393,5 +394,5 @@ pub fn configure_builder<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
 pub fn run() {
     configure_builder(tauri::Builder::default())
         .run(tauri::generate_context!())
-        .expect("error while running Cadence desktop host");
+        .expect("error while running Xero desktop host");
 }

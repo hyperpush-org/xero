@@ -34,7 +34,7 @@ pub struct IosSdkStatus {
     pub idb_companion_present: bool,
     /// Host OS supports iOS Simulator (only macOS does).
     pub supported: bool,
-    /// Cadence has been granted Accessibility permission (macOS) — required
+    /// Xero has been granted Accessibility permission (macOS) — required
     /// for `CGEventPostToPid` to deliver taps to Simulator.app. Always `false`
     /// on non-macOS hosts.
     pub ax_permission_granted: bool,

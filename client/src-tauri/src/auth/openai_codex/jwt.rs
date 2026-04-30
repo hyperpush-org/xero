@@ -17,7 +17,7 @@ pub(super) fn extract_account_id(access_token: &str) -> Result<String, AuthFlowE
             AuthFlowError::terminal(
                 "account_id_missing",
                 RuntimeAuthPhase::Failed,
-                "Cadence could not extract the OpenAI account id from the access token.",
+                "Xero could not extract the OpenAI account id from the access token.",
             )
         })
 }
@@ -28,7 +28,7 @@ fn decode_jwt_payload(access_token: &str) -> Result<serde_json::Value, AuthFlowE
         return Err(AuthFlowError::terminal(
             "access_token_malformed",
             RuntimeAuthPhase::Failed,
-            "Cadence received a malformed OpenAI access token.",
+            "Xero received a malformed OpenAI access token.",
         ));
     }
 
@@ -36,7 +36,7 @@ fn decode_jwt_payload(access_token: &str) -> Result<serde_json::Value, AuthFlowE
         AuthFlowError::terminal(
             "access_token_malformed",
             RuntimeAuthPhase::Failed,
-            "Cadence could not base64url-decode the OpenAI access token payload.",
+            "Xero could not base64url-decode the OpenAI access token payload.",
         )
     })?;
 
@@ -44,7 +44,7 @@ fn decode_jwt_payload(access_token: &str) -> Result<serde_json::Value, AuthFlowE
         AuthFlowError::terminal(
             "access_token_malformed",
             RuntimeAuthPhase::Failed,
-            "Cadence could not parse the OpenAI access token payload JSON.",
+            "Xero could not parse the OpenAI access token payload JSON.",
         )
     })
 }

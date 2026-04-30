@@ -1,4 +1,4 @@
-# Joe
+# Xero
 
 To start your Phoenix server:
 

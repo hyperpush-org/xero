@@ -178,7 +178,7 @@ impl DefaultFundingBackend {
         if guard.is_none() {
             let built = Client::builder()
                 .timeout(Duration::from_secs(15))
-                .user_agent("cadence-solana-workbench/0.1")
+                .user_agent("xero-solana-workbench/0.1")
                 .build()
                 .map_err(|err| {
                     CommandError::system_fault(

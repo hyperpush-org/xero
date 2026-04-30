@@ -1,4 +1,4 @@
-import type { ListProjectFilesResponseDto, ProjectFileNodeDto } from '@/src/lib/cadence-model/project'
+import type { ListProjectFilesResponseDto, ProjectFileNodeDto } from '@/src/lib/xero-model/project'
 
 export interface FileSystemNode {
   id: string

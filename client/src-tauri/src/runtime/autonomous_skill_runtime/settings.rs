@@ -158,7 +158,7 @@ impl SkillSourceSettings {
         if self.local_roots.len() == before {
             return Err(CommandError::user_fixable(
                 "skill_source_local_root_not_found",
-                format!("Cadence could not find local skill root `{root_id}`."),
+                format!("Xero could not find local skill root `{root_id}`."),
             ));
         }
         self.updated_at = now_timestamp();
@@ -191,7 +191,7 @@ impl SkillSourceSettings {
         if self.plugin_roots.len() == before {
             return Err(CommandError::user_fixable(
                 "plugin_source_root_not_found",
-                format!("Cadence could not find plugin root `{root_id}`."),
+                format!("Xero could not find plugin root `{root_id}`."),
             ));
         }
         self.updated_at = now_timestamp();
@@ -243,7 +243,7 @@ impl SkillSourceSettings {
             return Err(CommandError::user_fixable(
                 "skill_source_settings_version_unsupported",
                 format!(
-                    "Cadence rejected skill source settings version `{}` because only version `{SKILL_SOURCE_SETTINGS_SCHEMA_VERSION}` is supported.",
+                    "Xero rejected skill source settings version `{}` because only version `{SKILL_SOURCE_SETTINGS_SCHEMA_VERSION}` is supported.",
                     self.version
                 ),
             ));
@@ -263,7 +263,7 @@ impl SkillSourceSettings {
                 return Err(CommandError::user_fixable(
                     "skill_source_settings_duplicate_root",
                     format!(
-                        "Cadence rejected duplicate local skill root id `{}`.",
+                        "Xero rejected duplicate local skill root id `{}`.",
                         root.root_id
                     ),
                 ));
@@ -272,7 +272,7 @@ impl SkillSourceSettings {
                 return Err(CommandError::user_fixable(
                     "skill_source_settings_duplicate_root",
                     format!(
-                        "Cadence rejected duplicate local skill root path `{}`.",
+                        "Xero rejected duplicate local skill root path `{}`.",
                         root.path
                     ),
                 ));
@@ -294,19 +294,13 @@ impl SkillSourceSettings {
             if !plugin_root_ids.insert(root.root_id.clone()) {
                 return Err(CommandError::user_fixable(
                     "plugin_source_settings_duplicate_root",
-                    format!(
-                        "Cadence rejected duplicate plugin root id `{}`.",
-                        root.root_id
-                    ),
+                    format!("Xero rejected duplicate plugin root id `{}`.", root.root_id),
                 ));
             }
             if !plugin_root_paths.insert(root.path.clone()) {
                 return Err(CommandError::user_fixable(
                     "plugin_source_settings_duplicate_root",
-                    format!(
-                        "Cadence rejected duplicate plugin root path `{}`.",
-                        root.path
-                    ),
+                    format!("Xero rejected duplicate plugin root path `{}`.", root.path),
                 ));
             }
             plugin_roots.push(root);
@@ -320,9 +314,7 @@ impl SkillSourceSettings {
             if !project_ids.insert(project_id.clone()) {
                 return Err(CommandError::user_fixable(
                     "skill_source_settings_duplicate_project",
-                    format!(
-                        "Cadence rejected duplicate project skill source setting `{project_id}`."
-                    ),
+                    format!("Xero rejected duplicate project skill source setting `{project_id}`."),
                 ));
             }
             projects.push(SkillProjectSourceSetting {
@@ -369,7 +361,7 @@ pub fn load_skill_source_settings_from_path(path: &Path) -> CommandResult<SkillS
         CommandError::user_fixable(
             "skill_source_settings_decode_failed",
             format!(
-                "Cadence could not decode skill source settings stored in the global database: {error}"
+                "Xero could not decode skill source settings stored in the global database: {error}"
             ),
         )
     })?;
@@ -384,7 +376,7 @@ pub fn persist_skill_source_settings(
     let payload = serde_json::to_string(&normalized).map_err(|error| {
         CommandError::system_fault(
             "skill_source_settings_serialize_failed",
-            format!("Cadence could not serialize the skill source settings update: {error}"),
+            format!("Xero could not serialize the skill source settings update: {error}"),
         )
     })?;
 
@@ -400,7 +392,7 @@ pub fn persist_skill_source_settings(
         .map_err(|error| {
             CommandError::retryable(
                 "skill_source_settings_write_failed",
-                format!("Cadence could not persist skill source settings: {error}"),
+                format!("Xero could not persist skill source settings: {error}"),
             )
         })?;
 
@@ -409,7 +401,7 @@ pub fn persist_skill_source_settings(
 
 fn default_local_root_settings() -> Vec<SkillLocalRootSetting> {
     dirs::data_dir()
-        .map(|data| data.join("dev.sn0w.cadence").join("skills"))
+        .map(|data| data.join("dev.sn0w.xero").join("skills"))
         .filter(|root| root.is_dir())
         .and_then(|root| {
             normalize_local_root_setting(None, root.to_string_lossy().into_owned(), true).ok()
@@ -420,7 +412,7 @@ fn default_local_root_settings() -> Vec<SkillLocalRootSetting> {
 
 fn default_plugin_root_settings() -> Vec<SkillPluginRootSetting> {
     dirs::data_dir()
-        .map(|data| data.join("dev.sn0w.cadence").join("plugins"))
+        .map(|data| data.join("dev.sn0w.xero").join("plugins"))
         .filter(|root| root.is_dir())
         .and_then(|root| {
             normalize_plugin_root_setting(None, root.to_string_lossy().into_owned(), true).ok()
@@ -448,14 +440,14 @@ fn normalize_local_root_setting_with_updated_at(
     if !path.is_absolute() {
         return Err(CommandError::user_fixable(
             "skill_source_path_unsafe",
-            "Cadence requires local skill directories to use absolute paths.",
+            "Xero requires local skill directories to use absolute paths.",
         ));
     }
     let canonical = fs::canonicalize(&path).map_err(|error| {
         CommandError::user_fixable(
             "skill_source_path_unavailable",
             format!(
-                "Cadence could not resolve local skill directory {}: {error}",
+                "Xero could not resolve local skill directory {}: {error}",
                 path.display()
             ),
         )
@@ -464,7 +456,7 @@ fn normalize_local_root_setting_with_updated_at(
         return Err(CommandError::user_fixable(
             "skill_source_path_unsafe",
             format!(
-                "Cadence rejected local skill source {} because it is not a directory.",
+                "Xero rejected local skill source {} because it is not a directory.",
                 canonical.display()
             ),
         ));
@@ -508,20 +500,20 @@ fn normalize_plugin_root_setting_with_updated_at(
     if !path.is_absolute() {
         return Err(CommandError::user_fixable(
             "plugin_source_path_unsafe",
-            "Cadence requires plugin directories to use absolute paths.",
+            "Xero requires plugin directories to use absolute paths.",
         ));
     }
     let canonical = fs::canonicalize(&path).map_err(|error| {
         CommandError::user_fixable(
             "plugin_source_path_unavailable",
-            format!("Cadence could not access plugin directory `{raw_path}`: {error}"),
+            format!("Xero could not access plugin directory `{raw_path}`: {error}"),
         )
     })?;
     if !canonical.is_dir() {
         return Err(CommandError::user_fixable(
             "plugin_source_path_unavailable",
             format!(
-                "Cadence requires plugin root `{}` to be a directory.",
+                "Xero requires plugin root `{}` to be a directory.",
                 canonical.display()
             ),
         ));
@@ -554,7 +546,7 @@ fn normalize_root_id(value: &str) -> CommandResult<String> {
     {
         return Err(CommandError::user_fixable(
             "skill_source_root_id_invalid",
-            "Cadence requires source root ids to be lowercase kebab-case values.",
+            "Xero requires source root ids to be lowercase kebab-case values.",
         ));
     }
     Ok(trimmed)

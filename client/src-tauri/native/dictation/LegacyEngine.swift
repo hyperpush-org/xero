@@ -3,25 +3,25 @@ import Dispatch
 import Foundation
 import Speech
 
-private struct CadenceLegacyRecognitionFailure {
+private struct XeroLegacyRecognitionFailure {
     let domain: String
     let code: Int
     let message: String
 }
 
-private struct CadenceLegacyRecognitionUpdate {
+private struct XeroLegacyRecognitionUpdate {
     let text: String?
     let isFinal: Bool
-    let failure: CadenceLegacyRecognitionFailure?
+    let failure: XeroLegacyRecognitionFailure?
 }
 
-private struct CadenceLegacyDictationError: Error {
+private struct XeroLegacyDictationError: Error {
     let code: String
     let message: String
     let retryable: Bool
 }
 
-final class CadenceLegacyDictationEngine {
+final class XeroLegacyDictationEngine {
     private enum LifecycleState {
         case created
         case started
@@ -71,9 +71,9 @@ final class CadenceLegacyDictationEngine {
         self.privacyMode = privacyMode
         self.contextualPhrases = contextualPhrases
         self.emitPayload = emit
-        self.controlQueue = DispatchQueue(label: "dev.cadence.dictation.legacy.\(sessionId)")
+        self.controlQueue = DispatchQueue(label: "dev.xero.dictation.legacy.\(sessionId)")
         self.controlQueue.setSpecific(key: controlQueueKey, value: ())
-        self.resultQueue.name = "dev.cadence.dictation.legacy.\(sessionId).results"
+        self.resultQueue.name = "dev.xero.dictation.legacy.\(sessionId).results"
         self.resultQueue.maxConcurrentOperationCount = 1
         self.resultQueue.qualityOfService = .userInitiated
     }
@@ -82,19 +82,19 @@ final class CadenceLegacyDictationEngine {
         forceCleanup()
     }
 
-    func start() -> CadenceDictationOperationResponse {
+    func start() -> XeroDictationOperationResponse {
         performSync {
             startOnQueue()
         }
     }
 
-    func stop(reason: String) -> CadenceDictationOperationResponse {
+    func stop(reason: String) -> XeroDictationOperationResponse {
         performSync {
             stopOnQueue(cancelled: false, reason: reason)
         }
     }
 
-    func cancel() -> CadenceDictationOperationResponse {
+    func cancel() -> XeroDictationOperationResponse {
         performSync {
             stopOnQueue(cancelled: true, reason: "cancelled")
         }
@@ -108,11 +108,11 @@ final class CadenceLegacyDictationEngine {
         return controlQueue.sync(execute: body)
     }
 
-    private func startOnQueue() -> CadenceDictationOperationResponse {
+    private func startOnQueue() -> XeroDictationOperationResponse {
         guard #available(macOS 10.15, *) else {
             return .failure(
                 code: "dictation_legacy_runtime_unavailable",
-                message: "Cadence legacy dictation requires macOS 10.15 or newer.",
+                message: "Xero legacy dictation requires macOS 10.15 or newer.",
                 retryable: false
             )
         }
@@ -125,7 +125,7 @@ final class CadenceLegacyDictationEngine {
         case .stopped:
             return .failure(
                 code: "dictation_session_stopped",
-                message: "Cadence cannot start a dictation session after it has already stopped.",
+                message: "Xero cannot start a dictation session after it has already stopped.",
                 retryable: false
             )
         }
@@ -142,15 +142,15 @@ final class CadenceLegacyDictationEngine {
 
             let requestedLocale = Locale(identifier: localeIdentifier)
             guard let recognizer = SFSpeechRecognizer(locale: requestedLocale) else {
-                throw CadenceLegacyDictationError(
+                throw XeroLegacyDictationError(
                     code: "dictation_legacy_locale_unsupported",
-                    message: "Cadence could not create a legacy speech recognizer for \(localeIdentifier).",
+                    message: "Xero could not create a legacy speech recognizer for \(localeIdentifier).",
                     retryable: false
                 )
             }
 
             guard recognizer.isAvailable else {
-                throw CadenceLegacyDictationError(
+                throw XeroLegacyDictationError(
                     code: "dictation_legacy_recognizer_unavailable",
                     message: "Legacy Apple speech recognition is not currently available for \(recognizer.locale.identifier).",
                     retryable: true
@@ -179,7 +179,7 @@ final class CadenceLegacyDictationEngine {
             ])
 
             return .success(sessionId: sessionId, engine: "legacy", locale: recognizer.locale.identifier)
-        } catch let error as CadenceLegacyDictationError {
+        } catch let error as XeroLegacyDictationError {
             cleanupRecognitionOnQueue(cancelTask: true)
             state = .stopped
             return .failure(code: error.code, message: error.message, retryable: error.retryable)
@@ -188,13 +188,13 @@ final class CadenceLegacyDictationEngine {
             state = .stopped
             return .failure(
                 code: "dictation_legacy_start_failed",
-                message: "Cadence could not start legacy dictation: \(error.localizedDescription)",
+                message: "Xero could not start legacy dictation: \(error.localizedDescription)",
                 retryable: true
             )
         }
     }
 
-    private func stopOnQueue(cancelled: Bool, reason: String) -> CadenceDictationOperationResponse {
+    private func stopOnQueue(cancelled: Bool, reason: String) -> XeroDictationOperationResponse {
         switch state {
         case .created:
             state = .stopped
@@ -247,9 +247,9 @@ final class CadenceLegacyDictationEngine {
 
     private func ensurePrivacyPromptCanRun(key: String, code: String, label: String) throws {
         guard privacyUsageDescriptionVisibleToTcc(key) else {
-            throw CadenceLegacyDictationError(
+            throw XeroLegacyDictationError(
                 code: code,
-                message: "Cadence cannot request \(label) permission because macOS cannot see the app privacy usage string. Restart with pnpm run dev:tauri so the dev runner signs the Tauri binary, or use a bundled Cadence build.",
+                message: "Xero cannot request \(label) permission because macOS cannot see the app privacy usage string. Restart with pnpm run dev:tauri so the dev runner signs the Tauri binary, or use a bundled Xero build.",
                 retryable: false
             )
         }
@@ -257,17 +257,17 @@ final class CadenceLegacyDictationEngine {
 
     private func validatePermissions(_ permissions: (microphone: String, speech: String)) throws {
         guard permissions.microphone == "authorized" else {
-            throw CadenceLegacyDictationError(
+            throw XeroLegacyDictationError(
                 code: "dictation_microphone_permission_denied",
-                message: "Cadence needs microphone permission before it can start dictation.",
+                message: "Xero needs microphone permission before it can start dictation.",
                 retryable: false
             )
         }
 
         guard permissions.speech == "authorized" else {
-            throw CadenceLegacyDictationError(
+            throw XeroLegacyDictationError(
                 code: "dictation_speech_permission_denied",
-                message: "Cadence needs speech recognition permission before it can start dictation.",
+                message: "Xero needs speech recognition permission before it can start dictation.",
                 retryable: false
             )
         }
@@ -279,16 +279,16 @@ final class CadenceLegacyDictationEngine {
             requiresOnDeviceRecognition = false
         case "on_device_required":
             guard recognizer.supportsOnDeviceRecognition else {
-                throw CadenceLegacyDictationError(
+                throw XeroLegacyDictationError(
                     code: "dictation_legacy_on_device_unavailable",
-                    message: "Cadence could not start legacy dictation because on-device recognition is unavailable for \(recognizer.locale.identifier).",
+                    message: "Xero could not start legacy dictation because on-device recognition is unavailable for \(recognizer.locale.identifier).",
                     retryable: false
                 )
             }
             requiresOnDeviceRecognition = true
         default:
             guard recognizer.supportsOnDeviceRecognition else {
-                throw CadenceLegacyDictationError(
+                throw XeroLegacyDictationError(
                     code: "dictation_legacy_network_recognition_required",
                     message: "On-device legacy dictation is unavailable for \(recognizer.locale.identifier). Allow Apple server recognition to use this locale.",
                     retryable: false
@@ -300,9 +300,9 @@ final class CadenceLegacyDictationEngine {
 
     private func startRecognitionTaskOnQueue() throws {
         guard let recognizer else {
-            throw CadenceLegacyDictationError(
+            throw XeroLegacyDictationError(
                 code: "dictation_legacy_recognizer_missing",
-                message: "Cadence could not start legacy dictation because the speech recognizer was unavailable.",
+                message: "Xero could not start legacy dictation because the speech recognizer was unavailable.",
                 retryable: true
             )
         }
@@ -325,12 +325,12 @@ final class CadenceLegacyDictationEngine {
         recognitionRequest = request
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            let update = CadenceLegacyRecognitionUpdate(
+            let update = XeroLegacyRecognitionUpdate(
                 text: result?.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines),
                 isFinal: result?.isFinal ?? false,
                 failure: error.map { error in
                     let nsError = error as NSError
-                    return CadenceLegacyRecognitionFailure(
+                    return XeroLegacyRecognitionFailure(
                         domain: nsError.domain,
                         code: nsError.code,
                         message: nsError.localizedDescription
@@ -360,9 +360,9 @@ final class CadenceLegacyDictationEngine {
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw CadenceLegacyDictationError(
+            throw XeroLegacyDictationError(
                 code: "dictation_legacy_audio_format_unavailable",
-                message: "Cadence could not find a microphone audio format for legacy dictation.",
+                message: "Xero could not find a microphone audio format for legacy dictation.",
                 retryable: true
             )
         }
@@ -377,21 +377,21 @@ final class CadenceLegacyDictationEngine {
             try audioEngine.start()
         } catch {
             stopAudioCaptureOnQueue()
-            throw CadenceLegacyDictationError(
+            throw XeroLegacyDictationError(
                 code: "dictation_legacy_audio_capture_failed",
-                message: "Cadence could not start microphone capture for legacy dictation: \(error.localizedDescription)",
+                message: "Xero could not start microphone capture for legacy dictation: \(error.localizedDescription)",
                 retryable: true
             )
         }
     }
 
-    private func handleRecognitionCallback(_ update: CadenceLegacyRecognitionUpdate, generation taskGeneration: UInt64) {
+    private func handleRecognitionCallback(_ update: XeroLegacyRecognitionUpdate, generation taskGeneration: UInt64) {
         controlQueue.async { [weak self] in
             self?.handleRecognitionOnQueue(update, generation: taskGeneration)
         }
     }
 
-    private func handleRecognitionOnQueue(_ update: CadenceLegacyRecognitionUpdate, generation taskGeneration: UInt64) {
+    private func handleRecognitionOnQueue(_ update: XeroLegacyRecognitionUpdate, generation taskGeneration: UInt64) {
         guard taskGeneration == generation else {
             return
         }
@@ -457,12 +457,12 @@ final class CadenceLegacyDictationEngine {
             stopCurrentTaskForRolloverOnQueue()
             do {
                 try startRecognitionTaskOnQueue()
-            } catch let error as CadenceLegacyDictationError {
+            } catch let error as XeroLegacyDictationError {
                 emitTerminalErrorOnQueue(code: error.code, message: error.message, retryable: error.retryable)
             } catch {
                 emitTerminalErrorOnQueue(
                     code: "dictation_legacy_rollover_failed",
-                    message: "Cadence could not continue legacy dictation: \(error.localizedDescription)",
+                    message: "Xero could not continue legacy dictation: \(error.localizedDescription)",
                     retryable: true
                 )
             }
@@ -570,17 +570,17 @@ final class CadenceLegacyDictationEngine {
         ])
     }
 
-    private func mapRecognitionFailure(_ failure: CadenceLegacyRecognitionFailure) -> CadenceLegacyDictationError {
+    private func mapRecognitionFailure(_ failure: XeroLegacyRecognitionFailure) -> XeroLegacyDictationError {
         if failure.code == 1700 {
-            return CadenceLegacyDictationError(
+            return XeroLegacyDictationError(
                 code: "dictation_speech_permission_denied",
-                message: "Cadence needs speech recognition permission before it can continue dictation.",
+                message: "Xero needs speech recognition permission before it can continue dictation.",
                 retryable: false
             )
         }
 
         if failure.domain == "kLSRErrorDomain", failure.code == 201 {
-            return CadenceLegacyDictationError(
+            return XeroLegacyDictationError(
                 code: "dictation_legacy_dictation_disabled",
                 message: "Apple dictation appears to be disabled in System Settings.",
                 retryable: false
@@ -588,7 +588,7 @@ final class CadenceLegacyDictationEngine {
         }
 
         if failure.domain == "kLSRErrorDomain", failure.code == 102 {
-            return CadenceLegacyDictationError(
+            return XeroLegacyDictationError(
                 code: "dictation_legacy_assets_missing",
                 message: "Apple speech assets are missing for legacy on-device dictation.",
                 retryable: true
@@ -596,7 +596,7 @@ final class CadenceLegacyDictationEngine {
         }
 
         let retryableCodes: Set<Int> = [203, 300, 1100, 1101, 1107, 1110]
-        return CadenceLegacyDictationError(
+        return XeroLegacyDictationError(
             code: "dictation_legacy_recognition_failed",
             message: "Legacy dictation stopped unexpectedly: \(failure.message)",
             retryable: retryableCodes.contains(failure.code)
@@ -605,7 +605,7 @@ final class CadenceLegacyDictationEngine {
 
     private func normalizedContextualPhrases() -> [String] {
         let appPhrases = [
-            "Cadence",
+            "Xero",
             "Tauri",
             "ShadCN",
             "OpenAI",

@@ -23,8 +23,8 @@ use crate::commands::{CommandError, CommandResult};
 
 const PROBE_TIMEOUT_SECS: u64 = 5;
 const INSTALL_TIMEOUT_SECS: u64 = 1_800;
-const TOOLCHAIN_ROOT_ENV: &str = "CADENCE_SOLANA_TOOLCHAIN_ROOT";
-const TOOLCHAIN_RESOURCE_ROOT_ENV: &str = "CADENCE_SOLANA_RESOURCE_ROOT";
+const TOOLCHAIN_ROOT_ENV: &str = "XERO_SOLANA_TOOLCHAIN_ROOT";
+const TOOLCHAIN_RESOURCE_ROOT_ENV: &str = "XERO_SOLANA_RESOURCE_ROOT";
 const AGAVE_VERSION: &str = "v3.1.13";
 const ANCHOR_VERSION: &str = "v1.0.0";
 const ANCHOR_VERSION_FILENAME: &str = "1.0.0";
@@ -621,8 +621,8 @@ fn managed_root() -> PathBuf {
         return PathBuf::from(path);
     }
     dirs::data_dir()
-        .map(|dir| dir.join("cadence").join("solana").join("toolchain"))
-        .unwrap_or_else(|| env::temp_dir().join("cadence-solana-toolchain"))
+        .map(|dir| dir.join("xero").join("solana").join("toolchain"))
+        .unwrap_or_else(|| env::temp_dir().join("xero-solana-toolchain"))
 }
 
 fn tool_dirs_from_root(root: &Path) -> Vec<PathBuf> {
@@ -1023,7 +1023,7 @@ mod tests {
 
     #[test]
     fn root_dirs_include_expected_agave_layout() {
-        let root = PathBuf::from("/tmp/cadence-solana");
+        let root = PathBuf::from("/tmp/xero-solana");
         let dirs = tool_dirs_from_root(&root);
         assert!(dirs.contains(
             &root

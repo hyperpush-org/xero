@@ -1,17 +1,17 @@
-func cadenceDictationModernCompiled() -> Bool {
+func xeroDictationModernCompiled() -> Bool {
     false
 }
 
-func cadenceDictationModernRuntimeSupported() -> Bool {
+func xeroDictationModernRuntimeSupported() -> Bool {
     false
 }
 
-func cadenceDictationModernAssetProbe(localeIdentifier: String) -> (status: String, localeIdentifier: String?, reason: String?) {
+func xeroDictationModernAssetProbe(localeIdentifier: String) -> (status: String, localeIdentifier: String?, reason: String?) {
     _ = localeIdentifier
     return ("unavailable", nil, "modern_sdk_unavailable")
 }
 
-final class CadenceModernDictationEngine {
+final class XeroModernDictationEngine {
     init(
         sessionId: String,
         localeIdentifier: String,
@@ -26,20 +26,20 @@ final class CadenceModernDictationEngine {
         _ = emit
     }
 
-    func start() -> CadenceDictationOperationResponse {
+    func start() -> XeroDictationOperationResponse {
         .failure(
             code: "dictation_modern_sdk_unavailable",
-            message: "Cadence was built with a macOS SDK that does not include SpeechAnalyzer.",
+            message: "Xero was built with a macOS SDK that does not include SpeechAnalyzer.",
             retryable: false
         )
     }
 
-    func stop(reason: String) -> CadenceDictationOperationResponse {
+    func stop(reason: String) -> XeroDictationOperationResponse {
         _ = reason
         return .success()
     }
 
-    func cancel() -> CadenceDictationOperationResponse {
+    func cancel() -> XeroDictationOperationResponse {
         .success()
     }
 }

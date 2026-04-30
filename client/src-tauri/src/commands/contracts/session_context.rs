@@ -15,9 +15,9 @@ use super::runtime::{
     RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
 };
 
-pub const CADENCE_SESSION_CONTEXT_CONTRACT_VERSION: u32 = 1;
+pub const XERO_SESSION_CONTEXT_CONTRACT_VERSION: u32 = 1;
 
-const REDACTED_TEXT: &str = "Cadence redacted sensitive session-context text.";
+const REDACTED_TEXT: &str = "Xero redacted sensitive session-context text.";
 const REDACTED_PATH: &str = "[redacted-path]";
 const DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT: u8 = 80;
 
@@ -67,7 +67,7 @@ pub enum SessionTranscriptActorDto {
     Assistant,
     Tool,
     Runtime,
-    Cadence,
+    Xero,
     Operator,
 }
 
@@ -732,7 +732,7 @@ pub fn session_compaction_record_dto(record: &AgentCompactionRecord) -> SessionC
         .map(|diagnostic| diagnostic.redaction.clone())
         .unwrap_or_else(SessionContextRedactionDto::public);
     SessionCompactionRecordDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         compaction_id: record.compaction_id.clone(),
         project_id: record.project_id.clone(),
         agent_session_id: record.agent_session_id.clone(),
@@ -777,7 +777,7 @@ pub fn session_memory_record_dto(record: &AgentMemoryRecord) -> SessionMemoryRec
         .map(|diagnostic| diagnostic.redaction.clone())
         .unwrap_or_else(SessionContextRedactionDto::public);
     SessionMemoryRecordDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         memory_id: record.memory_id.clone(),
         project_id: record.project_id.clone(),
         agent_session_id: record.agent_session_id.clone(),
@@ -839,7 +839,7 @@ pub fn run_transcript_from_agent_snapshot(
         source_rank: 5,
         source_id: 0,
         item: SessionTranscriptItemDto {
-            contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+            contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
             item_id: format!("run_prompt:{}", snapshot.run.run_id),
             project_id: snapshot.run.project_id.clone(),
             agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -873,7 +873,7 @@ pub fn run_transcript_from_agent_snapshot(
             source_rank: 10,
             source_id: message.id,
             item: SessionTranscriptItemDto {
-                contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+                contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
                 item_id: format!("message:{}", message.id),
                 project_id: message.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -910,7 +910,7 @@ pub fn run_transcript_from_agent_snapshot(
             source_rank: 20,
             source_id: event.id,
             item: SessionTranscriptItemDto {
-                contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+                contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
                 item_id: format!("event:{}", event.id),
                 project_id: event.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -945,7 +945,7 @@ pub fn run_transcript_from_agent_snapshot(
             source_rank: 30,
             source_id: 0,
             item: SessionTranscriptItemDto {
-                contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+                contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
                 item_id: format!("tool_call:{}", tool_call.tool_call_id),
                 project_id: tool_call.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -980,7 +980,7 @@ pub fn run_transcript_from_agent_snapshot(
             source_rank: 40,
             source_id: file_change.id,
             item: SessionTranscriptItemDto {
-                contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+                contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
                 item_id: format!("file_change:{}", file_change.id),
                 project_id: file_change.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -993,7 +993,7 @@ pub fn run_transcript_from_agent_snapshot(
                 sequence: 0,
                 created_at: file_change.created_at.clone(),
                 kind: SessionTranscriptItemKindDto::FileChange,
-                actor: SessionTranscriptActorDto::Cadence,
+                actor: SessionTranscriptActorDto::Xero,
                 title: Some("File changed".into()),
                 text: None,
                 summary: Some(format!("{}: {}", file_change.operation, path)),
@@ -1015,7 +1015,7 @@ pub fn run_transcript_from_agent_snapshot(
             source_rank: 50,
             source_id: checkpoint.id,
             item: SessionTranscriptItemDto {
-                contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+                contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
                 item_id: format!("checkpoint:{}", checkpoint.id),
                 project_id: checkpoint.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -1028,7 +1028,7 @@ pub fn run_transcript_from_agent_snapshot(
                 sequence: 0,
                 created_at: checkpoint.created_at.clone(),
                 kind: SessionTranscriptItemKindDto::Checkpoint,
-                actor: SessionTranscriptActorDto::Cadence,
+                actor: SessionTranscriptActorDto::Xero,
                 title: Some("Checkpoint".into()),
                 text: None,
                 summary: Some(summary),
@@ -1050,7 +1050,7 @@ pub fn run_transcript_from_agent_snapshot(
             source_rank: 60,
             source_id: 0,
             item: SessionTranscriptItemDto {
-                contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+                contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
                 item_id: format!("action_request:{}", action.action_id),
                 project_id: action.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
@@ -1090,7 +1090,7 @@ pub fn run_transcript_from_agent_snapshot(
 
     let redaction = combine_redactions(items.iter().map(|item| &item.redaction));
     RunTranscriptDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         project_id: snapshot.run.project_id.clone(),
         agent_session_id: snapshot.run.agent_session_id.clone(),
         run_id: snapshot.run.run_id.clone(),
@@ -1151,7 +1151,7 @@ pub fn run_transcript_from_runtime_stream_items(
     }
     let redaction = combine_redactions(transcript_items.iter().map(|item| &item.redaction));
     RunTranscriptDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         project_id,
         agent_session_id,
         run_id,
@@ -1216,7 +1216,7 @@ pub fn session_transcript_from_runs(
     );
     let usage_totals = aggregate_usage_totals(&run_summaries);
     SessionTranscriptDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         project_id: session.project_id.clone(),
         agent_session_id: session.agent_session_id.clone(),
         title,
@@ -1290,7 +1290,7 @@ pub fn evaluate_compaction_policy(
             SessionContextPolicyActionDto::Skipped,
             Some(SessionCompactionTriggerDto::Auto),
             "context_budget_unknown",
-            "Cadence cannot decide auto-compact pressure because the provider context budget is unknown.",
+            "Xero cannot decide auto-compact pressure because the provider context budget is unknown.",
             true,
             false,
         );
@@ -1474,7 +1474,7 @@ pub fn provider_context_budget_tokens(provider_id: &str, model_id: &str) -> Opti
 }
 
 pub fn validate_run_transcript_contract(transcript: &RunTranscriptDto) -> Result<(), String> {
-    if transcript.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+    if transcript.contract_version != XERO_SESSION_CONTEXT_CONTRACT_VERSION {
         return Err("run transcript contract version is unsupported".into());
     }
     let mut previous_sequence = 0_u64;
@@ -1502,7 +1502,7 @@ pub fn validate_run_transcript_contract(transcript: &RunTranscriptDto) -> Result
 pub fn validate_session_transcript_contract(
     transcript: &SessionTranscriptDto,
 ) -> Result<(), String> {
-    if transcript.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+    if transcript.contract_version != XERO_SESSION_CONTEXT_CONTRACT_VERSION {
         return Err("session transcript contract version is unsupported".into());
     }
     if transcript.archived && transcript.archived_at.is_none() {
@@ -1533,7 +1533,7 @@ pub fn validate_session_transcript_contract(
 pub fn validate_export_payload_contract(
     payload: &SessionTranscriptExportPayloadDto,
 ) -> Result<(), String> {
-    if payload.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+    if payload.contract_version != XERO_SESSION_CONTEXT_CONTRACT_VERSION {
         return Err("session transcript export contract version is unsupported".into());
     }
     validate_session_transcript_contract(&payload.transcript)?;
@@ -1543,7 +1543,7 @@ pub fn validate_export_payload_contract(
 pub fn validate_context_snapshot_contract(
     snapshot: &SessionContextSnapshotDto,
 ) -> Result<(), String> {
-    if snapshot.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+    if snapshot.contract_version != XERO_SESSION_CONTEXT_CONTRACT_VERSION {
         return Err("context snapshot contract version is unsupported".into());
     }
     let mut previous_sequence = 0_u64;
@@ -1562,7 +1562,7 @@ pub fn validate_context_snapshot_contract(
 pub fn validate_session_compaction_record_contract(
     compaction: &SessionCompactionRecordDto,
 ) -> Result<(), String> {
-    if compaction.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+    if compaction.contract_version != XERO_SESSION_CONTEXT_CONTRACT_VERSION {
         return Err("session compaction contract version is unsupported".into());
     }
     if compaction.covered_run_ids.is_empty() {
@@ -1598,7 +1598,7 @@ pub fn validate_session_compaction_record_contract(
 pub fn validate_session_memory_record_contract(
     memory: &SessionMemoryRecordDto,
 ) -> Result<(), String> {
-    if memory.contract_version != CADENCE_SESSION_CONTEXT_CONTRACT_VERSION {
+    if memory.contract_version != XERO_SESSION_CONTEXT_CONTRACT_VERSION {
         return Err("session memory contract version is unsupported".into());
     }
     if memory.text.trim().is_empty() {
@@ -1682,7 +1682,7 @@ fn actor_from_event(kind: &AgentRunEventKind) -> SessionTranscriptActorDto {
         | AgentRunEventKind::ToolDelta
         | AgentRunEventKind::ToolCompleted => SessionTranscriptActorDto::Tool,
         AgentRunEventKind::ActionRequired => SessionTranscriptActorDto::Operator,
-        _ => SessionTranscriptActorDto::Cadence,
+        _ => SessionTranscriptActorDto::Xero,
     }
 }
 
@@ -1781,7 +1781,7 @@ fn runtime_stream_transcript_item(
         .map(|(value, _)| value);
     let redaction = text_redaction;
     SessionTranscriptItemDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         item_id: format!("runtime_stream:{}:{}", item.run_id, item.sequence),
         project_id: project_id.into(),
         agent_session_id: agent_session_id.into(),
@@ -2022,7 +2022,7 @@ fn find_session_context_sensitive_content(value: &str) -> Option<&'static str> {
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
     {
-        return Some("raw PTY byte sequences");
+        return Some("raw terminal byte sequences");
     }
 
     None
@@ -2187,7 +2187,7 @@ fn policy_decision(
 ) -> SessionContextPolicyDecisionDto {
     let (message, redaction) = sanitize_context_text(message);
     SessionContextPolicyDecisionDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         decision_id: decision_id.into(),
         kind: SessionContextPolicyDecisionKindDto::Compaction,
         action,
@@ -2209,7 +2209,7 @@ pub fn memory_policy_decision(
 ) -> SessionContextPolicyDecisionDto {
     let (message, redaction) = sanitize_context_text(message.as_ref());
     SessionContextPolicyDecisionDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         decision_id: decision_id.into(),
         kind: SessionContextPolicyDecisionKindDto::MemoryInjection,
         action,

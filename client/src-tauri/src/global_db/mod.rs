@@ -12,7 +12,7 @@ use crate::commands::CommandError;
 pub mod migrations;
 pub mod permissions;
 
-pub const GLOBAL_DATABASE_FILE_NAME: &str = "cadence.db";
+pub const GLOBAL_DATABASE_FILE_NAME: &str = "xero.db";
 
 pub fn global_database_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(GLOBAL_DATABASE_FILE_NAME)
@@ -24,7 +24,7 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
             CommandError::retryable(
                 "global_database_dir_unavailable",
                 format!(
-                    "Cadence could not prepare the app-data directory at {}: {error}",
+                    "Xero could not prepare the app-data directory at {}: {error}",
                     parent.display()
                 ),
             )
@@ -36,7 +36,7 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
         CommandError::retryable(
             "global_database_open_failed",
             format!(
-                "Cadence could not open the global database at {}: {error}",
+                "Xero could not open the global database at {}: {error}",
                 database_path.display()
             ),
         )
@@ -57,7 +57,7 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
                 CommandError::retryable(
                     "global_database_open_failed",
                     format!(
-                        "Cadence could not recreate the global database at {}: {error}",
+                        "Xero could not recreate the global database at {}: {error}",
                         database_path.display()
                     ),
                 )
@@ -80,7 +80,7 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
         .map_err(|error| {
             CommandError::system_fault(
                 "global_database_configuration_failed",
-                format!("Cadence could not configure SQLite busy timeout: {error}"),
+                format!("Xero could not configure SQLite busy timeout: {error}"),
             )
         })?;
 
@@ -93,7 +93,7 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
         .map_err(|error| {
             CommandError::system_fault(
                 "global_database_configuration_failed",
-                format!("Cadence could not configure SQLite pragmas: {error}"),
+                format!("Xero could not configure SQLite pragmas: {error}"),
             )
         })
 }
@@ -102,7 +102,7 @@ fn global_database_migration_error(database_path: &Path, error: MigrationError) 
     CommandError::system_fault(
         "global_database_migration_failed",
         format!(
-            "Cadence could not initialize the global database at {}. The local app state may need to be reset: {error}",
+            "Xero could not initialize the global database at {}. The local app state may need to be reset: {error}",
             database_path.display()
         ),
     )
@@ -131,7 +131,7 @@ fn quarantine_incompatible_database(
         CommandError::retryable(
             "global_database_backup_failed",
             format!(
-                "Cadence found pre-release app state from an incompatible build at {} but could not move it aside to {}: {error}",
+                "Xero found pre-release app state from an incompatible build at {} but could not move it aside to {}: {error}",
                 database_path.display(),
                 backup_path.display(),
             ),
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn open_global_database_creates_file_and_migrates() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
-        let database_path = tempdir.path().join("cadence.db");
+        let database_path = tempdir.path().join("xero.db");
 
         let connection = open_global_database(&database_path).expect("open and migrate");
         assert!(database_path.exists(), "database file should exist on disk");
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn open_global_database_is_idempotent() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
-        let database_path = tempdir.path().join("cadence.db");
+        let database_path = tempdir.path().join("xero.db");
 
         {
             let _ = open_global_database(&database_path).expect("first open");
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn open_global_database_rebuilds_incompatible_pre_release_state() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
-        let database_path = tempdir.path().join("cadence.db");
+        let database_path = tempdir.path().join("xero.db");
 
         {
             let connection = Connection::open(&database_path).expect("open old db");
@@ -304,10 +304,7 @@ mod tests {
             "incompatible pre-release state should be moved aside before rebuilding"
         );
         assert!(
-            tempdir
-                .path()
-                .join("cadence.db.incompatible-v99.bak")
-                .exists(),
+            tempdir.path().join("xero.db.incompatible-v99.bak").exists(),
             "the incompatible database should be quarantined for inspection"
         );
     }

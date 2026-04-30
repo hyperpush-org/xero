@@ -104,7 +104,7 @@ fn map_projection_registry_error(
     };
 
     let message = format!(
-        "Cadence rejected runtime MCP projection data at {} because validation failed: {} ({}).",
+        "Xero rejected runtime MCP projection data at {} because validation failed: {} ({}).",
         path.display(),
         error.message,
         error.code,
@@ -130,7 +130,7 @@ fn assert_projection_registry_connected(
         return Err(CommandError::user_fixable(
             projection_disconnected_code(context),
             format!(
-                "Cadence rejected runtime MCP projection contract at {} because server `{}` had non-connected status `{:?}`.",
+                "Xero rejected runtime MCP projection contract at {} because server `{}` had non-connected status `{:?}`.",
                 path.display(),
                 disconnected.id,
                 disconnected.connection.status,

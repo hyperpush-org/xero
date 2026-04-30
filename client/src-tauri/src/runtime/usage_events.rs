@@ -4,7 +4,7 @@
 //! At app boot, `lib.rs` registers a closure that captures the global
 //! `AppHandle` and forwards calls to `tauri::Emitter::emit`. The provider loop
 //! then calls `emit_agent_usage_updated()` after persisting a usage row, and
-//! the frontend (`useCadenceDesktopState`) listens on `agent_usage_updated`
+//! the frontend (`useXeroDesktopState`) listens on `agent_usage_updated`
 //! to refresh the spend totals shown in the footer + sidebar.
 
 use std::sync::OnceLock;

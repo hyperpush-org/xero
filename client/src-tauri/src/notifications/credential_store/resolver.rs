@@ -27,20 +27,20 @@ impl NotificationCredentialResolver for FileNotificationCredentialStore {
             .find(|entry| entry.project_id == project_id && entry.route_id == route_id)
         else {
             return Err(NotificationAdapterError::credentials_missing(format!(
-                "Cadence has no app-local credentials for notification route `{route_id}` in project `{project_id}`."
+                "Xero has no app-local credentials for notification route `{route_id}` in project `{project_id}`."
             )));
         };
 
         let parsed_entry_kind =
             NotificationRouteKind::parse(entry.route_kind.as_str()).map_err(|_| {
                 NotificationAdapterError::credentials_malformed(format!(
-                    "Cadence found malformed app-local credentials for route `{route_id}` because `route_kind` was not `telegram` or `discord`."
+                    "Xero found malformed app-local credentials for route `{route_id}` because `route_kind` was not `telegram` or `discord`."
                 ))
             })?;
 
         if parsed_entry_kind != route_kind {
             return Err(NotificationAdapterError::credentials_malformed(format!(
-                "Cadence found app-local credentials for route `{route_id}` with kind `{}` but expected `{}`.",
+                "Xero found app-local credentials for route `{route_id}` with kind `{}` but expected `{}`.",
                 parsed_entry_kind.as_str(),
                 route_kind.as_str()
             )));
@@ -114,7 +114,7 @@ impl NotificationCredentialResolver for FileNotificationCredentialStore {
         let cursor = cursor.trim();
         if cursor.is_empty() {
             return Err(NotificationAdapterError::payload_invalid(
-                "Cadence requires non-empty inbound cursor values before persisting adapter replay state.",
+                "Xero requires non-empty inbound cursor values before persisting adapter replay state.",
             ));
         }
 

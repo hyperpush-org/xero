@@ -188,9 +188,9 @@ fn is_safe_segment(segment: &str) -> bool {
 
 fn default_program_archive_root() -> PathBuf {
     if let Some(dir) = dirs::data_dir() {
-        return dir.join("cadence/solana/program-archive");
+        return dir.join("xero/solana/program-archive");
     }
-    std::env::temp_dir().join("cadence-solana-program-archive")
+    std::env::temp_dir().join("xero-solana-program-archive")
 }
 
 fn json_response<T: Serialize + ?Sized>(value: &T) -> http::Response<Vec<u8>> {

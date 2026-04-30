@@ -36,7 +36,7 @@ use crate::{
         SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
         SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptScopeDto,
         SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
-        UpdateSessionMemoryRequestDto, CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        UpdateSessionMemoryRequestDto, XERO_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
         self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
@@ -117,7 +117,7 @@ pub fn export_session_transcript<R: Runtime>(
         SessionTranscriptScopeDto::Session
     };
     let payload = SessionTranscriptExportPayloadDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         export_id: format!(
             "session-export:{}:{}:{}",
             transcript.project_id, transcript.agent_session_id, generated_at
@@ -132,7 +132,7 @@ pub fn export_session_transcript<R: Runtime>(
     validate_export_payload_contract(&payload).map_err(|details| {
         CommandError::system_fault(
             "session_transcript_export_invalid",
-            format!("Cadence could not create a valid transcript export: {details}"),
+            format!("Xero could not create a valid transcript export: {details}"),
         )
     })?;
 
@@ -141,7 +141,7 @@ pub fn export_session_transcript<R: Runtime>(
             serde_json::to_string_pretty(&payload).map_err(|error| {
                 CommandError::system_fault(
                     "session_transcript_export_serialize_failed",
-                    format!("Cadence could not serialize the session transcript export: {error}"),
+                    format!("Xero could not serialize the session transcript export: {error}"),
                 )
             })?,
             "application/json".to_string(),
@@ -178,7 +178,7 @@ pub fn save_session_transcript_export(
             return Err(CommandError::user_fixable(
                 "session_transcript_export_parent_missing",
                 format!(
-                    "Cadence cannot save the transcript because `{}` does not exist.",
+                    "Xero cannot save the transcript because `{}` does not exist.",
                     parent.display()
                 ),
             ));
@@ -189,7 +189,7 @@ pub fn save_session_transcript_export(
         CommandError::retryable(
             "session_transcript_export_write_failed",
             format!(
-                "Cadence could not write the transcript export to `{}`: {error}",
+                "Xero could not write the transcript export to `{}`: {error}",
                 path.display()
             ),
         )
@@ -306,7 +306,7 @@ pub fn compact_session_history<R: Runtime>(
     validate_session_compaction_record_contract(&response.compaction).map_err(|details| {
         CommandError::system_fault(
             "session_compaction_invalid",
-            format!("Cadence generated an invalid session compaction record: {details}"),
+            format!("Xero generated an invalid session compaction record: {details}"),
         )
     })?;
     Ok(response)
@@ -394,7 +394,7 @@ pub fn list_session_memories<R: Runtime>(
         validate_session_memory_record_contract(memory).map_err(|details| {
             CommandError::system_fault(
                 "session_memory_invalid",
-                format!("Cadence projected an invalid memory record: {details}"),
+                format!("Xero projected an invalid memory record: {details}"),
             )
         })?;
     }
@@ -474,7 +474,7 @@ pub fn update_session_memory<R: Runtime>(
     validate_session_memory_record_contract(&dto).map_err(|details| {
         CommandError::system_fault(
             "session_memory_invalid",
-            format!("Cadence projected an invalid memory record: {details}"),
+            format!("Xero projected an invalid memory record: {details}"),
         )
     })?;
     Ok(dto)
@@ -587,7 +587,7 @@ fn build_session_transcript(
     validate_session_transcript_contract(&transcript).map_err(|details| {
         CommandError::system_fault(
             "session_transcript_invalid",
-            format!("Cadence projected an invalid session transcript: {details}"),
+            format!("Xero projected an invalid session transcript: {details}"),
         )
     })?;
     Ok(transcript)
@@ -742,7 +742,7 @@ fn build_session_context_snapshot(
             .chain(policy_decisions.iter().map(|decision| &decision.redaction)),
     );
     let snapshot = SessionContextSnapshotDto {
-        contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         snapshot_id: format!(
             "context:{}:{}:{}:{}",
             project_id,
@@ -766,7 +766,7 @@ fn build_session_context_snapshot(
     validate_context_snapshot_contract(&snapshot).map_err(|details| {
         CommandError::system_fault(
             "session_context_snapshot_invalid",
-            format!("Cadence projected an invalid context snapshot: {details}"),
+            format!("Xero projected an invalid context snapshot: {details}"),
         )
     })?;
     Ok(snapshot)
@@ -790,7 +790,7 @@ pub(crate) fn compact_session_history_with_provider(
         return Err(CommandError::user_fixable(
             "session_compaction_no_runs",
             format!(
-                "Cadence cannot compact session `{}` because it does not have any owned-agent runs yet.",
+                "Xero cannot compact session `{}` because it does not have any owned-agent runs yet.",
                 session.agent_session_id
             ),
         ));
@@ -812,7 +812,7 @@ pub(crate) fn compact_session_history_with_provider(
         return Err(CommandError::user_fixable(
             "session_compaction_provider_mismatch",
             format!(
-                "Cadence cannot compact session `{agent_session_id}` with `{}/{}` because the selected run uses `{}/{}`.",
+                "Xero cannot compact session `{agent_session_id}` with `{}/{}` because the selected run uses `{}/{}`.",
                 provider.provider_id(),
                 provider.model_id(),
                 latest_snapshot.run.provider_id,
@@ -828,7 +828,7 @@ pub(crate) fn compact_session_history_with_provider(
     if source.covered_messages.is_empty() {
         return Err(CommandError::user_fixable(
             "session_compaction_not_needed",
-            "Cadence needs more recorded conversation before a manual compaction would reduce replay context.",
+            "Xero needs more recorded conversation before a manual compaction would reduce replay context.",
         ));
     }
 
@@ -854,7 +854,7 @@ pub(crate) fn compact_session_history_with_provider(
     if summary_redaction.redacted {
         return Err(CommandError::retryable(
             "session_compaction_summary_redacted",
-            "The provider returned a compaction summary that looked secret-bearing, so Cadence refused to save it.",
+            "The provider returned a compaction summary that looked secret-bearing, so Xero refused to save it.",
         ));
     }
 
@@ -913,7 +913,7 @@ fn extract_session_memory_candidates_with_provider(
     if completed_snapshots.is_empty() {
         return Err(CommandError::user_fixable(
             "session_memory_no_completed_runs",
-            "Cadence needs at least one completed owned-agent run before it can propose reviewed memory.",
+            "Xero needs at least one completed owned-agent run before it can propose reviewed memory.",
         ));
     }
 
@@ -991,7 +991,7 @@ fn extract_session_memory_candidates_with_provider(
         validate_session_memory_record_contract(memory).map_err(|details| {
             CommandError::system_fault(
                 "session_memory_invalid",
-                format!("Cadence projected an invalid memory record: {details}"),
+                format!("Xero projected an invalid memory record: {details}"),
             )
         })?;
     }
@@ -1038,7 +1038,7 @@ fn build_memory_extraction_source(
     let source_run_id = run_transcripts.last().map(|run| run.run_id.clone());
     let mut source_item_ids = Vec::new();
     let mut transcript = String::from(
-        "Review this completed Cadence session transcript for durable memory candidates.\n",
+        "Review this completed Xero session transcript for durable memory candidates.\n",
     );
     for run in &run_transcripts {
         transcript.push_str(&format!(
@@ -1085,7 +1085,7 @@ impl SessionTranscriptItemActorLabel for SessionTranscriptItemDto {
             crate::commands::SessionTranscriptActorDto::Assistant => "assistant",
             crate::commands::SessionTranscriptActorDto::Tool => "tool",
             crate::commands::SessionTranscriptActorDto::Runtime => "runtime",
-            crate::commands::SessionTranscriptActorDto::Cadence => "cadence",
+            crate::commands::SessionTranscriptActorDto::Xero => "xero",
             crate::commands::SessionTranscriptActorDto::Operator => "operator",
         }
     }
@@ -1121,7 +1121,7 @@ fn prepare_new_memory_candidate(
     if confidence < MIN_MEMORY_CONFIDENCE {
         return Err(session_memory_diagnostic_dto(
             "session_memory_candidate_low_confidence",
-            "Cadence skipped a low-confidence memory candidate.",
+            "Xero skipped a low-confidence memory candidate.",
         ));
     }
     let (_redacted_text, redaction) = redact_session_context_text(&text);
@@ -1168,12 +1168,12 @@ fn memory_context_blocked_error(
     {
         (
             "session_memory_integrity_blocked",
-            "Cadence will not approve memory text that tries to override system, developer, or tool instructions.",
+            "Xero will not approve memory text that tries to override system, developer, or tool instructions.",
         )
     } else {
         (
             "session_memory_secret_blocked",
-            "Cadence will not approve memory text that looks secret-bearing.",
+            "Xero will not approve memory text that looks secret-bearing.",
         )
     }
 }
@@ -1188,12 +1188,12 @@ fn memory_candidate_blocked_diagnostic(
     {
         (
             "session_memory_candidate_integrity",
-            "Cadence skipped a memory candidate because it looked like an instruction-override attempt.",
+            "Xero skipped a memory candidate because it looked like an instruction-override attempt.",
         )
     } else {
         (
             "session_memory_candidate_secret",
-            "Cadence skipped a memory candidate because its text looked secret-bearing.",
+            "Xero skipped a memory candidate because its text looked secret-bearing.",
         )
     }
 }
@@ -1320,7 +1320,7 @@ fn render_compaction_transcript(
     covered_messages: &[&AgentMessageRecord],
 ) -> CommandResult<String> {
     let mut output = String::new();
-    output.push_str("Compact the following Cadence session history for replay.\n");
+    output.push_str("Compact the following Xero session history for replay.\n");
     output.push_str("Raw transcript rows stay durable; unresolved actions remain unresolved.\n\n");
     for (snapshot, usage) in snapshots {
         if !covered_run_ids.contains(&snapshot.run.run_id) {
@@ -1575,7 +1575,7 @@ fn tool_descriptor_estimate_text(descriptor: &AgentToolDescriptor) -> CommandRes
     serde_json::to_string(descriptor).map_err(|error| {
         CommandError::system_fault(
             "session_context_tool_descriptor_serialize_failed",
-            format!("Cadence could not estimate a tool descriptor context contribution: {error}"),
+            format!("Xero could not estimate a tool descriptor context contribution: {error}"),
         )
     })
 }
@@ -1989,7 +1989,7 @@ fn ensure_run_belongs_to_session(
     Err(CommandError::user_fixable(
         "agent_run_session_mismatch",
         format!(
-            "Cadence found owned-agent run `{}` but it does not belong to session `{agent_session_id}`.",
+            "Xero found owned-agent run `{}` but it does not belong to session `{agent_session_id}`.",
             snapshot.run.run_id
         ),
     ))
@@ -1999,7 +1999,7 @@ fn missing_session_error(project_id: &str, agent_session_id: &str) -> CommandErr
     CommandError::user_fixable(
         "agent_session_not_found",
         format!(
-            "Cadence could not find agent session `{agent_session_id}` for project `{project_id}`."
+            "Xero could not find agent session `{agent_session_id}` for project `{project_id}`."
         ),
     )
 }
@@ -2150,7 +2150,7 @@ fn sanitize_file_segment(value: &str) -> String {
         .trim_matches('-')
         .to_string();
     if segment.is_empty() {
-        "cadence".into()
+        "xero".into()
     } else {
         segment.chars().take(64).collect()
     }
@@ -2459,7 +2459,7 @@ fn search_rows_with_sqlite(
         let matched_fields: String = row.get(6)?;
         let snippet: String = row.get(7)?;
         Ok(SessionTranscriptSearchResultSnippetDto {
-            contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+            contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
             result_id: result_id.clone(),
             project_id: row.get(1)?,
             agent_session_id: row.get(2)?,
@@ -2505,7 +2505,7 @@ fn search_rows_fallback(
         .into_iter()
         .take(limit)
         .map(|(_, row)| SessionTranscriptSearchResultSnippetDto {
-            contract_version: CADENCE_SESSION_CONTEXT_CONTRACT_VERSION,
+            contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
             result_id: row.result_id.clone(),
             project_id: row.project_id.clone(),
             agent_session_id: row.agent_session_id.clone(),

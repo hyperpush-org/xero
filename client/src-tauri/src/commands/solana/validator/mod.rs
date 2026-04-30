@@ -317,7 +317,7 @@ mod tests {
             let ledger = opts
                 .ledger_dir
                 .clone()
-                .unwrap_or_else(|| std::env::temp_dir().join("cadence-solana-test"));
+                .unwrap_or_else(|| std::env::temp_dir().join("xero-solana-test"));
             let handle = ClusterHandle {
                 kind,
                 rpc_url: format!("http://127.0.0.1:{rpc_port}"),

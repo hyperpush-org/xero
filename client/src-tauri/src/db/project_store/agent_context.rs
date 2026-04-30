@@ -88,7 +88,7 @@ pub fn insert_agent_compaction(
         CommandError::retryable(
             "agent_compaction_transaction_failed",
             format!(
-                "Cadence could not start the agent-compaction transaction in {}: {error}",
+                "Xero could not start the agent-compaction transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -151,7 +151,7 @@ pub fn insert_agent_compaction(
                 serde_json::to_string(&record.covered_run_ids).map_err(|error| {
                     CommandError::system_fault(
                         "agent_compaction_covered_runs_serialize_failed",
-                        format!("Cadence could not serialize compaction coverage: {error}"),
+                        format!("Xero could not serialize compaction coverage: {error}"),
                     )
                 })?,
                 record.covered_message_start_id,
@@ -174,7 +174,7 @@ pub fn insert_agent_compaction(
         CommandError::retryable(
             "agent_compaction_commit_failed",
             format!(
-                "Cadence could not commit the agent-compaction transaction in {}: {error}",
+                "Xero could not commit the agent-compaction transaction in {}: {error}",
                 database_path.display()
             ),
         )
@@ -286,7 +286,7 @@ fn read_agent_compaction_by_id(
         .ok_or_else(|| {
             CommandError::system_fault(
                 "agent_compaction_insert_missing",
-                "Cadence inserted a compaction record but could not load it back.",
+                "Xero inserted a compaction record but could not load it back.",
             )
         })
 }
@@ -388,7 +388,7 @@ fn diagnostic_json(
             .map_err(|error| {
                 CommandError::system_fault(
                     "agent_compaction_diagnostic_serialize_failed",
-                    format!("Cadence could not serialize compaction diagnostic metadata: {error}"),
+                    format!("Xero could not serialize compaction diagnostic metadata: {error}"),
                 )
             })
         })
@@ -406,7 +406,7 @@ fn parse_diagnostic_json(value: &str) -> Result<AgentRunDiagnosticRecord, serde_
         message: value
             .get("message")
             .and_then(|value| value.as_str())
-            .unwrap_or("Cadence could not decode compaction diagnostic details.")
+            .unwrap_or("Xero could not decode compaction diagnostic details.")
             .to_string(),
     })
 }
@@ -495,13 +495,13 @@ fn parse_agent_compaction_trigger(value: &str) -> AgentCompactionTrigger {
 fn map_agent_compaction_read_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "agent_compaction_read_failed",
-        format!("Cadence could not read session compaction records: {error}"),
+        format!("Xero could not read session compaction records: {error}"),
     )
 }
 
 fn map_agent_compaction_write_error(error: rusqlite::Error) -> CommandError {
     CommandError::retryable(
         "agent_compaction_write_failed",
-        format!("Cadence could not write session compaction records: {error}"),
+        format!("Xero could not write session compaction records: {error}"),
     )
 }

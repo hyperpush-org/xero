@@ -1,4 +1,4 @@
-defmodule Joe.Repo.Migrations.CreateGithubAuthSessions do
+defmodule Xero.Repo.Migrations.CreateGithubAuthSessions do
   use Ecto.Migration
 
   def change do

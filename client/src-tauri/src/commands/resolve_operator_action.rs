@@ -51,7 +51,7 @@ fn parse_operator_action_decision(value: &str) -> CommandResult<OperatorApproval
         other => Err(CommandError::user_fixable(
             "operator_action_decision_unsupported",
             format!(
-                "Cadence does not support operator decision `{other}`. Allowed decisions: approve, reject."
+                "Xero does not support operator decision `{other}`. Allowed decisions: approve, reject."
             ),
         )),
     }

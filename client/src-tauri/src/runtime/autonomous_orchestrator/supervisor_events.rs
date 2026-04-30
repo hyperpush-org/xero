@@ -30,7 +30,7 @@ pub fn persist_supervisor_event(
             return Err(CommandError::retryable(
                 "autonomous_live_event_run_mismatch",
                 format!(
-                    "Cadence refused to persist live supervisor event state because the durable autonomous run `{}` does not match active runtime run `{}` for project `{project_id}`.",
+                    "Xero refused to persist live supervisor event state because the durable autonomous run `{}` does not match active runtime run `{}` for project `{project_id}`.",
                     snapshot.run.run_id, runtime_snapshot.run.run_id,
                 ),
             ));

@@ -22,7 +22,7 @@ pub(super) fn parse_authorization_input(
         let url = Url::parse(value).map_err(|_| {
             AuthFlowError::invalid_manual_input(
                 "malformed_redirect_url",
-                "Cadence could not parse the pasted OpenAI redirect URL.",
+                "Xero could not parse the pasted OpenAI redirect URL.",
             )
         })?;
 

@@ -8,17 +8,17 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use cadence_desktop_lib::commands::solana::persona::fund::FundingDelta;
-use cadence_desktop_lib::commands::solana::persona::roles::PersonaRole;
-use cadence_desktop_lib::commands::solana::toolchain::{ToolProbe, ToolchainStatus};
-use cadence_desktop_lib::commands::solana::{
+use xero_desktop_lib::commands::solana::persona::fund::FundingDelta;
+use xero_desktop_lib::commands::solana::persona::roles::PersonaRole;
+use xero_desktop_lib::commands::solana::toolchain::{ToolProbe, ToolchainStatus};
+use xero_desktop_lib::commands::solana::{
     self, create_token, generate_wallet_scaffold, mint_metaplex_nft, token_extension_matrix,
     wallet_descriptors, ClusterKind, MetaplexMintInvocation, MetaplexMintOutcome,
     MetaplexMintRequest, MetaplexMintRunner, MetaplexStandard, PersonaSpec, TokenCreateInvocation,
     TokenCreateOutcome, TokenCreateRunner, TokenCreateSpec, TokenExtension, TokenExtensionConfig,
     TokenProgram, TokenServices, WalletKind, WalletScaffoldRequest,
 };
-use cadence_desktop_lib::commands::CommandResult;
+use xero_desktop_lib::commands::CommandResult;
 
 use super::support::{fixture_with_persona_store, FixtureState};
 
@@ -125,7 +125,7 @@ pub fn token_create_argv_preserves_transfer_fee_config() {
     }));
     let services: Arc<TokenServices> = Arc::new(TokenServices {
         token: Arc::clone(&runner) as Arc<dyn TokenCreateRunner>,
-        metaplex: Arc::new(cadence_desktop_lib::commands::solana::SystemMetaplexRunner::new()),
+        metaplex: Arc::new(xero_desktop_lib::commands::solana::SystemMetaplexRunner::new()),
     });
     let state = fixture.state.with_token_services(services);
 
@@ -183,7 +183,7 @@ pub fn token_create_reports_transfer_hook_incompatibilities() {
     }));
     let services: Arc<TokenServices> = Arc::new(TokenServices {
         token: Arc::clone(&runner) as Arc<dyn TokenCreateRunner>,
-        metaplex: Arc::new(cadence_desktop_lib::commands::solana::SystemMetaplexRunner::new()),
+        metaplex: Arc::new(xero_desktop_lib::commands::solana::SystemMetaplexRunner::new()),
     });
     let state = fixture.state.with_token_services(services);
     let authority = state
@@ -227,7 +227,7 @@ pub fn token_create_rejects_extensions_on_classic_program() {
     }));
     let services: Arc<TokenServices> = Arc::new(TokenServices {
         token: Arc::clone(&runner) as Arc<dyn TokenCreateRunner>,
-        metaplex: Arc::new(cadence_desktop_lib::commands::solana::SystemMetaplexRunner::new()),
+        metaplex: Arc::new(xero_desktop_lib::commands::solana::SystemMetaplexRunner::new()),
     });
     let state = fixture.state.with_token_services(services);
     let authority = state
@@ -267,14 +267,14 @@ pub fn metaplex_mint_materialises_worker_and_passes_env() {
         exit_code: Some(0),
         success: true,
         stdout:
-            "CADENCE_MINT_RESULT {\"mint\":\"4Rf9mGD7FeYknun5JczX5nGLTfQuS1GRjNVfkEMKE92b\",\"signature\":\"SigXYZ\"}"
+            "XERO_MINT_RESULT {\"mint\":\"4Rf9mGD7FeYknun5JczX5nGLTfQuS1GRjNVfkEMKE92b\",\"signature\":\"SigXYZ\"}"
                 .into(),
         stderr: String::new(),
         mint_address: None,
         signature: None,
     }));
     let services: Arc<TokenServices> = Arc::new(TokenServices {
-        token: Arc::new(cadence_desktop_lib::commands::solana::SystemTokenCreateRunner::new()),
+        token: Arc::new(xero_desktop_lib::commands::solana::SystemTokenCreateRunner::new()),
         metaplex: Arc::clone(&runner) as Arc<dyn MetaplexMintRunner>,
     });
     let tmp = tempfile::TempDir::new().unwrap();
@@ -322,9 +322,9 @@ pub fn metaplex_mint_materialises_worker_and_passes_env() {
     assert!(captured[0].worker_path.exists());
     // Authority env var points at the persona's keypair file.
     let env_map: std::collections::BTreeMap<_, _> = captured[0].envs.iter().cloned().collect();
-    assert!(env_map.contains_key::<std::ffi::OsString>(&"CADENCE_AUTHORITY".into()));
+    assert!(env_map.contains_key::<std::ffi::OsString>(&"XERO_AUTHORITY".into()));
     let authority_env = env_map
-        .get::<std::ffi::OsString>(&"CADENCE_AUTHORITY".into())
+        .get::<std::ffi::OsString>(&"XERO_AUTHORITY".into())
         .unwrap();
     assert_eq!(
         authority_env.to_string_lossy().as_ref(),
@@ -344,7 +344,7 @@ pub fn metaplex_mint_rejects_overlong_symbol() {
         signature: None,
     }));
     let services: Arc<TokenServices> = Arc::new(TokenServices {
-        token: Arc::new(cadence_desktop_lib::commands::solana::SystemTokenCreateRunner::new()),
+        token: Arc::new(xero_desktop_lib::commands::solana::SystemTokenCreateRunner::new()),
         metaplex: Arc::clone(&runner) as Arc<dyn MetaplexMintRunner>,
     });
     let tmp = tempfile::TempDir::new().unwrap();

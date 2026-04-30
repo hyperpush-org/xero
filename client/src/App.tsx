@@ -1,42 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AgentRuntime } from '@/components/cadence/agent-runtime'
-import { SetupEmptyState } from '@/components/cadence/agent-runtime/setup-empty-state'
-import { AgentSessionsSidebar } from '@/components/cadence/agent-sessions-sidebar'
-import { ArchivedSessionsDialog } from '@/components/cadence/archived-sessions-dialog'
-import { type View } from '@/components/cadence/data'
-import { EmptyPanel } from '@/components/cadence/empty-panel'
-import { ExecutionView } from '@/components/cadence/execution-view'
-import { NoProjectEmptyState } from '@/components/cadence/no-project-empty-state'
-import { OnboardingFlow } from '@/components/cadence/onboarding/onboarding-flow'
-import { ProjectLoadErrorState } from '@/components/cadence/project-load-error-state'
-import { PhaseView } from '@/components/cadence/phase-view'
-import { ProjectRail } from '@/components/cadence/project-rail'
-import { CadenceShell, type PlatformVariant } from '@/components/cadence/shell'
-import type { StatusFooterProps } from '@/components/cadence/status-footer'
-import { GamesSidebar } from '@/components/cadence/games-sidebar'
-import { BrowserSidebar } from '@/components/cadence/browser-sidebar'
-import { IosEmulatorSidebar } from '@/components/cadence/ios-emulator-sidebar'
-import { AndroidEmulatorSidebar } from '@/components/cadence/android-emulator-sidebar'
-import { SolanaWorkbenchSidebar } from '@/components/cadence/solana-workbench-sidebar'
-import { SettingsDialog, type SettingsSection } from '@/components/cadence/settings-dialog'
-import { UsageStatsSidebar } from '@/components/cadence/usage-stats-sidebar'
-import { VcsSidebar } from '@/components/cadence/vcs-sidebar'
-import { CadenceDesktopAdapter as DefaultCadenceDesktopAdapter, type CadenceDesktopAdapter } from '@/src/lib/cadence-desktop'
-import { mapAgentSession } from '@/src/lib/cadence-model/runtime'
+import { AgentRuntime } from '@/components/xero/agent-runtime'
+import { SetupEmptyState } from '@/components/xero/agent-runtime/setup-empty-state'
+import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
+import { ArchivedSessionsDialog } from '@/components/xero/archived-sessions-dialog'
+import { type View } from '@/components/xero/data'
+import { LoadingScreen } from '@/components/xero/loading-screen'
+import { ExecutionView } from '@/components/xero/execution-view'
+import { NoProjectEmptyState } from '@/components/xero/no-project-empty-state'
+import { OnboardingFlow } from '@/components/xero/onboarding/onboarding-flow'
+import { ProjectLoadErrorState } from '@/components/xero/project-load-error-state'
+import { PhaseView } from '@/components/xero/phase-view'
+import { ProjectRail } from '@/components/xero/project-rail'
+import { XeroShell, type PlatformVariant } from '@/components/xero/shell'
+import type { StatusFooterProps } from '@/components/xero/status-footer'
+import { GamesSidebar } from '@/components/xero/games-sidebar'
+import { BrowserSidebar } from '@/components/xero/browser-sidebar'
+import { IosEmulatorSidebar } from '@/components/xero/ios-emulator-sidebar'
+import { AndroidEmulatorSidebar } from '@/components/xero/android-emulator-sidebar'
+import { SolanaWorkbenchSidebar } from '@/components/xero/solana-workbench-sidebar'
+import { SettingsDialog, type SettingsSection } from '@/components/xero/settings-dialog'
+import { UsageStatsSidebar } from '@/components/xero/usage-stats-sidebar'
+import { VcsSidebar } from '@/components/xero/vcs-sidebar'
+import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
+import { mapAgentSession } from '@/src/lib/xero-model/runtime'
 import type {
   SessionTranscriptSearchResultSnippetDto,
-} from '@/src/lib/cadence-model/session-context'
-import { type RepositoryDiffScope } from '@/src/lib/cadence-model/project'
-import { useCadenceDesktopState } from '@/src/features/cadence/use-cadence-desktop-state'
+} from '@/src/lib/xero-model/session-context'
+import { type RepositoryDiffScope } from '@/src/lib/xero-model/project'
+import { useXeroDesktopState } from '@/src/features/xero/use-xero-desktop-state'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { cn } from '@/lib/utils'
 
-export interface CadenceAppProps {
-  adapter?: CadenceDesktopAdapter
+export interface XeroAppProps {
+  adapter?: XeroDesktopAdapter
 }
 
-export function CadenceApp({ adapter }: CadenceAppProps) {
-  const resolvedAdapter = adapter ?? DefaultCadenceDesktopAdapter
+export function XeroApp({ adapter }: XeroAppProps) {
+  const resolvedAdapter = adapter ?? DefaultXeroDesktopAdapter
   const [activeView, setActiveViewRaw] = useState<View>('phases')
 
   // Tab switches simultaneously trigger the cross-fade of view panes AND the
@@ -94,8 +94,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     providerCredentialsLoadError,
     providerCredentialsSaveStatus,
     providerCredentialsSaveError,
-    providerModelCatalogs,
-    providerModelCatalogLoadStatuses,
     doctorReport,
     doctorReportStatus,
     doctorReportError,
@@ -122,6 +120,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     writeProjectFile,
     createProjectEntry,
     renameProjectEntry,
+    moveProjectEntry,
     deleteProjectEntry,
     searchProject,
     replaceInProject,
@@ -137,8 +136,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
-    refreshProviderModelCatalog,
-    checkProviderProfile,
     runDoctorReport,
     refreshProviderCredentials,
     upsertProviderCredential,
@@ -171,7 +168,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     renameAgentSession,
     activeUsageSummary,
     refreshUsageSummary,
-  } = useCadenceDesktopState({ adapter })
+  } = useXeroDesktopState({ adapter })
 
   const {
     session: githubSession,
@@ -286,7 +283,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
   const [explorerCollapsed, setExplorerCollapsed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     try {
-      return window.localStorage.getItem('cadence.explorer.collapsed') === '1'
+      return window.localStorage.getItem('xero.explorer.collapsed') === '1'
     } catch {
       return false
     }
@@ -296,7 +293,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
     if (typeof window === 'undefined') return
     try {
       window.localStorage.setItem(
-        'cadence.explorer.collapsed',
+        'xero.explorer.collapsed',
         explorerCollapsed ? '1' : '0',
       )
     } catch {
@@ -438,13 +435,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
 
   const renderBody = () => {
     if (isLoading && !activeProject) {
-      return (
-        <EmptyPanel
-          eyebrow="Loading"
-          title="Loading desktop project state"
-          body="Cadence is reading the imported projects, snapshot, and repository status from the desktop backend."
-        />
-      )
+      return <LoadingScreen />
     }
 
     if (!activeProject && errorMessage) {
@@ -569,6 +560,8 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
               <AgentRuntime
                 agent={agentView}
                 desktopAdapter={resolvedAdapter}
+                accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
+                accountLogin={githubSession?.user.login ?? null}
                 onLogout={() => logoutRuntimeSession()}
                 onOpenSettings={() => openSettings('providers')}
                 onOpenDiagnostics={() => openSettings('diagnostics')}
@@ -609,6 +602,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
                 writeProjectFile={writeProjectFile}
                 createProjectEntry={createProjectEntry}
                 renameProjectEntry={renameProjectEntry}
+                moveProjectEntry={moveProjectEntry}
                 deleteProjectEntry={deleteProjectEntry}
                 searchProject={searchProject}
                 replaceInProject={replaceInProject}
@@ -631,7 +625,7 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
 
   if (showOnboarding) {
     return (
-      <CadenceShell
+      <XeroShell
         activeView={activeView}
         onViewChange={setActiveView}
         projectName={activeProject?.name}
@@ -671,8 +665,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           providerCredentialsLoadError={providerCredentialsLoadError}
           providerCredentialsSaveStatus={providerCredentialsSaveStatus}
           providerCredentialsSaveError={providerCredentialsSaveError}
-          providerModelCatalogs={providerModelCatalogs}
-          providerModelCatalogLoadStatuses={providerModelCatalogLoadStatuses}
           runtimeSession={agentView?.runtimeSession ?? null}
           project={onboardingProject}
           isImporting={isImporting}
@@ -683,9 +675,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
           pendingNotificationRouteId={agentView?.pendingNotificationRouteId ?? null}
           notificationRouteMutationError={agentView?.notificationRouteMutationError ?? null}
           onImportProject={() => importProject()}
-          onRefreshProviderModelCatalog={(profileId, options) =>
-            refreshProviderModelCatalog(profileId, options)
-          }
           onRefreshProviderCredentials={(options) => refreshProviderCredentials(options)}
           onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
           onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
@@ -700,12 +689,12 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
             setOnboardingOpen(false)
           }}
         />
-      </CadenceShell>
+      </XeroShell>
     )
   }
 
   return (
-    <CadenceShell
+    <XeroShell
       activeView={activeView}
       onViewChange={setActiveView}
       projectName={activeProject?.name}
@@ -811,12 +800,6 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
         onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
         onStartOAuthLogin={(request) => startOAuthLogin(request)}
-        providerModelCatalogs={providerModelCatalogs}
-        providerModelCatalogLoadStatuses={providerModelCatalogLoadStatuses}
-        onRefreshProviderModelCatalog={(profileId, options) =>
-          refreshProviderModelCatalog(profileId, options)
-        }
-        onCheckProviderProfile={(profileId, options) => checkProviderProfile(profileId, options)}
         doctorReport={doctorReport}
         doctorReportStatus={doctorReportStatus}
         doctorReportError={doctorReportError}
@@ -868,10 +851,10 @@ export function CadenceApp({ adapter }: CadenceAppProps) {
         onGithubLogin={() => void loginWithGithub()}
         onGithubLogout={() => void logoutGithub()}
       />
-    </CadenceShell>
+    </XeroShell>
   )
 }
 
 export default function App() {
-  return <CadenceApp />
+  return <XeroApp />
 }

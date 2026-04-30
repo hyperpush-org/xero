@@ -1,11 +1,11 @@
 import Config
 
 # Configure your database
-config :joe, Joe.Repo,
+config :xero, Xero.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "joe_dev",
+  database: "xero_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -16,7 +16,7 @@ config :joe, Joe.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-config :joe, JoeWeb.Endpoint,
+config :xero, XeroWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
@@ -25,8 +25,8 @@ config :joe, JoeWeb.Endpoint,
   debug_errors: true,
   secret_key_base: "uGCY6CYIOezRsxd8m1DiGEWJJYIzWmX763tvG44xS4y8PkiFQUt7CkKrXcDI3MmD",
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:joe, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:joe, ~w(--watch)]}
+    esbuild: {Esbuild, :install_and_run, [:xero, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:xero, ~w(--watch)]}
   ]
 
 # ## SSL Support
@@ -53,7 +53,7 @@ config :joe, JoeWeb.Endpoint,
 # different ports.
 
 # Reload browser tabs when matching files change.
-config :joe, JoeWeb.Endpoint,
+config :xero, XeroWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
     patterns: [
@@ -62,13 +62,13 @@ config :joe, JoeWeb.Endpoint,
       # Gettext translations
       ~r"priv/gettext/.*\.po$",
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/joe_web/router\.ex$",
-      ~r"lib/joe_web/(controllers|live|components)/.*\.(ex|heex)$"
+      ~r"lib/xero_web/router\.ex$",
+      ~r"lib/xero_web/(controllers|live|components)/.*\.(ex|heex)$"
     ]
   ]
 
 # Enable dev routes for dashboard and mailbox
-config :joe, dev_routes: true
+config :xero, dev_routes: true
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

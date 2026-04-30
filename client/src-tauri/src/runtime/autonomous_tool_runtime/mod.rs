@@ -29,9 +29,9 @@ use super::autonomous_web_runtime::{
 
 use super::autonomous_skill_runtime::{
     load_skill_source_settings_from_path, AutonomousSkillRuntime, AutonomousSkillRuntimeConfig,
-    CadenceSkillSourceKind, CadenceSkillSourceState, CadenceSkillToolAccessDecision,
-    CadenceSkillToolContextPayload, CadenceSkillToolDiagnostic, CadenceSkillToolInput,
-    CadenceSkillToolLifecycleEvent, CadenceSkillToolOperation, CadenceSkillTrustState,
+    XeroSkillSourceKind, XeroSkillSourceState, XeroSkillToolAccessDecision,
+    XeroSkillToolContextPayload, XeroSkillToolDiagnostic, XeroSkillToolInput,
+    XeroSkillToolLifecycleEvent, XeroSkillToolOperation, XeroSkillTrustState,
 };
 use crate::{
     commands::{
@@ -352,7 +352,7 @@ impl AutonomousToolRuntime {
             _ => CommandError::system_fault(
                 "autonomous_tool_repo_root_unavailable",
                 format!(
-                    "Cadence could not access the imported repository root at {}: {error}",
+                    "Xero could not access the imported repository root at {}: {error}",
                     repo_root.display()
                 ),
             ),
@@ -994,7 +994,7 @@ pub enum AutonomousToolRequest {
     #[serde(rename = "powershell")]
     PowerShell(AutonomousPowerShellRequest),
     ToolSearch(AutonomousToolSearchRequest),
-    Skill(CadenceSkillToolInput),
+    Skill(XeroSkillToolInput),
     Browser(AutonomousBrowserRequest),
     Emulator(AutonomousEmulatorRequest),
     SolanaCluster(AutonomousSolanaClusterRequest),
@@ -1248,7 +1248,7 @@ pub enum AutonomousProcessManagerAction {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomousProcessOwnershipScope {
-    CadenceOwned,
+    XeroOwned,
     External,
 }
 
@@ -2441,7 +2441,7 @@ fn default_bundled_skill_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<Autonomous
         .filter(|root| root.is_dir())
         .map(|root| {
             vec![AutonomousBundledSkillRoot {
-                bundle_id: "cadence".into(),
+                bundle_id: "xero".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 root_path: root,
             }]
@@ -2478,31 +2478,31 @@ pub struct AutonomousSkillToolCandidate {
     pub skill_id: String,
     pub name: String,
     pub description: String,
-    pub source_kind: CadenceSkillSourceKind,
-    pub state: CadenceSkillSourceState,
-    pub trust: CadenceSkillTrustState,
+    pub source_kind: XeroSkillSourceKind,
+    pub state: XeroSkillSourceState,
+    pub trust: XeroSkillTrustState,
     pub enabled: bool,
     pub installed: bool,
     pub user_invocable: Option<bool>,
     pub version_hash: Option<String>,
     pub cache_key: Option<String>,
-    pub access: CadenceSkillToolAccessDecision,
+    pub access: XeroSkillToolAccessDecision,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousSkillToolOutput {
-    pub operation: CadenceSkillToolOperation,
+    pub operation: XeroSkillToolOperation,
     pub status: AutonomousSkillToolStatus,
     pub message: String,
     pub candidates: Vec<AutonomousSkillToolCandidate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected: Option<AutonomousSkillToolCandidate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<CadenceSkillToolContextPayload>,
+    pub context: Option<XeroSkillToolContextPayload>,
     #[serde(default)]
-    pub lifecycle_events: Vec<CadenceSkillToolLifecycleEvent>,
+    pub lifecycle_events: Vec<XeroSkillToolLifecycleEvent>,
     #[serde(default)]
-    pub diagnostics: Vec<CadenceSkillToolDiagnostic>,
+    pub diagnostics: Vec<XeroSkillToolDiagnostic>,
     pub truncated: bool,
 }

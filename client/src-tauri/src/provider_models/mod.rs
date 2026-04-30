@@ -278,7 +278,7 @@ pub fn load_provider_model_catalog<R: Runtime>(
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "provider_not_found",
-                format!("Cadence could not find provider `{profile_id}`."),
+                format!("Xero could not find provider `{profile_id}`."),
             )
         })?;
 
@@ -287,7 +287,15 @@ pub fn load_provider_model_catalog<R: Runtime>(
     let refresh_target = resolve_provider_model_catalog_refresh_target(&profile, state)
         .map_err(diagnostic_into_command_error)?;
     let expected_scope = refresh_target.cache_scope(&profile);
-    let cached_row = cache_load.requested_cache_row(&profile, &expected_scope);
+    let cache_supported = !matches!(
+        refresh_target,
+        ProviderModelCatalogRefreshTarget::OpenAiCodex
+    );
+    let cached_row = if cache_supported {
+        cache_load.requested_cache_row(&profile, &expected_scope)
+    } else {
+        None
+    };
     let cache_key = profile.provider_id.clone();
     let profile_diagnostic = readiness_diagnostic(&profile);
 
@@ -304,9 +312,13 @@ pub fn load_provider_model_catalog<R: Runtime>(
         }
     }
 
-    let cache_read_diagnostic = cache_load.requested_diagnostic(&cache_key);
+    let cache_read_diagnostic = if cache_supported {
+        cache_load.requested_diagnostic(&cache_key)
+    } else {
+        None
+    };
     let cache_catalogs = cache_load.catalogs.clone();
-    let cache_write_allowed = cache_load.write_allowed;
+    let cache_write_allowed = cache_supported && cache_load.write_allowed;
     let provider_profiles = provider_profiles.clone();
     let profile = profile.clone();
     let cache_path = cache_path.clone();
@@ -379,7 +391,7 @@ fn refresh_provider_model_catalog(
                 let diagnostic = ProviderModelCatalogDiagnostic {
                     code: "provider_credentials_unavailable".into(),
                     message: format!(
-                        "Cadence cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                        "Xero cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
                         profile.provider_id
                     ),
                     retryable: false,
@@ -498,15 +510,23 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
 
 fn openai_codex_thinking_capability(model_id: &str) -> ProviderModelThinkingCapability {
     let mut effort_options = vec![
+        ProviderModelThinkingEffort::Minimal,
         ProviderModelThinkingEffort::Low,
         ProviderModelThinkingEffort::Medium,
         ProviderModelThinkingEffort::High,
     ];
-    if model_id == "gpt-5.5" {
+    if openai_codex_supports_x_high_thinking(model_id) {
         effort_options.push(ProviderModelThinkingEffort::XHigh);
     }
 
     supported_thinking_capability(effort_options)
+}
+
+fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
+    let model_id = model_id.trim().to_ascii_lowercase();
+    ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
+        .iter()
+        .any(|marker| model_id.contains(marker))
 }
 
 #[cfg(test)]
@@ -514,7 +534,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openai_codex_projection_exposes_gpt_5_5_choice() {
+    fn openai_codex_projection_exposes_gsd_thinking_levels_for_openai_choices() {
         let models = openai_codex_projection();
         let model_ids = models
             .iter()
@@ -532,14 +552,58 @@ mod tests {
             ]
         );
 
+        for model in models {
+            assert_eq!(
+                model.thinking.effort_options,
+                vec![
+                    ProviderModelThinkingEffort::Minimal,
+                    ProviderModelThinkingEffort::Low,
+                    ProviderModelThinkingEffort::Medium,
+                    ProviderModelThinkingEffort::High,
+                    ProviderModelThinkingEffort::XHigh,
+                ],
+                "{} should expose GSD-style OpenAI Codex thinking levels",
+                model.model_id
+            );
+        }
+    }
+
+    #[test]
+    fn openai_codex_thinking_capability_matches_gsd_x_high_patch() {
+        assert_eq!(
+            openai_codex_thinking_capability("gpt-5.1").effort_options,
+            vec![
+                ProviderModelThinkingEffort::Minimal,
+                ProviderModelThinkingEffort::Low,
+                ProviderModelThinkingEffort::Medium,
+                ProviderModelThinkingEffort::High,
+            ]
+        );
+        assert_eq!(
+            openai_codex_thinking_capability("openai/gpt-5.4").effort_options,
+            vec![
+                ProviderModelThinkingEffort::Minimal,
+                ProviderModelThinkingEffort::Low,
+                ProviderModelThinkingEffort::Medium,
+                ProviderModelThinkingEffort::High,
+                ProviderModelThinkingEffort::XHigh,
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_codex_projection_exposes_gpt_5_5_display_name() {
+        let models = openai_codex_projection();
         let gpt_5_5 = models
             .iter()
             .find(|model| model.model_id == "gpt-5.5")
             .expect("gpt-5.5 model choice");
+
         assert_eq!(gpt_5_5.display_name, "GPT-5.5");
         assert_eq!(
             gpt_5_5.thinking.effort_options,
             vec![
+                ProviderModelThinkingEffort::Minimal,
                 ProviderModelThinkingEffort::Low,
                 ProviderModelThinkingEffort::Medium,
                 ProviderModelThinkingEffort::High,
@@ -843,7 +907,7 @@ fn resolve_provider_model_catalog_refresh_target(
         other => Err(ProviderModelCatalogDiagnostic {
             code: "provider_model_provider_unsupported".into(),
             message: format!(
-                "Cadence cannot discover models for provider `{other}` because that provider is not supported by the desktop host yet."
+                "Xero cannot discover models for provider `{other}` because that provider is not supported by the desktop host yet."
             ),
             retryable: false,
         }),
@@ -868,9 +932,7 @@ fn persist_provider_model_catalog_cache(
     let payload = serde_json::to_string(next).map_err(|error| {
         CommandError::system_fault(
             "provider_model_catalog_cache_serialize_failed",
-            format!(
-                "Cadence could not serialize the app-local provider-model catalog cache: {error}"
-            ),
+            format!("Xero could not serialize the app-local provider-model catalog cache: {error}"),
         )
     })?;
 
@@ -887,7 +949,7 @@ fn persist_provider_model_catalog_cache(
         .map_err(|error| {
             CommandError::retryable(
                 "provider_model_catalog_cache_write_failed",
-                format!("Cadence could not write provider model catalog cache row: {error}"),
+                format!("Xero could not write provider model catalog cache row: {error}"),
             )
         })?;
 
@@ -907,7 +969,7 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
             load.file_error = Some(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_read_failed".into(),
                 message: format!(
-                    "Cadence could not open the global database for the provider-model catalog cache at {}: {}",
+                    "Xero could not open the global database for the provider-model catalog cache at {}: {}",
                     path.display(),
                     error.message
                 ),
@@ -926,7 +988,7 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
             load.file_error = Some(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_read_failed".into(),
                 message: format!(
-                    "Cadence could not prepare provider-model catalog cache read: {error}"
+                    "Xero could not prepare provider-model catalog cache read: {error}"
                 ),
                 retryable: true,
             });
@@ -942,9 +1004,7 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
             load.write_allowed = false;
             load.file_error = Some(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_read_failed".into(),
-                message: format!(
-                    "Cadence could not read provider-model catalog cache rows: {error}"
-                ),
+                message: format!("Xero could not read provider-model catalog cache rows: {error}"),
                 retryable: true,
             });
             return load;
@@ -971,7 +1031,7 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
                             ProviderModelCatalogDiagnostic {
                                 code: "provider_model_catalog_cache_decode_failed".into(),
                                 message: format!(
-                                    "Cadence could not decode the cached provider-model catalog row for provider connection `{profile_id}`: {error}"
+                                    "Xero could not decode the cached provider-model catalog row for provider connection `{profile_id}`: {error}"
                                 ),
                                 retryable: false,
                             },
@@ -984,7 +1044,7 @@ fn load_provider_model_catalog_cache(path: &Path) -> ProviderModelCatalogCacheLo
                 load.file_error = Some(ProviderModelCatalogDiagnostic {
                     code: "provider_model_catalog_cache_read_failed".into(),
                     message: format!(
-                        "Cadence could not decode provider-model catalog cache row: {error}"
+                        "Xero could not decode provider-model catalog cache row: {error}"
                     ),
                     retryable: true,
                 });
@@ -1005,7 +1065,7 @@ fn validate_cached_catalog_row(
         return Err(ProviderModelCatalogDiagnostic {
             code: "provider_model_catalog_cache_invalid".into(),
             message: format!(
-                "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because providerId was blank.",
+                "Xero rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because providerId was blank.",
                 path.display()
             ),
             retryable: false,
@@ -1023,7 +1083,7 @@ fn validate_cached_catalog_row(
             return Err(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_invalid".into(),
                 message: format!(
-                    "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one cache-scope field was blank.",
+                    "Xero rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one cache-scope field was blank.",
                     path.display()
                 ),
                 retryable: false,
@@ -1036,7 +1096,7 @@ fn validate_cached_catalog_row(
             return Err(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_invalid".into(),
                 message: format!(
-                    "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one modelId was blank.",
+                    "Xero rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one modelId was blank.",
                     path.display()
                 ),
                 retryable: false,
@@ -1047,7 +1107,7 @@ fn validate_cached_catalog_row(
             return Err(ProviderModelCatalogDiagnostic {
                 code: "provider_model_catalog_cache_invalid".into(),
                 message: format!(
-                    "Cadence rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one displayName was blank.",
+                    "Xero rejected the cached provider-model catalog row for provider connection `{profile_id}` at {} because one displayName was blank.",
                     path.display()
                 ),
                 retryable: false,
@@ -1103,7 +1163,7 @@ fn readiness_diagnostic(
             OPENROUTER_PROVIDER_ID => ProviderModelCatalogDiagnostic {
                 code: "provider_credentials_unavailable".into(),
                 message: format!(
-                    "Cadence cannot discover OpenRouter models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                    "Xero cannot discover OpenRouter models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
                     profile.provider_id
                 ),
                 retryable: false,
@@ -1111,7 +1171,7 @@ fn readiness_diagnostic(
             ANTHROPIC_PROVIDER_ID => ProviderModelCatalogDiagnostic {
                 code: "provider_credentials_unavailable".into(),
                 message: format!(
-                    "Cadence cannot discover Anthropic models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                    "Xero cannot discover Anthropic models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
                     profile.provider_id
                 ),
                 retryable: false,
@@ -1124,7 +1184,7 @@ fn readiness_diagnostic(
                 ProviderModelCatalogDiagnostic {
                     code: "provider_credentials_unavailable".into(),
                     message: format!(
-                        "Cadence cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                        "Xero cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
                         profile.provider_id
                     ),
                     retryable: false,
@@ -1176,7 +1236,7 @@ fn missing_openrouter_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "openrouter_api_key_missing".into(),
         message: format!(
-            "Cadence cannot discover OpenRouter models for provider `{}` because no app-local API key is configured.",
+            "Xero cannot discover OpenRouter models for provider `{}` because no app-local API key is configured.",
             profile.provider_id
         ),
         retryable: false,
@@ -1189,7 +1249,7 @@ fn missing_anthropic_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "anthropic_api_key_missing".into(),
         message: format!(
-            "Cadence cannot discover Anthropic models for provider `{}` because no app-local API key is configured.",
+            "Xero cannot discover Anthropic models for provider `{}` because no app-local API key is configured.",
             profile.provider_id
         ),
         retryable: false,
@@ -1202,7 +1262,7 @@ fn missing_bedrock_ambient_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "bedrock_ambient_proof_missing".into(),
         message: format!(
-            "Cadence cannot validate Amazon Bedrock model availability for provider `{}` because its ambient readiness proof link is missing. Save the provider again so Cadence records ambient-auth intent.",
+            "Xero cannot validate Amazon Bedrock model availability for provider `{}` because its ambient readiness proof link is missing. Save the provider again so Xero records ambient-auth intent.",
             profile.provider_id
         ),
         retryable: false,
@@ -1215,7 +1275,7 @@ fn missing_vertex_ambient_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "vertex_ambient_proof_missing".into(),
         message: format!(
-            "Cadence cannot validate Google Vertex AI model availability for provider `{}` because its ambient readiness proof link is missing. Save the provider again so Cadence records ambient-auth intent.",
+            "Xero cannot validate Google Vertex AI model availability for provider `{}` because its ambient readiness proof link is missing. Save the provider again so Xero records ambient-auth intent.",
             profile.provider_id
         ),
         retryable: false,

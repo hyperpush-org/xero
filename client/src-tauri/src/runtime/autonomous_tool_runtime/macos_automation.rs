@@ -19,7 +19,7 @@ use super::{
 use crate::commands::{validate_non_empty, CommandError, CommandResult};
 
 const MACOS_AUTOMATION_PHASE: &str = "phase_7_macos_app_system_automation";
-const SCREENSHOT_ARTIFACT_DIR: &str = "cadence-macos-screenshots";
+const SCREENSHOT_ARTIFACT_DIR: &str = "xero-macos-screenshots";
 
 impl AutonomousToolRuntime {
     pub fn macos_automation(
@@ -45,7 +45,7 @@ impl AutonomousToolRuntime {
         let policy = macos_automation_policy_trace(request.action);
         if policy.approval_required && !operator_approved {
             let message = format!(
-                "Cadence paused `{}` because {}",
+                "Xero paused `{}` because {}",
                 macos_action_label(request.action),
                 policy.reason
             );
@@ -98,7 +98,7 @@ fn validate_macos_automation_request(
             if request.app_name.is_none() && request.bundle_id.is_none() {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_macos_app_target_required",
-                    "Cadence needs `appName` or `bundleId` to launch a macOS app.",
+                    "Xero needs `appName` or `bundleId` to launch a macOS app.",
                 ));
             }
         }
@@ -107,7 +107,7 @@ fn validate_macos_automation_request(
             if !has_app_target {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_macos_app_target_required",
-                    "Cadence needs `appName`, `bundleId`, or `pid` to target a macOS app.",
+                    "Xero needs `appName`, `bundleId`, or `pid` to target a macOS app.",
                 ));
             }
         }
@@ -115,7 +115,7 @@ fn validate_macos_automation_request(
             if request.window_id.is_none() && !has_app_target {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_macos_window_target_required",
-                    "Cadence needs `windowId`, `appName`, `bundleId`, or `pid` to focus a macOS window.",
+                    "Xero needs `windowId`, `appName`, `bundleId`, or `pid` to focus a macOS window.",
                 ));
             }
         }
@@ -185,7 +185,7 @@ fn run_macos_automation(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let message = "Cadence macOS automation is only available on macOS hosts.".to_string();
+        let message = "Xero macOS automation is only available on macOS hosts.".to_string();
         Ok(macos_automation_result(AutonomousMacosAutomationOutput {
             action: request.action,
             phase: MACOS_AUTOMATION_PHASE.into(),
@@ -224,7 +224,7 @@ fn screenshot_artifact_path(prefix: &str) -> CommandResult<PathBuf> {
     fs::create_dir_all(&root).map_err(|error| {
         CommandError::system_fault(
             "autonomous_tool_macos_screenshot_artifact_failed",
-            format!("Cadence could not create the macOS screenshot artifact directory: {error}"),
+            format!("Xero could not create the macOS screenshot artifact directory: {error}"),
         )
     })?;
     let millis = SystemTime::now()
@@ -232,7 +232,7 @@ fn screenshot_artifact_path(prefix: &str) -> CommandResult<PathBuf> {
         .map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_macos_screenshot_artifact_failed",
-                format!("Cadence could not timestamp the macOS screenshot artifact: {error}"),
+                format!("Xero could not timestamp the macOS screenshot artifact: {error}"),
             )
         })?
         .as_millis();
@@ -258,7 +258,7 @@ fn write_screenshot_artifact(
         .map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_macos_screenshot_encode_failed",
-                format!("Cadence could not encode the macOS screenshot as PNG: {error}"),
+                format!("Xero could not encode the macOS screenshot as PNG: {error}"),
             )
         })?;
     let bytes = buffer.into_inner();
@@ -266,7 +266,7 @@ fn write_screenshot_artifact(
     fs::write(&path, &bytes).map_err(|error| {
         CommandError::system_fault(
             "autonomous_tool_macos_screenshot_artifact_failed",
-            format!("Cadence could not write the macOS screenshot artifact: {error}"),
+            format!("Xero could not write the macOS screenshot artifact: {error}"),
         )
     })?;
 
@@ -398,7 +398,7 @@ mod macos {
                     AutonomousMacosAutomationAction::MacAppQuit,
                     AutonomousMacosAutomationAction::MacWindowFocus,
                 ],
-                detail: "Required when macOS needs Cadence to drive or focus external app UI.".into(),
+                detail: "Required when macOS needs Xero to drive or focus external app UI.".into(),
             },
             AutonomousMacosPermission {
                 name: "Screen Recording".into(),
@@ -418,7 +418,7 @@ mod macos {
                     AutonomousMacosAutomationAction::MacAppActivate,
                     AutonomousMacosAutomationAction::MacAppQuit,
                 ],
-                detail: "macOS grants Automation per target app, so Cadence reports it as unknown until an operation is attempted.".into(),
+                detail: "macOS grants Automation per target app, so Xero reports it as unknown until an operation is attempted.".into(),
             },
         ]
     }
@@ -503,7 +503,7 @@ mod macos {
 
             Err(CommandError::user_fixable(
                 "autonomous_tool_macos_app_not_found",
-                "Cadence could not find a running macOS app matching the requested target.",
+                "Xero could not find a running macOS app matching the requested target.",
             ))
         })
     }
@@ -519,7 +519,7 @@ mod macos {
         let output = command.output().map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_macos_app_launch_failed",
-                format!("Cadence could not invoke macOS app launch: {error}"),
+                format!("Xero could not invoke macOS app launch: {error}"),
             )
         })?;
         if output.status.success() {
@@ -552,7 +552,7 @@ mod macos {
         let windows = xcap::Window::all().map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_macos_window_list_failed",
-                format!("Cadence could not list macOS windows: {error}"),
+                format!("Xero could not list macOS windows: {error}"),
             )
         })?;
 
@@ -591,7 +591,7 @@ mod macos {
         list_windows(request)?.into_iter().next().ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_macos_window_not_found",
-                "Cadence could not find a macOS window matching the requested target.",
+                "Xero could not find a macOS window matching the requested target.",
             )
         })
     }
@@ -648,7 +648,7 @@ mod macos {
                 let windows = xcap::Window::all().map_err(|error| {
                     CommandError::system_fault(
                         "autonomous_tool_macos_screenshot_failed",
-                        format!("Cadence could not enumerate windows for screenshot: {error}"),
+                        format!("Xero could not enumerate windows for screenshot: {error}"),
                     )
                 })?;
                 for window in windows {
@@ -659,7 +659,7 @@ mod macos {
                     let image = window.capture_image().map_err(|error| {
                         CommandError::system_fault(
                             "autonomous_tool_macos_screenshot_failed",
-                            format!("Cadence could not capture the target window: {error}"),
+                            format!("Xero could not capture the target window: {error}"),
                         )
                     })?;
                     return write_screenshot_artifact(
@@ -672,14 +672,14 @@ mod macos {
                 }
                 Err(CommandError::user_fixable(
                     "autonomous_tool_macos_window_not_found",
-                    "Cadence could not find a macOS window to screenshot.",
+                    "Xero could not find a macOS window to screenshot.",
                 ))
             }
             AutonomousMacosScreenshotTarget::Screen => {
                 let monitors = xcap::Monitor::all().map_err(|error| {
                     CommandError::system_fault(
                         "autonomous_tool_macos_screenshot_failed",
-                        format!("Cadence could not enumerate displays for screenshot: {error}"),
+                        format!("Xero could not enumerate displays for screenshot: {error}"),
                     )
                 })?;
                 let monitor = if let Some(monitor_id) = request.monitor_id {
@@ -689,7 +689,7 @@ mod macos {
                         .ok_or_else(|| {
                             CommandError::user_fixable(
                                 "autonomous_tool_macos_monitor_not_found",
-                                format!("Cadence could not find macOS monitor `{monitor_id}`."),
+                                format!("Xero could not find macOS monitor `{monitor_id}`."),
                             )
                         })?
                 } else {
@@ -704,7 +704,7 @@ mod macos {
                         .ok_or_else(|| {
                             CommandError::system_fault(
                                 "autonomous_tool_macos_monitor_not_found",
-                                "Cadence could not find a macOS monitor to screenshot.",
+                                "Xero could not find a macOS monitor to screenshot.",
                             )
                         })?
                 };
@@ -712,7 +712,7 @@ mod macos {
                 let image = monitor.capture_image().map_err(|error| {
                     CommandError::system_fault(
                         "autonomous_tool_macos_screenshot_failed",
-                        format!("Cadence could not capture the display contents: {error}"),
+                        format!("Xero could not capture the display contents: {error}"),
                     )
                 })?;
                 write_screenshot_artifact(
@@ -734,7 +734,7 @@ mod macos {
         move |error| {
             CommandError::system_fault(
                 "autonomous_tool_macos_window_list_failed",
-                format!("Cadence could not {operation}: {error}"),
+                format!("Xero could not {operation}: {error}"),
             )
         }
     }

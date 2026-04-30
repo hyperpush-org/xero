@@ -65,7 +65,7 @@ pub fn upsert_provider_credential<R: Runtime>(
     if request.kind == ProviderCredentialKindDto::OAuthSession {
         return Err(CommandError::user_fixable(
             "provider_credentials_oauth_via_login",
-            "Cadence persists OAuth sessions through the provider login flow, not the credential upsert command.",
+            "Xero persists OAuth sessions through the provider login flow, not the credential upsert command.",
         ));
     }
 
@@ -205,14 +205,14 @@ fn validate_per_provider_fields(
         OPENAI_CODEX_PROVIDER_ID => {
             return Err(CommandError::user_fixable(
                 "provider_credentials_oauth_via_login",
-                "Cadence persists OpenAI Codex credentials through the OAuth login flow.",
+                "Xero persists OpenAI Codex credentials through the OAuth login flow.",
             ));
         }
         OLLAMA_PROVIDER_ID => {
             if !matches!(kind, ProviderCredentialKind::Local) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
-                    "Cadence requires kind=local for Ollama credentials.",
+                    "Xero requires kind=local for Ollama credentials.",
                 ));
             }
             if let Some(url) = base_url {
@@ -223,7 +223,7 @@ fn validate_per_provider_fields(
             if !matches!(kind, ProviderCredentialKind::ApiKey) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
-                    "Cadence requires kind=api_key for Azure OpenAI credentials.",
+                    "Xero requires kind=api_key for Azure OpenAI credentials.",
                 ));
             }
             if api_key.is_none() {
@@ -239,7 +239,7 @@ fn validate_per_provider_fields(
             ) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
-                    "Cadence requires kind=api_key or kind=local for OpenAI-API credentials.",
+                    "Xero requires kind=api_key or kind=local for OpenAI-API credentials.",
                 ));
             }
             if matches!(kind, ProviderCredentialKind::ApiKey) && api_key.is_none() {
@@ -253,7 +253,7 @@ fn validate_per_provider_fields(
             if !matches!(kind, ProviderCredentialKind::Ambient) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
-                    "Cadence requires kind=ambient for Bedrock credentials.",
+                    "Xero requires kind=ambient for Bedrock credentials.",
                 ));
             }
             if region.is_none() {
@@ -264,7 +264,7 @@ fn validate_per_provider_fields(
             if !matches!(kind, ProviderCredentialKind::Ambient) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
-                    "Cadence requires kind=ambient for Vertex credentials.",
+                    "Xero requires kind=ambient for Vertex credentials.",
                 ));
             }
             if region.is_none() {
@@ -279,9 +279,7 @@ fn validate_per_provider_fields(
             if !matches!(kind, ProviderCredentialKind::ApiKey) {
                 return Err(CommandError::user_fixable(
                     "provider_credentials_invalid_kind",
-                    format!(
-                        "Cadence requires kind=api_key for provider `{provider_id}` credentials."
-                    ),
+                    format!("Xero requires kind=api_key for provider `{provider_id}` credentials."),
                 ));
             }
             if api_key.is_none() {
@@ -296,14 +294,14 @@ fn validate_base_url(value: &str) -> CommandResult<()> {
     let parsed = Url::parse(value).map_err(|error| {
         CommandError::user_fixable(
             "provider_credentials_invalid",
-            format!("Cadence rejected baseUrl `{value}`: {error}"),
+            format!("Xero rejected baseUrl `{value}`: {error}"),
         )
     })?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(CommandError::user_fixable(
             "provider_credentials_invalid",
             format!(
-                "Cadence rejected baseUrl `{value}` because scheme `{}` is not http(s).",
+                "Xero rejected baseUrl `{value}` because scheme `{}` is not http(s).",
                 parsed.scheme()
             ),
         ));

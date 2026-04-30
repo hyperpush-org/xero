@@ -556,8 +556,8 @@ pub struct ProviderProfileDiagnosticsDto {
     pub checked_at: String,
     pub profile_id: String,
     pub provider_id: String,
-    pub validation_checks: Vec<crate::runtime::CadenceDiagnosticCheck>,
-    pub reachability_checks: Vec<crate::runtime::CadenceDiagnosticCheck>,
+    pub validation_checks: Vec<crate::runtime::XeroDiagnosticCheck>,
+    pub reachability_checks: Vec<crate::runtime::XeroDiagnosticCheck>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_catalog: Option<ProviderModelCatalogDto>,
 }
@@ -566,7 +566,7 @@ pub struct ProviderProfileDiagnosticsDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunDoctorReportRequestDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<crate::runtime::CadenceDoctorReportMode>,
+    pub mode: Option<crate::runtime::XeroDoctorReportMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -646,6 +646,15 @@ pub enum RuntimeToolCallState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStreamTranscriptRole {
+    User,
+    Assistant,
+    System,
+    Tool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeStreamItemDto {
     pub kind: RuntimeStreamItemKind,
@@ -654,6 +663,8 @@ pub struct RuntimeStreamItemDto {
     pub session_id: Option<String>,
     pub flow_id: Option<String>,
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_role: Option<RuntimeStreamTranscriptRole>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_state: Option<RuntimeToolCallState>,

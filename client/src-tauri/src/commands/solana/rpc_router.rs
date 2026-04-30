@@ -24,7 +24,7 @@ use crate::commands::{CommandError, CommandResult};
 use super::cluster::ClusterKind;
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_millis(3_500);
-const DEFAULT_USER_AGENT: &str = "cadence-solana-workbench/0.1";
+const DEFAULT_USER_AGENT: &str = "xero-solana-workbench/0.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -783,7 +783,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
-            "Manage Cadence-owned long-running, interactive, grouped, restartable, and async-job processes, plus phase 5 system process visibility and approval-gated external signaling.",
+            "Manage Xero-owned long-running, interactive, grouped, restartable, and async-job processes, plus phase 5 system process visibility and approval-gated external signaling.",
             process_manager_schema(),
         ),
         descriptor(
@@ -967,7 +967,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_SKILL,
-            "Discover, resolve, install, invoke, reload, or create Cadence skills for model-visible instructions and assets.",
+            "Discover, resolve, install, invoke, reload, or create Xero skills for model-visible instructions and assets.",
             skill_schema(),
         ),
         descriptor(
@@ -1182,7 +1182,7 @@ fn process_manager_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Process-manager action. Supports Cadence-owned process control plus phase 5 system process visibility and external kill actions.",
+                    "Process-manager action. Supports Xero-owned process control plus phase 5 system process visibility and external kill actions.",
                     &[
                         "start",
                         "list",
@@ -1242,7 +1242,7 @@ fn process_manager_schema() -> JsonValue {
                 "targetOwnership",
                 enum_schema(
                     "Ownership scope for targeted actions.",
-                    &["cadence_owned", "external"],
+                    &["xero_owned", "external"],
                 ),
             ),
             (
@@ -1259,7 +1259,7 @@ fn process_manager_schema() -> JsonValue {
             ),
             (
                 "sinceLastRead",
-                boolean_schema("For output, return only chunks after Cadence's remembered read cursor for this process."),
+                boolean_schema("For output, return only chunks after Xero's remembered read cursor for this process."),
             ),
             ("maxBytes", integer_schema("Maximum output bytes to return.")),
             ("tailLines", integer_schema("For output, collapse returned chunks to the last N lines.")),
@@ -1436,7 +1436,7 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_DEPLOY,
-            "Deploy a Solana program through Cadence safety gates.",
+            "Deploy a Solana program through Xero safety gates.",
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,

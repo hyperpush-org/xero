@@ -93,11 +93,11 @@ pub fn run_script<R: Runtime>(
     let script = format!(
         "(function(){{\
             try {{\
-              if (!window.__cadenceBridge__) {{\
-                window.__cadenceBridge__ = {{}};\
+              if (!window.__xeroBridge__) {{\
+                window.__xeroBridge__ = {{}};\
               }}\
-              if (typeof window.__cadenceBridge__.run === 'function') {{\
-                window.__cadenceBridge__.run({id}, {body});\
+              if (typeof window.__xeroBridge__.run === 'function') {{\
+                window.__xeroBridge__.run({id}, {body});\
               }} else {{\
                 throw new Error('bridge not installed');\
               }}\
@@ -120,7 +120,7 @@ pub fn run_script<R: Runtime>(
         waiters.cancel(&request_id);
         CommandError::system_fault(
             "browser_bridge_eval_failed",
-            format!("Cadence could not evaluate the browser bridge script: {error}"),
+            format!("Xero could not evaluate the browser bridge script: {error}"),
         )
     })?;
 

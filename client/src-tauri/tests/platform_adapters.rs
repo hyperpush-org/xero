@@ -1,10 +1,9 @@
-use std::{env::consts::EXE_SUFFIX, net::TcpListener, path::PathBuf};
+use std::net::TcpListener;
 
-use cadence_desktop_lib::runtime::{
+use xero_desktop_lib::runtime::{
     bind_openai_callback_listener, resolve_openai_callback_policy,
-    resolve_runtime_shell_selection_for_platform,
-    resolve_runtime_supervisor_binary_with_current_executable, OpenAiCallbackBindResult,
-    RuntimePlatform, RuntimeShellSource,
+    resolve_runtime_shell_selection_for_platform, OpenAiCallbackBindResult, RuntimePlatform,
+    RuntimeShellSource,
 };
 
 #[path = "support/runtime_shell.rs"]
@@ -112,70 +111,6 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         return (*message).to_string();
     }
     "<non-string panic payload>".into()
-}
-
-#[test]
-fn runtime_supervisor_binary_resolves_bundled_candidates_deterministically() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let current_exe = root.path().join("app").join("cadence-desktop");
-    std::fs::create_dir_all(current_exe.parent().expect("current exe parent"))
-        .expect("create current exe parent");
-
-    let bundled = current_exe
-        .parent()
-        .expect("current exe parent")
-        .join("resources")
-        .join("binaries")
-        .join(format!("Cadence-runtime-supervisor{EXE_SUFFIX}"));
-    std::fs::create_dir_all(bundled.parent().expect("bundled parent"))
-        .expect("create bundled parent");
-    std::fs::write(&bundled, "#!/bin/sh\nexit 0\n").expect("write bundled supervisor");
-
-    let resolved =
-        resolve_runtime_supervisor_binary_with_current_executable(None, current_exe.as_path())
-            .expect("resolve supervisor binary");
-
-    assert_eq!(resolved.binary_path, bundled);
-    assert!(resolved
-        .inspected_candidates
-        .iter()
-        .any(|path| path == &resolved.binary_path));
-}
-
-#[test]
-fn runtime_supervisor_binary_rejects_invalid_override_with_typed_error() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let current_exe = root.path().join("app").join("cadence-desktop");
-    std::fs::create_dir_all(current_exe.parent().expect("current exe parent"))
-        .expect("create current exe parent");
-
-    let invalid_override = root.path().join("missing-supervisor-binary");
-    let error = resolve_runtime_supervisor_binary_with_current_executable(
-        Some(invalid_override.as_path()),
-        current_exe.as_path(),
-    )
-    .expect_err("invalid override should fail");
-
-    assert_eq!(error.code, "runtime_supervisor_binary_missing");
-    assert!(error
-        .message
-        .contains(invalid_override.to_string_lossy().as_ref()));
-    assert!(error.message.contains("Inspected candidates"));
-}
-
-#[test]
-fn runtime_supervisor_binary_missing_error_includes_inspected_candidates() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let current_exe: PathBuf = root.path().join("app").join("cadence-desktop");
-    std::fs::create_dir_all(current_exe.parent().expect("current exe parent"))
-        .expect("create current exe parent");
-
-    let error =
-        resolve_runtime_supervisor_binary_with_current_executable(None, current_exe.as_path())
-            .expect_err("missing binary should fail");
-    assert_eq!(error.code, "runtime_supervisor_binary_missing");
-    assert!(error.message.contains("Inspected candidates"));
-    assert!(error.message.contains("Cadence-runtime-supervisor"));
 }
 
 #[test]

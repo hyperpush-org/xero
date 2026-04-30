@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cadence_desktop_lib::{
+use rusqlite::params;
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         list_notification_routes::list_notification_routes, ListNotificationRoutesRequestDto,
         NotificationRouteCredentialReadinessStatusDto,
@@ -16,14 +19,11 @@ use cadence_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
-use rusqlite::params;
-use tauri::Manager;
-use tempfile::TempDir;
 
 fn build_mock_app(root: &TempDir) -> tauri::App<tauri::test::MockRuntime> {
     let app_data = root.path().join("app-data");
     fs::create_dir_all(&app_data).expect("create app-data dir");
-    let global_db_path = app_data.join("cadence.db");
+    let global_db_path = app_data.join("xero.db");
 
     let state = DesktopState::default().with_global_db_path_override(global_db_path);
 
@@ -194,7 +194,7 @@ fn list_notification_routes_projects_redacted_readiness_for_present_and_partial_
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "Cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Xero");
 
     upsert_route(
         &repo_root,
@@ -305,7 +305,7 @@ fn list_notification_routes_marks_missing_store_as_fail_closed_with_typed_diagno
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "Cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Xero");
 
     upsert_route(
         &repo_root,
@@ -352,7 +352,7 @@ fn list_notification_routes_returns_typed_error_when_global_database_is_unavaila
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "Cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Xero");
 
     upsert_route(
         &repo_root,
@@ -393,7 +393,7 @@ fn list_notification_routes_marks_malformed_store_as_fail_closed_with_typed_diag
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "Cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Xero");
 
     upsert_route(
         &repo_root,
@@ -447,7 +447,7 @@ fn list_notification_routes_rejects_unsupported_persisted_route_kinds() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(&root);
     let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "Cadence");
+    let repo_root = seed_project(&root, &app, project_id, "Xero");
 
     insert_raw_route(
         &repo_root,

@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Cadence uses the microphone only when you start dictation so it can turn speech into prompt text.</string>
+  <string>Xero uses the microphone only when you start dictation so it can turn speech into prompt text.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Cadence uses Apple Speech Recognition only when you start dictation so you can review dictated prompt text before sending.</string>
+  <string>Xero uses Apple Speech Recognition only when you start dictation so you can review dictated prompt text before sending.</string>
 </dict>
 </plist>

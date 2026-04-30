@@ -57,7 +57,7 @@ pub fn load_openai_codex_session_for_profile_link(
         return Err(AuthFlowError::terminal(
             "provider_profiles_invalid",
             RuntimeAuthPhase::Failed,
-            "Cadence rejected the active OpenAI provider profile because it referenced a non-OpenAI credential link.",
+            "Xero rejected the active OpenAI provider profile because it referenced a non-OpenAI credential link.",
         ));
     };
 
@@ -218,7 +218,7 @@ fn validate_target_openai_profile(
             "provider_profile_missing",
             phase,
             format!(
-                "Cadence rejected {action} because provider profile `{profile_id}` was not found. Select a different OpenAI credential."
+                "Xero rejected {action} because provider profile `{profile_id}` was not found. Select a different OpenAI credential."
             ),
         ));
     };
@@ -228,7 +228,7 @@ fn validate_target_openai_profile(
             "provider_profile_provider_mismatch",
             phase,
             format!(
-                "Cadence rejected {action} because provider profile `{profile_id}` belongs to provider `{}` instead of `{OPENAI_CODEX_PROVIDER_ID}`. Select an OpenAI credential.",
+                "Xero rejected {action} because provider profile `{profile_id}` belongs to provider `{}` instead of `{OPENAI_CODEX_PROVIDER_ID}`. Select an OpenAI credential.",
                 profile.provider_id
             ),
         ));
@@ -288,7 +288,7 @@ fn openai_profile_link_from_session(
         return Err(AuthFlowError::terminal(
             "provider_profiles_invalid",
             RuntimeAuthPhase::Failed,
-            "Cadence rejected the OpenAI auth session because accountId was blank while syncing the provider profile.",
+            "Xero rejected the OpenAI auth session because accountId was blank while syncing the provider profile.",
         ));
     }
 
@@ -297,7 +297,7 @@ fn openai_profile_link_from_session(
         return Err(AuthFlowError::terminal(
             "provider_profiles_invalid",
             RuntimeAuthPhase::Failed,
-            "Cadence rejected the OpenAI auth session because sessionId was blank while syncing the provider profile.",
+            "Xero rejected the OpenAI auth session because sessionId was blank while syncing the provider profile.",
         ));
     }
 
@@ -307,7 +307,7 @@ fn openai_profile_link_from_session(
             "provider_profiles_invalid",
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected the OpenAI auth session because providerId `{provider_id}` was not `{OPENAI_CODEX_PROVIDER_ID}` while syncing the provider profile."
+                "Xero rejected the OpenAI auth session because providerId `{provider_id}` was not `{OPENAI_CODEX_PROVIDER_ID}` while syncing the provider profile."
             ),
         ));
     }

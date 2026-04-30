@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-/// Migrations for the global SQLite database (`cadence.db`).
+/// Migrations for the global SQLite database (`xero.db`).
 ///
 /// This is the single source of truth for non-project-scoped state:
 /// credentials, sessions, settings, registries, and the model catalog cache.

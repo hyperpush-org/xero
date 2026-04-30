@@ -3,7 +3,7 @@
 //! something to render. Whether individual tools are found depends on the
 //! CI host.
 
-use cadence_desktop_lib::commands::solana::toolchain;
+use xero_desktop_lib::commands::solana::toolchain;
 
 pub fn toolchain_probe_returns_well_shaped_struct_on_this_host() {
     let status = toolchain::probe();

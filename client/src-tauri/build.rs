@@ -15,8 +15,8 @@ const IDB_COMPANION_VERSION: &str = "1.1.8";
 const IDB_COMPANION_SHA256: &str =
     "3b72cc6a9a5b1a22a188205a84090d3a294347a846180efd755cf1a3c848e3e7";
 const IDB_COMPANION_DIR: &str = "idb-companion.universal";
-const BUILD_COOKIE_IMPORTER_ENV: &str = "CADENCE_BUILD_COOKIE_IMPORTER";
-const SKIP_COOKIE_IMPORTER_ENV: &str = "CADENCE_SKIP_COOKIE_IMPORTER";
+const BUILD_COOKIE_IMPORTER_ENV: &str = "XERO_BUILD_COOKIE_IMPORTER";
+const SKIP_COOKIE_IMPORTER_ENV: &str = "XERO_SKIP_COOKIE_IMPORTER";
 
 fn main() {
     configure_custom_cfgs();
@@ -29,8 +29,8 @@ fn main() {
 }
 
 fn configure_custom_cfgs() {
-    println!("cargo:rustc-check-cfg=cfg(cadence_dictation_native_shim)");
-    println!("cargo:rustc-check-cfg=cfg(cadence_dictation_modern_sdk)");
+    println!("cargo:rustc-check-cfg=cfg(xero_dictation_native_shim)");
+    println!("cargo:rustc-check-cfg=cfg(xero_dictation_modern_sdk)");
 }
 
 fn compile_dictation_shim() {
@@ -40,10 +40,10 @@ fn compile_dictation_shim() {
     println!("cargo:rerun-if-changed=native/dictation/LegacyEngine.swift");
     println!("cargo:rerun-if-changed=native/dictation/ModernAvailable.swift");
     println!("cargo:rerun-if-changed=native/dictation/ModernStub.swift");
-    println!("cargo:rerun-if-env-changed=CADENCE_SKIP_DICTATION_SHIM");
+    println!("cargo:rerun-if-env-changed=XERO_SKIP_DICTATION_SHIM");
 
-    println!("cargo:rustc-env=CADENCE_MACOS_SDK_VERSION=");
-    println!("cargo:rustc-env=CADENCE_DICTATION_MODERN_COMPILED=0");
+    println!("cargo:rustc-env=XERO_MACOS_SDK_VERSION=");
+    println!("cargo:rustc-env=XERO_DICTATION_MODERN_COMPILED=0");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -54,9 +54,9 @@ fn compile_dictation_shim() {
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Security");
 
-    if std::env::var_os("CADENCE_SKIP_DICTATION_SHIM").is_some() {
+    if std::env::var_os("XERO_SKIP_DICTATION_SHIM").is_some() {
         println!(
-            "cargo:warning=CADENCE_SKIP_DICTATION_SHIM is set; dictation status will report the native shim unavailable."
+            "cargo:warning=XERO_SKIP_DICTATION_SHIM is set; dictation status will report the native shim unavailable."
         );
         return;
     }
@@ -76,13 +76,13 @@ fn compile_dictation_shim() {
     let sdk_version = xcrun_output(&["--sdk", "macosx", "--show-sdk-version"]).unwrap_or_default();
     let modern_sdk = macos_sdk_supports_modern_dictation(&sdk_version);
 
-    println!("cargo:rustc-env=CADENCE_MACOS_SDK_VERSION={sdk_version}");
+    println!("cargo:rustc-env=XERO_MACOS_SDK_VERSION={sdk_version}");
     println!(
-        "cargo:rustc-env=CADENCE_DICTATION_MODERN_COMPILED={}",
+        "cargo:rustc-env=XERO_DICTATION_MODERN_COMPILED={}",
         if modern_sdk { "1" } else { "0" }
     );
     if modern_sdk {
-        println!("cargo:rustc-cfg=cadence_dictation_modern_sdk");
+        println!("cargo:rustc-cfg=xero_dictation_modern_sdk");
     }
 
     // macOS 26+ splits Foundation into new Swift overlay dylibs
@@ -106,14 +106,14 @@ fn compile_dictation_shim() {
     } else {
         shim_dir.join("ModernStub.swift")
     };
-    let output = out_dir.join("libCadenceDictationShim.a");
+    let output = out_dir.join("libXeroDictationShim.a");
 
     let status = Command::new(&swiftc)
         .arg("-emit-library")
         .arg("-static")
         .arg("-parse-as-library")
         .arg("-module-name")
-        .arg("CadenceDictationShim")
+        .arg("XeroDictationShim")
         .arg("-sdk")
         .arg(&sdk_path)
         .arg("-o")
@@ -126,7 +126,7 @@ fn compile_dictation_shim() {
         .expect("failed to spawn swiftc for dictation shim");
 
     if !status.success() {
-        panic!("failed to compile Cadence dictation Swift shim (exit {status:?})");
+        panic!("failed to compile Xero dictation Swift shim (exit {status:?})");
     }
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
@@ -147,8 +147,8 @@ fn compile_dictation_shim() {
         // ensure this path is never called on older OS versions.
         println!("cargo:rustc-link-arg=-Wl,-undefined,dynamic_lookup");
     }
-    println!("cargo:rustc-link-lib=static=CadenceDictationShim");
-    println!("cargo:rustc-cfg=cadence_dictation_native_shim");
+    println!("cargo:rustc-link-lib=static=XeroDictationShim");
+    println!("cargo:rustc-cfg=xero_dictation_native_shim");
 }
 
 fn xcrun_find(tool: &str) -> Option<PathBuf> {
@@ -224,7 +224,7 @@ fn compile_idb_proto() {
     }
 
     // Point tonic-build at the vendored `protoc` so developers don't need
-    // `brew install protobuf` just to build Cadence.
+    // `brew install protobuf` just to build Xero.
     std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap());
 
     if let Err(err) = tonic_build::configure()
@@ -256,7 +256,7 @@ fn build_cookie_importer() {
     println!("cargo:rerun-if-env-changed={BUILD_COOKIE_IMPORTER_ENV}");
     println!("cargo:rerun-if-env-changed={SKIP_COOKIE_IMPORTER_ENV}");
 
-    // OUT_DIR looks like .../target/<profile>/build/cadence-desktop-<hash>/out.
+    // OUT_DIR looks like .../target/<profile>/build/xero-desktop-<hash>/out.
     // Walk up three levels to reach the parent of target/<profile>/, then the
     // runtime binary lives in target/<profile>/.
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -319,9 +319,9 @@ fn copy_cookie_importer(helper_target: &Path, destination: &Path) {
 
 fn binary_name() -> &'static str {
     if cfg!(windows) {
-        "cadence-cookie-importer.exe"
+        "xero-cookie-importer.exe"
     } else {
-        "cadence-cookie-importer"
+        "xero-cookie-importer"
     }
 }
 
@@ -337,10 +337,10 @@ fn fetch_scrcpy_server() {
     let target = resources_dir.join(format!("scrcpy-server-v{SCRCPY_VERSION}.jar"));
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=CADENCE_SKIP_SIDECAR_FETCH");
+    println!("cargo:rerun-if-env-changed=XERO_SKIP_SIDECAR_FETCH");
     println!("cargo:rerun-if-changed={}", target.display());
 
-    if std::env::var_os("CADENCE_SKIP_SIDECAR_FETCH").is_some() {
+    if std::env::var_os("XERO_SKIP_SIDECAR_FETCH").is_some() {
         return;
     }
 
@@ -413,7 +413,7 @@ fn fetch_scrcpy_server() {
 /// compiled out entirely by `#[cfg(target_os = "macos")]` guards, so the
 /// bundled resource would never be loaded.
 ///
-/// The fetch is skipped when `CADENCE_SKIP_SIDECAR_FETCH` is set (CI caches
+/// The fetch is skipped when `XERO_SKIP_SIDECAR_FETCH` is set (CI caches
 /// the extraction itself) or when the pinned version marker is already
 /// present. Failures downgrade to a `cargo:warning`; the runtime probe
 /// falls back to Homebrew / `PATH` so `tauri dev` without a prior fetch
@@ -423,13 +423,13 @@ fn fetch_idb_companion() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let resources_dir = manifest_dir.join("resources");
     let extracted = resources_dir.join(IDB_COMPANION_DIR);
-    let sentinel = extracted.join(".cadence-version");
+    let sentinel = extracted.join(".xero-version");
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=CADENCE_SKIP_SIDECAR_FETCH");
+    println!("cargo:rerun-if-env-changed=XERO_SKIP_SIDECAR_FETCH");
     println!("cargo:rerun-if-changed={}", sentinel.display());
 
-    if std::env::var_os("CADENCE_SKIP_SIDECAR_FETCH").is_some() {
+    if std::env::var_os("XERO_SKIP_SIDECAR_FETCH").is_some() {
         return;
     }
 

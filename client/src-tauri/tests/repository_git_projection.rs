@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature};
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         get_repository_diff, get_repository_status, import_repository, CommandError,
         CommandErrorClass, ImportRepositoryRequestDto, ProjectIdRequestDto,
@@ -17,9 +20,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use git2::{IndexAddOption, Repository, Signature};
-use tauri::Manager;
-use tempfile::TempDir;
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
@@ -28,7 +28,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn registry_path(root: &TempDir) -> PathBuf {
-    root.path().join("app-data").join("cadence.db")
+    root.path().join("app-data").join("xero.db")
 }
 
 fn create_state(registry_root: &TempDir) -> DesktopState {
@@ -38,7 +38,7 @@ fn create_state(registry_root: &TempDir) -> DesktopState {
 fn import_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     path: impl AsRef<Path>,
-) -> Result<cadence_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::ImportRepositoryResponseDto, CommandError> {
     import_repository(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -51,7 +51,7 @@ fn import_with_app(
 fn get_status_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
-) -> Result<cadence_desktop_lib::commands::RepositoryStatusResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::RepositoryStatusResponseDto, CommandError> {
     get_repository_status(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -65,7 +65,7 @@ fn get_diff_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
     scope: RepositoryDiffScope,
-) -> Result<cadence_desktop_lib::commands::RepositoryDiffResponseDto, CommandError> {
+) -> Result<xero_desktop_lib::commands::RepositoryDiffResponseDto, CommandError> {
     get_repository_diff(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -80,7 +80,7 @@ fn init_git_repo() -> TempDir {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let repository = Repository::init(temp_dir.path()).expect("git repo");
 
-    fs::write(temp_dir.path().join("README.md"), "Cadence\n").expect("write README");
+    fs::write(temp_dir.path().join("README.md"), "Xero\n").expect("write README");
     commit_all(&repository, "initial commit");
 
     temp_dir
@@ -95,7 +95,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
+    let signature = Signature::now("Xero", "Xero@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -286,11 +286,11 @@ fn repository_status_and_diffs_surface_real_staged_unstaged_and_untracked_truth(
     assert!(status.has_untracked_changes);
     assert!(status.entries.iter().any(|entry| {
         entry.path == "README.md"
-            && entry.unstaged == Some(cadence_desktop_lib::commands::ChangeKind::Modified)
+            && entry.unstaged == Some(xero_desktop_lib::commands::ChangeKind::Modified)
     }));
     assert!(status.entries.iter().any(|entry| {
         entry.path == "staged.txt"
-            && entry.staged == Some(cadence_desktop_lib::commands::ChangeKind::Added)
+            && entry.staged == Some(xero_desktop_lib::commands::ChangeKind::Added)
     }));
     assert!(status
         .entries
@@ -309,7 +309,7 @@ fn repository_status_and_diffs_surface_real_staged_unstaged_and_untracked_truth(
             .expect("unstaged diff succeeds");
     assert!(!unstaged_diff.patch.is_empty());
     assert!(unstaged_diff.patch.contains("README.md"));
-    assert!(unstaged_diff.patch.contains("-Cadence"));
+    assert!(unstaged_diff.patch.contains("-Xero"));
     assert!(unstaged_diff.patch.contains("+updated"));
 
     let worktree_diff =
@@ -317,7 +317,7 @@ fn repository_status_and_diffs_surface_real_staged_unstaged_and_untracked_truth(
             .expect("worktree diff succeeds");
     assert!(worktree_diff.patch.contains("README.md"));
     assert!(worktree_diff.patch.contains("staged.txt"));
-    assert!(worktree_diff.patch.contains("-Cadence"));
+    assert!(worktree_diff.patch.contains("-Xero"));
     assert!(worktree_diff.patch.contains("+updated"));
     assert!(worktree_diff.patch.contains("+staged change"));
     assert_diff_matches_root(

@@ -23,7 +23,7 @@ pub mod project_store;
 
 const STATE_DATABASE_FILE: &str = "state.db";
 const PROJECTS_DIRECTORY: &str = "projects";
-const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.cadence";
+const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.xero";
 
 #[derive(Debug, Clone, Default)]
 struct ProjectDatabasePathConfig {
@@ -64,12 +64,7 @@ pub fn configure_project_database_paths(global_db_path: &Path) {
         config.repo_root_to_database_path.clear();
     });
 
-    // Propagate the configured global DB path to child processes (notably the detached
-    // runtime supervisor sidecar) via the shared env var so they resolve the same DB.
-    std::env::set_var(
-        crate::runtime::supervisor::CADENCE_GLOBAL_DB_PATH_ENV,
-        global_db_path,
-    );
+    let _ = global_db_path;
 }
 
 pub fn database_path_for_project(project_id: &str) -> PathBuf {
@@ -122,7 +117,7 @@ pub fn import_project(
         CommandError::retryable(
             "project_state_dir_unavailable",
             format!(
-                "Cadence could not prepare the project state directory at {}: {error}",
+                "Xero could not prepare the project state directory at {}: {error}",
                 database_directory.display()
             ),
         )
@@ -205,7 +200,7 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
         .map_err(|error| {
             CommandError::system_fault(
                 "state_database_configuration_failed",
-                format!("Cadence could not configure SQLite busy timeout: {error}"),
+                format!("Xero could not configure SQLite busy timeout: {error}"),
             )
         })?;
 
@@ -214,7 +209,7 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
         .map_err(|error| {
             CommandError::system_fault(
                 "state_database_configuration_failed",
-                format!("Cadence could not configure SQLite pragmas: {error}"),
+                format!("Xero could not configure SQLite pragmas: {error}"),
             )
         })
 }
@@ -224,7 +219,7 @@ fn open_database_connection(database_path: &Path) -> Result<Connection, CommandE
         CommandError::retryable(
             "state_database_open_failed",
             format!(
-                "Cadence could not open the project state database at {}: {error}",
+                "Xero could not open the project state database at {}: {error}",
                 database_path.display()
             ),
         )
@@ -235,7 +230,7 @@ fn state_database_migration_error(database_path: &Path, error: MigrationError) -
     CommandError::system_fault(
         "state_database_migration_failed",
         format!(
-            "Cadence could not migrate the project state database at {}: {error}",
+            "Xero could not migrate the project state database at {}: {error}",
             database_path.display()
         ),
     )
@@ -264,7 +259,7 @@ fn quarantine_incompatible_database(
         CommandError::retryable(
             "state_database_backup_failed",
             format!(
-                "Cadence found project state from a newer build at {} but could not move it aside to {}: {error}",
+                "Xero found project state from a newer build at {} but could not move it aside to {}: {error}",
                 database_path.display(),
                 backup_path.display(),
             ),
@@ -333,7 +328,7 @@ fn persist_import_rows(
     let transaction = connection.unchecked_transaction().map_err(|error| {
         CommandError::system_fault(
             "state_database_transaction_failed",
-            format!("Cadence could not start the import transaction: {error}"),
+            format!("Xero could not start the import transaction: {error}"),
         )
     })?;
 
@@ -367,7 +362,7 @@ fn persist_import_rows(
         .map_err(|error| {
             CommandError::system_fault(
                 "project_row_persist_failed",
-                format!("Cadence could not persist the imported project row: {error}"),
+                format!("Xero could not persist the imported project row: {error}"),
             )
         })?;
 
@@ -406,7 +401,7 @@ fn persist_import_rows(
         .map_err(|error| {
             CommandError::system_fault(
                 "repository_row_persist_failed",
-                format!("Cadence could not persist the imported repository row: {error}"),
+                format!("Xero could not persist the imported repository row: {error}"),
             )
         })?;
 
@@ -424,7 +419,7 @@ fn persist_import_rows(
         .map_err(|error| {
             CommandError::system_fault(
                 "project_meta_persist_failed",
-                format!("Cadence could not persist the project-state metadata row: {error}"),
+                format!("Xero could not persist the project-state metadata row: {error}"),
             )
         })?;
 
@@ -436,7 +431,7 @@ fn persist_import_rows(
         .map_err(|error| {
             CommandError::system_fault(
                 "agent_session_persist_failed",
-                format!("Cadence could not clear selected agent sessions before import: {error}"),
+                format!("Xero could not clear selected agent sessions before import: {error}"),
             )
         })?;
 
@@ -468,14 +463,14 @@ fn persist_import_rows(
         .map_err(|error| {
             CommandError::system_fault(
                 "agent_session_persist_failed",
-                format!("Cadence could not persist the default agent session row: {error}"),
+                format!("Xero could not persist the default agent session row: {error}"),
             )
         })?;
 
     transaction.commit().map_err(|error| {
         CommandError::system_fault(
             "state_database_commit_failed",
-            format!("Cadence could not commit the import transaction: {error}"),
+            format!("Xero could not commit the import transaction: {error}"),
         )
     })
 }

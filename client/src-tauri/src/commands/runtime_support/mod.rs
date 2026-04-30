@@ -1,6 +1,5 @@
 mod autonomous;
 mod project;
-mod protocol_dto;
 mod run;
 mod session;
 
@@ -8,20 +7,11 @@ mod session;
 pub(crate) use autonomous::{autonomous_run_state_from_snapshot, load_persisted_autonomous_run};
 pub(crate) use autonomous::{sync_autonomous_run_state, AutonomousSyncIntent};
 pub(crate) use project::{emit_project_updated, resolve_project_root};
-pub(crate) use protocol_dto::{
-    autonomous_skill_cache_status_dto_from_protocol,
-    autonomous_skill_lifecycle_diagnostic_dto_from_protocol,
-    autonomous_skill_lifecycle_result_dto_from_protocol,
-    autonomous_skill_lifecycle_source_dto_from_protocol,
-    autonomous_skill_lifecycle_stage_dto_from_protocol, tool_result_summary_dto_from_protocol,
-};
 pub(crate) use run::{
-    emit_runtime_run_updated, emit_runtime_run_updated_if_changed, generate_runtime_run_id,
-    launch_or_reconnect_detached_runtime_run, launch_or_reconnect_runtime_run,
-    load_persisted_runtime_run, load_runtime_run_status, normalize_requested_runtime_run_controls,
-    resolve_owned_agent_provider_config, runtime_run_dto_from_snapshot, stop_owned_runtime_run,
-    update_owned_runtime_run_controls, DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-    DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
+    apply_owned_runtime_run_pending_controls, emit_runtime_run_updated,
+    emit_runtime_run_updated_if_changed, generate_runtime_run_id, launch_or_reconnect_runtime_run,
+    load_persisted_runtime_run, load_runtime_run_status, resolve_owned_agent_provider_config,
+    runtime_run_dto_from_snapshot, stop_owned_runtime_run, update_owned_runtime_run_controls,
 };
 #[allow(unused_imports)]
 pub(crate) use session::runtime_session_from_record;

@@ -157,7 +157,7 @@ impl ToolRegistry {
             CommandError::user_fixable(
                 "agent_tool_call_invalid",
                 format!(
-                    "Cadence could not decode owned-agent tool call `{}` for `{}`: {error}",
+                    "Xero could not decode owned-agent tool call `{}` for `{}`: {error}",
                     tool_call.tool_call_id, tool_call.tool_name
                 ),
             )
@@ -249,7 +249,7 @@ pub trait ProviderAdapter {
             }),
             ProviderTurnOutcome::ToolCalls { .. } => Err(CommandError::user_fixable(
                 "session_compaction_provider_requested_tools",
-                "Cadence asked the provider to compact session history, but the provider requested tool calls instead of returning a summary.",
+                "Xero asked the provider to compact session history, but the provider requested tool calls instead of returning a summary.",
             )),
         }
     }
@@ -270,7 +270,7 @@ pub trait ProviderAdapter {
                 .join("\n")
         };
         let prompt = format!(
-            "Extract durable memory candidates from this Cadence coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
+            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
             request.transcript
         );
         let turn = ProviderTurnRequest {
@@ -299,7 +299,7 @@ pub trait ProviderAdapter {
             }
             ProviderTurnOutcome::ToolCalls { .. } => Err(CommandError::user_fixable(
                 "session_memory_provider_requested_tools",
-                "Cadence asked the provider to extract memory candidates, but the provider requested tool calls instead of returning JSON.",
+                "Xero asked the provider to extract memory candidates, but the provider requested tool calls instead of returning JSON.",
             )),
         }
     }
@@ -405,7 +405,7 @@ fn parse_provider_memory_candidates(message: &str) -> CommandResult<Vec<Provider
     serde_json::from_str::<Vec<ProviderMemoryCandidate>>(json_text).map_err(|error| {
         CommandError::retryable(
             "session_memory_provider_json_invalid",
-            format!("Cadence could not decode provider memory candidates as JSON: {error}"),
+            format!("Xero could not decode provider memory candidates as JSON: {error}"),
         )
     })
 }
@@ -452,7 +452,7 @@ impl ProviderAdapter for FakeProviderAdapter {
             .any(|message| matches!(message, ProviderMessage::Tool { .. }))
         {
             let message =
-                "Owned agent run completed through the Cadence model-loop scaffold.".to_string();
+                "Owned agent run completed through the Xero model-loop scaffold.".to_string();
             emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
             return Ok(ProviderTurnOutcome::Complete {
                 message,
@@ -469,7 +469,7 @@ impl ProviderAdapter for FakeProviderAdapter {
             })
             .unwrap_or_default();
         let tool_calls = parse_fake_tool_directives(user_prompt);
-        let message = "Cadence owned-agent runtime accepted the task.".to_string();
+        let message = "Xero owned-agent runtime accepted the task.".to_string();
         emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
         if tool_calls.is_empty() {
             Ok(ProviderTurnOutcome::Complete {
@@ -573,7 +573,7 @@ impl ProviderAdapter for FakeProviderAdapter {
                     text,
                     35,
                 ));
-            } else if lowered.contains("cadence redacted sensitive session-context text")
+            } else if lowered.contains("xero redacted sensitive session-context text")
                 && !candidates
                     .iter()
                     .any(|candidate| candidate.text.contains("sk-fake-memory-secret"))

@@ -6,7 +6,10 @@ use std::{
     thread,
 };
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature};
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         RepositoryDiffScope, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
         RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
@@ -35,9 +38,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use git2::{IndexAddOption, Repository, Signature};
-use tauri::Manager;
-use tempfile::TempDir;
 
 #[path = "support/runtime_shell.rs"]
 mod runtime_shell;
@@ -50,7 +50,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
+        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
 }
 
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
@@ -113,7 +113,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
+    let signature = Signature::now("Xero", "Xero@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -990,8 +990,8 @@ fn tool_runtime_todo_generated_ids_do_not_collide_after_deletes() {
 #[test]
 fn tool_runtime_invokes_mcp_capabilities_across_transports() {
     let root = tempfile::tempdir().expect("temp dir");
-    env::set_var("CADENCE_TEST_MCP_LEAK_SECRET", "should-not-leak");
-    env::set_var("CADENCE_TEST_MCP_ALLOWED_SECRET", "allowed-secret");
+    env::set_var("XERO_TEST_MCP_LEAK_SECRET", "should-not-leak");
+    env::set_var("XERO_TEST_MCP_ALLOWED_SECRET", "allowed-secret");
     let stdio_server = root.path().join("mcp_stdio_server.py");
     fs::write(
         &stdio_server,
@@ -1040,8 +1040,8 @@ while True:
                     "text": json.dumps(
                         {
                             "allowed": os.environ.get("MCP_ALLOWED_SECRET"),
-                            "leaked": os.environ.get("CADENCE_TEST_MCP_LEAK_SECRET"),
-                            "sanitized": os.environ.get("CADENCE_AGENT_SANITIZED_ENV"),
+                            "leaked": os.environ.get("XERO_TEST_MCP_LEAK_SECRET"),
+                            "sanitized": os.environ.get("XERO_AGENT_SANITIZED_ENV"),
                         }
                     ),
                 }
@@ -1071,7 +1071,7 @@ while True:
                     },
                     env: vec![McpEnvironmentReference {
                         key: "MCP_ALLOWED_SECRET".into(),
-                        from_env: "CADENCE_TEST_MCP_ALLOWED_SECRET".into(),
+                        from_env: "XERO_TEST_MCP_ALLOWED_SECRET".into(),
                     }],
                     cwd: None,
                     connection: McpConnectionState {
@@ -1178,8 +1178,8 @@ while True:
         }
         other => panic!("unexpected mcp env output: {other:?}"),
     }
-    env::remove_var("CADENCE_TEST_MCP_LEAK_SECRET");
-    env::remove_var("CADENCE_TEST_MCP_ALLOWED_SECRET");
+    env::remove_var("XERO_TEST_MCP_LEAK_SECRET");
+    env::remove_var("XERO_TEST_MCP_ALLOWED_SECRET");
 }
 
 #[test]
@@ -1278,7 +1278,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     let written = runtime
         .write(AutonomousWriteRequest {
             path: "notes/output.txt".into(),
-            content: "hello from Cadence\n".into(),
+            content: "hello from Xero\n".into(),
         })
         .expect("write file inside repo");
     assert_eq!(written.tool_name, "write");
@@ -1289,7 +1289,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             assert_eq!(
                 fs::read_to_string(repo_root.join("notes").join("output.txt"))
                     .expect("read written file"),
-                "hello from Cadence\n"
+                "hello from Xero\n"
             );
         }
         other => panic!("unexpected write output: {other:?}"),
@@ -1544,11 +1544,11 @@ fn tool_runtime_executes_git_status_and_diff_with_real_repository_truth() {
             assert!(!output.has_untracked_changes);
             assert!(output.entries.iter().any(|entry| {
                 entry.path == "src/tracked.txt"
-                    && entry.unstaged == Some(cadence_desktop_lib::commands::ChangeKind::Modified)
+                    && entry.unstaged == Some(xero_desktop_lib::commands::ChangeKind::Modified)
             }));
             assert!(output.entries.iter().any(|entry| {
                 entry.path == "src/staged.txt"
-                    && entry.staged == Some(cadence_desktop_lib::commands::ChangeKind::Added)
+                    && entry.staged == Some(xero_desktop_lib::commands::ChangeKind::Added)
             }));
         }
         other => panic!("unexpected git status output: {other:?}"),
@@ -2153,7 +2153,7 @@ fn tool_runtime_command_policy_denies_repo_escape_arguments_before_spawn() {
     assert_eq!(error.code, "policy_denied_argument_outside_repo");
     assert_eq!(
         error.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied
     );
 }
 
@@ -2240,7 +2240,7 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
     assert_eq!(read_error.code, "autonomous_tool_path_denied");
     assert_eq!(
         read_error.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied
     );
 
     let write_error = runtime
@@ -2252,7 +2252,7 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
     assert_eq!(write_error.code, "autonomous_tool_path_denied");
     assert_eq!(
         write_error.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied
     );
 
     let cwd_error = runtime
@@ -2265,7 +2265,7 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
     assert_eq!(cwd_error.code, "policy_denied_command_cwd_outside_repo");
     assert_eq!(
         cwd_error.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied
     );
 }
 
@@ -2411,6 +2411,6 @@ fn tool_runtime_denies_symlink_escapes() {
     assert_eq!(error.code, "autonomous_tool_path_denied");
     assert_eq!(
         error.class,
-        cadence_desktop_lib::commands::CommandErrorClass::PolicyDenied
+        xero_desktop_lib::commands::CommandErrorClass::PolicyDenied
     );
 }

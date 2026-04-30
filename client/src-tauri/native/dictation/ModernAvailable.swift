@@ -3,11 +3,11 @@ import Dispatch
 import Foundation
 import Speech
 
-func cadenceDictationModernCompiled() -> Bool {
+func xeroDictationModernCompiled() -> Bool {
     true
 }
 
-func cadenceDictationModernRuntimeSupported() -> Bool {
+func xeroDictationModernRuntimeSupported() -> Bool {
     if #available(macOS 26.0, *) {
         _ = SpeechAnalyzer.self
         _ = DictationTranscriber.self
@@ -18,7 +18,7 @@ func cadenceDictationModernRuntimeSupported() -> Bool {
     return false
 }
 
-func cadenceDictationModernAssetProbe(localeIdentifier: String) -> (status: String, localeIdentifier: String?, reason: String?) {
+func xeroDictationModernAssetProbe(localeIdentifier: String) -> (status: String, localeIdentifier: String?, reason: String?) {
     guard #available(macOS 26.0, *) else {
         return ("unavailable", nil, "runtime_too_old")
     }
@@ -27,7 +27,7 @@ func cadenceDictationModernAssetProbe(localeIdentifier: String) -> (status: Stri
     var result: (status: String, localeIdentifier: String?, reason: String?) = ("unknown", nil, "asset_probe_timed_out")
 
     Task {
-        result = await cadenceDictationModernAssetProbeAsync(localeIdentifier: localeIdentifier)
+        result = await xeroDictationModernAssetProbeAsync(localeIdentifier: localeIdentifier)
         semaphore.signal()
     }
 
@@ -39,7 +39,7 @@ func cadenceDictationModernAssetProbe(localeIdentifier: String) -> (status: Stri
 }
 
 @available(macOS 26.0, *)
-private func cadenceDictationModernAssetProbeAsync(localeIdentifier: String) async -> (status: String, localeIdentifier: String?, reason: String?) {
+private func xeroDictationModernAssetProbeAsync(localeIdentifier: String) async -> (status: String, localeIdentifier: String?, reason: String?) {
     let requestedLocale = Locale(identifier: localeIdentifier)
     guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
         return ("unsupported_locale", nil, "modern_locale_unsupported")
@@ -63,14 +63,14 @@ private func cadenceDictationModernAssetProbeAsync(localeIdentifier: String) asy
 }
 
 @available(macOS 26.0, *)
-final class CadenceModernDictationEngine {
+final class XeroModernDictationEngine {
     private let sessionId: String
     private let localeIdentifier: String
     private let privacyMode: String
     private let contextualPhrases: [String]
     private let emitPayload: ([String: Any]) -> Void
     private let audioEngine = AVAudioEngine()
-    private let audioQueue = DispatchQueue(label: "dev.cadence.dictation.modern.audio")
+    private let audioQueue = DispatchQueue(label: "dev.xero.dictation.modern.audio")
     private let audioQueueKey = DispatchSpecificKey<Void>()
     private let lock = NSLock()
 
@@ -103,22 +103,22 @@ final class CadenceModernDictationEngine {
         self.audioQueue.setSpecific(key: audioQueueKey, value: ())
     }
 
-    func start() -> CadenceDictationOperationResponse {
-        var response: CadenceDictationOperationResponse?
+    func start() -> XeroDictationOperationResponse {
+        var response: XeroDictationOperationResponse?
         let semaphore = DispatchSemaphore(value: 0)
 
         Task {
             do {
                 let locale = try await startAsync()
                 response = .success(sessionId: sessionId, engine: "modern", locale: locale.identifier)
-            } catch let error as CadenceModernDictationError {
+            } catch let error as XeroModernDictationError {
                 await cleanupAfterFailedStart()
                 response = .failure(code: error.code, message: error.message, retryable: error.retryable)
             } catch {
                 await cleanupAfterFailedStart()
                 response = .failure(
                     code: "dictation_modern_start_failed",
-                    message: "Cadence could not start modern dictation: \(error.localizedDescription)",
+                    message: "Xero could not start modern dictation: \(error.localizedDescription)",
                     retryable: true
                 )
             }
@@ -128,16 +128,16 @@ final class CadenceModernDictationEngine {
         semaphore.wait()
         return response ?? .failure(
             code: "dictation_modern_start_failed",
-            message: "Cadence could not start modern dictation.",
+            message: "Xero could not start modern dictation.",
             retryable: true
         )
     }
 
-    func stop(reason: String) -> CadenceDictationOperationResponse {
+    func stop(reason: String) -> XeroDictationOperationResponse {
         waitForStop(cancelled: false, reason: reason)
     }
 
-    func cancel() -> CadenceDictationOperationResponse {
+    func cancel() -> XeroDictationOperationResponse {
         waitForStop(cancelled: true, reason: "cancelled")
     }
 
@@ -155,9 +155,9 @@ final class CadenceModernDictationEngine {
 
         let requestedLocale = Locale(identifier: localeIdentifier)
         guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: requestedLocale) else {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_modern_locale_unsupported",
-                message: "Cadence could not find a modern on-device dictation locale equivalent to \(localeIdentifier).",
+                message: "Xero could not find a modern on-device dictation locale equivalent to \(localeIdentifier).",
                 retryable: false
             )
         }
@@ -187,9 +187,9 @@ final class CadenceModernDictationEngine {
         )
         let fallbackFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules)
         guard let analyzerFormat = preferredFormat ?? fallbackFormat else {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_modern_audio_format_unavailable",
-                message: "Cadence could not find an audio format compatible with modern dictation.",
+                message: "Xero could not find an audio format compatible with modern dictation.",
                 retryable: true
             )
         }
@@ -246,9 +246,9 @@ final class CadenceModernDictationEngine {
                 "progress": 1.0,
             ])
         } catch {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_modern_asset_install_failed",
-                message: "Cadence could not install Apple speech assets for modern dictation: \(error.localizedDescription)",
+                message: "Xero could not install Apple speech assets for modern dictation: \(error.localizedDescription)",
                 retryable: true
             )
         }
@@ -308,9 +308,9 @@ final class CadenceModernDictationEngine {
             lock.withLock {
                 audioTapInstalled = false
             }
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_modern_audio_capture_failed",
-                message: "Cadence could not start microphone capture for modern dictation: \(error.localizedDescription)",
+                message: "Xero could not start microphone capture for modern dictation: \(error.localizedDescription)",
                 retryable: true
             )
         }
@@ -339,7 +339,7 @@ final class CadenceModernDictationEngine {
             } catch {
                 handleModernError(
                     code: "dictation_modern_audio_conversion_failed",
-                    message: "Cadence could not convert microphone audio for modern dictation: \(error.localizedDescription)",
+                    message: "Xero could not convert microphone audio for modern dictation: \(error.localizedDescription)",
                     retryable: true
                 )
             }
@@ -352,9 +352,9 @@ final class CadenceModernDictationEngine {
         }
 
         guard let converter = AVAudioConverter(from: buffer.format, to: outputFormat) else {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_modern_audio_converter_unavailable",
-                message: "Cadence could not create a microphone audio converter for modern dictation.",
+                message: "Xero could not create a microphone audio converter for modern dictation.",
                 retryable: true
             )
         }
@@ -362,9 +362,9 @@ final class CadenceModernDictationEngine {
         let frameRatio = outputFormat.sampleRate / buffer.format.sampleRate
         let frameCapacity = AVAudioFrameCount((Double(buffer.frameLength) * frameRatio).rounded(.up)) + 1
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_modern_audio_buffer_unavailable",
-                message: "Cadence could not allocate a microphone audio buffer for modern dictation.",
+                message: "Xero could not allocate a microphone audio buffer for modern dictation.",
                 retryable: true
             )
         }
@@ -383,9 +383,9 @@ final class CadenceModernDictationEngine {
         }
 
         if status == .error {
-            throw conversionError ?? CadenceModernDictationError(
+            throw conversionError ?? XeroModernDictationError(
                 code: "dictation_modern_audio_conversion_failed",
-                message: "Cadence could not convert microphone audio for modern dictation.",
+                message: "Xero could not convert microphone audio for modern dictation.",
                 retryable: true
             )
         }
@@ -439,8 +439,8 @@ final class CadenceModernDictationEngine {
         return transcript + " " + segment
     }
 
-    private func waitForStop(cancelled: Bool, reason: String) -> CadenceDictationOperationResponse {
-        var response: CadenceDictationOperationResponse?
+    private func waitForStop(cancelled: Bool, reason: String) -> XeroDictationOperationResponse {
+        var response: XeroDictationOperationResponse?
         let semaphore = DispatchSemaphore(value: 0)
 
         Task {
@@ -452,7 +452,7 @@ final class CadenceModernDictationEngine {
         return response ?? .success()
     }
 
-    private func stopAsync(cancelled: Bool, reason: String) async -> CadenceDictationOperationResponse {
+    private func stopAsync(cancelled: Bool, reason: String) async -> XeroDictationOperationResponse {
         let shouldStop = lock.withLock { () -> Bool in
             if isFinished {
                 return false
@@ -483,12 +483,12 @@ final class CadenceModernDictationEngine {
                     "kind": "error",
                     "sessionId": sessionId,
                     "code": "dictation_modern_finalize_failed",
-                    "message": "Cadence could not finalize modern dictation: \(error.localizedDescription)",
+                    "message": "Xero could not finalize modern dictation: \(error.localizedDescription)",
                     "retryable": true,
                 ])
                 return .failure(
                     code: "dictation_modern_finalize_failed",
-                    message: "Cadence could not finalize modern dictation: \(error.localizedDescription)",
+                    message: "Xero could not finalize modern dictation: \(error.localizedDescription)",
                     retryable: true
                 )
             }
@@ -605,9 +605,9 @@ final class CadenceModernDictationEngine {
 
     private func ensurePrivacyPromptCanRun(key: String, code: String, label: String) throws {
         guard privacyUsageDescriptionVisibleToTcc(key) else {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: code,
-                message: "Cadence cannot request \(label) permission because macOS cannot see the app privacy usage string. Restart with pnpm run dev:tauri so the dev runner signs the Tauri binary, or use a bundled Cadence build.",
+                message: "Xero cannot request \(label) permission because macOS cannot see the app privacy usage string. Restart with pnpm run dev:tauri so the dev runner signs the Tauri binary, or use a bundled Xero build.",
                 retryable: false
             )
         }
@@ -615,9 +615,9 @@ final class CadenceModernDictationEngine {
 
     private func validatePermissions(_ permissions: (microphone: String, speech: String)) throws {
         guard permissions.microphone == "authorized" else {
-            throw CadenceModernDictationError(
+            throw XeroModernDictationError(
                 code: "dictation_microphone_permission_denied",
-                message: "Cadence needs microphone permission before it can start dictation.",
+                message: "Xero needs microphone permission before it can start dictation.",
                 retryable: false
             )
         }
@@ -628,7 +628,7 @@ final class CadenceModernDictationEngine {
     }
 }
 
-private struct CadenceModernDictationError: Error {
+private struct XeroModernDictationError: Error {
     let code: String
     let message: String
     let retryable: Bool

@@ -302,7 +302,7 @@ pub fn complete_openai_codex_flow<R: Runtime>(
         AuthFlowError::terminal(
             "auth_flow_not_found",
             RuntimeAuthPhase::Failed,
-            format!("Cadence could not find the active OpenAI auth flow `{flow_id}`."),
+            format!("Xero could not find the active OpenAI auth flow `{flow_id}`."),
         )
     })?;
     let super::super::ActiveAuthFlow::OpenAiCodex(selected_flow) = selected_flow;
@@ -423,7 +423,7 @@ pub fn refresh_openai_codex_session<R: Runtime>(
                 "auth_session_not_found",
                 RuntimeAuthPhase::Refreshing,
                 format!(
-                    "Cadence does not have an app-local OpenAI auth session for account `{account_id}`."
+                    "Xero does not have an app-local OpenAI auth session for account `{account_id}`."
                 ),
             )
         })?;
@@ -472,7 +472,7 @@ pub fn cancel_openai_codex_flow(
             AuthFlowError::terminal(
                 "auth_flow_not_found",
                 RuntimeAuthPhase::Failed,
-                format!("Cadence could not find the active OpenAI auth flow `{flow_id}`."),
+                format!("Xero could not find the active OpenAI auth flow `{flow_id}`."),
             )
         })
 }
@@ -488,7 +488,7 @@ fn build_authorization_url(
         AuthFlowError::terminal(
             "authorize_url_invalid",
             RuntimeAuthPhase::Starting,
-            format!("Cadence could not parse the OpenAI authorize URL: {error}"),
+            format!("Xero could not parse the OpenAI authorize URL: {error}"),
         )
     })?;
 

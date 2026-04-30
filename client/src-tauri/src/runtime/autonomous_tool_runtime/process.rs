@@ -87,14 +87,14 @@ impl ProcessSessionRegistry {
         let mut sessions = self.sessions.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock the command session registry.",
+                "Xero could not lock the command session registry.",
             )
         })?;
         if sessions.len() >= MAX_COMMAND_SESSIONS {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_command_session_limit_reached",
                 format!(
-                    "Cadence limits autonomous command sessions to {MAX_COMMAND_SESSIONS} concurrent process(es). Stop an existing session before starting another."
+                    "Xero limits autonomous command sessions to {MAX_COMMAND_SESSIONS} concurrent process(es). Stop an existing session before starting another."
                 ),
             ));
         }
@@ -106,14 +106,14 @@ impl ProcessSessionRegistry {
         let sessions = self.sessions.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock the command session registry.",
+                "Xero could not lock the command session registry.",
             )
         })?;
         if sessions.len() >= MAX_COMMAND_SESSIONS {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_command_session_limit_reached",
                 format!(
-                    "Cadence limits autonomous command sessions to {MAX_COMMAND_SESSIONS} concurrent process(es). Stop an existing session before starting another."
+                    "Xero limits autonomous command sessions to {MAX_COMMAND_SESSIONS} concurrent process(es). Stop an existing session before starting another."
                 ),
             ));
         }
@@ -124,13 +124,13 @@ impl ProcessSessionRegistry {
         let sessions = self.sessions.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock the command session registry.",
+                "Xero could not lock the command session registry.",
             )
         })?;
         sessions.get(session_id).cloned().ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_command_session_not_found",
-                format!("Cadence could not find command session `{session_id}`."),
+                format!("Xero could not find command session `{session_id}`."),
             )
         })
     }
@@ -139,13 +139,13 @@ impl ProcessSessionRegistry {
         let mut sessions = self.sessions.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock the command session registry.",
+                "Xero could not lock the command session registry.",
             )
         })?;
         sessions.remove(session_id).ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_command_session_not_found",
-                format!("Cadence could not find command session `{session_id}`."),
+                format!("Xero could not find command session `{session_id}`."),
             )
         })
     }
@@ -194,7 +194,7 @@ impl ProcessSession {
         let mut chunks = self.chunks.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock command session output.",
+                "Xero could not lock command session output.",
             )
         })?;
         chunks.push(AutonomousCommandSessionChunk {
@@ -216,7 +216,7 @@ impl ProcessSession {
         let chunks = self.chunks.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock command session output.",
+                "Xero could not lock command session output.",
             )
         })?;
         let mut selected = Vec::new();
@@ -247,7 +247,7 @@ impl ProcessSession {
         if let Some(exit_code) = *self.exit_code.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock command session exit state.",
+                "Xero could not lock command session exit state.",
             )
         })? {
             return Ok(Some(exit_code));
@@ -256,14 +256,14 @@ impl ProcessSession {
         let mut child = self.child.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock command session process state.",
+                "Xero could not lock command session process state.",
             )
         })?;
         let Some(child_ref) = child.as_mut() else {
             return Ok(*self.exit_code.lock().map_err(|_| {
                 CommandError::system_fault(
                     "autonomous_tool_command_session_lock_failed",
-                    "Cadence could not lock command session exit state.",
+                    "Xero could not lock command session exit state.",
                 )
             })?);
         };
@@ -274,7 +274,7 @@ impl ProcessSession {
                 *self.exit_code.lock().map_err(|_| {
                     CommandError::system_fault(
                         "autonomous_tool_command_session_lock_failed",
-                        "Cadence could not lock command session exit state.",
+                        "Xero could not lock command session exit state.",
                     )
                 })? = exit_code;
                 *child = None;
@@ -284,7 +284,7 @@ impl ProcessSession {
             Err(error) => Err(CommandError::retryable(
                 "autonomous_tool_command_session_wait_failed",
                 format!(
-                    "Cadence could not observe command session `{}`: {error}",
+                    "Xero could not observe command session `{}`: {error}",
                     self.session_id
                 ),
             )),
@@ -295,14 +295,14 @@ impl ProcessSession {
         let mut child = self.child.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_command_session_lock_failed",
-                "Cadence could not lock command session process state.",
+                "Xero could not lock command session process state.",
             )
         })?;
         let Some(child_ref) = child.as_mut() else {
             return Ok(*self.exit_code.lock().map_err(|_| {
                 CommandError::system_fault(
                     "autonomous_tool_command_session_lock_failed",
-                    "Cadence could not lock command session exit state.",
+                    "Xero could not lock command session exit state.",
                 )
             })?);
         };
@@ -313,7 +313,7 @@ impl ProcessSession {
                 *self.exit_code.lock().map_err(|_| {
                     CommandError::system_fault(
                         "autonomous_tool_command_session_lock_failed",
-                        "Cadence could not lock command session exit state.",
+                        "Xero could not lock command session exit state.",
                     )
                 })? = exit_code;
                 *child = None;
@@ -324,7 +324,7 @@ impl ProcessSession {
                     CommandError::retryable(
                         "autonomous_tool_command_session_stop_failed",
                         format!(
-                            "Cadence could not stop command session `{}`: {error}",
+                            "Xero could not stop command session `{}`: {error}",
                             self.session_id
                         ),
                     )
@@ -333,7 +333,7 @@ impl ProcessSession {
                 *self.exit_code.lock().map_err(|_| {
                     CommandError::system_fault(
                         "autonomous_tool_command_session_lock_failed",
-                        "Cadence could not lock command session exit state.",
+                        "Xero could not lock command session exit state.",
                     )
                 })? = exit_code;
                 *child = None;
@@ -342,7 +342,7 @@ impl ProcessSession {
             Err(error) => Err(CommandError::retryable(
                 "autonomous_tool_command_session_wait_failed",
                 format!(
-                    "Cadence could not observe command session `{}` before stopping it: {error}",
+                    "Xero could not observe command session `{}` before stopping it: {error}",
                     self.session_id
                 ),
             )),
@@ -404,12 +404,12 @@ impl AutonomousToolRuntime {
         let mut child = command.spawn().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => CommandError::user_fixable(
                 "autonomous_tool_command_not_found",
-                format!("Cadence could not find command `{}`.", prepared.argv[0]),
+                format!("Xero could not find command `{}`.", prepared.argv[0]),
             ),
             _ => CommandError::system_fault(
                 "autonomous_tool_command_spawn_failed",
                 format!(
-                    "Cadence could not launch command `{}`: {error}",
+                    "Xero could not launch command `{}`: {error}",
                     prepared.argv[0]
                 ),
             ),
@@ -418,13 +418,13 @@ impl AutonomousToolRuntime {
         let stdout = child.stdout.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_command_stdout_missing",
-                "Cadence could not capture command stdout.",
+                "Xero could not capture command stdout.",
             )
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_command_stderr_missing",
-                "Cadence could not capture command stderr.",
+                "Xero could not capture command stderr.",
             )
         })?;
 
@@ -444,7 +444,7 @@ impl AutonomousToolRuntime {
                         CommandError::system_fault(
                             "autonomous_tool_command_wait_failed",
                             format!(
-                                "Cadence could not stop cancelled command `{}`: {error}",
+                                "Xero could not stop cancelled command `{}`: {error}",
                                 prepared.argv[0]
                             ),
                         )
@@ -456,7 +456,7 @@ impl AutonomousToolRuntime {
                         CommandError::system_fault(
                             "autonomous_tool_command_wait_failed",
                             format!(
-                                "Cadence could not stop timed-out command `{}`: {error}",
+                                "Xero could not stop timed-out command `{}`: {error}",
                                 prepared.argv[0]
                             ),
                         )
@@ -469,7 +469,7 @@ impl AutonomousToolRuntime {
                     return Err(CommandError::system_fault(
                         "autonomous_tool_command_wait_failed",
                         format!(
-                            "Cadence could not observe command `{}` while it was running: {error}",
+                            "Xero could not observe command `{}` while it was running: {error}",
                             prepared.argv[0]
                         ),
                     ));
@@ -488,7 +488,7 @@ impl AutonomousToolRuntime {
             return Err(CommandError::retryable(
                 "autonomous_tool_command_timeout",
                 format!(
-                    "Cadence timed out command `{}` after {}ms.",
+                    "Xero timed out command `{}` after {}ms.",
                     render_command_for_summary(&prepared.argv),
                     prepared.timeout_ms,
                 ),
@@ -566,7 +566,7 @@ impl AutonomousToolRuntime {
             .map(|path| display_relative_or_root(&self.repo_root, &self.repo_root.join(path)))
             .unwrap_or_else(|| ".".into());
         let summary = format!(
-            "Command `{}` requires operator review before Cadence can run it.",
+            "Command `{}` requires operator review before Xero can run it.",
             render_command_for_summary(&prepared.argv)
         );
 
@@ -658,12 +658,12 @@ impl AutonomousToolRuntime {
         let mut child = command.spawn().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => CommandError::user_fixable(
                 "autonomous_tool_command_not_found",
-                format!("Cadence could not find command `{}`.", prepared.argv[0]),
+                format!("Xero could not find command `{}`.", prepared.argv[0]),
             ),
             _ => CommandError::system_fault(
                 "autonomous_tool_command_session_spawn_failed",
                 format!(
-                    "Cadence could not launch command session `{}`: {error}",
+                    "Xero could not launch command session `{}`: {error}",
                     prepared.argv[0]
                 ),
             ),
@@ -672,13 +672,13 @@ impl AutonomousToolRuntime {
         let stdout = child.stdout.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_command_stdout_missing",
-                "Cadence could not capture command session stdout.",
+                "Xero could not capture command session stdout.",
             )
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_command_stderr_missing",
-                "Cadence could not capture command session stderr.",
+                "Xero could not capture command session stderr.",
             )
         })?;
 
@@ -753,7 +753,7 @@ impl AutonomousToolRuntime {
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_COMMAND_SESSION_START.into(),
             summary: format!(
-                "Command session `{}` requires operator review before Cadence can start it.",
+                "Command session `{}` requires operator review before Xero can start it.",
                 render_command_for_summary(&prepared.argv)
             ),
             command_result: None,
@@ -864,7 +864,7 @@ pub(super) fn apply_sanitized_command_environment(command: &mut Command) {
             "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
         );
     }
-    command.env("CADENCE_AGENT_SANITIZED_ENV", "1");
+    command.env("XERO_AGENT_SANITIZED_ENV", "1");
 }
 
 fn prune_command_session_chunks(chunks: &mut Vec<AutonomousCommandSessionChunk>) {
@@ -1005,11 +1005,11 @@ fn join_capture(
         Ok(Ok(capture)) => Ok(capture),
         Ok(Err(error)) => Err(CommandError::system_fault(
             "autonomous_tool_command_output_failed",
-            format!("Cadence could not capture command output: {error}"),
+            format!("Xero could not capture command output: {error}"),
         )),
         Err(_) => Err(CommandError::system_fault(
             "autonomous_tool_command_output_failed",
-            "Cadence could not join the command output capture thread.",
+            "Xero could not join the command output capture thread.",
         )),
     }
 }

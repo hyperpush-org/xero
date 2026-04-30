@@ -43,7 +43,7 @@ impl NotificationRouteKind {
             "telegram" => Ok(Self::Telegram),
             "discord" => Ok(Self::Discord),
             other => Err(NotificationAdapterError::payload_invalid(format!(
-                "Cadence does not support notification route kind `{other}`."
+                "Xero does not support notification route kind `{other}`."
             ))),
         }
     }

@@ -177,7 +177,7 @@ pub(crate) fn emit_runtime_updated<R: Runtime>(
         CommandError::retryable(
             "runtime_updated_emit_failed",
             format!(
-                "Cadence updated runtime-session metadata but could not emit the runtime update event: {error}"
+                "Xero updated runtime-session metadata but could not emit the runtime update event: {error}"
             ),
         )
     })

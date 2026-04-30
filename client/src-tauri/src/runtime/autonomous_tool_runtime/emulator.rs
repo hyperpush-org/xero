@@ -277,7 +277,7 @@ fn decode_input<T: DeserializeOwned>(
         |error| {
             CommandError::user_fixable(
                 "autonomous_emulator_input_invalid",
-                format!("Cadence could not decode emulator action `{action_name}` input: {error}"),
+                format!("Xero could not decode emulator action `{action_name}` input: {error}"),
             )
         },
     )
@@ -299,7 +299,7 @@ fn to_json_value(value: impl Serialize) -> CommandResult<JsonValue> {
     serde_json::to_value(value).map_err(|error| {
         CommandError::system_fault(
             "autonomous_emulator_output_serialize_failed",
-            format!("Cadence could not serialize emulator tool output: {error}"),
+            format!("Xero could not serialize emulator tool output: {error}"),
         )
     })
 }

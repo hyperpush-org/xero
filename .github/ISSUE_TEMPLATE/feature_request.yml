@@ -16,7 +16,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What should Cadence do?
+      description: What should Xero do?
     validations:
       required: true
   - type: textarea

@@ -150,7 +150,7 @@ pub fn refresh_mcp_connection_truth_with_config(
                 Err(_) => ProbeOutcome::failed(
                     "mcp_probe_runtime_panic",
                     format!(
-                        "Cadence failed to evaluate MCP server `{}` because the probe task panicked.",
+                        "Xero failed to evaluate MCP server `{}` because the probe task panicked.",
                         registry.servers[index].id
                     ),
                     true,
@@ -188,7 +188,7 @@ pub fn stale_after_configuration_change(previous: &McpConnectionState) -> McpCon
         status: McpConnectionStatus::Stale,
         diagnostic: Some(McpConnectionDiagnostic {
             code: "mcp_status_recheck_required".into(),
-            message: "Cadence marked this MCP server as stale because its configuration changed and must be rechecked.".into(),
+            message: "Xero marked this MCP server as stale because its configuration changed and must be rechecked.".into(),
             retryable: true,
         }),
         last_checked_at: None,
@@ -208,7 +208,7 @@ fn probe_server(server: &McpServerRecord, timeout: Duration) -> ProbeOutcome {
         return ProbeOutcome::blocked(
             "mcp_probe_env_missing",
             format!(
-                "Cadence blocked MCP server `{}` because required environment references are missing: {}.",
+                "Xero blocked MCP server `{}` because required environment references are missing: {}.",
                 server.id,
                 missing_env.join(", "),
             ),
@@ -246,9 +246,7 @@ fn probe_stdio_transport(
         Err(error) => {
             return ProbeOutcome::failed(
                 "mcp_probe_spawn_failed",
-                format!(
-                    "Cadence could not start MCP stdio server `{server_id}` for probing: {error}"
-                ),
+                format!("Xero could not start MCP stdio server `{server_id}` for probing: {error}"),
                 !matches!(
                     error.kind(),
                     ErrorKind::NotFound | ErrorKind::PermissionDenied
@@ -267,7 +265,7 @@ fn probe_stdio_transport(
                     ProbeOutcome::misconfigured(
                         "mcp_probe_stdio_exited_early",
                         format!(
-                            "Cadence marked MCP stdio server `{server_id}` as misconfigured because it exited before becoming ready."
+                            "Xero marked MCP stdio server `{server_id}` as misconfigured because it exited before becoming ready."
                         ),
                         false,
                     )
@@ -275,7 +273,7 @@ fn probe_stdio_transport(
                     ProbeOutcome::failed(
                         "mcp_probe_stdio_failed",
                         format!(
-                            "Cadence marked MCP stdio server `{server_id}` as failed because the probe process exited non-zero."
+                            "Xero marked MCP stdio server `{server_id}` as failed because the probe process exited non-zero."
                         ),
                         false,
                     )
@@ -289,7 +287,7 @@ fn probe_stdio_transport(
                     return ProbeOutcome::stale(
                         "mcp_probe_timeout",
                         format!(
-                            "Cadence marked MCP server `{server_id}` as stale because the probe timed out."
+                            "Xero marked MCP server `{server_id}` as stale because the probe timed out."
                         ),
                         true,
                     );
@@ -309,7 +307,7 @@ fn probe_stdio_transport(
                 return ProbeOutcome::failed(
                     "mcp_probe_stdio_wait_failed",
                     format!(
-                        "Cadence could not monitor MCP stdio server `{server_id}` during probing: {error}"
+                        "Xero could not monitor MCP stdio server `{server_id}` during probing: {error}"
                     ),
                     true,
                 );
@@ -330,7 +328,7 @@ fn probe_http_transport(
             return ProbeOutcome::failed(
                 "mcp_probe_client_build_failed",
                 format!(
-                    "Cadence could not initialize the HTTP probe client for MCP server `{server_id}`: {error}"
+                    "Xero could not initialize the HTTP probe client for MCP server `{server_id}`: {error}"
                 ),
                 true,
             );
@@ -344,7 +342,7 @@ fn probe_http_transport(
                 return ProbeOutcome::stale(
                     "mcp_probe_timeout",
                     format!(
-                        "Cadence marked MCP server `{server_id}` as stale because the probe timed out."
+                        "Xero marked MCP server `{server_id}` as stale because the probe timed out."
                     ),
                     true,
                 );
@@ -352,7 +350,7 @@ fn probe_http_transport(
 
             return ProbeOutcome::failed(
                 "mcp_probe_transport_failed",
-                format!("Cadence could not reach MCP server `{server_id}` during probing: {error}"),
+                format!("Xero could not reach MCP server `{server_id}` during probing: {error}"),
                 true,
             );
         }
@@ -369,7 +367,7 @@ fn probe_http_transport(
         return ProbeOutcome::blocked(
             "mcp_probe_access_denied",
             format!(
-                "Cadence blocked MCP server `{server_id}` because the probe received HTTP {}.",
+                "Xero blocked MCP server `{server_id}` because the probe received HTTP {}.",
                 status.as_u16(),
             ),
             false,
@@ -380,7 +378,7 @@ fn probe_http_transport(
         return ProbeOutcome::misconfigured(
             "mcp_probe_endpoint_not_found",
             format!(
-                "Cadence marked MCP server `{server_id}` as misconfigured because the probe endpoint returned HTTP 404."
+                "Xero marked MCP server `{server_id}` as misconfigured because the probe endpoint returned HTTP 404."
             ),
             false,
         );
@@ -390,7 +388,7 @@ fn probe_http_transport(
         return ProbeOutcome::failed(
             "mcp_probe_server_error",
             format!(
-                "Cadence marked MCP server `{server_id}` as failed because the probe received HTTP {}.",
+                "Xero marked MCP server `{server_id}` as failed because the probe received HTTP {}.",
                 status.as_u16(),
             ),
             true,
@@ -406,7 +404,7 @@ fn probe_http_transport(
             ProbeOutcome::misconfigured(
                 "mcp_probe_http_client_error",
                 format!(
-                    "Cadence marked MCP server `{server_id}` as misconfigured because the probe received HTTP {}.",
+                    "Xero marked MCP server `{server_id}` as misconfigured because the probe received HTTP {}.",
                     status.as_u16(),
                 ),
                 false,
@@ -415,7 +413,7 @@ fn probe_http_transport(
             ProbeOutcome::failed(
                 "mcp_probe_http_unexpected_status",
                 format!(
-                    "Cadence marked MCP server `{server_id}` as failed because the probe received HTTP {}.",
+                    "Xero marked MCP server `{server_id}` as failed because the probe received HTTP {}.",
                     status.as_u16(),
                 ),
                 true,
@@ -432,7 +430,7 @@ fn probe_http_transport(
                 return ProbeOutcome::misconfigured(
                     "mcp_probe_http_malformed_response",
                     format!(
-                        "Cadence marked MCP server `{server_id}` as misconfigured because the probe response content-type was not MCP-compatible."
+                        "Xero marked MCP server `{server_id}` as misconfigured because the probe response content-type was not MCP-compatible."
                     ),
                     false,
                 );
@@ -447,7 +445,7 @@ fn probe_http_transport(
                 return ProbeOutcome::misconfigured(
                     "mcp_probe_sse_malformed_response",
                     format!(
-                        "Cadence marked MCP server `{server_id}` as misconfigured because the probe response was not an event stream."
+                        "Xero marked MCP server `{server_id}` as misconfigured because the probe response was not an event stream."
                     ),
                     false,
                 );

@@ -62,7 +62,7 @@ pub fn configure_main_window<R: Runtime>(app: AppHandle<R>) {
     register_window_state_persistence(app, &window);
 
     if let Err(error) = window.show() {
-        eprintln!("Cadence failed to show the main window after geometry bootstrap: {error}");
+        eprintln!("Xero failed to show the main window after geometry bootstrap: {error}");
     }
 }
 
@@ -70,7 +70,7 @@ fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewW
     let display_areas = match display_areas_for_window(window) {
         Ok(display_areas) => display_areas,
         Err(error) => {
-            eprintln!("Cadence could not inspect available displays for window restore: {error}");
+            eprintln!("Xero could not inspect available displays for window restore: {error}");
             Vec::new()
         }
     };
@@ -78,7 +78,7 @@ fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewW
     let saved_bounds = match load_window_bounds(app) {
         Ok(saved_bounds) => saved_bounds,
         Err(error) => {
-            eprintln!("Cadence could not load saved window bounds; using first-launch fullscreen defaults instead: {error}");
+            eprintln!("Xero could not load saved window bounds; using first-launch fullscreen defaults instead: {error}");
             None
         }
     };
@@ -87,7 +87,7 @@ fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewW
         Some(bounds) if saved_bounds_fit_display_areas(bounds, &display_areas) => Some(bounds),
         Some(bounds) => {
             eprintln!(
-                "Cadence ignored saved window bounds outside the active display layout: x={}, y={}, width={}, height={}",
+                "Xero ignored saved window bounds outside the active display layout: x={}, y={}, width={}, height={}",
                 bounds.x, bounds.y, bounds.width, bounds.height
             );
             default_window_bounds(window)
@@ -97,7 +97,7 @@ fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewW
 
     if let Some(bounds) = startup_bounds {
         if let Err(error) = apply_window_bounds(window, bounds) {
-            eprintln!("Cadence failed to apply startup window bounds: {error}");
+            eprintln!("Xero failed to apply startup window bounds: {error}");
         }
     }
 }
@@ -110,7 +110,7 @@ fn register_window_state_persistence<R: Runtime>(app: AppHandle<R>, window: &Web
             };
 
             if let Err(error) = save_current_window_bounds(&app, &window) {
-                eprintln!("Cadence failed to persist main window bounds during shutdown: {error}");
+                eprintln!("Xero failed to persist main window bounds during shutdown: {error}");
             }
         }
     });

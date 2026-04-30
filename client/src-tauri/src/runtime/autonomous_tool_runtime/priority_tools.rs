@@ -101,7 +101,7 @@ impl AutonomousToolRuntime {
         let mut todos = self.todo_items.lock().map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_todo_lock_failed",
-                "Cadence could not lock the owned-agent todo store.",
+                "Xero could not lock the owned-agent todo store.",
             )
         })?;
         let mut changed_item = None;
@@ -136,7 +136,7 @@ impl AutonomousToolRuntime {
                 let item = todos.get_mut(&id).ok_or_else(|| {
                     CommandError::user_fixable(
                         "autonomous_tool_todo_not_found",
-                        format!("Cadence could not find todo `{id}`."),
+                        format!("Xero could not find todo `{id}`."),
                     )
                 })?;
                 item.status = AutonomousTodoStatus::Completed;
@@ -177,7 +177,7 @@ impl AutonomousToolRuntime {
             let mut tasks = self.subagent_tasks.lock().map_err(|_| {
                 CommandError::system_fault(
                     "autonomous_tool_subagent_lock_failed",
-                    "Cadence could not lock the owned-agent subagent task store.",
+                    "Xero could not lock the owned-agent subagent task store.",
                 )
             })?;
             let subagent_id = next_subagent_id(&tasks);
@@ -227,7 +227,7 @@ impl AutonomousToolRuntime {
             let mut tasks = self.subagent_tasks.lock().map_err(|_| {
                 CommandError::system_fault(
                     "autonomous_tool_subagent_lock_failed",
-                    "Cadence could not lock the owned-agent subagent task store.",
+                    "Xero could not lock the owned-agent subagent task store.",
                 )
             })?;
             tasks.insert(task.subagent_id.clone(), task.clone());
@@ -255,7 +255,7 @@ impl AutonomousToolRuntime {
         if !display_path.ends_with(".ipynb") {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_notebook_extension_invalid",
-                "Cadence only edits Jupyter notebooks with the `.ipynb` extension.",
+                "Xero only edits Jupyter notebooks with the `.ipynb` extension.",
             ));
         }
 
@@ -264,7 +264,7 @@ impl AutonomousToolRuntime {
             CommandError::retryable(
                 "autonomous_tool_notebook_read_failed",
                 format!(
-                    "Cadence could not read notebook {}: {error}",
+                    "Xero could not read notebook {}: {error}",
                     resolved_path.display()
                 ),
             )
@@ -272,7 +272,7 @@ impl AutonomousToolRuntime {
         let mut notebook = serde_json::from_str::<JsonValue>(&contents).map_err(|error| {
             CommandError::user_fixable(
                 "autonomous_tool_notebook_decode_failed",
-                format!("Cadence could not parse notebook `{display_path}` as JSON: {error}"),
+                format!("Xero could not parse notebook `{display_path}` as JSON: {error}"),
             )
         })?;
 
@@ -282,16 +282,13 @@ impl AutonomousToolRuntime {
             .ok_or_else(|| {
                 CommandError::user_fixable(
                     "autonomous_tool_notebook_cells_missing",
-                    "Cadence requires notebook JSON to contain a `cells` array.",
+                    "Xero requires notebook JSON to contain a `cells` array.",
                 )
             })?;
         let cell = cells.get_mut(request.cell_index).ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_notebook_cell_not_found",
-                format!(
-                    "Cadence could not find notebook cell {}.",
-                    request.cell_index
-                ),
+                format!("Xero could not find notebook cell {}.", request.cell_index),
             )
         })?;
         let cell_type = cell
@@ -302,7 +299,7 @@ impl AutonomousToolRuntime {
         let source = cell.get_mut("source").ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_notebook_source_missing",
-                "Cadence requires the target notebook cell to contain `source`.",
+                "Xero requires the target notebook cell to contain `source`.",
             )
         })?;
         let old_source = notebook_source_to_string(source)?;
@@ -310,7 +307,7 @@ impl AutonomousToolRuntime {
             if expected != old_source {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_notebook_expected_source_mismatch",
-                    "Cadence refused to edit the notebook cell because expectedSource no longer matches.",
+                    "Xero refused to edit the notebook cell because expectedSource no longer matches.",
                 ));
             }
         }
@@ -320,14 +317,14 @@ impl AutonomousToolRuntime {
         let serialized = serde_json::to_vec_pretty(&notebook).map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_notebook_serialize_failed",
-                format!("Cadence could not serialize notebook `{display_path}`: {error}"),
+                format!("Xero could not serialize notebook `{display_path}`: {error}"),
             )
         })?;
         fs::write(&resolved_path, serialized).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_notebook_write_failed",
                 format!(
-                    "Cadence could not write notebook {}: {error}",
+                    "Xero could not write notebook {}: {error}",
                     resolved_path.display()
                 ),
             )
@@ -677,7 +674,7 @@ impl AutonomousToolRuntime {
         let registry_path = self.mcp_registry_path.as_ref().ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_mcp_registry_unavailable",
-                "Cadence cannot use MCP tools because no MCP registry path is wired.",
+                "Xero cannot use MCP tools because no MCP registry path is wired.",
             )
         })?;
         let registry = load_mcp_registry_from_path(registry_path)?;
@@ -839,7 +836,7 @@ pub(super) fn connected_mcp_server<'a>(
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "autonomous_tool_mcp_server_not_found",
-                format!("Cadence could not find MCP server `{server_id}`."),
+                format!("Xero could not find MCP server `{server_id}`."),
             )
         })?;
     if server.connection.status != McpConnectionStatus::Connected {
@@ -950,7 +947,7 @@ fn matching_lsp_descriptor(
             .ok_or_else(|| {
                 CommandError::user_fixable(
                     "autonomous_tool_lsp_server_not_found",
-                    format!("Cadence could not find LSP server `{}`.", server_id.trim()),
+                    format!("Xero could not find LSP server `{}`.", server_id.trim()),
                 )
             })
             .map(Some);
@@ -981,7 +978,7 @@ fn normalize_lsp_timeout(timeout_ms: Option<u64>) -> CommandResult<u64> {
     if timeout == 0 || timeout > MAX_LSP_TIMEOUT_MS {
         return Err(CommandError::user_fixable(
             "autonomous_tool_lsp_timeout_invalid",
-            format!("Cadence requires LSP timeoutMs to be between 1 and {MAX_LSP_TIMEOUT_MS}."),
+            format!("Xero requires LSP timeoutMs to be between 1 and {MAX_LSP_TIMEOUT_MS}."),
         ));
     }
     Ok(timeout)
@@ -1068,7 +1065,7 @@ fn priority_tool_catalog(
         (
             "process_manager",
             "process_manager",
-            "Start, interact with, inspect, read output from, and kill Cadence-owned long-running processes.",
+            "Start, interact with, inspect, read output from, and kill Xero-owned long-running processes.",
         ),
         (
             "macos_automation",
@@ -1252,7 +1249,7 @@ fn priority_tool_catalog(
         catalog.push((
             AUTONOMOUS_TOOL_SKILL,
             "skills",
-            "Discover, resolve, install, invoke, reload, or create Cadence skills.",
+            "Discover, resolve, install, invoke, reload, or create Xero skills.",
         ));
     }
     catalog
@@ -1263,7 +1260,7 @@ fn bounded_limit(value: Option<usize>, default: usize) -> CommandResult<usize> {
     if limit == 0 || limit > MAX_PRIORITY_TOOL_LIMIT {
         return Err(CommandError::user_fixable(
             "autonomous_tool_limit_invalid",
-            format!("Cadence requires limit to be between 1 and {MAX_PRIORITY_TOOL_LIMIT}."),
+            format!("Xero requires limit to be between 1 and {MAX_PRIORITY_TOOL_LIMIT}."),
         ));
     }
     Ok(limit)
@@ -1286,7 +1283,7 @@ fn normalize_todo_id(value: &str) -> CommandResult<String> {
     } else {
         Err(CommandError::user_fixable(
             "autonomous_tool_todo_id_invalid",
-            "Cadence requires todo ids to contain only letters, numbers, hyphen, underscore, or dot.",
+            "Xero requires todo ids to contain only letters, numbers, hyphen, underscore, or dot.",
         ))
     }
 }
@@ -1327,7 +1324,7 @@ fn notebook_source_to_string(value: &JsonValue) -> CommandResult<String> {
                 part.as_str().map(ToOwned::to_owned).ok_or_else(|| {
                     CommandError::user_fixable(
                         "autonomous_tool_notebook_source_invalid",
-                        "Cadence requires notebook source arrays to contain only strings.",
+                        "Xero requires notebook source arrays to contain only strings.",
                     )
                 })
             })
@@ -1335,7 +1332,7 @@ fn notebook_source_to_string(value: &JsonValue) -> CommandResult<String> {
             .map(|parts| parts.join("")),
         _ => Err(CommandError::user_fixable(
             "autonomous_tool_notebook_source_invalid",
-            "Cadence requires notebook source to be a string or string array.",
+            "Xero requires notebook source to be a string or string array.",
         )),
     }
 }
@@ -1400,7 +1397,7 @@ fn extract_symbols(path: &str, text: &str) -> CommandResult<Vec<AutonomousCodeSy
                 .map_err(|error| {
                     CommandError::system_fault(
                         "autonomous_tool_code_intel_regex_failed",
-                        format!("Cadence could not compile code-intel regex: {error}"),
+                        format!("Xero could not compile code-intel regex: {error}"),
                     )
                 })
         })
@@ -1512,23 +1509,18 @@ fn invoke_lsp_server(
     let executable = find_executable_on_path(descriptor.command).ok_or_else(|| {
         CommandError::user_fixable(
             "autonomous_tool_lsp_command_not_found",
-            format!(
-                "Cadence could not find LSP command `{}`.",
-                descriptor.command
-            ),
+            format!("Xero could not find LSP command `{}`.", descriptor.command),
         )
     })?;
     let relative_path = path_to_forward_slash(file_path.strip_prefix(repo_root).map_err(|_| {
-        CommandError::policy_denied(
-            "Cadence denied LSP access outside the imported repository root.",
-        )
+        CommandError::policy_denied("Xero denied LSP access outside the imported repository root.")
     })?);
     let target_uri = file_uri(file_path)?;
     let root_uri = file_uri(repo_root)?;
     let text = fs::read_to_string(file_path).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_lsp_read_failed",
-            format!("Cadence could not read `{relative_path}` for LSP: {error}"),
+            format!("Xero could not read `{relative_path}` for LSP: {error}"),
         )
     })?;
 
@@ -1544,15 +1536,12 @@ fn invoke_lsp_server(
     let mut child = process.spawn().map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => CommandError::user_fixable(
             "autonomous_tool_lsp_command_not_found",
-            format!(
-                "Cadence could not find LSP command `{}`.",
-                descriptor.command
-            ),
+            format!("Xero could not find LSP command `{}`.", descriptor.command),
         ),
         _ => CommandError::retryable(
             "autonomous_tool_lsp_spawn_failed",
             format!(
-                "Cadence could not launch LSP server `{}`: {error}",
+                "Xero could not launch LSP server `{}`: {error}",
                 descriptor.server_id
             ),
         ),
@@ -1562,13 +1551,13 @@ fn invoke_lsp_server(
         let mut stdin = child.stdin.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_lsp_stdin_missing",
-                "Cadence could not open stdin for the LSP server.",
+                "Xero could not open stdin for the LSP server.",
             )
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_lsp_stdout_missing",
-                "Cadence could not open stdout for the LSP server.",
+                "Xero could not open stdout for the LSP server.",
             )
         })?;
         let (message_tx, message_rx) = mpsc::channel::<String>();
@@ -1606,7 +1595,7 @@ fn invoke_lsp_server(
                         }
                     },
                     "clientInfo": {
-                        "name": "cadence-owned-agent",
+                        "name": "xero-owned-agent",
                         "version": "0.1.0"
                     }
                 }
@@ -1711,7 +1700,7 @@ fn read_lsp_symbols_response(
             terminate_child(child);
             return Err(CommandError::retryable(
                 "autonomous_tool_lsp_timeout",
-                "Cadence timed out waiting for LSP document symbols.",
+                "Xero timed out waiting for LSP document symbols.",
             ));
         };
         let message = recv_lsp_message(message_rx, remaining, child)?;
@@ -1760,7 +1749,7 @@ fn read_lsp_diagnostics_notifications(
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(CommandError::retryable(
                     "autonomous_tool_lsp_disconnected",
-                    "Cadence lost the LSP server stdout stream.",
+                    "Xero lost the LSP server stdout stream.",
                 ));
             }
         };
@@ -1785,12 +1774,12 @@ fn recv_lsp_message(
             terminate_child(child);
             Err(CommandError::retryable(
                 "autonomous_tool_lsp_timeout",
-                "Cadence timed out waiting for LSP server response.",
+                "Xero timed out waiting for LSP server response.",
             ))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(CommandError::retryable(
             "autonomous_tool_lsp_disconnected",
-            "Cadence lost the LSP server stdout stream.",
+            "Xero lost the LSP server stdout stream.",
         )),
     }
 }
@@ -1799,7 +1788,7 @@ fn decode_lsp_message(message: &str) -> CommandResult<JsonValue> {
     serde_json::from_str::<JsonValue>(message).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_lsp_decode_failed",
-            format!("Cadence could not decode LSP JSON-RPC response: {error}"),
+            format!("Xero could not decode LSP JSON-RPC response: {error}"),
         )
     })
 }
@@ -1808,26 +1797,26 @@ fn write_lsp_message(stdin: &mut impl Write, value: JsonValue) -> CommandResult<
     let bytes = serde_json::to_vec(&value).map_err(|error| {
         CommandError::system_fault(
             "autonomous_tool_lsp_serialize_failed",
-            format!("Cadence could not serialize an LSP request: {error}"),
+            format!("Xero could not serialize an LSP request: {error}"),
         )
     })?;
     let header = format!("Content-Length: {}\r\n\r\n", bytes.len());
     stdin.write_all(header.as_bytes()).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_lsp_write_failed",
-            format!("Cadence could not write LSP stdio headers: {error}"),
+            format!("Xero could not write LSP stdio headers: {error}"),
         )
     })?;
     stdin.write_all(&bytes).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_lsp_write_failed",
-            format!("Cadence could not write to LSP stdio: {error}"),
+            format!("Xero could not write to LSP stdio: {error}"),
         )
     })?;
     stdin.flush().map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_lsp_write_failed",
-            format!("Cadence could not flush LSP stdio: {error}"),
+            format!("Xero could not flush LSP stdio: {error}"),
         )
     })
 }
@@ -2070,10 +2059,7 @@ fn file_uri(path: &Path) -> CommandResult<String> {
         .map_err(|_| {
             CommandError::system_fault(
                 "autonomous_tool_lsp_file_uri_failed",
-                format!(
-                    "Cadence could not convert `{}` to a file URI.",
-                    path.display()
-                ),
+                format!("Xero could not convert `{}` to a file URI.", path.display()),
             )
         })
 }
@@ -2121,7 +2107,7 @@ pub(super) fn normalize_mcp_timeout(timeout_ms: Option<u64>) -> CommandResult<u6
     if timeout == 0 || timeout > MAX_MCP_TIMEOUT_MS {
         return Err(CommandError::user_fixable(
             "autonomous_tool_mcp_timeout_invalid",
-            format!("Cadence requires MCP timeoutMs to be between 1 and {MAX_MCP_TIMEOUT_MS}."),
+            format!("Xero requires MCP timeoutMs to be between 1 and {MAX_MCP_TIMEOUT_MS}."),
         ));
     }
     Ok(timeout)
@@ -2188,7 +2174,7 @@ fn invoke_stdio_mcp(
         return Err(CommandError::user_fixable(
             "autonomous_tool_mcp_transport_unsupported",
             format!(
-                "Cadence currently invokes MCP capabilities only over stdio; server `{}` uses another transport.",
+                "Xero currently invokes MCP capabilities only over stdio; server `{}` uses another transport.",
                 server.id
             ),
         ));
@@ -2209,7 +2195,7 @@ fn invoke_stdio_mcp(
             CommandError::user_fixable(
                 "autonomous_tool_mcp_env_missing",
                 format!(
-                    "Cadence could not invoke MCP server `{}` because environment variable `{}` is missing.",
+                    "Xero could not invoke MCP server `{}` because environment variable `{}` is missing.",
                     server.id, env_ref.from_env
                 ),
             )
@@ -2220,27 +2206,24 @@ fn invoke_stdio_mcp(
     let mut child = process.spawn().map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => CommandError::user_fixable(
             "autonomous_tool_mcp_command_not_found",
-            format!("Cadence could not find MCP command `{command}`."),
+            format!("Xero could not find MCP command `{command}`."),
         ),
         _ => CommandError::system_fault(
             "autonomous_tool_mcp_spawn_failed",
-            format!(
-                "Cadence could not launch MCP server `{}`: {error}",
-                server.id
-            ),
+            format!("Xero could not launch MCP server `{}`: {error}", server.id),
         ),
     })?;
 
     let mut stdin = child.stdin.take().ok_or_else(|| {
         CommandError::system_fault(
             "autonomous_tool_mcp_stdin_missing",
-            "Cadence could not open stdin for the MCP server.",
+            "Xero could not open stdin for the MCP server.",
         )
     })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         CommandError::system_fault(
             "autonomous_tool_mcp_stdout_missing",
-            "Cadence could not open stdout for the MCP server.",
+            "Xero could not open stdout for the MCP server.",
         )
     })?;
     let (message_tx, message_rx) = mpsc::channel::<String>();
@@ -2264,7 +2247,7 @@ fn invoke_stdio_mcp(
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "cadence-owned-agent",
+                    "name": "xero-owned-agent",
                     "version": "0.1.0"
                 }
             }
@@ -2304,7 +2287,7 @@ fn invoke_http_mcp(
         McpTransport::Stdio { .. } => {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_mcp_transport_invalid",
-                "Cadence cannot invoke stdio MCP through the HTTP transport helper.",
+                "Xero cannot invoke stdio MCP through the HTTP transport helper.",
             ));
         }
     };
@@ -2314,7 +2297,7 @@ fn invoke_http_mcp(
         .map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_mcp_http_client_failed",
-                format!("Cadence could not build MCP HTTP client: {error}"),
+                format!("Xero could not build MCP HTTP client: {error}"),
             )
         })?;
     let timeout = Duration::from_millis(timeout_ms);
@@ -2332,7 +2315,7 @@ fn invoke_http_mcp(
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "cadence-owned-agent",
+                    "name": "xero-owned-agent",
                     "version": "0.1.0"
                 }
             }
@@ -2402,12 +2385,12 @@ fn http_mcp_json_rpc(
         if error.is_timeout() {
             CommandError::retryable(
                 "autonomous_tool_mcp_timeout",
-                format!("Cadence timed out waiting for MCP HTTP response after {timeout:?}."),
+                format!("Xero timed out waiting for MCP HTTP response after {timeout:?}."),
             )
         } else {
             CommandError::retryable(
                 "autonomous_tool_mcp_http_failed",
-                format!("Cadence could not reach MCP HTTP endpoint `{url}`: {error}"),
+                format!("Xero could not reach MCP HTTP endpoint `{url}`: {error}"),
             )
         }
     })?;
@@ -2433,7 +2416,7 @@ fn parse_http_mcp_response(
     let body = response.text().map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_mcp_http_read_failed",
-            format!("Cadence could not read MCP HTTP response: {error}"),
+            format!("Xero could not read MCP HTTP response: {error}"),
         )
     })?;
     if !status.is_success() {
@@ -2455,7 +2438,7 @@ fn parse_http_mcp_response(
         serde_json::from_str::<JsonValue>(&body).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_mcp_decode_failed",
-                format!("Cadence could not decode MCP HTTP JSON-RPC response: {error}"),
+                format!("Xero could not decode MCP HTTP JSON-RPC response: {error}"),
             )
         })?
     };
@@ -2489,7 +2472,7 @@ fn parse_mcp_sse_body(body: &str, expected_id: Option<i64>) -> CommandResult<Jso
         let value = serde_json::from_str::<JsonValue>(&data).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_mcp_decode_failed",
-                format!("Cadence could not decode MCP SSE JSON-RPC event: {error}"),
+                format!("Xero could not decode MCP SSE JSON-RPC event: {error}"),
             )
         })?;
         if expected_id.is_none() || value.get("id").and_then(JsonValue::as_i64) == expected_id {
@@ -2509,26 +2492,26 @@ fn write_mcp_message(stdin: &mut impl Write, value: JsonValue) -> CommandResult<
     let bytes = serde_json::to_vec(&value).map_err(|error| {
         CommandError::system_fault(
             "autonomous_tool_mcp_serialize_failed",
-            format!("Cadence could not serialize an MCP request: {error}"),
+            format!("Xero could not serialize an MCP request: {error}"),
         )
     })?;
     let header = format!("Content-Length: {}\r\n\r\n", bytes.len());
     stdin.write_all(header.as_bytes()).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_mcp_write_failed",
-            format!("Cadence could not write MCP stdio headers: {error}"),
+            format!("Xero could not write MCP stdio headers: {error}"),
         )
     })?;
     stdin.write_all(&bytes).map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_mcp_write_failed",
-            format!("Cadence could not write to MCP stdio: {error}"),
+            format!("Xero could not write to MCP stdio: {error}"),
         )
     })?;
     stdin.flush().map_err(|error| {
         CommandError::retryable(
             "autonomous_tool_mcp_write_failed",
-            format!("Cadence could not flush MCP stdio: {error}"),
+            format!("Xero could not flush MCP stdio: {error}"),
         )
     })
 }
@@ -2546,20 +2529,20 @@ fn read_mcp_response(
                 let _ = child.kill();
                 return Err(CommandError::retryable(
                     "autonomous_tool_mcp_timeout",
-                    "Cadence timed out waiting for MCP server response.",
+                    "Xero timed out waiting for MCP server response.",
                 ));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(CommandError::retryable(
                     "autonomous_tool_mcp_disconnected",
-                    "Cadence lost the MCP server stdout stream.",
+                    "Xero lost the MCP server stdout stream.",
                 ));
             }
         };
         let value = serde_json::from_str::<JsonValue>(&message).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_mcp_decode_failed",
-                format!("Cadence could not decode MCP JSON-RPC response: {error}"),
+                format!("Xero could not decode MCP JSON-RPC response: {error}"),
             )
         })?;
         if value.get("id").and_then(JsonValue::as_i64) != Some(expected_id) {

@@ -25,11 +25,10 @@ use crate::{
     runtime::{
         discover_bundled_skill_directory, discover_local_skill_directory, discover_plugin_roots,
         discover_plugin_skill_contribution, discover_project_skill_directory,
-        resolve_imported_repo_root, CadenceDiscoveredSkill, CadencePluginDiscoveryDiagnostic,
-        CadencePluginRoot, CadenceSkillDirectoryDiscovery, CadenceSkillDiscoveryDiagnostic,
-        CadenceSkillSourceKind, CadenceSkillSourceLocator, CadenceSkillSourceRecord,
-        CadenceSkillSourceScope, CadenceSkillSourceState, CadenceSkillTrustState,
-        SkillSourceSettings,
+        resolve_imported_repo_root, SkillSourceSettings, XeroDiscoveredSkill,
+        XeroPluginDiscoveryDiagnostic, XeroPluginRoot, XeroSkillDirectoryDiscovery,
+        XeroSkillDiscoveryDiagnostic, XeroSkillSourceKind, XeroSkillSourceLocator,
+        XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState, XeroSkillTrustState,
     },
     state::DesktopState,
 };
@@ -77,16 +76,16 @@ pub fn set_skill_enabled<R: Runtime>(
             .ok_or_else(|| {
                 CommandError::user_fixable(
                     "skill_source_not_found",
-                    format!("Cadence could not find skill source `{source_id}`."),
+                    format!("Xero could not find skill source `{source_id}`."),
                 )
             })?;
         if request.enabled
-            && (discovered.source.state == CadenceSkillSourceState::Blocked
-                || discovered.source.trust == CadenceSkillTrustState::Blocked)
+            && (discovered.source.state == XeroSkillSourceState::Blocked
+                || discovered.source.trust == XeroSkillTrustState::Blocked)
         {
             return Err(CommandError::user_fixable(
                 "skill_source_blocked",
-                format!("Cadence cannot enable blocked skill source `{source_id}`."),
+                format!("Xero cannot enable blocked skill source `{source_id}`."),
             ));
         }
         let trust = if request.enabled {
@@ -97,9 +96,9 @@ pub fn set_skill_enabled<R: Runtime>(
         let record = InstalledSkillRecord::from_discovered_skill(
             &discovered,
             if request.enabled {
-                CadenceSkillSourceState::Enabled
+                XeroSkillSourceState::Enabled
             } else {
-                CadenceSkillSourceState::Disabled
+                XeroSkillSourceState::Disabled
             },
             trust,
             now_timestamp(),
@@ -131,7 +130,7 @@ pub fn remove_skill<R: Runtime>(
     if !project_store::remove_installed_skill(&repo_root, &source_id)? {
         return Err(CommandError::user_fixable(
             "installed_skill_not_found",
-            format!("Cadence could not find installed skill source `{source_id}`."),
+            format!("Xero could not find installed skill source `{source_id}`."),
         ));
     }
 
@@ -432,12 +431,12 @@ fn load_skill_registry<R: Runtime>(
 
 struct PluginRegistrySnapshot {
     records: Vec<InstalledPluginRecord>,
-    diagnostics: Vec<CadencePluginDiscoveryDiagnostic>,
+    diagnostics: Vec<XeroPluginDiscoveryDiagnostic>,
 }
 
 struct DiscoveredSkillSnapshot {
-    candidates: Vec<CadenceDiscoveredSkill>,
-    diagnostics: Vec<CadenceSkillDiscoveryDiagnostic>,
+    candidates: Vec<XeroDiscoveredSkill>,
+    diagnostics: Vec<XeroSkillDiscoveryDiagnostic>,
 }
 
 fn collect_discoverable_skills<R: Runtime>(
@@ -481,8 +480,8 @@ fn collect_discoverable_skills<R: Runtime>(
         let plugin_snapshot = collect_plugin_registry(app, state, project_id, false)?;
         for plugin in plugin_snapshot.records {
             for skill in &plugin.manifest.skills {
-                let state = if plugin.state == CadenceSkillSourceState::Enabled {
-                    CadenceSkillSourceState::Discoverable
+                let state = if plugin.state == XeroSkillSourceState::Enabled {
+                    XeroSkillSourceState::Discoverable
                 } else {
                     plugin.state
                 };
@@ -499,10 +498,10 @@ fn collect_discoverable_skills<R: Runtime>(
                     if candidate.skill_id == skill.id {
                         candidates.push(candidate);
                     } else {
-                        diagnostics.push(CadenceSkillDiscoveryDiagnostic {
-                            code: "cadence_plugin_skill_id_mismatch".into(),
+                        diagnostics.push(XeroSkillDiscoveryDiagnostic {
+                            code: "xero_plugin_skill_id_mismatch".into(),
                             message: format!(
-                                "Cadence skipped plugin `{}` skill contribution `{}` because SKILL.md declared `{}`.",
+                                "Xero skipped plugin `{}` skill contribution `{}` because SKILL.md declared `{}`.",
                                 plugin.plugin_id, skill.id, candidate.skill_id
                             ),
                             relative_path: Some(skill.path.clone()),
@@ -513,7 +512,7 @@ fn collect_discoverable_skills<R: Runtime>(
             }
         }
         diagnostics.extend(plugin_snapshot.diagnostics.into_iter().map(|diagnostic| {
-            CadenceSkillDiscoveryDiagnostic {
+            XeroSkillDiscoveryDiagnostic {
                 code: diagnostic.code,
                 message: diagnostic.message,
                 relative_path: diagnostic.relative_path,
@@ -539,7 +538,7 @@ fn collect_plugin_registry<R: Runtime>(
     let roots = settings
         .enabled_plugin_roots()
         .into_iter()
-        .map(|root| CadencePluginRoot {
+        .map(|root| XeroPluginRoot {
             root_id: root.root_id,
             root_path: PathBuf::from(root.path),
         });
@@ -553,9 +552,9 @@ fn collect_plugin_registry<R: Runtime>(
 }
 
 fn push_discovery(
-    candidates: &mut Vec<CadenceDiscoveredSkill>,
-    diagnostics: &mut Vec<CadenceSkillDiscoveryDiagnostic>,
-    discovered: CadenceSkillDirectoryDiscovery,
+    candidates: &mut Vec<XeroDiscoveredSkill>,
+    diagnostics: &mut Vec<XeroSkillDiscoveryDiagnostic>,
+    discovered: XeroSkillDirectoryDiscovery,
 ) {
     candidates.extend(discovered.candidates);
     diagnostics.extend(discovered.diagnostics);
@@ -575,7 +574,7 @@ fn bundled_skill_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<BundledSkillRoot> 
         .filter(|root| root.is_dir())
         .map(|root| {
             vec![BundledSkillRoot {
-                bundle_id: "cadence".into(),
+                bundle_id: "xero".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 root_path: root,
             }]
@@ -613,15 +612,14 @@ fn apply_plugin_state_to_installed_skill(
     mut record: InstalledSkillRecord,
     plugins: &[InstalledPluginRecord],
 ) -> InstalledSkillRecord {
-    let CadenceSkillSourceLocator::Plugin { plugin_id, .. } = &record.source.locator else {
+    let XeroSkillSourceLocator::Plugin { plugin_id, .. } = &record.source.locator else {
         return record;
     };
     let Some(plugin) = plugins.iter().find(|plugin| plugin.plugin_id == *plugin_id) else {
-        record.source.state = CadenceSkillSourceState::Stale;
+        record.source.state = XeroSkillSourceState::Stale;
         return record;
     };
-    if plugin.state != CadenceSkillSourceState::Enabled
-        || plugin.trust == CadenceSkillTrustState::Blocked
+    if plugin.state != XeroSkillSourceState::Enabled || plugin.trust == XeroSkillTrustState::Blocked
     {
         record.source.state = plugin.state;
         record.source.trust = plugin.trust;
@@ -653,7 +651,7 @@ fn skill_entry_from_installed(
         project_id: source_project_id(&source.scope),
         source_state: source_state_dto(source.state),
         trust_state: trust_state_dto(source.trust),
-        enabled: source.state == CadenceSkillSourceState::Enabled,
+        enabled: source.state == XeroSkillSourceState::Enabled,
         installed: true,
         user_invocable: record.user_invocable,
         version_hash: record.version_hash.clone(),
@@ -698,7 +696,7 @@ fn plugin_registry_entry_dto(
         manifest_hash: record.manifest_hash.clone(),
         state: source_state_dto(record.state),
         trust: trust_state_dto(record.trust),
-        enabled: record.state == CadenceSkillSourceState::Enabled,
+        enabled: record.state == XeroSkillSourceState::Enabled,
         skill_count: record.manifest.skills.len(),
         command_count: record.manifest.commands.len(),
         skills,
@@ -719,64 +717,64 @@ fn plugin_command_dto(
         description: command.description.clone(),
         entry: command.entry.clone(),
         availability: match &command.availability {
-            crate::runtime::CadencePluginCommandAvailability::Always => {
+            crate::runtime::XeroPluginCommandAvailability::Always => {
                 PluginCommandAvailabilityDto::Always
             }
-            crate::runtime::CadencePluginCommandAvailability::ProjectOpen => {
+            crate::runtime::XeroPluginCommandAvailability::ProjectOpen => {
                 PluginCommandAvailabilityDto::ProjectOpen
             }
         },
         risk_level: match &command.risk_level {
-            crate::runtime::CadencePluginCommandRiskLevel::Observe => {
+            crate::runtime::XeroPluginCommandRiskLevel::Observe => {
                 PluginCommandRiskLevelDto::Observe
             }
-            crate::runtime::CadencePluginCommandRiskLevel::ProjectRead => {
+            crate::runtime::XeroPluginCommandRiskLevel::ProjectRead => {
                 PluginCommandRiskLevelDto::ProjectRead
             }
-            crate::runtime::CadencePluginCommandRiskLevel::ProjectWrite => {
+            crate::runtime::XeroPluginCommandRiskLevel::ProjectWrite => {
                 PluginCommandRiskLevelDto::ProjectWrite
             }
-            crate::runtime::CadencePluginCommandRiskLevel::RunOwned => {
+            crate::runtime::XeroPluginCommandRiskLevel::RunOwned => {
                 PluginCommandRiskLevelDto::RunOwned
             }
-            crate::runtime::CadencePluginCommandRiskLevel::Network => {
+            crate::runtime::XeroPluginCommandRiskLevel::Network => {
                 PluginCommandRiskLevelDto::Network
             }
-            crate::runtime::CadencePluginCommandRiskLevel::SystemRead => {
+            crate::runtime::XeroPluginCommandRiskLevel::SystemRead => {
                 PluginCommandRiskLevelDto::SystemRead
             }
-            crate::runtime::CadencePluginCommandRiskLevel::OsAutomation => {
+            crate::runtime::XeroPluginCommandRiskLevel::OsAutomation => {
                 PluginCommandRiskLevelDto::OsAutomation
             }
-            crate::runtime::CadencePluginCommandRiskLevel::SignalExternal => {
+            crate::runtime::XeroPluginCommandRiskLevel::SignalExternal => {
                 PluginCommandRiskLevelDto::SignalExternal
             }
         },
         approval_policy: match &command.approval_policy {
-            crate::runtime::CadencePluginCommandApprovalPolicy::NeverForObserveOnly => {
+            crate::runtime::XeroPluginCommandApprovalPolicy::NeverForObserveOnly => {
                 PluginCommandApprovalPolicyDto::NeverForObserveOnly
             }
-            crate::runtime::CadencePluginCommandApprovalPolicy::Required => {
+            crate::runtime::XeroPluginCommandApprovalPolicy::Required => {
                 PluginCommandApprovalPolicyDto::Required
             }
-            crate::runtime::CadencePluginCommandApprovalPolicy::PerInvocation => {
+            crate::runtime::XeroPluginCommandApprovalPolicy::PerInvocation => {
                 PluginCommandApprovalPolicyDto::PerInvocation
             }
-            crate::runtime::CadencePluginCommandApprovalPolicy::Blocked => {
+            crate::runtime::XeroPluginCommandApprovalPolicy::Blocked => {
                 PluginCommandApprovalPolicyDto::Blocked
             }
         },
         state_policy: match &command.state_policy {
-            crate::runtime::CadencePluginCommandStatePolicy::Ephemeral => {
+            crate::runtime::XeroPluginCommandStatePolicy::Ephemeral => {
                 PluginCommandStatePolicyDto::Ephemeral
             }
-            crate::runtime::CadencePluginCommandStatePolicy::Project => {
+            crate::runtime::XeroPluginCommandStatePolicy::Project => {
                 PluginCommandStatePolicyDto::Project
             }
-            crate::runtime::CadencePluginCommandStatePolicy::Plugin => {
+            crate::runtime::XeroPluginCommandStatePolicy::Plugin => {
                 PluginCommandStatePolicyDto::Plugin
             }
-            crate::runtime::CadencePluginCommandStatePolicy::External => {
+            crate::runtime::XeroPluginCommandStatePolicy::External => {
                 PluginCommandStatePolicyDto::External
             }
         },
@@ -796,7 +794,7 @@ fn plugin_diagnostic_dto(diagnostic: &InstalledPluginDiagnosticRecord) -> Plugin
 }
 
 fn skill_entry_from_discovered(
-    candidate: &CadenceDiscoveredSkill,
+    candidate: &XeroDiscoveredSkill,
 ) -> CommandResult<SkillRegistryEntryDto> {
     let source = candidate.source.clone().validate()?;
     Ok(SkillRegistryEntryDto {
@@ -809,7 +807,7 @@ fn skill_entry_from_discovered(
         project_id: source_project_id(&source.scope),
         source_state: source_state_dto(source.state),
         trust_state: trust_state_dto(source.trust),
-        enabled: source.state == CadenceSkillSourceState::Enabled,
+        enabled: source.state == XeroSkillSourceState::Enabled,
         installed: false,
         user_invocable: candidate.user_invocable,
         version_hash: Some(candidate.version_hash.clone()),
@@ -819,9 +817,9 @@ fn skill_entry_from_discovered(
     })
 }
 
-fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadataDto {
+fn source_metadata_dto(source: &XeroSkillSourceRecord) -> SkillSourceMetadataDto {
     match &source.locator {
-        CadenceSkillSourceLocator::Bundled {
+        XeroSkillSourceLocator::Bundled {
             bundle_id,
             skill_id,
             version,
@@ -837,7 +835,7 @@ fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadata
             plugin_id: None,
             server_id: None,
         },
-        CadenceSkillSourceLocator::Local {
+        XeroSkillSourceLocator::Local {
             root_id,
             root_path,
             relative_path,
@@ -854,7 +852,7 @@ fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadata
             plugin_id: None,
             server_id: None,
         },
-        CadenceSkillSourceLocator::Project { relative_path, .. } => SkillSourceMetadataDto {
+        XeroSkillSourceLocator::Project { relative_path, .. } => SkillSourceMetadataDto {
             label: format!("Project skill {relative_path}"),
             repo: None,
             reference: None,
@@ -866,7 +864,7 @@ fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadata
             plugin_id: None,
             server_id: None,
         },
-        CadenceSkillSourceLocator::Github {
+        XeroSkillSourceLocator::Github {
             repo,
             reference,
             path,
@@ -883,7 +881,7 @@ fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadata
             plugin_id: None,
             server_id: None,
         },
-        CadenceSkillSourceLocator::Dynamic {
+        XeroSkillSourceLocator::Dynamic {
             run_id,
             artifact_id,
             ..
@@ -899,7 +897,7 @@ fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadata
             plugin_id: None,
             server_id: None,
         },
-        CadenceSkillSourceLocator::Mcp {
+        XeroSkillSourceLocator::Mcp {
             server_id,
             capability_id,
             ..
@@ -915,7 +913,7 @@ fn source_metadata_dto(source: &CadenceSkillSourceRecord) -> SkillSourceMetadata
             plugin_id: None,
             server_id: Some(server_id.clone()),
         },
-        CadenceSkillSourceLocator::Plugin {
+        XeroSkillSourceLocator::Plugin {
             plugin_id,
             contribution_id,
             skill_path,
@@ -989,7 +987,7 @@ fn installed_diagnostic_dto(
 }
 
 fn discovery_diagnostic_dto(
-    diagnostic: CadenceSkillDiscoveryDiagnostic,
+    diagnostic: XeroSkillDiscoveryDiagnostic,
 ) -> SkillDiscoveryDiagnosticDto {
     SkillDiscoveryDiagnosticDto {
         code: diagnostic.code,
@@ -999,7 +997,7 @@ fn discovery_diagnostic_dto(
 }
 
 fn plugin_discovery_diagnostic_dto(
-    diagnostic: CadencePluginDiscoveryDiagnostic,
+    diagnostic: XeroPluginDiscoveryDiagnostic,
 ) -> SkillDiscoveryDiagnosticDto {
     SkillDiscoveryDiagnosticDto {
         code: diagnostic.code,
@@ -1008,60 +1006,60 @@ fn plugin_discovery_diagnostic_dto(
     }
 }
 
-fn source_kind_dto(kind: CadenceSkillSourceKind) -> SkillSourceKindDto {
+fn source_kind_dto(kind: XeroSkillSourceKind) -> SkillSourceKindDto {
     match kind {
-        CadenceSkillSourceKind::Bundled => SkillSourceKindDto::Bundled,
-        CadenceSkillSourceKind::Local => SkillSourceKindDto::Local,
-        CadenceSkillSourceKind::Project => SkillSourceKindDto::Project,
-        CadenceSkillSourceKind::Github => SkillSourceKindDto::Github,
-        CadenceSkillSourceKind::Dynamic => SkillSourceKindDto::Dynamic,
-        CadenceSkillSourceKind::Mcp => SkillSourceKindDto::Mcp,
-        CadenceSkillSourceKind::Plugin => SkillSourceKindDto::Plugin,
+        XeroSkillSourceKind::Bundled => SkillSourceKindDto::Bundled,
+        XeroSkillSourceKind::Local => SkillSourceKindDto::Local,
+        XeroSkillSourceKind::Project => SkillSourceKindDto::Project,
+        XeroSkillSourceKind::Github => SkillSourceKindDto::Github,
+        XeroSkillSourceKind::Dynamic => SkillSourceKindDto::Dynamic,
+        XeroSkillSourceKind::Mcp => SkillSourceKindDto::Mcp,
+        XeroSkillSourceKind::Plugin => SkillSourceKindDto::Plugin,
     }
 }
 
-fn source_scope_dto(scope: &CadenceSkillSourceScope) -> SkillSourceScopeDto {
+fn source_scope_dto(scope: &XeroSkillSourceScope) -> SkillSourceScopeDto {
     match scope {
-        CadenceSkillSourceScope::Global => SkillSourceScopeDto::Global,
-        CadenceSkillSourceScope::Project { .. } => SkillSourceScopeDto::Project,
+        XeroSkillSourceScope::Global => SkillSourceScopeDto::Global,
+        XeroSkillSourceScope::Project { .. } => SkillSourceScopeDto::Project,
     }
 }
 
-fn source_project_id(scope: &CadenceSkillSourceScope) -> Option<String> {
+fn source_project_id(scope: &XeroSkillSourceScope) -> Option<String> {
     match scope {
-        CadenceSkillSourceScope::Global => None,
-        CadenceSkillSourceScope::Project { project_id } => Some(project_id.clone()),
+        XeroSkillSourceScope::Global => None,
+        XeroSkillSourceScope::Project { project_id } => Some(project_id.clone()),
     }
 }
 
-fn source_state_dto(state: CadenceSkillSourceState) -> SkillSourceStateDto {
+fn source_state_dto(state: XeroSkillSourceState) -> SkillSourceStateDto {
     match state {
-        CadenceSkillSourceState::Discoverable => SkillSourceStateDto::Discoverable,
-        CadenceSkillSourceState::Installed => SkillSourceStateDto::Installed,
-        CadenceSkillSourceState::Enabled => SkillSourceStateDto::Enabled,
-        CadenceSkillSourceState::Disabled => SkillSourceStateDto::Disabled,
-        CadenceSkillSourceState::Stale => SkillSourceStateDto::Stale,
-        CadenceSkillSourceState::Failed => SkillSourceStateDto::Failed,
-        CadenceSkillSourceState::Blocked => SkillSourceStateDto::Blocked,
+        XeroSkillSourceState::Discoverable => SkillSourceStateDto::Discoverable,
+        XeroSkillSourceState::Installed => SkillSourceStateDto::Installed,
+        XeroSkillSourceState::Enabled => SkillSourceStateDto::Enabled,
+        XeroSkillSourceState::Disabled => SkillSourceStateDto::Disabled,
+        XeroSkillSourceState::Stale => SkillSourceStateDto::Stale,
+        XeroSkillSourceState::Failed => SkillSourceStateDto::Failed,
+        XeroSkillSourceState::Blocked => SkillSourceStateDto::Blocked,
     }
 }
 
-fn trust_state_dto(trust: CadenceSkillTrustState) -> SkillTrustStateDto {
+fn trust_state_dto(trust: XeroSkillTrustState) -> SkillTrustStateDto {
     match trust {
-        CadenceSkillTrustState::Trusted => SkillTrustStateDto::Trusted,
-        CadenceSkillTrustState::UserApproved => SkillTrustStateDto::UserApproved,
-        CadenceSkillTrustState::ApprovalRequired => SkillTrustStateDto::ApprovalRequired,
-        CadenceSkillTrustState::Untrusted => SkillTrustStateDto::Untrusted,
-        CadenceSkillTrustState::Blocked => SkillTrustStateDto::Blocked,
+        XeroSkillTrustState::Trusted => SkillTrustStateDto::Trusted,
+        XeroSkillTrustState::UserApproved => SkillTrustStateDto::UserApproved,
+        XeroSkillTrustState::ApprovalRequired => SkillTrustStateDto::ApprovalRequired,
+        XeroSkillTrustState::Untrusted => SkillTrustStateDto::Untrusted,
+        XeroSkillTrustState::Blocked => SkillTrustStateDto::Blocked,
     }
 }
 
-fn approve_trust_for_user_enable(trust: CadenceSkillTrustState) -> CadenceSkillTrustState {
+fn approve_trust_for_user_enable(trust: XeroSkillTrustState) -> XeroSkillTrustState {
     match trust {
-        CadenceSkillTrustState::Blocked | CadenceSkillTrustState::Trusted => trust,
-        CadenceSkillTrustState::UserApproved
-        | CadenceSkillTrustState::ApprovalRequired
-        | CadenceSkillTrustState::Untrusted => CadenceSkillTrustState::UserApproved,
+        XeroSkillTrustState::Blocked | XeroSkillTrustState::Trusted => trust,
+        XeroSkillTrustState::UserApproved
+        | XeroSkillTrustState::ApprovalRequired
+        | XeroSkillTrustState::Untrusted => XeroSkillTrustState::UserApproved,
     }
 }
 

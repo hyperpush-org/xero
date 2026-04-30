@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use cadence_desktop_lib::{
+use rusqlite::{params, Connection};
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::OperatorApprovalStatus,
     db::{self, database_path_for_repo, project_store},
     git::repository::CanonicalRepository,
     state::DesktopState,
 };
-use rusqlite::{params, Connection};
-use tempfile::TempDir;
 
 fn seed_project(root: &TempDir, project_id: &str, repository_id: &str, repo_name: &str) -> PathBuf {
     let repo_root = root.path().join(repo_name);
@@ -34,7 +34,7 @@ fn seed_project(root: &TempDir, project_id: &str, repository_id: &str, repo_name
         deletions: 0,
     };
 
-    db::configure_project_database_paths(&root.path().join("app-data").join("cadence.db"));
+    db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
     let state = DesktopState::default();
     db::import_project(&repository, state.import_failpoints()).expect("import project");
 

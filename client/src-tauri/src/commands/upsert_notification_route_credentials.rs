@@ -46,7 +46,7 @@ pub fn upsert_notification_route_credentials<R: Runtime>(
             CommandError::user_fixable(
                 "notification_route_not_found",
                 format!(
-                    "Cadence could not find notification route `{}` in project `{}`.",
+                    "Xero could not find notification route `{}` in project `{}`.",
                     request.route_id, request.project_id
                 ),
             )
@@ -56,7 +56,7 @@ pub fn upsert_notification_route_credentials<R: Runtime>(
         CommandError::system_fault(
             "notification_route_decode_failed",
             format!(
-                "Cadence found unsupported persisted notification route kind `{}` for route `{}` in project `{}`.",
+                "Xero found unsupported persisted notification route kind `{}` for route `{}` in project `{}`.",
                 route.route_kind, request.route_id, request.project_id
             ),
         )
@@ -66,7 +66,7 @@ pub fn upsert_notification_route_credentials<R: Runtime>(
         return Err(CommandError::user_fixable(
             REQUEST_INVALID_CODE,
             format!(
-                "Cadence route `{}` in project `{}` is `{}` but credentials were submitted for `{}`.",
+                "Xero route `{}` in project `{}` is `{}` but credentials were submitted for `{}`.",
                 request.route_id,
                 request.project_id,
                 persisted_route_kind.as_str(),

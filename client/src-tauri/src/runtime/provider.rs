@@ -248,7 +248,7 @@ pub fn resolve_runtime_provider_identity(
                 return Err(AuthDiagnostic {
                     code: "runtime_provider_mismatch".into(),
                     message: format!(
-                        "Cadence rejected the runtime provider identity because providerId `{}` does not match runtimeKind `{}`.",
+                        "Xero rejected the runtime provider identity because providerId `{}` does not match runtimeKind `{}`.",
                         provider_id.unwrap_or_default(),
                         runtime_kind.unwrap_or_default()
                     ),
@@ -262,14 +262,14 @@ pub fn resolve_runtime_provider_identity(
         (None, Some(RuntimeReference::Family(_))) => Err(AuthDiagnostic {
             code: "runtime_provider_missing".into(),
             message: format!(
-                "Cadence could not resolve the runtime provider because runtimeKind `{}` requires a non-blank providerId.",
+                "Xero could not resolve the runtime provider because runtimeKind `{}` requires a non-blank providerId.",
                 runtime_kind.unwrap_or_default()
             ),
             retryable: false,
         }),
         (None, None) => Err(AuthDiagnostic {
             code: "runtime_provider_missing".into(),
-            message: "Cadence could not resolve the runtime provider because both providerId and runtimeKind were blank.".into(),
+            message: "Xero could not resolve the runtime provider because both providerId and runtimeKind were blank.".into(),
             retryable: false,
         }),
     }
@@ -292,7 +292,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
                 AuthFlowError::terminal(
                     "runtime_settings_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not bind the selected OpenRouter runtime because the app-global runtime settings snapshot was missing.",
+                    "Xero could not bind the selected OpenRouter runtime because the app-global runtime settings snapshot was missing.",
                 )
             })?;
 
@@ -310,7 +310,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
                 AuthFlowError::terminal(
                     "runtime_settings_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not bind the selected Anthropic runtime because the app-global runtime settings snapshot was missing.",
+                    "Xero could not bind the selected Anthropic runtime because the app-global runtime settings snapshot was missing.",
                 )
             })?;
 
@@ -333,7 +333,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
                     "runtime_settings_missing",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not bind the selected {} runtime because the app-global runtime settings snapshot was missing.",
+                        "Xero could not bind the selected {} runtime because the app-global runtime settings snapshot was missing.",
                         provider.provider_id
                     ),
                 )
@@ -378,7 +378,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
                 AuthFlowError::terminal(
                     "runtime_settings_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not reconcile the selected OpenRouter runtime because the app-global runtime settings snapshot was missing.",
+                    "Xero could not reconcile the selected OpenRouter runtime because the app-global runtime settings snapshot was missing.",
                 )
             })?;
 
@@ -398,7 +398,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
                 AuthFlowError::terminal(
                     "runtime_settings_missing",
                     RuntimeAuthPhase::Failed,
-                    "Cadence could not reconcile the selected Anthropic runtime because the app-global runtime settings snapshot was missing.",
+                    "Xero could not reconcile the selected Anthropic runtime because the app-global runtime settings snapshot was missing.",
                 )
             })?;
 
@@ -422,7 +422,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
                     "runtime_settings_missing",
                     RuntimeAuthPhase::Failed,
                     format!(
-                        "Cadence could not reconcile the selected {} runtime because the app-global runtime settings snapshot was missing.",
+                        "Xero could not reconcile the selected {} runtime because the app-global runtime settings snapshot was missing.",
                         provider.provider_id
                     ),
                 )
@@ -505,8 +505,7 @@ fn bind_openai_codex_runtime_session<R: Runtime>(
     else {
         return Ok(RuntimeProviderBindOutcome::SignedOut(AuthDiagnostic {
             code: "auth_session_not_found".into(),
-            message: "Cadence does not have a global app-local OpenAI auth session available."
-                .into(),
+            message: "Xero does not have a global app-local OpenAI auth session available.".into(),
             retryable: false,
         }));
     };
@@ -545,7 +544,7 @@ fn reconcile_openai_codex_runtime_session<R: Runtime>(
         None => {
             return Ok(RuntimeProviderReconcileOutcome::SignedOut(AuthDiagnostic {
                 code: "auth_session_not_found".into(),
-                message: "Cadence no longer has a global app-local OpenAI auth session available."
+                message: "Xero no longer has a global app-local OpenAI auth session available."
                     .into(),
                 retryable: false,
             }))
@@ -570,7 +569,7 @@ fn active_openai_profile(
         AuthFlowError::terminal(
             "provider_credentials_missing",
             RuntimeAuthPhase::Failed,
-            "Cadence could not resolve the active OpenAI credential because the provider credential snapshot was missing.",
+            "Xero could not resolve the active OpenAI credential because the provider credential snapshot was missing.",
         )
     })?;
 
@@ -578,7 +577,7 @@ fn active_openai_profile(
         AuthFlowError::terminal(
             "provider_credentials_invalid",
             RuntimeAuthPhase::Failed,
-            "Cadence could not resolve an OpenAI credential. Sign in to OpenAI Codex from Providers settings.",
+            "Xero could not resolve an OpenAI credential. Sign in to OpenAI Codex from Providers settings.",
         )
     })?;
 
@@ -587,7 +586,7 @@ fn active_openai_profile(
             "runtime_provider_mismatch",
             RuntimeAuthPhase::Failed,
             format!(
-                "Cadence rejected OpenAI runtime reconciliation because provider `{}` is not `{}`.",
+                "Xero rejected OpenAI runtime reconciliation because provider `{}` is not `{}`.",
                 profile.provider_id, OPENAI_CODEX_PROVIDER_ID
             ),
         ));
@@ -695,7 +694,7 @@ fn unknown_runtime_provider_diagnostic(value: &str) -> AuthDiagnostic {
     AuthDiagnostic {
         code: "runtime_provider_unknown".into(),
         message: format!(
-            "Cadence does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {OLLAMA_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}, {BEDROCK_PROVIDER_ID}, {VERTEX_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_RUNTIME_KIND}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
+            "Xero does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {OLLAMA_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}, {BEDROCK_PROVIDER_ID}, {VERTEX_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_RUNTIME_KIND}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
         ),
         retryable: false,
     }

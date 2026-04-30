@@ -3,7 +3,7 @@
 //! Posts synthetic mouse, scroll, and keyboard events directly to
 //! Simulator.app's process via `CGEventPostToPid`, bypassing the need
 //! for `idb_companion`'s gRPC HID surface. Requires the user to grant
-//! Accessibility permission to Cadence (System Settings → Privacy &
+//! Accessibility permission to Xero (System Settings → Privacy &
 //! Security → Accessibility).
 //!
 //! ## Coordinate system
@@ -16,9 +16,9 @@
 //!
 //! ## Why `post_to_pid` and not `post`?
 //!
-//! Cadence's own window sits on top of Simulator.app in the z-order
+//! Xero's own window sits on top of Simulator.app in the z-order
 //! (that's why the sidebar shows screenshots, not the real window), so
-//! a globally-posted event would hit Cadence. `post_to_pid` bypasses
+//! a globally-posted event would hit Xero. `post_to_pid` bypasses
 //! window-server hit-testing and delivers the event straight into the
 //! target process's queue, which then routes it against its own
 //! windows — regardless of whether those windows are visible.
@@ -72,17 +72,17 @@ pub fn invalidate_cache() {
     }
 }
 
-/// `true` when Cadence has been granted Accessibility permission (which
+/// `true` when Xero has been granted Accessibility permission (which
 /// macOS requires for `CGEventPostToPid` to actually deliver events to
 /// another process). Checked without triggering any UI — safe to poll.
 pub fn ax_permission_granted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
-/// Trigger macOS's Accessibility permission prompt. If Cadence is already
+/// Trigger macOS's Accessibility permission prompt. If Xero is already
 /// registered in System Settings → Privacy & Security → Accessibility,
 /// this is a no-op and returns the current state. Otherwise a system
-/// dialog appears ("Cadence would like to control this computer using
+/// dialog appears ("Xero would like to control this computer using
 /// accessibility features") with a button that deep-links to the settings
 /// pane. Returns the permission state *after* the call — will still be
 /// `false` if the user just dismissed the prompt, since granting
@@ -110,9 +110,9 @@ fn require_ax_permission() -> Result<(), CommandError> {
     }
     Err(CommandError::user_fixable(
         "ios_ax_permission_denied",
-        "Cadence needs Accessibility permission to drive the iOS Simulator. \
+        "Xero needs Accessibility permission to drive the iOS Simulator. \
          Open System Settings → Privacy & Security → Accessibility and \
-         enable Cadence, then try again.",
+         enable Xero, then try again.",
     ))
 }
 
@@ -158,7 +158,7 @@ pub fn send_touch(
 fn click_via_applescript(point: CGPoint) -> Result<(), CommandError> {
     use std::process::Command;
     // `tell process "Simulator" to click at {x, y}` works even when the
-    // Simulator window is obscured by Cadence — the AX tree is process-
+    // Simulator window is obscured by Xero — the AX tree is process-
     // scoped, not window-server scoped. Rounding to i64 avoids surfacing
     // AppleScript `{12.5, 30.1}` literals which parse inconsistently
     // across macOS releases.
@@ -183,9 +183,9 @@ end tell"#
             if stderr.contains("1743") || stderr.to_lowercase().contains("not authorized") {
                 Err(CommandError::user_fixable(
                     "ios_ax_permission_denied",
-                    "Cadence needs Accessibility permission to drive the iOS Simulator. \
+                    "Xero needs Accessibility permission to drive the iOS Simulator. \
                      Open System Settings → Privacy & Security → Accessibility and enable \
-                     Cadence, then try again.",
+                     Xero, then try again.",
                 ))
             } else {
                 Err(CommandError::system_fault(
@@ -345,7 +345,7 @@ fn event_source() -> Result<CGEventSource, CommandError> {
     CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| {
         CommandError::system_fault(
             "ios_cg_event_source_failed",
-            "Could not create a CGEventSource. Grant Accessibility permission to Cadence \
+            "Could not create a CGEventSource. Grant Accessibility permission to Xero \
              (System Settings → Privacy & Security → Accessibility) and try again.",
         )
     })
@@ -377,7 +377,7 @@ fn resolve_window(device_name: &str) -> Result<WindowInfo, CommandError> {
             format!(
                 "Could not find the Simulator.app window for `{device_name}`. \
                  Make sure the iOS Simulator window is open — it can be positioned \
-                 anywhere on screen (including behind Cadence), but it must not be \
+                 anywhere on screen (including behind Xero), but it must not be \
                  minimized or hidden by ⌘H."
             ),
         )
@@ -393,7 +393,7 @@ fn find_window(device_name: &str) -> Option<WindowInfo> {
     // `kCGWindowListOptionOnScreenOnly` excludes minimized / hidden windows
     // but includes those merely *obscured* by a window from another app —
     // exactly what we need so the user can bury Simulator.app behind
-    // Cadence.
+    // Xero.
     const KCG_ON_SCREEN_ONLY: u32 = 1 << 0;
     const KCG_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
     let options = KCG_ON_SCREEN_ONLY | KCG_EXCLUDE_DESKTOP_ELEMENTS;

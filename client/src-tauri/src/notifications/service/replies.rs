@@ -151,7 +151,7 @@ where
                     None,
                     "notification_adapter_cursor_malformed".into(),
                     format!(
-                        "Cadence reset malformed inbound cursor state for route `{}` to conservative replay mode.",
+                        "Xero reset malformed inbound cursor state for route `{}` to conservative replay mode.",
                         route.route_id
                     ),
                 );
@@ -171,7 +171,7 @@ where
                 }
                 (expected_kind, _) => {
                     Err(NotificationAdapterError::credentials_malformed(format!(
-                        "Cadence found malformed app-local credentials for route `{}` because expected `{}` credentials were missing.",
+                        "Xero found malformed app-local credentials for route `{}` because expected `{}` credentials were missing.",
                         route.route_id,
                         expected_kind.as_str(),
                     )))
@@ -205,7 +205,7 @@ where
                     None,
                     "notification_adapter_reply_batch_truncated".into(),
                     format!(
-                        "Cadence truncated {dropped} inbound replies for route `{}` to keep duplicate floods bounded.",
+                        "Xero truncated {dropped} inbound replies for route `{}` to keep duplicate floods bounded.",
                         route.route_id
                     ),
                 );
@@ -223,7 +223,7 @@ where
                         Some(message.message_id),
                         "notification_adapter_reply_duplicate".into(),
                         format!(
-                            "Cadence skipped duplicate inbound reply message for route `{}`.",
+                            "Xero skipped duplicate inbound reply message for route `{}`.",
                             route.route_id
                         ),
                     );
@@ -317,7 +317,7 @@ where
                 Some(message.message_id),
                 "notification_reply_correlation_invalid".into(),
                 format!(
-                    "Cadence rejected inbound route `{}` reply because no dispatch matched correlation key `{}`.",
+                    "Xero rejected inbound route `{}` reply because no dispatch matched correlation key `{}`.",
                     route.route_id, parsed.correlation_key
                 ),
             );
@@ -404,7 +404,7 @@ fn record_reply_acceptance(
         accepted: true,
         diagnostic_code: REPLY_RECEIVED_DIAGNOSTIC.into(),
         diagnostic_message: format!(
-            "Cadence accepted inbound reply for route `{}` and resumed the correlated action through the existing broker path.",
+            "Xero accepted inbound reply for route `{}` and resumed the correlated action through the existing broker path.",
             route.route_id
         ),
         reply_code: None,
@@ -429,7 +429,7 @@ fn record_reply_rejection(
         accepted: false,
         diagnostic_code: REPLY_REJECTED_DIAGNOSTIC.into(),
         diagnostic_message: format!(
-            "Cadence rejected inbound reply for route `{}` with `{}`.",
+            "Xero rejected inbound reply for route `{}` with `{}`.",
             route.route_id, code
         ),
         reply_code: Some(code),

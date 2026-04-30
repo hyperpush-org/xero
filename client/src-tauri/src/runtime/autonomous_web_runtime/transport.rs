@@ -55,7 +55,7 @@ impl AutonomousWebTransport for ReqwestAutonomousWebTransport {
             .build()
             .map_err(|error| {
                 AutonomousWebTransportError::Setup(format!(
-                    "Cadence could not initialize the autonomous web HTTP client: {error}"
+                    "Xero could not initialize the autonomous web HTTP client: {error}"
                 ))
             })?;
 
@@ -79,7 +79,7 @@ impl AutonomousWebTransport for ReqwestAutonomousWebTransport {
             .read_to_end(&mut body)
             .map_err(|error| {
                 AutonomousWebTransportError::Transport(format!(
-                    "Cadence could not read the autonomous web response body: {error}"
+                    "Xero could not read the autonomous web response body: {error}"
                 ))
             })?;
         let body_truncated = body.len() > request.max_response_bytes;
@@ -130,18 +130,18 @@ pub(super) fn search_provider_from_env() -> Option<AutonomousWebSearchProviderCo
 fn map_transport_error(error: reqwest::Error) -> AutonomousWebTransportError {
     if error.is_timeout() {
         return AutonomousWebTransportError::Timeout(
-            "Cadence timed out while waiting for the autonomous web response.".into(),
+            "Xero timed out while waiting for the autonomous web response.".into(),
         );
     }
 
     if error.is_redirect() {
         return AutonomousWebTransportError::Redirect(
-            "Cadence rejected the autonomous web request because the redirect chain was invalid or exceeded the configured limit.".into(),
+            "Xero rejected the autonomous web request because the redirect chain was invalid or exceeded the configured limit.".into(),
         );
     }
 
     AutonomousWebTransportError::Transport(format!(
-        "Cadence could not execute the autonomous web request: {error}"
+        "Xero could not execute the autonomous web request: {error}"
     ))
 }
 

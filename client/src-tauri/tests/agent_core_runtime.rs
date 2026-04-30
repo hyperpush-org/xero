@@ -6,7 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cadence_desktop_lib::{
+use git2::{IndexAddOption, Repository, Signature};
+use rusqlite::{params, Connection};
+use serde_json::json;
+use tauri::Manager;
+use tempfile::TempDir;
+use xero_desktop_lib::{
     commands::{
         cancel_agent_run, compact_session_history, start_agent_task, start_runtime_run,
         update_runtime_run_controls, CancelAgentRunRequestDto, CompactSessionHistoryRequestDto,
@@ -27,11 +32,6 @@ use cadence_desktop_lib::{
     },
     state::DesktopState,
 };
-use git2::{IndexAddOption, Repository, Signature};
-use rusqlite::{params, Connection};
-use serde_json::json;
-use tauri::Manager;
-use tempfile::TempDir;
 
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
@@ -41,7 +41,7 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
 
 fn create_state(root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("cadence.db"))
+        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
         .with_owned_agent_provider_config_override(AgentProviderConfig::Fake)
 }
 
@@ -116,7 +116,7 @@ fn commit_all(repository: &Repository, message: &str) {
 
     let tree_id = index.write_tree().expect("write tree");
     let tree = repository.find_tree(tree_id).expect("find tree");
-    let signature = Signature::now("Cadence", "Cadence@example.com").expect("signature");
+    let signature = Signature::now("Xero", "Xero@example.com").expect("signature");
 
     let parents = repository
         .head()
@@ -696,10 +696,7 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         snapshot.run.status,
         db::project_store::AgentRunStatus::Completed
     );
-    assert!(snapshot
-        .run
-        .system_prompt
-        .contains("cadence-owned-agent-v1"));
+    assert!(snapshot.run.system_prompt.contains("xero-owned-agent-v1"));
     assert!(snapshot
         .run
         .system_prompt
@@ -709,7 +706,7 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         snapshot
             .run
             .system_prompt
-            .contains("Cadence redacted sensitive session-context text."),
+            .contains("Xero redacted sensitive session-context text."),
         "approved memory secrets should be redacted in the system prompt"
     );
     assert!(!snapshot.run.system_prompt.contains("sk-runtime-secret"));
@@ -905,7 +902,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         .contributors
         .iter()
         .any(|contributor| contributor.kind
-            == cadence_desktop_lib::commands::SessionContextContributorKindDto::CompactionSummary));
+            == xero_desktop_lib::commands::SessionContextContributorKindDto::CompactionSummary));
 
     let continue_tool_runtime = AutonomousToolRuntime::for_project(
         &app.handle().clone(),
@@ -1131,7 +1128,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             provider_id: "openai_api".into(),
             model_id: "gpt-5.4".into(),
             prompt: "Prepare an auto-compact failure source.".into(),
-            system_prompt: "You are Cadence.".into(),
+            system_prompt: "You are Xero.".into(),
             now: "2026-04-26T18:00:00Z".into(),
         },
     )
@@ -1142,7 +1139,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             project_id: project_id.clone(),
             run_id: run_id.into(),
             role: db::project_store::AgentMessageRole::System,
-            content: "You are Cadence.".into(),
+            content: "You are Xero.".into(),
             created_at: "2026-04-26T18:00:01Z".into(),
         },
     )
@@ -1667,7 +1664,7 @@ fn owned_agent_command_tools_emit_command_output_events() {
         project_id: project_id.clone(),
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-command-1".into(),
-        prompt: "Please prove command output streaming.\ntool:command_echo hello-cadence".into(),
+        prompt: "Please prove command output streaming.\ntool:command_echo hello-xero".into(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1681,8 +1678,8 @@ fn owned_agent_command_tools_emit_command_output_events() {
         .expect("command_output event");
     let payload: serde_json::Value =
         serde_json::from_str(&command_output.payload_json).expect("command output payload JSON");
-    assert_eq!(payload["argv"], json!(["echo", "hello-cadence"]));
-    assert_eq!(payload["stdout"], "hello-cadence");
+    assert_eq!(payload["argv"], json!(["echo", "hello-xero"]));
+    assert_eq!(payload["stdout"], "hello-xero");
     assert_eq!(payload["spawned"], true);
     assert_eq!(payload["exitCode"], 0);
 }
@@ -1928,7 +1925,7 @@ fn owned_agent_shell_commands_with_sensitive_expansion_require_approval() {
             argv: vec![
                 "sh".into(),
                 "-c".into(),
-                "printf ${CADENCE_AGENT_SECRET_TEST_TOKEN:-missing}".into(),
+                "printf ${XERO_AGENT_SECRET_TEST_TOKEN:-missing}".into(),
             ],
             cwd: None,
             timeout_ms: Some(1_000),
@@ -1954,17 +1951,17 @@ fn owned_agent_commands_run_with_sanitized_environment_even_after_approval() {
     .expect("build autonomous tool runtime")
     .with_runtime_run_controls(yolo_controls());
 
-    std::env::set_var("CADENCE_AGENT_SECRET_TEST_TOKEN", "super-secret");
+    std::env::set_var("XERO_AGENT_SECRET_TEST_TOKEN", "super-secret");
     let result = tool_runtime.command_with_operator_approval(AutonomousCommandRequest {
         argv: vec![
             "sh".into(),
             "-c".into(),
-            "printf ${CADENCE_AGENT_SECRET_TEST_TOKEN:-missing}".into(),
+            "printf ${XERO_AGENT_SECRET_TEST_TOKEN:-missing}".into(),
         ],
         cwd: None,
         timeout_ms: Some(1_000),
     });
-    std::env::remove_var("CADENCE_AGENT_SECRET_TEST_TOKEN");
+    std::env::remove_var("XERO_AGENT_SECRET_TEST_TOKEN");
 
     let result = result.expect("approved command should run with scrubbed env");
     let AutonomousToolOutput::Command(output) = result.output else {
@@ -2087,7 +2084,7 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
     assert_eq!(runtime_run.runtime_kind, "owned_agent");
     assert_eq!(runtime_run.supervisor_kind, "owned_agent");
     assert_eq!(runtime_run.transport.kind, "internal");
-    assert_eq!(runtime_run.transport.endpoint, "cadence://owned-agent");
+    assert_eq!(runtime_run.transport.endpoint, "xero://owned-agent");
     assert_eq!(
         runtime_run.controls.active.approval_mode,
         RuntimeRunApprovalModeDto::Yolo
@@ -2218,7 +2215,7 @@ fn start_agent_task_returns_running_before_background_driver_finishes() {
 
     assert_eq!(
         agent_run.status,
-        cadence_desktop_lib::commands::AgentRunStatusDto::Running
+        xero_desktop_lib::commands::AgentRunStatusDto::Running
     );
 
     let completed = wait_for_agent_run_status(
@@ -2262,7 +2259,7 @@ fn cancel_agent_run_flips_background_task_cancellation_token() {
     .expect("cancel running agent task");
     assert_eq!(
         cancelled.status,
-        cadence_desktop_lib::commands::AgentRunStatusDto::Cancelled
+        xero_desktop_lib::commands::AgentRunStatusDto::Cancelled
     );
 
     let snapshot = wait_for_agent_run_status(

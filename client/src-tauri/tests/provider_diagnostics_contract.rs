@@ -1,4 +1,4 @@
-use cadence_desktop_lib::{
+use xero_desktop_lib::{
     provider_credentials::{
         ProviderApiKeyCredentialEntry, ProviderCredentialLink, ProviderCredentialProfile,
         ProviderCredentialReadinessProjection, ProviderCredentialReadinessStatus,
@@ -14,11 +14,10 @@ use cadence_desktop_lib::{
         provider_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
         stale_runtime_binding_diagnostic, summarize_diagnostic_checks,
         unsupported_provider_diagnostic, validate_diagnostic_check, validate_doctor_report,
-        CadenceDiagnosticCheck, CadenceDiagnosticCheckInput, CadenceDiagnosticEndpointMetadata,
-        CadenceDiagnosticRedactionClass, CadenceDiagnosticSeverity, CadenceDiagnosticStatus,
-        CadenceDiagnosticSubject, CadenceDoctorReport, CadenceDoctorReportInput,
-        CadenceDoctorReportMode, CadenceDoctorReportOutputMode, CadenceDoctorVersionInfo,
-        CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+        XeroDiagnosticCheck, XeroDiagnosticCheckInput, XeroDiagnosticEndpointMetadata,
+        XeroDiagnosticRedactionClass, XeroDiagnosticSeverity, XeroDiagnosticStatus,
+        XeroDiagnosticSubject, XeroDoctorReport, XeroDoctorReportInput, XeroDoctorReportMode,
+        XeroDoctorReportOutputMode, XeroDoctorVersionInfo, XERO_DIAGNOSTIC_CONTRACT_VERSION,
     },
 };
 
@@ -104,10 +103,10 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
     .expect("missing readiness diagnostic");
     assert_eq!(
         diagnostic.subject,
-        CadenceDiagnosticSubject::ProviderCredential
+        XeroDiagnosticSubject::ProviderCredential
     );
-    assert_eq!(diagnostic.status, CadenceDiagnosticStatus::Failed);
-    assert_eq!(diagnostic.severity, CadenceDiagnosticSeverity::Error);
+    assert_eq!(diagnostic.status, XeroDiagnosticStatus::Failed);
+    assert_eq!(diagnostic.severity, XeroDiagnosticSeverity::Error);
     assert_eq!(
         diagnostic.affected_profile_id.as_deref(),
         Some("openrouter-work")
@@ -162,7 +161,7 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
     let stale =
         stale_runtime_binding_diagnostic(Some("openrouter-work"), "openrouter", "openrouter")
             .expect("stale binding diagnostic");
-    assert_eq!(stale.subject, CadenceDiagnosticSubject::RuntimeBinding);
+    assert_eq!(stale.subject, XeroDiagnosticSubject::RuntimeBinding);
 
     let ambient = ambient_auth_failure_diagnostic(
         &profile("vertex-work", "vertex", "anthropic", None),
@@ -196,7 +195,7 @@ fn provider_validation_reports_metadata_runtime_and_readiness_contracts() {
         provider_validation_diagnostics(&snapshot, &ready).expect("validate ready provider");
     assert!(checks
         .iter()
-        .all(|check| check.status != CadenceDiagnosticStatus::Failed));
+        .all(|check| check.status != XeroDiagnosticStatus::Failed));
     assert!(checks
         .iter()
         .any(|check| check.code == "provider_runtime_aligned"));
@@ -222,7 +221,7 @@ fn provider_validation_reports_metadata_runtime_and_readiness_contracts() {
     assert!(repair_checks
         .iter()
         .any(|check| check.code == "provider_metadata_unexpected"
-            && check.status == CadenceDiagnosticStatus::Failed));
+            && check.status == XeroDiagnosticStatus::Failed));
     assert!(repair_checks
         .iter()
         .any(|check| check.code == "provider_credentials_missing"
@@ -436,7 +435,7 @@ fn provider_validation_accepts_supported_provider_metadata_shapes() {
         assert!(
             checks
                 .iter()
-                .all(|check| check.status != CadenceDiagnosticStatus::Failed),
+                .all(|check| check.status != XeroDiagnosticStatus::Failed),
             "{} should not emit failed validation checks: {checks:?}",
             case.provider_id
         );
@@ -449,12 +448,12 @@ fn provider_validation_accepts_supported_provider_metadata_shapes() {
 
 #[test]
 fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
-    let invalid_passed = CadenceDiagnosticCheck {
-        contract_version: CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+    let invalid_passed = XeroDiagnosticCheck {
+        contract_version: XERO_DIAGNOSTIC_CONTRACT_VERSION,
         check_id: "diagnostic:v1:test".into(),
-        subject: CadenceDiagnosticSubject::ProviderCredential,
-        status: CadenceDiagnosticStatus::Passed,
-        severity: CadenceDiagnosticSeverity::Error,
+        subject: XeroDiagnosticSubject::ProviderCredential,
+        status: XeroDiagnosticStatus::Passed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: true,
         code: "bad".into(),
         message: "bad".into(),
@@ -462,7 +461,7 @@ fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
         affected_provider_id: None,
         endpoint: None,
         remediation: None,
-        redaction_class: cadence_desktop_lib::runtime::CadenceDiagnosticRedactionClass::Public,
+        redaction_class: xero_desktop_lib::runtime::XeroDiagnosticRedactionClass::Public,
         redacted: false,
     };
     assert_eq!(
@@ -472,10 +471,10 @@ fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
         "diagnostic_state_invalid"
     );
 
-    let missing_remediation = CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ModelCatalog,
-        status: CadenceDiagnosticStatus::Warning,
-        severity: CadenceDiagnosticSeverity::Warning,
+    let missing_remediation = XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ModelCatalog,
+        status: XeroDiagnosticStatus::Warning,
+        severity: XeroDiagnosticSeverity::Warning,
         retryable: true,
         code: "catalog_warning".into(),
         message: "Catalog warning.".into(),
@@ -505,10 +504,7 @@ fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
     };
     let unavailable_diagnostic =
         provider_model_catalog_diagnostic(&unavailable).expect("catalog diagnostic");
-    assert_eq!(
-        unavailable_diagnostic.status,
-        CadenceDiagnosticStatus::Failed
-    );
+    assert_eq!(unavailable_diagnostic.status, XeroDiagnosticStatus::Failed);
     assert!(unavailable_diagnostic.retryable);
 
     let stale_cache = provider_model_catalog_diagnostic(&catalog(
@@ -516,13 +512,13 @@ fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
         Some(retryable_error),
     ))
     .expect("stale cache diagnostic");
-    assert_eq!(stale_cache.status, CadenceDiagnosticStatus::Warning);
-    assert_eq!(stale_cache.severity, CadenceDiagnosticSeverity::Warning);
+    assert_eq!(stale_cache.status, XeroDiagnosticStatus::Warning);
+    assert_eq!(stale_cache.severity, XeroDiagnosticSeverity::Warning);
 
     let manual =
         provider_model_catalog_diagnostic(&catalog(ProviderModelCatalogSource::Manual, None))
             .expect("manual catalog diagnostic");
-    assert_eq!(manual.status, CadenceDiagnosticStatus::Skipped);
+    assert_eq!(manual.status, XeroDiagnosticStatus::Skipped);
     assert!(!manual.retryable);
 }
 
@@ -532,7 +528,7 @@ fn diagnostics_redact_auth_headers_cloud_paths_and_nested_report_payloads() {
         "Provider returned Authorization: Bearer opaque-oauth-token-123 during refresh.",
     );
     assert!(auth_redacted);
-    assert_eq!(auth_class, CadenceDiagnosticRedactionClass::Secret);
+    assert_eq!(auth_class, XeroDiagnosticRedactionClass::Secret);
     assert!(!auth_header.contains("opaque-oauth-token-123"));
     assert!(auth_header.contains("Authorization: Bearer [redacted]"));
 
@@ -546,23 +542,23 @@ fn diagnostics_redact_auth_headers_cloud_paths_and_nested_report_payloads() {
         "ADC failed at GOOGLE_APPLICATION_CREDENTIALS=/Users/sn0w/.config/gcloud/application_default_credentials.json and AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY.",
     );
     assert!(cloud_redacted);
-    assert_eq!(cloud_class, CadenceDiagnosticRedactionClass::Secret);
+    assert_eq!(cloud_class, XeroDiagnosticRedactionClass::Secret);
     assert!(!cloud_paths.contains("/Users/sn0w"));
     assert!(!cloud_paths.contains("wJalrXUtnFEMI"));
     assert!(cloud_paths.contains("[redacted-path]"));
 
-    let raw_nested = CadenceDiagnosticCheck {
-        contract_version: CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+    let raw_nested = XeroDiagnosticCheck {
+        contract_version: XERO_DIAGNOSTIC_CONTRACT_VERSION,
         check_id: "diagnostic:v1:settings_dependency:global:global:nested_secret_payload".into(),
-        subject: CadenceDiagnosticSubject::SettingsDependency,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+        subject: XeroDiagnosticSubject::SettingsDependency,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: false,
         code: "nested_secret_payload".into(),
         message: "Nested doctor payload included Authorization: Bearer opaque-nested-token-456 from /Users/sn0w/.aws/credentials.".into(),
         affected_profile_id: None,
         affected_provider_id: None,
-        endpoint: Some(CadenceDiagnosticEndpointMetadata {
+        endpoint: Some(XeroDiagnosticEndpointMetadata {
             base_url: Some(
                 "http://local-user:local-pass@127.0.0.1:4000/v1?api_key=opaque-local-key"
                     .into(),
@@ -577,15 +573,15 @@ fn diagnostics_redact_auth_headers_cloud_paths_and_nested_report_payloads() {
         remediation: Some(
             "Remove session_id=sess_nested_secret before copying diagnostics.".into(),
         ),
-        redaction_class: CadenceDiagnosticRedactionClass::Public,
+        redaction_class: XeroDiagnosticRedactionClass::Public,
         redacted: false,
     };
 
-    let report = CadenceDoctorReport::new(CadenceDoctorReportInput {
+    let report = XeroDoctorReport::new(XeroDoctorReportInput {
         report_id: "doctor-20260426-privacy".into(),
         generated_at: "2026-04-26T12:00:00Z".into(),
-        mode: CadenceDoctorReportMode::QuickLocal,
-        versions: CadenceDoctorVersionInfo {
+        mode: XeroDoctorReportMode::QuickLocal,
+        versions: XeroDoctorVersionInfo {
             app_version: "0.1.0".into(),
             runtime_supervisor_version: Some("0.1.0".into()),
             runtime_protocol_version: Some("diagnostics-v1".into()),
@@ -604,12 +600,9 @@ fn diagnostics_redact_auth_headers_cloud_paths_and_nested_report_payloads() {
         .first()
         .expect("nested diagnostic");
     assert!(nested.redacted);
-    assert_eq!(
-        nested.redaction_class,
-        CadenceDiagnosticRedactionClass::Secret
-    );
+    assert_eq!(nested.redaction_class, XeroDiagnosticRedactionClass::Secret);
 
-    let json = render_doctor_report(&report, CadenceDoctorReportOutputMode::Json)
+    let json = render_doctor_report(&report, XeroDoctorReportOutputMode::Json)
         .expect("render redacted doctor report");
     for leaked in [
         "opaque-nested-token-456",
@@ -628,26 +621,26 @@ fn diagnostics_redact_auth_headers_cloud_paths_and_nested_report_payloads() {
 
 #[test]
 fn doctor_report_serializes_human_and_json_with_stable_counts_and_no_secrets() {
-    let passed = CadenceDiagnosticCheck::passed(
-        CadenceDiagnosticSubject::RuntimeSupervisor,
+    let passed = XeroDiagnosticCheck::passed(
+        XeroDiagnosticSubject::RuntimeSupervisor,
         "runtime_supervisor_ready",
         "Runtime supervisor binary is available.",
     )
     .expect("passed diagnostic");
-    let skipped = CadenceDiagnosticCheck::skipped(
-        CadenceDiagnosticSubject::McpRegistry,
+    let skipped = XeroDiagnosticCheck::skipped(
+        XeroDiagnosticSubject::McpRegistry,
         "mcp_registry_not_configured",
         "No MCP servers are configured, so MCP dependency checks were skipped.",
         Some("Add an MCP server before running extended dependency checks.".into()),
     )
     .expect("skipped diagnostic");
-    let failed = CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::SettingsDependency,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+    let failed = XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::SettingsDependency,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: false,
         code: "settings_secret_path_rejected".into(),
-        message: "Settings dependency read failed at /Users/sn0w/Library/Application Support/dev.sn0w.cadence/secrets.json with token=sk-live-secret".into(),
+        message: "Settings dependency read failed at /Users/sn0w/Library/Application Support/dev.sn0w.xero/secrets.json with token=sk-live-secret".into(),
         affected_profile_id: None,
         affected_provider_id: None,
         endpoint: None,
@@ -655,11 +648,11 @@ fn doctor_report_serializes_human_and_json_with_stable_counts_and_no_secrets() {
     })
     .expect("failed diagnostic");
 
-    let report = CadenceDoctorReport::new(CadenceDoctorReportInput {
+    let report = XeroDoctorReport::new(XeroDoctorReportInput {
         report_id: "doctor-20260426-120000".into(),
         generated_at: "2026-04-26T12:00:00Z".into(),
-        mode: CadenceDoctorReportMode::QuickLocal,
-        versions: CadenceDoctorVersionInfo {
+        mode: XeroDoctorReportMode::QuickLocal,
+        versions: XeroDoctorVersionInfo {
             app_version: "0.1.0".into(),
             runtime_supervisor_version: Some("0.1.0".into()),
             runtime_protocol_version: Some("diagnostics-v1".into()),
@@ -679,21 +672,21 @@ fn doctor_report_serializes_human_and_json_with_stable_counts_and_no_secrets() {
     assert_eq!(report.summary.skipped, 1);
     assert_eq!(
         report.summary.highest_severity,
-        CadenceDiagnosticSeverity::Error
+        XeroDiagnosticSeverity::Error
     );
     assert_eq!(
         summarize_diagnostic_checks(report.all_checks()),
         report.summary
     );
 
-    let json = render_doctor_report(&report, CadenceDoctorReportOutputMode::Json)
+    let json = render_doctor_report(&report, XeroDoctorReportOutputMode::Json)
         .expect("doctor report JSON");
     assert!(json.contains("\"reportId\": \"doctor-20260426-120000\""));
     assert!(!json.contains("/Users/sn0w"));
     assert!(!json.contains("sk-live-secret"));
     assert!(json.contains("[redacted-path]"));
 
-    let human = render_doctor_report(&report, CadenceDoctorReportOutputMode::CompactHuman)
+    let human = render_doctor_report(&report, XeroDoctorReportOutputMode::CompactHuman)
         .expect("doctor report text");
     assert!(human.contains("Summary: 1 passed, 0 warning(s), 1 failed, 1 skipped"));
     assert!(human.contains("Runtime supervisor:"));

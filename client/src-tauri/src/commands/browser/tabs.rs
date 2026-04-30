@@ -15,7 +15,7 @@ pub const BROWSER_MAIN_WINDOW_LABEL: &str = "main";
 
 /// Prefix for all browser tab webview labels, so we can identify them in Tauri's
 /// global webview registry.
-pub const BROWSER_TAB_PREFIX: &str = "cadence-browser-tab-";
+pub const BROWSER_TAB_PREFIX: &str = "xero-browser-tab-";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

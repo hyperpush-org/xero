@@ -18,12 +18,12 @@ use super::provider::{
     VERTEX_PROVIDER_ID,
 };
 
-pub const CADENCE_DIAGNOSTIC_CONTRACT_VERSION: u32 = 1;
-pub const CADENCE_DOCTOR_REPORT_CONTRACT_VERSION: u32 = 1;
+pub const XERO_DIAGNOSTIC_CONTRACT_VERSION: u32 = 1;
+pub const XERO_DOCTOR_REPORT_CONTRACT_VERSION: u32 = 1;
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceDiagnosticSubject {
+pub enum XeroDiagnosticSubject {
     Dictation,
     ProviderCredential,
     ModelCatalog,
@@ -35,7 +35,7 @@ pub enum CadenceDiagnosticSubject {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceDiagnosticStatus {
+pub enum XeroDiagnosticStatus {
     Passed,
     Warning,
     Failed,
@@ -44,7 +44,7 @@ pub enum CadenceDiagnosticStatus {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceDiagnosticSeverity {
+pub enum XeroDiagnosticSeverity {
     Info,
     Warning,
     Error,
@@ -52,7 +52,7 @@ pub enum CadenceDiagnosticSeverity {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceDiagnosticRedactionClass {
+pub enum XeroDiagnosticRedactionClass {
     Public,
     EndpointCredential,
     LocalPath,
@@ -61,7 +61,7 @@ pub enum CadenceDiagnosticRedactionClass {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceDiagnosticEndpointMetadata {
+pub struct XeroDiagnosticEndpointMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,12 +80,12 @@ pub struct CadenceDiagnosticEndpointMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceDiagnosticCheck {
+pub struct XeroDiagnosticCheck {
     pub contract_version: u32,
     pub check_id: String,
-    pub subject: CadenceDiagnosticSubject,
-    pub status: CadenceDiagnosticStatus,
-    pub severity: CadenceDiagnosticSeverity,
+    pub subject: XeroDiagnosticSubject,
+    pub status: XeroDiagnosticStatus,
+    pub severity: XeroDiagnosticSeverity,
     pub retryable: bool,
     pub code: String,
     pub message: String,
@@ -94,45 +94,45 @@ pub struct CadenceDiagnosticCheck {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affected_provider_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<CadenceDiagnosticEndpointMetadata>,
+    pub endpoint: Option<XeroDiagnosticEndpointMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
-    pub redaction_class: CadenceDiagnosticRedactionClass,
+    pub redaction_class: XeroDiagnosticRedactionClass,
     #[serde(default)]
     pub redacted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CadenceDiagnosticCheckInput {
-    pub subject: CadenceDiagnosticSubject,
-    pub status: CadenceDiagnosticStatus,
-    pub severity: CadenceDiagnosticSeverity,
+pub struct XeroDiagnosticCheckInput {
+    pub subject: XeroDiagnosticSubject,
+    pub status: XeroDiagnosticStatus,
+    pub severity: XeroDiagnosticSeverity,
     pub retryable: bool,
     pub code: String,
     pub message: String,
     pub affected_profile_id: Option<String>,
     pub affected_provider_id: Option<String>,
-    pub endpoint: Option<CadenceDiagnosticEndpointMetadata>,
+    pub endpoint: Option<XeroDiagnosticEndpointMetadata>,
     pub remediation: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceDoctorReportMode {
+pub enum XeroDoctorReportMode {
     QuickLocal,
     ExtendedNetwork,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CadenceDoctorReportOutputMode {
+pub enum XeroDoctorReportOutputMode {
     CompactHuman,
     Json,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceDoctorVersionInfo {
+pub struct XeroDoctorVersionInfo {
     pub app_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_supervisor_version: Option<String>,
@@ -142,54 +142,54 @@ pub struct CadenceDoctorVersionInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceDoctorReportSummary {
+pub struct XeroDoctorReportSummary {
     pub passed: u32,
     pub warnings: u32,
     pub failed: u32,
     pub skipped: u32,
     pub total: u32,
-    pub highest_severity: CadenceDiagnosticSeverity,
+    pub highest_severity: XeroDiagnosticSeverity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CadenceDoctorReport {
+pub struct XeroDoctorReport {
     pub contract_version: u32,
     pub report_id: String,
     pub generated_at: String,
-    pub mode: CadenceDoctorReportMode,
-    pub versions: CadenceDoctorVersionInfo,
-    pub summary: CadenceDoctorReportSummary,
+    pub mode: XeroDoctorReportMode,
+    pub versions: XeroDoctorVersionInfo,
+    pub summary: XeroDoctorReportSummary,
     #[serde(default)]
-    pub dictation_checks: Vec<CadenceDiagnosticCheck>,
+    pub dictation_checks: Vec<XeroDiagnosticCheck>,
     #[serde(default)]
-    pub profile_checks: Vec<CadenceDiagnosticCheck>,
+    pub profile_checks: Vec<XeroDiagnosticCheck>,
     #[serde(default)]
-    pub model_catalog_checks: Vec<CadenceDiagnosticCheck>,
+    pub model_catalog_checks: Vec<XeroDiagnosticCheck>,
     #[serde(default)]
-    pub runtime_supervisor_checks: Vec<CadenceDiagnosticCheck>,
+    pub runtime_supervisor_checks: Vec<XeroDiagnosticCheck>,
     #[serde(default)]
-    pub mcp_dependency_checks: Vec<CadenceDiagnosticCheck>,
+    pub mcp_dependency_checks: Vec<XeroDiagnosticCheck>,
     #[serde(default)]
-    pub settings_dependency_checks: Vec<CadenceDiagnosticCheck>,
+    pub settings_dependency_checks: Vec<XeroDiagnosticCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CadenceDoctorReportInput {
+pub struct XeroDoctorReportInput {
     pub report_id: String,
     pub generated_at: String,
-    pub mode: CadenceDoctorReportMode,
-    pub versions: CadenceDoctorVersionInfo,
-    pub dictation_checks: Vec<CadenceDiagnosticCheck>,
-    pub profile_checks: Vec<CadenceDiagnosticCheck>,
-    pub model_catalog_checks: Vec<CadenceDiagnosticCheck>,
-    pub runtime_supervisor_checks: Vec<CadenceDiagnosticCheck>,
-    pub mcp_dependency_checks: Vec<CadenceDiagnosticCheck>,
-    pub settings_dependency_checks: Vec<CadenceDiagnosticCheck>,
+    pub mode: XeroDoctorReportMode,
+    pub versions: XeroDoctorVersionInfo,
+    pub dictation_checks: Vec<XeroDiagnosticCheck>,
+    pub profile_checks: Vec<XeroDiagnosticCheck>,
+    pub model_catalog_checks: Vec<XeroDiagnosticCheck>,
+    pub runtime_supervisor_checks: Vec<XeroDiagnosticCheck>,
+    pub mcp_dependency_checks: Vec<XeroDiagnosticCheck>,
+    pub settings_dependency_checks: Vec<XeroDiagnosticCheck>,
 }
 
-impl CadenceDiagnosticCheck {
-    pub fn new(input: CadenceDiagnosticCheckInput) -> CommandResult<Self> {
+impl XeroDiagnosticCheck {
+    pub fn new(input: XeroDiagnosticCheckInput) -> CommandResult<Self> {
         let (message, message_redacted, message_class) = sanitize_diagnostic_text(&input.message);
         let (remediation, remediation_redacted, remediation_class) =
             sanitize_optional_diagnostic_text(input.remediation.as_deref());
@@ -201,7 +201,7 @@ impl CadenceDiagnosticCheck {
         );
 
         let check = Self {
-            contract_version: CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+            contract_version: XERO_DIAGNOSTIC_CONTRACT_VERSION,
             check_id: diagnostic_check_id(
                 input.subject,
                 input.affected_provider_id.as_deref(),
@@ -226,14 +226,14 @@ impl CadenceDiagnosticCheck {
     }
 
     pub fn passed(
-        subject: CadenceDiagnosticSubject,
+        subject: XeroDiagnosticSubject,
         code: impl Into<String>,
         message: impl Into<String>,
     ) -> CommandResult<Self> {
-        Self::new(CadenceDiagnosticCheckInput {
+        Self::new(XeroDiagnosticCheckInput {
             subject,
-            status: CadenceDiagnosticStatus::Passed,
-            severity: CadenceDiagnosticSeverity::Info,
+            status: XeroDiagnosticStatus::Passed,
+            severity: XeroDiagnosticSeverity::Info,
             retryable: false,
             code: code.into(),
             message: message.into(),
@@ -245,15 +245,15 @@ impl CadenceDiagnosticCheck {
     }
 
     pub fn skipped(
-        subject: CadenceDiagnosticSubject,
+        subject: XeroDiagnosticSubject,
         code: impl Into<String>,
         message: impl Into<String>,
         remediation: Option<String>,
     ) -> CommandResult<Self> {
-        Self::new(CadenceDiagnosticCheckInput {
+        Self::new(XeroDiagnosticCheckInput {
             subject,
-            status: CadenceDiagnosticStatus::Skipped,
-            severity: CadenceDiagnosticSeverity::Info,
+            status: XeroDiagnosticStatus::Skipped,
+            severity: XeroDiagnosticSeverity::Info,
             retryable: false,
             code: code.into(),
             message: message.into(),
@@ -265,14 +265,14 @@ impl CadenceDiagnosticCheck {
     }
 }
 
-impl CadenceDoctorReport {
-    pub fn new(input: CadenceDoctorReportInput) -> CommandResult<Self> {
+impl XeroDoctorReport {
+    pub fn new(input: XeroDoctorReportInput) -> CommandResult<Self> {
         let mut report = Self {
-            contract_version: CADENCE_DOCTOR_REPORT_CONTRACT_VERSION,
+            contract_version: XERO_DOCTOR_REPORT_CONTRACT_VERSION,
             report_id: input.report_id.trim().to_owned(),
             generated_at: input.generated_at.trim().to_owned(),
             mode: input.mode,
-            versions: CadenceDoctorVersionInfo {
+            versions: XeroDoctorVersionInfo {
                 app_version: sanitize_diagnostic_text(&input.versions.app_version).0,
                 runtime_supervisor_version: sanitize_optional_diagnostic_text(
                     input.versions.runtime_supervisor_version.as_deref(),
@@ -283,13 +283,13 @@ impl CadenceDoctorReport {
                 )
                 .0,
             },
-            summary: CadenceDoctorReportSummary {
+            summary: XeroDoctorReportSummary {
                 passed: 0,
                 warnings: 0,
                 failed: 0,
                 skipped: 0,
                 total: 0,
-                highest_severity: CadenceDiagnosticSeverity::Info,
+                highest_severity: XeroDiagnosticSeverity::Info,
             },
             dictation_checks: sort_and_validate_checks(input.dictation_checks)?,
             profile_checks: sort_and_validate_checks(input.profile_checks)?,
@@ -302,7 +302,7 @@ impl CadenceDoctorReport {
         validate_doctor_report(report)
     }
 
-    pub fn all_checks(&self) -> Vec<&CadenceDiagnosticCheck> {
+    pub fn all_checks(&self) -> Vec<&XeroDiagnosticCheck> {
         self.dictation_checks
             .iter()
             .chain(self.profile_checks.iter())
@@ -317,14 +317,14 @@ impl CadenceDoctorReport {
 pub fn provider_readiness_diagnostic(
     profile: &ProviderCredentialProfile,
     readiness: &ProviderCredentialReadinessProjection,
-) -> CommandResult<CadenceDiagnosticCheck> {
+) -> CommandResult<XeroDiagnosticCheck> {
     let endpoint = endpoint_metadata_from_profile(profile);
     match readiness.status {
-        ProviderCredentialReadinessStatus::Ready => CadenceDiagnosticCheck::new(
-            CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ProviderCredential,
-                status: CadenceDiagnosticStatus::Passed,
-                severity: CadenceDiagnosticSeverity::Info,
+        ProviderCredentialReadinessStatus::Ready => XeroDiagnosticCheck::new(
+            XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::ProviderCredential,
+                status: XeroDiagnosticStatus::Passed,
+                severity: XeroDiagnosticSeverity::Info,
                 retryable: false,
                 code: "provider_ready".into(),
                 message: format!(
@@ -337,11 +337,11 @@ pub fn provider_readiness_diagnostic(
                 remediation: None,
             },
         ),
-        ProviderCredentialReadinessStatus::Missing => CadenceDiagnosticCheck::new(
-            CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ProviderCredential,
-                status: CadenceDiagnosticStatus::Failed,
-                severity: CadenceDiagnosticSeverity::Error,
+        ProviderCredentialReadinessStatus::Missing => XeroDiagnosticCheck::new(
+            XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::ProviderCredential,
+                status: XeroDiagnosticStatus::Failed,
+                severity: XeroDiagnosticSeverity::Error,
                 retryable: false,
                 code: "provider_credentials_missing".into(),
                 message: format!(
@@ -354,11 +354,11 @@ pub fn provider_readiness_diagnostic(
                 remediation: Some(provider_remediation(profile)),
             },
         ),
-        ProviderCredentialReadinessStatus::Malformed => CadenceDiagnosticCheck::new(
-            CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ProviderCredential,
-                status: CadenceDiagnosticStatus::Failed,
-                severity: CadenceDiagnosticSeverity::Error,
+        ProviderCredentialReadinessStatus::Malformed => XeroDiagnosticCheck::new(
+            XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::ProviderCredential,
+                status: XeroDiagnosticStatus::Failed,
+                severity: XeroDiagnosticSeverity::Error,
                 retryable: false,
                 code: "provider_credentials_malformed".into(),
                 message: format!(
@@ -369,7 +369,7 @@ pub fn provider_readiness_diagnostic(
                 affected_provider_id: Some(profile.provider_id.clone()),
                 endpoint,
                 remediation: Some(
-                    "Reconnect or resave this provider so Cadence can rebuild the app-local credential link.".into(),
+                    "Reconnect or resave this provider so Xero can rebuild the app-local credential link.".into(),
                 ),
             },
         ),
@@ -379,14 +379,14 @@ pub fn provider_readiness_diagnostic(
 pub fn unsupported_provider_diagnostic(
     profile_id: Option<&str>,
     provider_id: &str,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderCredential,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ProviderCredential,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: false,
         code: "provider_id_unsupported".into(),
-        message: format!("Cadence does not support provider id `{provider_id}`."),
+        message: format!("Xero does not support provider id `{provider_id}`."),
         affected_profile_id: profile_id.map(str::to_owned),
         affected_provider_id: Some(provider_id.into()),
         endpoint: None,
@@ -399,11 +399,11 @@ pub fn unsupported_provider_diagnostic(
 pub fn invalid_base_url_diagnostic(
     profile: &ProviderCredentialProfile,
     base_url: &str,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderCredential,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ProviderCredential,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: false,
         code: "provider_base_url_invalid".into(),
         message: format!(
@@ -412,7 +412,7 @@ pub fn invalid_base_url_diagnostic(
         ),
         affected_profile_id: Some(profile.profile_id.clone()),
         affected_provider_id: Some(profile.provider_id.clone()),
-        endpoint: Some(CadenceDiagnosticEndpointMetadata {
+        endpoint: Some(XeroDiagnosticEndpointMetadata {
             base_url: Some(base_url.into()),
             host: None,
             api_version: profile.api_version.clone(),
@@ -431,11 +431,11 @@ pub fn stale_runtime_binding_diagnostic(
     profile_id: Option<&str>,
     provider_id: &str,
     runtime_kind: &str,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::RuntimeBinding,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::RuntimeBinding,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: false,
         code: "runtime_binding_stale".into(),
         message: format!(
@@ -453,11 +453,11 @@ pub fn stale_runtime_binding_diagnostic(
 pub fn ambient_auth_failure_diagnostic(
     profile: &ProviderCredentialProfile,
     message: &str,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderCredential,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ProviderCredential,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: true,
         code: "provider_ambient_auth_failed".into(),
         message: message.into(),
@@ -472,23 +472,23 @@ pub fn ambient_auth_failure_diagnostic(
 
 pub fn provider_model_catalog_diagnostic(
     catalog: &ProviderModelCatalog,
-) -> CommandResult<CadenceDiagnosticCheck> {
+) -> CommandResult<XeroDiagnosticCheck> {
     if let Some(error) = &catalog.last_refresh_error {
         let has_stale_snapshot = matches!(
             catalog.source,
             ProviderModelCatalogSource::Cache | ProviderModelCatalogSource::Manual
         ) && !catalog.models.is_empty();
-        return CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ModelCatalog,
+        return XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ModelCatalog,
             status: if has_stale_snapshot {
-                CadenceDiagnosticStatus::Warning
+                XeroDiagnosticStatus::Warning
             } else {
-                CadenceDiagnosticStatus::Failed
+                XeroDiagnosticStatus::Failed
             },
             severity: if has_stale_snapshot {
-                CadenceDiagnosticSeverity::Warning
+                XeroDiagnosticSeverity::Warning
             } else {
-                CadenceDiagnosticSeverity::Error
+                XeroDiagnosticSeverity::Error
             },
             retryable: error.retryable,
             code: error.code.clone(),
@@ -505,10 +505,10 @@ pub fn provider_model_catalog_diagnostic(
 
     match catalog.source {
         ProviderModelCatalogSource::Live | ProviderModelCatalogSource::Cache => {
-            CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ModelCatalog,
-                status: CadenceDiagnosticStatus::Passed,
-                severity: CadenceDiagnosticSeverity::Info,
+            XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::ModelCatalog,
+                status: XeroDiagnosticStatus::Passed,
+                severity: XeroDiagnosticSeverity::Info,
                 retryable: false,
                 code: "provider_model_catalog_ready".into(),
                 message: format!(
@@ -521,31 +521,29 @@ pub fn provider_model_catalog_diagnostic(
                 remediation: None,
             })
         }
-        ProviderModelCatalogSource::Manual => {
-            CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ModelCatalog,
-                status: CadenceDiagnosticStatus::Skipped,
-                severity: CadenceDiagnosticSeverity::Info,
-                retryable: false,
-                code: "provider_model_catalog_manual".into(),
-                message: format!(
-                    "Provider `{}` uses manual model catalog configuration.",
-                    catalog.provider_id
-                ),
-                affected_profile_id: Some(catalog.profile_id.clone()),
-                affected_provider_id: Some(catalog.provider_id.clone()),
-                endpoint: None,
-                remediation: Some(
-                    "Confirm the configured model id is still accepted by the provider endpoint."
-                        .into(),
-                ),
-            })
-        }
+        ProviderModelCatalogSource::Manual => XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ModelCatalog,
+            status: XeroDiagnosticStatus::Skipped,
+            severity: XeroDiagnosticSeverity::Info,
+            retryable: false,
+            code: "provider_model_catalog_manual".into(),
+            message: format!(
+                "Provider `{}` uses manual model catalog configuration.",
+                catalog.provider_id
+            ),
+            affected_profile_id: Some(catalog.profile_id.clone()),
+            affected_provider_id: Some(catalog.provider_id.clone()),
+            endpoint: None,
+            remediation: Some(
+                "Confirm the configured model id is still accepted by the provider endpoint."
+                    .into(),
+            ),
+        }),
         ProviderModelCatalogSource::Unavailable => {
-            CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-                subject: CadenceDiagnosticSubject::ModelCatalog,
-                status: CadenceDiagnosticStatus::Failed,
-                severity: CadenceDiagnosticSeverity::Error,
+            XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::ModelCatalog,
+                status: XeroDiagnosticStatus::Failed,
+                severity: XeroDiagnosticSeverity::Error,
                 retryable: true,
                 code: "provider_model_catalog_unavailable".into(),
                 message: format!(
@@ -564,7 +562,7 @@ pub fn provider_model_catalog_diagnostic(
 pub fn provider_validation_diagnostics(
     snapshot: &ProviderCredentialsView,
     profile: &ProviderCredentialProfile,
-) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
+) -> CommandResult<Vec<XeroDiagnosticCheck>> {
     let mut checks = Vec::new();
     let _ = snapshot;
     checks.push(provider_runtime_alignment_diagnostic(profile)?);
@@ -578,15 +576,15 @@ pub fn provider_validation_diagnostics(
 
 fn provider_runtime_alignment_diagnostic(
     profile: &ProviderCredentialProfile,
-) -> CommandResult<CadenceDiagnosticCheck> {
+) -> CommandResult<XeroDiagnosticCheck> {
     match resolve_runtime_provider_identity(
         Some(profile.provider_id.as_str()),
         Some(profile.runtime_kind.as_str()),
     ) {
-        Ok(provider) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderCredential,
-            status: CadenceDiagnosticStatus::Passed,
-            severity: CadenceDiagnosticSeverity::Info,
+        Ok(provider) => XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ProviderCredential,
+            status: XeroDiagnosticStatus::Passed,
+            severity: XeroDiagnosticSeverity::Info,
             retryable: false,
             code: "provider_runtime_aligned".into(),
             message: format!(
@@ -598,10 +596,10 @@ fn provider_runtime_alignment_diagnostic(
             endpoint: endpoint_metadata_from_profile(profile),
             remediation: None,
         }),
-        Err(diagnostic) => CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderCredential,
-            status: CadenceDiagnosticStatus::Failed,
-            severity: CadenceDiagnosticSeverity::Error,
+        Err(diagnostic) => XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ProviderCredential,
+            status: XeroDiagnosticStatus::Failed,
+            severity: XeroDiagnosticSeverity::Error,
             retryable: diagnostic.retryable,
             code: diagnostic.code,
             message: diagnostic.message,
@@ -618,7 +616,7 @@ fn provider_runtime_alignment_diagnostic(
 
 fn provider_metadata_diagnostics(
     profile: &ProviderCredentialProfile,
-) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
+) -> CommandResult<Vec<XeroDiagnosticCheck>> {
     let mut checks = Vec::new();
 
     match profile.provider_id.as_str() {
@@ -670,7 +668,7 @@ fn provider_metadata_diagnostics(
                     profile,
                     "provider_runtime_kind_invalid",
                     "Gemini AI Studio providers must use runtime kind `gemini`.",
-                    "Resave the provider so Cadence can rebuild Gemini runtime metadata.",
+                    "Resave the provider so Xero can rebuild Gemini runtime metadata.",
                 )?);
             }
         }
@@ -729,7 +727,7 @@ fn provider_metadata_diagnostics(
                     profile,
                     "provider_runtime_kind_invalid",
                     "Ollama providers must use runtime kind `openai_compatible`.",
-                    "Resave the provider so Cadence can rebuild local runtime metadata.",
+                    "Resave the provider so Xero can rebuild local runtime metadata.",
                 )?);
             }
         }
@@ -796,10 +794,10 @@ fn provider_metadata_diagnostics(
     }
 
     if checks.is_empty() {
-        checks.push(CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-            subject: CadenceDiagnosticSubject::ProviderCredential,
-            status: CadenceDiagnosticStatus::Passed,
-            severity: CadenceDiagnosticSeverity::Info,
+        checks.push(XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::ProviderCredential,
+            status: XeroDiagnosticStatus::Passed,
+            severity: XeroDiagnosticSeverity::Info,
             retryable: false,
             code: "provider_metadata_ready".into(),
             message: format!(
@@ -819,7 +817,7 @@ fn provider_metadata_diagnostics(
 fn require_preset_id(
     profile: &ProviderCredentialProfile,
     expected: &str,
-    checks: &mut Vec<CadenceDiagnosticCheck>,
+    checks: &mut Vec<XeroDiagnosticCheck>,
 ) -> CommandResult<()> {
     if profile.preset_id.as_deref() == Some(expected) {
         return Ok(());
@@ -832,7 +830,7 @@ fn require_preset_id(
             "Provider `{}` must use presetId `{expected}` for `{}`.",
             profile.provider_id, profile.provider_id
         ),
-        "Resave this provider from Providers settings so Cadence can restore the preset metadata.",
+        "Resave this provider from Providers settings so Xero can restore the preset metadata.",
     )?);
     Ok(())
 }
@@ -841,7 +839,7 @@ fn require_present(
     profile: &ProviderCredentialProfile,
     field: &'static str,
     value: Option<&str>,
-    checks: &mut Vec<CadenceDiagnosticCheck>,
+    checks: &mut Vec<XeroDiagnosticCheck>,
 ) -> CommandResult<()> {
     if value.is_some_and(|value| !value.trim().is_empty()) {
         return Ok(());
@@ -863,7 +861,7 @@ fn require_absent(
     profile: &ProviderCredentialProfile,
     field: &'static str,
     value: Option<&str>,
-    checks: &mut Vec<CadenceDiagnosticCheck>,
+    checks: &mut Vec<XeroDiagnosticCheck>,
 ) -> CommandResult<()> {
     if value.is_none_or(|value| value.trim().is_empty()) {
         return Ok(());
@@ -876,7 +874,7 @@ fn require_absent(
             "Provider `{}` has unsupported `{field}` metadata for `{}`.",
             profile.provider_id, profile.provider_id
         ),
-        "Resave this provider from Providers settings so Cadence can drop unsupported connection metadata.",
+        "Resave this provider from Providers settings so Xero can drop unsupported connection metadata.",
     )?);
     Ok(())
 }
@@ -884,7 +882,7 @@ fn require_absent(
 fn require_http_base_url(
     profile: &ProviderCredentialProfile,
     base_url: &str,
-    checks: &mut Vec<CadenceDiagnosticCheck>,
+    checks: &mut Vec<XeroDiagnosticCheck>,
 ) -> CommandResult<()> {
     let parsed = Url::parse(base_url);
     let valid = parsed
@@ -904,11 +902,11 @@ fn metadata_failed(
     code: &str,
     message: &str,
     remediation: &str,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
-        subject: CadenceDiagnosticSubject::ProviderCredential,
-        status: CadenceDiagnosticStatus::Failed,
-        severity: CadenceDiagnosticSeverity::Error,
+) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ProviderCredential,
+        status: XeroDiagnosticStatus::Failed,
+        severity: XeroDiagnosticSeverity::Error,
         retryable: false,
         code: code.into(),
         message: message.into(),
@@ -919,13 +917,11 @@ fn metadata_failed(
     })
 }
 
-pub fn validate_diagnostic_check(
-    check: CadenceDiagnosticCheck,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    if check.contract_version != CADENCE_DIAGNOSTIC_CONTRACT_VERSION {
+pub fn validate_diagnostic_check(check: XeroDiagnosticCheck) -> CommandResult<XeroDiagnosticCheck> {
+    if check.contract_version != XERO_DIAGNOSTIC_CONTRACT_VERSION {
         return Err(CommandError::user_fixable(
             "diagnostic_contract_version_invalid",
-            "Cadence diagnostic checks must use the current diagnostic contract version.",
+            "Xero diagnostic checks must use the current diagnostic contract version.",
         ));
     }
     ensure_non_empty(&check.check_id, "checkId")?;
@@ -939,8 +935,8 @@ pub fn validate_diagnostic_check(
     }
 
     match check.status {
-        CadenceDiagnosticStatus::Passed => {
-            if check.severity != CadenceDiagnosticSeverity::Info || check.retryable {
+        XeroDiagnosticStatus::Passed => {
+            if check.severity != XeroDiagnosticSeverity::Info || check.retryable {
                 return Err(invalid_state_combo(
                     "Passed diagnostic checks must use severity `info` and retryable=false.",
                 ));
@@ -951,23 +947,23 @@ pub fn validate_diagnostic_check(
                 ));
             }
         }
-        CadenceDiagnosticStatus::Skipped => {
-            if check.severity != CadenceDiagnosticSeverity::Info || check.retryable {
+        XeroDiagnosticStatus::Skipped => {
+            if check.severity != XeroDiagnosticSeverity::Info || check.retryable {
                 return Err(invalid_state_combo(
                     "Skipped diagnostic checks must use severity `info` and retryable=false.",
                 ));
             }
         }
-        CadenceDiagnosticStatus::Warning => {
-            if check.severity != CadenceDiagnosticSeverity::Warning {
+        XeroDiagnosticStatus::Warning => {
+            if check.severity != XeroDiagnosticSeverity::Warning {
                 return Err(invalid_state_combo(
                     "Warning diagnostic checks must use severity `warning`.",
                 ));
             }
             ensure_non_empty_option(check.remediation.as_deref(), "remediation")?;
         }
-        CadenceDiagnosticStatus::Failed => {
-            if check.severity != CadenceDiagnosticSeverity::Error {
+        XeroDiagnosticStatus::Failed => {
+            if check.severity != XeroDiagnosticSeverity::Error {
                 return Err(invalid_state_combo(
                     "Failed diagnostic checks must use severity `error`.",
                 ));
@@ -976,12 +972,12 @@ pub fn validate_diagnostic_check(
         }
     }
 
-    if check.redaction_class == CadenceDiagnosticRedactionClass::Public && check.redacted {
+    if check.redaction_class == XeroDiagnosticRedactionClass::Public && check.redacted {
         return Err(invalid_state_combo(
             "Public diagnostic checks must not be marked redacted.",
         ));
     }
-    if check.redaction_class != CadenceDiagnosticRedactionClass::Public && !check.redacted {
+    if check.redaction_class != XeroDiagnosticRedactionClass::Public && !check.redacted {
         return Err(invalid_state_combo(
             "Non-public diagnostic redaction classes must set redacted=true.",
         ));
@@ -990,11 +986,11 @@ pub fn validate_diagnostic_check(
     Ok(check)
 }
 
-pub fn validate_doctor_report(report: CadenceDoctorReport) -> CommandResult<CadenceDoctorReport> {
-    if report.contract_version != CADENCE_DOCTOR_REPORT_CONTRACT_VERSION {
+pub fn validate_doctor_report(report: XeroDoctorReport) -> CommandResult<XeroDoctorReport> {
+    if report.contract_version != XERO_DOCTOR_REPORT_CONTRACT_VERSION {
         return Err(CommandError::user_fixable(
             "doctor_report_contract_version_invalid",
-            "Cadence doctor reports must use the current doctor report contract version.",
+            "Xero doctor reports must use the current doctor report contract version.",
         ));
     }
     ensure_non_empty(&report.report_id, "reportId")?;
@@ -1010,7 +1006,7 @@ pub fn validate_doctor_report(report: CadenceDoctorReport) -> CommandResult<Cade
     if report.summary != expected {
         return Err(CommandError::user_fixable(
             "doctor_report_summary_invalid",
-            "Cadence doctor report summary counts must match the included checks.",
+            "Xero doctor report summary counts must match the included checks.",
         ));
     }
 
@@ -1018,41 +1014,37 @@ pub fn validate_doctor_report(report: CadenceDoctorReport) -> CommandResult<Cade
 }
 
 pub fn render_doctor_report(
-    report: &CadenceDoctorReport,
-    mode: CadenceDoctorReportOutputMode,
+    report: &XeroDoctorReport,
+    mode: XeroDoctorReportOutputMode,
 ) -> CommandResult<String> {
     validate_doctor_report(report.clone())?;
     match mode {
-        CadenceDoctorReportOutputMode::Json => {
-            serde_json::to_string_pretty(report).map_err(|error| {
-                CommandError::system_fault(
-                    "doctor_report_json_serialize_failed",
-                    format!("Cadence could not serialize the doctor report: {error}"),
-                )
-            })
-        }
-        CadenceDoctorReportOutputMode::CompactHuman => Ok(render_compact_human_report(report)),
+        XeroDoctorReportOutputMode::Json => serde_json::to_string_pretty(report).map_err(|error| {
+            CommandError::system_fault(
+                "doctor_report_json_serialize_failed",
+                format!("Xero could not serialize the doctor report: {error}"),
+            )
+        }),
+        XeroDoctorReportOutputMode::CompactHuman => Ok(render_compact_human_report(report)),
     }
 }
 
-pub fn summarize_diagnostic_checks(
-    checks: Vec<&CadenceDiagnosticCheck>,
-) -> CadenceDoctorReportSummary {
-    let mut summary = CadenceDoctorReportSummary {
+pub fn summarize_diagnostic_checks(checks: Vec<&XeroDiagnosticCheck>) -> XeroDoctorReportSummary {
+    let mut summary = XeroDoctorReportSummary {
         passed: 0,
         warnings: 0,
         failed: 0,
         skipped: 0,
         total: checks.len() as u32,
-        highest_severity: CadenceDiagnosticSeverity::Info,
+        highest_severity: XeroDiagnosticSeverity::Info,
     };
 
     for check in checks {
         match check.status {
-            CadenceDiagnosticStatus::Passed => summary.passed += 1,
-            CadenceDiagnosticStatus::Warning => summary.warnings += 1,
-            CadenceDiagnosticStatus::Failed => summary.failed += 1,
-            CadenceDiagnosticStatus::Skipped => summary.skipped += 1,
+            XeroDiagnosticStatus::Passed => summary.passed += 1,
+            XeroDiagnosticStatus::Warning => summary.warnings += 1,
+            XeroDiagnosticStatus::Failed => summary.failed += 1,
+            XeroDiagnosticStatus::Skipped => summary.skipped += 1,
         }
         summary.highest_severity = highest_severity(summary.highest_severity, check.severity);
     }
@@ -1060,9 +1052,9 @@ pub fn summarize_diagnostic_checks(
     summary
 }
 
-pub fn sanitize_diagnostic_text(value: &str) -> (String, bool, CadenceDiagnosticRedactionClass) {
+pub fn sanitize_diagnostic_text(value: &str) -> (String, bool, XeroDiagnosticRedactionClass) {
     let mut redacted = false;
-    let mut redaction_class = CadenceDiagnosticRedactionClass::Public;
+    let mut redaction_class = XeroDiagnosticRedactionClass::Public;
     let mut redact_next = false;
     let words = value
         .split_whitespace()
@@ -1078,7 +1070,7 @@ pub fn sanitize_diagnostic_text(value: &str) -> (String, bool, CadenceDiagnostic
                 redacted = true;
                 redaction_class = strongest_redaction_class(
                     redaction_class,
-                    CadenceDiagnosticRedactionClass::Secret,
+                    XeroDiagnosticRedactionClass::Secret,
                 );
                 return word.replace(bare, "[redacted]");
             }
@@ -1102,14 +1094,14 @@ pub fn sanitize_diagnostic_text(value: &str) -> (String, bool, CadenceDiagnostic
                 redacted = true;
                 redaction_class = strongest_redaction_class(
                     redaction_class,
-                    CadenceDiagnosticRedactionClass::Secret,
+                    XeroDiagnosticRedactionClass::Secret,
                 );
                 "[redacted]".into()
             } else if looks_like_raw_local_path(bare) {
                 redacted = true;
                 redaction_class = strongest_redaction_class(
                     redaction_class,
-                    CadenceDiagnosticRedactionClass::LocalPath,
+                    XeroDiagnosticRedactionClass::LocalPath,
                 );
                 word.replace(bare, "[redacted-path]")
             } else {
@@ -1122,8 +1114,8 @@ pub fn sanitize_diagnostic_text(value: &str) -> (String, bool, CadenceDiagnostic
 }
 
 fn sort_and_validate_checks(
-    checks: Vec<CadenceDiagnosticCheck>,
-) -> CommandResult<Vec<CadenceDiagnosticCheck>> {
+    checks: Vec<XeroDiagnosticCheck>,
+) -> CommandResult<Vec<XeroDiagnosticCheck>> {
     let mut checks = checks
         .into_iter()
         .map(sanitize_diagnostic_check)
@@ -1147,10 +1139,8 @@ fn sort_and_validate_checks(
     Ok(checks)
 }
 
-fn sanitize_diagnostic_check(
-    check: CadenceDiagnosticCheck,
-) -> CommandResult<CadenceDiagnosticCheck> {
-    CadenceDiagnosticCheck::new(CadenceDiagnosticCheckInput {
+fn sanitize_diagnostic_check(check: XeroDiagnosticCheck) -> CommandResult<XeroDiagnosticCheck> {
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
         subject: check.subject,
         status: check.status,
         severity: check.severity,
@@ -1164,9 +1154,9 @@ fn sanitize_diagnostic_check(
     })
 }
 
-fn render_compact_human_report(report: &CadenceDoctorReport) -> String {
+fn render_compact_human_report(report: &XeroDoctorReport) -> String {
     let mut lines = vec![
-        format!("Cadence doctor report {}", report.report_id),
+        format!("Xero doctor report {}", report.report_id),
         format!("Generated: {}", report.generated_at),
         format!("Mode: {:?}", report.mode),
         format!(
@@ -1198,7 +1188,7 @@ fn render_compact_human_report(report: &CadenceDoctorReport) -> String {
     lines.join("\n")
 }
 
-fn push_human_group(lines: &mut Vec<String>, label: &str, checks: &[CadenceDiagnosticCheck]) {
+fn push_human_group(lines: &mut Vec<String>, label: &str, checks: &[XeroDiagnosticCheck]) {
     if checks.is_empty() {
         return;
     }
@@ -1218,30 +1208,30 @@ fn push_human_group(lines: &mut Vec<String>, label: &str, checks: &[CadenceDiagn
 
 fn sanitize_optional_diagnostic_text(
     value: Option<&str>,
-) -> (Option<String>, bool, CadenceDiagnosticRedactionClass) {
+) -> (Option<String>, bool, XeroDiagnosticRedactionClass) {
     let Some(value) = value else {
-        return (None, false, CadenceDiagnosticRedactionClass::Public);
+        return (None, false, XeroDiagnosticRedactionClass::Public);
     };
     let (sanitized, redacted, class) = sanitize_diagnostic_text(value);
     (Some(sanitized), redacted, class)
 }
 
 fn sanitize_endpoint_metadata(
-    endpoint: Option<CadenceDiagnosticEndpointMetadata>,
+    endpoint: Option<XeroDiagnosticEndpointMetadata>,
 ) -> (
-    Option<CadenceDiagnosticEndpointMetadata>,
+    Option<XeroDiagnosticEndpointMetadata>,
     bool,
-    CadenceDiagnosticRedactionClass,
+    XeroDiagnosticRedactionClass,
 ) {
     let Some(endpoint) = endpoint else {
-        return (None, false, CadenceDiagnosticRedactionClass::Public);
+        return (None, false, XeroDiagnosticRedactionClass::Public);
     };
 
     let (base_url, base_url_redacted, base_url_class, host) = endpoint
         .base_url
         .as_deref()
         .map(sanitize_endpoint_url)
-        .unwrap_or((None, false, CadenceDiagnosticRedactionClass::Public, None));
+        .unwrap_or((None, false, XeroDiagnosticRedactionClass::Public, None));
     let (api_version, api_redacted, api_class) =
         sanitize_optional_diagnostic_text(endpoint.api_version.as_deref());
     let (region, region_redacted, region_class) =
@@ -1259,7 +1249,7 @@ fn sanitize_endpoint_metadata(
     ]
     .into_iter()
     .fold(
-        CadenceDiagnosticRedactionClass::Public,
+        XeroDiagnosticRedactionClass::Public,
         strongest_redaction_class,
     );
     let redacted = endpoint.redacted
@@ -1270,7 +1260,7 @@ fn sanitize_endpoint_metadata(
         || model_strategy_redacted;
 
     (
-        Some(CadenceDiagnosticEndpointMetadata {
+        Some(XeroDiagnosticEndpointMetadata {
             base_url,
             host: host.or_else(|| normalize_optional_text(endpoint.host)),
             api_version,
@@ -1289,12 +1279,12 @@ fn sanitize_endpoint_url(
 ) -> (
     Option<String>,
     bool,
-    CadenceDiagnosticRedactionClass,
+    XeroDiagnosticRedactionClass,
     Option<String>,
 ) {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return (None, false, CadenceDiagnosticRedactionClass::Public, None);
+        return (None, false, XeroDiagnosticRedactionClass::Public, None);
     }
 
     let Ok(mut parsed) = Url::parse(trimmed) else {
@@ -1347,9 +1337,9 @@ fn sanitize_endpoint_url(
         Some(parsed.to_string()),
         redacted,
         if redacted {
-            CadenceDiagnosticRedactionClass::EndpointCredential
+            XeroDiagnosticRedactionClass::EndpointCredential
         } else {
-            CadenceDiagnosticRedactionClass::Public
+            XeroDiagnosticRedactionClass::Public
         },
         host,
     )
@@ -1357,7 +1347,7 @@ fn sanitize_endpoint_url(
 
 fn endpoint_metadata_from_profile(
     profile: &ProviderCredentialProfile,
-) -> Option<CadenceDiagnosticEndpointMetadata> {
+) -> Option<XeroDiagnosticEndpointMetadata> {
     if profile.base_url.is_none()
         && profile.api_version.is_none()
         && profile.region.is_none()
@@ -1366,7 +1356,7 @@ fn endpoint_metadata_from_profile(
         return None;
     }
 
-    Some(CadenceDiagnosticEndpointMetadata {
+    Some(XeroDiagnosticEndpointMetadata {
         base_url: profile.base_url.clone(),
         host: None,
         api_version: profile.api_version.clone(),
@@ -1425,14 +1415,14 @@ fn invalid_state_combo(message: impl Into<String>) -> CommandError {
 }
 
 fn diagnostic_check_id(
-    subject: CadenceDiagnosticSubject,
+    subject: XeroDiagnosticSubject,
     provider_id: Option<&str>,
     profile_id: Option<&str>,
     code: &str,
 ) -> String {
     format!(
         "diagnostic:v{}:{:?}:{}:{}:{}",
-        CADENCE_DIAGNOSTIC_CONTRACT_VERSION,
+        XERO_DIAGNOSTIC_CONTRACT_VERSION,
         subject,
         provider_id.unwrap_or("global"),
         profile_id.unwrap_or("global"),
@@ -1443,9 +1433,9 @@ fn diagnostic_check_id(
 }
 
 fn highest_severity(
-    current: CadenceDiagnosticSeverity,
-    next: CadenceDiagnosticSeverity,
-) -> CadenceDiagnosticSeverity {
+    current: XeroDiagnosticSeverity,
+    next: XeroDiagnosticSeverity,
+) -> XeroDiagnosticSeverity {
     if next > current {
         next
     } else {
@@ -1454,9 +1444,9 @@ fn highest_severity(
 }
 
 fn strongest_redaction_class(
-    left: CadenceDiagnosticRedactionClass,
-    right: CadenceDiagnosticRedactionClass,
-) -> CadenceDiagnosticRedactionClass {
+    left: XeroDiagnosticRedactionClass,
+    right: XeroDiagnosticRedactionClass,
+) -> XeroDiagnosticRedactionClass {
     if right > left {
         right
     } else {
@@ -1475,7 +1465,7 @@ fn trim_word_punctuation(value: &str) -> &str {
 
 struct DiagnosticAssignmentRedaction {
     value: String,
-    redaction_class: CadenceDiagnosticRedactionClass,
+    redaction_class: XeroDiagnosticRedactionClass,
     redact_next: bool,
 }
 
@@ -1485,7 +1475,7 @@ fn redact_sensitive_assignment(value: &str) -> Option<DiagnosticAssignmentRedact
             if is_sensitive_name(key) && !secret.trim().is_empty() {
                 return Some(DiagnosticAssignmentRedaction {
                     value: format!("{}{}[redacted]", key, separator),
-                    redaction_class: CadenceDiagnosticRedactionClass::Secret,
+                    redaction_class: XeroDiagnosticRedactionClass::Secret,
                     redact_next: is_authorization_scheme(
                         &trim_word_punctuation(secret).to_ascii_lowercase(),
                     ),
@@ -1495,7 +1485,7 @@ fn redact_sensitive_assignment(value: &str) -> Option<DiagnosticAssignmentRedact
             if looks_like_raw_local_path(secret.trim()) {
                 return Some(DiagnosticAssignmentRedaction {
                     value: format!("{}{}[redacted-path]", key, separator),
-                    redaction_class: CadenceDiagnosticRedactionClass::LocalPath,
+                    redaction_class: XeroDiagnosticRedactionClass::LocalPath,
                     redact_next: false,
                 });
             }

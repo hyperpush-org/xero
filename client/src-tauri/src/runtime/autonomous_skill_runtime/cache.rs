@@ -129,7 +129,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
 
         let contents = fs::read_to_string(&manifest_path).map_err(|error| {
             AutonomousSkillCacheError::Read(format!(
-                "Cadence could not read the autonomous skill cache manifest at {}: {error}",
+                "Xero could not read the autonomous skill cache manifest at {}: {error}",
                 manifest_path.display()
             ))
         })?;
@@ -137,7 +137,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
         let manifest =
             serde_json::from_str::<AutonomousSkillCacheManifest>(&contents).map_err(|error| {
                 AutonomousSkillCacheError::Decode(format!(
-                    "Cadence could not decode the autonomous skill cache manifest at {}: {error}",
+                    "Xero could not decode the autonomous skill cache manifest at {}: {error}",
                     manifest_path.display()
                 ))
             })?;
@@ -155,7 +155,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
         let tree_directory = self.tree_directory(cache_key, &manifest.source.tree_hash);
         if !tree_directory.is_dir() {
             return Err(AutonomousSkillCacheError::Contract(format!(
-                "Cadence expected an autonomous skill cache tree at {} but it was missing.",
+                "Xero expected an autonomous skill cache tree at {} but it was missing.",
                 tree_directory.display()
             )));
         }
@@ -168,7 +168,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
             .collect::<BTreeSet<_>>();
         if actual_paths != expected_paths {
             return Err(AutonomousSkillCacheError::Contract(format!(
-                "Cadence detected autonomous skill cache drift for `{}` because the cached file set no longer matches the manifest.",
+                "Xero detected autonomous skill cache drift for `{}` because the cached file set no longer matches the manifest.",
                 manifest.skill_id
             )));
         }
@@ -177,14 +177,14 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
             let path = tree_directory.join(&record.relative_path);
             let bytes = fs::read(&path).map_err(|error| {
                 AutonomousSkillCacheError::Read(format!(
-                    "Cadence could not read cached autonomous skill file {}: {error}",
+                    "Xero could not read cached autonomous skill file {}: {error}",
                     path.display()
                 ))
             })?;
             let digest = sha256_hex(&bytes);
             if digest != record.sha256 || bytes.len() != record.bytes {
                 return Err(AutonomousSkillCacheError::Contract(format!(
-                    "Cadence detected autonomous skill cache drift for `{}` at `{}`.",
+                    "Xero detected autonomous skill cache drift for `{}` at `{}`.",
                     manifest.skill_id, record.relative_path
                 )));
             }
@@ -204,7 +204,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
         let tree_directory = self.tree_directory(cache_key, &manifest.source.tree_hash);
         fs::create_dir_all(&cache_directory).map_err(|error| {
             AutonomousSkillCacheError::Write(format!(
-                "Cadence could not prepare the autonomous skill cache directory at {}: {error}",
+                "Xero could not prepare the autonomous skill cache directory at {}: {error}",
                 cache_directory.display()
             ))
         })?;
@@ -212,14 +212,14 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
         if tree_directory.exists() {
             fs::remove_dir_all(&tree_directory).map_err(|error| {
                 AutonomousSkillCacheError::Write(format!(
-                    "Cadence could not clear the staged autonomous skill cache tree at {}: {error}",
+                    "Xero could not clear the staged autonomous skill cache tree at {}: {error}",
                     tree_directory.display()
                 ))
             })?;
         }
         fs::create_dir_all(&tree_directory).map_err(|error| {
             AutonomousSkillCacheError::Write(format!(
-                "Cadence could not create the autonomous skill cache tree at {}: {error}",
+                "Xero could not create the autonomous skill cache tree at {}: {error}",
                 tree_directory.display()
             ))
         })?;
@@ -229,14 +229,14 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
                     AutonomousSkillCacheError::Write(format!(
-                        "Cadence could not prepare the autonomous skill cache subdirectory at {}: {error}",
+                        "Xero could not prepare the autonomous skill cache subdirectory at {}: {error}",
                         parent.display()
                     ))
                 })?;
             }
             fs::write(&path, &file.bytes).map_err(|error| {
                 AutonomousSkillCacheError::Write(format!(
-                    "Cadence could not write cached autonomous skill file {}: {error}",
+                    "Xero could not write cached autonomous skill file {}: {error}",
                     path.display()
                 ))
             })?;
@@ -246,7 +246,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
 
         let manifest_bytes = serde_json::to_vec_pretty(manifest).map_err(|error| {
             AutonomousSkillCacheError::Write(format!(
-                "Cadence could not serialize the autonomous skill cache manifest for `{}`: {error}",
+                "Xero could not serialize the autonomous skill cache manifest for `{}`: {error}",
                 manifest.skill_id
             ))
         })?;
@@ -257,7 +257,7 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
         )
         .map_err(|error| {
             AutonomousSkillCacheError::Write(format!(
-                "Cadence could not persist the autonomous skill cache manifest for `{}`: {error}",
+                "Xero could not persist the autonomous skill cache manifest for `{}`: {error}",
                 manifest.skill_id
             ))
         })?;
@@ -276,13 +276,13 @@ impl AutonomousSkillCacheStore for FilesystemAutonomousSkillCacheStore {
             .join(relative_path);
         let bytes = fs::read(&path).map_err(|error| {
             AutonomousSkillCacheError::Read(format!(
-                "Cadence could not read cached autonomous skill file {}: {error}",
+                "Xero could not read cached autonomous skill file {}: {error}",
                 path.display()
             ))
         })?;
         String::from_utf8(bytes).map_err(|error| {
             AutonomousSkillCacheError::Decode(format!(
-                "Cadence could not decode cached autonomous skill file {} as UTF-8: {error}",
+                "Xero could not decode cached autonomous skill file {} as UTF-8: {error}",
                 path.display()
             ))
         })
@@ -308,7 +308,7 @@ fn collect_relative_files_inner(
 ) -> Result<(), AutonomousSkillCacheError> {
     let entries = fs::read_dir(current).map_err(|error| {
         AutonomousSkillCacheError::Read(format!(
-            "Cadence could not enumerate cached autonomous skill directory {}: {error}",
+            "Xero could not enumerate cached autonomous skill directory {}: {error}",
             current.display()
         ))
     })?;
@@ -316,7 +316,7 @@ fn collect_relative_files_inner(
     for entry in entries {
         let entry = entry.map_err(|error| {
             AutonomousSkillCacheError::Read(format!(
-                "Cadence could not inspect a cached autonomous skill directory entry under {}: {error}",
+                "Xero could not inspect a cached autonomous skill directory entry under {}: {error}",
                 current.display()
             ))
         })?;
@@ -327,7 +327,7 @@ fn collect_relative_files_inner(
         }
         let relative = path.strip_prefix(root).map_err(|error| {
             AutonomousSkillCacheError::Read(format!(
-                "Cadence could not normalize cached autonomous skill path {}: {error}",
+                "Xero could not normalize cached autonomous skill path {}: {error}",
                 path.display()
             ))
         })?;

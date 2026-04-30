@@ -6,16 +6,13 @@ use crate::{
     commands::{
         runtime_support::{
             emit_project_updated, emit_runtime_run_updated, resolve_project_root,
-            runtime_run_dto_from_snapshot, DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
+            runtime_run_dto_from_snapshot,
         },
         validate_non_empty, CommandError, CommandResult, ProjectUpdateReason, ResumeHistoryStatus,
         ResumeOperatorRunRequestDto, ResumeOperatorRunResponseDto,
     },
     db::project_store::{self, PreparedRuntimeOperatorResume},
-    runtime::{
-        autonomous_orchestrator::{persist_operator_resume, validate_operator_resume_target},
-        submit_runtime_run_input, RuntimeSupervisorSubmitInputRequest,
-    },
+    runtime::autonomous_orchestrator::validate_operator_resume_target,
     state::DesktopState,
 };
 
@@ -62,7 +59,7 @@ pub fn resume_operator_run<R: Runtime>(
 
 fn resume_runtime_operator_run<R: Runtime>(
     app: &AppHandle<R>,
-    state: &DesktopState,
+    _state: &DesktopState,
     repo_root: &Path,
     runtime_resume: PreparedRuntimeOperatorResume,
 ) -> CommandResult<ResumeOperatorRunResponseDto> {
@@ -88,77 +85,23 @@ fn resume_runtime_operator_run<R: Runtime>(
         return Err(error);
     }
 
-    match submit_runtime_run_input(
-        state,
-        RuntimeSupervisorSubmitInputRequest {
-            project_id: runtime_resume.project_id.clone(),
-            agent_session_id: runtime_resume.agent_session_id.clone(),
-            repo_root: repo_root.to_path_buf(),
-            run_id: runtime_resume.run_id.clone(),
-            session_id: runtime_resume.session_id.clone(),
-            flow_id: runtime_resume.flow_id.clone(),
-            action_id: runtime_resume.approval_request.action_id.clone(),
-            boundary_id: runtime_resume.boundary_id.clone(),
-            input: runtime_resume.user_answer.clone(),
-            control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-        },
-    ) {
-        Ok(_) => {
-            if let Err(error) = persist_operator_resume(
-                repo_root,
-                &runtime_resume.project_id,
-                &runtime_resume.agent_session_id,
-                &runtime_resume.approval_request.action_id,
-                &runtime_resume.boundary_id,
-            ) {
-                project_store::record_runtime_operator_resume_outcome(
-                    repo_root,
-                    &runtime_resume,
-                    ResumeHistoryStatus::Failed,
-                    &runtime_resume_failure_summary(&runtime_resume, &error),
-                )?;
-                emit_runtime_resume_updates(
-                    app,
-                    repo_root,
-                    &runtime_resume.project_id,
-                    &runtime_resume.agent_session_id,
-                )?;
-                return Err(error);
-            }
-
-            let resumed = project_store::record_runtime_operator_resume_outcome(
-                repo_root,
-                &runtime_resume,
-                ResumeHistoryStatus::Started,
-                &runtime_resume_success_summary(&runtime_resume),
-            )?;
-            emit_runtime_resume_updates(
-                app,
-                repo_root,
-                &runtime_resume.project_id,
-                &runtime_resume.agent_session_id,
-            )?;
-            Ok(ResumeOperatorRunResponseDto {
-                approval_request: resumed.approval_request,
-                resume_entry: resumed.resume_entry,
-            })
-        }
-        Err(error) => {
-            project_store::record_runtime_operator_resume_outcome(
-                repo_root,
-                &runtime_resume,
-                ResumeHistoryStatus::Failed,
-                &runtime_resume_failure_summary(&runtime_resume, &error),
-            )?;
-            emit_runtime_resume_updates(
-                app,
-                repo_root,
-                &runtime_resume.project_id,
-                &runtime_resume.agent_session_id,
-            )?;
-            Err(error)
-        }
-    }
+    let error = CommandError::user_fixable(
+        "runtime_operator_resume_unsupported",
+        "Xero no longer resumes legacy runtime boundaries. Send the response through the Xero-owned agent prompt instead.",
+    );
+    project_store::record_runtime_operator_resume_outcome(
+        repo_root,
+        &runtime_resume,
+        ResumeHistoryStatus::Failed,
+        &runtime_resume_failure_summary(&runtime_resume, &error),
+    )?;
+    emit_runtime_resume_updates(
+        app,
+        repo_root,
+        &runtime_resume.project_id,
+        &runtime_resume.agent_session_id,
+    )?;
+    Err(error)
 }
 
 fn emit_runtime_resume_updates<R: Runtime>(
@@ -179,22 +122,12 @@ fn emit_runtime_resume_updates<R: Runtime>(
     emit_runtime_run_updated(app, runtime_run.as_ref())
 }
 
-fn runtime_resume_success_summary(runtime_resume: &PreparedRuntimeOperatorResume) -> String {
-    format!(
-        "Operator resumed detached runtime run `{}` for action `{}` at boundary `{}` after approving {}.",
-        runtime_resume.run_id,
-        runtime_resume.approval_request.action_id,
-        runtime_resume.boundary_id,
-        runtime_resume.approval_request.title,
-    )
-}
-
 fn runtime_resume_failure_summary(
     runtime_resume: &PreparedRuntimeOperatorResume,
     error: &CommandError,
 ) -> String {
     format!(
-        "Cadence could not resume detached runtime run `{}` for action `{}` at boundary `{}` after approving {}: [{}] {}.",
+        "Xero could not resume removed runtime run `{}` for action `{}` at boundary `{}` after approving {}: [{}] {}.",
         runtime_resume.run_id,
         runtime_resume.approval_request.action_id,
         runtime_resume.boundary_id,

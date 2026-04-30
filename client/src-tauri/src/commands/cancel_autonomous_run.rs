@@ -5,14 +5,13 @@ use crate::{
         validate_non_empty, AutonomousRunStateDto, CancelAutonomousRunRequestDto, CommandError,
         CommandResult,
     },
-    runtime::{stop_runtime_run as stop_supervised_runtime_run, RuntimeSupervisorStopRequest},
+    db::project_store,
     state::DesktopState,
 };
 
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run, resolve_project_root,
-    sync_autonomous_run_state, AutonomousSyncIntent, DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-    DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
+    stop_owned_runtime_run, sync_autonomous_run_state, AutonomousSyncIntent,
 };
 
 #[tauri::command]
@@ -34,7 +33,7 @@ pub fn cancel_autonomous_run<R: Runtime>(
             return Err(CommandError::user_fixable(
                 "autonomous_run_mismatch",
                 format!(
-                    "Cadence refused to cancel autonomous run `{}` because project `{}` is currently bound to durable run `{}`.",
+                    "Xero refused to cancel autonomous run `{}` because project `{}` is currently bound to durable run `{}`.",
                     request.run_id, request.project_id, snapshot.run.run_id
                 ),
             ));
@@ -43,16 +42,26 @@ pub fn cancel_autonomous_run<R: Runtime>(
         return Ok(AutonomousRunStateDto { run: None });
     }
 
-    let after = stop_supervised_runtime_run(
-        state.inner(),
-        RuntimeSupervisorStopRequest {
-            project_id: request.project_id.clone(),
-            agent_session_id: request.agent_session_id.clone(),
-            repo_root: repo_root.clone(),
-            control_timeout: DEFAULT_RUNTIME_RUN_CONTROL_TIMEOUT,
-            shutdown_timeout: DEFAULT_RUNTIME_RUN_SHUTDOWN_TIMEOUT,
-        },
-    )?;
+    let after = if let Some(snapshot) = before.as_ref().filter(|snapshot| {
+        snapshot.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
+    }) {
+        let _ = state
+            .inner()
+            .agent_run_supervisor()
+            .cancel(&snapshot.run.run_id)?;
+        if project_store::load_agent_run(&repo_root, &request.project_id, &snapshot.run.run_id)
+            .is_ok()
+        {
+            let _ = crate::runtime::cancel_owned_agent_run(
+                &repo_root,
+                &request.project_id,
+                &snapshot.run.run_id,
+            )?;
+        }
+        Some(stop_owned_runtime_run(&repo_root, snapshot)?)
+    } else {
+        None
+    };
     emit_runtime_run_updated_if_changed(
         &app,
         &request.project_id,
