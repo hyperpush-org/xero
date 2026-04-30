@@ -23,8 +23,13 @@ import {
   type XeroDiagnosticStatusDto,
   type XeroDoctorReportDto,
   type RunDoctorReportRequestDto,
+  type EnvironmentCapabilityStateDto,
+  type EnvironmentDiscoveryStatusDto,
+  type EnvironmentProfileSummaryDto,
+  type EnvironmentToolCategoryDto,
 } from "@/src/lib/xero-model"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { SectionHeader } from "./section-header"
@@ -33,6 +38,9 @@ interface DiagnosticsSectionProps {
   doctorReport: XeroDoctorReportDto | null
   doctorReportStatus: DoctorReportRunStatus
   doctorReportError: OperatorActionErrorView | null
+  environmentDiscoveryStatus?: EnvironmentDiscoveryStatusDto | null
+  environmentProfileSummary?: EnvironmentProfileSummaryDto
+  onRefreshEnvironmentDiscovery?: (options?: { force?: boolean }) => Promise<EnvironmentDiscoveryStatusDto | null>
   onRunDoctorReport?: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
 }
 
@@ -107,10 +115,34 @@ const MODE_LABEL: Record<RunDoctorReportRequestDto["mode"], string> = {
   extended_network: "Extended · network checks",
 }
 
+const CATEGORY_LABEL: Record<EnvironmentToolCategoryDto, string> = {
+  base_developer_tool: "Developer tools",
+  package_manager: "Package managers",
+  platform_package_manager: "Platform managers",
+  language_runtime: "Runtimes",
+  container_orchestration: "Containers",
+  mobile_tooling: "Mobile",
+  cloud_deployment: "Cloud",
+  database_cli: "Databases",
+  solana_tooling: "Solana",
+  agent_ai_cli: "Agent CLIs",
+}
+
+const CAPABILITY_LABEL: Record<EnvironmentCapabilityStateDto, string> = {
+  ready: "Ready",
+  partial: "Partial",
+  missing: "Missing",
+  blocked: "Blocked",
+  unknown: "Unknown",
+}
+
 export function DiagnosticsSection({
   doctorReport,
   doctorReportStatus,
   doctorReportError,
+  environmentDiscoveryStatus = null,
+  environmentProfileSummary = null,
+  onRefreshEnvironmentDiscovery,
   onRunDoctorReport,
 }: DiagnosticsSectionProps) {
   const [copied, setCopied] = useState(false)
@@ -126,6 +158,10 @@ export function DiagnosticsSection({
     void onRunDoctorReport?.({ mode }).catch(() => undefined)
   }
 
+  const refreshEnvironment = () => {
+    void onRefreshEnvironmentDiscovery?.({ force: true }).catch(() => undefined)
+  }
+
   const copyReport = () => {
     if (!report || typeof navigator === "undefined" || !navigator.clipboard) return
     void navigator.clipboard.writeText(renderXeroDoctorReport(report, "json")).then(() => {
@@ -139,6 +175,13 @@ export function DiagnosticsSection({
       <SectionHeader
         title="Diagnostics"
         description="Run local provider, runtime, MCP, and settings checks without exposing secrets or local paths."
+      />
+
+      <EnvironmentProfilePanel
+        status={environmentDiscoveryStatus}
+        summary={environmentProfileSummary}
+        canRefresh={Boolean(onRefreshEnvironmentDiscovery)}
+        onRefresh={refreshEnvironment}
       />
 
       {doctorReportError ? (
@@ -228,6 +271,155 @@ function EmptyState({
           onClick={() => onRun("extended_network")}
         />
       </div>
+    </div>
+  )
+}
+
+function EnvironmentProfilePanel({
+  status,
+  summary,
+  canRefresh,
+  onRefresh,
+}: {
+  status: EnvironmentDiscoveryStatusDto | null
+  summary: EnvironmentProfileSummaryDto
+  canRefresh: boolean
+  onRefresh: () => void
+}) {
+  const presentTools = summary?.tools.filter((tool) => tool.present) ?? []
+  const missingTools = summary?.tools.filter((tool) => !tool.present) ?? []
+  const readyCapabilities = summary?.capabilities.filter((capability) => capability.state === "ready") ?? []
+  const attentionCapabilities =
+    summary?.capabilities.filter((capability) => capability.state !== "ready").slice(0, 4) ?? []
+  const highlightedTools = presentTools.slice(0, 8)
+  const isProbing = status?.status === "probing"
+
+  return (
+    <section className="rounded-xl border border-border/70 bg-card/35">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/50 px-5 py-4">
+        <div className="min-w-0">
+          <h4 className="text-[13px] font-semibold tracking-tight text-foreground">Developer environment</h4>
+          <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
+            {summary
+              ? `${summary.platform.osKind} ${summary.platform.arch} · ${
+                  summary.refreshedAt ? formatTimestamp(summary.refreshedAt) : "Not refreshed yet"
+                }`
+              : status?.status === "probing"
+                ? "Discovery is running in the background."
+                : "No environment profile has been recorded yet."}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={status?.stale ? "destructive" : "secondary"} className="rounded-md text-[11px]">
+            {status?.stale ? "Stale" : summary ? CAPABILITY_LABEL.ready : "Pending"}
+          </Badge>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 text-[12px]"
+            disabled={!canRefresh || isProbing}
+            onClick={onRefresh}
+          >
+            {isProbing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+            Refresh
+          </Button>
+        </div>
+      </header>
+
+      <div className="grid gap-0 border-b border-border/50 sm:grid-cols-3">
+        <EnvironmentMetric label="Present tools" value={presentTools.length} />
+        <EnvironmentMetric label="Missing tools" value={missingTools.length} />
+        <EnvironmentMetric label="Ready capabilities" value={readyCapabilities.length} isLast />
+      </div>
+
+      {summary ? (
+        <div className="grid gap-5 px-5 py-4 md:grid-cols-[1.2fr_0.8fr]">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+              Detected tools
+            </p>
+            {highlightedTools.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {highlightedTools.map((tool) => (
+                  <span
+                    key={tool.id}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-background/45 px-2 py-1 text-[11.5px] text-foreground"
+                    title={tool.displayPath ?? tool.id}
+                  >
+                    <span className="font-medium">{tool.id}</span>
+                    {tool.version ? (
+                      <span className="truncate text-muted-foreground">{tool.version}</span>
+                    ) : null}
+                    <span className="text-muted-foreground/70">{CATEGORY_LABEL[tool.category]}</span>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-[12px] text-muted-foreground">No installed developer tools were detected yet.</p>
+            )}
+          </div>
+
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+              Capability attention
+            </p>
+            {attentionCapabilities.length > 0 ? (
+              <div className="mt-3 flex flex-col gap-2">
+                {attentionCapabilities.map((capability) => (
+                  <div key={capability.id} className="rounded-md border border-border/60 bg-background/35 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-[12px] font-medium text-foreground">{capability.id}</span>
+                      <Badge variant="outline" className="shrink-0 rounded-md text-[10.5px]">
+                        {CAPABILITY_LABEL[capability.state]}
+                      </Badge>
+                    </div>
+                    {capability.message ? (
+                      <p className="mt-1 text-[11.5px] leading-[1.45] text-muted-foreground">{capability.message}</p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-[12px] text-muted-foreground">Recorded capabilities are ready or not yet available.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {status?.diagnostics.length ? (
+        <div className="border-t border-border/50 px-5 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+            Environment diagnostics
+          </p>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {status.diagnostics.slice(0, 4).map((diagnostic) => (
+              <p key={`${diagnostic.code}-${diagnostic.message}`} className="text-[12px] leading-[1.45] text-muted-foreground">
+                <span className="font-medium text-foreground">{diagnostic.code}</span>
+                <span className="mx-1 text-muted-foreground/50">·</span>
+                {diagnostic.message}
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function EnvironmentMetric({
+  label,
+  value,
+  isLast = false,
+}: {
+  label: string
+  value: number
+  isLast?: boolean
+}) {
+  return (
+    <div className={cn("px-5 py-3", !isLast && "border-b border-border/40 sm:border-b-0 sm:border-r")}>
+      <p className="text-[18px] font-semibold leading-none tabular-nums text-foreground">{value}</p>
+      <p className="mt-1 text-[10.5px] font-medium uppercase tracking-[0.1em] text-muted-foreground">{label}</p>
     </div>
   )
 }

@@ -12,6 +12,11 @@ use crate::{
         RunDoctorReportRequestDto, RuntimeAuthPhase,
     },
     db::project_store::{self, RuntimeRunStatus, RuntimeRunTransportLiveness},
+    environment::service as environment_service,
+    global_db::environment_profile::{
+        EnvironmentCapabilityState, EnvironmentDiagnostic, EnvironmentDiagnosticSeverity,
+        EnvironmentProfileStatus, EnvironmentProfileSummary,
+    },
     mcp::{McpConnectionStatus, McpRegistry},
     notifications::{FileNotificationCredentialStore, NotificationRouteKind},
     provider_models::load_provider_model_catalog,
@@ -38,6 +43,7 @@ pub fn run_doctor_report<R: Runtime>(
     let mut checks = DoctorCheckBuckets::default();
 
     collect_app_path_checks(&app, state.inner(), &mut checks.settings_dependency_checks);
+    collect_environment_profile_checks(&app, state.inner(), &mut checks.settings_dependency_checks);
     collect_dictation_checks(&app, state.inner(), &mut checks.dictation_checks);
     collect_provider_checks(&app, state.inner(), mode, &mut checks);
     collect_mcp_checks(&app, state.inner(), &mut checks.mcp_dependency_checks);
@@ -1274,6 +1280,224 @@ fn collect_app_path_checks<R: Runtime>(
         "provider model catalog cache",
         state.global_db_path(app),
         PathExpectation::OptionalFile,
+    );
+}
+
+fn collect_environment_profile_checks<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    checks: &mut Vec<XeroDiagnosticCheck>,
+) {
+    let database_path = match state.global_db_path(app) {
+        Ok(path) => path,
+        Err(error) => {
+            push_check(
+                checks,
+                command_error_check(
+                    XeroDiagnosticSubject::SettingsDependency,
+                    "environment_profile_path_unavailable",
+                    "Xero could not resolve the global environment profile path.",
+                    error,
+                    "Repair app-data directory permissions, then run diagnostics again.",
+                ),
+            );
+            return;
+        }
+    };
+
+    let status = match environment_service::environment_discovery_status(&database_path) {
+        Ok(status) => status,
+        Err(error) => {
+            push_check(
+                checks,
+                command_error_check(
+                    XeroDiagnosticSubject::SettingsDependency,
+                    "environment_profile_status_unavailable",
+                    "Xero could not load environment profile status.",
+                    error,
+                    "Refresh environment discovery from Settings, then run diagnostics again.",
+                ),
+            );
+            return;
+        }
+    };
+
+    let summary = match environment_service::environment_profile_summary(&database_path) {
+        Ok(summary) => summary,
+        Err(error) => {
+            push_check(
+                checks,
+                command_error_check(
+                    XeroDiagnosticSubject::SettingsDependency,
+                    "environment_profile_summary_unavailable",
+                    "Xero could not decode the saved environment profile summary.",
+                    error,
+                    "Refresh environment discovery from Settings, then run diagnostics again.",
+                ),
+            );
+            return;
+        }
+    };
+
+    let Some(summary) = summary else {
+        push_check(
+            checks,
+            XeroDiagnosticCheck::skipped(
+                XeroDiagnosticSubject::SettingsDependency,
+                "environment_profile_missing",
+                "No developer environment profile has been recorded yet.",
+                Some("Open onboarding or refresh environment discovery from Settings.".into()),
+            ),
+        );
+        return;
+    };
+
+    push_environment_summary_check(checks, &summary, status.stale);
+    if status.stale {
+        push_check(
+            checks,
+            XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::SettingsDependency,
+                status: XeroDiagnosticStatus::Warning,
+                severity: XeroDiagnosticSeverity::Warning,
+                retryable: true,
+                code: "environment_profile_stale".into(),
+                message: "The developer environment profile is stale.".into(),
+                affected_profile_id: None,
+                affected_provider_id: None,
+                endpoint: None,
+                remediation: Some("Refresh environment discovery from Settings.".into()),
+            }),
+        );
+    }
+
+    for diagnostic in &status.diagnostics {
+        push_environment_diagnostic_check(checks, diagnostic);
+    }
+}
+
+fn push_environment_summary_check(
+    checks: &mut Vec<XeroDiagnosticCheck>,
+    summary: &EnvironmentProfileSummary,
+    stale: bool,
+) {
+    let present_tools = summary.tools.iter().filter(|tool| tool.present).count();
+    let ready_capabilities = summary
+        .capabilities
+        .iter()
+        .filter(|capability| capability.state == EnvironmentCapabilityState::Ready)
+        .count();
+    let important_missing = summary
+        .capabilities
+        .iter()
+        .filter(|capability| {
+            matches!(
+                capability.state,
+                EnvironmentCapabilityState::Missing
+                    | EnvironmentCapabilityState::Partial
+                    | EnvironmentCapabilityState::Blocked
+            )
+        })
+        .take(3)
+        .map(|capability| capability.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let (status, severity, retryable, code, remediation) = match summary.status {
+        EnvironmentProfileStatus::Ready if !stale => (
+            XeroDiagnosticStatus::Passed,
+            XeroDiagnosticSeverity::Info,
+            false,
+            "environment_profile_ready",
+            None,
+        ),
+        EnvironmentProfileStatus::Ready | EnvironmentProfileStatus::Partial => (
+            XeroDiagnosticStatus::Warning,
+            XeroDiagnosticSeverity::Warning,
+            true,
+            "environment_profile_partial_or_stale",
+            Some("Refresh environment discovery from Settings.".to_string()),
+        ),
+        EnvironmentProfileStatus::Pending | EnvironmentProfileStatus::Probing => (
+            XeroDiagnosticStatus::Skipped,
+            XeroDiagnosticSeverity::Info,
+            false,
+            "environment_profile_probe_in_progress",
+            Some("Run diagnostics again after environment discovery completes.".to_string()),
+        ),
+        EnvironmentProfileStatus::Failed => (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            true,
+            "environment_profile_failed",
+            Some("Refresh environment discovery from Settings.".to_string()),
+        ),
+    };
+
+    let mut message = format!(
+        "Developer environment profile `{}` includes {present_tools} present tool(s) and {ready_capabilities} ready capability fact(s).",
+        summary.status.as_str()
+    );
+    if !important_missing.is_empty() {
+        message.push_str(&format!(" Attention needed: {important_missing}."));
+    }
+
+    push_check(
+        checks,
+        XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::SettingsDependency,
+            status,
+            severity,
+            retryable,
+            code: code.into(),
+            message,
+            affected_profile_id: None,
+            affected_provider_id: None,
+            endpoint: None,
+            remediation,
+        }),
+    );
+}
+
+fn push_environment_diagnostic_check(
+    checks: &mut Vec<XeroDiagnosticCheck>,
+    diagnostic: &EnvironmentDiagnostic,
+) {
+    let (status, severity, remediation) = match diagnostic.severity {
+        EnvironmentDiagnosticSeverity::Info => (
+            XeroDiagnosticStatus::Skipped,
+            XeroDiagnosticSeverity::Info,
+            None,
+        ),
+        EnvironmentDiagnosticSeverity::Warning => (
+            XeroDiagnosticStatus::Warning,
+            XeroDiagnosticSeverity::Warning,
+            Some("Refresh environment discovery after changing local developer tools.".to_string()),
+        ),
+        EnvironmentDiagnosticSeverity::Error => (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            Some(
+                "Repair the local tool or app-data state, then refresh environment discovery."
+                    .to_string(),
+            ),
+        ),
+    };
+
+    push_check(
+        checks,
+        XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::SettingsDependency,
+            status,
+            severity,
+            retryable: diagnostic.retryable,
+            code: format!("environment_{}", diagnostic.code),
+            message: diagnostic.message.clone(),
+            affected_profile_id: None,
+            affected_provider_id: None,
+            endpoint: None,
+            remediation,
+        }),
     );
 }
 

@@ -90,7 +90,10 @@ pub use emulator::{
     emulator_list_devices, emulator_rotate, emulator_sdk_status, emulator_start, emulator_stop,
     emulator_subscribe_ready, EmulatorState,
 };
-pub use environment_discovery::{get_environment_discovery_status, start_environment_discovery};
+pub use environment_discovery::{
+    get_environment_discovery_status, get_environment_profile_summary,
+    refresh_environment_discovery, start_environment_discovery,
+};
 pub use get_autonomous_run::get_autonomous_run;
 pub use get_project_snapshot::get_project_snapshot;
 pub use get_repository_diff::get_repository_diff;

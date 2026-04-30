@@ -39,7 +39,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime, State};
 
-use crate::commands::{CommandError, CommandResult};
+use crate::{
+    commands::{CommandError, CommandResult},
+    environment::service as environment_service,
+    state::DesktopState,
+};
 
 pub use audit::{
     coverage::{
@@ -782,9 +786,16 @@ pub fn solana_toolchain_install_status<R: Runtime>(
 #[tauri::command]
 pub fn solana_toolchain_install<R: Runtime>(
     app: AppHandle<R>,
+    state: State<'_, DesktopState>,
     request: ToolchainInstallRequest,
 ) -> CommandResult<ToolchainInstallStatus> {
-    toolchain::install(&app, request)
+    let status = toolchain::install(&app, request)?;
+    if let Ok(database_path) = state.global_db_path(&app) {
+        if let Err(error) = environment_service::refresh_environment_discovery(database_path) {
+            eprintln!("[environment] refresh after Solana toolchain install failed: {error}");
+        }
+    }
+    Ok(status)
 }
 
 #[tauri::command]

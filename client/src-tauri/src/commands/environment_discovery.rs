@@ -3,6 +3,7 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     commands::{CommandResult, EnvironmentDiscoveryStatus},
     environment::service,
+    global_db::environment_profile::EnvironmentProfileSummary,
     state::DesktopState,
 };
 
@@ -20,4 +21,20 @@ pub fn start_environment_discovery<R: Runtime>(
     state: State<'_, DesktopState>,
 ) -> CommandResult<EnvironmentDiscoveryStatus> {
     service::start_environment_discovery(state.global_db_path(&app)?)
+}
+
+#[tauri::command]
+pub fn refresh_environment_discovery<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+) -> CommandResult<EnvironmentDiscoveryStatus> {
+    service::refresh_environment_discovery(state.global_db_path(&app)?)
+}
+
+#[tauri::command]
+pub fn get_environment_profile_summary<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+) -> CommandResult<Option<EnvironmentProfileSummary>> {
+    service::environment_profile_summary(&state.global_db_path(&app)?)
 }

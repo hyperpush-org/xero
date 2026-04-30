@@ -314,6 +314,8 @@ import {
 import {
   environmentDiscoveryStatusSchema,
   type EnvironmentDiscoveryStatusDto,
+  environmentProfileSummarySchema,
+  type EnvironmentProfileSummaryDto,
 } from '@/src/lib/xero-model/environment'
 
 const COMMANDS = {
@@ -451,6 +453,8 @@ const COMMANDS = {
   browserTabFocus: 'browser_tab_focus',
   browserTabClose: 'browser_tab_close',
   getEnvironmentDiscoveryStatus: 'get_environment_discovery_status',
+  getEnvironmentProfileSummary: 'get_environment_profile_summary',
+  refreshEnvironmentDiscovery: 'refresh_environment_discovery',
   startEnvironmentDiscovery: 'start_environment_discovery',
 } as const
 
@@ -765,6 +769,8 @@ export interface XeroDesktopAdapter {
   submitNotificationReply(request: SubmitNotificationReplyRequestDto): Promise<SubmitNotificationReplyResponseDto>
   syncNotificationAdapters(projectId: string): Promise<SyncNotificationAdaptersResponseDto>
   getEnvironmentDiscoveryStatus?(): Promise<EnvironmentDiscoveryStatusDto>
+  getEnvironmentProfileSummary?(): Promise<EnvironmentProfileSummaryDto>
+  refreshEnvironmentDiscovery?(): Promise<EnvironmentDiscoveryStatusDto>
   startEnvironmentDiscovery?(): Promise<EnvironmentDiscoveryStatusDto>
   speechDictationStatus?(): Promise<DictationStatusDto>
   speechDictationSettings?(): Promise<DictationSettingsDto>
@@ -2015,6 +2021,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
 
   getEnvironmentDiscoveryStatus() {
     return invokeTyped(COMMANDS.getEnvironmentDiscoveryStatus, environmentDiscoveryStatusSchema)
+  },
+
+  getEnvironmentProfileSummary() {
+    return invokeTyped(COMMANDS.getEnvironmentProfileSummary, environmentProfileSummarySchema)
+  },
+
+  refreshEnvironmentDiscovery() {
+    return invokeTyped(COMMANDS.refreshEnvironmentDiscovery, environmentDiscoveryStatusSchema)
   },
 
   startEnvironmentDiscovery() {

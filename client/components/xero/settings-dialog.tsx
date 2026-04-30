@@ -14,6 +14,8 @@ import type {
 } from "@/src/features/xero/use-xero-desktop-state"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
 import type {
+  EnvironmentDiscoveryStatusDto,
+  EnvironmentProfileSummaryDto,
   ImportMcpServersResponseDto,
   XeroDoctorReportDto,
   McpImportDiagnosticDto,
@@ -152,6 +154,9 @@ export interface SettingsDialogProps {
   doctorReport?: XeroDoctorReportDto | null
   doctorReportStatus?: DoctorReportRunStatus
   doctorReportError?: OperatorActionErrorView | null
+  environmentDiscoveryStatus?: EnvironmentDiscoveryStatusDto | null
+  environmentProfileSummary?: EnvironmentProfileSummaryDto
+  onRefreshEnvironmentDiscovery?: (options?: { force?: boolean }) => Promise<EnvironmentDiscoveryStatusDto | null>
   onRunDoctorReport?: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
   dictationAdapter?: DictationSettingsAdapter
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
@@ -212,6 +217,9 @@ export function SettingsDialog({
   doctorReport = null,
   doctorReportStatus = "idle",
   doctorReportError = null,
+  environmentDiscoveryStatus = null,
+  environmentProfileSummary = null,
+  onRefreshEnvironmentDiscovery,
   onRunDoctorReport,
   dictationAdapter,
   onUpsertNotificationRoute,
@@ -257,6 +265,7 @@ export function SettingsDialog({
   const [section, setSection] = useState<SettingsSection>("providers")
   const refreshOnOpenCallbacksRef = useRef({
     providerCredentials: onRefreshProviderCredentials,
+    environment: onRefreshEnvironmentDiscovery,
     mcpRegistry: onRefreshMcpRegistry,
     skillRegistry: onRefreshSkillRegistry,
   })
@@ -268,19 +277,21 @@ export function SettingsDialog({
   useEffect(() => {
     refreshOnOpenCallbacksRef.current = {
       providerCredentials: onRefreshProviderCredentials,
+      environment: onRefreshEnvironmentDiscovery,
       mcpRegistry: onRefreshMcpRegistry,
       skillRegistry: onRefreshSkillRegistry,
     }
-  }, [onRefreshMcpRegistry, onRefreshProviderCredentials, onRefreshSkillRegistry])
+  }, [onRefreshEnvironmentDiscovery, onRefreshMcpRegistry, onRefreshProviderCredentials, onRefreshSkillRegistry])
 
   useEffect(() => {
     if (!open) {
       return
     }
 
-    const { providerCredentials, mcpRegistry, skillRegistry } = refreshOnOpenCallbacksRef.current
+    const { providerCredentials, environment, mcpRegistry, skillRegistry } = refreshOnOpenCallbacksRef.current
 
     void providerCredentials?.({ force: true }).catch(() => undefined)
+    void environment?.().catch(() => undefined)
     void mcpRegistry?.({ force: true }).catch(() => undefined)
     void skillRegistry?.({ force: true }).catch(() => undefined)
   }, [open])
@@ -380,6 +391,9 @@ export function SettingsDialog({
                   doctorReport={doctorReport}
                   doctorReportStatus={doctorReportStatus}
                   doctorReportError={doctorReportError}
+                  environmentDiscoveryStatus={environmentDiscoveryStatus}
+                  environmentProfileSummary={environmentProfileSummary}
+                  onRefreshEnvironmentDiscovery={onRefreshEnvironmentDiscovery}
                   onRunDoctorReport={onRunDoctorReport}
                 />
               ) : section === "dictation" ? (

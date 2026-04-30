@@ -28,7 +28,10 @@ import type {
 } from '@/src/lib/xero-model/session-context'
 import { type RepositoryDiffScope } from '@/src/lib/xero-model/project'
 import { summarizeProjectUsageSpend } from '@/src/lib/xero-model/usage'
-import type { EnvironmentDiscoveryStatusDto } from '@/src/lib/xero-model/environment'
+import type {
+  EnvironmentDiscoveryStatusDto,
+  EnvironmentProfileSummaryDto,
+} from '@/src/lib/xero-model/environment'
 import { useXeroDesktopState, type AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
@@ -236,6 +239,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [usageOpen, setUsageOpen] = useState(false)
   const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
     useState<EnvironmentDiscoveryStatusDto | null>(null)
+  const [environmentProfileSummary, setEnvironmentProfileSummary] =
+    useState<EnvironmentProfileSummaryDto>(null)
   const environmentDiscoveryStartedRef = useRef(false)
 
   useEffect(() => {
@@ -246,6 +251,37 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSettingsInitialSection(section)
     setSettingsOpen(true)
   }
+
+  const refreshEnvironmentDiscovery = useCallback(
+    async (options: { force?: boolean } = {}) => {
+      if (!resolvedAdapter.getEnvironmentDiscoveryStatus) {
+        return null
+      }
+
+      let status =
+        options.force && resolvedAdapter.refreshEnvironmentDiscovery
+          ? await resolvedAdapter.refreshEnvironmentDiscovery()
+          : options.force && resolvedAdapter.startEnvironmentDiscovery
+            ? await resolvedAdapter.startEnvironmentDiscovery()
+            : await resolvedAdapter.getEnvironmentDiscoveryStatus()
+
+      if (
+        !options.force &&
+        status.shouldStart &&
+        resolvedAdapter.startEnvironmentDiscovery
+      ) {
+        status = await resolvedAdapter.startEnvironmentDiscovery()
+      }
+
+      setEnvironmentDiscoveryStatus(status)
+      if (resolvedAdapter.getEnvironmentProfileSummary) {
+        const summary = await resolvedAdapter.getEnvironmentProfileSummary()
+        setEnvironmentProfileSummary(summary)
+      }
+      return status
+    },
+    [resolvedAdapter],
+  )
 
   const toggleGames = () => {
     setGamesOpen((current) => {
@@ -688,31 +724,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
     let cancelled = false
     environmentDiscoveryStartedRef.current = true
 
-    const refreshEnvironmentDiscovery = async () => {
+    const startEnvironmentDiscovery = async () => {
       try {
-        const status = await resolvedAdapter.getEnvironmentDiscoveryStatus?.()
-        if (!status || cancelled) {
-          return
-        }
-        setEnvironmentDiscoveryStatus(status)
-
-        if (status.shouldStart && resolvedAdapter.startEnvironmentDiscovery) {
-          const startedStatus = await resolvedAdapter.startEnvironmentDiscovery()
-          if (!cancelled) {
-            setEnvironmentDiscoveryStatus(startedStatus)
-          }
-        }
+        const status = await refreshEnvironmentDiscovery()
+        if (cancelled || !status) return
       } catch {
         // Onboarding remains non-blocking; diagnostics can surface discovery failures later.
       }
     }
 
-    void refreshEnvironmentDiscovery()
+    void startEnvironmentDiscovery()
 
     return () => {
       cancelled = true
     }
-  }, [resolvedAdapter, showOnboarding])
+  }, [refreshEnvironmentDiscovery, resolvedAdapter.getEnvironmentDiscoveryStatus, showOnboarding])
 
   if (showOnboarding) {
     return (
@@ -904,6 +930,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
         doctorReport={doctorReport}
         doctorReportStatus={doctorReportStatus}
         doctorReportError={doctorReportError}
+        environmentDiscoveryStatus={environmentDiscoveryStatus}
+        environmentProfileSummary={environmentProfileSummary}
+        onRefreshEnvironmentDiscovery={(options) => refreshEnvironmentDiscovery(options)}
         onRunDoctorReport={(request) => runDoctorReport(request)}
         dictationAdapter={resolvedAdapter}
         onUpsertNotificationRoute={(request) =>

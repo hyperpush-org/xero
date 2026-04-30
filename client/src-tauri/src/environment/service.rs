@@ -77,13 +77,26 @@ pub fn environment_profile_summary(
 pub fn start_environment_discovery(
     database_path: PathBuf,
 ) -> CommandResult<EnvironmentDiscoveryStatus> {
+    start_environment_discovery_with_policy(database_path, false)
+}
+
+pub fn refresh_environment_discovery(
+    database_path: PathBuf,
+) -> CommandResult<EnvironmentDiscoveryStatus> {
+    start_environment_discovery_with_policy(database_path, true)
+}
+
+fn start_environment_discovery_with_policy(
+    database_path: PathBuf,
+    force: bool,
+) -> CommandResult<EnvironmentDiscoveryStatus> {
     if !mark_discovery_active(&database_path) {
         return environment_discovery_status(&database_path);
     }
 
     let mut connection = open_global_database(&database_path)?;
     let current = load_environment_profile_row(&connection)?;
-    if !status_from_row(current.as_ref(), false).should_start {
+    if !force && !status_from_row(current.as_ref(), false).should_start {
         unmark_discovery_active(&database_path);
         return Ok(status_from_row(current.as_ref(), false));
     }
