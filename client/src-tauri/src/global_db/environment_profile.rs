@@ -548,7 +548,7 @@ fn validate_tools_summary(
             join_field(&base, "displayPath"),
         )?;
         if let Some(display_path) = &tool.display_path {
-            if display_path.starts_with('/') {
+            if looks_like_absolute_path(display_path) {
                 return Err(EnvironmentProfileValidationError::invalid(
                     join_field(&base, "displayPath"),
                     "summary tool paths must be redacted or display-only, not absolute paths",
@@ -667,6 +667,14 @@ fn reject_secret_like_json_strings(
         JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
     }
     Ok(())
+}
+
+fn looks_like_absolute_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("\\\\")
+        || value.as_bytes().get(0..3).is_some_and(|prefix| {
+            prefix[0].is_ascii_alphabetic() && prefix[1] == b':' && prefix[2] == b'\\'
+        })
 }
 
 fn join_field(base: &str, child: &str) -> String {
@@ -800,6 +808,11 @@ mod tests {
         let mut summary = sample_summary();
         summary.tools[0].display_path = Some("/Users/alice/.local/bin/node".into());
         let error = validate_environment_summary(&summary).expect_err("absolute path is rejected");
+        assert_eq!(error.field, "summary.tools[0].displayPath");
+
+        summary.tools[0].display_path = Some(r"C:\Users\alice\.local\bin\node.exe".into());
+        let error =
+            validate_environment_summary(&summary).expect_err("Windows absolute path is rejected");
         assert_eq!(error.field, "summary.tools[0].displayPath");
     }
 

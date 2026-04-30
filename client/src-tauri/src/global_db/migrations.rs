@@ -13,10 +13,36 @@ pub fn migrations() -> &'static Migrations<'static> {
         Migrations::new(vec![
             M::up(INITIAL_SCHEMA_SQL),
             M::up(BROWSER_CONTROL_SETTINGS_SQL),
+            M::up(ENVIRONMENT_PROFILE_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const ENVIRONMENT_PROFILE_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS environment_profile (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'probing', 'ready', 'partial', 'failed')),
+        os_kind TEXT NOT NULL CHECK (os_kind <> ''),
+        os_version TEXT,
+        arch TEXT NOT NULL CHECK (arch <> ''),
+        default_shell TEXT,
+        path_fingerprint TEXT,
+        payload_json TEXT NOT NULL CHECK (payload_json <> '' AND json_valid(payload_json)),
+        summary_json TEXT NOT NULL CHECK (summary_json <> '' AND json_valid(summary_json)),
+        permission_requests_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(permission_requests_json)),
+        diagnostics_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(diagnostics_json)),
+        probe_started_at TEXT,
+        probe_completed_at TEXT,
+        refreshed_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_environment_profile_refreshed_at
+        ON environment_profile(refreshed_at);
+"#;
 
 const BROWSER_CONTROL_SETTINGS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS browser_control_settings (

@@ -9,6 +9,7 @@ use rusqlite_migration::{Error as MigrationError, MigrationDefinitionError};
 
 use crate::commands::CommandError;
 
+pub mod environment_profile;
 pub mod migrations;
 pub mod permissions;
 
@@ -207,6 +208,7 @@ mod tests {
             "skill_sources",
             "mcp_registry",
             "provider_model_catalog_cache",
+            "environment_profile",
             "projects",
             "repositories",
         ];
@@ -242,6 +244,87 @@ mod tests {
                 "legacy table `{table}` should be absent from the fresh baseline"
             );
         }
+    }
+
+    #[test]
+    fn environment_profile_migration_enforces_contract() {
+        let connection = migrate_in_memory();
+
+        let index_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_environment_profile_refreshed_at'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count environment profile index");
+        assert_eq!(
+            index_count, 1,
+            "environment profile refresh index should exist"
+        );
+
+        let payload_json = r#"{
+            "schemaVersion": 1,
+            "platform": {
+                "osKind": "macos",
+                "osVersion": "15.4",
+                "arch": "aarch64",
+                "defaultShell": "zsh"
+            },
+            "path": {
+                "entryCount": 2,
+                "fingerprint": "sha256-demo",
+                "sources": ["tauri-process-path", "common-dev-dirs"]
+            },
+            "tools": [],
+            "capabilities": [],
+            "permissions": [],
+            "diagnostics": []
+        }"#;
+        let summary_json = r#"{
+            "schemaVersion": 1,
+            "status": "ready",
+            "platform": {
+                "osKind": "macos",
+                "osVersion": "15.4",
+                "arch": "aarch64",
+                "defaultShell": "zsh"
+            },
+            "refreshedAt": "2026-04-30T12:00:00Z",
+            "tools": [],
+            "capabilities": [],
+            "permissionRequests": [],
+            "diagnostics": []
+        }"#;
+
+        connection
+            .execute(
+                "INSERT INTO environment_profile (
+                    id, schema_version, status, os_kind, os_version, arch, default_shell,
+                    path_fingerprint, payload_json, summary_json, refreshed_at
+                ) VALUES (1, 1, 'ready', 'macos', '15.4', 'aarch64', 'zsh',
+                    'sha256-demo', ?1, ?2, '2026-04-30T12:00:00Z'
+                )",
+                rusqlite::params![payload_json, summary_json],
+            )
+            .expect("valid environment profile row inserts");
+
+        let invalid_status = connection.execute(
+            "UPDATE environment_profile SET status = 'complete' WHERE id = 1",
+            [],
+        );
+        assert!(
+            invalid_status.is_err(),
+            "environment profile status should be constrained"
+        );
+
+        let invalid_json = connection.execute(
+            "UPDATE environment_profile SET payload_json = 'not json' WHERE id = 1",
+            [],
+        );
+        assert!(
+            invalid_json.is_err(),
+            "environment profile payload should require valid JSON"
+        );
     }
 
     #[test]
