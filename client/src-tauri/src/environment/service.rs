@@ -57,6 +57,23 @@ pub fn environment_discovery_status(
     ))
 }
 
+pub fn environment_profile_summary(
+    database_path: &Path,
+) -> CommandResult<Option<EnvironmentProfileSummary>> {
+    let connection = open_global_database(database_path)?;
+    let Some(row) = load_environment_profile_row(&connection)? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&row.summary_json)
+        .map(Some)
+        .map_err(|error| {
+            CommandError::system_fault(
+                "environment_profile_summary_decode_failed",
+                format!("Xero could not decode the environment profile summary: {error}"),
+            )
+        })
+}
+
 pub fn start_environment_discovery(
     database_path: PathBuf,
 ) -> CommandResult<EnvironmentDiscoveryStatus> {

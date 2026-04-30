@@ -962,6 +962,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:tool_search ") => {
                 names.insert(AUTONOMOUS_TOOL_TOOL_SEARCH.into());
             }
+            line if line.starts_with("tool:environment_context ") => {
+                names.insert(AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT.into());
+            }
             line if line.starts_with("tool:skill_") => {
                 names.insert(AUTONOMOUS_TOOL_SKILL.into());
             }
@@ -1110,7 +1113,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, and skills.",
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -1537,6 +1540,56 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &[
                     ("query", string_schema("Tool capability query.")),
                     ("limit", integer_schema("Maximum result count.")),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            "Read compact, redacted developer-environment facts only after the model explicitly asks for them.",
+            object_schema(
+                &["action"],
+                &[
+                    (
+                        "action",
+                        enum_schema(
+                            "Environment context action.",
+                            &["summary", "tool", "category", "capability", "refresh"],
+                        ),
+                    ),
+                    (
+                        "toolIds",
+                        json!({
+                            "type": "array",
+                            "description": "Tool IDs to inspect when action=tool, such as node, python3, cargo, protoc, docker, solana, or anchor.",
+                            "items": { "type": "string" }
+                        }),
+                    ),
+                    (
+                        "category",
+                        enum_schema(
+                            "Tool category to inspect when action=category.",
+                            &[
+                                "base_developer_tool",
+                                "package_manager",
+                                "platform_package_manager",
+                                "language_runtime",
+                                "container_orchestration",
+                                "mobile_tooling",
+                                "cloud_deployment",
+                                "database_cli",
+                                "solana_tooling",
+                                "agent_ai_cli",
+                            ],
+                        ),
+                    ),
+                    (
+                        "capabilityIds",
+                        json!({
+                            "type": "array",
+                            "description": "Capability IDs to inspect when action=capability, such as tauri_desktop_build or protobuf_build_ready.",
+                            "items": { "type": "string" }
+                        }),
+                    ),
                 ],
             ),
         ),
@@ -2602,5 +2655,26 @@ mod tests {
         }
         assert!(!names.contains(AUTONOMOUS_TOOL_WRITE));
         assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND));
+        assert!(!names.contains(AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT));
+    }
+
+    #[test]
+    fn prompt_compiler_does_not_include_environment_facts_by_default() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls = runtime_controls_from_request(None);
+        let registry = ToolRegistry::for_prompt(root.path(), "Diagnose my setup.", &controls);
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .compile()
+        .expect("compile prompt");
+
+        assert!(!compilation.prompt.contains("environment_context"));
+        assert!(!compilation.prompt.contains("protoc"));
+        assert!(!compilation.prompt.contains("node_project_ready"));
     }
 }

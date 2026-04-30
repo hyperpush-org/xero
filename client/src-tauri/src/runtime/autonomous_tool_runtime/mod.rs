@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod emulator;
+mod environment_context;
 mod filesystem;
 mod git;
 mod macos_automation;
@@ -51,6 +52,10 @@ pub use browser::{
 pub use emulator::{
     AutonomousEmulatorAction, AutonomousEmulatorOutput, AutonomousEmulatorRequest,
     EmulatorExecutor, UnavailableEmulatorExecutor, AUTONOMOUS_TOOL_EMULATOR,
+};
+pub use environment_context::{
+    AutonomousEnvironmentContextAction, AutonomousEnvironmentContextOutput,
+    AutonomousEnvironmentContextRequest,
 };
 pub use repo_scope::{resolve_imported_repo_root, resolve_imported_repo_root_from_registry};
 pub use solana::{
@@ -107,6 +112,7 @@ pub const AUTONOMOUS_TOOL_CODE_INTEL: &str = "code_intel";
 pub const AUTONOMOUS_TOOL_LSP: &str = "lsp";
 pub const AUTONOMOUS_TOOL_POWERSHELL: &str = "powershell";
 pub const AUTONOMOUS_TOOL_TOOL_SEARCH: &str = "tool_search";
+pub const AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT: &str = "environment_context";
 pub const AUTONOMOUS_TOOL_SKILL: &str = "skill";
 pub const AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX: &str = "mcp__";
 
@@ -204,6 +210,7 @@ const TOOL_ACCESS_MCP_INVOKE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MCP];
 const TOOL_ACCESS_INTELLIGENCE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP];
 const TOOL_ACCESS_NOTEBOOK_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_NOTEBOOK_EDIT];
 const TOOL_ACCESS_POWERSHELL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_POWERSHELL];
+const TOOL_ACCESS_ENVIRONMENT_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT];
 const TOOL_ACCESS_SKILL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SKILL];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +366,12 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         risk_class: "command",
     },
     ToolAccessGroupDefinition {
+        name: "environment",
+        description: "Read the redacted developer environment profile from app-global state.",
+        tools: TOOL_ACCESS_ENVIRONMENT_TOOLS,
+        risk_class: "observe",
+    },
+    ToolAccessGroupDefinition {
         name: "skills",
         description: "Discover, load, install, invoke, reload, and create Xero skills.",
         tools: TOOL_ACCESS_SKILL_TOOLS,
@@ -492,6 +505,32 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &["tool", "search", "discovery", "catalog", "bm25", "capability"],
             &["query", "limit"],
             &["Search for address lookup table tools.", "Find the smallest browser observation capability."],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            "environment",
+            "Read compact, redacted developer-environment facts from the app-global environment profile.",
+            &[
+                "environment",
+                "installed tools",
+                "cli",
+                "package manager",
+                "language runtime",
+                "PATH",
+                "protoc",
+                "node",
+                "rust",
+                "python",
+                "solana",
+                "docker",
+                "mobile",
+            ],
+            &["action", "toolIds", "category", "capabilityIds"],
+            &[
+                "Get a summary before diagnosing command not found.",
+                "Check whether protoc, node, rust, or solana tooling is present.",
+            ],
             "observe",
         ),
         catalog_entry(
@@ -1016,6 +1055,7 @@ pub struct AutonomousToolRuntime {
     pub(super) solana_executor: Option<Arc<dyn SolanaExecutor>>,
     pub(super) cancellation_token: Option<AgentRunCancellationToken>,
     pub(super) mcp_registry_path: Option<PathBuf>,
+    pub(super) environment_profile_database_path: Option<PathBuf>,
     pub(super) todo_items: Arc<Mutex<BTreeMap<String, AutonomousTodoItem>>>,
     pub(super) subagent_tasks: Arc<Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
     pub(super) subagent_executor: Option<Arc<dyn AutonomousSubagentExecutor>>,
@@ -1117,6 +1157,7 @@ impl AutonomousToolRuntime {
             solana_executor: None,
             cancellation_token: None,
             mcp_registry_path: None,
+            environment_profile_database_path: None,
             todo_items: Arc::new(Mutex::new(BTreeMap::new())),
             subagent_tasks: Arc::new(Mutex::new(BTreeMap::new())),
             subagent_executor: None,
@@ -1216,6 +1257,7 @@ impl AutonomousToolRuntime {
         .with_browser_executor(browser_executor)
         .with_emulator_executor(emulator::tauri_emulator_executor(app.clone()))
         .with_mcp_registry_path(state.global_db_path(app)?)
+        .with_environment_profile_database_path(state.global_db_path(app)?)
         .with_skill_tool_config(
             project_id.to_owned(),
             skill_runtime,
@@ -1260,6 +1302,11 @@ impl AutonomousToolRuntime {
 
     pub fn with_mcp_registry_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.mcp_registry_path = Some(path.into());
+        self
+    }
+
+    pub fn with_environment_profile_database_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.environment_profile_database_path = Some(path.into());
         self
     }
 
@@ -1399,6 +1446,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::Lsp(request) => self.lsp(request),
             AutonomousToolRequest::PowerShell(request) => self.powershell(request),
             AutonomousToolRequest::ToolSearch(request) => self.tool_search(request),
+            AutonomousToolRequest::EnvironmentContext(request) => self.environment_context(request),
             AutonomousToolRequest::Skill(request) => self.skill(request),
             AutonomousToolRequest::Browser(request) => self.browser(request),
             AutonomousToolRequest::Emulator(request) => self.emulator(request),
@@ -1764,6 +1812,7 @@ pub enum AutonomousToolRequest {
     #[serde(rename = "powershell")]
     PowerShell(AutonomousPowerShellRequest),
     ToolSearch(AutonomousToolSearchRequest),
+    EnvironmentContext(AutonomousEnvironmentContextRequest),
     Skill(XeroSkillToolInput),
     Browser(AutonomousBrowserRequest),
     Emulator(AutonomousEmulatorRequest),
@@ -2461,6 +2510,7 @@ pub enum AutonomousToolOutput {
     CodeIntel(AutonomousCodeIntelOutput),
     Lsp(AutonomousLspOutput),
     ToolSearch(AutonomousToolSearchOutput),
+    EnvironmentContext(AutonomousEnvironmentContextOutput),
     Skill(AutonomousSkillToolOutput),
     Browser(AutonomousBrowserOutput),
     Emulator(AutonomousEmulatorOutput),

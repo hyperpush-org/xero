@@ -282,6 +282,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "web_fetch",
         "browser",
         "emulator",
+        "environment_context",
         "solana_cluster",
         "solana_logs",
         "solana_tx",
