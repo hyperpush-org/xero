@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Toggle } from '@/components/ui/toggle'
 import type { AgentSessionView } from '@/src/lib/xero-model'
 import type { SessionTranscriptSearchResultSnippetDto } from '@/src/lib/xero-model/session-context'
 
@@ -157,6 +158,7 @@ export function AgentSessionsSidebar({
   const [width, setWidth] = useState(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SessionTranscriptSearchResultSnippetDto[]>([])
   const [searchStatus, setSearchStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -168,6 +170,7 @@ export function AgentSessionsSidebar({
   const targetWidth = collapsed ? 0 : width
   const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const widthRef = useRef(width)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   widthRef.current = width
 
   useEffect(() => {
@@ -190,6 +193,12 @@ export function AgentSessionsSidebar({
   }, [width])
 
   useEffect(() => {
+    if (!searchOpen) {
+      setSearchResults([])
+      setSearchStatus('idle')
+      setSearchError(null)
+      return
+    }
     if (!onSearchSessions) return
     const query = searchQuery.trim()
     if (query.length < 2) {
@@ -221,7 +230,15 @@ export function AgentSessionsSidebar({
       cancelled = true
       window.clearTimeout(timeout)
     }
-  }, [onSearchSessions, searchQuery])
+  }, [onSearchSessions, searchOpen, searchQuery])
+
+  useEffect(() => {
+    if (!searchOpen) {
+      setSearchQuery('')
+      return
+    }
+    searchInputRef.current?.focus()
+  }, [searchOpen])
 
   const handleResizeStart = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (collapsed || event.button !== 0) return
@@ -448,13 +465,29 @@ export function AgentSessionsSidebar({
       ) : null}
 
       <div className="flex h-full shrink-0 flex-col" style={{ width }}>
-        <div className="flex shrink-0 items-start justify-between gap-2 px-3 pt-2.5 pb-2">
+        <div className="flex shrink-0 items-start justify-between gap-2 px-3 pt-2 pb-2">
           <div className="min-w-0">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
               Sessions
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            {onSearchSessions ? (
+              <Toggle
+                aria-controls="agent-session-search-panel"
+                aria-label="Search sessions"
+                className={cn(
+                  'h-6 w-6 min-w-6 p-0 text-muted-foreground transition-colors',
+                  'hover:bg-primary/10 hover:text-primary',
+                  'data-[state=on]:bg-primary/10 data-[state=on]:text-primary',
+                )}
+                onPressedChange={setSearchOpen}
+                pressed={searchOpen}
+                size="sm"
+              >
+                <Search className="h-3.5 w-3.5" />
+              </Toggle>
+            ) : null}
             <button
               aria-label="View archived sessions"
               className={cn(
@@ -498,8 +531,8 @@ export function AgentSessionsSidebar({
           </div>
         </div>
 
-        {onSearchSessions ? (
-          <div className="shrink-0 border-b border-border/60 px-3 pb-2">
+        {onSearchSessions && searchOpen ? (
+          <div id="agent-session-search-panel" className="shrink-0 px-3 pb-2">
             <label className="sr-only" htmlFor="agent-session-search">
               Search sessions
             </label>
@@ -507,6 +540,7 @@ export function AgentSessionsSidebar({
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="agent-session-search"
+                ref={searchInputRef}
                 type="search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
@@ -558,7 +592,7 @@ export function AgentSessionsSidebar({
           </div>
         ) : null}
 
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
+        <div className="flex-1 overflow-y-auto border-t border-border/60 scrollbar-thin">
           {entries.length === 0 ? (
             <div className="px-3 py-5 text-center text-[11px] leading-relaxed text-muted-foreground/80">
               No sessions yet. Start a new chat to begin.
@@ -670,8 +704,6 @@ export function AgentSessionsSidebarItem({
   onRenameSession,
   compact = 'full',
 }: AgentSessionsSidebarItemProps) {
-  const formattedCreatedAt = formatRelativeDate(session.createdAt)
-
   if (compact === 'icon') {
     return (
       <button
@@ -752,43 +784,26 @@ export function AgentSessionsSidebarItem({
     <div className="group relative">
       <button
         className={cn(
-          'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors',
+          'flex w-full items-center rounded-md px-3 py-2 text-left transition-colors',
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
         )}
         onClick={() => onSelectSession(session.agentSessionId)}
         type="button"
       >
-        <div
-          className={cn(
-            'flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-colors',
-            isActive
-              ? 'border-primary/45 bg-primary/15 text-primary'
-              : 'border-border/70 bg-secondary/70 text-muted-foreground group-hover:border-border group-hover:bg-secondary group-hover:text-foreground',
-          )}
-        >
-          <MessageSquare className="h-3 w-3" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1 pr-5">
-            <span
-              className={cn(
-                'truncate text-[12px] font-medium leading-tight',
-                isActive ? 'text-foreground' : 'text-foreground/85 group-hover:text-foreground',
-              )}
-            >
-              {session.title}
-            </span>
-            {isPinned ? (
-              <Pin
-                aria-hidden
-                className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70"
-              />
-            ) : null}
-          </div>
-          {formattedCreatedAt ? (
-            <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-              {formattedCreatedAt}
-            </div>
+        <div className="flex min-w-0 flex-1 items-center gap-1 pr-6">
+          <span
+            className={cn(
+              'truncate text-[12.5px] font-medium leading-tight',
+              isActive ? 'text-foreground' : 'text-foreground/85 group-hover:text-foreground',
+            )}
+          >
+            {session.title}
+          </span>
+          {isPinned ? (
+            <Pin
+              aria-hidden
+              className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70"
+            />
           ) : null}
         </div>
       </button>
@@ -798,7 +813,7 @@ export function AgentSessionsSidebarItem({
           <button
             aria-label={`Session actions for ${session.title}`}
             className={cn(
-              'absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors',
+              'absolute right-1 top-1/2 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors',
               'hover:bg-secondary hover:text-foreground disabled:opacity-50',
               isActive || isPending
                 ? 'opacity-100'
@@ -863,30 +878,4 @@ export function AgentSessionsSidebarItem({
       </DropdownMenu>
     </div>
   )
-}
-
-function formatRelativeDate(isoTimestamp: string): string | null {
-  const parsed = Date.parse(isoTimestamp)
-  if (!Number.isFinite(parsed)) {
-    return null
-  }
-
-  const now = Date.now()
-  const diffSeconds = Math.floor((now - parsed) / 1000)
-
-  if (diffSeconds < 60) return 'Just now'
-  if (diffSeconds < 3600) {
-    const minutes = Math.floor(diffSeconds / 60)
-    return `${minutes}m ago`
-  }
-  if (diffSeconds < 86400) {
-    const hours = Math.floor(diffSeconds / 3600)
-    return `${hours}h ago`
-  }
-  if (diffSeconds < 86400 * 7) {
-    const days = Math.floor(diffSeconds / 86400)
-    return `${days}d ago`
-  }
-
-  return new Date(parsed).toLocaleDateString()
 }

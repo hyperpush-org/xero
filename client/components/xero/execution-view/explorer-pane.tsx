@@ -7,7 +7,8 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
-import { ChevronRight, FilePlus, FolderPlus, RotateCcw, Search, X } from 'lucide-react'
+import { FilePlus, FolderPlus, RotateCcw, Search, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useSidebarWidthMotion } from '@/lib/sidebar-motion'
@@ -40,7 +41,7 @@ interface ExplorerPaneProps {
   onCancelCreate: () => void
   onCreateEntry: (name: string) => Promise<string | null>
   onCopyPath: (path: string) => void
-  onCollapseAll: () => void
+  onOpenFind: () => void
   onReload: () => void
 }
 
@@ -95,7 +96,7 @@ export function ExplorerPane({
   onCancelCreate,
   onCreateEntry,
   onCopyPath,
-  onCollapseAll,
+  onOpenFind,
   onReload,
 }: ExplorerPaneProps) {
   const [width, setWidth] = useState(() => readPersistedWidth() ?? DEFAULT_WIDTH)
@@ -202,8 +203,8 @@ export function ExplorerPane({
           <IconButton label="New folder" onClick={() => onRequestNewFolder('/')}>
             <FolderPlus className="h-3.5 w-3.5" />
           </IconButton>
-          <IconButton label="Collapse all" onClick={onCollapseAll}>
-            <ChevronRight className="h-3.5 w-3.5 rotate-90" />
+          <IconButton label="Open find and replace" onClick={onOpenFind}>
+            <Search className="h-3.5 w-3.5" />
           </IconButton>
           <IconButton label="Reload project" onClick={onReload}>
             <RotateCcw className={cn('h-3.5 w-3.5', isTreeLoading && 'animate-spin')} />
@@ -282,14 +283,16 @@ function IconButton({
   children: ReactNode
 }) {
   return (
-    <button
+    <Button
       aria-label={label}
-      className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      className="size-6 rounded text-muted-foreground hover:bg-muted hover:text-foreground"
       onClick={onClick}
+      size="icon"
       title={label}
       type="button"
+      variant="ghost"
     >
       {children}
-    </button>
+    </Button>
   )
 }

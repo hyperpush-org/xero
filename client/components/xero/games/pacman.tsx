@@ -13,6 +13,7 @@ import {
   type GameState,
   type Ghost,
 } from "./pacman-engine"
+import { useGameRunCompletion, type GameRunCompletion } from "./use-game-run-completion"
 
 const COLORS = {
   wall: "#1d4ed8",
@@ -32,9 +33,10 @@ const CELL_MAX = 24
 
 interface PacmanProps {
   active: boolean
+  onRunComplete?: (run: GameRunCompletion) => void
 }
 
-export function Pacman({ active }: PacmanProps) {
+export function Pacman({ active, onRunComplete }: PacmanProps) {
   const [state, dispatch] = useReducer(reduce, undefined, createInitialState)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -45,6 +47,7 @@ export function Pacman({ active }: PacmanProps) {
   const [showKeybinds, setShowKeybinds] = useState(false)
 
   const running = state.status === "playing"
+  useGameRunCompletion({ status: state.status, score: state.score, onRunComplete })
 
   // -----------------------------------------------------------------------
   // Size the playfield to the stage, preserving maze aspect.

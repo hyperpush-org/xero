@@ -28,6 +28,8 @@ defmodule XeroWeb.Router do
     post "/github/login", GitHubAuthController, :start
     get "/github/session", GitHubAuthController, :session
     delete "/github/session", GitHubAuthController, :delete_session
+    get "/games/stats", GameStatsController, :index
+    post "/games/runs", GameStatsController, :create
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

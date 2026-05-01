@@ -90,7 +90,6 @@ function EditorView({
     saveActive,
     revertActive,
     reloadProjectTree,
-    collapseAll,
     handleRequestRename,
     handleRequestDelete,
     handleRequestNewFile,
@@ -214,7 +213,7 @@ function EditorView({
           onCancelCreate={() => setNewChildTarget(null)}
           onCreateEntry={handleCreateSubmit}
           onCopyPath={handleCopyPath}
-          onCollapseAll={collapseAll}
+          onOpenFind={() => handleOpenFind({ withReplace: true, initialQuery: '' })}
           onReload={reloadProjectTree}
         />
       )}

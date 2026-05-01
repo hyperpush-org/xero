@@ -127,7 +127,15 @@ describe('AgentSessionsSidebar', () => {
 
     renderSidebar({ onSearchSessions, onOpenSearchResult })
 
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Search sessions' }), {
+    const searchToggle = screen.getByRole('button', { name: 'Search sessions' })
+    expect(searchToggle).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('searchbox', { name: 'Search sessions' })).not.toBeInTheDocument()
+
+    fireEvent.click(searchToggle)
+    expect(searchToggle).toHaveAttribute('aria-pressed', 'true')
+
+    const searchbox = screen.getByRole('searchbox', { name: 'Search sessions' })
+    fireEvent.change(searchbox, {
       target: { value: 'validation' },
     })
 
@@ -135,6 +143,26 @@ describe('AgentSessionsSidebar', () => {
     fireEvent.click(await screen.findByText('Matched validation transcript item.'))
 
     expect(onOpenSearchResult).toHaveBeenCalledWith(searchResult)
+    expect(screen.getByRole('searchbox', { name: 'Search sessions' })).toHaveValue('')
+  })
+
+  it('clears and hides transcript search when toggled closed', async () => {
+    const onSearchSessions = vi.fn(async () => [searchResult])
+
+    renderSidebar({ onSearchSessions })
+
+    const searchToggle = screen.getByRole('button', { name: 'Search sessions' })
+    fireEvent.click(searchToggle)
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search sessions' }), {
+      target: { value: 'validation' },
+    })
+
+    await waitFor(() => expect(onSearchSessions).toHaveBeenCalledWith('validation'))
+    fireEvent.click(searchToggle)
+
+    expect(screen.queryByRole('searchbox', { name: 'Search sessions' })).not.toBeInTheDocument()
+
+    fireEvent.click(searchToggle)
     expect(screen.getByRole('searchbox', { name: 'Search sessions' })).toHaveValue('')
   })
 })

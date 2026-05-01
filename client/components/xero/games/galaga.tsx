@@ -17,6 +17,7 @@ import {
   type EnemyKind,
   type GameState,
 } from "./galaga-engine"
+import { useGameRunCompletion, type GameRunCompletion } from "./use-game-run-completion"
 
 // ---------------------------------------------------------------------------
 // Sprites — each "X" is one logical pixel; "." is transparent.
@@ -218,9 +219,10 @@ const STARS_NEAR: Array<[number, number]> = [
 
 interface GalagaProps {
   active: boolean
+  onRunComplete?: (run: GameRunCompletion) => void
 }
 
-export function Galaga({ active }: GalagaProps) {
+export function Galaga({ active, onRunComplete }: GalagaProps) {
   const [state, dispatch] = useReducer(reduce, undefined, createInitialState)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -233,6 +235,7 @@ export function Galaga({ active }: GalagaProps) {
   const keysRef = useRef({ left: false, right: false, fire: false })
 
   const running = state.status === "playing"
+  useGameRunCompletion({ status: state.status, score: state.score, onRunComplete })
 
   // -----------------------------------------------------------------------
   // Stage fit: preserve aspect, integer-ish scale for pixel-perfect display.

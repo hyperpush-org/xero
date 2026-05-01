@@ -11,6 +11,7 @@ import {
   type Direction,
   type GameState,
 } from "./snake-engine"
+import { useGameRunCompletion, type GameRunCompletion } from "./use-game-run-completion"
 
 const COLORS = {
   grid: "rgba(74,222,128,0.05)",
@@ -27,9 +28,10 @@ const CELL_MAX = 26
 
 interface SnakeProps {
   active: boolean
+  onRunComplete?: (run: GameRunCompletion) => void
 }
 
-export function Snake({ active }: SnakeProps) {
+export function Snake({ active, onRunComplete }: SnakeProps) {
   const [state, dispatch] = useReducer(reduce, undefined, createInitialState)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -40,6 +42,7 @@ export function Snake({ active }: SnakeProps) {
   const [showKeybinds, setShowKeybinds] = useState(false)
 
   const running = state.status === "playing"
+  useGameRunCompletion({ status: state.status, score: state.score, onRunComplete })
 
   // -----------------------------------------------------------------------
   // Size the playfield to the stage, preserving grid aspect.

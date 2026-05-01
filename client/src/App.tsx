@@ -895,7 +895,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onOpenArchivedSessions={() => setArchivedSessionsOpen(true)}
       />
       {renderBody()}
-      <GamesSidebar open={gamesOpen} />
+      <GamesSidebar accountLogin={githubSession?.user.login ?? null} open={gamesOpen} />
       <BrowserSidebar open={browserOpen} />
       <UsageStatsSidebar
         open={usageOpen}

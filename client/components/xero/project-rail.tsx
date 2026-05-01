@@ -535,6 +535,30 @@ function ProjectRailSessionsSection({
   const noopArchive = useCallback(() => {}, [])
   const noopTogglePin = useCallback(() => {}, [])
 
+  if (railCollapsed) {
+    if (!onExpandExplorer) return null
+
+    return (
+      <motion.section
+        className="flex shrink-0 items-center justify-center border-t border-border/70 px-1 py-1.5"
+        layout="position"
+        transition={layoutTransition}
+      >
+        <button
+          aria-label="Expand sessions sidebar"
+          className={cn(
+            'flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors',
+            'hover:bg-primary/10 hover:text-primary',
+          )}
+          onClick={onExpandExplorer}
+          type="button"
+        >
+          <PanelLeftOpen className="h-3.5 w-3.5" />
+        </button>
+      </motion.section>
+    )
+  }
+
   return (
     <motion.section
       className="flex min-h-0 flex-1 flex-col border-t border-border/70"
@@ -658,22 +682,6 @@ function ProjectRailSessionsSection({
           </ul>
         )}
       </div>
-
-      {railCollapsed && onExpandExplorer ? (
-        <div className="flex shrink-0 items-center justify-center border-t border-border/60 px-1 py-1.5">
-          <button
-            aria-label="Expand sessions sidebar"
-            className={cn(
-              'flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors',
-              'hover:bg-primary/10 hover:text-primary',
-            )}
-            onClick={onExpandExplorer}
-            type="button"
-          >
-            <PanelLeftOpen className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      ) : null}
     </motion.section>
   )
 }

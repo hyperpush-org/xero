@@ -1042,6 +1042,36 @@
   body {
     @apply text-foreground font-sans antialiased;
   }
+
+  :where(*):is(:focus, :focus-visible, :focus-within) {
+    --tw-ring-color: transparent !important;
+    --tw-ring-offset-width: 0px !important;
+    --tw-ring-offset-shadow: 0 0 #0000 !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
+  :where(
+      input,
+      textarea,
+      select,
+      [role='combobox'],
+      [data-slot='input'],
+      [data-slot='textarea'],
+      [data-slot='select-trigger'],
+      [data-slot='input-group'],
+      [class*='focus:border-'],
+      [class*='focus-visible:border-'],
+      [class*='focus-within:border-'],
+      [class*='focus-visible'][class*='border-']
+    ):is(:focus, :focus-visible, :focus-within):not([aria-invalid='true']) {
+    border-color: var(--input) !important;
+  }
+
+  :where([data-slot='tabs-trigger']):focus-visible:not([data-state='active']) {
+    border-color: transparent !important;
+  }
 }
 
 @layer utilities {

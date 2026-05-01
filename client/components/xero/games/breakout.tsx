@@ -18,6 +18,7 @@ import {
   reduce,
   type GameState,
 } from "./breakout-engine"
+import { useGameRunCompletion, type GameRunCompletion } from "./use-game-run-completion"
 
 const ROW_COLORS = [
   "#ef4444", // red
@@ -43,9 +44,10 @@ const COLORS = {
 
 interface BreakoutProps {
   active: boolean
+  onRunComplete?: (run: GameRunCompletion) => void
 }
 
-export function Breakout({ active }: BreakoutProps) {
+export function Breakout({ active, onRunComplete }: BreakoutProps) {
   const [state, dispatch] = useReducer(reduce, undefined, createInitialState)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -58,6 +60,7 @@ export function Breakout({ active }: BreakoutProps) {
   const keysRef = useRef({ left: false, right: false })
 
   const running = state.status === "playing"
+  useGameRunCompletion({ status: state.status, score: state.score, onRunComplete })
 
   // -----------------------------------------------------------------------
   // Fit the canvas into the stage, preserving aspect. Canvas stays at 1:1

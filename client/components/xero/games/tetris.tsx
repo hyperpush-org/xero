@@ -20,6 +20,7 @@ import {
   type GameState,
   type PieceType,
 } from "./tetris-engine"
+import { useGameRunCompletion, type GameRunCompletion } from "./use-game-run-completion"
 
 // ---------------------------------------------------------------------------
 // Input state — per-key DAS/ARR trackers.
@@ -228,9 +229,10 @@ const CELL_MAX = 30
 
 interface TetrisProps {
   active: boolean
+  onRunComplete?: (run: GameRunCompletion) => void
 }
 
-export function Tetris({ active }: TetrisProps) {
+export function Tetris({ active, onRunComplete }: TetrisProps) {
   const [state, dispatch] = useReducer(reduce, undefined, createInitialState)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const playfieldRef = useRef<HTMLCanvasElement | null>(null)
@@ -248,6 +250,7 @@ export function Tetris({ active }: TetrisProps) {
   })
 
   const running = state.status === "playing"
+  useGameRunCompletion({ status: state.status, score: state.score, onRunComplete })
 
   // -----------------------------------------------------------------------
   // Size the playfield by observing container dims.

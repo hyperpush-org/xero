@@ -492,6 +492,19 @@ describe('ExecutionView', () => {
     expect(window.localStorage.getItem('xero.editor.explorer.width')).toBe(String(after))
   })
 
+  it('opens the find and replace sidebar from the explorer header search action', async () => {
+    renderExecutionView()
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open find and replace' }))
+
+    const findInput = await screen.findByLabelText('Find')
+    expect(findInput).toHaveFocus()
+    expect(screen.getByLabelText('Replace')).toBeVisible()
+    expect(screen.queryByLabelText('Search files')).not.toBeInTheDocument()
+  })
+
   it('keeps tabs, dirty markers, expanded folders, cached contents, and active paths in sync across create rename delete flows', async () => {
     const workspace = createWorkspaceHarness({
       root: folder('root', '/', [folder('src', '/src', [file('main.tsx', '/src/main.tsx')])]),

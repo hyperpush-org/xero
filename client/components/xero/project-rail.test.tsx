@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ProjectRail } from './project-rail'
+import type { AgentSessionView } from '@/src/lib/xero-model'
 
 const projects = [
   {
@@ -17,6 +18,27 @@ const projects = [
     branchLabel: 'main',
     runtimeLabel: 'Runtime unavailable',
     phaseProgressPercent: 0,
+  },
+]
+
+const sessions: AgentSessionView[] = [
+  {
+    projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
+    title: 'Main session',
+    summary: 'Primary project session',
+    status: 'active',
+    statusLabel: 'Active',
+    selected: true,
+    createdAt: '2026-04-15T20:00:00Z',
+    updatedAt: '2026-04-15T20:00:00Z',
+    archivedAt: null,
+    lastRunId: null,
+    lastRuntimeKind: null,
+    lastProviderId: null,
+    lineage: null,
+    isActive: true,
+    isArchived: false,
   },
 ]
 
@@ -126,5 +148,46 @@ describe('ProjectRail', () => {
     expect(screen.queryByRole('separator', { name: 'Resize projects sidebar' })).not.toBeInTheDocument()
     expect(rail).toHaveAttribute('data-collapsed', 'true')
     expect(rail).toHaveClass('w-11')
+  })
+
+  it('hides collapsed sessions and keeps only the expand control at the bottom', () => {
+    const onCreateSession = vi.fn()
+    const onSelectSession = vi.fn()
+    const onExpandExplorer = vi.fn()
+
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        collapsed
+        errorMessage={null}
+        explorerCollapsed
+        isCreatingSession={false}
+        isImporting={false}
+        isLoading={false}
+        onArchiveSession={() => undefined}
+        onCreateSession={onCreateSession}
+        onExpandExplorer={onExpandExplorer}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        onSelectSession={onSelectSession}
+        pendingProjectRemovalId={null}
+        pendingSessionId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+        selectedSessionId="agent-session-main"
+        sessions={sessions}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'New session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Main session' })).not.toBeInTheDocument()
+
+    const expandButton = screen.getByRole('button', { name: 'Expand sessions sidebar' })
+    fireEvent.click(expandButton)
+
+    expect(onExpandExplorer).toHaveBeenCalledTimes(1)
+    expect(onCreateSession).not.toHaveBeenCalled()
+    expect(onSelectSession).not.toHaveBeenCalled()
   })
 })

@@ -15,6 +15,7 @@ import {
   type GameState,
   type Ship,
 } from "./asteroids-engine"
+import { useGameRunCompletion, type GameRunCompletion } from "./use-game-run-completion"
 
 const COLORS = {
   ship: "#e2e8f0",
@@ -45,9 +46,10 @@ const STARS: Array<{ x: number; y: number; b: number }> = (() => {
 
 interface AsteroidsProps {
   active: boolean
+  onRunComplete?: (run: GameRunCompletion) => void
 }
 
-export function Asteroids({ active }: AsteroidsProps) {
+export function Asteroids({ active, onRunComplete }: AsteroidsProps) {
   const [state, dispatch] = useReducer(reduce, undefined, createInitialState)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -60,6 +62,7 @@ export function Asteroids({ active }: AsteroidsProps) {
   const keysRef = useRef({ left: false, right: false, thrust: false, fire: false })
 
   const running = state.status === "playing"
+  useGameRunCompletion({ status: state.status, score: state.score, onRunComplete })
 
   // -----------------------------------------------------------------------
   // Fit canvas into the stage, preserving aspect ratio.

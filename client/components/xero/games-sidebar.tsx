@@ -1,10 +1,12 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronRight, Play, Search } from "lucide-react"
 import { motion } from "motion/react"
 import { cn } from "@/lib/utils"
+import { loadGameStats, recordGameRun, type GameStatDto } from "@/src/lib/game-stats"
 import { useSidebarMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import type { GameRunCompletion } from "./games/use-game-run-completion"
 import { Asteroids } from "./games/asteroids"
 import { Breakout } from "./games/breakout"
 import { Galaga } from "./games/galaga"
@@ -23,6 +25,7 @@ const DEFAULT_WIDTH = 256
 
 interface GamesSidebarProps {
   open: boolean
+  accountLogin?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +81,13 @@ interface Game {
   tagline: string
   glyph: PixelGlyph
   stats: GameStats
+}
+
+const EMPTY_STATS: GameStats = {
+  personalBest: "0",
+  runs: 0,
+  timePlayed: "0m",
+  leaderboard: [],
 }
 
 const GAMES: Game[] = [
@@ -297,11 +307,12 @@ const GAMES: Game[] = [
 // Component
 // ---------------------------------------------------------------------------
 
-export function GamesSidebar({ open }: GamesSidebarProps) {
+export function GamesSidebar({ open, accountLogin }: GamesSidebarProps) {
   const [query, setQuery] = useState("")
   const [width, setWidth] = useState(DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
+  const [serverStats, setServerStats] = useState<GameStatDto[] | null>(null)
   const targetWidth = open ? width : 0
   const { contentTransition } = useSidebarMotion(isResizing)
   const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
@@ -377,6 +388,63 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
     [selectedGameId],
   )
 
+  useEffect(() => {
+    if (!open || !accountLogin) {
+      setServerStats(null)
+      return
+    }
+
+    let cancelled = false
+
+    const refresh = async () => {
+      try {
+        const snapshot = await loadGameStats()
+        if (!cancelled) setServerStats(snapshot?.stats ?? null)
+      } catch {
+        if (!cancelled) setServerStats(null)
+      }
+    }
+
+    void refresh()
+
+    return () => {
+      cancelled = true
+    }
+  }, [accountLogin, open])
+
+  const statsByGameId = useMemo(() => {
+    const stats = new Map<string, GameStats>()
+    for (const game of GAMES) {
+      stats.set(game.id, EMPTY_STATS)
+    }
+    for (const stat of serverStats ?? []) {
+      stats.set(stat.gameId, {
+        personalBest: formatScore(stat.personalBest),
+        runs: stat.runs,
+        timePlayed: formatDuration(stat.timePlayedMs),
+        leaderboard: stat.leaderboard.map((entry) => ({
+          name: entry.name || entry.login,
+          score: formatScore(entry.score),
+          you: entry.you,
+        })),
+      })
+    }
+    return stats
+  }, [serverStats])
+
+  const handleRunComplete = useCallback(async (gameId: string, run: GameRunCompletion) => {
+    try {
+      const snapshot = await recordGameRun({
+        gameId,
+        score: run.score,
+        timePlayedMs: run.timePlayedMs,
+      })
+      setServerStats(snapshot?.stats ?? null)
+    } catch {
+      // The game should remain playable if the server is unavailable.
+    }
+  }, [])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return GAMES
@@ -426,7 +494,13 @@ export function GamesSidebar({ open }: GamesSidebarProps) {
         transition={contentTransition}
       >
         {selectedGame ? (
-          <GameDetail game={selectedGame} onBack={handleBack} />
+          <GameDetail
+            accountLogin={accountLogin}
+            game={selectedGame}
+            onBack={handleBack}
+            onRunComplete={handleRunComplete}
+            stats={statsByGameId.get(selectedGame.id) ?? EMPTY_STATS}
+          />
         ) : (
           <GameList
             filtered={filtered}
@@ -537,7 +611,24 @@ function GameRow({ game, onSelect }: { game: Game; onSelect: (gameId: string) =>
 // Detail view — player dashboard
 // ---------------------------------------------------------------------------
 
-function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
+function GameDetail({
+  accountLogin,
+  game,
+  onBack,
+  onRunComplete,
+  stats,
+}: {
+  accountLogin?: string | null
+  game: Game
+  onBack: () => void
+  onRunComplete: (gameId: string, run: GameRunCompletion) => void
+  stats: GameStats
+}) {
+  const handleRunComplete = useCallback(
+    (run: GameRunCompletion) => onRunComplete(game.id, run),
+    [game.id, onRunComplete],
+  )
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex py-[7px] shrink-0 items-center gap-2 border-b border-border/70 pl-1.5 pr-3">
@@ -558,28 +649,28 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
         <div className="flex shrink-0 items-center justify-center border-b border-border/70 bg-background/40 px-6 py-7">
           {game.id === "tetris" ? (
-            <Tetris active />
+            <Tetris active onRunComplete={handleRunComplete} />
           ) : game.id === "space-invaders" ? (
-            <SpaceInvaders active />
+            <SpaceInvaders active onRunComplete={handleRunComplete} />
           ) : game.id === "snake" ? (
-            <Snake active />
+            <Snake active onRunComplete={handleRunComplete} />
           ) : game.id === "pacman" ? (
-            <Pacman active />
+            <Pacman active onRunComplete={handleRunComplete} />
           ) : game.id === "breakout" ? (
-            <Breakout active />
+            <Breakout active onRunComplete={handleRunComplete} />
           ) : game.id === "asteroids" ? (
-            <Asteroids active />
+            <Asteroids active onRunComplete={handleRunComplete} />
           ) : game.id === "galaga" ? (
-            <Galaga active />
+            <Galaga active onRunComplete={handleRunComplete} />
           ) : (
             <GameCanvas glyph={game.glyph} />
           )}
         </div>
 
         <div className="grid grid-cols-3 gap-px border-b border-border/70 bg-border/60">
-          <StatCell label="Personal best" value={game.stats.personalBest} highlight />
-          <StatCell label="Runs" value={String(game.stats.runs)} />
-          <StatCell label="Time played" value={game.stats.timePlayed} />
+          <StatCell label="Personal best" value={stats.personalBest} highlight />
+          <StatCell label="Runs" value={String(stats.runs)} />
+          <StatCell label="Time played" value={stats.timePlayed} />
         </div>
 
         <section className="border-b border-border/70 px-4 py-3">
@@ -595,7 +686,12 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
             </button>
           </div>
           <ul className="flex flex-col gap-px">
-            {game.stats.leaderboard.map((entry, index) => {
+            {stats.leaderboard.length === 0 ? (
+              <li className="px-1.5 py-2 text-[11px] text-muted-foreground">
+                {accountLogin ? "No scores yet." : "Sign in to track scores."}
+              </li>
+            ) : null}
+            {stats.leaderboard.map((entry, index) => {
               const rank = index + 1
               return (
                 <li
@@ -637,6 +733,19 @@ function GameDetail({ game, onBack }: { game: Game; onBack: () => void }) {
       </div>
     </div>
   )
+}
+
+function formatScore(score: number): string {
+  return Math.max(0, score).toLocaleString()
+}
+
+function formatDuration(ms: number): string {
+  const totalMinutes = Math.floor(Math.max(0, ms) / 60_000)
+  if (totalMinutes < 60) return `${totalMinutes}m`
+
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
 }
 
 function GameCanvas({ glyph }: { glyph: PixelGlyph }) {
