@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 use serde_json::json;
 use tempfile::TempDir;
 use xero_desktop_lib::{
-    commands::RuntimeAgentIdDto,
+    commands::{CommandError, RuntimeAgentIdDto},
     db::{self, project_store},
     git::repository::CanonicalRepository,
     state::DesktopState,
@@ -270,4 +270,304 @@ fn handoff_lineage_requires_same_type_and_deduplicates_by_idempotency_key() {
     )
     .expect_err("cross-agent handoff should be rejected");
     assert_eq!(mismatch.code, "agent_handoff_lineage_target_agent_mismatch");
+}
+
+#[test]
+fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+
+    let record = project_store::NewProjectRecordRecord {
+        record_id: "project-record-phase2".into(),
+        project_id: project_id.clone(),
+        record_kind: project_store::ProjectRecordKind::Decision,
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+        run_id: "run-phase2-record".into(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+        title: "Phase 2 retrieval decision".into(),
+        summary: "Hybrid LanceDB retrieval must cite durable project context.".into(),
+        text: "Decision: phase 2 stores LanceDB embeddings for project records and uses hybrid retrieval.".into(),
+        content_json: Some(json!({"decision": "phase2 retrieval foundation"})),
+        schema_name: Some("xero.project_record.decision.v1".into()),
+        schema_version: 1,
+        importance: project_store::ProjectRecordImportance::High,
+        confidence: Some(0.95),
+        tags: vec!["phase2".into(), "retrieval".into()],
+        source_item_ids: vec!["message-phase2".into()],
+        related_paths: vec!["client/src-tauri/src/db/project_store/agent_retrieval.rs".into()],
+        produced_artifact_refs: Vec::new(),
+        redaction_state: project_store::ProjectRecordRedactionState::Clean,
+        visibility: project_store::ProjectRecordVisibility::Retrieval,
+        created_at: "2026-05-01T12:10:00Z".into(),
+    };
+    let inserted =
+        project_store::insert_project_record(&repo_root, &record).expect("insert project record");
+    let duplicate = project_store::insert_project_record(
+        &repo_root,
+        &project_store::NewProjectRecordRecord {
+            record_id: "project-record-phase2-duplicate".into(),
+            ..record.clone()
+        },
+    )
+    .expect("deduplicate project record");
+    assert_eq!(duplicate.record_id, inserted.record_id);
+
+    project_store::insert_agent_memory(
+        &repo_root,
+        &project_store::NewAgentMemoryRecord {
+            memory_id: "memory-phase2-approved".into(),
+            project_id: project_id.clone(),
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            scope: project_store::AgentMemoryScope::Session,
+            kind: project_store::AgentMemoryKind::Decision,
+            text:
+                "Approved memory: phase 2 retrieval should use LanceDB embeddings and cite results."
+                    .into(),
+            review_state: project_store::AgentMemoryReviewState::Approved,
+            enabled: true,
+            confidence: Some(93),
+            source_run_id: Some("run-phase2-memory".into()),
+            source_item_ids: vec!["memory-source".into()],
+            diagnostic: None,
+            created_at: "2026-05-01T12:11:00Z".into(),
+        },
+    )
+    .expect("insert approved memory");
+
+    project_store::insert_project_record(
+        &repo_root,
+        &project_store::NewProjectRecordRecord {
+            record_id: "project-record-blocked".into(),
+            text: "Decision: blocked secret retrieval record should not be injected.".into(),
+            redaction_state: project_store::ProjectRecordRedactionState::Blocked,
+            created_at: "2026-05-01T12:12:00Z".into(),
+            ..record.clone()
+        },
+    )
+    .expect("insert blocked record");
+
+    let response = project_store::search_agent_context(
+        &repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: "query-phase2-hybrid".into(),
+            project_id: project_id.clone(),
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            run_id: None,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            query_text: "phase2 lancedb embeddings retrieval".into(),
+            search_scope: project_store::AgentRetrievalSearchScope::HybridContext,
+            filters: project_store::AgentContextRetrievalFilters {
+                record_kinds: vec![project_store::ProjectRecordKind::Decision],
+                tags: vec!["phase2".into()],
+                related_paths: vec!["agent_retrieval.rs".into()],
+                runtime_agent_id: Some(RuntimeAgentIdDto::Engineer),
+                agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                created_after: Some("2026-05-01T12:00:00Z".into()),
+                min_importance: Some(project_store::ProjectRecordImportance::High),
+                ..project_store::AgentContextRetrievalFilters::default()
+            },
+            limit_count: 5,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-01T12:13:00Z".into(),
+        },
+    )
+    .expect("hybrid search");
+
+    assert_eq!(response.method, "hybrid");
+    assert_eq!(response.results.len(), 1);
+    let result = &response.results[0];
+    assert_eq!(result.source_id, inserted.record_id);
+    assert_eq!(
+        result.metadata["embeddingModel"],
+        project_store::DEFAULT_AGENT_EMBEDDING_MODEL
+    );
+    assert_eq!(
+        result.metadata["embeddingVersion"],
+        project_store::DEFAULT_AGENT_EMBEDDING_VERSION
+    );
+    assert_eq!(result.metadata["embeddingPresent"], true);
+    assert!(!response
+        .results
+        .iter()
+        .any(|result| result.source_id == "project-record-blocked"));
+
+    let logs =
+        project_store::list_agent_retrieval_results(&repo_root, &project_id, "query-phase2-hybrid")
+            .expect("retrieval result logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].source_id, inserted.record_id);
+}
+
+#[test]
+fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
+    struct BadDimensionEmbeddingService;
+    impl project_store::AgentEmbeddingService for BadDimensionEmbeddingService {
+        fn model(&self) -> &str {
+            "bad-dimension"
+        }
+
+        fn dimension(&self) -> i32 {
+            32
+        }
+
+        fn version(&self) -> &str {
+            "bad.v1"
+        }
+
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, CommandError> {
+            Ok(vec![0.0; 32])
+        }
+    }
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+
+    project_store::insert_agent_memory(
+        &repo_root,
+        &project_store::NewAgentMemoryRecord {
+            memory_id: "memory-fallback-approved".into(),
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            scope: project_store::AgentMemoryScope::Project,
+            kind: project_store::AgentMemoryKind::ProjectFact,
+            text: "Project fact: keyword fallback can retrieve LanceDB memory without semantic embeddings.".into(),
+            review_state: project_store::AgentMemoryReviewState::Approved,
+            enabled: true,
+            confidence: Some(90),
+            source_run_id: Some("run-fallback".into()),
+            source_item_ids: vec!["source-fallback".into()],
+            diagnostic: None,
+            created_at: "2026-05-01T12:20:00Z".into(),
+        },
+    )
+    .expect("insert fallback memory");
+
+    project_store::insert_agent_memory(
+        &repo_root,
+        &project_store::NewAgentMemoryRecord {
+            memory_id: "memory-secret-approved".into(),
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            scope: project_store::AgentMemoryScope::Project,
+            kind: project_store::AgentMemoryKind::ProjectFact,
+            text: "Project fact: keyword fallback api_key=sk-secret should be redacted from retrieval snippets."
+                .into(),
+            review_state: project_store::AgentMemoryReviewState::Approved,
+            enabled: true,
+            confidence: Some(90),
+            source_run_id: Some("run-redaction".into()),
+            source_item_ids: vec!["source-redaction".into()],
+            diagnostic: None,
+            created_at: "2026-05-01T12:21:00Z".into(),
+        },
+    )
+    .expect("insert redaction memory");
+
+    let fallback = project_store::search_agent_context_with_embedding_service(
+        &repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: "query-keyword-fallback".into(),
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            run_id: None,
+            runtime_agent_id: RuntimeAgentIdDto::Ask,
+            query_text: "keyword fallback lancedb memory".into(),
+            search_scope: project_store::AgentRetrievalSearchScope::ApprovedMemory,
+            filters: project_store::AgentContextRetrievalFilters::default(),
+            limit_count: 5,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-01T12:22:00Z".into(),
+        },
+        None,
+    )
+    .expect("keyword fallback search");
+    assert_eq!(fallback.method, "keyword_fallback");
+    assert!(fallback
+        .results
+        .iter()
+        .any(|result| result.source_id == "memory-fallback-approved"));
+    let redacted = fallback
+        .results
+        .iter()
+        .find(|result| result.source_id == "memory-secret-approved")
+        .expect("redacted memory result");
+    assert_eq!(
+        redacted.redaction_state,
+        project_store::AgentContextRedactionState::Redacted
+    );
+    assert_eq!(redacted.snippet, "[redacted]");
+
+    let mismatch = project_store::search_agent_context_with_embedding_service(
+        &repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: "query-bad-dimension".into(),
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            run_id: None,
+            runtime_agent_id: RuntimeAgentIdDto::Ask,
+            query_text: "dimension mismatch".into(),
+            search_scope: project_store::AgentRetrievalSearchScope::ApprovedMemory,
+            filters: project_store::AgentContextRetrievalFilters::default(),
+            limit_count: 1,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-01T12:23:00Z".into(),
+        },
+        Some(&BadDimensionEmbeddingService),
+    )
+    .expect_err("dimension mismatch should fail");
+    assert_eq!(
+        mismatch.code,
+        "agent_retrieval_embedding_dimension_mismatch"
+    );
+
+    let job = project_store::enqueue_agent_embedding_backfill_job(
+        &repo_root,
+        &project_store::NewAgentEmbeddingBackfillJobRecord {
+            job_id: "embedding-job-1".into(),
+            project_id: project_id.clone(),
+            source_kind: project_store::AgentEmbeddingBackfillSourceKind::ApprovedMemory,
+            source_id: "memory-fallback-approved".into(),
+            source_hash: project_store::agent_memory_text_hash(
+                "Project fact: keyword fallback can retrieve LanceDB memory without semantic embeddings.",
+            ),
+            embedding_model: project_store::DEFAULT_AGENT_EMBEDDING_MODEL.into(),
+            embedding_dimension: project_store::AGENT_RETRIEVAL_EMBEDDING_DIM,
+            embedding_version: project_store::DEFAULT_AGENT_EMBEDDING_VERSION.into(),
+            created_at: "2026-05-01T12:24:00Z".into(),
+        },
+    )
+    .expect("enqueue backfill job");
+    let duplicate = project_store::enqueue_agent_embedding_backfill_job(
+        &repo_root,
+        &project_store::NewAgentEmbeddingBackfillJobRecord {
+            job_id: "embedding-job-duplicate".into(),
+            ..project_store::NewAgentEmbeddingBackfillJobRecord {
+                job_id: "embedding-job-1".into(),
+                project_id: project_id.clone(),
+                source_kind: project_store::AgentEmbeddingBackfillSourceKind::ApprovedMemory,
+                source_id: "memory-fallback-approved".into(),
+                source_hash: project_store::agent_memory_text_hash(
+                    "Project fact: keyword fallback can retrieve LanceDB memory without semantic embeddings.",
+                ),
+                embedding_model: project_store::DEFAULT_AGENT_EMBEDDING_MODEL.into(),
+                embedding_dimension: project_store::AGENT_RETRIEVAL_EMBEDDING_DIM,
+                embedding_version: project_store::DEFAULT_AGENT_EMBEDDING_VERSION.into(),
+                created_at: "2026-05-01T12:24:00Z".into(),
+            }
+        },
+    )
+    .expect("dedupe backfill job");
+    assert_eq!(duplicate.id, job.id);
+
+    let run = project_store::run_agent_embedding_backfill_jobs(
+        &repo_root,
+        &project_id,
+        5,
+        "2026-05-01T12:25:00Z",
+    )
+    .expect("run backfill jobs");
+    assert_eq!(run.queued_count, 1);
+    assert_eq!(run.succeeded_count, 1);
 }

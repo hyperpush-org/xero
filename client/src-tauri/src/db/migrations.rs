@@ -1050,6 +1050,41 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_agent_retrieval_results_source
         ON agent_retrieval_results(project_id, source_kind, source_id);
 
+    CREATE TABLE IF NOT EXISTS agent_embedding_backfill_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        source_kind TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        embedding_model TEXT NOT NULL,
+        embedding_dimension INTEGER NOT NULL CHECK (embedding_dimension > 0),
+        embedding_version TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (job_id <> ''),
+        CHECK (source_kind IN ('project_record', 'approved_memory')),
+        CHECK (source_id <> ''),
+        CHECK (length(source_hash) = 64),
+        CHECK (source_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (embedding_model <> ''),
+        CHECK (embedding_version <> ''),
+        CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'skipped')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, job_id),
+        UNIQUE (project_id, source_kind, source_id, embedding_model, embedding_version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_embedding_backfill_jobs_status
+        ON agent_embedding_backfill_jobs(project_id, status, created_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_agent_embedding_backfill_jobs_source
+        ON agent_embedding_backfill_jobs(project_id, source_kind, source_id);
+
     CREATE TABLE IF NOT EXISTS meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         project_id TEXT NOT NULL,
@@ -1131,6 +1166,7 @@ mod tests {
                 "agent_compactions",
                 "agent_context_manifests",
                 "agent_context_policy_settings",
+                "agent_embedding_backfill_jobs",
                 "agent_events",
                 "agent_file_changes",
                 "agent_handoff_lineage",

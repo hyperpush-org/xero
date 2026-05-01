@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    agent_embeddings::embedding_for_storage,
     open_runtime_database,
     project_record_lance::{self, ProjectRecordRow},
     read_project_row, validate_non_empty_text,
@@ -153,6 +154,7 @@ pub fn insert_project_record(
         .as_ref()
         .map(project_record_content_hash)
         .transpose()?;
+    let embedding = embedding_for_storage(&project_record_embedding_text(record))?;
     let row = ProjectRecordRow {
         record_id: record.record_id.clone(),
         project_id: record.project_id.clone(),
@@ -193,6 +195,10 @@ pub fn insert_project_record(
         visibility: project_record_visibility_sql_value(&record.visibility).into(),
         created_at: record.created_at.clone(),
         updated_at: record.created_at.clone(),
+        embedding: Some(embedding.vector),
+        embedding_model: Some(embedding.model),
+        embedding_dimension: Some(embedding.dimension),
+        embedding_version: Some(embedding.version),
     };
     store.insert_dedup(row).and_then(row_into_record)
 }
@@ -256,6 +262,19 @@ fn validate_new_project_record(record: &NewProjectRecordRecord) -> Result<(), Co
         return Err(CommandError::invalid_request("confidence"));
     }
     Ok(())
+}
+
+fn project_record_embedding_text(record: &NewProjectRecordRecord) -> String {
+    let mut text = format!("{}.\n{}\n{}", record.title, record.summary, record.text);
+    if !record.tags.is_empty() {
+        text.push_str("\nTags: ");
+        text.push_str(&record.tags.join(", "));
+    }
+    if !record.related_paths.is_empty() {
+        text.push_str("\nRelated paths: ");
+        text.push_str(&record.related_paths.join(", "));
+    }
+    text
 }
 
 fn row_into_record(row: ProjectRecordRow) -> Result<ProjectRecordRecord, CommandError> {
