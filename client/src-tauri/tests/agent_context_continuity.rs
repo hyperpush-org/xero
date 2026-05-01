@@ -1302,3 +1302,189 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
         );
     }
 }
+
+/// Phase 8 crash-recovery hardening. Confirms that when a handoff lineage
+/// regresses to `Pending` mid-flight (process crash, partially-applied write,
+/// etc.), the next continuation request advances the same lineage to
+/// `Completed` without duplicating the target run, the LanceDB-backed handoff
+/// project record, or the lineage row itself.
+#[test]
+fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+
+    project_store::upsert_agent_context_policy_settings(
+        &repo_root,
+        &project_store::NewAgentContextPolicySettingsRecord {
+            project_id: project_id.clone(),
+            scope: project_store::AgentContextPolicySettingsScope::Project,
+            agent_session_id: None,
+            auto_compact_enabled: true,
+            auto_handoff_enabled: true,
+            compact_threshold_percent: 1,
+            handoff_threshold_percent: 2,
+            raw_tail_message_count: 6,
+            updated_at: "2026-05-01T13:00:00Z".into(),
+        },
+    )
+    .expect("force handoff policy");
+
+    let runtime_agent_id = RuntimeAgentIdDto::Engineer;
+    let source_run_id = "phase8-crash-source".to_string();
+    let pending_prompt = "Continue from durable state after a simulated process crash.".to_string();
+
+    let tool_runtime = AutonomousToolRuntime::new(&repo_root).expect("tool runtime");
+    let source_request = OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: source_run_id.clone(),
+        prompt: "Original engineering task that exceeded the context budget.".into(),
+        controls: Some(controls_for_agent(runtime_agent_id)),
+        tool_runtime: tool_runtime.clone(),
+        provider_config: AgentProviderConfig::Fake,
+    };
+    create_owned_agent_run(&source_request).expect("create source run");
+    append_long_context_messages(&repo_root, &project_id, &source_run_id);
+    project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        &source_run_id,
+        project_store::AgentRunStatus::Completed,
+        None,
+        "2026-05-01T13:10:00Z",
+    )
+    .expect("mark source completed");
+
+    let continuation = ContinueOwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        run_id: source_run_id.clone(),
+        prompt: pending_prompt.clone(),
+        controls: Some(controls_for_agent(runtime_agent_id)),
+        tool_runtime: tool_runtime.clone(),
+        provider_config: AgentProviderConfig::Fake,
+        answer_pending_actions: false,
+        auto_compact: None,
+    };
+    let target = continue_owned_agent_run(continuation.clone()).expect("first handoff");
+
+    let initial_lineage = project_store::list_agent_handoff_lineage_for_source(
+        &repo_root,
+        &project_id,
+        &source_run_id,
+    )
+    .expect("list lineage after first handoff")
+    .into_iter()
+    .next()
+    .expect("lineage row exists");
+    assert_eq!(
+        initial_lineage.status,
+        project_store::AgentHandoffLineageStatus::Completed
+    );
+    let lineage_handoff_id = initial_lineage.handoff_id.clone();
+    let lineage_target_run_id = initial_lineage.target_run_id.clone();
+    let lineage_target_session_id = initial_lineage.target_agent_session_id.clone();
+    let lineage_handoff_record_id = initial_lineage.handoff_record_id.clone();
+    let lineage_bundle = initial_lineage.bundle.clone();
+
+    project_store::update_agent_handoff_lineage(
+        &repo_root,
+        &project_store::AgentHandoffLineageUpdateRecord {
+            project_id: project_id.clone(),
+            handoff_id: lineage_handoff_id.clone(),
+            target_agent_session_id: lineage_target_session_id.clone(),
+            target_run_id: lineage_target_run_id.clone(),
+            status: project_store::AgentHandoffLineageStatus::Pending,
+            handoff_record_id: lineage_handoff_record_id.clone(),
+            bundle: lineage_bundle.clone(),
+            diagnostic: None,
+            updated_at: "2026-05-01T13:11:00Z".into(),
+            completed_at: None,
+        },
+    )
+    .expect("simulate crashed pending lineage");
+
+    let pending_before = project_store::list_agent_handoff_lineage_by_status(
+        &repo_root,
+        &project_id,
+        &[project_store::AgentHandoffLineageStatus::Pending],
+    )
+    .expect("query pending lineage");
+    assert_eq!(
+        pending_before.len(),
+        1,
+        "regressed lineage should be discoverable as pending"
+    );
+
+    let recovered = prepare_owned_agent_continuation_for_drive(&continuation)
+        .expect("recover from pending lineage");
+    assert_eq!(recovered.snapshot.run.run_id, target.run.run_id);
+
+    let lineage_after = project_store::list_agent_handoff_lineage_for_source(
+        &repo_root,
+        &project_id,
+        &source_run_id,
+    )
+    .expect("list lineage after recovery");
+    assert_eq!(
+        lineage_after.len(),
+        1,
+        "recovery must not duplicate handoff lineage"
+    );
+    assert_eq!(
+        lineage_after[0].handoff_id, lineage_handoff_id,
+        "recovery must reuse the original handoff id"
+    );
+    assert_eq!(
+        lineage_after[0].status,
+        project_store::AgentHandoffLineageStatus::Completed
+    );
+    assert_eq!(lineage_after[0].target_run_id, lineage_target_run_id);
+
+    let pending_after = project_store::list_agent_handoff_lineage_by_status(
+        &repo_root,
+        &project_id,
+        &[project_store::AgentHandoffLineageStatus::Pending],
+    )
+    .expect("query pending lineage after recovery");
+    assert!(
+        pending_after.is_empty(),
+        "no stranded pending lineage after recovery"
+    );
+
+    let bundle_records = project_store::list_project_records(&repo_root, &project_id)
+        .expect("list project records after recovery")
+        .into_iter()
+        .filter(|record| {
+            record.schema_name.as_deref() == Some("xero.agent_handoff.bundle.v1")
+                && record.run_id == source_run_id
+        })
+        .count();
+    assert_eq!(
+        bundle_records, 1,
+        "recovery must not duplicate handoff bundle records"
+    );
+
+    let runs = project_store::list_agent_runs(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+    )
+    .expect("list agent runs after recovery");
+    let target_count = runs
+        .iter()
+        .filter(|run| run.run_id == target.run.run_id)
+        .count();
+    assert_eq!(
+        target_count, 1,
+        "recovery must not create duplicate target runs"
+    );
+    let source_after = project_store::load_agent_run(&repo_root, &project_id, &source_run_id)
+        .expect("load source");
+    assert_eq!(
+        source_after.run.status,
+        project_store::AgentRunStatus::HandedOff,
+        "source run remains marked HandedOff after recovery"
+    );
+}

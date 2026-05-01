@@ -25,6 +25,7 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub model_id: &'a str,
     pub turn_index: usize,
     pub browser_control_preference: BrowserControlPreferenceDto,
+    pub soul_settings: Option<&'a SoulSettingsDto>,
     pub tools: &'a [AgentToolDescriptor],
     pub messages: &'a [ProviderMessage],
     pub owned_process_summary: Option<&'a str>,
@@ -44,6 +45,7 @@ pub(crate) fn assemble_provider_context_package(
         input.browser_control_preference,
         input.tools,
     )
+    .with_soul_settings(input.soul_settings)
     .with_owned_process_summary(input.owned_process_summary)
     .with_skill_contexts(skill_contexts)
     .with_retrieved_project_context(Some(retrieved_project_context.clone()))
@@ -68,7 +70,8 @@ pub(crate) fn assemble_provider_context_package(
     let estimated_tokens = included.iter().fold(0_u64, |total, contributor| {
         total.saturating_add(contributor.estimated_tokens)
     });
-    let budget_tokens = provider_context_budget_tokens(input.provider_id, input.model_id);
+    let context_limit = resolve_context_limit(input.provider_id, input.model_id);
+    let budget_tokens = context_limit.effective_input_budget_tokens;
     let active_compaction = project_store::load_active_agent_compaction(
         input.repo_root,
         input.project_id,
@@ -127,6 +130,15 @@ pub(crate) fn assemble_provider_context_package(
         "turnIndex": input.turn_index,
         "contextHash": context_hash.clone(),
         "budgetTokens": budget_tokens,
+        "contextWindowTokens": context_limit.context_window_tokens,
+        "effectiveInputBudgetTokens": context_limit.effective_input_budget_tokens,
+        "maxOutputTokens": context_limit.max_output_tokens,
+        "outputReserveTokens": context_limit.output_reserve_tokens,
+        "safetyReserveTokens": context_limit.safety_reserve_tokens,
+        "limitSource": context_limit.source,
+        "limitConfidence": context_limit.confidence,
+        "limitDiagnostic": context_limit.diagnostic,
+        "limitFetchedAt": context_limit.fetched_at,
         "estimatedTokens": estimated_tokens,
         "policy": {
             "action": context_policy_action_label(&policy_decision.action),
@@ -443,6 +455,7 @@ fn generated_context_id(prefix: &str, run_id: &str, turn_index: usize) -> String
 
 fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
     match fragment.id.as_str() {
+        "xero.soul" => "soul",
         "xero.system_policy" => "runtime_policy",
         "xero.tool_policy" => "tool_policy",
         "project.code_map" => "code_map",
@@ -665,6 +678,7 @@ mod tests {
             model_id: OPENAI_CODEX_PROVIDER_ID,
             turn_index: 0,
             browser_control_preference: BrowserControlPreferenceDto::Default,
+            soul_settings: None,
             tools: &[],
             messages: &messages,
             owned_process_summary: None,

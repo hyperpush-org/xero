@@ -38,9 +38,10 @@ use super::autonomous_skill_runtime::{
 };
 use crate::{
     commands::{
-        browser::load_browser_control_settings, BranchSummaryDto, BrowserControlPreferenceDto,
-        CommandError, CommandResult, RepositoryDiffScope, RepositoryStatusEntryDto,
-        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto,
+        browser::load_browser_control_settings, default_soul_settings, load_soul_settings,
+        BranchSummaryDto, BrowserControlPreferenceDto, CommandError, CommandResult,
+        RepositoryDiffScope, RepositoryStatusEntryDto, RuntimeAgentIdDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, SoulSettingsDto,
     },
     runtime::AgentRunCancellationToken,
     state::DesktopState,
@@ -1221,6 +1222,7 @@ pub struct AutonomousToolRuntime {
     pub(super) command_controls: Option<RuntimeRunControlStateDto>,
     pub(super) agent_run_context: Option<AutonomousAgentRunContext>,
     pub(super) browser_control_preference: BrowserControlPreferenceDto,
+    pub(super) soul_settings: SoulSettingsDto,
     pub(super) browser_executor: Option<Arc<dyn BrowserExecutor>>,
     pub(super) emulator_executor: Option<Arc<dyn EmulatorExecutor>>,
     pub(super) solana_executor: Option<Arc<dyn SolanaExecutor>>,
@@ -1248,6 +1250,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
                 "browser_control_preference",
                 &self.browser_control_preference,
             )
+            .field("soul_settings", &self.soul_settings)
             .field("mcp_registry_path", &self.mcp_registry_path)
             .field("subagent_execution_depth", &self.subagent_execution_depth)
             .field("subagent_write_scope", &self.subagent_write_scope)
@@ -1332,6 +1335,7 @@ impl AutonomousToolRuntime {
             command_controls: None,
             agent_run_context: None,
             browser_control_preference: BrowserControlPreferenceDto::Default,
+            soul_settings: default_soul_settings(),
             browser_executor: None,
             emulator_executor: None,
             solana_executor: None,
@@ -1370,6 +1374,15 @@ impl AutonomousToolRuntime {
         self.browser_control_preference
     }
 
+    pub fn with_soul_settings(mut self, settings: SoulSettingsDto) -> Self {
+        self.soul_settings = settings;
+        self
+    }
+
+    pub fn soul_settings(&self) -> &SoulSettingsDto {
+        &self.soul_settings
+    }
+
     pub fn with_emulator_executor(mut self, executor: Arc<dyn EmulatorExecutor>) -> Self {
         self.emulator_executor = Some(executor);
         self
@@ -1396,6 +1409,7 @@ impl AutonomousToolRuntime {
         let browser_executor = browser::tauri_browser_executor(app.clone(), state.clone());
         let repo_root = resolve_imported_repo_root(app, state, project_id)?;
         let browser_control_preference = load_browser_control_settings(app, state)?.preference;
+        let soul_settings = load_soul_settings(app, state)?;
         let skill_settings = load_skill_source_settings_from_path(&state.global_db_path(app)?)?;
         let skill_runtime_config = AutonomousSkillRuntimeConfig {
             default_source_repo: skill_settings.github.repo.clone(),
@@ -1434,6 +1448,7 @@ impl AutonomousToolRuntime {
             state.autonomous_web_config(),
         )?
         .with_browser_control_preference(browser_control_preference)
+        .with_soul_settings(soul_settings)
         .with_browser_executor(browser_executor)
         .with_emulator_executor(emulator::tauri_emulator_executor(app.clone()))
         .with_mcp_registry_path(state.global_db_path(app)?)

@@ -412,14 +412,72 @@ pub enum SessionContextBudgetPressureDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContextLimitSourceDto {
+    LiveCatalog,
+    AppProfile,
+    BuiltInRegistry,
+    Heuristic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContextLimitConfidenceDto {
+    High,
+    Medium,
+    Low,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionContextLimitResolutionDto {
+    pub provider_id: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_input_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    pub output_reserve_tokens: u64,
+    pub safety_reserve_tokens: u64,
+    pub source: SessionContextLimitSourceDto,
+    pub confidence: SessionContextLimitConfidenceDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionContextBudgetDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_input_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    pub output_reserve_tokens: u64,
+    pub safety_reserve_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressure_percent: Option<u64>,
     pub estimated_tokens: u64,
     pub estimation_source: SessionUsageSourceDto,
     pub pressure: SessionContextBudgetPressureDto,
     pub known_provider_budget: bool,
+    pub limit_source: SessionContextLimitSourceDto,
+    pub limit_confidence: SessionContextLimitConfidenceDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_diagnostic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_fetched_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1500,53 +1558,66 @@ pub fn approved_memory_context_contributors(
         .collect()
 }
 
+const DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS: u64 = 4_096;
+const DEFAULT_CONTEXT_LIMIT_SAFETY_RESERVE_PERCENT: u64 = 15;
+
 pub fn context_budget(
     estimated_tokens: u64,
     budget_tokens: Option<u64>,
 ) -> SessionContextBudgetDto {
-    context_budget_with_source(
+    context_budget_from_resolution(
         estimated_tokens,
-        budget_tokens,
+        legacy_context_limit_resolution(budget_tokens),
         SessionUsageSourceDto::Estimated,
     )
 }
 
 pub fn context_budget_with_source(
     estimated_tokens: u64,
-    budget_tokens: Option<u64>,
+    limit: SessionContextLimitResolutionDto,
     estimation_source: SessionUsageSourceDto,
 ) -> SessionContextBudgetDto {
-    let Some(budget) = budget_tokens else {
-        return SessionContextBudgetDto {
-            budget_tokens: None,
-            estimated_tokens,
-            estimation_source,
-            pressure: SessionContextBudgetPressureDto::Unknown,
-            known_provider_budget: false,
-        };
-    };
+    context_budget_from_resolution(estimated_tokens, limit, estimation_source)
+}
 
-    let percent = if budget == 0 {
-        101
-    } else {
-        estimated_tokens.saturating_mul(100) / budget
-    };
-    let pressure = match percent {
-        0..=49 => SessionContextBudgetPressureDto::Low,
-        50..=79 => SessionContextBudgetPressureDto::Medium,
-        80..=100 => SessionContextBudgetPressureDto::High,
-        _ => SessionContextBudgetPressureDto::Over,
-    };
+fn context_budget_from_resolution(
+    estimated_tokens: u64,
+    limit: SessionContextLimitResolutionDto,
+    estimation_source: SessionUsageSourceDto,
+) -> SessionContextBudgetDto {
+    let effective_budget = limit.effective_input_budget_tokens;
+    let pressure_percent = effective_budget.filter(|budget| *budget > 0).map(|budget| {
+        estimated_tokens
+            .saturating_mul(100)
+            .saturating_add(budget.saturating_sub(1))
+            / budget
+    });
+    let pressure = context_pressure_from_percent(pressure_percent);
+
     SessionContextBudgetDto {
-        budget_tokens: Some(budget),
+        budget_tokens: effective_budget,
+        context_window_tokens: limit.context_window_tokens,
+        effective_input_budget_tokens: effective_budget,
+        max_output_tokens: limit.max_output_tokens,
+        output_reserve_tokens: limit.output_reserve_tokens,
+        safety_reserve_tokens: limit.safety_reserve_tokens,
+        remaining_tokens: effective_budget.map(|budget| budget.saturating_sub(estimated_tokens)),
+        pressure_percent,
         estimated_tokens,
         estimation_source,
         pressure,
-        known_provider_budget: true,
+        known_provider_budget: effective_budget.is_some(),
+        limit_source: limit.source,
+        limit_confidence: limit.confidence,
+        limit_diagnostic: limit.diagnostic,
+        limit_fetched_at: limit.fetched_at,
     }
 }
 
-pub fn provider_context_budget_tokens(provider_id: &str, model_id: &str) -> Option<u64> {
+pub fn resolve_context_limit(
+    provider_id: &str,
+    model_id: &str,
+) -> SessionContextLimitResolutionDto {
     let provider = provider_id.trim().to_ascii_lowercase();
     let model = model_id.trim().to_ascii_lowercase();
     if provider.is_empty()
@@ -1554,20 +1625,134 @@ pub fn provider_context_budget_tokens(provider_id: &str, model_id: &str) -> Opti
         || provider == "unavailable"
         || model == "unavailable"
     {
-        return None;
+        return unknown_context_limit_resolution(provider_id, model_id);
     }
 
+    if let Some(window) = built_in_context_window_tokens(&provider, &model) {
+        return context_limit_resolution(
+            provider_id,
+            model_id,
+            window,
+            SessionContextLimitSourceDto::BuiltInRegistry,
+            SessionContextLimitConfidenceDto::Medium,
+            format!(
+                "Xero used its built-in context limit registry for `{provider_id}/{model_id}`."
+            ),
+        );
+    }
+
+    if let Some(window) = heuristic_context_window_tokens(&provider, &model) {
+        return context_limit_resolution(
+            provider_id,
+            model_id,
+            window,
+            SessionContextLimitSourceDto::Heuristic,
+            SessionContextLimitConfidenceDto::Low,
+            format!(
+                "Xero inferred this context limit from the provider/model family for `{provider_id}/{model_id}`."
+            ),
+        );
+    }
+
+    unknown_context_limit_resolution(provider_id, model_id)
+}
+
+pub fn provider_context_budget_tokens(provider_id: &str, model_id: &str) -> Option<u64> {
+    resolve_context_limit(provider_id, model_id).context_window_tokens
+}
+
+fn legacy_context_limit_resolution(budget_tokens: Option<u64>) -> SessionContextLimitResolutionDto {
+    match budget_tokens {
+        Some(budget) => SessionContextLimitResolutionDto {
+            provider_id: "legacy".into(),
+            model_id: "legacy".into(),
+            context_window_tokens: Some(budget),
+            effective_input_budget_tokens: Some(budget),
+            max_output_tokens: None,
+            output_reserve_tokens: 0,
+            safety_reserve_tokens: 0,
+            source: SessionContextLimitSourceDto::Heuristic,
+            confidence: SessionContextLimitConfidenceDto::Low,
+            diagnostic: Some(
+                "Legacy budget value supplied without context-window metadata.".into(),
+            ),
+            fetched_at: None,
+        },
+        None => unknown_context_limit_resolution("legacy", "legacy"),
+    }
+}
+
+fn unknown_context_limit_resolution(
+    provider_id: &str,
+    model_id: &str,
+) -> SessionContextLimitResolutionDto {
+    SessionContextLimitResolutionDto {
+        provider_id: provider_id.trim().to_string(),
+        model_id: model_id.trim().to_string(),
+        context_window_tokens: None,
+        effective_input_budget_tokens: None,
+        max_output_tokens: Some(DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS),
+        output_reserve_tokens: DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS,
+        safety_reserve_tokens: 0,
+        source: SessionContextLimitSourceDto::Unknown,
+        confidence: SessionContextLimitConfidenceDto::Unknown,
+        diagnostic: Some(
+            "Xero can estimate the next request size, but the selected model's context window is unknown."
+                .into(),
+        ),
+        fetched_at: None,
+    }
+}
+
+fn context_limit_resolution(
+    provider_id: &str,
+    model_id: &str,
+    context_window_tokens: u64,
+    source: SessionContextLimitSourceDto,
+    confidence: SessionContextLimitConfidenceDto,
+    diagnostic: String,
+) -> SessionContextLimitResolutionDto {
+    let output_reserve_tokens = DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS.min(context_window_tokens);
+    let budget_after_output = context_window_tokens.saturating_sub(output_reserve_tokens);
+    let safety_reserve_tokens = budget_after_output
+        .saturating_mul(DEFAULT_CONTEXT_LIMIT_SAFETY_RESERVE_PERCENT)
+        .saturating_add(99)
+        / 100;
+    let effective_input_budget_tokens = budget_after_output.saturating_sub(safety_reserve_tokens);
+
+    SessionContextLimitResolutionDto {
+        provider_id: provider_id.trim().to_string(),
+        model_id: model_id.trim().to_string(),
+        context_window_tokens: Some(context_window_tokens),
+        effective_input_budget_tokens: Some(effective_input_budget_tokens),
+        max_output_tokens: Some(DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS),
+        output_reserve_tokens,
+        safety_reserve_tokens,
+        source,
+        confidence,
+        diagnostic: Some(diagnostic),
+        fetched_at: None,
+    }
+}
+
+fn context_pressure_from_percent(percent: Option<u64>) -> SessionContextBudgetPressureDto {
+    match percent {
+        None => SessionContextBudgetPressureDto::Unknown,
+        Some(0..=49) => SessionContextBudgetPressureDto::Low,
+        Some(50..=74) => SessionContextBudgetPressureDto::Medium,
+        Some(75..=100) => SessionContextBudgetPressureDto::High,
+        Some(_) => SessionContextBudgetPressureDto::Over,
+    }
+}
+
+fn built_in_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
     if model.contains("gemini-1.5-pro")
         || model.contains("gemini-1.5-flash")
         || model.contains("gemini-2.")
     {
         return Some(1_000_000);
     }
-    if model.contains("claude")
-        || provider == "anthropic"
-        || provider == "bedrock"
-        || provider == "vertex"
-    {
+    if model.contains("claude") {
         return Some(200_000);
     }
     if model.contains("gpt-5")
@@ -1575,11 +1760,28 @@ pub fn provider_context_budget_tokens(provider_id: &str, model_id: &str) -> Opti
         || model.contains("gpt-4o")
         || model.contains("o3")
         || model.contains("o4")
-        || provider == "openai_codex"
         || (provider == "github_models" && model.contains("gpt"))
         || model.contains("mistral-large")
         || model.contains("codestral")
     {
+        return Some(128_000);
+    }
+
+    None
+}
+
+fn heuristic_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
+    if provider == "anthropic" || provider == "bedrock" || provider == "vertex" {
+        return Some(200_000);
+    }
+    if provider == "openai_codex" {
+        return Some(128_000);
+    }
+    if provider.contains("gemini") || provider == "google" {
+        return Some(1_000_000);
+    }
+
+    if model.contains("large") || model.contains("pro") || model.contains("sonnet") {
         return Some(128_000);
     }
 
@@ -1666,6 +1868,24 @@ pub fn validate_context_snapshot_contract(
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err("context snapshot provider request hash must be lowercase SHA-256".into());
+    }
+    if snapshot.budget.known_provider_budget {
+        let Some(effective_budget) = snapshot.budget.effective_input_budget_tokens else {
+            return Err("known context budgets must expose an effective input budget".into());
+        };
+        if snapshot.budget.budget_tokens != Some(effective_budget) {
+            return Err("context budget tokens must match the effective input budget".into());
+        }
+        if snapshot.budget.remaining_tokens.is_none() {
+            return Err("known context budgets must expose remaining tokens".into());
+        }
+        if snapshot.budget.pressure_percent.is_none() {
+            return Err("known context budgets must expose pressure percent".into());
+        }
+    } else if snapshot.budget.pressure != SessionContextBudgetPressureDto::Unknown
+        || snapshot.budget.pressure_percent.is_some()
+    {
+        return Err("unknown context budgets must not expose pressure percent".into());
     }
     let mut previous_sequence = 0_u64;
     let mut included_tokens = 0_u64;

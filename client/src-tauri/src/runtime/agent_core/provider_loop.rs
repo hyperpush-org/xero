@@ -41,6 +41,7 @@ pub(crate) fn drive_provider_loop(
                 model_id: provider.model_id(),
                 turn_index,
                 browser_control_preference: tool_runtime.browser_control_preference(),
+                soul_settings: Some(tool_runtime.soul_settings()),
                 tools: tool_registry.descriptors(),
                 messages: &messages,
                 owned_process_summary: owned_process_summary.as_deref(),

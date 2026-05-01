@@ -81,6 +81,7 @@ interface ComposerDockProps {
   runtimeRunActionError: OperatorActionErrorView | null
   runtimeRunActionErrorTitle: string
   dictation: ComposerDictationControl
+  contextMeter?: ReactNode
   onOpenDiagnostics?: () => void
   onDraftPromptChange: (value: string) => void
   onSubmitDraftPrompt: () => void
@@ -145,6 +146,7 @@ export function ComposerDock({
   runtimeRunActionError,
   runtimeRunActionErrorTitle,
   dictation,
+  contextMeter,
   onOpenDiagnostics,
   onDraftPromptChange,
   onSubmitDraftPrompt,
@@ -291,6 +293,7 @@ export function ComposerDock({
                   ) : null}
                 </div>
                 <div className="flex items-center gap-1">
+                  {contextMeter ? <div className="shrink-0">{contextMeter}</div> : null}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button

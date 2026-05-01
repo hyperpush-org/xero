@@ -261,6 +261,12 @@ import {
   type UpsertBrowserControlSettingsRequestDto,
 } from '@/src/lib/xero-model/browser'
 import {
+  soulSettingsSchema,
+  upsertSoulSettingsRequestSchema,
+  type SoulSettingsDto,
+  type UpsertSoulSettingsRequestDto,
+} from '@/src/lib/xero-model/soul'
+import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
   agentSessionBranchResponseSchema,
@@ -427,6 +433,8 @@ const COMMANDS = {
   subscribeRuntimeStream: 'subscribe_runtime_stream',
   browserControlSettings: 'browser_control_settings',
   browserControlUpdateSettings: 'browser_control_update_settings',
+  soulSettings: 'soul_settings',
+  soulUpdateSettings: 'soul_update_settings',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
   browserHide: 'browser_hide',
@@ -797,6 +805,8 @@ export interface XeroDesktopAdapter {
   browserControlUpdateSettings?(
     request: UpsertBrowserControlSettingsRequestDto,
   ): Promise<BrowserControlSettingsDto>
+  soulSettings?(): Promise<SoulSettingsDto>
+  soulUpdateSettings?(request: UpsertSoulSettingsRequestDto): Promise<SoulSettingsDto>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -2109,6 +2119,17 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   browserControlUpdateSettings(request) {
     const parsedRequest = upsertBrowserControlSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.browserControlUpdateSettings, browserControlSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  soulSettings() {
+    return invokeTyped(COMMANDS.soulSettings, soulSettingsSchema)
+  },
+
+  soulUpdateSettings(request) {
+    const parsedRequest = upsertSoulSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.soulUpdateSettings, soulSettingsSchema, {
       request: parsedRequest,
     })
   },

@@ -313,15 +313,97 @@ export const sessionContextTaskPhaseSchema = z.enum([
 ])
 export const sessionContextDispositionSchema = z.enum(['include', 'summarize', 'defer', 'retrieve_on_demand'])
 export const sessionContextBudgetPressureSchema = z.enum(['unknown', 'low', 'medium', 'high', 'over'])
+export const sessionContextLimitSourceSchema = z.enum([
+  'live_catalog',
+  'app_profile',
+  'built_in_registry',
+  'heuristic',
+  'unknown',
+])
+export const sessionContextLimitConfidenceSchema = z.enum(['high', 'medium', 'low', 'unknown'])
+export const sessionContextLimitResolutionSchema = z
+  .object({
+    providerId: z.string(),
+    modelId: z.string(),
+    contextWindowTokens: z.number().int().positive().nullable().optional(),
+    effectiveInputBudgetTokens: z.number().int().nonnegative().nullable().optional(),
+    maxOutputTokens: z.number().int().nonnegative().nullable().optional(),
+    outputReserveTokens: z.number().int().nonnegative(),
+    safetyReserveTokens: z.number().int().nonnegative(),
+    source: sessionContextLimitSourceSchema,
+    confidence: sessionContextLimitConfidenceSchema,
+    diagnostic: nonEmptyOptionalTextSchema,
+    fetchedAt: isoTimestampSchema.nullable().optional(),
+  })
+  .strict()
 export const sessionContextBudgetSchema = z
   .object({
-    budgetTokens: z.number().int().positive().nullable().optional(),
+    budgetTokens: z.number().int().nonnegative().nullable().optional(),
+    contextWindowTokens: z.number().int().positive().nullable().optional(),
+    effectiveInputBudgetTokens: z.number().int().nonnegative().nullable().optional(),
+    maxOutputTokens: z.number().int().nonnegative().nullable().optional(),
+    outputReserveTokens: z.number().int().nonnegative(),
+    safetyReserveTokens: z.number().int().nonnegative(),
+    remainingTokens: z.number().int().nonnegative().nullable().optional(),
+    pressurePercent: z.number().int().nonnegative().nullable().optional(),
     estimatedTokens: z.number().int().nonnegative(),
     estimationSource: sessionUsageSourceSchema,
     pressure: sessionContextBudgetPressureSchema,
     knownProviderBudget: z.boolean(),
+    limitSource: sessionContextLimitSourceSchema,
+    limitConfidence: sessionContextLimitConfidenceSchema,
+    limitDiagnostic: nonEmptyOptionalTextSchema,
+    limitFetchedAt: isoTimestampSchema.nullable().optional(),
   })
   .strict()
+  .superRefine((budget, ctx) => {
+    if (!budget.knownProviderBudget) {
+      if (budget.pressure !== 'unknown') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['pressure'],
+          message: 'Unknown context budgets must use unknown pressure.',
+        })
+      }
+      if (budget.pressurePercent != null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['pressurePercent'],
+          message: 'Unknown context budgets must not expose pressure percent.',
+        })
+      }
+      return
+    }
+
+    if (budget.effectiveInputBudgetTokens == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['effectiveInputBudgetTokens'],
+        message: 'Known context budgets must expose an effective input budget.',
+      })
+    }
+    if (budget.budgetTokens !== budget.effectiveInputBudgetTokens) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['budgetTokens'],
+        message: 'Budget tokens must match the effective input budget.',
+      })
+    }
+    if (budget.remainingTokens == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['remainingTokens'],
+        message: 'Known context budgets must expose remaining tokens.',
+      })
+    }
+    if (budget.pressurePercent == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pressurePercent'],
+        message: 'Known context budgets must expose pressure percent.',
+      })
+    }
+  })
 
 export const sessionContextContributorSchema = z
   .object({
@@ -767,6 +849,9 @@ export type SessionContextContributorKindDto = z.infer<typeof sessionContextCont
 export type SessionContextTaskPhaseDto = z.infer<typeof sessionContextTaskPhaseSchema>
 export type SessionContextDispositionDto = z.infer<typeof sessionContextDispositionSchema>
 export type SessionContextBudgetPressureDto = z.infer<typeof sessionContextBudgetPressureSchema>
+export type SessionContextLimitSourceDto = z.infer<typeof sessionContextLimitSourceSchema>
+export type SessionContextLimitConfidenceDto = z.infer<typeof sessionContextLimitConfidenceSchema>
+export type SessionContextLimitResolutionDto = z.infer<typeof sessionContextLimitResolutionSchema>
 export type SessionContextBudgetDto = z.infer<typeof sessionContextBudgetSchema>
 export type SessionContextContributorDto = z.infer<typeof sessionContextContributorSchema>
 export type SessionContextCodeSymbolDto = z.infer<typeof sessionContextCodeSymbolSchema>
@@ -825,16 +910,44 @@ export function createContextBudget(estimatedTokens: number, budgetTokens?: numb
   if (!budgetTokens || budgetTokens <= 0) {
     return {
       budgetTokens: null,
+      contextWindowTokens: null,
+      effectiveInputBudgetTokens: null,
+      maxOutputTokens: 4096,
+      outputReserveTokens: 4096,
+      safetyReserveTokens: 0,
+      remainingTokens: null,
+      pressurePercent: null,
       estimatedTokens,
       estimationSource: 'estimated',
       pressure: 'unknown',
       knownProviderBudget: false,
+      limitSource: 'unknown',
+      limitConfidence: 'unknown',
+      limitDiagnostic: "Xero can estimate the next request size, but the selected model's context window is unknown.",
+      limitFetchedAt: null,
     }
   }
-  const percent = Math.floor((estimatedTokens / budgetTokens) * 100)
+  const percent = Math.ceil((estimatedTokens / budgetTokens) * 100)
   const pressure: SessionContextBudgetPressureDto =
-    percent < 50 ? 'low' : percent < 80 ? 'medium' : percent <= 100 ? 'high' : 'over'
-  return { budgetTokens, estimatedTokens, estimationSource: 'estimated', pressure, knownProviderBudget: true }
+    percent < 50 ? 'low' : percent < 75 ? 'medium' : percent <= 100 ? 'high' : 'over'
+  return {
+    budgetTokens,
+    contextWindowTokens: budgetTokens,
+    effectiveInputBudgetTokens: budgetTokens,
+    maxOutputTokens: null,
+    outputReserveTokens: 0,
+    safetyReserveTokens: 0,
+    remainingTokens: Math.max(0, budgetTokens - estimatedTokens),
+    pressurePercent: percent,
+    estimatedTokens,
+    estimationSource: 'estimated',
+    pressure,
+    knownProviderBudget: true,
+    limitSource: 'heuristic',
+    limitConfidence: 'low',
+    limitDiagnostic: 'Legacy budget value supplied without context-window metadata.',
+    limitFetchedAt: null,
+  }
 }
 
 function validateStrictSequence(

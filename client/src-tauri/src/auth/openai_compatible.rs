@@ -139,6 +139,8 @@ pub struct OpenAiCompatibleDiscoveredModel {
     pub id: String,
     pub display_name: String,
     pub thinking: OpenAiCompatibleDiscoveredThinkingCapability,
+    pub context_window_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +175,10 @@ struct GitHubCatalogModelSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default, alias = "context_window_tokens", alias = "context_length")]
+    context_window_tokens: Option<u64>,
+    #[serde(default, alias = "max_output_tokens", alias = "max_completion_tokens")]
+    max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +191,12 @@ struct ModelSummary {
     display_name: Option<String>,
     #[serde(default)]
     capabilities: OpenAiCompatibleCapabilities,
+    #[serde(default, alias = "context_window_tokens", alias = "context_length")]
+    context_window_tokens: Option<u64>,
+    #[serde(default, alias = "max_input_tokens", alias = "max_context_length")]
+    max_input_tokens: Option<u64>,
+    #[serde(default, alias = "max_output_tokens", alias = "max_completion_tokens")]
+    max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -552,6 +564,11 @@ fn normalize_models(
             id: id.to_owned(),
             display_name,
             thinking,
+            context_window_tokens: model
+                .context_window_tokens
+                .or(model.max_input_tokens)
+                .filter(|tokens| *tokens > 0),
+            max_output_tokens: model.max_output_tokens.filter(|tokens| *tokens > 0),
         });
     }
 
@@ -607,6 +624,8 @@ fn normalize_github_models_catalog(
             id: id.to_owned(),
             display_name,
             thinking: unsupported_thinking_capability(),
+            context_window_tokens: model.context_window_tokens.filter(|tokens| *tokens > 0),
+            max_output_tokens: model.max_output_tokens.filter(|tokens| *tokens > 0),
         });
     }
 

@@ -1042,6 +1042,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onRefreshEnvironmentDiscovery={(options) => refreshEnvironmentDiscovery(options)}
         onRunDoctorReport={(request) => runDoctorReport(request)}
         dictationAdapter={resolvedAdapter}
+        soulAdapter={resolvedAdapter}
         onUpsertNotificationRoute={(request) =>
           upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
         }

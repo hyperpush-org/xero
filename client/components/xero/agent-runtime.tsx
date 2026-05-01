@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, Loader2, Plus } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -8,6 +8,7 @@ import type {
   AgentPaneView,
   AgentProviderModelView,
 } from '@/src/features/xero/use-xero-desktop-state'
+import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import type {
   AgentSessionView,
   RuntimeRunView,
@@ -27,6 +28,7 @@ import type {
   ListSessionMemoriesRequestDto,
   ListSessionMemoriesResponseDto,
   SessionMemoryRecordDto,
+  SessionContextSnapshotDto,
   UpdateSessionMemoryRequestDto,
 } from '@/src/lib/xero-model/session-context'
 import {
@@ -41,6 +43,10 @@ import {
   getCheckpointControlLoopRecoveryAlertMeta,
 } from './agent-runtime/checkpoint-control-loop-helpers'
 import { CheckpointControlLoopSection } from './agent-runtime/checkpoint-control-loop-section'
+import {
+  AgentContextMeter,
+  type AgentContextMeterStatus,
+} from './agent-runtime/agent-context-meter'
 import {
   getComposerApprovalOptions,
   getComposerModelGroups,
@@ -60,6 +66,8 @@ import {
 import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
+
+type AgentRuntimeDesktopAdapter = SpeechDictationAdapter & Partial<Pick<XeroDesktopAdapter, 'getSessionContextSnapshot'>>
 
 interface AgentRuntimeProps {
   agent: AgentPaneView
@@ -103,7 +111,7 @@ interface AgentRuntimeProps {
   onUpdateSessionMemory?: (request: UpdateSessionMemoryRequestDto) => Promise<SessionMemoryRecordDto>
   onDeleteSessionMemory?: (request: DeleteSessionMemoryRequestDto) => Promise<void>
   onContextRefresh?: () => Promise<void>
-  desktopAdapter?: SpeechDictationAdapter
+  desktopAdapter?: AgentRuntimeDesktopAdapter
   /** GitHub avatar URL for the signed-in account, when available. */
   accountAvatarUrl?: string | null
   /** GitHub login for the signed-in account. */
@@ -205,6 +213,113 @@ function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): Co
   return turns.slice(-MAX_VISIBLE_RUNTIME_FEED_ITEMS)
 }
 
+function toContextMeterError(error: unknown): {
+  code: string
+  message: string
+  retryable: boolean
+} {
+  const candidate = error as { code?: unknown; retryable?: unknown; message?: unknown } | null
+  return {
+    code: typeof candidate?.code === 'string' && candidate.code.trim().length > 0
+      ? candidate.code
+      : 'agent_context_meter_failed',
+    message: typeof candidate?.message === 'string' && candidate.message.trim().length > 0
+      ? candidate.message
+      : error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : 'Xero could not refresh the context meter.',
+    retryable: typeof candidate?.retryable === 'boolean' ? candidate.retryable : true,
+  }
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value)
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs)
+    return () => window.clearTimeout(timeout)
+  }, [delayMs, value])
+
+  return debounced
+}
+
+function useAgentContextMeterSnapshot(options: {
+  adapter?: AgentRuntimeDesktopAdapter
+  projectId: string
+  agentSessionId: string | null
+  runId: string | null
+  providerId: string | null
+  modelId: string | null
+  pendingPrompt: string
+  lifecycleKey: string
+}): {
+  status: AgentContextMeterStatus
+  snapshot: SessionContextSnapshotDto | null
+  error: ReturnType<typeof toContextMeterError> | null
+  refresh: () => void
+} {
+  const debouncedPendingPrompt = useDebouncedValue(options.pendingPrompt, 350)
+  const [status, setStatus] = useState<AgentContextMeterStatus>('idle')
+  const [snapshot, setSnapshot] = useState<SessionContextSnapshotDto | null>(null)
+  const [error, setError] = useState<ReturnType<typeof toContextMeterError> | null>(null)
+  const requestIdRef = useRef(0)
+  const snapshotRef = useRef<SessionContextSnapshotDto | null>(null)
+
+  useEffect(() => {
+    snapshotRef.current = snapshot
+  }, [snapshot])
+
+  const refresh = useCallback(() => {
+    if (!options.adapter?.getSessionContextSnapshot || !options.agentSessionId) {
+      requestIdRef.current += 1
+      setStatus('idle')
+      setSnapshot(null)
+      setError(null)
+      return
+    }
+
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
+    setStatus((current) => (snapshotRef.current || current === 'ready' ? 'stale' : 'loading'))
+    setError(null)
+
+    void options.adapter
+      .getSessionContextSnapshot({
+        projectId: options.projectId,
+        agentSessionId: options.agentSessionId,
+        runId: options.runId,
+        providerId: options.providerId,
+        modelId: options.modelId,
+        pendingPrompt: debouncedPendingPrompt,
+      })
+      .then((nextSnapshot) => {
+        if (requestIdRef.current !== requestId) return
+        setSnapshot(nextSnapshot)
+        setStatus('ready')
+        setError(null)
+      })
+      .catch((nextError) => {
+        if (requestIdRef.current !== requestId) return
+        setError(toContextMeterError(nextError))
+        setStatus('error')
+      })
+  }, [
+    debouncedPendingPrompt,
+    options.adapter,
+    options.agentSessionId,
+    options.modelId,
+    options.projectId,
+    options.providerId,
+    options.runId,
+  ])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh, options.lifecycleKey])
+
+  return { status, snapshot, error, refresh }
+}
+
 export function AgentRuntime({
   agent,
   onOpenSettings,
@@ -241,6 +356,9 @@ export function AgentRuntime({
   const toolCalls = runtimeStream?.toolCalls ?? []
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
   const visibleTurns = useMemo(() => buildConversationTurns(runtimeStreamItems), [runtimeStreamItems])
+  const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
+  const selectedAgentSessionId =
+    selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
 
   const selectedProviderId =
     agent.selectedModel?.providerId ?? agent.selectedProviderId ?? runtimeSession?.providerId ?? 'openai_codex'
@@ -333,12 +451,37 @@ export function AgentRuntime({
     [selectedComposerModel],
   )
   const composerApprovalOptions = useMemo(() => getComposerApprovalOptions(), [])
+  const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
+  const contextMeterState = useAgentContextMeterSnapshot({
+    adapter: desktopAdapter,
+    projectId: agent.project.id,
+    agentSessionId: selectedAgentSessionId,
+    runId: renderableRuntimeRun?.runId ?? streamRunId ?? null,
+    providerId: selectedComposerModel?.providerId ?? selectedProviderId,
+    modelId: selectedComposerModel?.modelId ?? selectedModelId,
+    pendingPrompt: controller.draftPrompt,
+    lifecycleKey: [
+      renderableRuntimeRun?.runId ?? 'no-run',
+      renderableRuntimeRun?.updatedAt ?? 'no-run-update',
+      runtimeStream?.status ?? 'idle',
+      runtimeStream?.lastItemAt ?? 'no-stream-update',
+      agent.pendingRuntimeRunAction ?? 'no-action',
+    ].join(':'),
+  })
+  const contextMeter =
+    contextMeterState.status === 'idle' ? null : (
+      <AgentContextMeter
+        status={contextMeterState.status}
+        snapshot={contextMeterState.snapshot}
+        error={contextMeterState.error}
+        onRefresh={contextMeterState.refresh}
+      />
+    )
   const composerThinkingPlaceholder = controller.composerThinkingEffort
     ? getRuntimeRunThinkingEffortLabel(controller.composerThinkingEffort)
     : controller.composerModelId
       ? 'Thinking unavailable'
       : 'Choose model'
-  const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const checkpointControlLoop = agent.checkpointControlLoop ?? createEmptyCheckpointControlLoop()
   const checkpointControlLoopRecoveryAlert = getCheckpointControlLoopRecoveryAlertMeta({
     controlLoop: checkpointControlLoop,
@@ -404,7 +547,11 @@ export function AgentRuntime({
   const projectLabel =
     agent.project.repository?.displayName ?? agent.project.name ?? 'this project'
   const sessionLabel = agent.project.selectedAgentSession?.title?.trim() || 'New Chat'
-  const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
+  const refreshContextMeter = contextMeterState.refresh
+  const handleContextRefresh = useCallback(async () => {
+    await onContextRefresh?.()
+    refreshContextMeter()
+  }, [onContextRefresh, refreshContextMeter])
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -460,6 +607,7 @@ export function AgentRuntime({
                 visibleTurns={visibleTurns}
                 streamIssue={streamIssue}
                 streamFailure={runtimeStream?.failure ?? null}
+                streamCompletion={runtimeStream?.completion ?? null}
                 accountAvatarUrl={accountAvatarUrl}
                 accountLogin={accountLogin}
               />
@@ -488,7 +636,7 @@ export function AgentRuntime({
                 onExtractSessionMemoryCandidates={onExtractSessionMemoryCandidates}
                 onUpdateSessionMemory={onUpdateSessionMemory}
                 onDeleteSessionMemory={onDeleteSessionMemory}
-                onContextRefresh={onContextRefresh}
+                onContextRefresh={handleContextRefresh}
               />
             </div>
           )}
@@ -508,6 +656,7 @@ export function AgentRuntime({
           controlsDisabled={controller.areControlsDisabled}
           runtimeAgentSwitchDisabled={controller.isRuntimeAgentSwitchDisabled}
           dictation={controller.dictation}
+          contextMeter={contextMeter}
           draftPrompt={controller.draftPrompt}
           isPromptDisabled={controller.isPromptDisabled}
           isSendDisabled={!controller.canSubmitPrompt}

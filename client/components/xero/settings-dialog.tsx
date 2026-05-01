@@ -13,6 +13,7 @@ import type {
   SkillRegistryMutationStatus,
 } from "@/src/features/xero/use-xero-desktop-state"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
+import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
 import type {
   EnvironmentDiscoveryStatusDto,
   EnvironmentProfileSummaryDto,
@@ -46,7 +47,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Code2, Globe, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Code2, Globe, Heart, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -64,12 +65,14 @@ import { NotificationsSection } from "@/components/xero/settings-dialog/notifica
 import { ProvidersSection } from "@/components/xero/settings-dialog/providers-section"
 import { PluginsSection } from "@/components/xero/settings-dialog/plugins-section"
 import { SkillsSection } from "@/components/xero/settings-dialog/skills-section"
+import { SoulSection } from "@/components/xero/settings-dialog/soul-section"
 import { ThemesSection } from "@/components/xero/settings-dialog/themes-section"
 
 export type SettingsSection =
   | "account"
   | "providers"
   | "diagnostics"
+  | "soul"
   | "dictation"
   | "notifications"
   | "mcp"
@@ -103,6 +106,7 @@ const WORKSPACE_GROUP: NavGroup = {
   items: [
     { id: "providers", label: "Providers", icon: KeyRound },
     { id: "diagnostics", label: "Diagnostics", icon: Activity },
+    { id: "soul", label: "Soul", icon: Heart },
     { id: "dictation", label: "Dictation", icon: Mic },
     { id: "notifications", label: "Notifications", icon: Bell },
     { id: "mcp", label: "MCP", icon: PlugZap },
@@ -159,6 +163,7 @@ export interface SettingsDialogProps {
   onRefreshEnvironmentDiscovery?: (options?: { force?: boolean }) => Promise<EnvironmentDiscoveryStatusDto | null>
   onRunDoctorReport?: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
   dictationAdapter?: DictationSettingsAdapter
+  soulAdapter?: SoulSettingsAdapter
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -222,6 +227,7 @@ export function SettingsDialog({
   onRefreshEnvironmentDiscovery,
   onRunDoctorReport,
   dictationAdapter,
+  soulAdapter,
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -396,6 +402,8 @@ export function SettingsDialog({
                   onRefreshEnvironmentDiscovery={onRefreshEnvironmentDiscovery}
                   onRunDoctorReport={onRunDoctorReport}
                 />
+              ) : section === "soul" ? (
+                <SoulSection adapter={soulAdapter} />
               ) : section === "dictation" ? (
                 <DictationSection adapter={dictationAdapter} />
               ) : section === "notifications" ? (

@@ -53,6 +53,7 @@ pub fn create_owned_agent_run(
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
         tool_registry.descriptors(),
+        Some(request.tool_runtime.soul_settings()),
     )?;
     let provider = create_provider_adapter(request.provider_config.clone())?;
     let now = now_timestamp();
@@ -402,9 +403,8 @@ fn ensure_context_budget_allows_continuation(
     request: &ContinueOwnedAgentRunRequest,
     snapshot: &AgentRunSnapshotRecord,
 ) -> CommandResult<()> {
-    let Some(budget_tokens) =
-        provider_context_budget_tokens(&snapshot.run.provider_id, &snapshot.run.model_id)
-    else {
+    let context_limit = resolve_context_limit(&snapshot.run.provider_id, &snapshot.run.model_id);
+    let Some(budget_tokens) = context_limit.effective_input_budget_tokens else {
         return Ok(());
     };
 
@@ -746,8 +746,8 @@ fn estimate_continuation_context_tokens(
     request: &ContinueOwnedAgentRunRequest,
     snapshot: &AgentRunSnapshotRecord,
 ) -> CommandResult<ContinuationContextEstimate> {
-    let budget_tokens =
-        provider_context_budget_tokens(&snapshot.run.provider_id, &snapshot.run.model_id);
+    let budget_tokens = resolve_context_limit(&snapshot.run.provider_id, &snapshot.run.model_id)
+        .effective_input_budget_tokens;
     let controls = runtime_controls_from_request(request.controls.as_ref());
     let tool_registry = tool_registry_for_snapshot(
         &request.repo_root,
@@ -764,6 +764,7 @@ fn estimate_continuation_context_tokens(
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
         tool_registry.descriptors(),
+        Some(request.tool_runtime.soul_settings()),
     )?;
     let provider_messages = provider_messages_from_snapshot(&request.repo_root, snapshot)?;
     let message_tokens = provider_messages.iter().try_fold(0_u64, |total, message| {
@@ -1268,6 +1269,7 @@ fn create_or_load_handoff_target_run(
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
         tool_registry.descriptors(),
+        Some(request.tool_runtime.soul_settings()),
     )?;
     let now = now_timestamp();
     project_store::insert_agent_run(

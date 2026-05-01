@@ -681,7 +681,7 @@ describe('AgentRuntime current UI', () => {
 
   it('mounts the reviewed memory workflow for the selected agent session', async () => {
     const candidateMemory = {
-      contractVersion: 1,
+      contractVersion: 1 as const,
       memoryId: 'memory-candidate-1',
       projectId: 'project-1',
       agentSessionId: 'agent-session-main',
@@ -718,7 +718,7 @@ describe('AgentRuntime current UI', () => {
               projectId: 'project-1',
               agentSessionId: 'agent-session-main',
               title: 'Main chat',
-              summary: null,
+              summary: '',
               status: 'active',
               statusLabel: 'Active',
               selected: true,
@@ -734,7 +734,7 @@ describe('AgentRuntime current UI', () => {
             },
           }),
           runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
-          runtimeRun: makeRuntimeRun({ status: 'completed', isActive: false, isTerminal: true }),
+          runtimeRun: makeRuntimeRun({ status: 'stopped', isActive: false, isTerminal: true }),
         })}
         onListSessionMemories={onListSessionMemories}
         onUpdateSessionMemory={onUpdateSessionMemory}
@@ -817,6 +817,71 @@ describe('AgentRuntime current UI', () => {
         prompt: '1+1',
       }),
     )
+  })
+
+  it('shows a handoff notice when the runtime stream completion reports a same-type handoff', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Run stopped',
+            runtimeLabel: 'Openai Codex · Run stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-04-29T00:48:09Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Stream complete',
+          runtimeStream: {
+            projectId: 'project-1',
+            agentSessionId: 'agent-session-main',
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'session-1',
+            flowId: null,
+            subscribedItemKinds: ['transcript', 'complete'],
+            status: 'complete',
+            items: [],
+            transcriptItems: [],
+            toolCalls: [],
+            skillItems: [],
+            activityItems: [],
+            actionRequired: [],
+            completion: {
+              id: 'complete:run-1:9',
+              kind: 'complete',
+              runId: 'run-1',
+              sequence: 9,
+              createdAt: '2026-04-29T00:48:10Z',
+              detail: 'Owned agent run handed off to a same-type target run.',
+            },
+            failure: null,
+            lastIssue: null,
+            lastItemAt: '2026-04-29T00:48:10Z',
+            lastSequence: 9,
+          },
+          runtimeStreamItems: [
+            {
+              id: 'transcript:run-1:8',
+              kind: 'transcript',
+              runId: 'run-1',
+              sequence: 8,
+              createdAt: '2026-04-29T00:48:09Z',
+              role: 'assistant',
+              text: 'Saved progress so far.',
+            },
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Run continued in a fresh session')).toBeVisible()
+    expect(
+      screen.getByText(/handed this conversation off to a new same-type run/i),
+    ).toBeVisible()
+    expect(screen.queryByText('Latest saved run failed')).not.toBeInTheDocument()
   })
 
   it('renders runtime stream messages as chronological conversation turns', () => {

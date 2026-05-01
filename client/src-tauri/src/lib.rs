@@ -274,6 +274,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::dictation::speech_dictation_start,
             commands::dictation::speech_dictation_stop,
             commands::dictation::speech_dictation_cancel,
+            commands::soul_settings::soul_settings,
+            commands::soul_settings::soul_update_settings,
             commands::browser::browser_show,
             commands::browser::browser_resize,
             commands::browser::browser_hide,

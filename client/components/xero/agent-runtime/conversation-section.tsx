@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import type {
   RuntimeRunView,
+  RuntimeStreamCompleteItemView,
   RuntimeStreamFailureItemView,
   RuntimeStreamIssueView,
   RuntimeStreamToolItemView,
@@ -67,10 +68,26 @@ interface ConversationSectionProps {
   visibleTurns: ConversationTurn[]
   streamIssue: RuntimeStreamIssueView | null
   streamFailure: RuntimeStreamFailureItemView | null
+  /** Stream completion item, used to surface same-type handoff continuations. */
+  streamCompletion?: RuntimeStreamCompleteItemView | null
   /** GitHub avatar URL for the signed-in user, when available. */
   accountAvatarUrl?: string | null
   /** GitHub login for the signed-in user, used as alt text. */
   accountLogin?: string | null
+}
+
+/**
+ * Stable detail-text marker emitted by the runtime when a same-type handoff
+ * completes a source run. The runtime emits the matching summary in
+ * `mark_source_run_handed_off` (see `runtime/agent_core/run.rs`); changing the
+ * sentence on either side requires updating both for the user-facing notice.
+ */
+const HANDOFF_COMPLETION_DETAIL_MARKER = 'handed off to a same-type target run'
+
+function isHandoffCompletion(
+  completion: RuntimeStreamCompleteItemView | null | undefined,
+): boolean {
+  return Boolean(completion?.detail?.toLowerCase().includes(HANDOFF_COMPLETION_DETAIL_MARKER))
 }
 
 export function ConversationSection({
@@ -78,6 +95,7 @@ export function ConversationSection({
   visibleTurns,
   streamIssue,
   streamFailure,
+  streamCompletion = null,
   accountAvatarUrl = null,
   accountLogin = null,
 }: ConversationSectionProps) {
@@ -98,7 +116,8 @@ export function ConversationSection({
   const showRunFailure = Boolean(runFailureMessage)
   const showStreamFailure = Boolean(streamFailure && !streamFailureIsDuplicate)
   const showStreamIssue = Boolean(streamIssue && !streamIssueIsDuplicate)
-  const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue
+  const showHandoffNotice = !showRunFailure && isHandoffCompletion(streamCompletion)
+  const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
   const showAnyTurn = visibleTurns.length > 0
 
   return (
@@ -119,6 +138,16 @@ export function ConversationSection({
 
       {showAnyNotice ? (
         <ul aria-label="Agent run notices" className="flex flex-col gap-3">
+          {showHandoffNotice ? (
+            <li>
+              <NoticeRow
+                tone="info"
+                title="Run continued in a fresh session"
+                message="Xero handed this conversation off to a new same-type run because the context budget was full. Your task, prior decisions, and approved memory carried over — keep replying as normal."
+                code={null}
+              />
+            </li>
+          ) : null}
           {showRunFailure ? (
             <li>
               <NoticeRow

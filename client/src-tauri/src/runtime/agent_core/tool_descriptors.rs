@@ -29,6 +29,7 @@ pub(crate) struct PromptCompiler<'a> {
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
     tools: &'a [AgentToolDescriptor],
+    soul_settings: Option<SoulSettingsDto>,
     owned_process_summary: Option<&'a str>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
     retrieved_project_context: Option<project_store::AgentContextRetrievalResponse>,
@@ -50,6 +51,7 @@ impl<'a> PromptCompiler<'a> {
             runtime_agent_id,
             browser_control_preference,
             tools,
+            soul_settings: None,
             owned_process_summary: None,
             skill_contexts: Vec::new(),
             retrieved_project_context: None,
@@ -58,6 +60,11 @@ impl<'a> PromptCompiler<'a> {
 
     pub(crate) fn with_owned_process_summary(mut self, summary: Option<&'a str>) -> Self {
         self.owned_process_summary = summary.and_then(non_empty_trimmed);
+        self
+    }
+
+    pub(crate) fn with_soul_settings(mut self, settings: Option<&SoulSettingsDto>) -> Self {
+        self.soul_settings = settings.cloned();
         self
     }
 
@@ -79,6 +86,15 @@ impl<'a> PromptCompiler<'a> {
 
     pub(crate) fn compile(&self) -> CommandResult<PromptCompilation> {
         let mut fragments = Vec::new();
+        if let Some(settings) = self.soul_settings.as_ref() {
+            fragments.push(prompt_fragment(
+                "xero.soul",
+                975,
+                "Selected Soul",
+                "xero-runtime:soul-settings",
+                soul_prompt_fragment(settings),
+            ));
+        }
         fragments.push(prompt_fragment(
             "xero.system_policy",
             1000,
@@ -144,6 +160,7 @@ pub(crate) fn assemble_system_prompt_for_session(
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
     tools: &[AgentToolDescriptor],
+    soul_settings: Option<&SoulSettingsDto>,
 ) -> CommandResult<String> {
     let compilation = compile_system_prompt_for_session(
         repo_root,
@@ -152,6 +169,7 @@ pub(crate) fn assemble_system_prompt_for_session(
         runtime_agent_id,
         browser_control_preference,
         tools,
+        soul_settings,
         None,
         Vec::new(),
     )?;
@@ -171,6 +189,7 @@ pub(crate) fn compile_system_prompt_for_session(
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
     tools: &[AgentToolDescriptor],
+    soul_settings: Option<&SoulSettingsDto>,
     owned_process_summary: Option<&str>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
 ) -> CommandResult<PromptCompilation> {
@@ -182,6 +201,7 @@ pub(crate) fn compile_system_prompt_for_session(
         browser_control_preference,
         tools,
     )
+    .with_soul_settings(soul_settings)
     .with_owned_process_summary(owned_process_summary)
     .with_skill_contexts(skill_contexts)
     .compile()
@@ -2800,6 +2820,35 @@ mod tests {
                 && fragment.sha256.len() == 64
                 && fragment.token_estimate > 0
         }));
+    }
+
+    #[test]
+    fn prompt_compiler_adds_selected_soul_at_prompt_start() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls = runtime_controls_from_request(None);
+        let registry = ToolRegistry::for_prompt(root.path(), "What is left to do?", &controls);
+        let soul_settings = crate::commands::default_soul_settings();
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Ask,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .with_soul_settings(Some(&soul_settings))
+        .compile()
+        .expect("compile prompt");
+
+        assert_eq!(compilation.fragments[0].id, "xero.soul");
+        assert!(compilation
+            .prompt
+            .starts_with("xero-owned-agent-v1\n\nSelected Soul: Steady steward"));
+        assert!(compilation
+            .prompt
+            .contains("must stay inside Xero runtime policy"));
+        assert!(compilation.prompt.contains("You are Xero's Ask agent."));
     }
 
     #[test]

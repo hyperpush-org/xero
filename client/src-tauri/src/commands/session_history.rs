@@ -14,7 +14,7 @@ use crate::{
     auth::now_timestamp,
     commands::{
         context_budget_with_source, estimate_tokens, evaluate_compaction_policy,
-        memory_policy_decision, provider_context_budget_tokens, redact_session_context_text,
+        memory_policy_decision, redact_session_context_text, resolve_context_limit,
         run_transcript_from_agent_snapshot, session_compaction_record_dto,
         session_memory_diagnostic_dto, session_memory_record_dto, session_transcript_from_runs,
         usage_totals_from_agent_usage, validate_context_snapshot_contract,
@@ -78,7 +78,6 @@ const MIN_MEMORY_CONFIDENCE: u8 = 50;
 const MAX_CODE_MAP_FILES: usize = 240;
 const MAX_CODE_SYMBOLS: usize = 160;
 const LARGE_CONTEXT_NODE_TOKENS: u64 = 700;
-const CONTEXT_BUDGET_RESERVE_PERCENT: u64 = 15;
 
 #[tauri::command]
 pub fn get_session_transcript<R: Runtime>(
@@ -712,7 +711,8 @@ fn build_session_context_snapshot(
     );
 
     let usage_totals = context_usage_totals(&session, &snapshots, run_id);
-    let budget_tokens = provider_context_budget_tokens(&provider_id, &model_id);
+    let context_limit = resolve_context_limit(&provider_id, &model_id);
+    let budget_tokens = context_limit.effective_input_budget_tokens;
     rank_and_plan_context(
         &mut contributors,
         budget_tokens,
@@ -738,7 +738,7 @@ fn build_session_context_snapshot(
     } else {
         SessionUsageSourceDto::Estimated
     };
-    let budget = context_budget_with_source(estimated_tokens, budget_tokens, estimation_source);
+    let budget = context_budget_with_source(estimated_tokens, context_limit, estimation_source);
     let provider_request_hash = provider_request_hash(&prompt_compilation, &contributors);
     let diff = context_snapshot_diff(
         project_id,
@@ -1546,6 +1546,7 @@ fn compile_prompt_context_for_snapshot(
         BrowserControlPreferenceDto::Default,
         descriptors.as_slice(),
         None,
+        None,
         skill_contexts,
     )?;
     Ok((compilation, descriptors))
@@ -1950,10 +1951,11 @@ fn append_file_observation_contributors(
     for (snapshot, _) in snapshots {
         for change in &snapshot.file_changes {
             let change_id = change.id.to_string();
+            let (path, _path_redaction) = redact_session_context_text(&change.path);
             let text = format!(
                 "{} {} old={} new={}",
                 change.operation,
-                change.path,
+                path,
                 change.old_hash.as_deref().unwrap_or("none"),
                 change.new_hash.as_deref().unwrap_or("none")
             );
@@ -1965,7 +1967,7 @@ fn append_file_observation_contributors(
                         snapshot.run.run_id, change.id
                     ),
                     kind: SessionContextContributorKindDto::FileObservation,
-                    label: format!("File observation: {}", change.path),
+                    label: format!("File observation: {path}"),
                     prompt_fragment_id: None,
                     prompt_fragment_priority: None,
                     prompt_fragment_hash: None,
@@ -2137,8 +2139,7 @@ fn rank_and_plan_context(
     let Some(budget_tokens) = budget_tokens else {
         return;
     };
-    let planning_budget =
-        budget_tokens.saturating_mul(100_u64.saturating_sub(CONTEXT_BUDGET_RESERVE_PERCENT)) / 100;
+    let planning_budget = budget_tokens;
     let mut ranked = contributors
         .iter()
         .enumerate()

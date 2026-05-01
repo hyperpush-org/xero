@@ -51,11 +51,11 @@ use crate::{
     auth::now_timestamp,
     commands::{
         context_budget, default_runtime_agent_id, estimate_tokens, evaluate_compaction_policy,
-        provider_context_budget_tokens, redact_session_context_text, BrowserControlPreferenceDto,
-        CommandError, CommandErrorClass, CommandResult, RuntimeAgentIdDto,
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
-        RuntimeRunControlStateDto, SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
-        SessionContextPolicyActionDto,
+        redact_session_context_text, resolve_context_limit, soul_prompt_fragment,
+        BrowserControlPreferenceDto, CommandError, CommandErrorClass, CommandResult,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlInputDto, RuntimeRunControlStateDto, SessionCompactionPolicyInput,
+        SessionContextBudgetPressureDto, SessionContextPolicyActionDto, SoulSettingsDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentMessageRecord, AgentMessageRole, AgentRunEventKind,
