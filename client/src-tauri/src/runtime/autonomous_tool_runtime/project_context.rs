@@ -333,6 +333,11 @@ impl AutonomousToolRuntime {
         let query_text =
             optional_trimmed(request.query.as_deref()).unwrap_or_else(|| default_query.to_string());
         let limit = normalize_limit(request.limit);
+        let run_snapshot = project_store::load_agent_run(
+            &self.repo_root,
+            &run_context.project_id,
+            &run_context.run_id,
+        )?;
         let response = project_store::search_agent_context(
             &self.repo_root,
             project_store::AgentContextRetrievalRequest {
@@ -341,6 +346,8 @@ impl AutonomousToolRuntime {
                 agent_session_id: Some(run_context.agent_session_id.clone()),
                 run_id: Some(run_context.run_id.clone()),
                 runtime_agent_id,
+                agent_definition_id: run_snapshot.run.agent_definition_id,
+                agent_definition_version: run_snapshot.run.agent_definition_version,
                 query_text: query_text.clone(),
                 search_scope,
                 filters: retrieval_filters_from_request(&request),
@@ -560,6 +567,11 @@ impl AutonomousToolRuntime {
         };
         let tags = candidate_tags(&request.tags, runtime_agent_id);
         let source_item_ids = candidate_source_item_ids(&request.source_item_ids, run_context);
+        let run_snapshot = project_store::load_agent_run(
+            &self.repo_root,
+            &run_context.project_id,
+            &run_context.run_id,
+        )?;
         let record = project_store::insert_project_record(
             &self.repo_root,
             &project_store::NewProjectRecordRecord {
@@ -570,6 +582,8 @@ impl AutonomousToolRuntime {
                     .unwrap_or(AutonomousProjectContextRecordKind::ContextNote)
                     .to_project_store(),
                 runtime_agent_id,
+                agent_definition_id: run_snapshot.run.agent_definition_id,
+                agent_definition_version: run_snapshot.run.agent_definition_version,
                 agent_session_id: Some(run_context.agent_session_id.clone()),
                 run_id: run_context.run_id.clone(),
                 workflow_run_id: None,
@@ -829,6 +843,8 @@ fn log_manual_retrieval(
 ) -> CommandResult<String> {
     let now = now_timestamp();
     let query_id = generated_project_context_query_id(&run_context.run_id);
+    let run_snapshot =
+        project_store::load_agent_run(repo_root, &run_context.project_id, &run_context.run_id)?;
     project_store::insert_agent_retrieval_query_log(
         repo_root,
         &project_store::NewAgentRetrievalQueryLogRecord {
@@ -837,6 +853,8 @@ fn log_manual_retrieval(
             agent_session_id: Some(run_context.agent_session_id.clone()),
             run_id: Some(run_context.run_id.clone()),
             runtime_agent_id,
+            agent_definition_id: run_snapshot.run.agent_definition_id,
+            agent_definition_version: run_snapshot.run.agent_definition_version,
             query_text,
             search_scope,
             filters: json!({"tool": AUTONOMOUS_TOOL_PROJECT_CONTEXT}),

@@ -177,6 +177,84 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ON agent_sessions(project_id, last_run_id)
         WHERE last_run_id IS NOT NULL;
 
+    CREATE TABLE IF NOT EXISTS agent_definitions (
+        definition_id TEXT PRIMARY KEY,
+        current_version INTEGER NOT NULL CHECK (current_version > 0),
+        display_name TEXT NOT NULL,
+        short_label TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL,
+        lifecycle_state TEXT NOT NULL,
+        base_capability_profile TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL,
+        CHECK (definition_id <> ''),
+        CHECK (display_name <> ''),
+        CHECK (short_label <> ''),
+        CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
+        CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
+        CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder'))
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_definition_versions (
+        definition_id TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        snapshot_json TEXT NOT NULL,
+        validation_report_json TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (definition_id, version),
+        CHECK (definition_id <> ''),
+        CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+        CHECK (validation_report_json IS NULL OR (validation_report_json <> '' AND json_valid(validation_report_json))),
+        FOREIGN KEY (definition_id)
+            REFERENCES agent_definitions(definition_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_definitions_lifecycle_scope
+        ON agent_definitions(lifecycle_state, scope, display_name);
+
+    CREATE TRIGGER IF NOT EXISTS agent_definition_versions_immutable_update
+    BEFORE UPDATE ON agent_definition_versions
+    BEGIN
+        SELECT RAISE(ABORT, 'agent definition versions are immutable');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS agent_definition_versions_immutable_delete
+    BEFORE DELETE ON agent_definition_versions
+    BEGIN
+        SELECT RAISE(ABORT, 'agent definition versions are immutable');
+    END;
+
+    INSERT OR IGNORE INTO agent_definitions (
+        definition_id,
+        current_version,
+        display_name,
+        short_label,
+        description,
+        scope,
+        lifecycle_state,
+        base_capability_profile,
+        updated_at
+    )
+    VALUES
+        ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
+        ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
+        ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
+        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
+
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    VALUES
+        ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+
     CREATE TABLE IF NOT EXISTS runtime_runs (
         project_id TEXT NOT NULL,
         agent_session_id TEXT NOT NULL,
@@ -387,6 +465,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
 
     CREATE TABLE IF NOT EXISTS agent_runs (
         runtime_agent_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         agent_session_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
@@ -405,7 +485,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         PRIMARY KEY (project_id, run_id),
         CHECK (agent_session_id <> ''),
-        CHECK (runtime_agent_id IN ('ask', 'engineer', 'debug')),
+        CHECK (runtime_agent_id <> ''),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
         CHECK (run_id <> ''),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
@@ -417,7 +499,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
         ),
         FOREIGN KEY (project_id, agent_session_id)
-            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_runs_session_updated
@@ -548,6 +632,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS agent_usage (
         project_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
         provider_id TEXT NOT NULL,
         model_id TEXT NOT NULL,
         input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
@@ -558,10 +644,14 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
         cache_creation_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_creation_tokens >= 0),
         PRIMARY KEY (project_id, run_id),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
         FOREIGN KEY (project_id, run_id)
-            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_usage_project_model
@@ -871,6 +961,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         agent_session_id TEXT NOT NULL,
         run_id TEXT,
         runtime_agent_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
         provider_id TEXT,
         model_id TEXT,
         request_kind TEXT NOT NULL,
@@ -892,7 +984,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (manifest_id <> ''),
         CHECK (agent_session_id <> ''),
         CHECK (run_id IS NULL OR run_id <> ''),
-        CHECK (runtime_agent_id IN ('ask', 'engineer', 'debug')),
+        CHECK (runtime_agent_id <> ''),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
         CHECK (provider_id IS NULL OR provider_id <> ''),
         CHECK (model_id IS NULL OR model_id <> ''),
         CHECK (request_kind IN ('provider_turn', 'handoff_source', 'diagnostic', 'test')),
@@ -913,7 +1007,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         FOREIGN KEY (project_id, agent_session_id)
             REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
         FOREIGN KEY (project_id, run_id)
-            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_context_manifests_run_created
@@ -930,9 +1026,13 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         source_agent_session_id TEXT NOT NULL,
         source_run_id TEXT NOT NULL,
         source_runtime_agent_id TEXT NOT NULL,
+        source_agent_definition_id TEXT NOT NULL,
+        source_agent_definition_version INTEGER NOT NULL,
         target_agent_session_id TEXT,
         target_run_id TEXT,
         target_runtime_agent_id TEXT NOT NULL,
+        target_agent_definition_id TEXT NOT NULL,
+        target_agent_definition_version INTEGER NOT NULL,
         provider_id TEXT NOT NULL,
         model_id TEXT NOT NULL,
         source_context_hash TEXT NOT NULL,
@@ -947,11 +1047,16 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (handoff_id <> ''),
         CHECK (source_agent_session_id <> ''),
         CHECK (source_run_id <> ''),
-        CHECK (source_runtime_agent_id IN ('ask', 'engineer', 'debug')),
+        CHECK (source_runtime_agent_id <> ''),
+        CHECK (source_agent_definition_id <> ''),
+        CHECK (source_agent_definition_version > 0),
         CHECK (target_agent_session_id IS NULL OR target_agent_session_id <> ''),
         CHECK (target_run_id IS NULL OR target_run_id <> ''),
-        CHECK (target_runtime_agent_id IN ('ask', 'engineer', 'debug')),
-        CHECK (source_runtime_agent_id = target_runtime_agent_id),
+        CHECK (target_runtime_agent_id <> ''),
+        CHECK (target_agent_definition_id <> ''),
+        CHECK (target_agent_definition_version > 0),
+        CHECK (source_agent_definition_id = target_agent_definition_id),
+        CHECK (source_agent_definition_version = target_agent_definition_version),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
         CHECK (length(source_context_hash) = 64),
@@ -967,7 +1072,11 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         FOREIGN KEY (project_id, source_agent_session_id)
             REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
         FOREIGN KEY (project_id, source_run_id)
-            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_agent_definition_id, source_agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version),
+        FOREIGN KEY (target_agent_definition_id, target_agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_handoff_lineage_one_pending_source
@@ -986,6 +1095,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         agent_session_id TEXT,
         run_id TEXT,
         runtime_agent_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
         query_text TEXT NOT NULL,
         query_hash TEXT NOT NULL,
         search_scope TEXT NOT NULL,
@@ -998,7 +1109,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (query_id <> ''),
         CHECK (agent_session_id IS NULL OR agent_session_id <> ''),
         CHECK (run_id IS NULL OR run_id <> ''),
-        CHECK (runtime_agent_id IN ('ask', 'engineer', 'debug')),
+        CHECK (runtime_agent_id <> ''),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
         CHECK (query_text <> ''),
         CHECK (length(query_hash) = 64),
         CHECK (query_hash NOT GLOB '*[^0-9a-f]*'),
@@ -1011,7 +1124,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         FOREIGN KEY (project_id, agent_session_id)
             REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
         FOREIGN KEY (project_id, run_id)
-            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_retrieval_queries_run_created
@@ -1166,6 +1281,8 @@ mod tests {
                 "agent_compactions",
                 "agent_context_manifests",
                 "agent_context_policy_settings",
+                "agent_definition_versions",
+                "agent_definitions",
                 "agent_embedding_backfill_jobs",
                 "agent_events",
                 "agent_file_changes",
@@ -1228,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn phase1_continuity_schema_persists_manifest_and_rejects_cross_type_handoff() {
+    fn phase1_continuity_schema_persists_manifest_and_rejects_cross_definition_handoff() {
         let connection = migrate_to_latest_in_memory();
         connection
             .execute(
@@ -1281,6 +1398,8 @@ mod tests {
                     project_id,
                     agent_session_id,
                     runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
                     request_kind,
                     policy_action,
                     policy_reason_code,
@@ -1295,7 +1414,7 @@ mod tests {
                     manifest_json,
                     created_at
                 )
-                VALUES (?1, ?2, ?3, 'ask', 'test', 'continue_now', 'schema_test', 10, 'unknown', ?4, '[]', '[]', '[]', '[]', 'clean', ?5, ?6)
+                VALUES (?1, ?2, ?3, 'ask', 'ask', 1, 'test', 'continue_now', 'schema_test', 10, 'unknown', ?4, '[]', '[]', '[]', '[]', 'clean', ?5, ?6)
                 "#,
                 params![
                     "manifest-1",
@@ -1313,6 +1432,8 @@ mod tests {
                 r#"
                 INSERT INTO agent_runs (
                     runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
                     project_id,
                     agent_session_id,
                     run_id,
@@ -1324,7 +1445,7 @@ mod tests {
                     started_at,
                     updated_at
                 )
-                VALUES ('ask', ?1, ?2, ?3, 'fake_provider', 'fake-model', 'running', 'prompt', 'system', ?4, ?4)
+                VALUES ('ask', 'ask', 1, ?1, ?2, ?3, 'fake_provider', 'fake-model', 'running', 'prompt', 'system', ?4, ?4)
                 "#,
                 params![
                     "project-1",
@@ -1344,7 +1465,11 @@ mod tests {
                     source_agent_session_id,
                     source_run_id,
                     source_runtime_agent_id,
+                    source_agent_definition_id,
+                    source_agent_definition_version,
                     target_runtime_agent_id,
+                    target_agent_definition_id,
+                    target_agent_definition_version,
                     provider_id,
                     model_id,
                     source_context_hash,
@@ -1354,7 +1479,7 @@ mod tests {
                     created_at,
                     updated_at
                 )
-                VALUES ('handoff-bad', ?1, ?2, ?3, 'ask', 'debug', 'fake_provider', 'fake-model', ?4, 'pending', 'handoff-bad-key', ?5, ?6, ?6)
+                VALUES ('handoff-bad', ?1, ?2, ?3, 'ask', 'ask', 1, 'ask', 'debug', 1, 'fake_provider', 'fake-model', ?4, 'pending', 'handoff-bad-key', ?5, ?6, ?6)
                 "#,
                 params![
                     "project-1",
@@ -1365,7 +1490,7 @@ mod tests {
                     "2026-05-01T12:04:00Z"
                 ],
             )
-            .expect_err("schema rejects cross-type handoff");
+            .expect_err("schema rejects cross-definition handoff");
         assert!(mismatch.to_string().contains("CHECK constraint failed"));
 
         connection
@@ -1377,7 +1502,11 @@ mod tests {
                     source_agent_session_id,
                     source_run_id,
                     source_runtime_agent_id,
+                    source_agent_definition_id,
+                    source_agent_definition_version,
                     target_runtime_agent_id,
+                    target_agent_definition_id,
+                    target_agent_definition_version,
                     provider_id,
                     model_id,
                     source_context_hash,
@@ -1387,7 +1516,7 @@ mod tests {
                     created_at,
                     updated_at
                 )
-                VALUES ('handoff-good', ?1, ?2, ?3, 'ask', 'ask', 'fake_provider', 'fake-model', ?4, 'pending', 'handoff-good-key', ?5, ?6, ?6)
+                VALUES ('handoff-good', ?1, ?2, ?3, 'ask', 'ask', 1, 'ask', 'ask', 1, 'fake_provider', 'fake-model', ?4, 'pending', 'handoff-good-key', ?5, ?6, ?6)
                 "#,
                 params![
                     "project-1",
@@ -1408,6 +1537,8 @@ mod tests {
                     project_id,
                     agent_session_id,
                     runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
                     query_text,
                     query_hash,
                     search_scope,
@@ -1416,7 +1547,7 @@ mod tests {
                     status,
                     created_at
                 )
-                VALUES ('query-1', ?1, ?2, 'ask', 'handoffs', ?3, 'handoffs', '{}', 5, 'succeeded', ?4)
+                VALUES ('query-1', ?1, ?2, 'ask', 'ask', 1, 'handoffs', ?3, 'handoffs', '{}', 5, 'succeeded', ?4)
                 "#,
                 params![
                     "project-1",

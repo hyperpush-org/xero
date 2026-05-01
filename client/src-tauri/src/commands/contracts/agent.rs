@@ -146,6 +146,8 @@ pub struct AgentActionRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentRunDto {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
@@ -173,6 +175,8 @@ pub struct AgentRunDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentRunSummaryDto {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
@@ -269,6 +273,8 @@ pub struct SubscribeAgentStreamResponseDto {
 pub fn agent_run_dto(snapshot: AgentRunSnapshotRecord) -> AgentRunDto {
     AgentRunDto {
         runtime_agent_id: snapshot.run.runtime_agent_id,
+        agent_definition_id: snapshot.run.agent_definition_id.clone(),
+        agent_definition_version: snapshot.run.agent_definition_version,
         project_id: snapshot.run.project_id.clone(),
         agent_session_id: snapshot.run.agent_session_id.clone(),
         run_id: snapshot.run.run_id.clone(),
@@ -328,6 +334,8 @@ pub fn agent_run_summary_dto(run: AgentRunRecord) -> AgentRunSummaryDto {
     let status = agent_run_status_dto(&run);
     AgentRunSummaryDto {
         runtime_agent_id: run.runtime_agent_id,
+        agent_definition_id: run.agent_definition_id,
+        agent_definition_version: run.agent_definition_version,
         project_id: run.project_id,
         agent_session_id: run.agent_session_id,
         run_id: run.run_id,

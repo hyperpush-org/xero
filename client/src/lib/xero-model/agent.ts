@@ -144,6 +144,8 @@ export const agentActionRequestSchema = z
 export const agentRunSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1),
+    agentDefinitionVersion: z.number().int().positive(),
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
     runId: z.string().trim().min(1),

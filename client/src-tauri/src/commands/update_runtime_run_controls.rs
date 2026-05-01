@@ -258,6 +258,7 @@ fn runtime_run_controls_as_input(
     if let Some(pending) = snapshot.controls.pending.as_ref() {
         return crate::commands::RuntimeRunControlInputDto {
             runtime_agent_id: pending.runtime_agent_id,
+            agent_definition_id: None,
             provider_profile_id: pending.provider_profile_id.clone(),
             model_id: pending.model_id.clone(),
             thinking_effort: pending.thinking_effort.clone(),
@@ -268,6 +269,7 @@ fn runtime_run_controls_as_input(
 
     crate::commands::RuntimeRunControlInputDto {
         runtime_agent_id: snapshot.controls.active.runtime_agent_id,
+        agent_definition_id: None,
         provider_profile_id: snapshot.controls.active.provider_profile_id.clone(),
         model_id: snapshot.controls.active.model_id.clone(),
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),

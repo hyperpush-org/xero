@@ -30,6 +30,7 @@ pub(crate) fn drive_provider_loop(
         touch_agent_run_heartbeat(repo_root, project_id, run_id)?;
         let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
         let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
+        let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
         let turn_context_package = assemble_provider_context_package(
             ProviderContextPackageInput {
                 repo_root,
@@ -37,6 +38,8 @@ pub(crate) fn drive_provider_loop(
                 agent_session_id,
                 run_id,
                 runtime_agent_id: controls.active.runtime_agent_id,
+                agent_definition_id: run_snapshot.run.agent_definition_id.as_str(),
+                agent_definition_version: run_snapshot.run.agent_definition_version,
                 provider_id: provider.provider_id(),
                 model_id: provider.model_id(),
                 turn_index,
@@ -996,11 +999,14 @@ fn persist_provider_usage(
             },
         )
     });
+    let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
     project_store::upsert_agent_usage(
         repo_root,
         &project_store::AgentUsageRecord {
             project_id: project_id.into(),
             run_id: run_id.into(),
+            agent_definition_id: run_snapshot.run.agent_definition_id,
+            agent_definition_version: run_snapshot.run.agent_definition_version,
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             input_tokens: usage.input_tokens,

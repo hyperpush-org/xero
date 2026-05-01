@@ -780,6 +780,7 @@ fn runtime_control_input_from_active(
 ) -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
         runtime_agent_id: active.runtime_agent_id,
+        agent_definition_id: None,
         provider_profile_id: active.provider_profile_id.clone(),
         model_id: active.model_id.clone(),
         thinking_effort: active.thinking_effort.clone(),

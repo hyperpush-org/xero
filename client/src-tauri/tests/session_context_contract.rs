@@ -24,6 +24,7 @@ use xero_desktop_lib::{
         AgentMessageRecord, AgentMessageRole, AgentRunDiagnosticRecord, AgentRunEventKind,
         AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus, AgentSessionRecord,
         AgentSessionStatus, AgentToolCallRecord, AgentToolCallState, AgentUsageRecord,
+        BUILTIN_AGENT_DEFINITION_VERSION,
     },
 };
 
@@ -40,6 +41,8 @@ fn owned_agent_transcript_maps_records_in_stable_order_and_redacts_secrets() {
     let usage = AgentUsageRecord {
         project_id: PROJECT_ID.into(),
         run_id: RUN_ID.into(),
+        agent_definition_id: "engineer".into(),
+        agent_definition_version: BUILTIN_AGENT_DEFINITION_VERSION,
         provider_id: PROVIDER_ID.into(),
         model_id: MODEL_ID.into(),
         input_tokens: 1200,
@@ -601,6 +604,8 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
     AgentRunSnapshotRecord {
         run: AgentRunRecord {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: BUILTIN_AGENT_DEFINITION_VERSION,
             project_id: PROJECT_ID.into(),
             agent_session_id: SESSION_ID.into(),
             run_id: RUN_ID.into(),

@@ -657,6 +657,8 @@ fn empty_eval_snapshot() -> AgentRunSnapshotRecord {
     AgentRunSnapshotRecord {
         run: project_store::AgentRunRecord {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             project_id: "eval-project".into(),
             agent_session_id: "eval-session".into(),
             run_id: "eval-run".into(),

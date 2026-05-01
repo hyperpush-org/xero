@@ -53,6 +53,8 @@ pub struct AgentContextRetrievalRequest {
     pub agent_session_id: Option<String>,
     pub run_id: Option<String>,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub query_text: String,
     pub search_scope: AgentRetrievalSearchScope,
     pub filters: AgentContextRetrievalFilters,
@@ -208,6 +210,8 @@ pub fn search_agent_context_with_embedding_service(
             agent_session_id: request.agent_session_id.clone(),
             run_id: request.run_id.clone(),
             runtime_agent_id: request.runtime_agent_id,
+            agent_definition_id: request.agent_definition_id.clone(),
+            agent_definition_version: request.agent_definition_version,
             query_text: request.query_text.clone(),
             search_scope: request.search_scope.clone(),
             filters: filters_json,
@@ -859,6 +863,8 @@ fn log_failed_retrieval_query(
             agent_session_id: request.agent_session_id.clone(),
             run_id: request.run_id.clone(),
             runtime_agent_id: request.runtime_agent_id,
+            agent_definition_id: request.agent_definition_id.clone(),
+            agent_definition_version: request.agent_definition_version,
             query_text: request.query_text.clone(),
             search_scope: request.search_scope.clone(),
             filters: retrieval_filters_json(&request.filters),
@@ -901,6 +907,14 @@ fn validate_retrieval_request(request: &AgentContextRetrievalRequest) -> Result<
         "queryText",
         "agent_retrieval_query_text_required",
     )?;
+    validate_non_empty_text(
+        &request.agent_definition_id,
+        "agentDefinitionId",
+        "agent_retrieval_definition_required",
+    )?;
+    if request.agent_definition_version == 0 {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
+    }
     validate_non_empty_text(
         &request.created_at,
         "createdAt",

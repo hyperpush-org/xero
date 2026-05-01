@@ -1,6 +1,7 @@
 mod agent_context;
 mod agent_continuity;
 mod agent_core;
+mod agent_definition;
 mod agent_embeddings;
 mod agent_lineage;
 mod agent_memory;
@@ -22,6 +23,7 @@ mod skills;
 pub use agent_context::*;
 pub use agent_continuity::*;
 pub use agent_core::*;
+pub use agent_definition::*;
 pub use agent_embeddings::*;
 pub use agent_lineage::*;
 pub use agent_memory::*;

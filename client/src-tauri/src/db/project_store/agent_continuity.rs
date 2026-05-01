@@ -159,6 +159,8 @@ pub struct AgentContextManifestRecord {
     pub agent_session_id: String,
     pub run_id: Option<String>,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub request_kind: AgentContextManifestRequestKind,
@@ -186,6 +188,8 @@ pub struct NewAgentContextManifestRecord {
     pub agent_session_id: String,
     pub run_id: Option<String>,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub request_kind: AgentContextManifestRequestKind,
@@ -214,9 +218,13 @@ pub struct AgentHandoffLineageRecord {
     pub source_agent_session_id: String,
     pub source_run_id: String,
     pub source_runtime_agent_id: RuntimeAgentIdDto,
+    pub source_agent_definition_id: String,
+    pub source_agent_definition_version: u32,
     pub target_agent_session_id: Option<String>,
     pub target_run_id: Option<String>,
     pub target_runtime_agent_id: RuntimeAgentIdDto,
+    pub target_agent_definition_id: String,
+    pub target_agent_definition_version: u32,
     pub provider_id: String,
     pub model_id: String,
     pub source_context_hash: String,
@@ -237,9 +245,13 @@ pub struct NewAgentHandoffLineageRecord {
     pub source_agent_session_id: String,
     pub source_run_id: String,
     pub source_runtime_agent_id: RuntimeAgentIdDto,
+    pub source_agent_definition_id: String,
+    pub source_agent_definition_version: u32,
     pub target_agent_session_id: Option<String>,
     pub target_run_id: Option<String>,
     pub target_runtime_agent_id: RuntimeAgentIdDto,
+    pub target_agent_definition_id: String,
+    pub target_agent_definition_version: u32,
     pub provider_id: String,
     pub model_id: String,
     pub source_context_hash: String,
@@ -275,6 +287,8 @@ pub struct AgentRetrievalQueryLogRecord {
     pub agent_session_id: Option<String>,
     pub run_id: Option<String>,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub query_text: String,
     pub query_hash: String,
     pub search_scope: AgentRetrievalSearchScope,
@@ -293,6 +307,8 @@ pub struct NewAgentRetrievalQueryLogRecord {
     pub agent_session_id: Option<String>,
     pub run_id: Option<String>,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub query_text: String,
     pub search_scope: AgentRetrievalSearchScope,
     pub filters: JsonValue,
@@ -536,6 +552,8 @@ pub fn insert_agent_context_manifest(
                 agent_session_id,
                 run_id,
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 provider_id,
                 model_id,
                 request_kind,
@@ -555,7 +573,7 @@ pub fn insert_agent_context_manifest(
                 manifest_json,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
             "#,
             params![
                 record.manifest_id,
@@ -563,6 +581,8 @@ pub fn insert_agent_context_manifest(
                 record.agent_session_id,
                 record.run_id,
                 runtime_agent_id_sql_value(&record.runtime_agent_id),
+                record.agent_definition_id,
+                record.agent_definition_version,
                 record.provider_id,
                 record.model_id,
                 manifest_request_kind_sql_value(&record.request_kind),
@@ -675,9 +695,13 @@ pub fn insert_agent_handoff_lineage(
                 source_agent_session_id,
                 source_run_id,
                 source_runtime_agent_id,
+                source_agent_definition_id,
+                source_agent_definition_version,
                 target_agent_session_id,
                 target_run_id,
                 target_runtime_agent_id,
+                target_agent_definition_id,
+                target_agent_definition_version,
                 provider_id,
                 model_id,
                 source_context_hash,
@@ -690,7 +714,7 @@ pub fn insert_agent_handoff_lineage(
                 updated_at,
                 completed_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             ON CONFLICT(project_id, idempotency_key) DO NOTHING
             "#,
             params![
@@ -699,9 +723,13 @@ pub fn insert_agent_handoff_lineage(
                 record.source_agent_session_id,
                 record.source_run_id,
                 runtime_agent_id_sql_value(&record.source_runtime_agent_id),
+                record.source_agent_definition_id,
+                record.source_agent_definition_version,
                 record.target_agent_session_id,
                 record.target_run_id,
                 runtime_agent_id_sql_value(&record.target_runtime_agent_id),
+                record.target_agent_definition_id,
+                record.target_agent_definition_version,
                 record.provider_id,
                 record.model_id,
                 record.source_context_hash,
@@ -944,6 +972,8 @@ pub fn insert_agent_retrieval_query_log(
                 agent_session_id,
                 run_id,
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 query_text,
                 query_hash,
                 search_scope,
@@ -954,7 +984,7 @@ pub fn insert_agent_retrieval_query_log(
                 created_at,
                 completed_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
             params![
                 record.query_id,
@@ -962,6 +992,8 @@ pub fn insert_agent_retrieval_query_log(
                 record.agent_session_id,
                 record.run_id,
                 runtime_agent_id_sql_value(&record.runtime_agent_id),
+                record.agent_definition_id,
+                record.agent_definition_version,
                 record.query_text,
                 query_hash,
                 retrieval_scope_sql_value(&record.search_scope),
@@ -1303,6 +1335,8 @@ fn manifest_select_sql(where_clause: &str) -> String {
             agent_session_id,
             run_id,
             runtime_agent_id,
+            agent_definition_id,
+            agent_definition_version,
             provider_id,
             model_id,
             request_kind,
@@ -1337,24 +1371,26 @@ fn read_manifest_row(
         agent_session_id: row.get(3)?,
         run_id: row.get(4)?,
         runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(5)?.as_str()),
-        provider_id: row.get(6)?,
-        model_id: row.get(7)?,
-        request_kind: parse_manifest_request_kind(row.get::<_, String>(8)?.as_str()),
-        policy_action: parse_context_policy_action(row.get::<_, String>(9)?.as_str()),
-        policy_reason_code: row.get(10)?,
-        budget_tokens: row_optional_u64(row, 11)?,
-        estimated_tokens: row_u64(row, 12)?,
-        pressure: parse_context_pressure(row.get::<_, String>(13)?.as_str()),
-        context_hash: row.get(14)?,
-        included_contributors: parse_json_column(row, 15)?,
-        excluded_contributors: parse_json_column(row, 16)?,
-        retrieval_query_ids: parse_json_column(row, 17)?,
-        retrieval_result_ids: parse_json_column(row, 18)?,
-        compaction_id: row.get(19)?,
-        handoff_id: row.get(20)?,
-        redaction_state: parse_redaction_state(row.get::<_, String>(21)?.as_str()),
-        manifest: parse_json_column(row, 22)?,
-        created_at: row.get(23)?,
+        agent_definition_id: row.get(6)?,
+        agent_definition_version: row_u32(row, 7)?,
+        provider_id: row.get(8)?,
+        model_id: row.get(9)?,
+        request_kind: parse_manifest_request_kind(row.get::<_, String>(10)?.as_str()),
+        policy_action: parse_context_policy_action(row.get::<_, String>(11)?.as_str()),
+        policy_reason_code: row.get(12)?,
+        budget_tokens: row_optional_u64(row, 13)?,
+        estimated_tokens: row_u64(row, 14)?,
+        pressure: parse_context_pressure(row.get::<_, String>(15)?.as_str()),
+        context_hash: row.get(16)?,
+        included_contributors: parse_json_column(row, 17)?,
+        excluded_contributors: parse_json_column(row, 18)?,
+        retrieval_query_ids: parse_json_column(row, 19)?,
+        retrieval_result_ids: parse_json_column(row, 20)?,
+        compaction_id: row.get(21)?,
+        handoff_id: row.get(22)?,
+        redaction_state: parse_redaction_state(row.get::<_, String>(23)?.as_str()),
+        manifest: parse_json_column(row, 24)?,
+        created_at: row.get(25)?,
     }))
 }
 
@@ -1368,9 +1404,13 @@ fn handoff_select_sql(where_clause: &str) -> String {
             source_agent_session_id,
             source_run_id,
             source_runtime_agent_id,
+            source_agent_definition_id,
+            source_agent_definition_version,
             target_agent_session_id,
             target_run_id,
             target_runtime_agent_id,
+            target_agent_definition_id,
+            target_agent_definition_version,
             provider_id,
             model_id,
             source_context_hash,
@@ -1398,20 +1438,24 @@ fn read_handoff_row(
         source_agent_session_id: row.get(3)?,
         source_run_id: row.get(4)?,
         source_runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(5)?.as_str()),
-        target_agent_session_id: row.get(6)?,
-        target_run_id: row.get(7)?,
-        target_runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(8)?.as_str()),
-        provider_id: row.get(9)?,
-        model_id: row.get(10)?,
-        source_context_hash: row.get(11)?,
-        status: parse_handoff_lineage_status(row.get::<_, String>(12)?.as_str()),
-        idempotency_key: row.get(13)?,
-        handoff_record_id: row.get(14)?,
-        bundle: parse_json_column(row, 15)?,
-        diagnostic: parse_optional_json_column(row, 16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
-        completed_at: row.get(19)?,
+        source_agent_definition_id: row.get(6)?,
+        source_agent_definition_version: row_u32(row, 7)?,
+        target_agent_session_id: row.get(8)?,
+        target_run_id: row.get(9)?,
+        target_runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(10)?.as_str()),
+        target_agent_definition_id: row.get(11)?,
+        target_agent_definition_version: row_u32(row, 12)?,
+        provider_id: row.get(13)?,
+        model_id: row.get(14)?,
+        source_context_hash: row.get(15)?,
+        status: parse_handoff_lineage_status(row.get::<_, String>(16)?.as_str()),
+        idempotency_key: row.get(17)?,
+        handoff_record_id: row.get(18)?,
+        bundle: parse_json_column(row, 19)?,
+        diagnostic: parse_optional_json_column(row, 20)?,
+        created_at: row.get(21)?,
+        updated_at: row.get(22)?,
+        completed_at: row.get(23)?,
     }))
 }
 
@@ -1448,6 +1492,8 @@ fn retrieval_query_select_sql(where_clause: &str) -> String {
             agent_session_id,
             run_id,
             runtime_agent_id,
+            agent_definition_id,
+            agent_definition_version,
             query_text,
             query_hash,
             search_scope,
@@ -1473,15 +1519,17 @@ fn read_retrieval_query_row(
         agent_session_id: row.get(3)?,
         run_id: row.get(4)?,
         runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(5)?.as_str()),
-        query_text: row.get(6)?,
-        query_hash: row.get(7)?,
-        search_scope: parse_retrieval_scope(row.get::<_, String>(8)?.as_str()),
-        filters: parse_json_column(row, 9)?,
-        limit_count: row_u32(row, 10)?,
-        status: parse_retrieval_query_status(row.get::<_, String>(11)?.as_str()),
-        diagnostic: parse_optional_json_column(row, 12)?,
-        created_at: row.get(13)?,
-        completed_at: row.get(14)?,
+        agent_definition_id: row.get(6)?,
+        agent_definition_version: row_u32(row, 7)?,
+        query_text: row.get(8)?,
+        query_hash: row.get(9)?,
+        search_scope: parse_retrieval_scope(row.get::<_, String>(10)?.as_str()),
+        filters: parse_json_column(row, 11)?,
+        limit_count: row_u32(row, 12)?,
+        status: parse_retrieval_query_status(row.get::<_, String>(13)?.as_str()),
+        diagnostic: parse_optional_json_column(row, 14)?,
+        created_at: row.get(15)?,
+        completed_at: row.get(16)?,
     }))
 }
 
@@ -1612,6 +1660,14 @@ fn validate_manifest(record: &NewAgentContextManifestRecord) -> Result<(), Comma
         "runId",
         "agent_context_manifest_run_invalid",
     )?;
+    validate_non_empty_text(
+        &record.agent_definition_id,
+        "agentDefinitionId",
+        "agent_context_manifest_definition_required",
+    )?;
+    if record.agent_definition_version == 0 {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
+    }
     validate_optional_non_empty(
         &record.provider_id,
         "providerId",
@@ -1670,11 +1726,26 @@ fn validate_handoff(record: &NewAgentHandoffLineageRecord) -> Result<(), Command
         "sourceRunId",
         "agent_handoff_lineage_source_run_required",
     )?;
-    if record.source_runtime_agent_id != record.target_runtime_agent_id {
+    if record.source_agent_definition_id != record.target_agent_definition_id
+        || record.source_agent_definition_version != record.target_agent_definition_version
+    {
         return Err(CommandError::user_fixable(
-            "agent_handoff_lineage_target_agent_mismatch",
-            "Same-type handoff requires the target runtime agent id to match the source runtime agent id.",
+            "agent_handoff_lineage_target_definition_mismatch",
+            "Same-agent handoff requires the target agent definition id and version to match the source definition.",
         ));
+    }
+    validate_non_empty_text(
+        &record.source_agent_definition_id,
+        "sourceAgentDefinitionId",
+        "agent_handoff_lineage_source_definition_required",
+    )?;
+    validate_non_empty_text(
+        &record.target_agent_definition_id,
+        "targetAgentDefinitionId",
+        "agent_handoff_lineage_target_definition_required",
+    )?;
+    if record.source_agent_definition_version == 0 || record.target_agent_definition_version == 0 {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
     }
     validate_optional_non_empty(
         &record.target_agent_session_id,
@@ -1783,6 +1854,14 @@ fn validate_retrieval_query(record: &NewAgentRetrievalQueryLogRecord) -> Result<
         "agent_retrieval_query_session_invalid",
     )?;
     validate_optional_non_empty(&record.run_id, "runId", "agent_retrieval_query_run_invalid")?;
+    validate_non_empty_text(
+        &record.agent_definition_id,
+        "agentDefinitionId",
+        "agent_retrieval_query_definition_required",
+    )?;
+    if record.agent_definition_version == 0 {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
+    }
     validate_non_empty_text(
         &record.query_text,
         "queryText",

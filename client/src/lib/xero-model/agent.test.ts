@@ -11,6 +11,8 @@ import {
 function makeAgentRunDto(overrides: Record<string, unknown> = {}) {
   return {
     runtimeAgentId: 'ask',
+    agentDefinitionId: 'ask',
+    agentDefinitionVersion: 1,
     projectId: 'project-1',
     agentSessionId: 'agent-session-main',
     runId: 'run-agent-1',
@@ -227,6 +229,7 @@ describe('owned agent run schemas', () => {
       prompt: 'Fix the failing test.',
       controls: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'project_release_engineer',
         modelId: 'openai_codex',
         approvalMode: 'yolo',
       },
@@ -237,7 +240,22 @@ describe('owned agent run schemas', () => {
     })
 
     expect(request.controls?.planModeRequired).toBe(false)
+    expect(request.controls?.agentDefinitionId).toBe('project_release_engineer')
     expect(subscription.replayedEventCount).toBe(3)
+  })
+
+  it('parses pinned custom agent definition metadata on durable run snapshots', () => {
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        runtimeAgentId: 'ask',
+        agentDefinitionId: 'project_researcher',
+        agentDefinitionVersion: 2,
+      }),
+    )
+
+    expect(parsed.runtimeAgentId).toBe('ask')
+    expect(parsed.agentDefinitionId).toBe('project_researcher')
+    expect(parsed.agentDefinitionVersion).toBe(2)
   })
 
   it('validates auto-compact preferences on owned-agent continuations', () => {

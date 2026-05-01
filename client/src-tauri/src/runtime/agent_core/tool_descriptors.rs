@@ -2908,6 +2908,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temp dir");
         let controls_input = RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Debug,
+            agent_definition_id: None,
             provider_profile_id: None,
             model_id: OPENAI_CODEX_PROVIDER_ID.into(),
             thinking_effort: None,

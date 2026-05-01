@@ -767,6 +767,8 @@ mod tests {
         AgentRunSnapshotRecord {
             run: project_store::AgentRunRecord {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
                 project_id: "project-1".into(),
                 agent_session_id: "session-1".into(),
                 run_id: "run-1".into(),

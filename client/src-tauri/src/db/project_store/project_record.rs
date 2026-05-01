@@ -61,6 +61,8 @@ pub struct ProjectRecordRecord {
     pub project_id: String,
     pub record_kind: ProjectRecordKind,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub agent_session_id: Option<String>,
     pub run_id: String,
     pub workflow_run_id: Option<String>,
@@ -91,6 +93,8 @@ pub struct NewProjectRecordRecord {
     pub project_id: String,
     pub record_kind: ProjectRecordKind,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub agent_session_id: Option<String>,
     pub run_id: String,
     pub workflow_run_id: Option<String>,
@@ -160,6 +164,8 @@ pub fn insert_project_record(
         project_id: record.project_id.clone(),
         record_kind: project_record_kind_sql_value(&record.record_kind).into(),
         runtime_agent_id: record.runtime_agent_id,
+        agent_definition_id: record.agent_definition_id.clone(),
+        agent_definition_version: record.agent_definition_version,
         agent_session_id: record.agent_session_id.clone(),
         run_id: record.run_id.clone(),
         workflow_run_id: record.workflow_run_id.clone(),
@@ -244,6 +250,14 @@ fn validate_new_project_record(record: &NewProjectRecordRecord) -> Result<(), Co
         "projectId",
         "project_record_project_id_required",
     )?;
+    validate_non_empty_text(
+        &record.agent_definition_id,
+        "agentDefinitionId",
+        "project_record_agent_definition_id_required",
+    )?;
+    if record.agent_definition_version == 0 {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
+    }
     validate_non_empty_text(&record.run_id, "runId", "project_record_run_id_required")?;
     validate_non_empty_text(&record.title, "title", "project_record_title_required")?;
     validate_non_empty_text(
@@ -283,6 +297,8 @@ fn row_into_record(row: ProjectRecordRow) -> Result<ProjectRecordRecord, Command
         project_id: row.project_id,
         record_kind: parse_project_record_kind(&row.record_kind),
         runtime_agent_id: row.runtime_agent_id,
+        agent_definition_id: row.agent_definition_id,
+        agent_definition_version: row.agent_definition_version,
         agent_session_id: row.agent_session_id,
         run_id: row.run_id,
         workflow_run_id: row.workflow_run_id,
@@ -478,6 +494,8 @@ mod tests {
             project_id: project_id.into(),
             record_kind: ProjectRecordKind::AgentHandoff,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: crate::db::project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             agent_session_id: Some("agent-session-1".into()),
             run_id: "run-1".into(),
             workflow_run_id: None,

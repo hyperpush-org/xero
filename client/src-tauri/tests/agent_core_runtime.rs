@@ -176,6 +176,7 @@ fn yolo_controls() -> RuntimeRunControlStateDto {
 fn yolo_controls_input() -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_definition_id: None,
         provider_profile_id: None,
         model_id: "test-model".into(),
         thinking_effort: None,
@@ -187,6 +188,7 @@ fn yolo_controls_input() -> RuntimeRunControlInputDto {
 fn suggest_controls_input() -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_definition_id: None,
         provider_profile_id: None,
         model_id: "test-model".into(),
         thinking_effort: None,
@@ -1298,6 +1300,8 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
         &repo_root,
         &db::project_store::NewAgentRunRecord {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: run_id.into(),
@@ -1420,6 +1424,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
         prompt: "Please inspect the file.\ntool:read src/tracked.txt".into(),
         controls: Some(RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
             provider_profile_id: None,
             model_id: "fake-model".into(),
             thinking_effort: None,

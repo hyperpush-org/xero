@@ -172,6 +172,8 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
         Some(project_store::AgentUsageRecord {
             project_id: project_id.clone(),
             run_id: "run-history-1".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             provider_id: PROVIDER_ID.into(),
             model_id: MODEL_ID.into(),
             input_tokens: 120,
@@ -1576,6 +1578,8 @@ fn seed_minimal_run_with_provider(
         repo_root,
         &project_store::NewAgentRunRecord {
             runtime_agent_id: xero_desktop_lib::commands::RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             project_id: project_id.into(),
             agent_session_id: agent_session_id.into(),
             run_id: run_id.into(),

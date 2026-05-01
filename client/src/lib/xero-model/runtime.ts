@@ -371,6 +371,7 @@ export const runtimeRunCheckpointSchema = z
 export const runtimeRunControlInputSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1).nullable().optional(),
     providerProfileId: nonEmptyOptionalTextSchema,
     modelId: z.string().trim().min(1),
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
@@ -747,6 +748,7 @@ export interface RuntimeRunCheckpointView {
 
 export interface RuntimeRunControlInputView {
   runtimeAgentId: RuntimeAgentIdDto
+  agentDefinitionId: string | null
   runtimeAgentLabel: string
   providerProfileId: string | null
   modelId: string
@@ -962,6 +964,7 @@ function mapRuntimeRunControlInput(control: RuntimeRunControlInputDto): RuntimeR
   const runtimeAgentId = control.runtimeAgentId ?? DEFAULT_RUNTIME_AGENT_ID
   return {
     runtimeAgentId,
+    agentDefinitionId: normalizeOptionalText(control.agentDefinitionId),
     runtimeAgentLabel: getRuntimeAgentLabel(runtimeAgentId),
     providerProfileId: normalizeOptionalText(control.providerProfileId),
     modelId: normalizeText(control.modelId, 'model-unavailable'),

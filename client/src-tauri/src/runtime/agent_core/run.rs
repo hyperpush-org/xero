@@ -35,7 +35,25 @@ pub fn create_owned_agent_run(
         &request.agent_session_id,
     )?;
 
-    let controls = runtime_controls_from_request(request.controls.as_ref());
+    let mut controls = runtime_controls_from_request(request.controls.as_ref());
+    let definition_selection = project_store::resolve_agent_definition_for_run(
+        &request.repo_root,
+        request
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.agent_definition_id.as_deref()),
+        controls.active.runtime_agent_id,
+    )?;
+    controls.active.runtime_agent_id = definition_selection.runtime_agent_id;
+    if !runtime_agent_allows_approval_mode(
+        &controls.active.runtime_agent_id,
+        &controls.active.approval_mode,
+    ) {
+        controls.active.approval_mode =
+            default_runtime_agent_approval_mode(&controls.active.runtime_agent_id);
+    }
+    controls.active.plan_mode_required =
+        controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
@@ -61,7 +79,9 @@ pub fn create_owned_agent_run(
     project_store::insert_agent_run(
         &request.repo_root,
         &NewAgentRunRecord {
-            runtime_agent_id: controls.active.runtime_agent_id,
+            runtime_agent_id: definition_selection.runtime_agent_id,
+            agent_definition_id: Some(definition_selection.definition_id),
+            agent_definition_version: Some(definition_selection.version),
             project_id: request.project_id.clone(),
             agent_session_id: request.agent_session_id.clone(),
             run_id: request.run_id.clone(),
@@ -607,9 +627,13 @@ fn prepare_handoff_continuation(
             source_agent_session_id: source_snapshot.run.agent_session_id.clone(),
             source_run_id: source_snapshot.run.run_id.clone(),
             source_runtime_agent_id: source_snapshot.run.runtime_agent_id,
+            source_agent_definition_id: source_snapshot.run.agent_definition_id.clone(),
+            source_agent_definition_version: source_snapshot.run.agent_definition_version,
             target_agent_session_id: None,
             target_run_id: None,
             target_runtime_agent_id: source_snapshot.run.runtime_agent_id,
+            target_agent_definition_id: source_snapshot.run.agent_definition_id.clone(),
+            target_agent_definition_version: source_snapshot.run.agent_definition_version,
             provider_id: provider.provider_id().to_string(),
             model_id: provider.model_id().to_string(),
             source_context_hash: source_context_hash.clone(),
@@ -1197,6 +1221,8 @@ fn persist_handoff_project_record(
             project_id: source_snapshot.run.project_id.clone(),
             record_kind: project_store::ProjectRecordKind::AgentHandoff,
             runtime_agent_id: source_snapshot.run.runtime_agent_id,
+            agent_definition_id: source_snapshot.run.agent_definition_id.clone(),
+            agent_definition_version: source_snapshot.run.agent_definition_version,
             agent_session_id: Some(source_snapshot.run.agent_session_id.clone()),
             run_id: source_snapshot.run.run_id.clone(),
             workflow_run_id: None,
@@ -1276,6 +1302,8 @@ fn create_or_load_handoff_target_run(
         &request.repo_root,
         &NewAgentRunRecord {
             runtime_agent_id: source_snapshot.run.runtime_agent_id,
+            agent_definition_id: Some(source_snapshot.run.agent_definition_id.clone()),
+            agent_definition_version: Some(source_snapshot.run.agent_definition_version),
             project_id: request.project_id.clone(),
             agent_session_id: source_snapshot.run.agent_session_id.clone(),
             run_id: target_run_id.to_string(),
@@ -1397,6 +1425,7 @@ fn handoff_control_input_for_source(
     let requested = request.controls.as_ref();
     RuntimeRunControlInputDto {
         runtime_agent_id: source_snapshot.run.runtime_agent_id,
+        agent_definition_id: Some(source_snapshot.run.agent_definition_id.clone()),
         provider_profile_id: requested.and_then(|controls| controls.provider_profile_id.clone()),
         model_id: requested
             .map(|controls| controls.model_id.trim().to_string())
@@ -2213,6 +2242,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             prompt,
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: self.controls.active.runtime_agent_id,
+                agent_definition_id: None,
                 provider_profile_id: self.controls.active.provider_profile_id.clone(),
                 model_id,
                 thinking_effort: self.controls.active.thinking_effort.clone(),

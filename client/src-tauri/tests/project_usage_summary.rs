@@ -96,6 +96,8 @@ fn seed_run(repo_root: &Path, run_id: &str, provider_id: &str, model_id: &str, s
         repo_root,
         &project_store::NewAgentRunRecord {
             runtime_agent_id: xero_desktop_lib::commands::RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             project_id: PROJECT_ID.into(),
             agent_session_id: SESSION_ID.into(),
             run_id: run_id.into(),
@@ -127,6 +129,8 @@ fn seed_usage(
         &project_store::AgentUsageRecord {
             project_id: PROJECT_ID.into(),
             run_id: run_id.into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             input_tokens: input,

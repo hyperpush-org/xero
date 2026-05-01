@@ -50,8 +50,9 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use crate::{
     auth::now_timestamp,
     commands::{
-        context_budget, default_runtime_agent_id, estimate_tokens, evaluate_compaction_policy,
-        redact_session_context_text, resolve_context_limit, soul_prompt_fragment,
+        context_budget, default_runtime_agent_approval_mode, default_runtime_agent_id,
+        estimate_tokens, evaluate_compaction_policy, redact_session_context_text,
+        resolve_context_limit, runtime_agent_allows_approval_mode, soul_prompt_fragment,
         BrowserControlPreferenceDto, CommandError, CommandErrorClass, CommandResult,
         RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
         RuntimeRunControlInputDto, RuntimeRunControlStateDto, SessionCompactionPolicyInput,

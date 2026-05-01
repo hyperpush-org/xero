@@ -36,6 +36,8 @@ pub struct ProjectRecordRow {
     pub project_id: String,
     pub record_kind: String,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub agent_session_id: Option<String>,
     pub run_id: String,
     pub workflow_run_id: Option<String>,
@@ -77,6 +79,8 @@ pub fn schema() -> SchemaRef {
         Field::new("record_id", DataType::Utf8, false),
         Field::new("record_kind", DataType::Utf8, false),
         Field::new("runtime_agent_id", DataType::Utf8, false),
+        Field::new("agent_definition_id", DataType::Utf8, false),
+        Field::new("agent_definition_version", DataType::Int32, false),
         Field::new("agent_session_id", DataType::Utf8, true),
         Field::new("run_id", DataType::Utf8, false),
         Field::new("workflow_run_id", DataType::Utf8, true),
@@ -314,6 +318,8 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
     let mut record_id = StringBuilder::new();
     let mut record_kind = StringBuilder::new();
     let mut runtime_agent_id = StringBuilder::new();
+    let mut agent_definition_id = StringBuilder::new();
+    let mut agent_definition_version = Int32Builder::new();
     let mut agent_session_id = StringBuilder::new();
     let mut run_id = StringBuilder::new();
     let mut workflow_run_id = StringBuilder::new();
@@ -346,6 +352,8 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         record_id.append_value(&row.record_id);
         record_kind.append_value(&row.record_kind);
         runtime_agent_id.append_value(row.runtime_agent_id.as_str());
+        agent_definition_id.append_value(&row.agent_definition_id);
+        agent_definition_version.append_value(row.agent_definition_version as i32);
         append_optional(&mut agent_session_id, row.agent_session_id.as_deref());
         run_id.append_value(&row.run_id);
         append_optional(&mut workflow_run_id, row.workflow_run_id.as_deref());
@@ -384,6 +392,8 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(record_id.finish()),
         Arc::new(record_kind.finish()),
         Arc::new(runtime_agent_id.finish()),
+        Arc::new(agent_definition_id.finish()),
+        Arc::new(agent_definition_version.finish()),
         Arc::new(agent_session_id.finish()),
         Arc::new(run_id.finish()),
         Arc::new(workflow_run_id.finish()),
@@ -535,6 +545,8 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
     let record_id = column_str(batch, "record_id")?;
     let record_kind = column_str(batch, "record_kind")?;
     let runtime_agent_id = column_str(batch, "runtime_agent_id")?;
+    let agent_definition_id = column_str(batch, "agent_definition_id")?;
+    let agent_definition_version = column_i32(batch, "agent_definition_version")?;
     let agent_session_id = column_str(batch, "agent_session_id")?;
     let run_id = column_str(batch, "run_id")?;
     let workflow_run_id = column_str(batch, "workflow_run_id")?;
@@ -573,6 +585,13 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
                 index,
                 "runtime_agent_id",
             )?),
+            agent_definition_id: require_str(agent_definition_id, index, "agent_definition_id")?
+                .to_string(),
+            agent_definition_version: read_required_u32(
+                agent_definition_version,
+                index,
+                "agent_definition_version",
+            )?,
             agent_session_id: optional_str(agent_session_id, index),
             run_id: require_str(run_id, index, "run_id")?.to_string(),
             workflow_run_id: optional_str(workflow_run_id, index),
@@ -677,6 +696,21 @@ fn optional_str(array: &StringArray, index: usize) -> Option<String> {
     } else {
         Some(array.value(index).to_string())
     }
+}
+
+fn read_required_u32(array: &Int32Array, index: usize, column: &str) -> Result<u32, CommandError> {
+    if array.is_null(index) {
+        return Err(CommandError::system_fault(
+            "project_record_lance_unexpected_null",
+            format!("Xero project-record lance dataset has unexpected null in `{column}`."),
+        ));
+    }
+    u32::try_from(array.value(index)).map_err(|_| {
+        CommandError::system_fault(
+            "project_record_lance_invalid_u32",
+            format!("Xero project-record lance dataset has an invalid u32 in `{column}`."),
+        )
+    })
 }
 
 fn optional_embedding(

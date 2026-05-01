@@ -256,6 +256,8 @@ pub fn create_agent_session_branch(
                     INSERT INTO agent_usage (
                         project_id,
                         run_id,
+                        agent_definition_id,
+                        agent_definition_version,
                         provider_id,
                         model_id,
                         input_tokens,
@@ -264,11 +266,13 @@ pub fn create_agent_session_branch(
                         estimated_cost_micros,
                         updated_at
                     )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                     "#,
                     params![
                         usage.project_id.as_str(),
                         replay_run_id.as_str(),
+                        usage.agent_definition_id.as_str(),
+                        usage.agent_definition_version,
                         usage.provider_id.as_str(),
                         usage.model_id.as_str(),
                         usage.input_tokens,
@@ -544,6 +548,8 @@ fn insert_replay_run(
             r#"
             INSERT INTO agent_runs (
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 project_id,
                 agent_session_id,
                 run_id,
@@ -561,10 +567,12 @@ fn insert_replay_run(
                 updated_at,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, NULL, NULL, NULL, ?10, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12, NULL, NULL, NULL, ?12, ?12)
             "#,
             params![
                 source_snapshot.run.runtime_agent_id.as_str(),
+                source_snapshot.run.agent_definition_id.as_str(),
+                source_snapshot.run.agent_definition_version,
                 project_id,
                 child_agent_session_id,
                 replay_run_id,

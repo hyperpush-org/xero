@@ -225,6 +225,7 @@ describe('runtime run control schemas', () => {
       agentSessionId: 'agent-session-main',
       initialControls: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'project_release_engineer',
         modelId: 'openai/gpt-4.1-mini',
         thinkingEffort: 'high',
         approvalMode: 'yolo',
@@ -239,6 +240,7 @@ describe('runtime run control schemas', () => {
       agentSessionId: 'agent-session-main',
       initialControls: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'project_release_engineer',
         modelId: 'openai/gpt-4.1-mini',
         thinkingEffort: 'high',
         approvalMode: 'yolo',

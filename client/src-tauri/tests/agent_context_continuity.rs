@@ -67,6 +67,8 @@ fn seed_agent_run_for_agent(
         repo_root,
         &project_store::NewAgentRunRecord {
             runtime_agent_id,
+            agent_definition_id: None,
+            agent_definition_version: None,
             project_id: project_id.into(),
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: run_id.into(),
@@ -83,6 +85,7 @@ fn seed_agent_run_for_agent(
 fn controls_for_agent(runtime_agent_id: RuntimeAgentIdDto) -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
         runtime_agent_id,
+        agent_definition_id: None,
         provider_profile_id: None,
         model_id: "test-model".into(),
         thinking_effort: None,
@@ -115,6 +118,8 @@ fn seed_phase3_context(repo_root: &Path, project_id: &str) {
             project_id: project_id.into(),
             record_kind: project_store::ProjectRecordKind::Decision,
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
             run_id: "phase3-source-run".into(),
             workflow_run_id: None,
@@ -253,6 +258,8 @@ fn context_manifest_persists_without_provider_call_and_retrieval_logs_round_trip
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: None,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             provider_id: None,
             model_id: None,
             request_kind: project_store::AgentContextManifestRequestKind::Test,
@@ -300,6 +307,8 @@ fn context_manifest_persists_without_provider_call_and_retrieval_logs_round_trip
             agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
             run_id: None,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             query_text: "recent handoffs".into(),
             search_scope: project_store::AgentRetrievalSearchScope::Handoffs,
             filters: json!({"kind": "agent_handoff"}),
@@ -353,9 +362,13 @@ fn handoff_lineage_requires_same_type_and_deduplicates_by_idempotency_key() {
         source_agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
         source_run_id: "run-handoff-source".into(),
         source_runtime_agent_id: RuntimeAgentIdDto::Debug,
+        source_agent_definition_id: "debug".into(),
+        source_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
         target_agent_session_id: None,
         target_run_id: None,
         target_runtime_agent_id: RuntimeAgentIdDto::Debug,
+        target_agent_definition_id: "debug".into(),
+        target_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
         provider_id: "fake_provider".into(),
         model_id: "fake-model".into(),
         source_context_hash: "b".repeat(64),
@@ -391,13 +404,17 @@ fn handoff_lineage_requires_same_type_and_deduplicates_by_idempotency_key() {
         &repo_root,
         &project_store::NewAgentHandoffLineageRecord {
             target_runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            target_agent_definition_id: "engineer".into(),
             idempotency_key: "source-run-context-engineer".into(),
             handoff_id: "handoff-invalid".into(),
             ..record
         },
     )
     .expect_err("cross-agent handoff should be rejected");
-    assert_eq!(mismatch.code, "agent_handoff_lineage_target_agent_mismatch");
+    assert_eq!(
+        mismatch.code,
+        "agent_handoff_lineage_target_definition_mismatch"
+    );
 }
 
 #[test]
@@ -410,6 +427,8 @@ fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
         project_id: project_id.clone(),
         record_kind: project_store::ProjectRecordKind::Decision,
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_definition_id: "engineer".into(),
+        agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
         agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
         run_id: "run-phase2-record".into(),
         workflow_run_id: None,
@@ -484,6 +503,8 @@ fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
             agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
             run_id: None,
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             query_text: "phase2 lancedb embeddings retrieval".into(),
             search_scope: project_store::AgentRetrievalSearchScope::HybridContext,
             filters: project_store::AgentContextRetrievalFilters {
@@ -601,6 +622,8 @@ fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
             agent_session_id: None,
             run_id: None,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             query_text: "keyword fallback lancedb memory".into(),
             search_scope: project_store::AgentRetrievalSearchScope::ApprovedMemory,
             filters: project_store::AgentContextRetrievalFilters::default(),
@@ -635,6 +658,8 @@ fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
             agent_session_id: None,
             run_id: None,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             query_text: "dimension mismatch".into(),
             search_scope: project_store::AgentRetrievalSearchScope::ApprovedMemory,
             filters: project_store::AgentContextRetrievalFilters::default(),
@@ -935,6 +960,8 @@ fn phase6_model_visible_context_tooling_permissions_and_logging() {
             agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
             run_id: Some("phase6-engineer-run".into()),
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             query_text: "phase6 proposed candidate retrieval".into(),
             search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
             filters: project_store::AgentContextRetrievalFilters::default(),
