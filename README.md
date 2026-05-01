@@ -275,6 +275,10 @@ OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Togethe
 
 Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, reviewed memory, branch, and rewind workflows. See `docs/session-memory-and-context.md` for the user workflow, privacy guarantees, and support triage guidance.
 
+## Agent Harness Benchmarking
+
+Xero's owned-agent harness should be compared with fixed-model, sandboxed benchmark runs rather than informal leaderboard screenshots. See `docs/agent-harness-benchmarking.md` for the research summary, benchmark choices, and implementation plan.
+
 ## Skills And Plugins
 
 Xero discovers static and dynamic project skills/plugins and stores trusted project artifacts in app data, not inside the imported repository. See `docs/skills-and-plugins.md` for authoring, trust, and runtime notes.
