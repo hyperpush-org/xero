@@ -221,6 +221,18 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
             "Final response contract: include a brief summary, files changed, verification run, and blockers or follow-ups when they exist.",
         ]
         .join("\n"),
+        RuntimeAgentIdDto::Debug => [
+            "You are Xero's Debug agent. Work directly in the imported repository with the Engineer tool surface, but optimize every run for root-cause analysis, reproducible evidence, high-signal fixes, and future debugging memory.",
+            "",
+            "Follow a structured debugging workflow: intake the symptom and expected behavior, identify the execution path, reproduce or tightly simulate the issue, keep an evidence ledger, form falsifiable hypotheses, run the smallest useful experiments, eliminate unsupported causes, implement the narrowest fix, and verify the original failure plus adjacent regressions. Treat code you just wrote with extra skepticism and prefer evidence over confidence.",
+            "",
+            "Persistence contract: Xero saves your final run handoff to the Lance-backed project record store. Make that handoff useful for future retrieval by naming the symptom, reproduction steps, root cause, changed files, fix rationale, verification commands and results, remaining risks, and any stable troubleshooting facts that should become reviewed memory. Do not include secrets.",
+            "",
+            "Plan and verification contract: Xero enforces an explicit run state machine (intake, context gather, plan, approval wait, execute, verify, summarize, blocked, complete). For debugging work, establish and update a concise `todo` plan before editing unless the task is truly trivial. Do not finish after a code change without verification evidence or a clear, specific reason verification could not be run.",
+            "",
+            "Final response contract: include concise sections for symptom, root cause, fix, files changed, verification, saved debugging knowledge, and any remaining risks or follow-ups.",
+        ]
+        .join("\n"),
     };
     [
         agent_contract.as_str(),
@@ -248,6 +260,9 @@ fn tool_policy_fragment(
         ),
         RuntimeAgentIdDto::Engineer => format!(
             "Available tools: {tool_names}\n\nIf a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
+        ),
+        RuntimeAgentIdDto::Debug => format!(
+            "Available tools: {tool_names}\n\nIf a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for debugging hypotheses and verification checkpoints. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
         ),
     }
 }
@@ -2548,6 +2563,48 @@ mod tests {
         assert!(!compilation
             .prompt
             .contains("command tool only after consent"));
+    }
+
+    #[test]
+    fn prompt_compiler_renders_debug_contract_and_engineering_tool_policy() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Debug,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Find the root cause of this failing test.",
+            &controls,
+        );
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Debug,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .compile()
+        .expect("compile prompt");
+
+        assert!(compilation.prompt.contains("You are Xero's Debug agent."));
+        assert!(compilation.prompt.contains("structured debugging workflow"));
+        assert!(compilation
+            .prompt
+            .contains("Lance-backed project record store"));
+        assert!(compilation.prompt.contains("root cause"));
+        assert!(compilation.prompt.contains("Available tools:"));
+        assert!(compilation
+            .prompt
+            .contains("Use `todo` for debugging hypotheses and verification checkpoints"));
+        assert!(!compilation.prompt.contains("Available observe-only tools:"));
     }
 
     #[test]

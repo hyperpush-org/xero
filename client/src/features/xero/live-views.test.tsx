@@ -22,12 +22,13 @@ import type {
   WorkflowPaneView,
 } from '@/src/features/xero/use-xero-desktop-state'
 import type { AgentProviderModelCatalogView } from '@/src/features/xero/use-xero-desktop-state/types'
-import type {
-  ProjectDetailView,
-  ProviderModelThinkingEffortDto,
-  RuntimeRunView,
-  RuntimeSessionView,
-  RuntimeStreamView,
+import {
+  getRuntimeAgentLabel,
+  type ProjectDetailView,
+  type ProviderModelThinkingEffortDto,
+  type RuntimeRunView,
+  type RuntimeSessionView,
+  type RuntimeStreamView,
 } from '@/src/lib/xero-model'
 
 type CheckpointControlLoopCard = NonNullable<AgentPaneView['checkpointControlLoop']>['items'][number]
@@ -486,8 +487,7 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     controlTruthSource:
       overrides.controlTruthSource ?? (selectedControls && !runtimeRun?.isTerminal ? 'runtime_run' : 'fallback'),
     selectedRuntimeAgentId,
-    selectedRuntimeAgentLabel:
-      overrides.selectedRuntimeAgentLabel ?? (selectedRuntimeAgentId === 'engineer' ? 'Engineer' : 'Ask'),
+    selectedRuntimeAgentLabel: overrides.selectedRuntimeAgentLabel ?? getRuntimeAgentLabel(selectedRuntimeAgentId),
     selectedModelId: overrides.selectedModelId ?? selectedControls?.modelId ?? selectedModelOption?.modelId ?? null,
     selectedThinkingEffort:
       overrides.selectedThinkingEffort ??

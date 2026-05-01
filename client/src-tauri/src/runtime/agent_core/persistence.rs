@@ -74,6 +74,7 @@ pub(crate) fn capture_project_record_for_run(
     let final_text = latest_assistant_message
         .map(|message| message.content.trim())
         .filter(|content| !content.is_empty());
+    let is_debug_run = snapshot.run.runtime_agent_id == RuntimeAgentIdDto::Debug;
     let (record_kind, title, raw_text, visibility) = match final_text {
         Some(text) => (
             project_store::ProjectRecordKind::AgentHandoff,
@@ -93,8 +94,13 @@ pub(crate) fn capture_project_record_for_run(
         return Ok(());
     }
     let summary = trim_project_record_summary(&text);
-    let content = json!({
-        "schema": "xero.project_record.run_handoff.v1",
+    let schema_name = if is_debug_run {
+        "xero.project_record.debug_session.v1"
+    } else {
+        "xero.project_record.run_handoff.v1"
+    };
+    let mut content = json!({
+        "schema": schema_name,
         "runtimeAgentId": snapshot.run.runtime_agent_id.as_str(),
         "providerId": snapshot.run.provider_id.as_str(),
         "modelId": snapshot.run.model_id.as_str(),
@@ -102,6 +108,34 @@ pub(crate) fn capture_project_record_for_run(
         "fileChanges": file_paths,
         "messageId": latest_assistant_message.map(|message| message.id),
     });
+    if is_debug_run {
+        content["debugSession"] = json!({
+            "memoryFocus": [
+                "symptom",
+                "reproduction",
+                "evidence",
+                "hypotheses",
+                "rootCause",
+                "fix",
+                "verification",
+                "remainingRisks",
+                "reusableTroubleshootingFacts"
+            ],
+            "captureContract": "The final assistant handoff is expected to include the symptom, root cause, fix rationale, changed files, verification evidence, and durable troubleshooting facts.",
+        });
+    }
+    let tags = if is_debug_run {
+        vec![
+            snapshot.run.runtime_agent_id.as_str().into(),
+            "debugging".into(),
+            "troubleshooting".into(),
+            "root-cause".into(),
+            "fix".into(),
+            "verification".into(),
+        ]
+    } else {
+        vec![snapshot.run.runtime_agent_id.as_str().into()]
+    };
     project_store::insert_project_record(
         repo_root,
         &project_store::NewProjectRecordRecord {
@@ -117,11 +151,15 @@ pub(crate) fn capture_project_record_for_run(
             summary,
             text,
             content_json: Some(content),
-            schema_name: Some("xero.project_record.run_handoff.v1".into()),
+            schema_name: Some(schema_name.into()),
             schema_version: 1,
-            importance: project_store::ProjectRecordImportance::Normal,
-            confidence: Some(0.8),
-            tags: vec![snapshot.run.runtime_agent_id.as_str().into()],
+            importance: if is_debug_run {
+                project_store::ProjectRecordImportance::High
+            } else {
+                project_store::ProjectRecordImportance::Normal
+            },
+            confidence: Some(if is_debug_run { 0.9 } else { 0.8 }),
+            tags,
             source_item_ids: latest_assistant_message
                 .map(|message| vec![format!("agent_messages:{}", message.id)])
                 .unwrap_or_default(),

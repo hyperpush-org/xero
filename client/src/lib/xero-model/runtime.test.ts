@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getRuntimeAgentDescriptor,
   mapRuntimeRun,
+  RUNTIME_AGENT_DESCRIPTORS,
+  runtimeAgentIdSchema,
   runtimeRunSchema,
   startRuntimeRunRequestSchema,
   updateRuntimeRunControlsRequestSchema,
@@ -56,6 +59,21 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
 }
 
 describe('runtime run control schemas', () => {
+  it('registers Debug as an engineering-capable runtime agent', () => {
+    expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
+    expect(RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual(['ask', 'engineer', 'debug'])
+
+    expect(getRuntimeAgentDescriptor('debug')).toMatchObject({
+      id: 'debug',
+      label: 'Debug',
+      toolPolicy: 'engineering',
+      outputContract: 'debug_summary',
+      allowPlanGate: true,
+      allowVerificationGate: true,
+      allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    })
+  })
+
   it('maps durable active and pending control snapshots into a selected pending projection', () => {
     const parsed = runtimeRunSchema.parse(makeRuntimeRunDto())
     const view = mapRuntimeRun(parsed)

@@ -1,4 +1,4 @@
-import { Activity, ArrowUp, Brain, CheckIcon, ChevronDownIcon, Cpu, LoaderCircle, MessageCircle, Mic, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { Activity, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, LoaderCircle, MessageCircle, Mic, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { forwardRef, Fragment, useMemo, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
@@ -9,6 +9,7 @@ import type {
 } from '@/src/features/xero/use-xero-desktop-state/types'
 import {
   RUNTIME_AGENT_DESCRIPTORS,
+  runtimeAgentIdSchema,
   type ProviderModelThinkingEffortDto,
   type RuntimeAgentIdDto,
   type RuntimeRunApprovalModeDto,
@@ -155,7 +156,7 @@ export function ComposerDock({
 }: ComposerDockProps) {
   const hasComposerModelOptions = composerModelGroups.length > 0
   const hasThinkingOptions = composerThinkingOptions.length > 0
-  const showApprovalSelector = composerRuntimeAgentId === 'engineer'
+  const showApprovalSelector = composerRuntimeAgentId !== 'ask'
   const isAgentSelectorDisabled = runtimeAgentSwitchDisabled || controlsDisabled
   const isUpdatingControls = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'update_controls'
   const isStartingRun =
@@ -164,7 +165,8 @@ export function ComposerDock({
     composerThinkingOptions.find((option) => option.value === composerThinkingLevel)?.label ?? composerThinkingPlaceholder
   const approvalTriggerLabel =
     composerApprovalOptions.find((option) => option.value === composerApprovalMode)?.label ?? 'Approval unavailable'
-  const AgentTriggerIcon = composerRuntimeAgentId === 'ask' ? MessageCircle : Wrench
+  const AgentTriggerIcon =
+    composerRuntimeAgentId === 'ask' ? MessageCircle : composerRuntimeAgentId === 'debug' ? Bug : Wrench
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey) {
@@ -205,8 +207,9 @@ export function ComposerDock({
                     disabled={isAgentSelectorDisabled}
                     value={composerRuntimeAgentId}
                     onValueChange={(value) => {
-                      if (value === 'ask' || value === 'engineer') {
-                        onComposerRuntimeAgentChange(value)
+                      const parsed = runtimeAgentIdSchema.safeParse(value)
+                      if (parsed.success) {
+                        onComposerRuntimeAgentChange(parsed.data)
                       }
                     }}
                   >

@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  Workflow as WorkflowIcon,
   Wrench,
   X,
 } from "lucide-react"
@@ -104,6 +105,8 @@ interface XeroShellProps {
   solanaOpen?: boolean
   onToggleVcs?: () => void
   vcsOpen?: boolean
+  onToggleWorkflows?: () => void
+  workflowsOpen?: boolean
   /** Number of changed files in the working tree — surfaced as a badge on the diff button. */
   vcsChangeCount?: number
   /** Lines added across the working tree (for the +/- badge). */
@@ -240,6 +243,8 @@ export function XeroShell({
   solanaOpen = false,
   onToggleVcs,
   vcsOpen = false,
+  onToggleWorkflows,
+  workflowsOpen = false,
   vcsChangeCount = 0,
   vcsAdditions = 0,
   vcsDeletions = 0,
@@ -550,6 +555,24 @@ export function XeroShell({
     </button>
   )
 
+  const WorkflowsBtn = (
+    <button
+      aria-label={workflowsOpen ? "Close workflows" : "Open workflows"}
+      aria-pressed={workflowsOpen}
+      className={cn(
+        "rounded-md p-1.5 transition-colors",
+        workflowsOpen
+          ? "bg-primary/15 text-primary"
+          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+      )}
+      onClick={onToggleWorkflows}
+      title="Workflows"
+      type="button"
+    >
+      <WorkflowIcon className="h-4 w-4" />
+    </button>
+  )
+
   const SidebarToggleBtn = (
     <button
       aria-label={sidebarCollapsed ? "Expand project sidebar" : "Collapse project sidebar"}
@@ -694,6 +717,7 @@ export function XeroShell({
             onDoubleClick={stopTitlebarMouseEventPropagation}
             onMouseDown={stopTitlebarMouseEventPropagation}
           >
+            {WorkflowsBtn}
             {VcsBtn}
             {ToolsMenu}
             {GamesBtn}

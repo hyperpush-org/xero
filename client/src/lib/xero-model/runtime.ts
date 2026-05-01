@@ -44,7 +44,7 @@ export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'op
 export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
-export const runtimeAgentIdSchema = z.enum(['ask', 'engineer'])
+export const runtimeAgentIdSchema = z.enum(['ask', 'engineer', 'debug'])
 export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'ask'
 
 export interface RuntimeAgentDescriptor {
@@ -55,9 +55,9 @@ export interface RuntimeAgentDescriptor {
   taskPurpose: string
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'engineer'
+  promptPolicy: 'ask' | 'engineer' | 'debug'
   toolPolicy: 'observe_only' | 'engineering'
-  outputContract: 'answer' | 'engineering_summary'
+  outputContract: 'answer' | 'engineering_summary' | 'debug_summary'
   projectDataPolicy: {
     required: true
     recordKinds: readonly (
@@ -134,6 +134,43 @@ export const RUNTIME_AGENT_DESCRIPTORS = [
         'diagnostic',
       ],
       structuredSchemas: ['xero.project_record.v1'],
+      unstructuredScopes: ['answer_note', 'session_summary', 'artifact_excerpt', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: true,
+    allowVerificationGate: true,
+    allowAutoCompact: true,
+  },
+  {
+    id: 'debug',
+    label: 'Debug',
+    shortLabel: 'Debug',
+    description:
+      'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.',
+    taskPurpose:
+      'Reproduce, gather evidence, test hypotheses, isolate root cause, fix, verify, and preserve reusable debugging knowledge.',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    promptPolicy: 'debug',
+    toolPolicy: 'engineering',
+    outputContract: 'debug_summary',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'agent_handoff',
+        'project_fact',
+        'decision',
+        'constraint',
+        'plan',
+        'finding',
+        'verification',
+        'question',
+        'artifact',
+        'context_note',
+        'diagnostic',
+      ],
+      structuredSchemas: ['xero.project_record.v1', 'xero.project_record.debug_session.v1'],
       unstructuredScopes: ['answer_note', 'session_summary', 'artifact_excerpt', 'troubleshooting_note'],
       memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
     },

@@ -235,7 +235,7 @@ impl ToolRegistry {
                 }
                 continue;
             }
-            if self.options.runtime_agent_id == RuntimeAgentIdDto::Engineer {
+            if self.options.runtime_agent_id.allows_engineering_tools() {
                 if let Some(dynamic) = tool_runtime.dynamic_tool_descriptor(tool_name)? {
                     descriptors_by_name.insert(
                         dynamic.name.clone(),

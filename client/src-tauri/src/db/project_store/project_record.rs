@@ -525,4 +525,48 @@ mod tests {
         assert!(lance_dir.join("project_records.lance").exists());
         assert!(!repo_root.join(".xero").exists());
     }
+
+    #[test]
+    fn project_records_round_trip_debug_runtime_agent() {
+        project_record_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-debug-records";
+        create_project_database(&repo_root, project_id);
+        let mut record = new_project_record(
+            project_id,
+            "project-record-debug-1",
+            "Debug found the root cause, fixed it, and verified the regression test.",
+        );
+        record.runtime_agent_id = RuntimeAgentIdDto::Debug;
+        record.title = "Debug run handoff".into();
+        record.summary = "Debug found the root cause and verified the fix.".into();
+        record.schema_name = Some("xero.project_record.debug_session.v1".into());
+        record.content_json = Some(json!({
+            "schema": "xero.project_record.debug_session.v1",
+            "debugSession": {
+                "memoryFocus": ["rootCause", "fix", "verification"]
+            }
+        }));
+        record.importance = ProjectRecordImportance::High;
+        record.tags = vec![
+            "debug".into(),
+            "debugging".into(),
+            "root-cause".into(),
+            "verification".into(),
+        ];
+
+        let inserted = insert_project_record(&repo_root, &record).expect("insert debug record");
+        let records = list_project_records(&repo_root, project_id).expect("list records");
+
+        assert_eq!(inserted.runtime_agent_id, RuntimeAgentIdDto::Debug);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].runtime_agent_id, RuntimeAgentIdDto::Debug);
+        assert_eq!(
+            records[0].schema_name.as_deref(),
+            Some("xero.project_record.debug_session.v1")
+        );
+        assert!(records[0].tags.iter().any(|tag| tag == "root-cause"));
+    }
 }

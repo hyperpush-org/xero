@@ -405,7 +405,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         PRIMARY KEY (project_id, run_id),
         CHECK (agent_session_id <> ''),
-        CHECK (runtime_agent_id IN ('ask', 'engineer')),
+        CHECK (runtime_agent_id IN ('ask', 'engineer', 'debug')),
         CHECK (run_id <> ''),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),

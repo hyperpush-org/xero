@@ -545,6 +545,7 @@ fn optional_str(array: &StringArray, index: usize) -> Option<String> {
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "engineer" => RuntimeAgentIdDto::Engineer,
+        "debug" => RuntimeAgentIdDto::Debug,
         _ => RuntimeAgentIdDto::Ask,
     }
 }

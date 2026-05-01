@@ -1169,6 +1169,21 @@ describe('AgentRuntime current UI', () => {
     expect(onOpenDiagnostics).toHaveBeenCalledTimes(1)
   })
 
+  it('renders Debug as an approval-capable composer agent', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          selectedRuntimeAgentId: 'debug',
+          selectedRuntimeAgentLabel: 'Debug',
+          selectedApprovalMode: 'auto_edit',
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
+    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('Auto edit')
+  })
+
   it('keeps model selectors available while a prompt is pending on an active run', async () => {
     const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
 

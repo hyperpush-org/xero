@@ -554,7 +554,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
 
 pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &str) -> bool {
     match agent_id {
-        RuntimeAgentIdDto::Engineer => true,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
         RuntimeAgentIdDto::Ask => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
                 || tool_effect_class(tool_name).is_ask_observe_only()
@@ -569,6 +569,9 @@ fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Engineer, tool_name) {
         agents.push(RuntimeAgentIdDto::Engineer.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Debug, tool_name) {
+        agents.push(RuntimeAgentIdDto::Debug.as_str());
     }
     agents
 }
@@ -1820,7 +1823,7 @@ impl AutonomousToolRuntime {
                     let runtime_tool_available = known_tools.contains(tool.as_str())
                         && self.tool_available_by_runtime(tool.as_str())
                         && tool_allowed_for_runtime_agent(runtime_agent_id, tool.as_str());
-                    let dynamic_tool_available = runtime_agent_id == RuntimeAgentIdDto::Engineer
+                    let dynamic_tool_available = runtime_agent_id.allows_engineering_tools()
                         && self.dynamic_tool_descriptor(&tool)?.is_some();
                     if runtime_tool_available || dynamic_tool_available {
                         requested.insert(tool);

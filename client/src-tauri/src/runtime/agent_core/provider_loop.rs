@@ -403,7 +403,7 @@ fn dynamic_tool_catalog_metadata(
             "examples": [format!("Call `{}` after exact MCP activation.", descriptor.name)],
             "riskClass": "external_capability_invoke",
             "effectClass": "external_service",
-            "allowedRuntimeAgents": [RuntimeAgentIdDto::Engineer.as_str()],
+            "allowedRuntimeAgents": [RuntimeAgentIdDto::Engineer.as_str(), RuntimeAgentIdDto::Debug.as_str()],
             "runtimeAvailable": true,
             "source": server_id,
             "trust": "connected_mcp_server",

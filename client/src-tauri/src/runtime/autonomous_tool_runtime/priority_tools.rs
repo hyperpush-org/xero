@@ -113,7 +113,7 @@ impl AutonomousToolRuntime {
             }
         }
 
-        if runtime_agent_id == RuntimeAgentIdDto::Engineer {
+        if runtime_agent_id.allows_engineering_tools() {
             let mcp_matches = self.mcp_tool_search_matches(&query, &query_terms)?;
             searched_catalog_size = searched_catalog_size.saturating_add(mcp_matches.len());
             matches.extend(mcp_matches);

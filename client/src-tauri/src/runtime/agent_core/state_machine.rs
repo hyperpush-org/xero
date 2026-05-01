@@ -826,6 +826,30 @@ mod tests {
     }
 
     #[test]
+    fn debug_agent_uses_engineering_plan_gate() {
+        let snapshot = empty_snapshot();
+        let mut debug_controls = controls(true);
+        debug_controls.active.runtime_agent_id = RuntimeAgentIdDto::Debug;
+        let classification = classify_agent_task(
+            "Debug the failing runtime state machine test",
+            &debug_controls,
+        );
+        let gate = evaluate_tool_batch_gate(
+            &snapshot,
+            &debug_controls,
+            &classification,
+            &[AgentToolCall {
+                tool_call_id: "call-1".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+                input: json!({ "argv": ["pnpm", "test"] }),
+            }],
+        );
+
+        assert!(classification.requires_plan);
+        assert!(matches!(gate, ToolBatchGate::RequirePlan { .. }));
+    }
+
+    #[test]
     fn ask_agent_does_not_require_engineering_plan_gate() {
         let snapshot = empty_snapshot();
         let mut ask_controls = controls(true);
