@@ -30,19 +30,28 @@ pub(crate) fn drive_provider_loop(
         touch_agent_run_heartbeat(repo_root, project_id, run_id)?;
         let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
         let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
-        let turn_prompt_compilation = compile_system_prompt_for_session(
-            repo_root,
-            Some(project_id),
-            Some(agent_session_id),
-            controls.active.runtime_agent_id,
-            tool_runtime.browser_control_preference(),
-            tool_registry.descriptors(),
-            owned_process_summary.as_deref(),
+        let turn_context_package = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root,
+                project_id,
+                agent_session_id,
+                run_id,
+                runtime_agent_id: controls.active.runtime_agent_id,
+                provider_id: provider.provider_id(),
+                model_id: provider.model_id(),
+                turn_index,
+                browser_control_preference: tool_runtime.browser_control_preference(),
+                tools: tool_registry.descriptors(),
+                messages: &messages,
+                owned_process_summary: owned_process_summary.as_deref(),
+            },
             skill_contexts,
         )?;
+        let _manifest_id = turn_context_package.manifest.manifest_id.as_str();
+        let _fragment_count = turn_context_package.compilation.fragments.len();
         record_tool_registry_snapshot(repo_root, project_id, run_id, turn_index, &tool_registry)?;
         let turn = ProviderTurnRequest {
-            system_prompt: turn_prompt_compilation.prompt,
+            system_prompt: turn_context_package.system_prompt,
             messages: messages.clone(),
             tools: tool_registry.descriptors().to_vec(),
             turn_index,

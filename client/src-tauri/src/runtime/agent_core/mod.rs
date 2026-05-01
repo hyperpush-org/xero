@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+mod context_package;
 mod evals;
 mod events;
 mod provider_adapters;
@@ -36,6 +37,7 @@ pub use supervisor::{
 };
 pub use types::*;
 
+pub(crate) use context_package::*;
 pub(crate) use persistence::*;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;

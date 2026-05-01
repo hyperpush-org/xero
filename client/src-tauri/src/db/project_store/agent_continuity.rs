@@ -605,6 +605,38 @@ pub fn get_agent_context_manifest(
         .transpose()
 }
 
+pub fn list_agent_context_manifests_for_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Vec<AgentContextManifestRecord>, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_context_manifest_project_required",
+    )?;
+    validate_non_empty_text(run_id, "runId", "agent_context_manifest_run_required")?;
+    let connection = open_continuity_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            manifest_select_sql(
+                r#"
+                WHERE project_id = ?1 AND run_id = ?2
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )
+            .as_str(),
+        )
+        .map_err(map_continuity_read_error)?;
+    let rows = statement
+        .query_map(params![project_id, run_id], read_manifest_row)
+        .map_err(map_continuity_read_error)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(map_continuity_read_error)?
+        .into_iter()
+        .collect()
+}
+
 pub fn insert_agent_handoff_lineage(
     repo_root: &Path,
     record: &NewAgentHandoffLineageRecord,
