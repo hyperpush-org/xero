@@ -90,6 +90,22 @@ const AUTO_COMPACT_DEFAULT_PREFERENCE: RuntimeAutoCompactPreferenceDto = {
   rawTailMessageCount: 8,
 }
 
+function sameRuntimeControlInput(
+  left: RuntimeRunControlInputDto | null,
+  right: RuntimeRunControlInputDto | null,
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return left === right
+
+  return (
+    (left.providerProfileId ?? null) === (right.providerProfileId ?? null) &&
+    left.modelId === right.modelId &&
+    (left.thinkingEffort ?? null) === (right.thinkingEffort ?? null) &&
+    left.approvalMode === right.approvalMode &&
+    Boolean(left.planModeRequired) === Boolean(right.planModeRequired)
+  )
+}
+
 function readStoredAutoCompactEnabled(): boolean {
   if (typeof window === 'undefined') return false
 
@@ -148,6 +164,7 @@ export function useAgentRuntimeController({
   const lastSeenProjectIdRef = useRef(projectId)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
   const draftPromptRef = useRef(draftPrompt)
+  const lastReportedComposerControlsRef = useRef<RuntimeRunControlInputDto | null | undefined>(undefined)
 
   const activeRuntimeRun = renderableRuntimeRun && !renderableRuntimeRun.isTerminal ? renderableRuntimeRun : null
   const effectiveModelSelectionKey = activeRuntimeRun ? selectedModelSelectionKey : draftModelSelectionKey
@@ -205,6 +222,14 @@ export function useAgentRuntimeController({
   })
 
   useEffect(() => {
+    if (
+      lastReportedComposerControlsRef.current !== undefined &&
+      sameRuntimeControlInput(lastReportedComposerControlsRef.current, selectedControlInput)
+    ) {
+      return
+    }
+
+    lastReportedComposerControlsRef.current = selectedControlInput
     onComposerControlsChange?.(selectedControlInput)
   }, [onComposerControlsChange, selectedControlInput])
 
