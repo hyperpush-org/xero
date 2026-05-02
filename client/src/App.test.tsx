@@ -1,7 +1,18 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const { githubLoginMock, githubLogoutMock, githubRefreshMock, openUrlMock } = vi.hoisted(() => ({
+const {
+  agentRuntimeMountMock,
+  agentRuntimeRenderMock,
+  agentRuntimeUnmountMock,
+  githubLoginMock,
+  githubLogoutMock,
+  githubRefreshMock,
+  openUrlMock,
+} = vi.hoisted(() => ({
+  agentRuntimeMountMock: vi.fn(),
+  agentRuntimeRenderMock: vi.fn(),
+  agentRuntimeUnmountMock: vi.fn(),
   githubLoginMock: vi.fn(async () => undefined),
   githubLogoutMock: vi.fn(async () => undefined),
   githubRefreshMock: vi.fn(async () => undefined),
@@ -30,9 +41,22 @@ vi.mock('@/components/ui/tooltip', () => ({
   TooltipTrigger: ({ children }: any) => <>{children}</>,
 }))
 
-vi.mock('../components/xero/agent-runtime', () => ({
-  AgentRuntime: () => <section aria-label="Agent runtime" />,
-}))
+vi.mock('../components/xero/agent-runtime', async () => {
+  const React = await import('react')
+
+  return {
+    AgentRuntime: (props: any) => {
+      agentRuntimeRenderMock(props.agent?.project?.id ?? null)
+
+      React.useEffect(() => {
+        agentRuntimeMountMock()
+        return () => agentRuntimeUnmountMock()
+      }, [])
+
+      return <section aria-label="Agent runtime" />
+    },
+  }
+})
 
 vi.mock('../components/xero/code-editor', async () => {
   const React = await import('react')
@@ -99,6 +123,9 @@ afterEach(() => {
   githubLoginMock.mockClear()
   githubLogoutMock.mockClear()
   githubRefreshMock.mockClear()
+  agentRuntimeMountMock.mockClear()
+  agentRuntimeRenderMock.mockClear()
+  agentRuntimeUnmountMock.mockClear()
   openUrlMock.mockReset()
   if (typeof window.localStorage?.clear === 'function') {
     window.localStorage.clear()
@@ -2358,6 +2385,62 @@ describe('XeroApp current UI', () => {
 
     expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
     expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()
+  })
+
+  it('lazy-activates the agent pane only after the Agent view is opened', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    expect(agentRuntimeRenderMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('region', { name: 'Agent runtime', hidden: true })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+
+    expect(await screen.findByRole('region', { name: 'Agent runtime' })).toBeVisible()
+    expect(agentRuntimeMountMock).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Agent runtime' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('region', { name: 'Agent runtime', hidden: true })).toBeInTheDocument()
+  })
+
+  it('lazy-mounts the workflows sidebar and preserves its local search state while hidden', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    expect(document.querySelector('aside[aria-label="Workflows"]')).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
+
+    const workflowsPanel = await screen.findByLabelText('Workflows')
+    fireEvent.click(within(workflowsPanel).getByRole('button', { name: 'Search workflows' }))
+    fireEvent.change(within(workflowsPanel).getByRole('searchbox', { name: 'Search workflows' }), {
+      target: { value: 'review' },
+    })
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close workflows' })[0])
+
+    await waitFor(() =>
+      expect(screen.queryByRole('complementary', { name: 'Workflows' })).not.toBeInTheDocument(),
+    )
+    expect(document.querySelector('aside[aria-label="Workflows"]')).toHaveAttribute('aria-hidden', 'true')
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
+
+    expect(await screen.findByRole('searchbox', { name: 'Search workflows' })).toHaveValue('review')
   })
 
   it('renders live git footer data from desktop state while leaving mock-only fields untouched', async () => {

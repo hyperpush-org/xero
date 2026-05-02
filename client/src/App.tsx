@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
+import {
+  Activity,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react'
 import { AgentRuntime } from '@/components/xero/agent-runtime'
 import { SetupEmptyState } from '@/components/xero/agent-runtime/setup-empty-state'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
@@ -145,6 +154,92 @@ function LiveAgentRuntime({
   }
 
   return <AgentRuntime {...props} agent={liveAgent} />
+}
+
+function useActivatedSurface(active: boolean) {
+  const [activated, setActivated] = useState(active)
+
+  useEffect(() => {
+    if (active) {
+      setActivated(true)
+    }
+  }, [active])
+
+  return active || activated
+}
+
+interface LazyActivityPaneProps {
+  active: boolean
+  children: ReactNode
+  className?: string
+  name: string
+}
+
+function LazyActivityPane({
+  active,
+  children,
+  className,
+  name,
+}: LazyActivityPaneProps) {
+  const shouldMount = useActivatedSurface(active)
+
+  if (!shouldMount) {
+    return null
+  }
+
+  return (
+    <Activity mode={active ? 'visible' : 'hidden'} name={name}>
+      <div
+        aria-hidden={!active}
+        className={className}
+        inert={!active ? true : undefined}
+      >
+        {children}
+      </div>
+    </Activity>
+  )
+}
+
+function LazyMountedPane({
+  active,
+  children,
+  className,
+}: Omit<LazyActivityPaneProps, 'name'>) {
+  const shouldMount = useActivatedSurface(active)
+
+  if (!shouldMount) {
+    return null
+  }
+
+  return (
+    <div
+      aria-hidden={!active}
+      className={className}
+      inert={!active ? true : undefined}
+    >
+      {children}
+    </div>
+  )
+}
+
+interface LazyActivitySurfaceProps {
+  children: ReactNode
+  name: string
+  open: boolean
+}
+
+function LazyActivitySurface({ children, name, open }: LazyActivitySurfaceProps) {
+  const shouldMount = useActivatedSurface(open)
+
+  if (!shouldMount) {
+    return null
+  }
+
+  return (
+    <Activity mode={open ? 'visible' : 'hidden'} name={name}>
+      {children}
+    </Activity>
+  )
 }
 
 export function XeroApp({ adapter }: XeroAppProps) {
@@ -860,10 +955,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
         />
         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {workflowView ? (
-            <div
-              aria-hidden={activeView !== 'phases'}
+            <LazyActivityPane
+              active={activeView === 'phases'}
               className={getViewPaneClassName(activeView === 'phases')}
-              inert={activeView !== 'phases' ? true : undefined}
+              name="workflow-pane"
             >
               <PhaseView
                 workflow={workflowView}
@@ -881,14 +976,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
                   if (!workflowsOpen) toggleWorkflows()
                 }}
               />
-            </div>
+            </LazyActivityPane>
           ) : null}
 
           {agentView ? (
-            <div
-              aria-hidden={activeView !== 'agent'}
+            <LazyActivityPane
+              active={activeView === 'agent'}
               className={getViewPaneClassName(activeView === 'agent')}
-              inert={activeView !== 'agent' ? true : undefined}
+              name="agent-pane"
             >
               <LiveAgentRuntime
                 agent={agentView}
@@ -931,14 +1026,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 }
                 onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
               />
-            </div>
+            </LazyActivityPane>
           ) : null}
 
           {shouldRenderExecutionPanel && executionView ? (
-            <div
-              aria-hidden={!isExecutionVisible}
+            <LazyMountedPane
+              active={isExecutionVisible}
               className={getViewPaneClassName(isExecutionVisible)}
-              inert={!isExecutionVisible ? true : undefined}
             >
               <ExecutionView
                 active={isExecutionVisible}
@@ -953,7 +1047,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 searchProject={searchProject}
                 replaceInProject={replaceInProject}
               />
-            </div>
+            </LazyMountedPane>
           ) : null}
         </div>
       </>
@@ -1133,20 +1227,32 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onOpenArchivedSessions={() => setArchivedSessionsOpen(true)}
       />
       {renderBody()}
-      <GamesSidebar accountLogin={githubSession?.user.login ?? null} open={gamesOpen} />
+      <LazyActivitySurface name="games-sidebar" open={gamesOpen}>
+        <GamesSidebar accountLogin={githubSession?.user.login ?? null} open={gamesOpen} />
+      </LazyActivitySurface>
       <BrowserSidebar open={browserOpen} />
-      <UsageStatsSidebar
-        open={usageOpen}
-        projectId={activeProjectId}
-        projectName={activeProject?.name ?? null}
-        summary={activeUsageSummary}
-        onClose={() => setUsageOpen(false)}
-        onRefresh={refreshUsageSummary}
-      />
-      <IosEmulatorSidebar open={iosOpen} />
-      <AndroidEmulatorSidebar open={androidOpen} />
-      <SolanaWorkbenchSidebar open={solanaOpen} />
-      <WorkflowsSidebar open={workflowsOpen} />
+      <LazyActivitySurface name="usage-sidebar" open={usageOpen}>
+        <UsageStatsSidebar
+          open={usageOpen}
+          projectId={activeProjectId}
+          projectName={activeProject?.name ?? null}
+          summary={activeUsageSummary}
+          onClose={() => setUsageOpen(false)}
+          onRefresh={refreshUsageSummary}
+        />
+      </LazyActivitySurface>
+      <LazyActivitySurface name="ios-emulator-sidebar" open={iosOpen}>
+        <IosEmulatorSidebar open={iosOpen} />
+      </LazyActivitySurface>
+      <LazyActivitySurface name="android-emulator-sidebar" open={androidOpen}>
+        <AndroidEmulatorSidebar open={androidOpen} />
+      </LazyActivitySurface>
+      <LazyActivitySurface name="solana-workbench-sidebar" open={solanaOpen}>
+        <SolanaWorkbenchSidebar open={solanaOpen} />
+      </LazyActivitySurface>
+      <LazyActivitySurface name="workflows-sidebar" open={workflowsOpen}>
+        <WorkflowsSidebar open={workflowsOpen} />
+      </LazyActivitySurface>
       <VcsSidebar
         open={vcsOpen}
         projectId={activeProjectId}
