@@ -7,9 +7,13 @@ use tauri::{
 
 use crate::{
     commands::{
-        validate_non_empty, CommandError, CommandResult, RuntimeStreamItemDto,
-        RuntimeStreamItemKind, RuntimeStreamTranscriptRole, RuntimeToolCallState,
-        SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
+        validate_non_empty, BrowserComputerUseActionStatusDto, BrowserComputerUseSurfaceDto,
+        BrowserComputerUseToolResultSummaryDto, CommandError, CommandResult,
+        CommandToolResultSummaryDto, FileToolResultSummaryDto, GitToolResultScopeDto,
+        GitToolResultSummaryDto, McpCapabilityKindDto, McpCapabilityToolResultSummaryDto,
+        RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamTranscriptRole,
+        RuntimeToolCallState, SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
+        ToolResultSummaryDto, WebToolResultContentKindDto, WebToolResultSummaryDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
@@ -281,6 +285,14 @@ fn owned_agent_event_runtime_item(
             item.tool_call_id = payload_string(&payload, "toolCallId");
             item.tool_name = payload_string(&payload, "toolName");
             item.tool_state = Some(RuntimeToolCallState::Running);
+            item.detail = payload
+                .get("input")
+                .and_then(|input| tool_started_detail(item.tool_name.as_deref(), input))
+                .or_else(|| {
+                    item.tool_name
+                        .as_ref()
+                        .map(|tool_name| format!("Started `{tool_name}`."))
+                });
             item.text = item
                 .tool_name
                 .as_ref()
@@ -300,18 +312,25 @@ fn owned_agent_event_runtime_item(
             item.kind = RuntimeStreamItemKind::Tool;
             item.tool_call_id = payload_string(&payload, "toolCallId");
             item.tool_name = payload_string(&payload, "toolName");
-            item.tool_state = Some(if payload_bool(&payload, "ok").unwrap_or(false) {
+            let ok = payload_bool(&payload, "ok").unwrap_or(false);
+            item.tool_state = Some(if ok {
                 RuntimeToolCallState::Succeeded
             } else {
                 RuntimeToolCallState::Failed
             });
-            item.text = payload_string(&payload, "summary")
+            item.detail = payload_string(&payload, "summary")
                 .or_else(|| payload_string(&payload, "message"))
                 .or_else(|| {
                     item.tool_name
                         .as_ref()
                         .map(|name| format!("Completed `{name}`."))
                 });
+            item.text = item.detail.clone();
+            if ok {
+                item.tool_summary = payload
+                    .get("output")
+                    .and_then(|output| tool_result_summary_from_output(output, ok));
+            }
             item.code = payload_string(&payload, "code");
             item.message = payload_string(&payload, "message");
         }
@@ -470,6 +489,354 @@ fn should_emit_owned_runtime_item(
     kind == &RuntimeStreamItemKind::Failure || requested.contains(kind)
 }
 
+fn tool_started_detail(tool_name: Option<&str>, input: &serde_json::Value) -> Option<String> {
+    let mut parts = Vec::new();
+
+    match tool_name.unwrap_or_default() {
+        "read" => {
+            push_value_part(&mut parts, "path", input, "path");
+            push_value_part(&mut parts, "startLine", input, "startLine");
+            push_value_part(&mut parts, "lineCount", input, "lineCount");
+            push_value_part(&mut parts, "mode", input, "mode");
+        }
+        "search" => {
+            push_value_part(&mut parts, "query", input, "query");
+            push_value_part(&mut parts, "path", input, "path");
+            push_value_part(&mut parts, "maxResults", input, "maxResults");
+        }
+        "find" => {
+            push_value_part(&mut parts, "pattern", input, "pattern");
+            push_value_part(&mut parts, "path", input, "path");
+        }
+        "list" => {
+            push_value_part(&mut parts, "path", input, "path");
+            push_value_part(&mut parts, "maxDepth", input, "maxDepth");
+        }
+        "command" | "command_session_start" => {
+            push_value_part(&mut parts, "cwd", input, "cwd");
+            push_value_part(&mut parts, "cmd", input, "argv");
+            push_value_part(&mut parts, "timeoutMs", input, "timeoutMs");
+        }
+        "command_session_read" | "command_session_stop" => {
+            push_value_part(&mut parts, "sessionId", input, "sessionId");
+        }
+        "git_diff" => {
+            push_value_part(&mut parts, "scope", input, "scope");
+        }
+        "web_search" | "web_search_only" => {
+            push_value_part(&mut parts, "query", input, "query");
+            push_value_part(&mut parts, "resultCount", input, "resultCount");
+        }
+        "web_fetch" => {
+            push_value_part(&mut parts, "url", input, "url");
+            push_value_part(&mut parts, "maxChars", input, "maxChars");
+        }
+        _ => push_generic_input_parts(&mut parts, input),
+    }
+
+    if parts.is_empty() {
+        push_generic_input_parts(&mut parts, input);
+    }
+
+    render_tool_detail_parts(parts)
+}
+
+fn push_generic_input_parts(parts: &mut Vec<String>, input: &serde_json::Value) {
+    for (label, key) in [
+        ("path", "path"),
+        ("fromPath", "fromPath"),
+        ("toPath", "toPath"),
+        ("pattern", "pattern"),
+        ("query", "query"),
+        ("url", "url"),
+        ("scope", "scope"),
+        ("cwd", "cwd"),
+        ("cmd", "argv"),
+        ("action", "action"),
+        ("serverId", "serverId"),
+        ("name", "name"),
+        ("uri", "uri"),
+    ] {
+        push_value_part(parts, label, input, key);
+        if parts.len() >= 3 {
+            break;
+        }
+    }
+}
+
+fn push_value_part(parts: &mut Vec<String>, label: &str, payload: &serde_json::Value, key: &str) {
+    if let Some(value) = payload.get(key).and_then(render_json_scalar) {
+        parts.push(format!("{label}: {value}"));
+    }
+}
+
+fn render_json_scalar(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.trim().to_owned()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        serde_json::Value::Array(values) => {
+            let joined = values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::trim))
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(joined)
+        }
+        _ => None,
+    }
+    .filter(|value| !value.is_empty())
+    .map(|value| truncate_chars(&value, 160))
+}
+
+fn render_tool_detail_parts(parts: Vec<String>) -> Option<String> {
+    if parts.is_empty() {
+        return None;
+    }
+
+    Some(truncate_chars(&parts.join(", "), 240))
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+
+    let keep_chars = max_chars.saturating_sub(3);
+    format!("{}...", value.chars().take(keep_chars).collect::<String>())
+}
+
+fn tool_result_summary_from_output(
+    output: &serde_json::Value,
+    ok: bool,
+) -> Option<ToolResultSummaryDto> {
+    match payload_string(output, "kind")?.as_str() {
+        "read" => Some(file_tool_summary(
+            payload_string(output, "path"),
+            None,
+            payload_usize(output, "lineCount"),
+            None,
+            payload_bool(output, "truncated").unwrap_or(false),
+        )),
+        "search" => Some(file_tool_summary(
+            None,
+            payload_string(output, "scope"),
+            None,
+            payload_usize(output, "totalMatches").or_else(|| payload_array_len(output, "matches")),
+            payload_bool(output, "truncated").unwrap_or(false),
+        )),
+        "find" => Some(file_tool_summary(
+            None,
+            payload_string(output, "scope"),
+            None,
+            payload_array_len(output, "matches"),
+            payload_bool(output, "truncated").unwrap_or(false),
+        )),
+        "edit" => Some(file_tool_summary(
+            payload_string(output, "path"),
+            None,
+            None,
+            payload_usize(output, "replacementLen"),
+            false,
+        )),
+        "write" | "delete" | "mkdir" | "hash" => Some(file_tool_summary(
+            payload_string(output, "path"),
+            None,
+            None,
+            None,
+            false,
+        )),
+        "patch" => Some(file_tool_summary(
+            payload_string(output, "path").or_else(|| first_file_path(output)),
+            None,
+            None,
+            payload_usize(output, "replacements"),
+            false,
+        )),
+        "rename" => Some(file_tool_summary(
+            payload_string(output, "fromPath"),
+            payload_string(output, "toPath"),
+            None,
+            None,
+            false,
+        )),
+        "list" => Some(file_tool_summary(
+            payload_string(output, "path"),
+            None,
+            None,
+            payload_array_len(output, "entries"),
+            payload_bool(output, "truncated").unwrap_or(false),
+        )),
+        "command" => Some(command_tool_summary(output)),
+        "command_session" => Some(command_session_tool_summary(output)),
+        "git_status" => Some(ToolResultSummaryDto::Git(GitToolResultSummaryDto {
+            scope: None,
+            changed_files: payload_usize(output, "changedFiles").unwrap_or_default(),
+            truncated: false,
+            base_revision: None,
+        })),
+        "git_diff" => Some(ToolResultSummaryDto::Git(GitToolResultSummaryDto {
+            scope: payload_string(output, "scope").and_then(|scope| git_scope_from_str(&scope)),
+            changed_files: payload_usize(output, "changedFiles").unwrap_or_default(),
+            truncated: payload_bool(output, "truncated").unwrap_or(false),
+            base_revision: payload_string(output, "baseRevision"),
+        })),
+        "web_search" => Some(ToolResultSummaryDto::Web(WebToolResultSummaryDto {
+            target: payload_string(output, "query")?,
+            result_count: payload_array_len(output, "results"),
+            final_url: None,
+            content_kind: None,
+            content_type: None,
+            truncated: payload_bool(output, "truncated").unwrap_or(false),
+        })),
+        "web_fetch" => Some(ToolResultSummaryDto::Web(WebToolResultSummaryDto {
+            target: payload_string(output, "url")?,
+            result_count: None,
+            final_url: payload_string(output, "finalUrl"),
+            content_kind: payload_string(output, "contentKind")
+                .and_then(|kind| web_content_kind_from_str(&kind)),
+            content_type: payload_string(output, "contentType"),
+            truncated: payload_bool(output, "truncated").unwrap_or(false),
+        })),
+        "browser" => Some(ToolResultSummaryDto::BrowserComputerUse(
+            BrowserComputerUseToolResultSummaryDto {
+                surface: BrowserComputerUseSurfaceDto::Browser,
+                action: payload_string(output, "action")?,
+                status: browser_status_from_ok(ok),
+                target: payload_string(output, "url"),
+                outcome: None,
+            },
+        )),
+        "mcp" => mcp_capability_summary_from_output(output),
+        _ => None,
+    }
+}
+
+fn file_tool_summary(
+    path: Option<String>,
+    scope: Option<String>,
+    line_count: Option<usize>,
+    match_count: Option<usize>,
+    truncated: bool,
+) -> ToolResultSummaryDto {
+    ToolResultSummaryDto::File(FileToolResultSummaryDto {
+        path,
+        scope,
+        line_count,
+        match_count,
+        truncated,
+    })
+}
+
+fn command_tool_summary(output: &serde_json::Value) -> ToolResultSummaryDto {
+    ToolResultSummaryDto::Command(CommandToolResultSummaryDto {
+        exit_code: payload_i32(output, "exitCode"),
+        timed_out: payload_bool(output, "timedOut").unwrap_or(false),
+        stdout_truncated: payload_bool(output, "stdoutTruncated").unwrap_or(false),
+        stderr_truncated: payload_bool(output, "stderrTruncated").unwrap_or(false),
+        stdout_redacted: payload_bool(output, "stdoutRedacted").unwrap_or(false),
+        stderr_redacted: payload_bool(output, "stderrRedacted").unwrap_or(false),
+    })
+}
+
+fn command_session_tool_summary(output: &serde_json::Value) -> ToolResultSummaryDto {
+    ToolResultSummaryDto::Command(CommandToolResultSummaryDto {
+        exit_code: payload_i32(output, "exitCode"),
+        timed_out: false,
+        stdout_truncated: command_session_stream_bool(output, "stdout", "truncated"),
+        stderr_truncated: command_session_stream_bool(output, "stderr", "truncated"),
+        stdout_redacted: command_session_stream_bool(output, "stdout", "redacted"),
+        stderr_redacted: command_session_stream_bool(output, "stderr", "redacted"),
+    })
+}
+
+fn command_session_stream_bool(output: &serde_json::Value, stream: &str, key: &str) -> bool {
+    output
+        .get("chunks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|chunk| {
+            payload_string(chunk, "stream").as_deref() == Some(stream)
+                && payload_bool(chunk, key).unwrap_or(false)
+        })
+}
+
+fn mcp_capability_summary_from_output(output: &serde_json::Value) -> Option<ToolResultSummaryDto> {
+    let action = payload_string(output, "action")?;
+    let capability_kind = match action.as_str() {
+        "invoke_tool" => McpCapabilityKindDto::Tool,
+        "read_resource" => McpCapabilityKindDto::Resource,
+        "get_prompt" => McpCapabilityKindDto::Prompt,
+        _ => return None,
+    };
+    let capability_name = payload_string(output, "capabilityName")?;
+
+    Some(ToolResultSummaryDto::McpCapability(
+        McpCapabilityToolResultSummaryDto {
+            server_id: payload_string(output, "serverId")?,
+            capability_kind,
+            capability_id: capability_name.clone(),
+            capability_name: Some(capability_name),
+        },
+    ))
+}
+
+fn first_file_path(output: &serde_json::Value) -> Option<String> {
+    output
+        .get("files")
+        .and_then(serde_json::Value::as_array)?
+        .first()
+        .and_then(|file| payload_string(file, "path"))
+}
+
+fn payload_usize(payload: &serde_json::Value, key: &str) -> Option<usize> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn payload_i32(payload: &serde_json::Value, key: &str) -> Option<i32> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+}
+
+fn payload_array_len(payload: &serde_json::Value, key: &str) -> Option<usize> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+}
+
+fn git_scope_from_str(scope: &str) -> Option<GitToolResultScopeDto> {
+    match scope {
+        "staged" => Some(GitToolResultScopeDto::Staged),
+        "unstaged" => Some(GitToolResultScopeDto::Unstaged),
+        "worktree" => Some(GitToolResultScopeDto::Worktree),
+        _ => None,
+    }
+}
+
+fn web_content_kind_from_str(kind: &str) -> Option<WebToolResultContentKindDto> {
+    match kind {
+        "html" => Some(WebToolResultContentKindDto::Html),
+        "plain_text" => Some(WebToolResultContentKindDto::PlainText),
+        _ => None,
+    }
+}
+
+fn browser_status_from_ok(ok: bool) -> BrowserComputerUseActionStatusDto {
+    if ok {
+        BrowserComputerUseActionStatusDto::Succeeded
+    } else {
+        BrowserComputerUseActionStatusDto::Failed
+    }
+}
+
 fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
     payload
         .get(key)
@@ -569,6 +936,7 @@ mod tests {
         assert_eq!(tool.tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Failed));
         assert_eq!(tool.code.as_deref(), Some("tool_failed"));
+        assert_eq!(tool.detail.as_deref(), Some("nope"));
 
         let action = owned_agent_event_runtime_item(
             event(
@@ -594,6 +962,183 @@ mod tests {
         assert_eq!(
             fallback_action.detail.as_deref(),
             Some("Owned agent requires operator input before continuing.")
+        );
+    }
+
+    #[test]
+    fn owned_agent_tool_started_projection_carries_concise_input_detail() {
+        let read = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolStarted,
+                r#"{"toolCallId":"call-read","toolName":"read","input":{"path":"client/components/xero/agent-runtime.tsx","startLine":12,"lineCount":40,"token":"[REDACTED]"}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("read tool item");
+        assert_eq!(
+            read.detail.as_deref(),
+            Some("path: client/components/xero/agent-runtime.tsx, startLine: 12, lineCount: 40")
+        );
+
+        let command = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolStarted,
+                r#"{"toolCallId":"call-command","toolName":"command","input":{"cwd":"client","argv":["pnpm","test","--run","agent-runtime.test.tsx"],"timeoutMs":120000}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("command tool item");
+        assert_eq!(
+            command.detail.as_deref(),
+            Some("cwd: client, cmd: pnpm test --run agent-runtime.test.tsx, timeoutMs: 120000")
+        );
+    }
+
+    #[test]
+    fn owned_agent_tool_completed_projection_maps_summary_into_detail() {
+        let tool = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-1","toolName":"read","ok":true,"summary":"Read 2 line(s) from `client/src/lib.rs`.","output":{"kind":"read","path":"client/src/lib.rs","lineCount":2,"truncated":false}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("tool item");
+
+        assert_eq!(
+            tool.detail.as_deref(),
+            Some("Read 2 line(s) from `client/src/lib.rs`.")
+        );
+        assert_eq!(tool.text, tool.detail);
+    }
+
+    #[test]
+    fn owned_agent_tool_completed_projection_derives_file_summaries() {
+        let read = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-read","toolName":"read","ok":true,"summary":"read","output":{"kind":"read","path":"client/src/lib.rs","lineCount":2,"truncated":false}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("read tool item");
+        assert_eq!(
+            read.tool_summary,
+            Some(ToolResultSummaryDto::File(FileToolResultSummaryDto {
+                path: Some("client/src/lib.rs".into()),
+                scope: None,
+                line_count: Some(2),
+                match_count: None,
+                truncated: false,
+            }))
+        );
+
+        let search = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-search","toolName":"search","ok":true,"summary":"search","output":{"kind":"search","query":"appendTranscriptDelta","scope":"client","matches":[{},{}],"totalMatches":4,"truncated":true}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("search tool item");
+        assert_eq!(
+            search.tool_summary,
+            Some(ToolResultSummaryDto::File(FileToolResultSummaryDto {
+                path: None,
+                scope: Some("client".into()),
+                line_count: None,
+                match_count: Some(4),
+                truncated: true,
+            }))
+        );
+
+        let find = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-find","toolName":"find","ok":true,"summary":"find","output":{"kind":"find","pattern":"*.rs","scope":"client/src-tauri","matches":["src/lib.rs","src/main.rs"],"truncated":false}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("find tool item");
+        assert_eq!(
+            find.tool_summary,
+            Some(ToolResultSummaryDto::File(FileToolResultSummaryDto {
+                path: None,
+                scope: Some("client/src-tauri".into()),
+                line_count: None,
+                match_count: Some(2),
+                truncated: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn owned_agent_tool_completed_projection_derives_command_git_and_web_summaries() {
+        let command = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-command","toolName":"command","ok":true,"summary":"command","output":{"kind":"command","argv":["pnpm","test"],"cwd":"client","exitCode":0,"timedOut":false,"stdoutTruncated":true,"stderrTruncated":false,"stdoutRedacted":false,"stderrRedacted":true}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("command tool item");
+        assert_eq!(
+            command.tool_summary,
+            Some(ToolResultSummaryDto::Command(CommandToolResultSummaryDto {
+                exit_code: Some(0),
+                timed_out: false,
+                stdout_truncated: true,
+                stderr_truncated: false,
+                stdout_redacted: false,
+                stderr_redacted: true,
+            }))
+        );
+
+        let git = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-git","toolName":"git_diff","ok":true,"summary":"git","output":{"kind":"git_diff","scope":"worktree","changedFiles":3,"truncated":true,"baseRevision":"HEAD~1"}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("git tool item");
+        assert_eq!(
+            git.tool_summary,
+            Some(ToolResultSummaryDto::Git(GitToolResultSummaryDto {
+                scope: Some(GitToolResultScopeDto::Worktree),
+                changed_files: 3,
+                truncated: true,
+                base_revision: Some("HEAD~1".into()),
+            }))
+        );
+
+        let web = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-web","toolName":"web_fetch","ok":true,"summary":"web","output":{"kind":"web_fetch","url":"https://example.com","finalUrl":"https://www.example.com/","contentKind":"html","contentType":"text/html","truncated":false}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("web tool item");
+        assert_eq!(
+            web.tool_summary,
+            Some(ToolResultSummaryDto::Web(WebToolResultSummaryDto {
+                target: "https://example.com".into(),
+                result_count: None,
+                final_url: Some("https://www.example.com/".into()),
+                content_kind: Some(WebToolResultContentKindDto::Html),
+                content_type: Some("text/html".into()),
+                truncated: false,
+            }))
         );
     }
 
