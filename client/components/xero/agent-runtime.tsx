@@ -47,6 +47,7 @@ import { EmptySessionState } from './agent-runtime/empty-session-state'
 import {
   getToolCardTitle,
   getStreamRunId,
+  getToolStateLabel,
   getToolSummaryContext,
   hasUsableRuntimeRunId,
 } from './agent-runtime/runtime-stream-helpers'
@@ -103,7 +104,8 @@ interface AgentRuntimeProps {
 }
 
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
-const MAX_VISIBLE_RUNTIME_FEED_ITEMS = 24
+const MAX_VISIBLE_RUNTIME_ACTION_TURNS = 16
+const COMPACT_TOOL_BURST_THRESHOLD = 5
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
 
 export function isRuntimeConversationNearBottom(
@@ -214,6 +216,121 @@ function mergeActionTurn(existing: ConversationTurn, incoming: ConversationTurn)
   }
 }
 
+function isActionLikeTurn(
+  turn: ConversationTurn,
+): turn is Extract<ConversationTurn, { kind: 'action' | 'action_group' }> {
+  return turn.kind === 'action' || turn.kind === 'action_group'
+}
+
+function actionGroupState(
+  actions: Extract<ConversationTurn, { kind: 'action' }>[],
+): RuntimeStreamToolItemView['toolState'] | null {
+  if (actions.some((action) => action.state === 'failed')) {
+    return 'failed'
+  }
+  if (actions.some((action) => action.state === 'running')) {
+    return 'running'
+  }
+  if (actions.some((action) => action.state === 'pending')) {
+    return 'pending'
+  }
+  if (actions.some((action) => action.state === 'succeeded')) {
+    return 'succeeded'
+  }
+  return null
+}
+
+function summarizeActionGroup(
+  actions: Extract<ConversationTurn, { kind: 'action' }>[],
+): string {
+  const stateCounts = new Map<RuntimeStreamToolItemView['toolState'], number>()
+  for (const action of actions) {
+    if (action.state) {
+      stateCounts.set(action.state, (stateCounts.get(action.state) ?? 0) + 1)
+    }
+  }
+
+  const stateSummary = (['failed', 'running', 'pending', 'succeeded'] as const)
+    .map((state) => {
+      const count = stateCounts.get(state) ?? 0
+      return count > 0 ? `${count} ${getToolStateLabel(state).toLowerCase()}` : null
+    })
+    .filter((part): part is string => Boolean(part))
+    .join(' · ')
+  const latestAction = actions.at(-1)
+
+  return [
+    stateSummary || `${actions.length} recorded`,
+    latestAction ? `latest ${latestAction.title}` : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(' · ')
+}
+
+function actionGroupTurnFromActions(
+  actions: Extract<ConversationTurn, { kind: 'action' }>[],
+): ConversationTurn {
+  const firstAction = actions[0]
+  const lastAction = actions.at(-1) ?? firstAction
+
+  return {
+    id: `tool-group:${firstAction.id}:${lastAction.id}`,
+    kind: 'action_group',
+    sequence: lastAction.sequence,
+    title: `${actions.length} tool calls`,
+    detail: summarizeActionGroup(actions),
+    state: actionGroupState(actions),
+    actions: actions.map((action) => ({
+      id: action.id,
+      title: action.title,
+      detail: action.detail,
+      state: action.state ?? null,
+    })),
+  }
+}
+
+function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
+  const compactedTurns: ConversationTurn[] = []
+  let actionBuffer: Extract<ConversationTurn, { kind: 'action' }>[] = []
+
+  const flushActionBuffer = () => {
+    if (actionBuffer.length >= COMPACT_TOOL_BURST_THRESHOLD) {
+      compactedTurns.push(actionGroupTurnFromActions(actionBuffer))
+    } else {
+      compactedTurns.push(...actionBuffer)
+    }
+    actionBuffer = []
+  }
+
+  for (const turn of turns) {
+    if (turn.kind === 'action') {
+      actionBuffer.push(turn)
+      continue
+    }
+
+    flushActionBuffer()
+    compactedTurns.push(turn)
+  }
+
+  flushActionBuffer()
+  return compactedTurns
+}
+
+function limitActionTurns(turns: ConversationTurn[]): ConversationTurn[] {
+  const actionTurnIndexes = turns
+    .map((turn, index) => (isActionLikeTurn(turn) ? index : null))
+    .filter((index): index is number => index != null)
+
+  if (actionTurnIndexes.length <= MAX_VISIBLE_RUNTIME_ACTION_TURNS) {
+    return turns
+  }
+
+  const keptActionTurnIndexes = new Set(
+    actionTurnIndexes.slice(actionTurnIndexes.length - MAX_VISIBLE_RUNTIME_ACTION_TURNS),
+  )
+  return turns.filter((turn, index) => !isActionLikeTurn(turn) || keptActionTurnIndexes.has(index))
+}
+
 function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): ConversationTurn[] {
   const turns: ConversationTurn[] = []
   const actionTurnIndexByToolCallId = new Map<string, number>()
@@ -270,7 +387,7 @@ function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): Co
     turns.push(incomingActionTurn)
   }
 
-  return turns.slice(-MAX_VISIBLE_RUNTIME_FEED_ITEMS)
+  return limitActionTurns(compactActionBursts(turns))
 }
 
 function toContextMeterError(error: unknown): {

@@ -15,6 +15,7 @@ import {
   mapRepositoryStatus,
   mapRuntimeRun,
   mapRuntimeSession,
+  MAX_RUNTIME_STREAM_ITEMS,
   mergeRuntimeStreamEvent,
   mergeRuntimeUpdated,
   projectSnapshotResponseSchema,
@@ -1586,6 +1587,139 @@ describe('xero-model', () => {
     expect(completed.lastSequence).toBeGreaterThan(withActionRequired.lastSequence ?? 0)
     expect(completed.completion?.detail).toBe('Runtime bootstrap finished for project-1.')
     expect(getRuntimeStreamStatusLabel(completed.status)).toBe('Stream complete')
+  })
+
+  it('keeps stream transcripts outside the non-transcript timeline cap and dedupes tool transitions', () => {
+    let stream = mergeRuntimeStreamEvent(
+      createRuntimeStreamFromSubscription(streamSubscription),
+      makeStreamEvent(
+        {
+          kind: 'transcript',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: 'Please inspect the runtime.',
+          transcriptRole: 'user',
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          actionType: null,
+          title: null,
+          detail: null,
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:00Z',
+        },
+        { sequence: 1 },
+      ),
+    )
+
+    stream = mergeRuntimeStreamEvent(
+      stream,
+      makeStreamEvent(
+        {
+          kind: 'transcript',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: 'Reading the relevant files.',
+          transcriptRole: 'assistant',
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          actionType: null,
+          title: null,
+          detail: null,
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:01Z',
+        },
+        { sequence: 2 },
+      ),
+    )
+
+    stream = mergeRuntimeStreamEvent(
+      stream,
+      makeStreamEvent(
+        {
+          kind: 'tool',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: 'read-runtime',
+          toolName: 'read',
+          toolState: 'running',
+          actionType: null,
+          title: null,
+          detail: 'path: client/components/xero/agent-runtime.tsx',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:02Z',
+        },
+        { sequence: 3 },
+      ),
+    )
+
+    stream = mergeRuntimeStreamEvent(
+      stream,
+      makeStreamEvent(
+        {
+          kind: 'tool',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: 'read-runtime',
+          toolName: 'read',
+          toolState: 'succeeded',
+          actionType: null,
+          title: null,
+          detail: 'Read 80 line(s).',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:03Z',
+        },
+        { sequence: 4 },
+      ),
+    )
+
+    expect(stream.items.filter((item) => item.kind === 'tool' && item.toolCallId === 'read-runtime')).toHaveLength(1)
+    expect(stream.items.find((item) => item.kind === 'tool' && item.toolCallId === 'read-runtime')).toMatchObject({
+      sequence: 4,
+      toolState: 'succeeded',
+    })
+
+    for (let index = 0; index < MAX_RUNTIME_STREAM_ITEMS + 5; index += 1) {
+      stream = mergeRuntimeStreamEvent(
+        stream,
+        makeStreamEvent(
+          {
+            kind: 'tool',
+            sessionId: 'session-1',
+            flowId: 'flow-1',
+            text: null,
+            toolCallId: `burst-tool-${index}`,
+            toolName: 'read',
+            toolState: 'succeeded',
+            actionType: null,
+            title: null,
+            detail: `Read file ${index}.`,
+            code: null,
+            message: null,
+            retryable: null,
+            createdAt: '2026-04-13T20:02:00Z',
+          },
+          { sequence: 5 + index },
+        ),
+      )
+    }
+
+    expect(stream.items.filter((item) => item.kind === 'transcript').map((item) => item.text)).toEqual([
+      'Please inspect the runtime.',
+      'Reading the relevant files.',
+    ])
+    expect(stream.items.filter((item) => item.kind !== 'transcript')).toHaveLength(MAX_RUNTIME_STREAM_ITEMS)
   })
 
   it('projects browser/computer-use summaries through runtime tool rows and rejects malformed follow-up payloads', () => {

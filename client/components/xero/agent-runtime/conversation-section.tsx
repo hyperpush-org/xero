@@ -65,6 +65,20 @@ export type ConversationTurn =
     }
   | {
       id: string
+      kind: 'action_group'
+      sequence: number
+      title: string
+      detail: string
+      state?: RuntimeStreamToolItemView['toolState'] | null
+      actions: Array<{
+        id: string
+        title: string
+        detail: string
+        state: RuntimeStreamToolItemView['toolState'] | null
+      }>
+    }
+  | {
+      id: string
       kind: 'failure'
       sequence: number
       message: string
@@ -242,6 +256,17 @@ function ConversationTurnRow({ turn, accountAvatarUrl, accountLogin }: Conversat
     return <FailureCard message={turn.message} code={turn.code} />
   }
 
+  if (turn.kind === 'action_group') {
+    return (
+      <ActionGroupCard
+        title={turn.title}
+        detail={turn.detail}
+        state={turn.state ?? null}
+        actions={turn.actions}
+      />
+    )
+  }
+
   return (
     <ActionCard
       title={turn.title}
@@ -249,6 +274,94 @@ function ConversationTurnRow({ turn, accountAvatarUrl, accountLogin }: Conversat
       detailRows={turn.detailRows}
       state={turn.state ?? null}
     />
+  )
+}
+
+interface ActionGroupCardProps {
+  title: string
+  detail: string
+  state: RuntimeStreamToolItemView['toolState'] | null
+  actions: Array<{
+    id: string
+    title: string
+    detail: string
+    state: RuntimeStreamToolItemView['toolState'] | null
+  }>
+}
+
+function ActionGroupCard({ title, detail, state, actions }: ActionGroupCardProps) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="flex gap-3">
+      <ToolAvatar state={state} />
+      <div className="min-w-0 max-w-[82%] flex-1">
+        <Collapsible
+          open={open}
+          onOpenChange={setOpen}
+          className={cn(
+            'rounded-lg border border-border/50 bg-muted/30 px-3.5 py-2.5',
+            'shadow-sm transition-colors',
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <Badge variant={state ? getToolStateBadgeVariant(state) : 'secondary'} className="font-mono text-[10px] uppercase tracking-wider">
+              Activity
+            </Badge>
+            <p className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-foreground" title={title}>
+              {title}
+            </p>
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                aria-label={`${open ? 'Hide' : 'Show'} grouped tool details for ${title}`}
+                className={cn(
+                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground',
+                  'hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                )}
+              >
+                <ChevronDown
+                  className={cn(
+                    'h-3.5 w-3.5 transition-transform duration-150',
+                    open ? 'rotate-180' : 'rotate-0',
+                  )}
+                />
+              </button>
+            </CollapsibleTrigger>
+          </div>
+          <p className="mt-1.5 truncate text-[13px] leading-relaxed text-muted-foreground" title={detail}>
+            {detail}
+          </p>
+          <CollapsibleContent>
+            <ol className="mt-2 grid gap-2 border-t border-border/50 pt-2">
+              {actions.map((action) => (
+                <li key={action.id} className="grid gap-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {action.state ? (
+                      <Badge
+                        variant={getToolStateBadgeVariant(action.state)}
+                        className="font-mono text-[10px] uppercase tracking-wider"
+                      >
+                        {getToolStateLabel(action.state)}
+                      </Badge>
+                    ) : null}
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={action.title}>
+                      {action.title}
+                    </span>
+                  </div>
+                  <p
+                    className="truncate text-[11px] leading-relaxed text-muted-foreground"
+                    title={action.detail}
+                  >
+                    {action.detail}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+    </div>
   )
 }
 

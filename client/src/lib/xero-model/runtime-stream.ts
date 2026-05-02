@@ -416,6 +416,51 @@ function capRecent<T>(values: T[], limit: number): T[] {
   return values.length <= limit ? values : values.slice(values.length - limit)
 }
 
+function compareRuntimeStreamItemsBySequence(
+  left: RuntimeStreamViewItem,
+  right: RuntimeStreamViewItem,
+): number {
+  return left.sequence === right.sequence
+    ? left.id.localeCompare(right.id)
+    : left.sequence - right.sequence
+}
+
+function capRuntimeTimelineItems(
+  currentItems: RuntimeStreamViewItem[],
+  transcriptItems: RuntimeStreamTranscriptItemView[],
+  nextItem: RuntimeStreamViewItem,
+): RuntimeStreamViewItem[] {
+  let nonTranscriptItems = currentItems.filter((item) => item.kind !== 'transcript')
+
+  if (nextItem.kind === 'tool') {
+    nonTranscriptItems = [
+      ...nonTranscriptItems.filter(
+        (item) => !(item.kind === 'tool' && item.toolCallId === nextItem.toolCallId),
+      ),
+      nextItem,
+    ]
+  } else if (nextItem.kind === 'action_required') {
+    nonTranscriptItems = [
+      ...nonTranscriptItems.filter(
+        (item) =>
+          !(
+            item.kind === 'action_required' &&
+            item.runId === nextItem.runId &&
+            item.actionId === nextItem.actionId
+          ),
+      ),
+      nextItem,
+    ]
+  } else if (nextItem.kind !== 'transcript') {
+    nonTranscriptItems = [...nonTranscriptItems, nextItem]
+  }
+
+  return [
+    ...transcriptItems,
+    ...capRecent(nonTranscriptItems, MAX_RUNTIME_STREAM_ITEMS),
+  ].sort(compareRuntimeStreamItemsBySequence)
+}
+
 function uniqueRuntimeStreamKinds(kinds: RuntimeStreamItemKindDto[]): RuntimeStreamItemKindDto[] {
   return Array.from(new Set(kinds))
 }
@@ -739,18 +784,6 @@ export function mergeRuntimeStreamEvent(
   }
 
   const nextItem = normalizeRuntimeStreamItem(event)
-  const nextItems =
-    nextItem.kind === 'action_required'
-      ? capRecent(
-          [
-            ...base.items.filter(
-              (item) => !(item.kind === 'action_required' && item.runId === nextItem.runId && item.actionId === nextItem.actionId),
-            ),
-            nextItem,
-          ],
-          MAX_RUNTIME_STREAM_ITEMS,
-        )
-      : capRecent([...base.items, nextItem], MAX_RUNTIME_STREAM_ITEMS)
   const nextToolCalls =
     nextItem.kind === 'tool'
       ? capRecent(
@@ -769,6 +802,7 @@ export function mergeRuntimeStreamEvent(
     nextItem.kind === 'transcript'
       ? capRecent([...base.transcriptItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
       : base.transcriptItems
+  const nextItems = capRuntimeTimelineItems(base.items, nextTranscriptItems, nextItem)
   const nextActivityItems =
     nextItem.kind === 'activity'
       ? capRecent([...base.activityItems, nextItem], MAX_RUNTIME_STREAM_ACTIVITY)

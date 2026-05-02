@@ -1006,6 +1006,42 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('list client/components/xero')).toBeVisible()
   })
 
+  it('groups long tool bursts without evicting the surrounding transcript turns', () => {
+    const toolBurst = Array.from({ length: 30 }, (_, index) =>
+      makeToolItem({
+        sequence: index + 3,
+        toolCallId: `call-read-${index}`,
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: `Read tool ${index}.`,
+        toolSummary: {
+          kind: 'file',
+          path: `client/src/tool-${index}.ts`,
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+      }),
+    )
+
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Please inspect the codebase.' }),
+      ...toolBurst,
+      makeTranscriptItem({ sequence: 40, role: 'assistant', text: 'Inspection complete.' }),
+    ])
+
+    expect(screen.getByText('Please inspect the codebase.')).toBeVisible()
+    expect(screen.getByText('Inspection complete.')).toBeVisible()
+    expect(screen.getByText('30 tool calls')).toBeVisible()
+    expect(screen.queryByText('read tool-0.ts')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /show grouped tool details for 30 tool calls/i }))
+
+    expect(screen.getByText('read tool-0.ts')).toBeVisible()
+    expect(screen.getByText('read tool-29.ts')).toBeVisible()
+  })
+
   it('offers diagnostics from runtime startup failures', () => {
     const onOpenDiagnostics = vi.fn()
 
