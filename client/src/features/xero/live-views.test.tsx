@@ -179,6 +179,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     controls: {
       active: {
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'openai_codex',
@@ -194,6 +196,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       selected: {
         source: 'active',
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'openai_codex',

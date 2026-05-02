@@ -15,7 +15,7 @@ mod skills;
 pub mod solana;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -508,6 +508,142 @@ impl AutonomousToolEffectClass {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousAgentToolPolicy {
+    allowed_effect_classes: BTreeSet<String>,
+    allowed_tools: BTreeSet<String>,
+    denied_tools: BTreeSet<String>,
+    external_service_allowed: bool,
+    browser_control_allowed: bool,
+    skill_runtime_allowed: bool,
+    subagent_allowed: bool,
+    command_allowed: bool,
+    destructive_write_allowed: bool,
+}
+
+impl AutonomousAgentToolPolicy {
+    pub fn from_definition_snapshot(snapshot: &JsonValue) -> Option<Self> {
+        let value = snapshot.get("toolPolicy")?;
+        if let Some(label) = value.as_str() {
+            return Some(Self::from_policy_label(label));
+        }
+        let object = value.as_object()?;
+        let mut allowed_tools = string_set_from_json(object.get("allowedTools"));
+        for group in string_set_from_json(object.get("allowedToolGroups")) {
+            if let Some(tools) = tool_access_group_tools(&group) {
+                allowed_tools.extend(tools.iter().map(|tool| (*tool).to_owned()));
+            }
+        }
+        Some(Self {
+            allowed_effect_classes: string_set_from_json(object.get("allowedEffectClasses")),
+            allowed_tools,
+            denied_tools: string_set_from_json(object.get("deniedTools")),
+            external_service_allowed: json_bool(object.get("externalServiceAllowed")),
+            browser_control_allowed: json_bool(object.get("browserControlAllowed")),
+            skill_runtime_allowed: json_bool(object.get("skillRuntimeAllowed")),
+            subagent_allowed: json_bool(object.get("subagentAllowed")),
+            command_allowed: json_bool(object.get("commandAllowed")),
+            destructive_write_allowed: json_bool(object.get("destructiveWriteAllowed")),
+        })
+    }
+
+    fn from_policy_label(label: &str) -> Self {
+        match label.trim() {
+            "engineering" => Self {
+                allowed_effect_classes: [
+                    "observe",
+                    "runtime_state",
+                    "write",
+                    "destructive_write",
+                    "command",
+                    "process_control",
+                ]
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect(),
+                allowed_tools: BTreeSet::new(),
+                denied_tools: BTreeSet::new(),
+                external_service_allowed: false,
+                browser_control_allowed: false,
+                skill_runtime_allowed: false,
+                subagent_allowed: false,
+                command_allowed: true,
+                destructive_write_allowed: true,
+            },
+            "agent_builder" => Self {
+                allowed_effect_classes: ["observe", "runtime_state"]
+                    .into_iter()
+                    .map(ToOwned::to_owned)
+                    .collect(),
+                allowed_tools: [AUTONOMOUS_TOOL_AGENT_DEFINITION.to_string()].into(),
+                denied_tools: BTreeSet::new(),
+                external_service_allowed: false,
+                browser_control_allowed: false,
+                skill_runtime_allowed: false,
+                subagent_allowed: false,
+                command_allowed: false,
+                destructive_write_allowed: false,
+            },
+            _ => Self {
+                allowed_effect_classes: ["observe"].into_iter().map(ToOwned::to_owned).collect(),
+                allowed_tools: BTreeSet::new(),
+                denied_tools: BTreeSet::new(),
+                external_service_allowed: false,
+                browser_control_allowed: false,
+                skill_runtime_allowed: false,
+                subagent_allowed: false,
+                command_allowed: false,
+                destructive_write_allowed: false,
+            },
+        }
+    }
+
+    pub fn allows_tool(&self, tool_name: &str) -> bool {
+        if self.denied_tools.contains(tool_name) {
+            return false;
+        }
+        if self.allowed_tools.contains(tool_name) {
+            return self.risky_effect_opted_in(tool_effect_class(tool_name));
+        }
+        let effect_class = tool_effect_class(tool_name);
+        self.allowed_effect_classes.contains(effect_class.as_str())
+            && self.risky_effect_opted_in(effect_class)
+    }
+
+    fn risky_effect_opted_in(&self, effect_class: AutonomousToolEffectClass) -> bool {
+        match effect_class {
+            AutonomousToolEffectClass::ExternalService => self.external_service_allowed,
+            AutonomousToolEffectClass::BrowserControl => self.browser_control_allowed,
+            AutonomousToolEffectClass::SkillRuntime => self.skill_runtime_allowed,
+            AutonomousToolEffectClass::AgentDelegation => self.subagent_allowed,
+            AutonomousToolEffectClass::Command | AutonomousToolEffectClass::ProcessControl => {
+                self.command_allowed
+            }
+            AutonomousToolEffectClass::DestructiveWrite => self.destructive_write_allowed,
+            _ => true,
+        }
+    }
+}
+
+fn string_set_from_json(value: Option<&JsonValue>) -> BTreeSet<String> {
+    value
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_bool(value: Option<&JsonValue>) -> bool {
+    value.and_then(JsonValue::as_bool).unwrap_or(false)
+}
+
 pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
     if tool_name.starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX) {
         return AutonomousToolEffectClass::ExternalService;
@@ -589,6 +725,17 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
                 || tool_effect_class(tool_name).is_ask_observe_only()
         }
     }
+}
+
+pub fn tool_allowed_for_runtime_agent_with_policy(
+    agent_id: RuntimeAgentIdDto,
+    tool_name: &str,
+    agent_tool_policy: Option<&AutonomousAgentToolPolicy>,
+) -> bool {
+    tool_allowed_for_runtime_agent(agent_id, tool_name)
+        && agent_tool_policy
+            .map(|policy| policy.allows_tool(tool_name))
+            .unwrap_or(true)
 }
 
 fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
@@ -1240,6 +1387,7 @@ pub struct AutonomousToolRuntime {
     pub(super) limits: AutonomousToolRuntimeLimits,
     pub(super) web_runtime: AutonomousWebRuntime,
     pub(super) command_controls: Option<RuntimeRunControlStateDto>,
+    pub(super) agent_tool_policy: Option<AutonomousAgentToolPolicy>,
     pub(super) agent_run_context: Option<AutonomousAgentRunContext>,
     pub(super) browser_control_preference: BrowserControlPreferenceDto,
     pub(super) soul_settings: SoulSettingsDto,
@@ -1265,6 +1413,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("repo_root", &self.repo_root)
             .field("limits", &self.limits)
             .field("command_controls", &self.command_controls)
+            .field("agent_tool_policy", &self.agent_tool_policy)
             .field("agent_run_context", &self.agent_run_context)
             .field(
                 "browser_control_preference",
@@ -1353,6 +1502,7 @@ impl AutonomousToolRuntime {
             limits,
             web_runtime: AutonomousWebRuntime::new(web_config),
             command_controls: None,
+            agent_tool_policy: None,
             agent_run_context: None,
             browser_control_preference: BrowserControlPreferenceDto::Default,
             soul_settings: default_soul_settings(),
@@ -1504,6 +1654,15 @@ impl AutonomousToolRuntime {
     pub fn with_runtime_run_controls(mut self, controls: RuntimeRunControlStateDto) -> Self {
         self.command_controls = Some(controls);
         self
+    }
+
+    pub fn with_agent_tool_policy(mut self, policy: Option<AutonomousAgentToolPolicy>) -> Self {
+        self.agent_tool_policy = policy;
+        self
+    }
+
+    pub fn agent_tool_policy(&self) -> Option<&AutonomousAgentToolPolicy> {
+        self.agent_tool_policy.as_ref()
     }
 
     pub fn with_agent_run_context(
@@ -1901,14 +2060,12 @@ impl AutonomousToolRuntime {
             AutonomousToolAccessAction::Request => {
                 let mut requested = std::collections::BTreeSet::new();
                 let mut denied = std::collections::BTreeSet::new();
-                let runtime_agent_id = self.active_runtime_agent_id();
-
                 for group in request.groups {
                     match tool_access_group_tools(&group) {
                         Some(tools) => {
                             for tool in tools {
                                 if self.tool_available_by_runtime(tool)
-                                    && tool_allowed_for_runtime_agent(runtime_agent_id, tool)
+                                    && self.tool_allowed_by_active_agent(tool)
                                 {
                                     requested.insert((*tool).to_owned());
                                 } else {
@@ -1926,9 +2083,15 @@ impl AutonomousToolRuntime {
                 for tool in request.tools {
                     let runtime_tool_available = known_tools.contains(tool.as_str())
                         && self.tool_available_by_runtime(tool.as_str())
-                        && tool_allowed_for_runtime_agent(runtime_agent_id, tool.as_str());
-                    let dynamic_tool_available = runtime_agent_id.allows_engineering_tools()
-                        && self.dynamic_tool_descriptor(&tool)?.is_some();
+                        && self.tool_allowed_by_active_agent(tool.as_str());
+                    let dynamic_tool_available =
+                        self.active_runtime_agent_id().allows_engineering_tools()
+                            && self
+                                .agent_tool_policy
+                                .as_ref()
+                                .map(|policy| policy.allows_tool(&tool))
+                                .unwrap_or(true)
+                            && self.dynamic_tool_descriptor(&tool)?.is_some();
                     if runtime_tool_available || dynamic_tool_available {
                         requested.insert(tool);
                     } else {
@@ -1955,13 +2118,11 @@ impl AutonomousToolRuntime {
     }
 
     fn available_tool_access_groups(&self) -> Vec<AutonomousToolAccessGroup> {
-        let runtime_agent_id = self.active_runtime_agent_id();
         tool_access_group_descriptors()
             .into_iter()
             .filter_map(|mut group| {
                 group.tools.retain(|tool| {
-                    self.tool_available_by_runtime(tool)
-                        && tool_allowed_for_runtime_agent(runtime_agent_id, tool)
+                    self.tool_available_by_runtime(tool) && self.tool_allowed_by_active_agent(tool)
                 });
                 if group.tools.is_empty() {
                     return None;
@@ -1984,6 +2145,14 @@ impl AutonomousToolRuntime {
             .as_ref()
             .map(|controls| controls.active.runtime_agent_id)
             .unwrap_or(RuntimeAgentIdDto::Ask)
+    }
+
+    fn tool_allowed_by_active_agent(&self, tool: &str) -> bool {
+        tool_allowed_for_runtime_agent_with_policy(
+            self.active_runtime_agent_id(),
+            tool,
+            self.agent_tool_policy.as_ref(),
+        )
     }
 
     fn tool_available_by_runtime(&self, tool: &str) -> bool {

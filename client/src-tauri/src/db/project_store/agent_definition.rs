@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde_json::Value as JsonValue;
 
 use crate::{
-    commands::{CommandError, RuntimeAgentIdDto},
+    commands::{CommandError, RuntimeAgentIdDto, RuntimeRunApprovalModeDto},
     db::database_path_for_repo,
 };
 
@@ -42,6 +42,9 @@ pub struct AgentDefinitionRunSelection {
     pub display_name: String,
     pub base_capability_profile: String,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub default_approval_mode: RuntimeRunApprovalModeDto,
+    pub allowed_approval_modes: Vec<RuntimeRunApprovalModeDto>,
+    pub snapshot: JsonValue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -409,14 +412,35 @@ pub fn resolve_agent_definition_for_run(
             ),
         ));
     }
+    let version = load_agent_definition_version(
+        repo_root,
+        &definition.definition_id,
+        definition.current_version,
+    )?
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_definition_version_missing",
+            format!(
+                "Xero resolved `{}` but could not load version {}.",
+                definition.definition_id, definition.current_version
+            ),
+        )
+    })?;
+    let runtime_agent_id =
+        runtime_agent_id_for_base_capability_profile(&definition.base_capability_profile);
+    let default_approval_mode =
+        definition_default_approval_mode(&version.snapshot, runtime_agent_id);
+    let allowed_approval_modes =
+        definition_allowed_approval_modes(&version.snapshot, runtime_agent_id);
     Ok(AgentDefinitionRunSelection {
-        runtime_agent_id: runtime_agent_id_for_base_capability_profile(
-            &definition.base_capability_profile,
-        ),
+        runtime_agent_id,
         definition_id: definition.definition_id,
         version: definition.current_version,
         display_name: definition.display_name,
         base_capability_profile: definition.base_capability_profile,
+        default_approval_mode,
+        allowed_approval_modes,
+        snapshot: version.snapshot,
     })
 }
 
@@ -537,6 +561,70 @@ pub fn runtime_agent_id_for_base_capability_profile(profile: &str) -> RuntimeAge
         "debugging" => RuntimeAgentIdDto::Debug,
         "agent_builder" => RuntimeAgentIdDto::AgentCreate,
         _ => RuntimeAgentIdDto::Ask,
+    }
+}
+
+fn definition_default_approval_mode(
+    snapshot: &JsonValue,
+    runtime_agent_id: RuntimeAgentIdDto,
+) -> RuntimeRunApprovalModeDto {
+    snapshot
+        .get("defaultApprovalMode")
+        .and_then(JsonValue::as_str)
+        .and_then(parse_runtime_approval_mode)
+        .filter(|mode| runtime_agent_allows_definition_mode(runtime_agent_id, mode))
+        .unwrap_or_else(|| crate::commands::default_runtime_agent_approval_mode(&runtime_agent_id))
+}
+
+fn definition_allowed_approval_modes(
+    snapshot: &JsonValue,
+    runtime_agent_id: RuntimeAgentIdDto,
+) -> Vec<RuntimeRunApprovalModeDto> {
+    let mut modes = snapshot
+        .get("allowedApprovalModes")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .filter_map(parse_runtime_approval_mode)
+                .filter(|mode| runtime_agent_allows_definition_mode(runtime_agent_id, mode))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if modes.is_empty() {
+        modes.push(crate::commands::default_runtime_agent_approval_mode(
+            &runtime_agent_id,
+        ));
+    }
+    if !modes
+        .iter()
+        .any(|mode| *mode == RuntimeRunApprovalModeDto::Suggest)
+    {
+        modes.insert(0, RuntimeRunApprovalModeDto::Suggest);
+    }
+    modes.sort_by_key(|mode| match mode {
+        RuntimeRunApprovalModeDto::Suggest => 0,
+        RuntimeRunApprovalModeDto::AutoEdit => 1,
+        RuntimeRunApprovalModeDto::Yolo => 2,
+    });
+    modes.dedup();
+    modes
+}
+
+fn runtime_agent_allows_definition_mode(
+    runtime_agent_id: RuntimeAgentIdDto,
+    mode: &RuntimeRunApprovalModeDto,
+) -> bool {
+    crate::commands::runtime_agent_allows_approval_mode(&runtime_agent_id, mode)
+}
+
+fn parse_runtime_approval_mode(value: &str) -> Option<RuntimeRunApprovalModeDto> {
+    match value.trim() {
+        "suggest" => Some(RuntimeRunApprovalModeDto::Suggest),
+        "auto_edit" => Some(RuntimeRunApprovalModeDto::AutoEdit),
+        "yolo" => Some(RuntimeRunApprovalModeDto::Yolo),
+        _ => None,
     }
 }
 

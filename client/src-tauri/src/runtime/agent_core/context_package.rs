@@ -23,6 +23,7 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub runtime_agent_id: RuntimeAgentIdDto,
     pub agent_definition_id: &'a str,
     pub agent_definition_version: u32,
+    pub agent_definition_snapshot: Option<&'a JsonValue>,
     pub provider_id: &'a str,
     pub model_id: &'a str,
     pub turn_index: usize,
@@ -48,6 +49,7 @@ pub(crate) fn assemble_provider_context_package(
         input.tools,
     )
     .with_soul_settings(input.soul_settings)
+    .with_agent_definition_snapshot(input.agent_definition_snapshot)
     .with_owned_process_summary(input.owned_process_summary)
     .with_skill_contexts(skill_contexts)
     .with_retrieved_project_context(Some(retrieved_project_context.clone()))
@@ -466,6 +468,7 @@ fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
         "xero.soul" => "soul",
         "xero.system_policy" => "runtime_policy",
         "xero.tool_policy" => "tool_policy",
+        "xero.agent_definition_policy" => "agent_definition_policy",
         "project.code_map" => "code_map",
         "xero.owned_process_state" => "process_state",
         "xero.approved_memory" => "approved_memory",
@@ -688,6 +691,7 @@ mod tests {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: "engineer",
             agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
             provider_id: OPENAI_CODEX_PROVIDER_ID,
             model_id: OPENAI_CODEX_PROVIDER_ID,
             turn_index: 0,

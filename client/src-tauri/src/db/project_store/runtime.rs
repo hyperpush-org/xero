@@ -83,6 +83,10 @@ pub struct RuntimeRunDiagnosticRecord {
 pub struct RuntimeRunActiveControlSnapshotRecord {
     pub runtime_agent_id: RuntimeAgentIdDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +102,10 @@ pub struct RuntimeRunActiveControlSnapshotRecord {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunPendingControlSnapshotRecord {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     pub model_id: String,
@@ -1642,6 +1650,11 @@ fn validate_runtime_run_control_state(
 fn validate_runtime_run_active_control_snapshot(
     active: &RuntimeRunActiveControlSnapshotRecord,
 ) -> Result<(), CommandError> {
+    validate_runtime_run_agent_definition_snapshot(
+        active.agent_definition_id.as_deref(),
+        active.agent_definition_version,
+        "control_state.active",
+    )?;
     if let Some(provider_profile_id) = active.provider_profile_id.as_ref() {
         validate_non_empty_text(
             provider_profile_id,
@@ -1683,6 +1696,11 @@ fn validate_runtime_run_pending_control_snapshot(
     pending: &RuntimeRunPendingControlSnapshotRecord,
     active_revision: u32,
 ) -> Result<(), CommandError> {
+    validate_runtime_run_agent_definition_snapshot(
+        pending.agent_definition_id.as_deref(),
+        pending.agent_definition_version,
+        "control_state.pending",
+    )?;
     if let Some(provider_profile_id) = pending.provider_profile_id.as_ref() {
         validate_non_empty_text(
             provider_profile_id,
@@ -1753,6 +1771,38 @@ fn validate_runtime_run_pending_control_snapshot(
     Ok(())
 }
 
+fn validate_runtime_run_agent_definition_snapshot(
+    agent_definition_id: Option<&str>,
+    agent_definition_version: Option<u32>,
+    prefix: &str,
+) -> Result<(), CommandError> {
+    match (agent_definition_id, agent_definition_version) {
+        (Some(definition_id), Some(version)) => {
+            validate_non_empty_text(
+                definition_id,
+                &format!("{prefix}.agent_definition_id"),
+                "runtime_run_request_invalid",
+            )?;
+            if version == 0 {
+                return Err(CommandError::system_fault(
+                    "runtime_run_request_invalid",
+                    format!("{prefix}.agent_definition_version must be positive."),
+                ));
+            }
+        }
+        (None, None) => {}
+        _ => {
+            return Err(CommandError::system_fault(
+                "runtime_run_request_invalid",
+                format!(
+                    "{prefix}.agent_definition_id and {prefix}.agent_definition_version must be populated together."
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_runtime_run_control_timestamp(value: &str, field: &str) -> Result<(), CommandError> {
     OffsetDateTime::parse(value, &Rfc3339).map_err(|error| {
         CommandError::system_fault(
@@ -1793,6 +1843,8 @@ pub fn build_runtime_run_control_state_with_plan_mode(
     build_runtime_run_control_state_with_profile(
         runtime_agent_id,
         None,
+        None,
+        None,
         model_id,
         thinking_effort,
         approval_mode,
@@ -1808,6 +1860,8 @@ pub fn build_runtime_run_control_state_with_plan_mode(
 )]
 pub fn build_runtime_run_control_state_with_profile(
     runtime_agent_id: RuntimeAgentIdDto,
+    agent_definition_id: Option<&str>,
+    agent_definition_version: Option<u32>,
     provider_profile_id: Option<&str>,
     model_id: &str,
     thinking_effort: Option<ProviderModelThinkingEffortDto>,
@@ -1831,6 +1885,11 @@ pub fn build_runtime_run_control_state_with_profile(
 
     let active = RuntimeRunActiveControlSnapshotRecord {
         runtime_agent_id,
+        agent_definition_id: agent_definition_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        agent_definition_version,
         provider_profile_id: provider_profile_id.clone(),
         model_id: model_id.to_owned(),
         thinking_effort,
@@ -1842,6 +1901,8 @@ pub fn build_runtime_run_control_state_with_profile(
     let pending = match initial_prompt {
         Some(prompt) if !prompt.trim().is_empty() => Some(RuntimeRunPendingControlSnapshotRecord {
             runtime_agent_id,
+            agent_definition_id: active.agent_definition_id.clone(),
+            agent_definition_version: active.agent_definition_version,
             provider_profile_id,
             model_id: active.model_id.clone(),
             thinking_effort: active.thinking_effort.clone(),

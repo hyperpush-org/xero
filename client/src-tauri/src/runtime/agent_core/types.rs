@@ -47,11 +47,12 @@ pub struct ToolRegistry {
     options: ToolRegistryOptions,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolRegistryOptions {
     pub skill_tool_enabled: bool,
     pub browser_control_preference: BrowserControlPreferenceDto,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_tool_policy: Option<AutonomousAgentToolPolicy>,
 }
 
 impl Default for ToolRegistryOptions {
@@ -60,6 +61,7 @@ impl Default for ToolRegistryOptions {
             skill_tool_enabled: false,
             browser_control_preference: BrowserControlPreferenceDto::Default,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_tool_policy: None,
         }
     }
 }
@@ -77,7 +79,11 @@ impl ToolRegistry {
                     options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
                 })
                 .filter(|descriptor| {
-                    tool_allowed_for_runtime_agent(options.runtime_agent_id, &descriptor.name)
+                    tool_allowed_for_runtime_agent_with_policy(
+                        options.runtime_agent_id,
+                        &descriptor.name,
+                        options.agent_tool_policy.as_ref(),
+                    )
                 })
                 .collect(),
             dynamic_routes: BTreeMap::new(),
@@ -120,7 +126,11 @@ impl ToolRegistry {
             .filter(|descriptor| {
                 tool_names.contains(descriptor.name.as_str())
                     && (options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
-                    && tool_allowed_for_runtime_agent(options.runtime_agent_id, &descriptor.name)
+                    && tool_allowed_for_runtime_agent_with_policy(
+                        options.runtime_agent_id,
+                        &descriptor.name,
+                        options.agent_tool_policy.as_ref(),
+                    )
             })
             .collect();
         Self {
@@ -141,7 +151,11 @@ impl ToolRegistry {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
             })
             .filter(|descriptor| {
-                tool_allowed_for_runtime_agent(options.runtime_agent_id, &descriptor.name)
+                tool_allowed_for_runtime_agent_with_policy(
+                    options.runtime_agent_id,
+                    &descriptor.name,
+                    options.agent_tool_policy.as_ref(),
+                )
             })
             .collect::<Vec<_>>();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
@@ -193,7 +207,7 @@ impl ToolRegistry {
             .cloned()
             .collect::<Vec<_>>();
         let dynamic_routes = self.dynamic_routes.clone();
-        let mut next = Self::for_tool_names_with_options(names, self.options);
+        let mut next = Self::for_tool_names_with_options(names, self.options.clone());
         next.descriptors.extend(dynamic_descriptors);
         next.descriptors
             .sort_by(|left, right| left.name.cmp(&right.name));
@@ -226,16 +240,24 @@ impl ToolRegistry {
             let tool_name = tool_name.as_ref();
             if let Some(descriptor) = builtin_descriptors.get(tool_name) {
                 if (self.options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
-                    && tool_allowed_for_runtime_agent(
+                    && tool_allowed_for_runtime_agent_with_policy(
                         self.options.runtime_agent_id,
                         &descriptor.name,
+                        self.options.agent_tool_policy.as_ref(),
                     )
                 {
                     descriptors_by_name.insert(descriptor.name.clone(), descriptor.clone());
                 }
                 continue;
             }
-            if self.options.runtime_agent_id.allows_engineering_tools() {
+            if self.options.runtime_agent_id.allows_engineering_tools()
+                && self
+                    .options
+                    .agent_tool_policy
+                    .as_ref()
+                    .map(|policy| policy.allows_tool(tool_name))
+                    .unwrap_or(true)
+            {
                 if let Some(dynamic) = tool_runtime.dynamic_tool_descriptor(tool_name)? {
                     descriptors_by_name.insert(
                         dynamic.name.clone(),
@@ -262,9 +284,10 @@ impl ToolRegistry {
                     .tool_name
                     .starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX);
             if known_tool
-                && !tool_allowed_for_runtime_agent(
+                && !tool_allowed_for_runtime_agent_with_policy(
                     self.options.runtime_agent_id,
                     &tool_call.tool_name,
+                    self.options.agent_tool_policy.as_ref(),
                 )
             {
                 return Err(agent_tool_boundary_violation(
@@ -281,7 +304,11 @@ impl ToolRegistry {
             ));
         }
 
-        if !tool_allowed_for_runtime_agent(self.options.runtime_agent_id, &tool_call.tool_name) {
+        if !tool_allowed_for_runtime_agent_with_policy(
+            self.options.runtime_agent_id,
+            &tool_call.tool_name,
+            self.options.agent_tool_policy.as_ref(),
+        ) {
             return Err(agent_tool_boundary_violation(
                 self.options.runtime_agent_id,
                 &tool_call.tool_name,
@@ -403,6 +430,8 @@ pub trait ProviderAdapter {
                 controls: RuntimeRunControlStateDto {
                     active: RuntimeRunActiveControlSnapshotDto {
                         runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                        agent_definition_id: None,
+                        agent_definition_version: None,
                         provider_profile_id: None,
                         model_id: request.model_id.clone(),
                     thinking_effort: None,
@@ -454,6 +483,8 @@ pub trait ProviderAdapter {
                 controls: RuntimeRunControlStateDto {
                     active: RuntimeRunActiveControlSnapshotDto {
                         runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                        agent_definition_id: None,
+                        agent_definition_version: None,
                         provider_profile_id: None,
                         model_id: request.model_id.clone(),
                     thinking_effort: None,

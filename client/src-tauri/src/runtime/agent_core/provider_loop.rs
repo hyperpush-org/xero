@@ -31,6 +31,8 @@ pub(crate) fn drive_provider_loop(
         let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
         let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
         let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+        let agent_definition_snapshot =
+            load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
         let turn_context_package = assemble_provider_context_package(
             ProviderContextPackageInput {
                 repo_root,
@@ -40,6 +42,7 @@ pub(crate) fn drive_provider_loop(
                 runtime_agent_id: controls.active.runtime_agent_id,
                 agent_definition_id: run_snapshot.run.agent_definition_id.as_str(),
                 agent_definition_version: run_snapshot.run.agent_definition_version,
+                agent_definition_snapshot: Some(&agent_definition_snapshot),
                 provider_id: provider.provider_id(),
                 model_id: provider.model_id(),
                 turn_index,
@@ -736,12 +739,15 @@ pub(crate) fn tool_registry_for_snapshot(
             skill_tool_enabled,
             browser_control_preference,
             runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: tool_runtime
+                .and_then(|runtime| runtime.agent_tool_policy().cloned()),
         },
     );
     let options = ToolRegistryOptions {
         skill_tool_enabled,
         browser_control_preference,
         runtime_agent_id: controls.active.runtime_agent_id,
+        agent_tool_policy: tool_runtime.and_then(|runtime| runtime.agent_tool_policy().cloned()),
     };
     let latest_registry = latest_tool_registry_snapshot(snapshot)?;
     let mut registry = if let Some(latest_registry) = latest_registry {

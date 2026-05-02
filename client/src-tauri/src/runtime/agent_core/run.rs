@@ -45,15 +45,18 @@ pub fn create_owned_agent_run(
         controls.active.runtime_agent_id,
     )?;
     controls.active.runtime_agent_id = definition_selection.runtime_agent_id;
-    if !runtime_agent_allows_approval_mode(
-        &controls.active.runtime_agent_id,
-        &controls.active.approval_mode,
-    ) {
-        controls.active.approval_mode =
-            default_runtime_agent_approval_mode(&controls.active.runtime_agent_id);
+    controls.active.agent_definition_id = Some(definition_selection.definition_id.clone());
+    controls.active.agent_definition_version = Some(definition_selection.version);
+    if !definition_selection
+        .allowed_approval_modes
+        .iter()
+        .any(|mode| mode == &controls.active.approval_mode)
+    {
+        controls.active.approval_mode = definition_selection.default_approval_mode.clone();
     }
     controls.active.plan_mode_required =
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
+    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_selection.snapshot);
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
@@ -62,6 +65,7 @@ pub fn create_owned_agent_run(
             skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
             browser_control_preference: request.tool_runtime.browser_control_preference(),
             runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: agent_tool_policy.clone(),
         },
     );
     let system_prompt = assemble_system_prompt_for_session(
@@ -71,6 +75,7 @@ pub fn create_owned_agent_run(
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
         tool_registry.descriptors(),
+        Some(&definition_selection.snapshot),
         Some(request.tool_runtime.soul_settings()),
     )?;
     let provider = create_provider_adapter(request.provider_config.clone())?;
@@ -161,12 +166,26 @@ pub fn drive_owned_agent_run(
     cancellation.check_cancelled()?;
     let snapshot =
         project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
-    let controls = runtime_controls_from_request(request.controls.as_ref());
+    let definition_snapshot =
+        load_agent_definition_snapshot_for_run(&request.repo_root, &snapshot.run)?;
+    let (default_approval_mode, allowed_approval_modes) =
+        agent_definition_approval_modes_from_snapshot(
+            &definition_snapshot,
+            snapshot.run.runtime_agent_id,
+        );
+    let controls = runtime_controls_for_agent_run(
+        &snapshot.run,
+        request.controls.as_ref(),
+        &allowed_approval_modes,
+        default_approval_mode,
+    );
+    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
     let skill_tool_enabled = request.tool_runtime.skill_tool_enabled();
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
         .tool_runtime
         .with_runtime_run_controls(controls.clone())
+        .with_agent_tool_policy(agent_tool_policy.clone())
         .with_agent_run_context(
             &request.project_id,
             &snapshot.run.agent_session_id,
@@ -351,17 +370,31 @@ pub fn prepare_owned_agent_continuation_for_drive(
             &request.project_id,
             &request.run_id,
         )?;
+        let definition_snapshot =
+            load_agent_definition_snapshot_for_run(&request.repo_root, &before.run)?;
+        let (default_approval_mode, allowed_approval_modes) =
+            agent_definition_approval_modes_from_snapshot(
+                &definition_snapshot,
+                before.run.runtime_agent_id,
+            );
+        let controls = runtime_controls_for_agent_run(
+            &before.run,
+            request.controls.as_ref(),
+            &allowed_approval_modes,
+            default_approval_mode,
+        );
+        let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
         let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
             browser_control_preference: request.tool_runtime.browser_control_preference(),
-            runtime_agent_id: runtime_controls_from_request(request.controls.as_ref())
-                .active
-                .runtime_agent_id,
+            runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: agent_tool_policy.clone(),
         });
         let replay_tool_runtime = request
             .tool_runtime
             .clone()
-            .with_runtime_run_controls(runtime_controls_from_request(request.controls.as_ref()))
+            .with_runtime_run_controls(controls)
+            .with_agent_tool_policy(agent_tool_policy)
             .with_agent_run_context(
                 &request.project_id,
                 &before.run.agent_session_id,
@@ -772,23 +805,40 @@ fn estimate_continuation_context_tokens(
 ) -> CommandResult<ContinuationContextEstimate> {
     let budget_tokens = resolve_context_limit(&snapshot.run.provider_id, &snapshot.run.model_id)
         .effective_input_budget_tokens;
-    let controls = runtime_controls_from_request(request.controls.as_ref());
+    let definition_snapshot =
+        load_agent_definition_snapshot_for_run(&request.repo_root, &snapshot.run)?;
+    let (default_approval_mode, allowed_approval_modes) =
+        agent_definition_approval_modes_from_snapshot(
+            &definition_snapshot,
+            snapshot.run.runtime_agent_id,
+        );
+    let controls = runtime_controls_for_agent_run(
+        &snapshot.run,
+        request.controls.as_ref(),
+        &allowed_approval_modes,
+        default_approval_mode,
+    );
+    let tool_runtime = request
+        .tool_runtime
+        .clone()
+        .with_agent_tool_policy(agent_tool_policy_from_snapshot(&definition_snapshot));
     let tool_registry = tool_registry_for_snapshot(
         &request.repo_root,
         snapshot,
         &controls,
-        request.tool_runtime.skill_tool_enabled(),
-        request.tool_runtime.browser_control_preference(),
-        Some(&request.tool_runtime),
+        tool_runtime.skill_tool_enabled(),
+        tool_runtime.browser_control_preference(),
+        Some(&tool_runtime),
     )?;
     let system_prompt = assemble_system_prompt_for_session(
         &request.repo_root,
         Some(&snapshot.run.project_id),
         Some(&snapshot.run.agent_session_id),
         controls.active.runtime_agent_id,
-        request.tool_runtime.browser_control_preference(),
+        tool_runtime.browser_control_preference(),
         tool_registry.descriptors(),
-        Some(request.tool_runtime.soul_settings()),
+        Some(&definition_snapshot),
+        Some(tool_runtime.soul_settings()),
     )?;
     let provider_messages = provider_messages_from_snapshot(&request.repo_root, snapshot)?;
     let message_tokens = provider_messages.iter().try_fold(0_u64, |total, message| {
@@ -1277,6 +1327,9 @@ fn create_or_load_handoff_target_run(
         &source_snapshot.run.agent_session_id,
     )?;
     let controls = handoff_controls_for_source(request, source_snapshot);
+    let definition_snapshot =
+        load_agent_definition_snapshot_for_run(&request.repo_root, &source_snapshot.run)?;
+    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
     let handoff_seed = render_handoff_seed_message(bundle)?;
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
@@ -1286,6 +1339,7 @@ fn create_or_load_handoff_target_run(
             skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
             browser_control_preference: request.tool_runtime.browser_control_preference(),
             runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy,
         },
     );
     let system_prompt = assemble_system_prompt_for_session(
@@ -1295,6 +1349,7 @@ fn create_or_load_handoff_target_run(
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
         tool_registry.descriptors(),
+        Some(&definition_snapshot),
         Some(request.tool_runtime.soul_settings()),
     )?;
     let now = now_timestamp();
@@ -1724,12 +1779,26 @@ pub fn drive_owned_agent_continuation(
     let snapshot =
         project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
     let messages = provider_messages_from_snapshot(&request.repo_root, &snapshot)?;
-    let controls = runtime_controls_from_request(request.controls.as_ref());
+    let definition_snapshot =
+        load_agent_definition_snapshot_for_run(&request.repo_root, &snapshot.run)?;
+    let (default_approval_mode, allowed_approval_modes) =
+        agent_definition_approval_modes_from_snapshot(
+            &definition_snapshot,
+            snapshot.run.runtime_agent_id,
+        );
+    let controls = runtime_controls_for_agent_run(
+        &snapshot.run,
+        request.controls.as_ref(),
+        &allowed_approval_modes,
+        default_approval_mode,
+    );
+    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
     let skill_tool_enabled = request.tool_runtime.skill_tool_enabled();
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
         .tool_runtime
         .with_runtime_run_controls(controls.clone())
+        .with_agent_tool_policy(agent_tool_policy.clone())
         .with_agent_run_context(
             &request.project_id,
             &snapshot.run.agent_session_id,
@@ -2242,7 +2311,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             prompt,
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: self.controls.active.runtime_agent_id,
-                agent_definition_id: None,
+                agent_definition_id: self.controls.active.agent_definition_id.clone(),
                 provider_profile_id: self.controls.active.provider_profile_id.clone(),
                 model_id,
                 thinking_effort: self.controls.active.thinking_effort.clone(),
@@ -2454,4 +2523,258 @@ fn subagent_result_summary(snapshot: &AgentRunSnapshotRecord) -> String {
                 snapshot.run.status
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rusqlite::{params, Connection};
+    use serde_json::json;
+    use std::{fs, path::Path};
+
+    use crate::db::{configure_connection, database_path_for_repo, migrations::migrations};
+
+    fn create_project_database(repo_root: &Path, project_id: &str) {
+        crate::db::configure_project_database_paths(
+            &repo_root
+                .parent()
+                .expect("repo parent")
+                .join("app-data")
+                .join("xero.db"),
+        );
+        let database_path = database_path_for_repo(repo_root);
+        fs::create_dir_all(database_path.parent().expect("database parent"))
+            .expect("create database dir");
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        configure_connection(&connection).expect("configure project database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_sessions (
+                    project_id,
+                    agent_session_id,
+                    title,
+                    status,
+                    selected,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, 'Main', 'active', 1, ?3, ?3)
+                "#,
+                params![
+                    project_id,
+                    project_store::DEFAULT_AGENT_SESSION_ID,
+                    "2026-05-01T12:00:00Z"
+                ],
+            )
+            .expect("insert agent session");
+    }
+
+    fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {
+        let (display_name, short_label, description, default_mode, allowed_modes, tool_policy) =
+            match profile {
+                "engineering" => (
+                    "Phase 4 Builder",
+                    "Builder",
+                    "Inspect, edit, and verify repository tasks under custom policy.",
+                    "yolo",
+                    json!(["suggest", "auto_edit", "yolo"]),
+                    json!({
+                        "allowedEffectClasses": ["observe", "runtime_state", "write", "destructive_write", "command", "process_control"],
+                        "allowedToolGroups": ["core", "mutation", "command_readonly"],
+                        "allowedTools": [],
+                        "deniedTools": [],
+                        "externalServiceAllowed": false,
+                        "browserControlAllowed": false,
+                        "skillRuntimeAllowed": false,
+                        "subagentAllowed": false,
+                        "commandAllowed": true,
+                        "destructiveWriteAllowed": true
+                    }),
+                ),
+                _ => (
+                    "Phase 4 Observer",
+                    "Observer",
+                    "Inspect repository context without mutating files.",
+                    "suggest",
+                    json!(["suggest"]),
+                    json!({
+                        "allowedEffectClasses": ["observe"],
+                        "allowedToolGroups": ["core"],
+                        "allowedTools": [],
+                        "deniedTools": ["write", "patch", "edit", "delete", "rename", "mkdir", "command"],
+                        "externalServiceAllowed": false,
+                        "browserControlAllowed": false,
+                        "skillRuntimeAllowed": false,
+                        "subagentAllowed": false,
+                        "commandAllowed": false,
+                        "destructiveWriteAllowed": false
+                    }),
+                ),
+            };
+        project_store::insert_agent_definition(
+            repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: definition_id.into(),
+                version: 1,
+                display_name: display_name.into(),
+                short_label: short_label.into(),
+                description: description.into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: profile.into(),
+                snapshot: json!({
+                    "id": definition_id,
+                    "version": 1,
+                    "displayName": display_name,
+                    "shortLabel": short_label,
+                    "description": description,
+                    "taskPurpose": "Exercise phase 4 custom agent execution.",
+                    "scope": "project_custom",
+                    "lifecycleState": "active",
+                    "baseCapabilityProfile": profile,
+                    "defaultApprovalMode": default_mode,
+                    "allowedApprovalModes": allowed_modes,
+                    "toolPolicy": tool_policy,
+                    "promptFragments": [
+                        {
+                            "id": "phase4.marker",
+                            "body": "Phase 4 custom workflow marker."
+                        }
+                    ],
+                    "workflowContract": "Phase 4 custom workflow marker.",
+                    "finalResponseContract": "Return a concise completion summary.",
+                    "retrievalDefaults": { "enabled": true, "limit": 4 },
+                    "memoryCandidatePolicy": { "reviewRequired": true },
+                    "handoffPolicy": { "enabled": true, "preserveDefinitionVersion": true }
+                }),
+                validation_report: Some(json!({ "status": "valid" })),
+                created_at: "2026-05-01T12:01:00Z".into(),
+                updated_at: "2026-05-01T12:01:00Z".into(),
+            },
+        )
+        .expect("insert custom definition");
+    }
+
+    fn custom_controls(
+        runtime_agent_id: RuntimeAgentIdDto,
+        definition_id: &str,
+        approval_mode: RuntimeRunApprovalModeDto,
+    ) -> RuntimeRunControlInputDto {
+        RuntimeRunControlInputDto {
+            runtime_agent_id,
+            agent_definition_id: Some(definition_id.into()),
+            provider_profile_id: Some(FAKE_PROVIDER_ID.into()),
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode,
+            plan_mode_required: false,
+        }
+    }
+
+    #[test]
+    fn phase4_custom_engineering_agent_runs_with_definition_prompt_and_mutation_tools() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "phase4-custom-engineering";
+        create_project_database(&repo_root, project_id);
+        save_custom_definition(&repo_root, "phase4_builder", "engineering");
+
+        let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "phase4-builder-run".into(),
+            prompt: "Apply the custom policy.\ntool:write phase4-output.txt phase4-ok\ntool:command_echo phase4-verification".into(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Engineer,
+                "phase4_builder",
+                RuntimeRunApprovalModeDto::Yolo,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+        })
+        .expect("run custom engineering agent");
+
+        assert_eq!(snapshot.run.status, AgentRunStatus::Completed);
+        assert_eq!(snapshot.run.runtime_agent_id, RuntimeAgentIdDto::Engineer);
+        assert_eq!(snapshot.run.agent_definition_id, "phase4_builder");
+        assert_eq!(snapshot.run.agent_definition_version, 1);
+        assert_eq!(
+            fs::read_to_string(repo_root.join("phase4-output.txt")).expect("read output"),
+            "phase4-ok"
+        );
+        assert!(
+            snapshot
+                .run
+                .system_prompt
+                .contains("Custom agent definition policy"),
+            "custom definition prompt fragment should be present"
+        );
+        assert!(snapshot
+            .run
+            .system_prompt
+            .contains("Phase 4 custom workflow marker."));
+        assert!(snapshot.tool_calls.iter().any(|call| {
+            call.tool_name == AUTONOMOUS_TOOL_WRITE && call.state == AgentToolCallState::Succeeded
+        }));
+        assert!(snapshot.tool_calls.iter().any(|call| {
+            call.tool_name == AUTONOMOUS_TOOL_COMMAND && call.state == AgentToolCallState::Succeeded
+        }));
+    }
+
+    #[test]
+    fn phase4_custom_observe_only_agent_blocks_mutation_tool_calls() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "phase4-custom-observer";
+        create_project_database(&repo_root, project_id);
+        save_custom_definition(&repo_root, "phase4_observer", "observe_only");
+
+        let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "phase4-observer-run".into(),
+            prompt: "Attempt a forbidden mutation.\ntool:write blocked.txt nope".into(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Engineer,
+                "phase4_observer",
+                RuntimeRunApprovalModeDto::Yolo,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+        })
+        .expect("run custom observe-only agent");
+
+        assert_eq!(snapshot.run.status, AgentRunStatus::Failed);
+        assert_eq!(snapshot.run.runtime_agent_id, RuntimeAgentIdDto::Ask);
+        assert_eq!(snapshot.run.agent_definition_id, "phase4_observer");
+        assert_eq!(snapshot.run.agent_definition_version, 1);
+        assert!(!repo_root.join("blocked.txt").exists());
+        let error = snapshot.run.last_error.expect("last error");
+        assert_eq!(error.code, "agent_tool_boundary_violation");
+        assert!(error.message.contains("write"));
+    }
 }

@@ -171,6 +171,8 @@ fn runtime_control_state(
     RuntimeRunControlStateDto {
         active: RuntimeRunActiveControlSnapshotDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "model-1".into(),
             thinking_effort: None,
@@ -181,6 +183,8 @@ fn runtime_control_state(
         },
         pending: pending.map(|approval_mode| RuntimeRunPendingControlSnapshotDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "model-1".into(),
             thinking_effort: None,

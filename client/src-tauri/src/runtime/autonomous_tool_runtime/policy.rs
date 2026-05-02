@@ -1378,6 +1378,8 @@ mod tests {
             .with_runtime_run_controls(RuntimeRunControlStateDto {
                 active: RuntimeRunActiveControlSnapshotDto {
                     runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    agent_definition_id: None,
+                    agent_definition_version: None,
                     provider_profile_id: None,
                     model_id: "test-model".into(),
                     thinking_effort: None,

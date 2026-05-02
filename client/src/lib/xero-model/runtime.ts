@@ -391,6 +391,8 @@ export const runtimeAutoCompactPreferenceSchema = z
 export const runtimeRunActiveControlSnapshotSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1).nullable().optional(),
+    agentDefinitionVersion: z.number().int().positive().nullable().optional(),
     providerProfileId: nonEmptyOptionalTextSchema,
     modelId: z.string().trim().min(1),
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
@@ -404,6 +406,8 @@ export const runtimeRunActiveControlSnapshotSchema = z
 export const runtimeRunPendingControlSnapshotSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1).nullable().optional(),
+    agentDefinitionVersion: z.number().int().positive().nullable().optional(),
     providerProfileId: nonEmptyOptionalTextSchema,
     modelId: z.string().trim().min(1),
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
@@ -749,6 +753,7 @@ export interface RuntimeRunCheckpointView {
 export interface RuntimeRunControlInputView {
   runtimeAgentId: RuntimeAgentIdDto
   agentDefinitionId: string | null
+  agentDefinitionVersion: number | null
   runtimeAgentLabel: string
   providerProfileId: string | null
   modelId: string
@@ -962,9 +967,13 @@ function getAgentSessionStatusLabel(status: AgentSessionStatusDto): string {
 
 function mapRuntimeRunControlInput(control: RuntimeRunControlInputDto): RuntimeRunControlInputView {
   const runtimeAgentId = control.runtimeAgentId ?? DEFAULT_RUNTIME_AGENT_ID
+  const controlSnapshot = control as RuntimeRunControlInputDto & {
+    agentDefinitionVersion?: number | null
+  }
   return {
     runtimeAgentId,
     agentDefinitionId: normalizeOptionalText(control.agentDefinitionId),
+    agentDefinitionVersion: controlSnapshot.agentDefinitionVersion ?? null,
     runtimeAgentLabel: getRuntimeAgentLabel(runtimeAgentId),
     providerProfileId: normalizeOptionalText(control.providerProfileId),
     modelId: normalizeText(control.modelId, 'model-unavailable'),

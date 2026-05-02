@@ -136,6 +136,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     controls: {
       active: {
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'openai_codex',
@@ -151,6 +153,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       selected: {
         source: 'active',
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'openai_codex',
@@ -1385,6 +1389,8 @@ describe('AgentRuntime current UI', () => {
           },
           runtimeRunActiveControls: {
             providerProfileId: null,
+            agentDefinitionId: null,
+            agentDefinitionVersion: null,
             runtimeAgentId: 'engineer',
             runtimeAgentLabel: 'Engineer',
             modelId: 'openai_codex',
@@ -1398,6 +1404,8 @@ describe('AgentRuntime current UI', () => {
           },
           runtimeRunPendingControls: {
             providerProfileId: null,
+            agentDefinitionId: null,
+            agentDefinitionVersion: null,
             runtimeAgentId: 'engineer',
             runtimeAgentLabel: 'Engineer',
             modelId: 'anthropic/claude-3.5-haiku',
@@ -1507,6 +1515,8 @@ describe('AgentRuntime current UI', () => {
           },
           runtimeRunActiveControls: {
             providerProfileId: null,
+            agentDefinitionId: null,
+            agentDefinitionVersion: null,
             runtimeAgentId: 'ask',
             runtimeAgentLabel: 'Ask',
             modelId: 'openai_codex',
@@ -1520,6 +1530,8 @@ describe('AgentRuntime current UI', () => {
           },
           runtimeRunPendingControls: {
             providerProfileId: null,
+            agentDefinitionId: null,
+            agentDefinitionVersion: null,
             runtimeAgentId: 'ask',
             runtimeAgentLabel: 'Ask',
             modelId: 'openai_codex',
@@ -1706,6 +1718,8 @@ describe('AgentRuntime current UI', () => {
           selectedApprovalMode: 'yolo',
           runtimeRunActiveControls: {
             providerProfileId: null,
+            agentDefinitionId: null,
+            agentDefinitionVersion: null,
             runtimeAgentId: 'engineer',
             runtimeAgentLabel: 'Engineer',
             modelId: 'openai_codex',

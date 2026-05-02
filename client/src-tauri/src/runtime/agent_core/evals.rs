@@ -641,6 +641,8 @@ fn eval_controls() -> RuntimeRunControlStateDto {
     RuntimeRunControlStateDto {
         active: RuntimeRunActiveControlSnapshotDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "eval-model".into(),
             thinking_effort: None,

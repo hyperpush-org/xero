@@ -26,6 +26,8 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
     controls: {
       active: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'phase4_builder',
+        agentDefinitionVersion: 3,
         modelId: 'openai/gpt-4.1-mini',
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
@@ -35,6 +37,8 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
       },
       pending: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'phase4_builder',
+        agentDefinitionVersion: 4,
         modelId: 'anthropic/claude-3.5-haiku',
         thinkingEffort: 'low',
         approvalMode: 'auto_edit',
@@ -103,6 +107,8 @@ describe('runtime run control schemas', () => {
 
     expect(view.controls.active).toMatchObject({
       runtimeAgentId: 'engineer',
+      agentDefinitionId: 'phase4_builder',
+      agentDefinitionVersion: 3,
       modelId: 'openai/gpt-4.1-mini',
       thinkingEffort: 'medium',
       approvalMode: 'suggest',
@@ -111,6 +117,8 @@ describe('runtime run control schemas', () => {
     })
     expect(view.controls.pending).toMatchObject({
       runtimeAgentId: 'engineer',
+      agentDefinitionId: 'phase4_builder',
+      agentDefinitionVersion: 4,
       modelId: 'anthropic/claude-3.5-haiku',
       thinkingEffort: 'low',
       approvalMode: 'auto_edit',
@@ -122,6 +130,8 @@ describe('runtime run control schemas', () => {
     expect(view.controls.selected).toMatchObject({
       source: 'pending',
       runtimeAgentId: 'engineer',
+      agentDefinitionId: 'phase4_builder',
+      agentDefinitionVersion: 4,
       modelId: 'anthropic/claude-3.5-haiku',
       thinkingEffort: 'low',
       approvalMode: 'auto_edit',

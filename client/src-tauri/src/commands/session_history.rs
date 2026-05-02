@@ -1528,6 +1528,7 @@ fn compile_prompt_context_for_snapshot(
                 skill_tool_enabled: true,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
                 runtime_agent_id: controls.active.runtime_agent_id,
+                agent_tool_policy: None,
             },
         )
         .into_descriptors()
@@ -1545,6 +1546,7 @@ fn compile_prompt_context_for_snapshot(
         controls.active.runtime_agent_id,
         BrowserControlPreferenceDto::Default,
         descriptors.as_slice(),
+        None,
         None,
         None,
         skill_contexts,
