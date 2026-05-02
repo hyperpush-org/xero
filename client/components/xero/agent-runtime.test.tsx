@@ -909,6 +909,55 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
   })
 
+  it('pauses auto-follow immediately when the user wheels upward during streaming', () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    const initialItems: NonNullable<AgentPaneView['runtimeStreamItems']> = [
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Walk me through the runtime.' }),
+      makeTranscriptItem({ sequence: 3, text: 'Working' }),
+    ]
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: initialItems,
+        })}
+      />,
+    )
+
+    const viewport = screen.getByLabelText('Agent conversation viewport')
+    setScrollMetrics(viewport, {
+      scrollTop: 560,
+      scrollHeight: 1_000,
+      clientHeight: 360,
+    })
+    fireEvent.wheel(viewport, { deltaY: -24 })
+
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+    scrollIntoView.mockClear()
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            ...initialItems,
+            makeTranscriptItem({ sequence: 4, text: ' through the runtime.' }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Working through the runtime.')).toBeVisible()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
   it('preserves subword streamed assistant transcript deltas exactly', () => {
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, text: 'mon' }),

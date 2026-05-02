@@ -108,6 +108,19 @@ describe('AgentSessionsSidebar', () => {
     expect(onSelectSession).toHaveBeenCalledWith('agent-session-alt')
   })
 
+  it('allows archiving the only active session', async () => {
+    const onArchiveSession = vi.fn()
+    renderSidebar({ onArchiveSession })
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Session actions for Main session' }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+
+    expect(onArchiveSession).toHaveBeenCalledWith('agent-session-main')
+  })
+
   it('keeps the resize control hidden while collapsed', () => {
     const { container } = renderSidebar({ collapsed: true })
 

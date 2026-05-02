@@ -458,7 +458,7 @@ export function AgentSessionsSidebar({
         onArchiveSession={onArchiveSession}
         onTogglePin={togglePinSession}
         onRenameSession={onRenameSession ? handleOpenRename : undefined}
-        canArchive={activeSessions.length > 1 && entry.state !== 'exiting'}
+        canArchive={entry.state !== 'exiting'}
       />
     </li>
   )

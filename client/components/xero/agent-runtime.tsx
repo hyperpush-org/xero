@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
 import { ArrowDown, ChevronRight, Loader2, Plus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -813,6 +813,20 @@ export function AgentRuntime({
     shouldAutoFollowRef.current = isNearBottom
     setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
   }, [hasConversationViewportContent])
+  const pauseConversationAutoFollow = useCallback(() => {
+    if (!hasConversationViewportContent) {
+      return
+    }
+
+    shouldAutoFollowRef.current = false
+    setShowJumpToLatest(true)
+  }, [hasConversationViewportContent])
+  const handleConversationWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const viewport = scrollViewportRef.current
+    if (event.deltaY < 0 && viewport && viewport.scrollHeight > viewport.clientHeight) {
+      pauseConversationAutoFollow()
+    }
+  }, [pauseConversationAutoFollow])
   const handleJumpToLatest = useCallback(() => {
     shouldAutoFollowRef.current = true
     setShowJumpToLatest(false)
@@ -884,6 +898,7 @@ export function AgentRuntime({
             aria-label="Agent conversation viewport"
             ref={scrollViewportRef}
             onScroll={handleConversationScroll}
+            onWheel={handleConversationWheel}
             className={
               showAgentSetupEmptyState || showEmptySessionState
                 ? 'flex h-full items-center justify-center overflow-y-auto scrollbar-thin px-6 py-5'
