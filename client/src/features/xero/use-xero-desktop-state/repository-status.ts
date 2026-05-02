@@ -1,4 +1,10 @@
-import type { RepositoryStatusView } from '@/src/lib/xero-model'
+import {
+  createRepositoryStatusEntriesRevision,
+  createRepositoryStatusDiffRevision,
+  type RepositoryStatusView,
+} from '@/src/lib/xero-model'
+
+export { createRepositoryStatusDiffRevision }
 
 export function createRepositoryStatusSyncKey(status: RepositoryStatusView | null): string {
   if (!status) {
@@ -12,6 +18,7 @@ export function createRepositoryStatusSyncKey(status: RepositoryStatusView | nul
     headShaLabel: status.headShaLabel,
     upstream: status.upstream ?? null,
     lastCommit: status.lastCommit,
+    diffRevision: status.diffRevision,
     stagedCount: status.stagedCount,
     unstagedCount: status.unstagedCount,
     untrackedCount: status.untrackedCount,
@@ -19,6 +26,6 @@ export function createRepositoryStatusSyncKey(status: RepositoryStatusView | nul
     additions: status.additions,
     deletions: status.deletions,
     hasChanges: status.hasChanges,
-    entries: status.entries,
+    entriesRevision: createRepositoryStatusEntriesRevision(status.entries),
   })
 }

@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { VcsSidebar, type VcsSidebarProps } from './vcs-sidebar'
-import type {
-  RepositoryDiffResponseDto,
-  RepositoryStatusView,
+import { deriveVcsDiffScope, VcsSidebar, type VcsSidebarProps } from './vcs-sidebar'
+import {
+  createRepositoryStatusDiffRevision,
+  type RepositoryDiffResponseDto,
+  type RepositoryStatusView,
 } from '@/src/lib/xero-model/project'
 
 const repository = {
@@ -18,7 +19,8 @@ const repository = {
 }
 
 function makeStatus(overrides: Partial<RepositoryStatusView> = {}): RepositoryStatusView {
-  return {
+  const { diffRevision, ...statusOverrides } = overrides
+  const status = {
     projectId: 'project-1',
     repositoryId: repository.id,
     branchLabel: 'main',
@@ -39,7 +41,12 @@ function makeStatus(overrides: Partial<RepositoryStatusView> = {}): RepositorySt
         untracked: false,
       },
     ],
-    ...overrides,
+    ...statusOverrides,
+  }
+
+  return {
+    ...status,
+    diffRevision: diffRevision ?? createRepositoryStatusDiffRevision(status),
   }
 }
 
@@ -53,15 +60,26 @@ function makeDiff(patch: string): RepositoryDiffResponseDto {
   }
 }
 
+function makeSingleFilePatch(line: string): string {
+  return [
+    'diff --git a/file.txt b/file.txt',
+    '--- a/file.txt',
+    '+++ b/file.txt',
+    '@@ -1 +1 @@',
+    `+${line}`,
+  ].join('\n')
+}
+
 function renderVcsSidebar(
   patch: string,
   options: {
     open?: boolean
     status?: RepositoryStatusView
+    onLoadDiff?: VcsSidebarProps['onLoadDiff']
     onGenerateCommitMessage?: VcsSidebarProps['onGenerateCommitMessage']
   } = {},
 ) {
-  const onLoadDiff = vi.fn(async () => makeDiff(patch))
+  const onLoadDiff = options.onLoadDiff ?? vi.fn(async () => makeDiff(patch))
   const props: VcsSidebarProps = {
     open: options.open ?? true,
     projectId: 'project-1',
@@ -105,6 +123,14 @@ function renderVcsSidebar(
 }
 
 describe('VcsSidebar', () => {
+  it('derives the selected diff scope from staged and unstaged file state', () => {
+    expect(deriveVcsDiffScope({ staged: 'modified', unstaged: null, untracked: false })).toBe('staged')
+    expect(deriveVcsDiffScope({ staged: 'modified', unstaged: 'modified', untracked: false })).toBe('worktree')
+    expect(deriveVcsDiffScope({ staged: null, unstaged: 'modified', untracked: false })).toBe('unstaged')
+    expect(deriveVcsDiffScope({ staged: null, unstaged: null, untracked: true })).toBe('unstaged')
+    expect(deriveVcsDiffScope(null)).toBeNull()
+  })
+
   it('highlights removed and added diff rows with red and green backgrounds', async () => {
     renderVcsSidebar(
       [
@@ -252,6 +278,97 @@ describe('VcsSidebar', () => {
 
     await waitFor(() => expect(screen.getByText('+11')).toBeInTheDocument())
     expect(onLoadDiff).toHaveBeenCalledTimes(1)
+  })
+
+  it('serves cached file patches for the same project, revision, scope, and path', async () => {
+    const status = makeStatus({
+      unstagedCount: 2,
+      statusCount: 2,
+      entries: [
+        {
+          path: 'file-a.txt',
+          staged: null,
+          unstaged: 'modified',
+          untracked: false,
+        },
+        {
+          path: 'file-b.txt',
+          staged: null,
+          unstaged: 'modified',
+          untracked: false,
+        },
+      ],
+    })
+    const onLoadDiff = vi.fn(async () =>
+      makeDiff(
+        [
+          'diff --git a/file-a.txt b/file-a.txt',
+          '--- a/file-a.txt',
+          '+++ b/file-a.txt',
+          '@@ -1 +1 @@',
+          '+first cached file',
+          'diff --git a/file-b.txt b/file-b.txt',
+          '--- a/file-b.txt',
+          '+++ b/file-b.txt',
+          '@@ -1 +1 @@',
+          '+second cached file',
+        ].join('\n'),
+      ),
+    )
+
+    renderVcsSidebar('', { status, onLoadDiff })
+
+    await waitFor(() => expect(screen.getByText('first cached file')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('file-b.txt'))
+
+    await waitFor(() => expect(screen.getByText('second cached file')).toBeInTheDocument())
+    expect(onLoadDiff).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidates the selected diff cache when the repository revision changes', async () => {
+    const onLoadDiff = vi
+      .fn(async () => makeDiff(makeSingleFilePatch('fallback revision')))
+      .mockResolvedValueOnce(makeDiff(makeSingleFilePatch('first revision')))
+      .mockResolvedValueOnce(makeDiff(makeSingleFilePatch('second revision')))
+
+    const { rerender } = renderVcsSidebar('', {
+      status: makeStatus(),
+      onLoadDiff,
+    })
+
+    await waitFor(() => expect(screen.getByText('first revision')).toBeInTheDocument())
+
+    rerender(
+      <VcsSidebar
+        open
+        projectId="project-1"
+        status={makeStatus({ headShaLabel: 'def5678' })}
+        branchLabel="main"
+        onClose={vi.fn()}
+        onRefreshStatus={vi.fn()}
+        onLoadDiff={onLoadDiff}
+        onStage={vi.fn(async () => undefined)}
+        onUnstage={vi.fn(async () => undefined)}
+        onDiscard={vi.fn(async () => undefined)}
+        onCommit={vi.fn(async () => ({
+          sha: 'def5678',
+          summary: 'Commit summary',
+          signature: { name: 'Test User', email: 'test@example.com' },
+        }))}
+        onFetch={vi.fn(async () => ({ remote: 'origin', refspecs: [] }))}
+        onPull={vi.fn(async () => ({
+          remote: 'origin',
+          branch: 'main',
+          updated: false,
+          summary: 'Already up to date.',
+          newHeadSha: null,
+        }))}
+        onPush={vi.fn(async () => ({ remote: 'origin', branch: 'main', updates: [] }))}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByText('second revision')).toBeInTheDocument())
+    expect(onLoadDiff).toHaveBeenCalledTimes(2)
   })
 
   it('generates a commit message from the staged diff', async () => {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type {
-  Phase,
-  ProjectDetailView,
-  RepositoryStatusView,
+import {
+  createRepositoryStatusDiffRevision,
+  type Phase,
+  type ProjectDetailView,
+  type RepositoryStatusView,
 } from '@/src/lib/xero-model'
 import { buildExecutionView } from './view-builders'
 
@@ -67,9 +68,13 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
 }
 
 function makeRepositoryStatus(overrides: Partial<RepositoryStatusView> = {}): RepositoryStatusView {
-  return {
+  const { diffRevision, ...statusOverrides } = overrides
+  const status = {
+    projectId: 'project-1',
+    repositoryId: 'repo-project-1',
     branchLabel: 'feature/xero',
     headShaLabel: 'def5678',
+    upstream: null,
     lastCommit: null,
     entries: [
       {
@@ -81,10 +86,18 @@ function makeRepositoryStatus(overrides: Partial<RepositoryStatusView> = {}): Re
     ],
     stagedCount: 1,
     unstagedCount: 2,
+    untrackedCount: 0,
     statusCount: 3,
+    additions: 4,
+    deletions: 1,
     hasChanges: true,
-    ...overrides,
-  } as RepositoryStatusView
+    ...statusOverrides,
+  }
+
+  return {
+    ...status,
+    diffRevision: diffRevision ?? createRepositoryStatusDiffRevision(status),
+  }
 }
 
 describe('view builders', () => {

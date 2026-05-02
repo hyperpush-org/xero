@@ -456,6 +456,7 @@ export interface RepositoryUpstreamView {
 export interface RepositoryStatusView {
   projectId: string
   repositoryId: string
+  diffRevision: string
   branchLabel: string
   headShaLabel: string
   upstream?: RepositoryUpstreamView | null
@@ -551,7 +552,7 @@ export function mapRepositoryStatus(status: RepositoryStatusResponseDto): Reposi
   const untrackedCount = entries.filter((entry) => entry.untracked).length
   const uniquePaths = new Set(entries.map((entry) => entry.path))
 
-  return {
+  const view = {
     projectId: status.repository.projectId,
     repositoryId: status.repository.id,
     branchLabel: branchName ?? 'No branch',
@@ -581,6 +582,11 @@ export function mapRepositoryStatus(status: RepositoryStatusResponseDto): Reposi
     hasChanges:
       status.hasStagedChanges || status.hasUnstagedChanges || status.hasUntrackedChanges || uniquePaths.size > 0,
     entries,
+  }
+
+  return {
+    ...view,
+    diffRevision: createRepositoryStatusDiffRevision(view),
   }
 }
 
@@ -643,6 +649,36 @@ export function applyRepositoryStatus<T extends { repository: RepositoryView | n
     runtimeSession: project.runtimeSession ?? null,
     runtimeRun: project.runtimeRun ?? null,
   }
+}
+
+export function createRepositoryStatusEntriesRevision(entries: RepositoryStatusEntryView[]): string {
+  return entries
+    .map((entry) =>
+      [
+        entry.path,
+        entry.staged ?? '',
+        entry.unstaged ?? '',
+        entry.untracked ? '1' : '0',
+      ].join('\u0000'),
+    )
+    .sort()
+    .join('\u0001')
+}
+
+export function createRepositoryStatusDiffRevision(
+  status: Pick<RepositoryStatusView, 'projectId' | 'repositoryId' | 'branchLabel' | 'headShaLabel' | 'entries'> | null,
+): string {
+  if (!status) {
+    return 'none'
+  }
+
+  return [
+    status.projectId,
+    status.repositoryId,
+    status.branchLabel,
+    status.headShaLabel,
+    createRepositoryStatusEntriesRevision(status.entries),
+  ].join('\u0002')
 }
 
 export function upsertProjectListItem(projects: ProjectListItem[], nextProject: ProjectListItem): ProjectListItem[] {

@@ -5,10 +5,14 @@ import {
   selectRepositoryStatus,
   shallowEqualObject,
 } from './high-churn-store'
-import type { RepositoryStatusView } from '@/src/lib/xero-model'
+import {
+  createRepositoryStatusDiffRevision,
+  type RepositoryStatusView,
+} from '@/src/lib/xero-model'
 
 function makeStatus(overrides: Partial<RepositoryStatusView> = {}): RepositoryStatusView {
-  return {
+  const { diffRevision, ...statusOverrides } = overrides
+  const status = {
     projectId: 'project-1',
     repositoryId: 'repo-project-1',
     branchLabel: 'main',
@@ -30,7 +34,12 @@ function makeStatus(overrides: Partial<RepositoryStatusView> = {}): RepositorySt
         untracked: false,
       },
     ],
-    ...overrides,
+    ...statusOverrides,
+  }
+
+  return {
+    ...status,
+    diffRevision: diffRevision ?? createRepositoryStatusDiffRevision(status),
   }
 }
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react"
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -16,16 +16,18 @@ import {
   X,
 } from "lucide-react"
 import { motion } from "motion/react"
-import type {
-  GitGenerateCommitMessageRequestDto,
-  GitGenerateCommitMessageResponseDto,
-  GitCommitResponseDto,
-  GitFetchResponseDto,
-  GitPullResponseDto,
-  GitPushResponseDto,
-  RepositoryDiffResponseDto,
-  RepositoryStatusEntryView,
-  RepositoryStatusView,
+import {
+  createRepositoryStatusDiffRevision,
+  type GitGenerateCommitMessageRequestDto,
+  type GitGenerateCommitMessageResponseDto,
+  type GitCommitResponseDto,
+  type GitFetchResponseDto,
+  type GitPullResponseDto,
+  type GitPushResponseDto,
+  type RepositoryDiffResponseDto,
+  type RepositoryDiffScope,
+  type RepositoryStatusEntryView,
+  type RepositoryStatusView,
 } from "@/src/lib/xero-model/project"
 import { getLangFromPath, tokenizeCode, type TokenizedLine } from "@/lib/shiki"
 import { useTheme } from "@/src/features/theme/theme-provider"
@@ -37,6 +39,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 const MIN_WIDTH = 600
 const DEFAULT_WIDTH_RATIO = 0.7
 const FILE_LIST_WIDTH = 300
+const MAX_DIFF_CACHE_ENTRIES = 80
 
 type ChangeKind = RepositoryStatusEntryView["staged"]
 
@@ -56,7 +59,7 @@ export interface VcsSidebarProps {
   onRefreshStatus: () => void | Promise<void>
   onLoadDiff: (
     projectId: string,
-    scope: "staged" | "unstaged" | "worktree",
+    scope: RepositoryDiffScope,
   ) => Promise<RepositoryDiffResponseDto>
   commitMessageModel?: VcsCommitMessageModel | null
   onGenerateCommitMessage?: (
@@ -72,12 +75,13 @@ export interface VcsSidebarProps {
   onPush: (projectId: string) => Promise<GitPushResponseDto>
 }
 
-interface FileEntry {
+export type VcsDiffScopeEntry = Pick<RepositoryStatusEntryView, "staged" | "unstaged" | "untracked">
+
+interface FileEntry extends VcsDiffScopeEntry {
   path: string
-  staged: ChangeKind
-  unstaged: ChangeKind
-  untracked: boolean
 }
+
+type DiffPatchCache = Map<string, string>
 
 type ActionKind =
   | "stage"
@@ -110,11 +114,12 @@ function viewportMaxWidth(): number {
 }
 
 export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
-  const { open } = props
-  const shouldRenderDiffPane = (props.status?.entries.length ?? 0) > 0
+  const { onClose, open, status } = props
+  const shouldRenderDiffPane = (status?.entries.length ?? 0) > 0
   const [width, setWidth] = useState<number>(() => defaultViewportWidth())
   const [isResizing, setIsResizing] = useState(false)
   const { contentTransition, widthTransition } = useSidebarMotion(isResizing)
+  const diffPatchCacheRef = useRef<DiffPatchCache>(new Map())
   const widthRef = useRef(width)
   widthRef.current = width
   const renderedWidth = shouldRenderDiffPane ? width : FILE_LIST_WIDTH
@@ -134,16 +139,20 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
   // Close on Escape so the panel stays keyboard-friendly without stealing
   // focus from the rest of the app.
   useEffect(() => {
-    if (!open || !props.onClose) return
+    if (!open || !onClose) return
     const handle = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault()
-        props.onClose?.()
+        onClose()
       }
     }
     window.addEventListener("keydown", handle)
     return () => window.removeEventListener("keydown", handle)
-  }, [open, props])
+  }, [onClose, open])
+
+  const handleClose = useCallback(() => {
+    onClose?.()
+  }, [onClose])
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -200,7 +209,7 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
           open ? "pointer-events-auto" : "pointer-events-none",
         )}
         initial={false}
-        onClick={() => props.onClose?.()}
+        onClick={handleClose}
         transition={contentTransition}
       />
       <motion.aside
@@ -239,11 +248,15 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
           />
         ) : null}
 
-        {open ? <VcsSidebarBody {...props} /> : null}
+        {open ? <VcsSidebarBody {...props} diffPatchCacheRef={diffPatchCacheRef} /> : null}
       </motion.aside>
     </>
   )
 })
+
+interface VcsSidebarBodyProps extends VcsSidebarProps {
+  diffPatchCacheRef: MutableRefObject<DiffPatchCache>
+}
 
 function VcsSidebarBody({
   projectId,
@@ -261,7 +274,8 @@ function VcsSidebarBody({
   onFetch,
   onPull,
   onPush,
-}: VcsSidebarProps) {
+  diffPatchCacheRef,
+}: VcsSidebarBodyProps) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [diffPatch, setDiffPatch] = useState<string>("")
   const [diffLoading, setDiffLoading] = useState(false)
@@ -271,8 +285,10 @@ function VcsSidebarBody({
   const [actionKind, setActionKind] = useState<ActionKind | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const onLoadDiffRef = useRef(onLoadDiff)
 
   const statusEntriesSignature = useMemo(() => getStatusEntriesSignature(status), [status])
+  const repositoryRevision = status?.diffRevision ?? createRepositoryStatusDiffRevision(status)
   const allEntries: FileEntry[] = useMemo(() => {
     if (!status) return []
     return status.entries.map((entry) => ({
@@ -282,10 +298,17 @@ function VcsSidebarBody({
       untracked: entry.untracked,
     }))
   }, [statusEntriesSignature])
+  const allEntriesRef = useRef<FileEntry[]>(allEntries)
+  allEntriesRef.current = allEntries
   const selectedEntry = useMemo(
     () => allEntries.find((item) => item.path === selectedPath) ?? null,
     [allEntries, selectedPath],
   )
+  const selectedScope = useMemo(() => deriveVcsDiffScope(selectedEntry), [selectedEntry])
+
+  useEffect(() => {
+    onLoadDiffRef.current = onLoadDiff
+  }, [onLoadDiff])
 
   const stagedFiles = useMemo(
     () => allEntries.filter((entry) => entry.staged !== null),
@@ -305,33 +328,39 @@ function VcsSidebarBody({
   // ---------- Diff loading ----------
 
   useEffect(() => {
-    if (!projectId || !selectedPath) {
+    if (!projectId || !selectedPath || !selectedScope) {
       setDiffPatch("")
       setDiffError(null)
+      setDiffLoading(false)
+      return
+    }
+
+    const cacheKey = createDiffPatchCacheKey(projectId, repositoryRevision, selectedScope, selectedPath)
+    const cachedPatch = diffPatchCacheRef.current.get(cacheKey)
+    if (cachedPatch !== undefined) {
+      setDiffPatch(cachedPatch)
+      setDiffError(null)
+      setDiffLoading(false)
       return
     }
 
     let cancelled = false
-    if (!selectedEntry) {
-      setDiffPatch("")
-      setDiffError(null)
-      return
-    }
-
-    const scope: "staged" | "unstaged" | "worktree" =
-      selectedEntry.staged && !selectedEntry.unstaged && !selectedEntry.untracked
-        ? "staged"
-        : selectedEntry.staged && (selectedEntry.unstaged || selectedEntry.untracked)
-          ? "worktree"
-          : "unstaged"
-
     setDiffLoading(true)
     setDiffError(null)
 
-    onLoadDiff(projectId, scope)
+    onLoadDiffRef.current(projectId, selectedScope)
       .then((response) => {
         if (cancelled) return
+        cacheScopeDiffPatches(
+          diffPatchCacheRef.current,
+          projectId,
+          repositoryRevision,
+          selectedScope,
+          response.patch,
+          allEntriesRef.current,
+        )
         const patch = extractFilePatch(response.patch, selectedPath)
+        setCachedDiffPatch(diffPatchCacheRef.current, cacheKey, patch)
         setDiffPatch(patch)
       })
       .catch((error: unknown) => {
@@ -348,7 +377,7 @@ function VcsSidebarBody({
     return () => {
       cancelled = true
     }
-  }, [projectId, selectedPath, selectedEntry, onLoadDiff])
+  }, [diffPatchCacheRef, projectId, repositoryRevision, selectedPath, selectedScope])
 
   useEffect(() => {
     if (selectedPath && allEntries.some((entry) => entry.path === selectedPath)) {
@@ -1164,6 +1193,65 @@ function ShikiTokens({ tokens }: { tokens: TokenizedLine }) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+export function deriveVcsDiffScope(
+  entry: VcsDiffScopeEntry | null,
+): RepositoryDiffScope | null {
+  if (!entry) return null
+
+  if (entry.staged && !entry.unstaged && !entry.untracked) {
+    return "staged"
+  }
+
+  if (entry.staged && (entry.unstaged || entry.untracked)) {
+    return "worktree"
+  }
+
+  return "unstaged"
+}
+
+function createDiffPatchCacheKey(
+  projectId: string,
+  revision: string,
+  scope: RepositoryDiffScope,
+  path: string,
+): string {
+  return [projectId, revision, scope, path].join("\u0000")
+}
+
+function setCachedDiffPatch(cache: DiffPatchCache, key: string, patch: string): void {
+  if (cache.has(key)) {
+    cache.delete(key)
+  }
+
+  cache.set(key, patch)
+  while (cache.size > MAX_DIFF_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value
+    if (oldestKey === undefined) return
+    cache.delete(oldestKey)
+  }
+}
+
+function cacheScopeDiffPatches(
+  cache: DiffPatchCache,
+  projectId: string,
+  revision: string,
+  scope: RepositoryDiffScope,
+  patch: string,
+  entries: FileEntry[],
+): void {
+  for (const entry of entries) {
+    if (deriveVcsDiffScope(entry) !== scope) {
+      continue
+    }
+
+    setCachedDiffPatch(
+      cache,
+      createDiffPatchCacheKey(projectId, revision, scope, entry.path),
+      extractFilePatch(patch, entry.path),
+    )
+  }
+}
 
 /** Slice a multi-file unified patch down to just the section for `path`. */
 function extractFilePatch(patch: string, path: string): string {

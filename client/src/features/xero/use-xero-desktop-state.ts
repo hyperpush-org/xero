@@ -53,7 +53,10 @@ import {
   removeProjectRecord,
   type ProjectLoadSource,
 } from './use-xero-desktop-state/project-loaders'
-import { createRepositoryStatusSyncKey } from './use-xero-desktop-state/repository-status'
+import {
+  createRepositoryStatusDiffRevision,
+  createRepositoryStatusSyncKey,
+} from './use-xero-desktop-state/repository-status'
 import {
   attachDesktopRuntimeListeners,
   attachRuntimeStreamSubscription,
@@ -468,6 +471,7 @@ export function useXeroDesktopState(
   const projectPrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
   const repositoryStatusRef = useRef<RepositoryStatusView | null>(null)
   const repositoryStatusSyncKeyRef = useRef('none')
+  const repositoryDiffRevisionRef = useRef(createRepositoryStatusDiffRevision(null))
   const repositoryStatusRefreshInFlightRef = useRef(false)
   const latestLoadRequestRef = useRef(0)
   const latestDiffRequestRef = useRef<Record<RepositoryDiffScope, number>>({
@@ -689,6 +693,12 @@ export function useXeroDesktopState(
   )
 
   const resetRepositoryDiffs = useCallback((status: RepositoryStatusView | null) => {
+    const nextRevision = status?.diffRevision ?? createRepositoryStatusDiffRevision(status)
+    if (repositoryDiffRevisionRef.current === nextRevision) {
+      return
+    }
+
+    repositoryDiffRevisionRef.current = nextRevision
     setRepositoryDiffs(createInitialRepositoryDiffs())
     setActiveDiffScope(getDefaultDiffScope(status))
   }, [])
