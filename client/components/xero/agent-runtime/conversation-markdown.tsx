@@ -57,14 +57,17 @@ export interface MarkdownProps {
   text: string
   /** When true, renders as muted/italic — used inside thinking blocks. */
   muted?: boolean
+  /** When true, renders at a smaller text size — used for collapsed previews. */
+  compact?: boolean
 }
 
-export function Markdown({ text, muted = false }: MarkdownProps) {
+export function Markdown({ text, muted = false, compact = false }: MarkdownProps) {
   const segments = splitFencedSegments(text)
   return (
     <div
       className={cn(
-        'flex flex-col gap-2.5 text-sm leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
+        'flex flex-col leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
+        compact ? 'gap-1.5 text-[11.5px]' : 'gap-2.5 text-sm',
         muted && 'text-muted-foreground italic',
       )}
     >

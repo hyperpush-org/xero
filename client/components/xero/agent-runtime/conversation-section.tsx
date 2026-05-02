@@ -596,15 +596,9 @@ function ResponseBlock({ text }: { text: string }) {
 function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   const normalizedText = text.trim()
-  const previewLines = normalizedText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(-4)
-  const hiddenLineCount = Math.max(
-    0,
-    normalizedText.split(/\r?\n/).filter((line) => line.trim()).length - previewLines.length,
-  )
+  const allLines = normalizedText.split(/\r?\n/).filter((line) => line.trim().length > 0)
+  const previewText = allLines.slice(-4).join('\n')
+  const hiddenLineCount = Math.max(0, allLines.length - 4)
 
   return (
     <div className="w-full max-w-full min-w-0 rounded-xl border border-dashed border-border/50 bg-muted/20 px-3 py-2">
@@ -635,16 +629,9 @@ function ThinkingBlock({ text }: { text: string }) {
         <div className="mt-2 border-t border-border/30 pt-2">
           <Markdown text={text} muted />
         </div>
-      ) : previewLines.length > 0 ? (
-        <div className="mt-2 space-y-1 border-l-2 border-border/50 pl-3">
-          {previewLines.map((line, index) => (
-            <p
-              key={`${index}:${line}`}
-              className="line-clamp-1 text-[12px] leading-relaxed text-muted-foreground"
-            >
-              {line}
-            </p>
-          ))}
+      ) : previewText.length > 0 ? (
+        <div className="mt-2">
+          <Markdown text={previewText} muted compact />
         </div>
       ) : null}
     </div>
