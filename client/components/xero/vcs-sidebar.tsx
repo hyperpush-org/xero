@@ -31,6 +31,8 @@ import {
 } from "@/src/lib/xero-model/project"
 import { getLangFromPath, tokenizeCode, type TokenizedLine } from "@/lib/shiki"
 import { useTheme } from "@/src/features/theme/theme-provider"
+import { useFixedVirtualizer } from "@/hooks/use-fixed-virtualizer"
+import { shouldVirtualizeRows } from "@/lib/virtual-list"
 import { cn } from "@/lib/utils"
 import { useSidebarMotion } from "@/lib/sidebar-motion"
 import { Button } from "@/components/ui/button"
@@ -40,6 +42,10 @@ const MIN_WIDTH = 600
 const DEFAULT_WIDTH_RATIO = 0.7
 const FILE_LIST_WIDTH = 300
 const MAX_DIFF_CACHE_ENTRIES = 80
+const VCS_FILE_ROW_HEIGHT = 28
+const VCS_FILE_VIRTUALIZATION_THRESHOLD = 180
+const DIFF_ROW_HEIGHT = 22
+const DIFF_VIRTUALIZATION_THRESHOLD = 320
 
 type ChangeKind = RepositoryStatusEntryView["staged"]
 
@@ -575,37 +581,19 @@ function VcsSidebarBody({
             </div>
           </div>
 
-          {/* File groups */}
-          <div className="flex flex-1 min-h-0 flex-col overflow-y-auto scrollbar-thin">
-            <FileGroup
-              actionKind={actionKind}
-              busy={isBusy}
-              emptyLabel="No staged changes"
-              entries={stagedFiles}
-              groupKind="staged"
-              groupLabel="Staged Changes"
-              onDiscard={handleDiscardOne}
-              onSelect={setSelectedPath}
-              onStageAll={handleStageAll}
-              onToggle={handleUnstageOne}
-              onUnstageAll={handleUnstageAll}
-              selectedPath={selectedPath}
-            />
-            <FileGroup
-              actionKind={actionKind}
-              busy={isBusy}
-              emptyLabel="Working tree is clean"
-              entries={unstagedFiles}
-              groupKind="unstaged"
-              groupLabel="Changes"
-              onDiscard={handleDiscardOne}
-              onSelect={setSelectedPath}
-              onStageAll={handleStageAll}
-              onToggle={handleStageOne}
-              onUnstageAll={handleUnstageAll}
-              selectedPath={selectedPath}
-            />
-          </div>
+          <VcsFileList
+            actionKind={actionKind}
+            busy={isBusy}
+            stagedFiles={stagedFiles}
+            unstagedFiles={unstagedFiles}
+            onDiscard={handleDiscardOne}
+            onSelect={setSelectedPath}
+            onStageAll={handleStageAll}
+            onStageOne={handleStageOne}
+            onUnstageAll={handleUnstageAll}
+            onUnstageOne={handleUnstageOne}
+            selectedPath={selectedPath}
+          />
 
           {/* Commit input */}
           <div className="shrink-0 border-t border-border/70 bg-sidebar px-3 py-2">
@@ -683,7 +671,7 @@ function VcsSidebarBody({
                 <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
               ) : null}
             </div>
-            <div className="flex-1 overflow-auto scrollbar-thin">
+            <div className="min-h-0 flex-1">
               {diffError ? (
                 <div className="px-4 py-4 text-[12px] text-destructive">{diffError}</div>
               ) : diffPatch ? (
@@ -702,107 +690,207 @@ function VcsSidebarBody({
 }
 
 // ---------------------------------------------------------------------------
-// File group (staged / unstaged)
+// Virtualized changed-file list
 // ---------------------------------------------------------------------------
 
-interface FileGroupProps {
+interface VcsFileListProps {
   actionKind: ActionKind | null
   busy: boolean
-  emptyLabel: string
-  entries: FileEntry[]
-  groupKind: "staged" | "unstaged"
-  groupLabel: string
   onDiscard: (path: string) => void
   onSelect: (path: string) => void
   onStageAll: () => void
-  onToggle: (path: string) => void
+  onStageOne: (path: string) => void
   onUnstageAll: () => void
+  onUnstageOne: (path: string) => void
   selectedPath: string | null
+  stagedFiles: FileEntry[]
+  unstagedFiles: FileEntry[]
 }
 
-function FileGroup({
+type VcsFileListRow =
+  | {
+      kind: "group"
+      groupKind: "staged" | "unstaged"
+      groupLabel: string
+      count: number
+    }
+  | {
+      kind: "empty"
+      groupKind: "staged" | "unstaged"
+      label: string
+    }
+  | {
+      kind: "file"
+      groupKind: "staged" | "unstaged"
+      entry: FileEntry
+    }
+
+function createVcsFileListRows({
+  collapsedGroups,
+  stagedFiles,
+  unstagedFiles,
+}: {
+  collapsedGroups: Record<"staged" | "unstaged", boolean>
+  stagedFiles: FileEntry[]
+  unstagedFiles: FileEntry[]
+}): VcsFileListRow[] {
+  const rows: VcsFileListRow[] = []
+
+  rows.push({ kind: "group", groupKind: "staged", groupLabel: "Staged Changes", count: stagedFiles.length })
+  if (!collapsedGroups.staged) {
+    if (stagedFiles.length === 0) {
+      rows.push({ kind: "empty", groupKind: "staged", label: "No staged changes" })
+    } else {
+      for (const entry of stagedFiles) rows.push({ kind: "file", groupKind: "staged", entry })
+    }
+  }
+
+  rows.push({ kind: "group", groupKind: "unstaged", groupLabel: "Changes", count: unstagedFiles.length })
+  if (!collapsedGroups.unstaged) {
+    if (unstagedFiles.length === 0) {
+      rows.push({ kind: "empty", groupKind: "unstaged", label: "Working tree is clean" })
+    } else {
+      for (const entry of unstagedFiles) rows.push({ kind: "file", groupKind: "unstaged", entry })
+    }
+  }
+
+  return rows
+}
+
+function VcsFileList({
   actionKind,
   busy,
-  emptyLabel,
-  entries,
-  groupKind,
-  groupLabel,
   onDiscard,
   onSelect,
   onStageAll,
-  onToggle,
+  onStageOne,
   onUnstageAll,
+  onUnstageOne,
   selectedPath,
-}: FileGroupProps) {
-  const [collapsed, setCollapsed] = useState(false)
+  stagedFiles,
+  unstagedFiles,
+}: VcsFileListProps) {
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<"staged" | "unstaged", boolean>>({
+    staged: false,
+    unstaged: false,
+  })
+  const rows = useMemo(
+    () => createVcsFileListRows({ collapsedGroups, stagedFiles, unstagedFiles }),
+    [collapsedGroups, stagedFiles, unstagedFiles],
+  )
+  const selectedRowIndex = useMemo(
+    () => rows.findIndex((row) => row.kind === "file" && row.entry.path === selectedPath),
+    [rows, selectedPath],
+  )
+  const shouldVirtualize = shouldVirtualizeRows(rows.length, VCS_FILE_VIRTUALIZATION_THRESHOLD)
+  const virtualizer = useFixedVirtualizer({
+    enabled: shouldVirtualize,
+    itemCount: rows.length,
+    itemSize: VCS_FILE_ROW_HEIGHT,
+    overscan: 10,
+    scrollToIndex: selectedRowIndex >= 0 ? selectedRowIndex : null,
+  })
+  const renderedRowIndexes = shouldVirtualize
+    ? virtualizer.indexes
+    : rows.map((_, index) => index)
+  const toggleGroup = useCallback((groupKind: "staged" | "unstaged") => {
+    setCollapsedGroups((current) => ({
+      ...current,
+      [groupKind]: !current[groupKind],
+    }))
+  }, [])
 
   return (
-    <section className="border-b border-border/40 last:border-b-0">
-      <div className="group flex w-full items-center gap-2 px-3 py-1.5 text-left">
-        <button
-          aria-expanded={!collapsed}
-          aria-label={collapsed ? `Expand ${groupLabel}` : `Collapse ${groupLabel}`}
-          className="flex flex-1 items-center gap-2 text-left"
-          onClick={() => setCollapsed((prev) => !prev)}
-          type="button"
-        >
-          <ChevronRight
-            className={cn(
-              "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
-              !collapsed && "rotate-90",
-            )}
-          />
-          <span className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-            {groupLabel}
-          </span>
-          <span className="rounded-full bg-muted/70 px-1.5 py-[1px] font-mono text-[10px] tabular-nums text-muted-foreground">
-            {entries.length}
-          </span>
-        </button>
-        {entries.length > 0 ? (
-          <span className="invisible flex items-center gap-0.5 group-hover:visible">
-            {groupKind === "unstaged" ? (
-              <GroupActionButton
-                busy={actionKind === "stage-all"}
-                disabled={busy}
-                icon={<Plus className="h-3 w-3" />}
-                label="Stage all"
-                onClick={onStageAll}
-              />
-            ) : (
-              <GroupActionButton
-                busy={actionKind === "unstage-all"}
-                disabled={busy}
-                icon={<Minus className="h-3 w-3" />}
-                label="Unstage all"
-                onClick={onUnstageAll}
-              />
-            )}
-          </span>
-        ) : null}
-      </div>
+    <div
+      aria-label="Changed files"
+      className="flex flex-1 min-h-0 flex-col overflow-y-auto scrollbar-thin"
+      onScroll={virtualizer.onScroll}
+      ref={virtualizer.scrollRef}
+      role="listbox"
+    >
+      {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.beforeSize }} /> : null}
+      {renderedRowIndexes.map((rowIndex) => {
+        const row = rows[rowIndex]
+        if (row.kind === "group") {
+          const collapsed = collapsedGroups[row.groupKind]
+          const groupAction =
+            row.groupKind === "unstaged"
+              ? {
+                  busy: actionKind === "stage-all",
+                  icon: <Plus className="h-3 w-3" />,
+                  label: "Stage all",
+                  onClick: onStageAll,
+                }
+              : {
+                  busy: actionKind === "unstage-all",
+                  icon: <Minus className="h-3 w-3" />,
+                  label: "Unstage all",
+                  onClick: onUnstageAll,
+                }
 
-      {!collapsed ? (
-        entries.length === 0 ? (
-          <div className="px-7 pb-2 pt-0.5 text-[11px] text-muted-foreground/70">{emptyLabel}</div>
-        ) : (
-          <ul className="flex flex-col">
-            {entries.map((entry) => (
-              <FileRow
-                busy={busy}
-                entry={entry}
-                groupKind={groupKind}
-                key={`${groupKind}-${entry.path}`}
-                onDiscard={onDiscard}
-                onSelect={onSelect}
-                onToggle={onToggle}
-                selected={selectedPath === entry.path}
-              />
-            ))}
-          </ul>
+          return (
+            <div
+              className="group flex h-[28px] w-full items-center gap-2 border-b border-border/40 px-3 text-left"
+              key={`${row.groupKind}:group`}
+              role="presentation"
+            >
+              <button
+                aria-expanded={!collapsed}
+                aria-label={collapsed ? `Expand ${row.groupLabel}` : `Collapse ${row.groupLabel}`}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                onClick={() => toggleGroup(row.groupKind)}
+                type="button"
+              >
+                <ChevronRight
+                  className={cn(
+                    "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+                    !collapsed && "rotate-90",
+                  )}
+                />
+                <span className="truncate text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                  {row.groupLabel}
+                </span>
+                <span className="rounded-full bg-muted/70 px-1.5 py-[1px] font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {row.count}
+                </span>
+              </button>
+              {row.count > 0 ? (
+                <span className="invisible flex items-center gap-0.5 group-hover:visible">
+                  <GroupActionButton disabled={busy} {...groupAction} />
+                </span>
+              ) : null}
+            </div>
+          )
+        }
+
+        if (row.kind === "empty") {
+          return (
+            <div
+              className="flex h-[28px] items-center border-b border-border/40 px-7 text-[11px] text-muted-foreground/70"
+              key={`${row.groupKind}:empty`}
+              role="presentation"
+            >
+              {row.label}
+            </div>
+          )
+        }
+
+        const onToggle = row.groupKind === "staged" ? onUnstageOne : onStageOne
+        return (
+          <FileRow
+            busy={busy}
+            entry={row.entry}
+            groupKind={row.groupKind}
+            key={`${row.groupKind}-${row.entry.path}`}
+            onDiscard={onDiscard}
+            onSelect={onSelect}
+            onToggle={onToggle}
+            selected={selectedPath === row.entry.path}
+          />
         )
-      ) : null}
-    </section>
+      })}
+      {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.afterSize }} /> : null}
+    </div>
   )
 }
 
@@ -825,13 +913,22 @@ function FileRow({ busy, entry, groupKind, onDiscard, onSelect, onToggle, select
     groupKind === "staged" ? entry.staged : (entry.unstaged ?? (entry.untracked ? "added" : null))
 
   return (
-    <li
+    <div
+      aria-selected={selected}
       className={cn(
-        "group/row flex cursor-pointer items-center gap-1.5 px-3 py-1 text-left transition-colors",
+        "group/row flex h-[28px] cursor-pointer items-center gap-1.5 px-3 py-0 text-left transition-colors",
         selected ? "bg-primary/10" : "hover:bg-secondary/40",
       )}
       onClick={() => onSelect(entry.path)}
-      role="button"
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onSelect(entry.path)
+        }
+      }}
+      role="option"
+      tabIndex={0}
     >
       <ChangeBadge entry={entry} kind={kind} untracked={groupKind === "unstaged" && entry.untracked} />
       <span className="min-w-0 flex-1 truncate text-[12px] text-foreground/90">{fileName}</span>
@@ -861,7 +958,7 @@ function FileRow({ busy, entry, groupKind, onDiscard, onSelect, onToggle, select
           }}
         />
       </span>
-    </li>
+    </div>
   )
 }
 
@@ -993,7 +1090,7 @@ function ChangeBadge({ entry, kind, untracked }: { entry: FileEntry; kind: Chang
 // Diff view with shiki syntax highlighting
 // ---------------------------------------------------------------------------
 
-interface DiffLine {
+export interface DiffLine {
   kind: "context" | "add" | "remove" | "hunk" | "header"
   prefix: string
   text: string
@@ -1001,7 +1098,7 @@ interface DiffLine {
   newNo: number | null
 }
 
-function parseDiffLines(patch: string): DiffLine[] {
+export function parseDiffLines(patch: string): DiffLine[] {
   const lines = patch.split(/\r?\n/)
   const result: DiffLine[] = []
   let oldNo = 0
@@ -1071,6 +1168,17 @@ function DiffView({ patch, path }: { patch: string; path: string }) {
   const { theme } = useTheme()
   const lang = useMemo(() => getLangFromPath(path), [path])
   const lines = useMemo(() => parseDiffLines(patch), [patch])
+  const shouldVirtualize = shouldVirtualizeRows(lines.length, DIFF_VIRTUALIZATION_THRESHOLD)
+  const virtualizer = useFixedVirtualizer({
+    enabled: shouldVirtualize,
+    itemCount: lines.length,
+    itemSize: DIFF_ROW_HEIGHT,
+    overscan: 24,
+    initialViewportSize: 640,
+  })
+  const renderedLineIndexes = shouldVirtualize
+    ? virtualizer.indexes
+    : lines.map((_, index) => index)
 
   // Per-line shiki tokenization. We pass each non-header line through shiki
   // independently — losing cross-line context (multiline strings, JSX, …)
@@ -1103,10 +1211,18 @@ function DiffView({ patch, path }: { patch: string; path: string }) {
   }, [lines, lang, theme.shiki])
 
   return (
-    <div className="font-mono text-[12px] leading-[1.55]">
-      {lines.map((line, index) => (
-        <DiffLineRow key={index} line={line} tokens={tokenizedLines[index] ?? null} />
+    <div
+      aria-label="Unified diff"
+      className="h-full overflow-auto font-mono text-[12px] leading-[1.55] scrollbar-thin"
+      onScroll={virtualizer.onScroll}
+      ref={virtualizer.scrollRef}
+      role="table"
+    >
+      {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.beforeSize }} /> : null}
+      {renderedLineIndexes.map((lineIndex) => (
+        <DiffLineRow key={lineIndex} line={lines[lineIndex]} tokens={tokenizedLines[lineIndex] ?? null} />
       ))}
+      {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.afterSize }} /> : null}
     </div>
   )
 }
@@ -1114,17 +1230,17 @@ function DiffView({ patch, path }: { patch: string; path: string }) {
 function DiffLineRow({ line, tokens }: { line: DiffLine; tokens: TokenizedLine | null }) {
   if (line.kind === "hunk") {
     return (
-      <div className="flex items-stretch border-y border-info/20 bg-info/10 text-[11px] text-info">
+      <div className="flex h-[22px] items-stretch border-y border-info/20 bg-info/10 text-[11px] text-info">
         <span className="w-12 shrink-0 select-none border-r border-info/20" />
-        <span className="px-3 py-0.5">{line.text}</span>
+        <span className="min-w-0 truncate px-3 py-0.5">{line.text}</span>
       </div>
     )
   }
   if (line.kind === "header") {
     return (
-      <div className="flex items-stretch text-[11px] text-muted-foreground/60">
+      <div className="flex h-[22px] items-stretch text-[11px] text-muted-foreground/60">
         <span className="w-12 shrink-0 select-none" />
-        <span className="px-3 py-0.5">{line.text}</span>
+        <span className="min-w-0 truncate px-3 py-0.5">{line.text}</span>
       </div>
     )
   }
@@ -1153,7 +1269,7 @@ function DiffLineRow({ line, tokens }: { line: DiffLine; tokens: TokenizedLine |
         : "text-muted-foreground/30"
 
   return (
-    <div className={cn("flex min-w-0 items-stretch", rowTone)}>
+    <div className={cn("flex h-[22px] min-w-0 items-stretch", rowTone)}>
       <span
         className={cn(
           "w-12 shrink-0 select-none px-2 text-right font-mono text-[10.5px] tabular-nums",
@@ -1163,7 +1279,7 @@ function DiffLineRow({ line, tokens }: { line: DiffLine; tokens: TokenizedLine |
         {lineNo ?? ""}
       </span>
       <span className={cn("w-5 shrink-0 select-none text-center", prefixClass)}>{line.prefix}</span>
-      <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-all py-px pr-3">
+      <pre className="m-0 min-w-0 flex-1 whitespace-pre py-px pr-3">
         {tokens ? <ShikiTokens tokens={tokens} /> : line.text}
       </pre>
     </div>

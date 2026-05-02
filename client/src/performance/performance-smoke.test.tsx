@@ -8,7 +8,10 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 
 import { createBrowserResizeScheduler, type ViewportRect } from '@/components/xero/browser-resize-scheduler'
 import { createEditorFrameScheduler } from '@/components/xero/code-editor'
-import { VcsSidebar, type VcsSidebarProps } from '@/components/xero/vcs-sidebar'
+import { flattenFileTreeRows } from '@/components/xero/file-tree'
+import { parseDiffLines, VcsSidebar, type VcsSidebarProps } from '@/components/xero/vcs-sidebar'
+import { calculateVirtualRange } from '@/lib/virtual-list'
+import type { FileSystemNode } from '@/src/lib/file-system-tree'
 import {
   createRuntimeStreamEventBuffer,
 } from '@/src/features/xero/use-xero-desktop-state/runtime-stream'
@@ -227,6 +230,34 @@ function makeSingleFilePatch(line: string): string {
     '+++ b/file.txt',
     '@@ -1 +1 @@',
     `+${line}`,
+  ].join('\n')
+}
+
+function makeLargeFileTree(fileCount: number): FileSystemNode {
+  return {
+    id: '/',
+    name: 'root',
+    path: '/',
+    type: 'folder',
+    children: Array.from({ length: fileCount }, (_, index) => {
+      const path = `/src/file-${String(index).padStart(4, '0')}.ts`
+      return {
+        id: path,
+        name: path.split('/').pop() ?? path,
+        path,
+        type: 'file',
+      }
+    }),
+  }
+}
+
+function makeLargeDiffPatch(lineCount: number): string {
+  return [
+    'diff --git a/file.txt b/file.txt',
+    '--- a/file.txt',
+    '+++ b/file.txt',
+    `@@ -1,${lineCount} +1,${lineCount} @@`,
+    ...Array.from({ length: lineCount }, (_, index) => `+line-${String(index).padStart(4, '0')}`),
   ].join('\n')
 }
 
@@ -455,6 +486,60 @@ describe('UI latency performance smoke replays', () => {
         resizeIpcCallsAfterBurst: 1,
         resizeIpcCallsAfterSteadyState: 1,
         resizeIpcCallsAfterForcedFrame: calls.length,
+      }
+    })
+  })
+
+  it('bounds large file-tree and diff visible ranges', async () => {
+    await measureReplay('large-list-windowing', () => {
+      const fileTreeRows = flattenFileTreeRows({
+        root: makeLargeFileTree(2_500),
+        expandedFolders: new Set(),
+        search: null,
+        creatingEntry: null,
+      })
+      const selectedFileIndex = 2_250
+      const fileTreeRange = calculateVirtualRange({
+        itemCount: fileTreeRows.length,
+        itemSize: 26,
+        viewportSize: 480,
+        scrollOffset: selectedFileIndex * 26,
+        overscan: 12,
+      })
+
+      expect(fileTreeRows).toHaveLength(2_500)
+      expect(fileTreeRange.startIndex).toBeLessThanOrEqual(selectedFileIndex)
+      expect(fileTreeRange.endIndex).toBeGreaterThan(selectedFileIndex)
+      expect(fileTreeRange.renderedCount).toBeLessThan(60)
+
+      const changedFileCount = 1_200
+      const changedFilesRange = calculateVirtualRange({
+        itemCount: changedFileCount + 2,
+        itemSize: 28,
+        viewportSize: 480,
+        scrollOffset: 0,
+        overscan: 10,
+      })
+      const diffLines = parseDiffLines(makeLargeDiffPatch(2_000))
+      const diffRange = calculateVirtualRange({
+        itemCount: diffLines.length,
+        itemSize: 22,
+        viewportSize: 640,
+        scrollOffset: 0,
+        overscan: 24,
+      })
+
+      expect(changedFilesRange.renderedCount).toBeLessThan(40)
+      expect(diffLines).toHaveLength(2_004)
+      expect(diffRange.renderedCount).toBeLessThan(60)
+
+      smokeReport.replays.largeListWindowing = {
+        fileTreeRows: fileTreeRows.length,
+        visibleFileTreeRows: fileTreeRange.renderedCount,
+        changedFileRows: changedFileCount,
+        visibleChangedFileRows: changedFilesRange.renderedCount,
+        diffRows: diffLines.length,
+        visibleDiffRows: diffRange.renderedCount,
       }
     })
   })

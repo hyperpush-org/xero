@@ -18,11 +18,15 @@ import {
   X,
 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
+import { useFixedVirtualizer } from '@/hooks/use-fixed-virtualizer'
+import { shouldVirtualizeRows } from '@/lib/virtual-list'
 import { cn } from '@/lib/utils'
 import type { FileSystemNode } from '@/src/lib/file-system-tree'
 import { FileContextMenu } from './file-context-menu'
 
 const FILE_TREE_DRAG_TYPE = 'application/x-xero-project-entry'
+const FILE_TREE_ROW_HEIGHT = 26
+const FILE_TREE_VIRTUALIZATION_THRESHOLD = 240
 
 interface FileTreeProps {
   root: FileSystemNode
@@ -43,10 +47,23 @@ interface FileTreeProps {
   onCopyPath: (path: string) => void
 }
 
-interface MatchInfo {
+export interface MatchInfo {
   matchedPaths: Set<string>
   ancestorPaths: Set<string>
 }
+
+export type FileTreeRowModel =
+  | {
+      kind: 'node'
+      node: FileSystemNode
+      level: number
+    }
+  | {
+      kind: 'create'
+      parentPath: string
+      type: 'file' | 'folder'
+      level: number
+    }
 
 function computeSearchMatches(root: FileSystemNode, query: string): MatchInfo | null {
   const q = query.trim().toLowerCase()
@@ -77,6 +94,72 @@ function computeSearchMatches(root: FileSystemNode, query: string): MatchInfo | 
   return { matchedPaths: matched, ancestorPaths: ancestors }
 }
 
+function isVisibleForSearch(node: FileSystemNode, search: MatchInfo | null): boolean {
+  if (!search) return true
+  return search.matchedPaths.has(node.path) || search.ancestorPaths.has(node.path)
+}
+
+function isFolderExpanded(
+  node: FileSystemNode,
+  expandedFolders: Set<string>,
+  search: MatchInfo | null,
+): boolean {
+  return search
+    ? search.ancestorPaths.has(node.path) || expandedFolders.has(node.path)
+    : expandedFolders.has(node.path)
+}
+
+export function flattenFileTreeRows({
+  root,
+  expandedFolders,
+  search,
+  creatingEntry,
+}: {
+  root: FileSystemNode
+  expandedFolders: Set<string>
+  search: MatchInfo | null
+  creatingEntry: { parentPath: string; type: 'file' | 'folder' } | null
+}): FileTreeRowModel[] {
+  const rows: FileTreeRowModel[] = []
+
+  if (creatingEntry?.parentPath === '/') {
+    rows.push({
+      kind: 'create',
+      parentPath: '/',
+      type: creatingEntry.type,
+      level: 0,
+    })
+  }
+
+  const walk = (node: FileSystemNode, level: number) => {
+    if (!isVisibleForSearch(node, search)) return
+
+    rows.push({ kind: 'node', node, level })
+    if (node.type !== 'folder' || !node.children || !isFolderExpanded(node, expandedFolders, search)) {
+      return
+    }
+
+    if (creatingEntry?.parentPath === node.path) {
+      rows.push({
+        kind: 'create',
+        parentPath: node.path,
+        type: creatingEntry.type,
+        level: level + 1,
+      })
+    }
+
+    for (const child of node.children) {
+      walk(child, level + 1)
+    }
+  }
+
+  for (const child of root.children ?? []) {
+    walk(child, 0)
+  }
+
+  return rows
+}
+
 export function FileTree({
   root,
   selectedPath,
@@ -98,6 +181,25 @@ export function FileTree({
   const search = useMemo(() => computeSearchMatches(root, searchQuery), [root, searchQuery])
   const [draggingPath, setDraggingPath] = useState<string | null>(null)
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
+  const rows = useMemo(
+    () => flattenFileTreeRows({ root, expandedFolders, search, creatingEntry }),
+    [creatingEntry, expandedFolders, root, search],
+  )
+  const selectedRowIndex = useMemo(
+    () => rows.findIndex((row) => row.kind === 'node' && row.node.path === selectedPath),
+    [rows, selectedPath],
+  )
+  const shouldVirtualize = shouldVirtualizeRows(rows.length, FILE_TREE_VIRTUALIZATION_THRESHOLD) && !creatingEntry
+  const virtualizer = useFixedVirtualizer({
+    enabled: shouldVirtualize,
+    itemCount: rows.length,
+    itemSize: FILE_TREE_ROW_HEIGHT,
+    overscan: 12,
+    scrollToIndex: selectedRowIndex >= 0 ? selectedRowIndex : null,
+  })
+  const renderedRowIndexes = shouldVirtualize
+    ? virtualizer.indexes
+    : rows.map((_, index) => index)
 
   const handleDropOnFolder = (event: React.DragEvent, targetParentPath: string) => {
     event.preventDefault()
@@ -164,6 +266,7 @@ export function FileTree({
     >
       <div
         className={cn('flex-1 overflow-y-auto py-1 scrollbar-thin', dropTargetPath === '/' && 'bg-primary/5')}
+        onScroll={virtualizer.onScroll}
         onDragLeave={(event) => {
           if (event.currentTarget === event.target) setDropTargetPath(null)
         }}
@@ -172,51 +275,54 @@ export function FileTree({
           setDropTargetPath('/')
         }}
         onDrop={(event) => handleDropOnFolder(event, '/')}
+        ref={virtualizer.scrollRef}
+        role="tree"
+        aria-label="Project files"
       >
-        {rootCreateRow}
-        {root.children.map((child) => (
-          <TreeNode
-            key={child.id}
-            node={child}
-            level={0}
-            selectedPath={selectedPath}
-            expandedFolders={expandedFolders}
-            dirtyPaths={dirtyPaths}
-            search={search}
-            creatingEntry={creatingEntry}
-            draggingPath={draggingPath}
-            dropTargetPath={dropTargetPath}
-            onDragStart={setDraggingPath}
-            onDragEnd={() => {
-              setDraggingPath(null)
-              setDropTargetPath(null)
-            }}
-            onDropTargetChange={setDropTargetPath}
-            onDropOnFolder={handleDropOnFolder}
-            onSelectFile={onSelectFile}
-            onToggleFolder={onToggleFolder}
-            onRequestRename={onRequestRename}
-            onRequestDelete={onRequestDelete}
-            onRequestNewFile={onRequestNewFile}
-            onRequestNewFolder={onRequestNewFolder}
-            onCancelCreate={onCancelCreate}
-            onCreateEntry={onCreateEntry}
-            onCopyPath={onCopyPath}
-          />
-        ))}
+        {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.beforeSize }} /> : null}
+        {renderedRowIndexes.map((rowIndex) => {
+          const row = rows[rowIndex]
+          return (
+            <FileTreeRow
+              dirtyPaths={dirtyPaths}
+              draggingPath={draggingPath}
+              dropTargetPath={dropTargetPath}
+              expandedFolders={expandedFolders}
+              key={row.kind === 'node' ? row.node.id : `create:${row.parentPath}`}
+              onCancelCreate={onCancelCreate}
+              onCopyPath={onCopyPath}
+              onCreateEntry={onCreateEntry}
+              onDragEnd={() => {
+                setDraggingPath(null)
+                setDropTargetPath(null)
+              }}
+              onDragStart={setDraggingPath}
+              onDropOnFolder={handleDropOnFolder}
+              onDropTargetChange={setDropTargetPath}
+              onRequestDelete={onRequestDelete}
+              onRequestNewFile={onRequestNewFile}
+              onRequestNewFolder={onRequestNewFolder}
+              onRequestRename={onRequestRename}
+              onSelectFile={onSelectFile}
+              onToggleFolder={onToggleFolder}
+              row={row}
+              search={search}
+              selectedPath={selectedPath}
+            />
+          )
+        })}
+        {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.afterSize }} /> : null}
       </div>
     </FileContextMenu>
   )
 }
 
-interface TreeNodeProps {
-  node: FileSystemNode
-  level: number
+interface FileTreeRowProps {
+  row: FileTreeRowModel
   selectedPath: string | null
   expandedFolders: Set<string>
   dirtyPaths?: Set<string>
   search: MatchInfo | null
-  creatingEntry: { parentPath: string; type: 'file' | 'folder' } | null
   draggingPath: string | null
   dropTargetPath: string | null
   onDragStart: (path: string) => void
@@ -234,133 +340,124 @@ interface TreeNodeProps {
   onCopyPath: (path: string) => void
 }
 
-function TreeNode(props: TreeNodeProps) {
-  const { node, search } = props
-  if (search) {
-    const visible = search.matchedPaths.has(node.path) || search.ancestorPaths.has(node.path)
-    if (!visible) return null
+interface TreeNodeProps {
+  node: FileSystemNode
+  level: number
+  selectedPath: string | null
+  expandedFolders: Set<string>
+  dirtyPaths?: Set<string>
+  search: MatchInfo | null
+  draggingPath: string | null
+  dropTargetPath: string | null
+  onDragStart: (path: string) => void
+  onDragEnd: () => void
+  onDropTargetChange: (path: string | null) => void
+  onDropOnFolder: (event: React.DragEvent, targetParentPath: string) => void
+  onSelectFile: (path: string) => void
+  onToggleFolder: (path: string) => void
+  onRequestRename: (path: string, type: 'file' | 'folder') => void
+  onRequestDelete: (path: string, type: 'file' | 'folder') => void
+  onRequestNewFile: (parentPath: string) => void
+  onRequestNewFolder: (parentPath: string) => void
+  onCancelCreate: () => void
+  onCreateEntry: (name: string) => Promise<string | null>
+  onCopyPath: (path: string) => void
+}
+
+function FileTreeRow({ row, ...props }: FileTreeRowProps) {
+  if (row.kind === 'create') {
+    return (
+      <InlineCreateRow
+        level={row.level}
+        type={row.type}
+        onCancel={props.onCancelCreate}
+        onCreate={props.onCreateEntry}
+      />
+    )
   }
-  return node.type === 'folder' ? <FolderRow {...props} /> : <FileRow {...props} />
+
+  const nodeProps = {
+    ...props,
+    node: row.node,
+    level: row.level,
+  }
+
+  return row.node.type === 'folder' ? <FolderRow {...nodeProps} /> : <FileRow {...nodeProps} />
 }
 
 function FolderRow({
   node,
   level,
-  selectedPath,
   expandedFolders,
-  dirtyPaths,
   search,
-  creatingEntry,
   draggingPath,
   dropTargetPath,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
   onDropOnFolder,
-  onSelectFile,
   onToggleFolder,
   onRequestRename,
   onRequestDelete,
   onRequestNewFile,
   onRequestNewFolder,
-  onCancelCreate,
-  onCreateEntry,
   onCopyPath,
 }: TreeNodeProps) {
-  const isExpanded = search ? search.ancestorPaths.has(node.path) || expandedFolders.has(node.path) : expandedFolders.has(node.path)
+  const isExpanded = isFolderExpanded(node, expandedFolders, search)
   const isDropTarget =
     dropTargetPath === node.path &&
     draggingPath !== node.path &&
     !node.path.startsWith(`${draggingPath ?? ''}/`)
 
   return (
-    <div>
-      <FileContextMenu
-        type="folder"
-        onNewFile={() => onRequestNewFile(node.path)}
-        onNewFolder={() => onRequestNewFolder(node.path)}
-        onRename={() => onRequestRename(node.path, 'folder')}
-        onDelete={() => onRequestDelete(node.path, 'folder')}
-        onCopyPath={() => onCopyPath(node.path)}
+    <FileContextMenu
+      type="folder"
+      onNewFile={() => onRequestNewFile(node.path)}
+      onNewFolder={() => onRequestNewFolder(node.path)}
+      onRename={() => onRequestRename(node.path, 'folder')}
+      onDelete={() => onRequestDelete(node.path, 'folder')}
+      onCopyPath={() => onCopyPath(node.path)}
+    >
+      <button
+        aria-expanded={isExpanded}
+        aria-level={level + 1}
+        type="button"
+        draggable
+        onClick={() => onToggleFolder(node.path)}
+        onDragEnd={onDragEnd}
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData(FILE_TREE_DRAG_TYPE, node.path)
+          onDragStart(node.path)
+        }}
+        onDragLeave={() => onDropTargetChange(null)}
+        onDragOver={(event) => {
+          if (draggingPath && draggingPath !== node.path && !node.path.startsWith(`${draggingPath}/`)) {
+            event.preventDefault()
+            event.stopPropagation()
+            event.dataTransfer.dropEffect = 'move'
+            onDropTargetChange(node.path)
+          }
+        }}
+        onDrop={(event) => onDropOnFolder(event, node.path)}
+        role="treeitem"
+        className={cn(
+          'group flex h-[26px] w-full items-center gap-1 py-0 pr-2 text-left text-[12px] leading-5 transition-colors',
+          'hover:bg-muted/40 text-foreground/80',
+          draggingPath === node.path && 'opacity-50',
+          isDropTarget && 'bg-primary/12 text-foreground',
+        )}
+        style={{ paddingLeft: `${6 + level * 12}px` }}
       >
-        <button
-          type="button"
-          draggable
-          onClick={() => onToggleFolder(node.path)}
-          onDragEnd={onDragEnd}
-          onDragStart={(event) => {
-            event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData(FILE_TREE_DRAG_TYPE, node.path)
-            onDragStart(node.path)
-          }}
-          onDragLeave={() => onDropTargetChange(null)}
-          onDragOver={(event) => {
-            if (draggingPath && draggingPath !== node.path && !node.path.startsWith(`${draggingPath}/`)) {
-              event.preventDefault()
-              event.stopPropagation()
-              event.dataTransfer.dropEffect = 'move'
-              onDropTargetChange(node.path)
-            }
-          }}
-          onDrop={(event) => onDropOnFolder(event, node.path)}
-          className={cn(
-            'group flex w-full items-center gap-1 py-[3px] pr-2 text-left text-[12px] leading-5 transition-colors',
-            'hover:bg-muted/40 text-foreground/80',
-            draggingPath === node.path && 'opacity-50',
-            isDropTarget && 'bg-primary/12 text-foreground',
-          )}
-          style={{ paddingLeft: `${6 + level * 12}px` }}
-        >
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/70">
-            {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          </span>
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-chart-1">
-            {isExpanded ? <FolderOpen className="h-3.5 w-3.5" /> : <Folder className="h-3.5 w-3.5" />}
-          </span>
-          <span className="min-w-0 flex-1 truncate">{node.name}</span>
-        </button>
-      </FileContextMenu>
-
-      {isExpanded && node.children && (
-        <div>
-          {creatingEntry?.parentPath === node.path ? (
-            <InlineCreateRow
-              level={level + 1}
-              type={creatingEntry.type}
-              onCancel={onCancelCreate}
-              onCreate={onCreateEntry}
-            />
-          ) : null}
-          {node.children.map((child) => (
-            <TreeNode
-              key={child.id}
-              node={child}
-              level={level + 1}
-              selectedPath={selectedPath}
-              expandedFolders={expandedFolders}
-              dirtyPaths={dirtyPaths}
-              search={search}
-              creatingEntry={creatingEntry}
-              draggingPath={draggingPath}
-              dropTargetPath={dropTargetPath}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              onDropTargetChange={onDropTargetChange}
-              onDropOnFolder={onDropOnFolder}
-              onSelectFile={onSelectFile}
-              onToggleFolder={onToggleFolder}
-              onRequestRename={onRequestRename}
-              onRequestDelete={onRequestDelete}
-              onRequestNewFile={onRequestNewFile}
-              onRequestNewFolder={onRequestNewFolder}
-              onCancelCreate={onCancelCreate}
-              onCreateEntry={onCreateEntry}
-              onCopyPath={onCopyPath}
-            />
-          ))}
-        </div>
-      )}
-    </div>
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/70">
+          {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        </span>
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center text-chart-1">
+          {isExpanded ? <FolderOpen className="h-3.5 w-3.5" /> : <Folder className="h-3.5 w-3.5" />}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+      </button>
+    </FileContextMenu>
   )
 }
 
@@ -388,6 +485,8 @@ function FileRow({
       onCopyPath={() => onCopyPath(node.path)}
     >
       <button
+        aria-level={level + 1}
+        aria-selected={isSelected}
         type="button"
         draggable
         onClick={() => onSelectFile(node.path)}
@@ -397,8 +496,9 @@ function FileRow({
           event.dataTransfer.setData(FILE_TREE_DRAG_TYPE, node.path)
           onDragStart(node.path)
         }}
+        role="treeitem"
         className={cn(
-          'group flex w-full items-center gap-1 py-[3px] pr-2 text-left text-[12px] leading-5 transition-colors',
+          'group flex h-[26px] w-full items-center gap-1 py-0 pr-2 text-left text-[12px] leading-5 transition-colors',
           isSelected
             ? 'bg-primary/15 text-foreground'
             : 'text-foreground/75 hover:bg-muted/40 hover:text-foreground',

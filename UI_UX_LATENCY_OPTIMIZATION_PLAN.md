@@ -55,6 +55,28 @@ The audit found these likely contributors:
 9. Some rail/sidebar animations still use layout-affecting properties in frequently changing surfaces.
 10. The shell/titlebar re-renders for state changes it does not visually depend on.
 
+## Follow-up Code Review Notes (2026-05-02)
+
+Static review after the initial draft found that several first-wave optimizations already exist in the codebase:
+
+- `client/src/features/xero/use-xero-desktop-state/high-churn-store.ts` has selector-based high-churn subscriptions.
+- `client/src/features/xero/use-xero-desktop-state/runtime-stream.ts` buffers runtime stream events and repository status updates.
+- `client/components/xero/code-editor.tsx` lazy-loads language extensions, debounces full snapshots, and coalesces cursor reports.
+- `client/components/xero/browser-resize-scheduler.ts` and `client/components/xero/browser-sidebar.tsx` have moved browser viewport sync to scheduled observer-driven work.
+- `client/components/xero/vcs-sidebar.tsx` has stable revision keys and a small diff patch cache.
+- `client/src/performance/performance-smoke.test.tsx` and `client/scripts/performance-smoke.mjs` provide a browser-free smoke path.
+
+The next optimization work should therefore bias toward second-order hotspots:
+
+- Rich text surfaces: `conversation-markdown.tsx` reparses markdown on render and asks Shiki to tokenize code blocks by content/theme.
+- Diff surfaces: `vcs-sidebar.tsx` renders every diff line and tokenizes all non-header lines for the selected patch.
+- File surfaces: `project_files.rs` builds the full project tree recursively, and `file-tree.tsx` renders the visible tree recursively without windowing.
+- Search/replace: `search_project.rs` walks the full tree and returns complete result payloads up to large caps.
+- Native boundaries: repository diff/status, project files, browser events, emulator frames, and runtime streams need explicit payload and frame budgets.
+- Optional heavy surfaces: Solana, emulator, games, provider/model registries, diagnostics, and settings subpanels should keep listeners, timers, and polling inactive unless visible or explicitly preloaded.
+
+Treat these as investigation leads, not conclusions. Each phase still needs before/after evidence from the same workflow.
+
 ## Success Metrics
 
 Use these as targets, not as dogma. If a target is unrealistic after profiling, update the plan with evidence.
@@ -381,6 +403,282 @@ Implementation note (2026-05-02):
 - Companion procedure: `docs/ui-ux-performance-smoke.md`.
 - The smoke path reports runtime stream flush counts, repository shell commit counts, editor cursor coalescing counts, sidebar resize scheduling counts, VCS diff cache invalidation counts, slowest replay task timings, and production bundle chunk sizes.
 
+## Phase 10: Virtualize Long Lists And Dense Text Surfaces
+
+Purpose: keep large repositories, long diffs, long sessions, and diagnostics feeds from turning into large DOM workloads.
+
+Work:
+
+- Inventory all user-facing scroll containers and classify which can exceed a few hundred rows:
+  - file tree
+  - VCS staged/unstaged file groups
+  - unified diff lines
+  - agent conversation turns if full history becomes visible
+  - archived sessions
+  - settings lists for providers, MCP, skills, plugins, diagnostics, notification dispatches
+  - usage rows
+  - Solana logs, audits, scenarios, IDLs, personas, wallets, and indexer results
+- Build or adopt one small virtual list helper for fixed-height rows, with an escape hatch for measured variable-height rows.
+- Flatten recursive trees into row models before rendering. Keep expansion state as data, not nested mounted components.
+- Keep keyboard navigation, selection, drag/drop, aria labels, and context menus correct under windowing.
+- Add `content-visibility: auto` only for coarse, below-fold rich sections where it is measurably helpful and does not break focus restoration.
+- Keep small lists simple. Do not virtualize lists that cannot grow enough to matter.
+
+Acceptance criteria:
+
+- A project with thousands of files can open the explorer without mounting thousands of row components.
+- A VCS status with hundreds or thousands of changed files keeps scrolling responsive.
+- Large diffs first paint quickly and do not render every line outside the viewport.
+- Keyboard navigation and screen-reader labels remain correct for windowed lists.
+
+Verification:
+
+- Add component/helper tests for visible range calculation, overscan, selection retention, and tree flattening.
+- Add a performance smoke replay for large file tree and large VCS/diff datasets.
+- Run scoped tests for the affected list/tree helpers and components.
+
+## Phase 11: Bound Markdown, Diff Parsing, And Syntax Highlighting
+
+Purpose: make rich text feel instant by showing plain content first and spending highlighting work only where it is visible and reusable.
+
+Work:
+
+- Add an LRU tokenization cache around `tokenizeCode`, keyed by language, Shiki theme, and a content hash.
+- Add byte and entry budgets for the Shiki token cache so a large diff or transcript cannot retain unbounded token arrays.
+- For VCS diffs, parse patch metadata once per patch key and tokenize only visible or near-visible lines.
+- Replace all-line `Promise.all` tokenization for diffs with bounded batches scheduled by frame or idle time.
+- For conversation markdown, memoize fenced segment parsing by message id/text revision and avoid re-tokenizing unchanged code blocks during assistant streaming.
+- Render plain code immediately, then hydrate syntax highlighting when ready.
+- Skip or partially highlight very large code blocks and very long diff lines, with a normal user-facing truncated/plain rendering state.
+- Keep theme changes correct by invalidating only theme-dependent token entries.
+
+Acceptance criteria:
+
+- Streaming assistant text does not reparse or rehighlight older completed turns.
+- Large diffs do not launch one Shiki task per line before first paint.
+- Switching theme updates visible highlighting without freezing the UI.
+- Plain fallback rendering remains readable when highlighting is skipped.
+
+Verification:
+
+- Add tests for token cache keys, eviction, theme invalidation, and large-block fallback.
+- Add smoke metrics for markdown parse count and diff tokenization batch count.
+- Compare large-diff open time before and after.
+
+## Phase 12: Define IPC And Event Payload Budgets
+
+Purpose: prevent the Tauri boundary from delivering payloads that are technically correct but too large or too frequent for smooth UI.
+
+Work:
+
+- Document per-command and per-event payload budgets:
+  - runtime stream item
+  - repository status
+  - repository diff
+  - project tree/listing
+  - project search results
+  - browser tab/events/console
+  - emulator frame/status events
+  - provider/model and settings registries
+- Add lightweight payload-size instrumentation to the performance harness. Keep it out of visible UI.
+- Split large commands into paged or path-scoped variants where needed:
+  - load one file diff instead of a whole scope diff when the UI selects one file
+  - page search results
+  - page notification dispatches and diagnostics tables
+  - lazily load tree children
+- Coalesce noisy browser events such as load/title/url/console updates by tab and frame.
+- Keep production runtime stream validation cheap, but keep full schema validation in tests and command responses.
+- Add a durable dropped/truncated/backpressure diagnostic when payload budgets are exceeded.
+
+Acceptance criteria:
+
+- The UI never needs to parse/render a multi-megabyte command response for a normal interaction.
+- Repeated native events are coalesced before React sees them.
+- Payload truncation is explicit, user-facing where needed, and test-covered.
+
+Verification:
+
+- Add payload budget tests for representative command DTOs.
+- Add smoke output for largest replay payloads and event rates.
+- Run scoped TypeScript tests for adapter parsing and scoped Rust tests for changed command DTOs.
+
+## Phase 13: Isolate And Cancel Backend Work
+
+Purpose: keep filesystem, git, database, model catalog, and discovery work from competing with foreground UI responsiveness.
+
+Work:
+
+- Audit sync Tauri commands and classify them by expected duration and blocking behavior:
+  - git status/diff/stage/unstage/discard/commit/fetch/pull/push
+  - project file read/write/tree/search/replace
+  - environment discovery and doctor report
+  - provider model catalog refresh
+  - MCP/skill/plugin discovery
+  - Solana audit/log/indexer commands
+  - emulator startup, frame capture, and SDK probes
+- For long or filesystem-heavy commands, use a cancellable job contract and move blocking work to the appropriate backend worker path.
+- Introduce per-project operation lanes where correctness needs ordering, such as git mutations and file mutations.
+- Cancel stale work when the active project, selected file, selected diff, search query, or visible sidebar changes.
+- Deduplicate identical in-flight commands by stable request key.
+- Avoid registry/database reads on hot paths when an app-data-backed cached projection can be kept current.
+- Emit progress only at bounded intervals for long jobs.
+
+Acceptance criteria:
+
+- Stale search, tree, diff, and provider refresh requests cannot apply over newer UI state.
+- Git mutations remain ordered per project without blocking unrelated projects.
+- Long background jobs surface progress without event spam.
+- Closing a heavy sidebar cancels or detaches work that only served that surface.
+
+Verification:
+
+- Add scoped Rust tests for cancellation, deduplication, ordering, and stale-result rejection where helpers are added.
+- Add frontend tests for "latest request wins" behavior.
+- Profile Tauri while a long search or git operation runs and confirm typing/sidebar interaction remains responsive.
+
+## Phase 14: Make Project Trees And Search Incremental
+
+Purpose: avoid paying full-repository costs for explorer open, folder expand, quick search, and replace flows.
+
+Work:
+
+- Replace full recursive `list_project_files` with lazy root/folder listing.
+- Keep expansion state and loaded children in a normalized frontend tree store.
+- Apply gitignore/ignore filtering consistently in tree listing, search, and replace.
+- Add a total node cap and a clear user-facing "too many entries" continuation state for enormous folders.
+- Maintain a lightweight app-data-backed project file index if profiling shows repeated tree walks dominate.
+- Debounce and cancel project search as the user types.
+- Stream or page search results by file, with stable ordering and a truncation marker.
+- For replace, operate on explicit reviewed result sets by default, not a freshly rescanned unbounded tree unless the user requests it.
+
+Acceptance criteria:
+
+- Opening the editor/explorer reads only the root and expanded folders needed for the current view.
+- Expanding a large folder does not block the whole editor.
+- Search results appear incrementally and stale queries cannot overwrite newer ones.
+- Replace remains predictable and scoped to the user's visible/reviewed selection.
+
+Verification:
+
+- Add Rust tests for folder listing, ignore handling, caps, and virtual-path safety.
+- Add frontend tests for incremental tree hydration and search cancellation.
+- Add smoke fixtures for large synthetic repository trees.
+
+## Phase 15: Govern Native Frames, Pointer Streams, And Hidden Loops
+
+Purpose: ensure every frame-producing or pointer-heavy surface obeys foreground/background rules.
+
+Work:
+
+- Audit active `requestAnimationFrame`, pointermove, scroll, resize, observer, polling, and native frame event sources.
+- Confirm games run their animation loops only while their game and sidebar are visible.
+- Confirm emulator frame streams drop or coalesce frames when the sidebar is hidden, covered by another pane, or the UI is already behind.
+- Keep browser tool overlay geometry reads scheduled and cached during pointer drawing/inspection.
+- Throttle pointer-driven width updates in sidebars to one React/CSS update per animation frame.
+- Persist resized widths only on drag end or idle, not during every pointermove.
+- Add reduced-motion and battery-sensitive behavior where continuous animation is nonessential.
+
+Acceptance criteria:
+
+- Hidden games, emulator sidebars, browser tools, and optional panels do not keep active rAF loops or high-rate event listeners alive.
+- Pointer drags do not produce more than one layout-affecting update per frame.
+- Native frame streams have explicit drop/coalesce behavior under pressure.
+
+Verification:
+
+- Add tests for frame-loop lifecycle helpers where extracted.
+- Add smoke metrics for active loop count and pointer-move coalescing.
+- Manually validate emulator and browser behavior through Tauri, not a normal browser.
+
+## Phase 16: Prioritize Input And Defer Derived Work
+
+Purpose: keep typing, clicking, dragging, and scrolling ahead of derived calculations.
+
+Work:
+
+- Use `startTransition` or deferred values for non-urgent filters, search previews, model lists, diagnostics grouping, and settings table derivations.
+- Keep text inputs locally controlled; commit expensive derived state after debounce, blur, submit, or transition.
+- Move expensive per-render derivations into memoized selectors or precomputed store projections.
+- Replace repeated `map/filter/sort` chains in hot render paths with indexed projections when lists are large or update often.
+- Use stable event callbacks for props passed into memoized child components.
+- Avoid reading and writing `localStorage` during active input loops; hydrate once and persist after the interaction settles.
+
+Acceptance criteria:
+
+- Typing in composer, search, file search, settings filters, commit message, and editor-related inputs never waits for heavy list derivation.
+- Large settings/diagnostics lists can update filters without waking unrelated shell and agent surfaces.
+- Resize and drag interactions persist state after the drag without synchronous storage writes in the move path.
+
+Verification:
+
+- Add focused tests for debounced/deferred commit semantics.
+- Add Profiler smoke probes around large filterable lists.
+- Re-run editor typing, sidebar drag, and settings filter profiles.
+
+## Phase 17: Reduce Allocation And GC Pressure
+
+Purpose: prevent low-millisecond churn from accumulating into pauses during stream-heavy and diff-heavy workflows.
+
+Work:
+
+- Add heap/retained-size snapshots to the performance procedure for stream burst, large diff, large tree, and settings open.
+- Give caches byte budgets, not only entry budgets:
+  - diff patches
+  - Shiki tokens
+  - project trees
+  - provider/model catalogs
+  - runtime streams by session
+  - browser console/event logs
+  - emulator frames
+- Prefer normalized maps plus stable id arrays for high-churn data that changes one item at a time.
+- Avoid repeated large string concatenation for growing assistant transcript text if profiling shows it dominates. Consider chunk storage plus joined display snapshots.
+- Avoid creating short-lived arrays in hot selectors where a stable projection can be updated incrementally.
+- Clear session/project-scoped caches when the project closes or a run/session is no longer reachable.
+
+Acceptance criteria:
+
+- Stream bursts and large diffs do not produce visible GC pauses in release profiling.
+- Cache memory has explicit limits and eviction behavior.
+- Project/session changes release large stale objects.
+
+Verification:
+
+- Add cache eviction tests for each bounded cache.
+- Capture before/after heap snapshots for the targeted flows.
+- Add smoke reporting for cache entry counts and approximate bytes where practical.
+
+## Phase 18: Production Tauri Trace Loop
+
+Purpose: make smoothness measurable in the real desktop runtime, not only in jsdom or a normal web environment.
+
+Work:
+
+- Define the repeatable release-build Tauri profiling procedure for macOS first, then other supported platforms.
+- Capture UI-thread frame timing, long tasks, memory, IPC/event rates, and backend job timings for the core workflows.
+- Add `performance.mark`/`performance.measure` or equivalent trace points for:
+  - project load
+  - agent stream flush
+  - editor file open/save
+  - VCS status/diff load
+  - sidebar open/close/resize
+  - search start/first result/complete
+  - emulator frame received/rendered
+- Keep trace points internal to tooling. Do not add visible debug UI.
+- Store profiling notes and trace filenames in this plan or a companion doc after each optimization slice.
+- Establish non-flaky budgets based on structural counts and generous duration bands, then tighten only with evidence.
+
+Acceptance criteria:
+
+- A future engineer can reproduce the same release Tauri profiles without using a normal browser.
+- Every major optimization phase records the same before/after workflow evidence.
+- Regressions can be detected by smoke counts first and release traces second.
+
+Verification:
+
+- Run the browser-free smoke script.
+- Run the documented Tauri profiling workflow on the current platform.
+- Attach or reference the resulting trace/profiling note.
+
 ## Suggested Implementation Order
 
 1. Phase 0: baseline measurement.
@@ -393,6 +691,15 @@ Implementation note (2026-05-02):
 8. Phase 7: animation cleanup.
 9. Phase 8: bundle/startup cleanup.
 10. Phase 9: performance gates.
+11. Phase 11: markdown, diff parsing, and syntax highlighting, because it targets visible rich-text stalls after the first-wave render fixes.
+12. Phase 10: virtualization for VCS, diffs, file tree, and any large diagnostics/settings lists.
+13. Phase 12: IPC/event payload budgets, before changing command contracts.
+14. Phase 14: incremental project tree and search, because it depends on the payload-budget decisions.
+15. Phase 13: backend job isolation and cancellation for filesystem, git, search, and discovery work.
+16. Phase 15: native frame, pointer stream, and hidden-loop governance.
+17. Phase 16: input priority and deferred derived work across settings, filters, composer, and sidebars.
+18. Phase 17: allocation/GC budget cleanup after the major data-flow shapes are stable.
+19. Phase 18: production Tauri trace loop, then repeat after each later slice.
 
 Phases 1 and 2 may overlap, but keep their commits/slices separate: first make event delivery bounded, then shrink the number of components that observe the delivered state.
 
@@ -462,6 +769,70 @@ Risk: first-use loading delay.
 
 Verification focus: build output, first-use preload behavior, Tauri startup.
 
+### Slice I: Rich Text Work Budget
+
+Deliverable: cached/batched markdown, Shiki, and diff tokenization.
+
+Risk: stale highlighting after theme/language changes.
+
+Verification focus: token cache invalidation, large code block fallback, diff first paint.
+
+### Slice J: Virtualized Dense Surfaces
+
+Deliverable: shared virtual list helper plus VCS/file-tree/diff adoption where measured.
+
+Risk: broken keyboard navigation, focus, drag/drop, or screen-reader semantics.
+
+Verification focus: visible range, overscan, selection retention, accessibility labels.
+
+### Slice K: IPC Payload Budgets
+
+Deliverable: documented payload limits plus command/event instrumentation.
+
+Risk: truncating information users need.
+
+Verification focus: explicit truncation states, payload-size smoke metrics, command DTO tests.
+
+### Slice L: Incremental File Tree And Search
+
+Deliverable: lazy folder listing, normalized tree store, cancellable/paged search results.
+
+Risk: stale or incomplete project tree/search state.
+
+Verification focus: ignore handling, virtual-path safety, latest-query-wins behavior.
+
+### Slice M: Backend Job Isolation
+
+Deliverable: cancellable/deduplicated worker path for long filesystem, git, discovery, and catalog operations.
+
+Risk: operation ordering regressions, especially for git and file mutations.
+
+Verification focus: per-project ordering, stale-result rejection, cancellation cleanup.
+
+### Slice N: Native Frame And Pointer Governance
+
+Deliverable: lifecycle gates and frame/pointer coalescing for browser tools, emulator, games, and resizable sidebars.
+
+Risk: dropped frames or delayed pointer feedback in visible surfaces.
+
+Verification focus: active-loop counts, frame drop/coalesce behavior, Tauri manual checks.
+
+### Slice O: Input Priority
+
+Deliverable: deferred large derivations and local-first input state for search, filters, composer, and settings.
+
+Risk: delayed derived data appearing stale.
+
+Verification focus: immediate keystroke feedback, debounced commit behavior, render counts.
+
+### Slice P: Memory And GC Budget
+
+Deliverable: byte-bounded caches, heap snapshot procedure, and cleanup on project/session disposal.
+
+Risk: over-eviction causing repeated recomputation.
+
+Verification focus: cache eviction tests, heap snapshots, repeated navigation profiles.
+
 ## Detailed Acceptance Checklist
 
 - [ ] Baseline profile captured before optimization work.
@@ -481,6 +852,17 @@ Verification focus: build output, first-use preload behavior, Tauri startup.
 - [ ] Build output shows improved chunking.
 - [x] Performance smoke checks exist for the highest-risk flows.
 - [ ] All verification avoids normal-browser app execution.
+- [ ] Large VCS file lists and diffs mount only visible rows plus overscan.
+- [ ] File tree loading is incremental or otherwise proven cheap for large repositories.
+- [ ] Search results are cancellable and paged/streamed for large repositories.
+- [ ] Markdown and Shiki tokenization are cached, bounded, and scheduled off the first-paint path.
+- [ ] IPC command/event payloads have documented size/frequency budgets.
+- [ ] Long backend jobs can be cancelled or ignored safely when UI state changes.
+- [ ] Hidden frame-producing surfaces have no active rAF/native-frame loops.
+- [ ] Pointer-driven resize work is coalesced and storage persistence happens after drag/idle.
+- [ ] Hot input filters use local-first state plus deferred heavy derivation.
+- [ ] Caches have byte or entry limits and project/session cleanup paths.
+- [ ] Release Tauri profiling notes exist for the optimized workflows.
 
 ## Rollout Notes
 
@@ -501,6 +883,13 @@ If a phase does not improve the measured flow, either revert that phase or docum
 - Should runtime stream validation be reduced in production once Rust-side contracts are covered by tests?
 - Which view should be treated as the startup-critical first view after project load?
 - Should editor persistence use deltas, debounced snapshots, or explicit save snapshots as the primary contract?
+- What is the maximum project size Xero should optimize for: files, directories, changed files, search matches, and diff bytes?
+- Should VCS expose a path-scoped diff command instead of loading and slicing scope-level patches in the frontend?
+- Should project search results be pushed over a Tauri channel, returned by pages, or stored as a backend query session?
+- Which caches should persist under OS app-data across app launches, and which should stay memory-only?
+- What are acceptable memory ceilings for Shiki tokens, diff patches, runtime streams, and project tree caches?
+- Which optional surfaces are allowed to preload on idle, and which must stay cold until explicit user intent?
+- Which Tauri profiling tools should be canonical on macOS, Windows, and Linux?
 
 ## Final Definition Of Done
 

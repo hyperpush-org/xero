@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { deriveVcsDiffScope, VcsSidebar, type VcsSidebarProps } from './vcs-sidebar'
+import { deriveVcsDiffScope, parseDiffLines, VcsSidebar, type VcsSidebarProps } from './vcs-sidebar'
 import {
   createRepositoryStatusDiffRevision,
   type RepositoryDiffResponseDto,
@@ -323,6 +323,43 @@ describe('VcsSidebar', () => {
 
     await waitFor(() => expect(screen.getByText('second cached file')).toBeInTheDocument())
     expect(onLoadDiff).toHaveBeenCalledTimes(1)
+  })
+
+  it('windows large source-control file groups', async () => {
+    const entries = Array.from({ length: 1_000 }, (_, index) => ({
+      path: `src/file-${String(index).padStart(4, '0')}.ts`,
+      staged: null,
+      unstaged: 'modified' as const,
+      untracked: false,
+    }))
+
+    renderVcsSidebar(makeSingleFilePatch('visible diff'), {
+      status: makeStatus({
+        unstagedCount: entries.length,
+        statusCount: entries.length,
+        entries,
+      }),
+    })
+
+    await waitFor(() => expect(screen.getByText('file-0000.ts')).toBeInTheDocument())
+    expect(screen.queryByText('file-0999.ts')).not.toBeInTheDocument()
+  })
+
+  it('windows large unified diffs', async () => {
+    const patch = [
+      'diff --git a/file.txt b/file.txt',
+      '--- a/file.txt',
+      '+++ b/file.txt',
+      '@@ -1,1000 +1,1000 @@',
+      ...Array.from({ length: 1_000 }, (_, index) => `+line-${String(index).padStart(4, '0')}`),
+    ].join('\n')
+
+    expect(parseDiffLines(patch)).toHaveLength(1_004)
+
+    renderVcsSidebar(patch)
+
+    await waitFor(() => expect(screen.getByText('line-0000')).toBeInTheDocument())
+    expect(screen.queryByText('line-0999')).not.toBeInTheDocument()
   })
 
   it('invalidates the selected diff cache when the repository revision changes', async () => {
