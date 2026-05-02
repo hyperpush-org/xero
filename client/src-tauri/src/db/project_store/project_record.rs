@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    agent_embeddings::embedding_for_storage,
     open_runtime_database,
     project_record_lance::{self, ProjectRecordRow},
     read_project_row, validate_non_empty_text,
@@ -60,6 +61,8 @@ pub struct ProjectRecordRecord {
     pub project_id: String,
     pub record_kind: ProjectRecordKind,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub agent_session_id: Option<String>,
     pub run_id: String,
     pub workflow_run_id: Option<String>,
@@ -90,6 +93,8 @@ pub struct NewProjectRecordRecord {
     pub project_id: String,
     pub record_kind: ProjectRecordKind,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub agent_session_id: Option<String>,
     pub run_id: String,
     pub workflow_run_id: Option<String>,
@@ -153,11 +158,14 @@ pub fn insert_project_record(
         .as_ref()
         .map(project_record_content_hash)
         .transpose()?;
+    let embedding = embedding_for_storage(&project_record_embedding_text(record))?;
     let row = ProjectRecordRow {
         record_id: record.record_id.clone(),
         project_id: record.project_id.clone(),
         record_kind: project_record_kind_sql_value(&record.record_kind).into(),
         runtime_agent_id: record.runtime_agent_id,
+        agent_definition_id: record.agent_definition_id.clone(),
+        agent_definition_version: record.agent_definition_version,
         agent_session_id: record.agent_session_id.clone(),
         run_id: record.run_id.clone(),
         workflow_run_id: record.workflow_run_id.clone(),
@@ -193,6 +201,10 @@ pub fn insert_project_record(
         visibility: project_record_visibility_sql_value(&record.visibility).into(),
         created_at: record.created_at.clone(),
         updated_at: record.created_at.clone(),
+        embedding: Some(embedding.vector),
+        embedding_model: Some(embedding.model),
+        embedding_dimension: Some(embedding.dimension),
+        embedding_version: Some(embedding.version),
     };
     store.insert_dedup(row).and_then(row_into_record)
 }
@@ -238,6 +250,14 @@ fn validate_new_project_record(record: &NewProjectRecordRecord) -> Result<(), Co
         "projectId",
         "project_record_project_id_required",
     )?;
+    validate_non_empty_text(
+        &record.agent_definition_id,
+        "agentDefinitionId",
+        "project_record_agent_definition_id_required",
+    )?;
+    if record.agent_definition_version == 0 {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
+    }
     validate_non_empty_text(&record.run_id, "runId", "project_record_run_id_required")?;
     validate_non_empty_text(&record.title, "title", "project_record_title_required")?;
     validate_non_empty_text(
@@ -258,12 +278,27 @@ fn validate_new_project_record(record: &NewProjectRecordRecord) -> Result<(), Co
     Ok(())
 }
 
+fn project_record_embedding_text(record: &NewProjectRecordRecord) -> String {
+    let mut text = format!("{}.\n{}\n{}", record.title, record.summary, record.text);
+    if !record.tags.is_empty() {
+        text.push_str("\nTags: ");
+        text.push_str(&record.tags.join(", "));
+    }
+    if !record.related_paths.is_empty() {
+        text.push_str("\nRelated paths: ");
+        text.push_str(&record.related_paths.join(", "));
+    }
+    text
+}
+
 fn row_into_record(row: ProjectRecordRow) -> Result<ProjectRecordRecord, CommandError> {
     Ok(ProjectRecordRecord {
         record_id: row.record_id,
         project_id: row.project_id,
         record_kind: parse_project_record_kind(&row.record_kind),
         runtime_agent_id: row.runtime_agent_id,
+        agent_definition_id: row.agent_definition_id,
+        agent_definition_version: row.agent_definition_version,
         agent_session_id: row.agent_session_id,
         run_id: row.run_id,
         workflow_run_id: row.workflow_run_id,
@@ -459,6 +494,8 @@ mod tests {
             project_id: project_id.into(),
             record_kind: ProjectRecordKind::AgentHandoff,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: crate::db::project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             agent_session_id: Some("agent-session-1".into()),
             run_id: "run-1".into(),
             workflow_run_id: None,

@@ -21,6 +21,7 @@ pub const CREATE_AGENT_SESSION_COMMAND: &str = "create_agent_session";
 pub const LIST_AGENT_SESSIONS_COMMAND: &str = "list_agent_sessions";
 pub const GET_AGENT_SESSION_COMMAND: &str = "get_agent_session";
 pub const UPDATE_AGENT_SESSION_COMMAND: &str = "update_agent_session";
+pub const AUTO_NAME_AGENT_SESSION_COMMAND: &str = "auto_name_agent_session";
 pub const ARCHIVE_AGENT_SESSION_COMMAND: &str = "archive_agent_session";
 pub const RESTORE_AGENT_SESSION_COMMAND: &str = "restore_agent_session";
 pub const DELETE_AGENT_SESSION_COMMAND: &str = "delete_agent_session";
@@ -95,6 +96,7 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     LIST_AGENT_SESSIONS_COMMAND,
     GET_AGENT_SESSION_COMMAND,
     UPDATE_AGENT_SESSION_COMMAND,
+    AUTO_NAME_AGENT_SESSION_COMMAND,
     ARCHIVE_AGENT_SESSION_COMMAND,
     RESTORE_AGENT_SESSION_COMMAND,
     DELETE_AGENT_SESSION_COMMAND,

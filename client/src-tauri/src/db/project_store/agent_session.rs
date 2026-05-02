@@ -460,7 +460,17 @@ pub fn archive_agent_session(
     }
 
     let now = now_timestamp();
-    connection
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_transaction_failed",
+            format!(
+                "Xero could not start the agent-session archive transaction in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+
+    transaction
         .execute(
             r#"
             UPDATE agent_sessions
@@ -483,6 +493,23 @@ pub fn archive_agent_session(
                 ),
             )
         })?;
+
+    ensure_active_agent_session_after_removal(
+        &transaction,
+        &database_path,
+        project_id,
+        now.as_str(),
+    )?;
+
+    transaction.commit().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_commit_failed",
+            format!(
+                "Xero could not commit the agent-session archive transaction in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
 
     read_agent_session_row(&connection, &database_path, project_id, agent_session_id)?
         .ok_or_else(|| missing_agent_session_error(project_id, agent_session_id))
@@ -572,7 +599,18 @@ pub fn delete_agent_session(
     let cascade_run_ids =
         read_run_ids_for_session(&connection, &database_path, project_id, agent_session_id)?;
 
-    connection
+    let now = now_timestamp();
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_transaction_failed",
+            format!(
+                "Xero could not start the agent-session delete transaction in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+
+    transaction
         .execute(
             r#"
             DELETE FROM agent_sessions
@@ -592,10 +630,91 @@ pub fn delete_agent_session(
             )
         })?;
 
+    ensure_active_agent_session_after_removal(
+        &transaction,
+        &database_path,
+        project_id,
+        now.as_str(),
+    )?;
+
+    transaction.commit().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_commit_failed",
+            format!(
+                "Xero could not commit the agent-session delete transaction in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+
     drop(connection);
     if !cascade_run_ids.is_empty() {
         clear_memory_runs_for_deletion(repo_root, project_id, &cascade_run_ids)?;
     }
+
+    Ok(())
+}
+
+fn ensure_active_agent_session_after_removal(
+    transaction: &Transaction<'_>,
+    database_path: &Path,
+    project_id: &str,
+    timestamp: &str,
+) -> Result<(), CommandError> {
+    let active_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM agent_sessions WHERE project_id = ?1 AND status = 'active'",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_query_failed",
+                format!(
+                    "Xero could not count active agent sessions in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    if active_count > 0 {
+        return Ok(());
+    }
+
+    clear_selected_agent_session(transaction, database_path, project_id)?;
+
+    let agent_session_id = generate_agent_session_id();
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_sessions (
+                project_id,
+                agent_session_id,
+                title,
+                summary,
+                status,
+                selected,
+                created_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, '', 'active', 1, ?4, ?4)
+            "#,
+            params![
+                project_id,
+                agent_session_id.as_str(),
+                DEFAULT_AGENT_SESSION_TITLE,
+                timestamp,
+            ],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not create a replacement agent session in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
 
     Ok(())
 }
@@ -1075,11 +1194,107 @@ mod tests {
             .expect("set session timestamp");
     }
 
+    fn force_archive_session(
+        database_path: &Path,
+        project_id: &str,
+        agent_session_id: &str,
+        timestamp: &str,
+    ) {
+        let connection = Connection::open(database_path).expect("open project database");
+        connection
+            .execute(
+                r#"
+                UPDATE agent_sessions
+                SET status = 'archived',
+                    selected = 0,
+                    archived_at = ?3,
+                    updated_at = ?3
+                WHERE project_id = ?1
+                  AND agent_session_id = ?2
+                "#,
+                params![project_id, agent_session_id, timestamp],
+            )
+            .expect("force archive session");
+    }
+
     fn session_ids(sessions: &[AgentSessionRecord]) -> Vec<String> {
         sessions
             .iter()
             .map(|session| session.agent_session_id.clone())
             .collect()
+    }
+
+    #[test]
+    fn archiving_last_active_session_creates_selected_replacement() {
+        let project = import_test_project();
+
+        let archived = archive_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect("archive default session");
+
+        assert_eq!(archived.status, AgentSessionStatus::Archived);
+        assert!(!archived.selected);
+
+        let active = list_agent_sessions(&project.repo_root, &project.project_id, false)
+            .expect("list active sessions");
+        assert_eq!(active.len(), 1);
+        let replacement = &active[0];
+        assert_ne!(replacement.agent_session_id, DEFAULT_AGENT_SESSION_ID);
+        assert_eq!(replacement.title, DEFAULT_AGENT_SESSION_TITLE);
+        assert_eq!(replacement.status, AgentSessionStatus::Active);
+        assert!(replacement.selected);
+        assert!(replacement.archived_at.is_none());
+
+        let all = list_agent_sessions(&project.repo_root, &project.project_id, true)
+            .expect("list all sessions");
+        assert_eq!(
+            all.iter()
+                .filter(|session| session.status == AgentSessionStatus::Active)
+                .count(),
+            1,
+        );
+        assert!(all.iter().any(|session| {
+            session.agent_session_id == DEFAULT_AGENT_SESSION_ID
+                && session.status == AgentSessionStatus::Archived
+        }));
+    }
+
+    #[test]
+    fn deleting_last_session_creates_selected_replacement() {
+        let project = import_test_project();
+        force_archive_session(
+            &project.database_path,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+            "2026-04-15T21:00:00Z",
+        );
+
+        delete_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect("delete archived default session");
+
+        let active = list_agent_sessions(&project.repo_root, &project.project_id, false)
+            .expect("list active sessions");
+        assert_eq!(active.len(), 1);
+        let replacement = &active[0];
+        assert_ne!(replacement.agent_session_id, DEFAULT_AGENT_SESSION_ID);
+        assert_eq!(replacement.title, DEFAULT_AGENT_SESSION_TITLE);
+        assert_eq!(replacement.status, AgentSessionStatus::Active);
+        assert!(replacement.selected);
+
+        let deleted = get_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect("read deleted session");
+        assert!(deleted.is_none());
     }
 
     #[test]

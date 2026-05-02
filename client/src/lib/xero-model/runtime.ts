@@ -44,20 +44,25 @@ export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'op
 export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
-export const runtimeAgentIdSchema = z.enum(['ask', 'engineer'])
+export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'engineer', 'debug', 'agent_create'] as const
+export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
 export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'ask'
 
 export interface RuntimeAgentDescriptor {
   id: RuntimeAgentIdDto
+  version: number
   label: string
   shortLabel: string
   description: string
   taskPurpose: string
+  scope: 'built_in' | 'global_custom' | 'project_custom'
+  lifecycleState: 'draft' | 'active' | 'archived'
+  baseCapabilityProfile: 'observe_only' | 'engineering' | 'debugging' | 'agent_builder'
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'engineer'
-  toolPolicy: 'observe_only' | 'engineering'
-  outputContract: 'answer' | 'engineering_summary'
+  promptPolicy: 'ask' | 'engineer' | 'debug' | 'agent_create'
+  toolPolicy: 'observe_only' | 'engineering' | 'agent_builder'
+  outputContract: 'answer' | 'engineering_summary' | 'debug_summary' | 'agent_definition_draft'
   projectDataPolicy: {
     required: true
     recordKinds: readonly (
@@ -86,10 +91,14 @@ export interface RuntimeAgentDescriptor {
 export const RUNTIME_AGENT_DESCRIPTORS = [
   {
     id: 'ask',
+    version: 1,
     label: 'Ask',
     shortLabel: 'Ask',
     description: 'Answer questions about the project without mutating files, app state, processes, or external services.',
     taskPurpose: 'Answer in chat using audited observe-only tools when grounding is needed.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'observe_only',
     defaultApprovalMode: 'suggest',
     allowedApprovalModes: ['suggest'],
     promptPolicy: 'ask',
@@ -109,10 +118,14 @@ export const RUNTIME_AGENT_DESCRIPTORS = [
   },
   {
     id: 'engineer',
+    version: 1,
     label: 'Engineer',
     shortLabel: 'Build',
     description: 'Implement repository changes with the existing software-building toolset and safety gates.',
     taskPurpose: 'Inspect, plan when needed, edit, verify, and summarize engineering work.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'engineering',
     defaultApprovalMode: 'suggest',
     allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
     promptPolicy: 'engineer',
@@ -140,6 +153,85 @@ export const RUNTIME_AGENT_DESCRIPTORS = [
     workflowRole: 'interactive',
     allowPlanGate: true,
     allowVerificationGate: true,
+    allowAutoCompact: true,
+  },
+  {
+    id: 'debug',
+    version: 1,
+    label: 'Debug',
+    shortLabel: 'Debug',
+    description:
+      'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.',
+    taskPurpose:
+      'Reproduce, gather evidence, test hypotheses, isolate root cause, fix, verify, and preserve reusable debugging knowledge.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'debugging',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    promptPolicy: 'debug',
+    toolPolicy: 'engineering',
+    outputContract: 'debug_summary',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'agent_handoff',
+        'project_fact',
+        'decision',
+        'constraint',
+        'plan',
+        'finding',
+        'verification',
+        'question',
+        'artifact',
+        'context_note',
+        'diagnostic',
+      ],
+      structuredSchemas: ['xero.project_record.v1', 'xero.project_record.debug_session.v1'],
+      unstructuredScopes: ['answer_note', 'session_summary', 'artifact_excerpt', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: true,
+    allowVerificationGate: true,
+    allowAutoCompact: true,
+  },
+  {
+    id: 'agent_create',
+    version: 1,
+    label: 'Agent Create',
+    shortLabel: 'Create',
+    description:
+      'Interview the user, validate custom agent definitions, and save approved definitions without mutating repositories.',
+    taskPurpose:
+      'Gather intent, clarify scope, propose least-privilege capabilities, validate definitions, and persist approved custom agents.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'agent_builder',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest'],
+    promptPolicy: 'agent_create',
+    toolPolicy: 'agent_builder',
+    outputContract: 'agent_definition_draft',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'agent_handoff',
+        'project_fact',
+        'decision',
+        'constraint',
+        'plan',
+        'question',
+        'context_note',
+        'diagnostic',
+      ],
+      structuredSchemas: ['xero.project_record.v1'],
+      unstructuredScopes: ['answer_note', 'session_summary', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: false,
+    allowVerificationGate: false,
     allowAutoCompact: true,
   },
 ] as const satisfies readonly RuntimeAgentDescriptor[]
@@ -279,6 +371,7 @@ export const runtimeRunCheckpointSchema = z
 export const runtimeRunControlInputSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1).nullable().optional(),
     providerProfileId: nonEmptyOptionalTextSchema,
     modelId: z.string().trim().min(1),
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
@@ -298,6 +391,8 @@ export const runtimeAutoCompactPreferenceSchema = z
 export const runtimeRunActiveControlSnapshotSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1).nullable().optional(),
+    agentDefinitionVersion: z.number().int().positive().nullable().optional(),
     providerProfileId: nonEmptyOptionalTextSchema,
     modelId: z.string().trim().min(1),
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
@@ -311,6 +406,8 @@ export const runtimeRunActiveControlSnapshotSchema = z
 export const runtimeRunPendingControlSnapshotSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1).nullable().optional(),
+    agentDefinitionVersion: z.number().int().positive().nullable().optional(),
     providerProfileId: nonEmptyOptionalTextSchema,
     modelId: z.string().trim().min(1),
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
@@ -432,6 +529,15 @@ export const updateAgentSessionRequestSchema = z
     title: z.string().trim().min(1).nullable().optional(),
     summary: z.string().nullable().optional(),
     selected: z.boolean().nullable().optional(),
+  })
+  .strict()
+
+export const autoNameAgentSessionRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: z.string().trim().min(1),
+    prompt: z.string().trim().min(1),
+    controls: runtimeRunControlInputSchema.nullable().optional(),
   })
   .strict()
 
@@ -577,6 +683,7 @@ export type CreateAgentSessionRequestDto = z.infer<typeof createAgentSessionRequ
 export type ListAgentSessionsRequestDto = z.infer<typeof listAgentSessionsRequestSchema>
 export type GetAgentSessionRequestDto = z.infer<typeof getAgentSessionRequestSchema>
 export type UpdateAgentSessionRequestDto = z.infer<typeof updateAgentSessionRequestSchema>
+export type AutoNameAgentSessionRequestDto = z.infer<typeof autoNameAgentSessionRequestSchema>
 export type ArchiveAgentSessionRequestDto = z.infer<typeof archiveAgentSessionRequestSchema>
 export type RestoreAgentSessionRequestDto = z.infer<typeof restoreAgentSessionRequestSchema>
 export type DeleteAgentSessionRequestDto = z.infer<typeof deleteAgentSessionRequestSchema>
@@ -655,6 +762,8 @@ export interface RuntimeRunCheckpointView {
 
 export interface RuntimeRunControlInputView {
   runtimeAgentId: RuntimeAgentIdDto
+  agentDefinitionId: string | null
+  agentDefinitionVersion: number | null
   runtimeAgentLabel: string
   providerProfileId: string | null
   modelId: string
@@ -868,8 +977,13 @@ function getAgentSessionStatusLabel(status: AgentSessionStatusDto): string {
 
 function mapRuntimeRunControlInput(control: RuntimeRunControlInputDto): RuntimeRunControlInputView {
   const runtimeAgentId = control.runtimeAgentId ?? DEFAULT_RUNTIME_AGENT_ID
+  const controlSnapshot = control as RuntimeRunControlInputDto & {
+    agentDefinitionVersion?: number | null
+  }
   return {
     runtimeAgentId,
+    agentDefinitionId: normalizeOptionalText(control.agentDefinitionId),
+    agentDefinitionVersion: controlSnapshot.agentDefinitionVersion ?? null,
     runtimeAgentLabel: getRuntimeAgentLabel(runtimeAgentId),
     providerProfileId: normalizeOptionalText(control.providerProfileId),
     modelId: normalizeText(control.modelId, 'model-unavailable'),

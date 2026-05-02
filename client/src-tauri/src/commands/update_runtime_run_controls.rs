@@ -10,7 +10,7 @@ use crate::{
     db::project_store::{self, RuntimeRunSnapshotRecord},
     runtime::{
         create_owned_agent_run, drive_owned_agent_continuation, drive_owned_agent_run,
-        prepare_owned_agent_continuation, AgentAutoCompactPreference, AgentRunSupervisor,
+        prepare_owned_agent_continuation_for_drive, AgentAutoCompactPreference, AgentRunSupervisor,
         AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
     },
     state::DesktopState,
@@ -18,10 +18,10 @@ use crate::{
 
 use super::agent_task::auto_compact_preference;
 use super::runtime_support::{
-    apply_owned_runtime_run_pending_controls, emit_runtime_run_updated_if_changed,
-    launch_or_reconnect_runtime_run, load_persisted_runtime_run,
-    resolve_owned_agent_provider_config, resolve_project_root, runtime_run_dto_from_snapshot,
-    update_owned_runtime_run_controls,
+    apply_owned_runtime_run_pending_controls, bind_owned_runtime_run_to_agent_handoff,
+    emit_runtime_run_updated_if_changed, launch_or_reconnect_runtime_run,
+    load_persisted_runtime_run, resolve_owned_agent_provider_config, resolve_project_root,
+    runtime_run_dto_from_snapshot, update_owned_runtime_run_controls,
 };
 
 #[tauri::command]
@@ -94,27 +94,38 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
     )?;
     let mut response_snapshot = after.clone();
     if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
-        drive_owned_runtime_prompt(
+        if let Some(rebound) = drive_owned_runtime_prompt(
             &app,
             state.inner(),
             &repo_root,
             &after,
             prompt,
             auto_compact,
-        )?;
-        let before_apply = Some(after.clone());
-        response_snapshot = apply_owned_runtime_run_pending_controls(
-            &repo_root,
-            &after,
-            "Owned agent runtime accepted the queued prompt.",
-        )?;
-        emit_runtime_run_updated_if_changed(
-            &app,
-            &request.project_id,
-            &request.agent_session_id,
-            &before_apply,
-            &Some(response_snapshot.clone()),
-        )?;
+        )? {
+            let before_bind = Some(after.clone());
+            response_snapshot = rebound;
+            emit_runtime_run_updated_if_changed(
+                &app,
+                &request.project_id,
+                &request.agent_session_id,
+                &before_bind,
+                &Some(response_snapshot.clone()),
+            )?;
+        } else {
+            let before_apply = Some(after.clone());
+            response_snapshot = apply_owned_runtime_run_pending_controls(
+                &repo_root,
+                &after,
+                "Owned agent runtime accepted the queued prompt.",
+            )?;
+            emit_runtime_run_updated_if_changed(
+                &app,
+                &request.project_id,
+                &request.agent_session_id,
+                &before_apply,
+                &Some(response_snapshot.clone()),
+            )?;
+        }
     }
 
     Ok(runtime_run_dto_from_snapshot(&response_snapshot))
@@ -127,7 +138,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     snapshot: &RuntimeRunSnapshotRecord,
     prompt: String,
     auto_compact: Option<AgentAutoCompactPreference>,
-) -> CommandResult<()> {
+) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
     if state
         .agent_run_supervisor()
         .is_active(&snapshot.run.run_id)?
@@ -161,12 +172,35 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 answer_pending_actions,
                 auto_compact,
             };
-            prepare_owned_agent_continuation(&continuation)?;
-            spawn_owned_agent_continuation(
-                state.agent_run_supervisor().clone(),
-                snapshot.run.agent_session_id.clone(),
-                continuation,
-            )
+            let prepared = prepare_owned_agent_continuation_for_drive(&continuation)?;
+            let target_run_id = prepared.drive_request.run_id.clone();
+            if target_run_id != snapshot.run.run_id
+                && state.agent_run_supervisor().is_active(&target_run_id)?
+            {
+                return Err(CommandError::user_fixable(
+                    "agent_run_already_active",
+                    format!(
+                        "Xero is already driving owned-agent run `{target_run_id}`. Wait for it to finish or cancel it before sending another message."
+                    ),
+                ));
+            }
+            let rebound = if target_run_id != snapshot.run.run_id {
+                Some(bind_owned_runtime_run_to_agent_handoff(
+                    repo_root,
+                    snapshot,
+                    &prepared.snapshot,
+                )?)
+            } else {
+                None
+            };
+            if prepared.drive_required {
+                spawn_owned_agent_continuation(
+                    state.agent_run_supervisor().clone(),
+                    prepared.snapshot.run.agent_session_id.clone(),
+                    prepared.drive_request,
+                )?;
+            }
+            Ok(rebound)
         }
         Err(error) if error.code == "agent_run_not_found" => {
             let request = OwnedAgentRunRequest {
@@ -180,7 +214,8 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 provider_config,
             };
             create_owned_agent_run(&request)?;
-            spawn_owned_agent_run(state.agent_run_supervisor().clone(), request)
+            spawn_owned_agent_run(state.agent_run_supervisor().clone(), request)?;
+            Ok(None)
         }
         Err(error) => Err(error),
     }
@@ -222,7 +257,8 @@ fn runtime_run_controls_as_input(
 ) -> crate::commands::RuntimeRunControlInputDto {
     if let Some(pending) = snapshot.controls.pending.as_ref() {
         return crate::commands::RuntimeRunControlInputDto {
-            runtime_agent_id: pending.runtime_agent_id.clone(),
+            runtime_agent_id: pending.runtime_agent_id,
+            agent_definition_id: pending.agent_definition_id.clone(),
             provider_profile_id: pending.provider_profile_id.clone(),
             model_id: pending.model_id.clone(),
             thinking_effort: pending.thinking_effort.clone(),
@@ -232,7 +268,8 @@ fn runtime_run_controls_as_input(
     }
 
     crate::commands::RuntimeRunControlInputDto {
-        runtime_agent_id: snapshot.controls.active.runtime_agent_id.clone(),
+        runtime_agent_id: snapshot.controls.active.runtime_agent_id,
+        agent_definition_id: snapshot.controls.active.agent_definition_id.clone(),
         provider_profile_id: snapshot.controls.active.provider_profile_id.clone(),
         model_id: snapshot.controls.active.model_id.clone(),
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),

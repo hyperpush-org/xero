@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getRuntimeAgentDescriptor,
   mapRuntimeRun,
+  RUNTIME_AGENT_DESCRIPTORS,
+  runtimeAgentIdSchema,
   runtimeRunSchema,
   startRuntimeRunRequestSchema,
   updateRuntimeRunControlsRequestSchema,
@@ -23,6 +26,8 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
     controls: {
       active: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'phase4_builder',
+        agentDefinitionVersion: 3,
         modelId: 'openai/gpt-4.1-mini',
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
@@ -32,6 +37,8 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
       },
       pending: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'phase4_builder',
+        agentDefinitionVersion: 4,
         modelId: 'anthropic/claude-3.5-haiku',
         thinkingEffort: 'low',
         approvalMode: 'auto_edit',
@@ -56,12 +63,53 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
 }
 
 describe('runtime run control schemas', () => {
+  it('registers built-in runtime agents as descriptor-backed entries', () => {
+    expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
+    expect(runtimeAgentIdSchema.parse('agent_create')).toBe('agent_create')
+    expect(RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual([
+      'ask',
+      'engineer',
+      'debug',
+      'agent_create',
+    ])
+
+    expect(getRuntimeAgentDescriptor('debug')).toMatchObject({
+      id: 'debug',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'debugging',
+      label: 'Debug',
+      toolPolicy: 'engineering',
+      outputContract: 'debug_summary',
+      allowPlanGate: true,
+      allowVerificationGate: true,
+      allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    })
+    expect(getRuntimeAgentDescriptor('agent_create')).toMatchObject({
+      id: 'agent_create',
+      label: 'Agent Create',
+      shortLabel: 'Create',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'agent_builder',
+      promptPolicy: 'agent_create',
+      toolPolicy: 'agent_builder',
+      outputContract: 'agent_definition_draft',
+      allowPlanGate: false,
+      allowVerificationGate: false,
+      allowedApprovalModes: ['suggest'],
+    })
+  })
+
+
   it('maps durable active and pending control snapshots into a selected pending projection', () => {
     const parsed = runtimeRunSchema.parse(makeRuntimeRunDto())
     const view = mapRuntimeRun(parsed)
 
     expect(view.controls.active).toMatchObject({
       runtimeAgentId: 'engineer',
+      agentDefinitionId: 'phase4_builder',
+      agentDefinitionVersion: 3,
       modelId: 'openai/gpt-4.1-mini',
       thinkingEffort: 'medium',
       approvalMode: 'suggest',
@@ -70,6 +118,8 @@ describe('runtime run control schemas', () => {
     })
     expect(view.controls.pending).toMatchObject({
       runtimeAgentId: 'engineer',
+      agentDefinitionId: 'phase4_builder',
+      agentDefinitionVersion: 4,
       modelId: 'anthropic/claude-3.5-haiku',
       thinkingEffort: 'low',
       approvalMode: 'auto_edit',
@@ -81,6 +131,8 @@ describe('runtime run control schemas', () => {
     expect(view.controls.selected).toMatchObject({
       source: 'pending',
       runtimeAgentId: 'engineer',
+      agentDefinitionId: 'phase4_builder',
+      agentDefinitionVersion: 4,
       modelId: 'anthropic/claude-3.5-haiku',
       thinkingEffort: 'low',
       approvalMode: 'auto_edit',
@@ -184,6 +236,7 @@ describe('runtime run control schemas', () => {
       agentSessionId: 'agent-session-main',
       initialControls: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'project_release_engineer',
         modelId: 'openai/gpt-4.1-mini',
         thinkingEffort: 'high',
         approvalMode: 'yolo',
@@ -198,6 +251,7 @@ describe('runtime run control schemas', () => {
       agentSessionId: 'agent-session-main',
       initialControls: {
         runtimeAgentId: 'engineer',
+        agentDefinitionId: 'project_release_engineer',
         modelId: 'openai/gpt-4.1-mini',
         thinkingEffort: 'high',
         approvalMode: 'yolo',

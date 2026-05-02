@@ -1,4 +1,4 @@
-import { Activity, ArrowUp, Brain, CheckIcon, ChevronDownIcon, Cpu, LoaderCircle, MessageCircle, Mic, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { Activity, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, LoaderCircle, MessageCircle, Mic, ShieldCheck, Sparkles, Users, Wrench } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { forwardRef, Fragment, useMemo, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
@@ -8,11 +8,18 @@ import type {
   RuntimeRunActionStatus,
 } from '@/src/features/xero/use-xero-desktop-state/types'
 import {
+  getRuntimeAgentDescriptor,
   RUNTIME_AGENT_DESCRIPTORS,
+  type AgentDefinitionSummaryDto,
   type ProviderModelThinkingEffortDto,
   type RuntimeAgentIdDto,
   type RuntimeRunApprovalModeDto,
 } from '@/src/lib/xero-model'
+
+import {
+  buildComposerAgentSelectionKey,
+  runtimeAgentIdForCustomBaseCapability,
+} from './composer-helpers'
 import { Button } from '@/components/ui/button'
 import {
   Command,
@@ -64,6 +71,9 @@ interface ComposerDockProps {
   isSendDisabled: boolean
   composerRuntimeAgentId: RuntimeAgentIdDto
   composerRuntimeAgentLabel: string
+  composerAgentDefinitionId?: string | null
+  composerAgentSelectionKey?: string
+  customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   composerModelId: string | null
   composerModelGroups: ComposerModelGroup[]
   composerThinkingLevel: ProviderModelThinkingEffortDto | null
@@ -80,11 +90,13 @@ interface ComposerDockProps {
   runtimeRunActionError: OperatorActionErrorView | null
   runtimeRunActionErrorTitle: string
   dictation: ComposerDictationControl
+  contextMeter?: ReactNode
   onOpenDiagnostics?: () => void
   onDraftPromptChange: (value: string) => void
   onSubmitDraftPrompt: () => void
   onAutoCompactEnabledChange: (value: boolean) => void
   onComposerRuntimeAgentChange: (value: RuntimeAgentIdDto) => void
+  onComposerAgentSelectionChange?: (selectionKey: string) => void
   onComposerModelChange: (value: string) => void
   onComposerThinkingLevelChange: (value: ProviderModelThinkingEffortDto) => void
   onComposerApprovalModeChange: (value: RuntimeRunApprovalModeDto) => void
@@ -128,6 +140,9 @@ export function ComposerDock({
   isSendDisabled,
   composerRuntimeAgentId,
   composerRuntimeAgentLabel,
+  composerAgentDefinitionId = null,
+  composerAgentSelectionKey,
+  customAgentDefinitions = [],
   composerModelId,
   composerModelGroups,
   composerThinkingLevel,
@@ -144,18 +159,21 @@ export function ComposerDock({
   runtimeRunActionError,
   runtimeRunActionErrorTitle,
   dictation,
+  contextMeter,
   onOpenDiagnostics,
   onDraftPromptChange,
   onSubmitDraftPrompt,
   onAutoCompactEnabledChange,
   onComposerRuntimeAgentChange,
+  onComposerAgentSelectionChange,
   onComposerModelChange,
   onComposerThinkingLevelChange,
   onComposerApprovalModeChange,
 }: ComposerDockProps) {
   const hasComposerModelOptions = composerModelGroups.length > 0
   const hasThinkingOptions = composerThinkingOptions.length > 0
-  const showApprovalSelector = composerRuntimeAgentId === 'engineer'
+  const composerRuntimeAgentDescriptor = getRuntimeAgentDescriptor(composerRuntimeAgentId)
+  const showApprovalSelector = composerRuntimeAgentDescriptor.allowedApprovalModes.length > 1
   const isAgentSelectorDisabled = runtimeAgentSwitchDisabled || controlsDisabled
   const isUpdatingControls = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'update_controls'
   const isStartingRun =
@@ -164,7 +182,39 @@ export function ComposerDock({
     composerThinkingOptions.find((option) => option.value === composerThinkingLevel)?.label ?? composerThinkingPlaceholder
   const approvalTriggerLabel =
     composerApprovalOptions.find((option) => option.value === composerApprovalMode)?.label ?? 'Approval unavailable'
-  const AgentTriggerIcon = composerRuntimeAgentId === 'ask' ? MessageCircle : Wrench
+  const activeCustomAgent = useMemo(() => {
+    if (!composerAgentDefinitionId) return null
+    return customAgentDefinitions.find((agent) => agent.definitionId === composerAgentDefinitionId) ?? null
+  }, [composerAgentDefinitionId, customAgentDefinitions])
+  const isCustomAgent = Boolean(activeCustomAgent)
+  const agentTriggerLabel = activeCustomAgent?.displayName ?? composerRuntimeAgentLabel
+  const agentSelectorValue =
+    composerAgentSelectionKey ??
+    buildComposerAgentSelectionKey(composerRuntimeAgentId, composerAgentDefinitionId)
+  const visibleCustomAgents = useMemo(
+    () =>
+      customAgentDefinitions.filter(
+        (agent) => agent.lifecycleState === 'active' || agent.definitionId === composerAgentDefinitionId,
+      ),
+    [composerAgentDefinitionId, customAgentDefinitions],
+  )
+  const projectCustomAgents = useMemo(
+    () => visibleCustomAgents.filter((agent) => agent.scope === 'project_custom'),
+    [visibleCustomAgents],
+  )
+  const globalCustomAgents = useMemo(
+    () => visibleCustomAgents.filter((agent) => agent.scope === 'global_custom'),
+    [visibleCustomAgents],
+  )
+  const AgentTriggerIcon = isCustomAgent
+    ? Users
+    : composerRuntimeAgentId === 'ask'
+      ? MessageCircle
+      : composerRuntimeAgentId === 'debug'
+        ? Bug
+        : composerRuntimeAgentId === 'agent_create'
+          ? Sparkles
+          : Wrench
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey) {
@@ -179,34 +229,39 @@ export function ComposerDock({
   }
 
   return (
-    <div className="relative shrink-0 px-4 pb-6 pt-10">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 -top-14 h-24 bg-gradient-to-b from-background/0 via-background/86 to-background"
-      />
-      <div className="relative mx-auto flex w-full max-w-[880px] items-end justify-center gap-3">
+    <div className="relative shrink-0 px-4 pb-3 pt-0">
+      <div className="relative mx-auto flex w-full max-w-[720px] items-end justify-center gap-3">
         <div className="w-full max-w-[720px]">
           <div className="group/composer relative overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur transition-colors supports-[backdrop-filter]:bg-card/75 hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]">
-            <Textarea
-              aria-label={promptInputLabel}
-              className="max-h-56 min-h-[92px] resize-none border-0 bg-transparent px-4 pb-3 pt-3.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
-              disabled={isPromptDisabled}
-              onChange={(event) => onDraftPromptChange(event.target.value)}
-              onKeyDown={handlePromptKeyDown}
-              placeholder={placeholder}
-              ref={promptInputRef}
-              rows={3}
-              value={draftPrompt}
-            />
-            <div className="border-t border-border/40 bg-background/20 px-2 py-1.5">
+            <div className="pb-1.5 pt-2.5">
+              <Textarea
+                aria-label={promptInputLabel}
+                className="min-h-[24px] max-h-[68px] resize-none overflow-y-auto border-0 bg-transparent dark:bg-transparent px-3 py-0 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
+                disabled={isPromptDisabled}
+                onChange={(event) => onDraftPromptChange(event.target.value)}
+                onKeyDown={handlePromptKeyDown}
+                placeholder={placeholder}
+                ref={promptInputRef}
+                rows={1}
+                value={draftPrompt}
+              />
+            </div>
+            <div className="border-t border-border/40 px-2 py-1.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
                   <Select
                     disabled={isAgentSelectorDisabled}
-                    value={composerRuntimeAgentId}
+                    value={agentSelectorValue}
                     onValueChange={(value) => {
-                      if (value === 'ask' || value === 'engineer') {
-                        onComposerRuntimeAgentChange(value)
+                      if (onComposerAgentSelectionChange) {
+                        onComposerAgentSelectionChange(value)
+                        return
+                      }
+                      if (value.startsWith('builtin:')) {
+                        const builtinId = value.slice('builtin:'.length) as RuntimeAgentIdDto
+                        if (RUNTIME_AGENT_DESCRIPTORS.some((agent) => agent.id === builtinId)) {
+                          onComposerRuntimeAgentChange(builtinId)
+                        }
                       }
                     }}
                   >
@@ -216,20 +271,81 @@ export function ComposerDock({
                           <ComposerInlineTrigger
                             aria-label="Agent selector"
                             icon={<AgentTriggerIcon aria-hidden="true" className="size-3" />}
-                            label={composerRuntimeAgentLabel}
+                            label={agentTriggerLabel}
                           />
                         </SelectPrimitive.Trigger>
                       </TooltipTrigger>
                       <TooltipContent side="top">
-                        {runtimeAgentSwitchDisabled ? 'Selected agent is fixed for the current run.' : `${composerRuntimeAgentLabel} agent`}
+                        {runtimeAgentSwitchDisabled
+                          ? 'Selected agent is fixed for the current run.'
+                          : isCustomAgent
+                            ? `${agentTriggerLabel} (${activeCustomAgent?.scope === 'project_custom' ? 'project' : 'global'} custom agent)`
+                            : `${agentTriggerLabel} agent`}
                       </TooltipContent>
                     </Tooltip>
                     <SelectContent className={composerInlineSelectContentClassName}>
                       {RUNTIME_AGENT_DESCRIPTORS.map((agent) => (
-                        <SelectItem key={agent.id} value={agent.id}>
+                        <SelectItem
+                          key={agent.id}
+                          value={buildComposerAgentSelectionKey(agent.id, null)}
+                        >
                           {agent.label}
                         </SelectItem>
                       ))}
+                      {projectCustomAgents.length > 0 ? (
+                        <>
+                          <SelectPrimitive.Separator className="my-1 h-px bg-border/60" />
+                          <SelectPrimitive.Label className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                            Project agents
+                          </SelectPrimitive.Label>
+                          {projectCustomAgents.map((agent) => (
+                            <SelectItem
+                              key={`project-${agent.definitionId}`}
+                              value={buildComposerAgentSelectionKey(
+                                runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
+                                agent.definitionId,
+                              )}
+                            >
+                              <span className="flex items-center gap-1.5">
+                                <Users aria-hidden="true" className="size-3 text-primary" />
+                                {agent.displayName}
+                                {agent.lifecycleState !== 'active' ? (
+                                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                                    · {agent.lifecycleState}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </>
+                      ) : null}
+                      {globalCustomAgents.length > 0 ? (
+                        <>
+                          <SelectPrimitive.Separator className="my-1 h-px bg-border/60" />
+                          <SelectPrimitive.Label className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                            Global agents
+                          </SelectPrimitive.Label>
+                          {globalCustomAgents.map((agent) => (
+                            <SelectItem
+                              key={`global-${agent.definitionId}`}
+                              value={buildComposerAgentSelectionKey(
+                                runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
+                                agent.definitionId,
+                              )}
+                            >
+                              <span className="flex items-center gap-1.5">
+                                <Users aria-hidden="true" className="size-3 text-muted-foreground" />
+                                {agent.displayName}
+                                {agent.lifecycleState !== 'active' ? (
+                                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                                    · {agent.lifecycleState}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </>
+                      ) : null}
                     </SelectContent>
                   </Select>
                   <ModelSelectorCombobox
@@ -288,6 +404,7 @@ export function ComposerDock({
                   ) : null}
                 </div>
                 <div className="flex items-center gap-1">
+                  {contextMeter ? <div className="shrink-0">{contextMeter}</div> : null}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button

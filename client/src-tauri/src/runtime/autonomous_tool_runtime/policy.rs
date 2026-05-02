@@ -312,6 +312,25 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             require_approval_code: "policy_requires_approval_external_capability",
             require_approval_reason: "External capability invocation requires operator approval.",
         },
+        AutonomousToolRequest::AgentDefinition(request) => {
+            let requires_approval = matches!(
+                request.action,
+                super::AutonomousAgentDefinitionAction::Save
+                    | super::AutonomousAgentDefinitionAction::Update
+                    | super::AutonomousAgentDefinitionAction::Archive
+                    | super::AutonomousAgentDefinitionAction::Clone
+            );
+            SafetyPolicyMetadata {
+                risk_class: "agent_definition_state",
+                network_intent: "none",
+                credential_sensitivity: "possible",
+                os_target: None,
+                prior_observation_required: false,
+                requires_approval,
+                require_approval_code: "policy_requires_approval_agent_definition_mutation",
+                require_approval_reason: "Saving, updating, archiving, or cloning agent definitions requires explicit operator approval.",
+            }
+        }
         AutonomousToolRequest::SolanaDeploy(_)
         | AutonomousToolRequest::SolanaCodama(_)
         | AutonomousToolRequest::SolanaReplay(_)
@@ -480,14 +499,20 @@ fn repo_path_escape(request: &AutonomousToolRequest) -> Option<String> {
 fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
     match request {
         AutonomousToolRequest::Read(request) if !request.system_path => vec![request.path.as_str()],
-        AutonomousToolRequest::Search(request) => request.path.as_deref().into_iter().collect(),
-        AutonomousToolRequest::Find(request) => request.path.as_deref().into_iter().collect(),
-        AutonomousToolRequest::List(request) => request.path.as_deref().into_iter().collect(),
+        AutonomousToolRequest::Search(request) => {
+            optional_repo_relative_path(request.path.as_deref())
+        }
+        AutonomousToolRequest::Find(request) => {
+            optional_repo_relative_path(request.path.as_deref())
+        }
+        AutonomousToolRequest::List(request) => {
+            optional_repo_relative_path(request.path.as_deref())
+        }
         AutonomousToolRequest::Hash(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Write(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Edit(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Patch(request) => {
-            let mut paths = request.path.as_deref().into_iter().collect::<Vec<_>>();
+            let mut paths = optional_repo_relative_path(request.path.as_deref());
             paths.extend(
                 request
                     .operations
@@ -504,6 +529,13 @@ fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
         AutonomousToolRequest::NotebookEdit(request) => vec![request.path.as_str()],
         _ => Vec::new(),
     }
+}
+
+fn optional_repo_relative_path(path: Option<&str>) -> Vec<&str> {
+    path.map(str::trim)
+        .filter(|path| !path.is_empty())
+        .into_iter()
+        .collect()
 }
 
 fn is_destructive_system_operation(request: &AutonomousToolRequest) -> bool {
@@ -1315,6 +1347,28 @@ mod tests {
     }
 
     #[test]
+    fn safety_policy_allows_blank_optional_observe_scope_as_repo_root() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let request = AutonomousToolRequest::List(super::super::AutonomousListRequest {
+            path: Some("".into()),
+            max_depth: Some(2),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                "list",
+                &json!({"path": "", "maxDepth": 2}),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+    }
+
+    #[test]
     fn safety_policy_uses_command_approval_mode() {
         let tempdir = tempdir().expect("tempdir");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
@@ -1359,6 +1413,8 @@ mod tests {
             .with_runtime_run_controls(RuntimeRunControlStateDto {
                 active: RuntimeRunActiveControlSnapshotDto {
                     runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    agent_definition_id: None,
+                    agent_definition_version: None,
                     provider_profile_id: None,
                     model_id: "test-model".into(),
                     thinking_effort: None,

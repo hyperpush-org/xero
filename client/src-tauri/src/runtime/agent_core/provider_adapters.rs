@@ -741,7 +741,10 @@ fn openai_responses_request_body(
     if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
         body.insert(
             "reasoning".into(),
-            json!({ "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort) }),
+            json!({
+                "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort),
+                "summary": "auto",
+            }),
         );
     }
     Ok(JsonValue::Object(body))
@@ -1154,6 +1157,10 @@ struct OpenAiChatDelta {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Vec<OpenAiToolCallDelta>,
 }
 
@@ -1241,11 +1248,23 @@ fn parse_openai_chat_sse(
             usage = Some(mapped);
         }
         for choice in chunk.choices {
-            if let Some(content) = choice.delta.content {
+            let OpenAiChatDelta {
+                content,
+                reasoning,
+                reasoning_content,
+                tool_calls,
+            } = choice.delta;
+            if let Some(reasoning) = reasoning_content
+                .or(reasoning)
+                .filter(|reasoning| !reasoning.is_empty())
+            {
+                emit(ProviderStreamEvent::ReasoningSummary(reasoning))?;
+            }
+            if let Some(content) = content {
                 message.push_str(&content);
                 emit(ProviderStreamEvent::MessageDelta(content))?;
             }
-            for tool_call in choice.delta.tool_calls {
+            for tool_call in tool_calls {
                 let partial = partial_calls.entry(tool_call.index).or_default();
                 if let Some(id) = tool_call.id {
                     partial.id = Some(id);
@@ -1300,6 +1319,9 @@ fn parse_openai_responses_sse(
                 format!("Xero could not decode a {provider_id} Responses chunk: {error}"),
             )
         })?;
+        if emit_openai_responses_reasoning_summary_event(&value, emit)? {
+            continue;
+        }
         match value
             .get("type")
             .and_then(JsonValue::as_str)
@@ -1336,33 +1358,19 @@ fn parse_openai_responses_sse(
                     arguments_delta: delta,
                 })?;
             }
+            "response.output_item.added" => {
+                apply_openai_response_function_call_item(
+                    &mut partial_calls,
+                    &value,
+                    completed_call_count,
+                );
+            }
             "response.output_item.done" => {
-                let item = value.get("item").cloned().unwrap_or(JsonValue::Null);
-                if item.get("type").and_then(JsonValue::as_str) == Some("function_call") {
-                    let index = item
-                        .get("output_index")
-                        .and_then(JsonValue::as_u64)
-                        .unwrap_or(completed_call_count as u64)
-                        as usize;
-                    let partial = partial_calls.entry(index).or_default();
-                    partial.id = item
-                        .get("call_id")
-                        .or_else(|| item.get("id"))
-                        .and_then(JsonValue::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| partial.id.clone());
-                    partial.name = item
-                        .get("name")
-                        .and_then(JsonValue::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| partial.name.clone());
-                    if partial.arguments.trim().is_empty() {
-                        partial.arguments = item
-                            .get("arguments")
-                            .and_then(JsonValue::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                    }
+                if apply_openai_response_function_call_item(
+                    &mut partial_calls,
+                    &value,
+                    completed_call_count,
+                ) {
                     completed_call_count = completed_call_count.saturating_add(1);
                 }
             }
@@ -1381,6 +1389,72 @@ fn parse_openai_responses_sse(
     }
 
     finish_provider_turn(provider_id, message, partial_calls, usage)
+}
+
+fn emit_openai_responses_reasoning_summary_event(
+    value: &JsonValue,
+    emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+) -> CommandResult<bool> {
+    match value
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default()
+    {
+        "response.reasoning_summary_text.delta" => {
+            let delta = value
+                .get("delta")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !delta.is_empty() {
+                emit(ProviderStreamEvent::ReasoningSummary(delta))?;
+            }
+            Ok(true)
+        }
+        "response.reasoning_summary_part.done" | "response.reasoning_summary_text.done" => {
+            emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+            Ok(true)
+        }
+        "response.reasoning_summary_part.added" => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+fn apply_openai_response_function_call_item(
+    partial_calls: &mut BTreeMap<usize, PartialToolCall>,
+    event: &JsonValue,
+    fallback_index: usize,
+) -> bool {
+    let item = event.get("item").cloned().unwrap_or(JsonValue::Null);
+    if item.get("type").and_then(JsonValue::as_str) != Some("function_call") {
+        return false;
+    }
+
+    let index = event
+        .get("output_index")
+        .or_else(|| item.get("output_index"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(fallback_index as u64) as usize;
+    let partial = partial_calls.entry(index).or_default();
+    partial.id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(JsonValue::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| partial.id.clone());
+    partial.name = item
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| partial.name.clone());
+    if partial.arguments.trim().is_empty() {
+        partial.arguments = item
+            .get("arguments")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_string();
+    }
+    true
 }
 
 fn openai_responses_stream_error(provider_id: &str, event: &JsonValue) -> CommandError {
@@ -2175,6 +2249,8 @@ mod tests {
             controls: RuntimeRunControlStateDto {
                 active: RuntimeRunActiveControlSnapshotDto {
                     runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    agent_definition_id: None,
+                    agent_definition_version: None,
                     provider_profile_id: None,
                     model_id: "model".into(),
                     thinking_effort: None,
@@ -2307,6 +2383,7 @@ mod tests {
         let openai_api = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
             .expect("openai api body");
         assert_eq!(openai_api["reasoning"]["effort"], "minimal");
+        assert_eq!(openai_api["reasoning"]["summary"], "auto");
 
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
         let gpt_5_1 = openai_codex_responses_request_body(
@@ -2491,6 +2568,83 @@ mod tests {
         let error = finish_provider_turn("test-provider", String::new(), malformed, None)
             .expect_err("malformed tool JSON should fail");
         assert_eq!(error.code, "agent_provider_tool_arguments_invalid");
+    }
+
+    #[test]
+    fn openai_responses_tool_item_uses_event_output_index() {
+        let mut partial_calls = BTreeMap::new();
+        partial_calls.insert(
+            3,
+            PartialToolCall {
+                id: None,
+                name: None,
+                arguments: r#"{"path":"src/lib.rs"}"#.into(),
+            },
+        );
+        let event = json!({
+            "type": "response.output_item.done",
+            "output_index": 3,
+            "item": {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "read"
+            }
+        });
+
+        assert!(apply_openai_response_function_call_item(
+            &mut partial_calls,
+            &event,
+            0,
+        ));
+        let outcome =
+            finish_provider_turn(OPENAI_CODEX_PROVIDER_ID, String::new(), partial_calls, None)
+                .expect("provider turn");
+
+        match outcome {
+            ProviderTurnOutcome::ToolCalls { tool_calls, .. } => {
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].tool_call_id, "call-1");
+                assert_eq!(tool_calls[0].tool_name, "read");
+                assert_eq!(tool_calls[0].input["path"], "src/lib.rs");
+            }
+            ProviderTurnOutcome::Complete { .. } => panic!("expected tool call turn"),
+        }
+    }
+
+    #[test]
+    fn openai_responses_reasoning_summary_events_emit_thinking_deltas() {
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "I should inspect the failing test"
+            }),
+            &mut emit,
+        )
+        .expect("delta event handled"));
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({ "type": "response.reasoning_summary_part.done" }),
+            &mut emit,
+        )
+        .expect("part done event handled"));
+        assert!(!emit_openai_responses_reasoning_summary_event(
+            &json!({ "type": "response.output_text.delta", "delta": "Done." }),
+            &mut emit,
+        )
+        .expect("text event ignored"));
+
+        assert_eq!(
+            events,
+            vec![
+                ProviderStreamEvent::ReasoningSummary("I should inspect the failing test".into()),
+                ProviderStreamEvent::ReasoningSummary("\n\n".into()),
+            ]
+        );
     }
 
     #[test]

@@ -42,6 +42,7 @@ interface NewChildTarget {
 
 interface UseExecutionWorkspaceControllerOptions {
   projectId: string
+  active?: boolean
   listProjectFiles: (projectId: string) => Promise<ListProjectFilesResponseDto>
   readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
   writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
@@ -105,6 +106,7 @@ function splitEntryPath(value: string): string[] {
 
 export function useExecutionWorkspaceController({
   projectId,
+  active = true,
   listProjectFiles,
   readProjectFile,
   writeProjectFile,
@@ -114,6 +116,7 @@ export function useExecutionWorkspaceController({
   deleteProjectEntry,
 }: UseExecutionWorkspaceControllerOptions) {
   const loadEpochRef = useRef(0)
+  const pendingInitialTreeLoadRef = useRef<string | null>(projectId)
 
   const [tree, setTree] = useState<FileSystemNode>(createEmptyFileSystem)
   const [savedContents, setSavedContents] = useState<Record<string, string>>({})
@@ -187,6 +190,7 @@ export function useExecutionWorkspaceController({
 
   useEffect(() => {
     loadEpochRef.current += 1
+    pendingInitialTreeLoadRef.current = projectId
     setTree(createEmptyFileSystem())
     setSavedContents({})
     setFileContents({})
@@ -202,8 +206,16 @@ export function useExecutionWorkspaceController({
     setRenameTarget(null)
     setDeleteTarget(null)
     setNewChildTarget(null)
+  }, [projectId])
+
+  useEffect(() => {
+    if (!active || pendingInitialTreeLoadRef.current !== projectId) {
+      return
+    }
+
+    pendingInitialTreeLoadRef.current = null
     void refreshTree({ preserveExpandedFolders: false })
-  }, [projectId, refreshTree])
+  }, [active, projectId, refreshTree])
 
   const closeTab = useCallback(
     (path: string) => {

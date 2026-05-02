@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(() => true),
+  listen: vi.fn(),
   channels: [] as Array<{ onmessage?: (message: unknown) => void }>,
 }))
 
@@ -19,7 +20,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(),
+  listen: mocks.listen,
 }))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
@@ -30,6 +31,7 @@ describe('XeroDesktopAdapter dictation', () => {
   beforeEach(() => {
     mocks.invoke.mockReset()
     mocks.isTauri.mockReturnValue(true)
+    mocks.listen.mockReset()
     mocks.channels.length = 0
   })
 
@@ -192,6 +194,32 @@ describe('XeroDesktopAdapter dictation', () => {
   })
 })
 
+describe('XeroDesktopAdapter event listeners', () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset()
+    mocks.isTauri.mockReturnValue(true)
+    mocks.listen.mockReset()
+    mocks.channels.length = 0
+  })
+
+  it('returns idempotent unlisteners that absorb Tauri teardown rejections', async () => {
+    const { XeroDesktopAdapter } = await import('./xero-desktop')
+    const rawUnlisten = vi.fn(() =>
+      Promise.reject(new TypeError("undefined is not an object (evaluating 'listeners[eventId].handlerId')")),
+    )
+
+    mocks.listen.mockResolvedValueOnce(rawUnlisten)
+
+    const unlisten = await XeroDesktopAdapter.onRuntimeRunUpdated(vi.fn(), vi.fn())
+
+    expect(unlisten()).toBeUndefined()
+    expect(unlisten()).toBeUndefined()
+    await Promise.resolve()
+
+    expect(rawUnlisten).toHaveBeenCalledTimes(1)
+  })
+})
+
 function makeRuntimeStreamItem(sequence: number, text: string) {
   return {
     kind: 'transcript',
@@ -227,6 +255,7 @@ describe('XeroDesktopAdapter runtime stream', () => {
   beforeEach(() => {
     mocks.invoke.mockReset()
     mocks.isTauri.mockReturnValue(true)
+    mocks.listen.mockReset()
     mocks.channels.length = 0
   })
 

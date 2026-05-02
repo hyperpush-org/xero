@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use arrow_array::builder::{
-    BooleanBuilder, FixedSizeListBuilder, Float32Builder, StringBuilder, UInt8Builder,
+    BooleanBuilder, FixedSizeListBuilder, Float32Builder, Int32Builder, StringBuilder, UInt8Builder,
 };
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchIterator, StringArray, UInt8Array,
+    Array, ArrayRef, BooleanArray, FixedSizeListArray, Int32Array, RecordBatch,
+    RecordBatchIterator, StringArray, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
@@ -30,6 +31,7 @@ use tokio::runtime::Runtime;
 use crate::commands::CommandError;
 
 use super::agent_core::AgentRunDiagnosticRecord;
+use super::agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM;
 use super::agent_memory::{
     AgentMemoryKind, AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope,
 };
@@ -38,7 +40,7 @@ use super::agent_memory::{
 /// most common embedding sizes (768 = MiniLM/E5; OpenAI text-embedding-3-small
 /// truncation default). Embedding writes are not yet wired; the column is
 /// declared so future code can populate it without a schema migration.
-pub const AGENT_MEMORY_EMBEDDING_DIM: i32 = 768;
+pub const AGENT_MEMORY_EMBEDDING_DIM: i32 = AGENT_RETRIEVAL_EMBEDDING_DIM;
 
 /// Lance-table identifier inside the dataset directory. LanceDB datasets use
 /// directories named `<table>.lance/`, but the connection API expects the
@@ -90,6 +92,9 @@ pub fn schema() -> SchemaRef {
         Field::new("diagnostic_json", DataType::Utf8, true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("embedding_model", DataType::Utf8, true),
+        Field::new("embedding_dimension", DataType::Int32, true),
+        Field::new("embedding_version", DataType::Utf8, true),
         Field::new(
             "embedding",
             DataType::FixedSizeList(
@@ -102,7 +107,7 @@ pub fn schema() -> SchemaRef {
 }
 
 /// Logical row form used by both the live store and the migration importer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AgentMemoryRow {
     pub memory_id: String,
     pub project_id: String,
@@ -119,6 +124,10 @@ pub struct AgentMemoryRow {
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
     pub created_at: String,
     pub updated_at: String,
+    pub embedding: Option<Vec<f32>>,
+    pub embedding_model: Option<String>,
+    pub embedding_dimension: Option<i32>,
+    pub embedding_version: Option<String>,
 }
 
 impl AgentMemoryRow {
@@ -265,6 +274,9 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
     let mut diagnostic_json = StringBuilder::new();
     let mut created_at = StringBuilder::new();
     let mut updated_at = StringBuilder::new();
+    let mut embedding_model = StringBuilder::new();
+    let mut embedding_dimension = Int32Builder::new();
+    let mut embedding_version = StringBuilder::new();
     let mut embedding =
         FixedSizeListBuilder::new(Float32Builder::new(), AGENT_MEMORY_EMBEDDING_DIM);
 
@@ -319,13 +331,19 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         }
         created_at.append_value(&row.created_at);
         updated_at.append_value(&row.updated_at);
-        // Embedding column is reserved; population is opt-in. Pad N null
-        // floats and mark the row as null so the Lance schema is honored
-        // even though we do not produce vectors yet.
-        for _ in 0..AGENT_MEMORY_EMBEDDING_DIM {
-            embedding.values().append_null();
+        match &row.embedding_model {
+            Some(value) => embedding_model.append_value(value),
+            None => embedding_model.append_null(),
         }
-        embedding.append(false);
+        match row.embedding_dimension {
+            Some(value) => embedding_dimension.append_value(value),
+            None => embedding_dimension.append_null(),
+        }
+        match &row.embedding_version {
+            Some(value) => embedding_version.append_value(value),
+            None => embedding_version.append_null(),
+        }
+        append_embedding(&mut embedding, row.embedding.as_deref())?;
     }
 
     let columns: Vec<ArrayRef> = vec![
@@ -343,6 +361,9 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(diagnostic_json.finish()),
         Arc::new(created_at.finish()),
         Arc::new(updated_at.finish()),
+        Arc::new(embedding_model.finish()),
+        Arc::new(embedding_dimension.finish()),
+        Arc::new(embedding_version.finish()),
         Arc::new(embedding.finish()),
     ];
     RecordBatch::try_new(schema, columns).map_err(|error| {
@@ -359,6 +380,36 @@ fn batches_to_rows(batches: Vec<RecordBatch>) -> Result<Vec<AgentMemoryRow>, Com
         rows.extend(batch_to_rows(&batch)?);
     }
     Ok(rows)
+}
+
+fn append_embedding(
+    builder: &mut FixedSizeListBuilder<Float32Builder>,
+    embedding: Option<&[f32]>,
+) -> Result<(), CommandError> {
+    match embedding {
+        Some(values) if values.len() == AGENT_MEMORY_EMBEDDING_DIM as usize => {
+            for value in values {
+                builder.values().append_value(*value);
+            }
+            builder.append(true);
+            Ok(())
+        }
+        Some(values) => Err(CommandError::system_fault(
+            "agent_memory_lance_embedding_dimension_mismatch",
+            format!(
+                "Xero agent-memory embedding has {} dimensions; expected {}.",
+                values.len(),
+                AGENT_MEMORY_EMBEDDING_DIM
+            ),
+        )),
+        None => {
+            for _ in 0..AGENT_MEMORY_EMBEDDING_DIM {
+                builder.values().append_null();
+            }
+            builder.append(false);
+            Ok(())
+        }
+    }
 }
 
 fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandError> {
@@ -381,6 +432,10 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
     let diagnostic_json_arr = column_str(batch, "diagnostic_json")?;
     let created_at_arr = column_str(batch, "created_at")?;
     let updated_at_arr = column_str(batch, "updated_at")?;
+    let embedding_model_arr = column_str(batch, "embedding_model")?;
+    let embedding_dimension_arr = column_i32(batch, "embedding_dimension")?;
+    let embedding_version_arr = column_str(batch, "embedding_version")?;
+    let embedding_arr = column_embedding(batch, "embedding")?;
 
     let mut rows = Vec::with_capacity(row_count);
     for index in 0..row_count {
@@ -419,6 +474,14 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
             diagnostic,
             created_at: require_str(created_at_arr, index, "created_at")?.to_string(),
             updated_at: require_str(updated_at_arr, index, "updated_at")?.to_string(),
+            embedding: optional_embedding(embedding_arr, index)?,
+            embedding_model: optional_str(embedding_model_arr, index),
+            embedding_dimension: if embedding_dimension_arr.is_null(index) {
+                None
+            } else {
+                Some(embedding_dimension_arr.value(index))
+            },
+            embedding_version: optional_str(embedding_version_arr, index),
         });
     }
     Ok(rows)
@@ -442,6 +505,23 @@ fn column_u8<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt8Array, C
     batch
         .column_by_name(name)
         .and_then(|array| array.as_any().downcast_ref::<UInt8Array>())
+        .ok_or_else(|| missing_column(name))
+}
+
+fn column_i32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array, CommandError> {
+    batch
+        .column_by_name(name)
+        .and_then(|array| array.as_any().downcast_ref::<Int32Array>())
+        .ok_or_else(|| missing_column(name))
+}
+
+fn column_embedding<'a>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> Result<&'a FixedSizeListArray, CommandError> {
+    batch
+        .column_by_name(name)
+        .and_then(|array| array.as_any().downcast_ref::<FixedSizeListArray>())
         .ok_or_else(|| missing_column(name))
 }
 
@@ -472,6 +552,38 @@ fn optional_str(array: &StringArray, index: usize) -> Option<String> {
     } else {
         Some(array.value(index).to_string())
     }
+}
+
+fn optional_embedding(
+    array: &FixedSizeListArray,
+    index: usize,
+) -> Result<Option<Vec<f32>>, CommandError> {
+    if array.is_null(index) {
+        return Ok(None);
+    }
+    if array.value_length() != AGENT_MEMORY_EMBEDDING_DIM {
+        return Err(CommandError::system_fault(
+            "agent_memory_lance_embedding_dimension_mismatch",
+            format!(
+                "Xero agent-memory Lance embedding dimension is {}; expected {}.",
+                array.value_length(),
+                AGENT_MEMORY_EMBEDDING_DIM
+            ),
+        ));
+    }
+    let values = array.value(index);
+    let values = values
+        .as_any()
+        .downcast_ref::<arrow_array::Float32Array>()
+        .ok_or_else(|| missing_column("embedding.item"))?;
+    let mut vector = Vec::with_capacity(AGENT_MEMORY_EMBEDDING_DIM as usize);
+    for value_index in 0..AGENT_MEMORY_EMBEDDING_DIM as usize {
+        if values.is_null(value_index) {
+            return Ok(None);
+        }
+        vector.push(values.value(value_index));
+    }
+    Ok(Some(vector))
 }
 
 fn decode_source_item_ids(value: &str) -> Result<Vec<String>, CommandError> {
@@ -585,8 +697,11 @@ impl ProjectMemoryStore {
         row.updated_at = row.created_at.clone();
         let dataset = self.dataset_dir.clone();
         let project_id = self.project_id.clone();
-        let memory_id = row.memory_id.clone();
         let result = runtime().block_on(async move {
+            let rows = scan_all(&dataset).await?;
+            if let Some(existing) = rows.iter().find(|existing| same_dedup_key(existing, &row)) {
+                return Ok::<AgentMemoryRow, CommandError>(existing.clone());
+            }
             let connection = ensure_connection(&dataset).await?;
             let table = open_or_create_table(&connection).await?;
             insert_row(&table, &row).await?;
@@ -595,9 +710,37 @@ impl ProjectMemoryStore {
         // Return the canonical stored shape so callers see the project_id we
         // stamped on the way in even if they passed a different one.
         let mut record = result.into_record();
-        record.memory_id = memory_id;
         record.project_id = project_id;
         Ok(record)
+    }
+
+    pub(crate) fn list_rows(
+        &self,
+        agent_session_id: Option<&str>,
+        filter: AgentMemoryListFilterOwned,
+    ) -> Result<Vec<AgentMemoryRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let agent_session_id = agent_session_id.map(|value| value.to_string());
+        runtime().block_on(async move {
+            let rows = scan_all(&dataset).await?;
+            Ok(filter_rows(rows, &agent_session_id, filter)
+                .into_iter()
+                .map(|row| stamp_project(row, &project_id))
+                .collect())
+        })
+    }
+
+    pub(crate) fn list_all_rows(&self) -> Result<Vec<AgentMemoryRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        runtime().block_on(async move {
+            let rows = scan_all(&dataset).await?;
+            Ok(rows
+                .into_iter()
+                .map(|row| stamp_project(row, &project_id))
+                .collect())
+        })
     }
 
     pub fn list(
@@ -762,6 +905,47 @@ impl ProjectMemoryStore {
             Ok::<usize, CommandError>(updated)
         })
     }
+
+    pub(crate) fn update_embedding(
+        &self,
+        memory_id: &str,
+        embedding: Vec<f32>,
+        embedding_model: String,
+        embedding_dimension: i32,
+        embedding_version: String,
+        updated_at: String,
+    ) -> Result<Option<AgentMemoryRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let memory_id = memory_id.to_string();
+        runtime().block_on(async move {
+            let mut row = fetch_row(&dataset, &memory_id).await?;
+            let Some(mut row) = row.take() else {
+                return Ok(None);
+            };
+            row.project_id = project_id.clone();
+            row.embedding = Some(embedding);
+            row.embedding_model = Some(embedding_model);
+            row.embedding_dimension = Some(embedding_dimension);
+            row.embedding_version = Some(embedding_version);
+            row.updated_at = updated_at;
+            replace_row(&dataset, row.clone()).await?;
+            Ok(Some(stamp_project(row, &project_id)))
+        })
+    }
+}
+
+fn same_dedup_key(left: &AgentMemoryRow, right: &AgentMemoryRow) -> bool {
+    if left.memory_id == right.memory_id {
+        return true;
+    }
+    left.scope == right.scope
+        && left.kind == right.kind
+        && left.agent_session_id == right.agent_session_id
+        && left.text_hash == right.text_hash
+        && left.source_run_id == right.source_run_id
+        && left.source_item_ids == right.source_item_ids
+        && !matches!(left.review_state, AgentMemoryReviewState::Rejected)
 }
 
 fn ordering_for_list(rows: &mut [AgentMemoryRow]) {
@@ -982,6 +1166,10 @@ mod tests {
             diagnostic: None,
             created_at: "2026-04-26T00:00:00Z".into(),
             updated_at: "2026-04-26T00:00:00Z".into(),
+            embedding: None,
+            embedding_model: None,
+            embedding_dimension: None,
+            embedding_version: None,
         }
     }
 

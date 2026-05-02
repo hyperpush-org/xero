@@ -4,6 +4,7 @@ import { getDesktopErrorMessage, type XeroDesktopAdapter } from '@/src/lib/xero-
 import { applyRuntimeRun, applyRuntimeSession, mapProjectSnapshot, type ProjectDetailView } from '@/src/lib/xero-model'
 import { mapAutonomousRunInspection } from '@/src/lib/xero-model/autonomous'
 import {
+  mapNotificationBroker,
   type NotificationDispatchDto,
   type NotificationRouteDto,
   type SyncNotificationAdaptersResponseDto,
@@ -71,6 +72,15 @@ type AutonomousRunLoadResult = {
 } | {
   ok: false
   inspection: AutonomousInspection
+  error: string
+}
+type RepositoryStatusLoadResult = {
+  ok: true
+  status: RepositoryStatusView
+  error: null
+} | {
+  ok: false
+  status: RepositoryStatusView | null
   error: string
 }
 
@@ -231,6 +241,7 @@ export function loadNotificationRoutesForProject({
 
 interface ProjectLoadRefs {
   latestLoadRequestRef: MutableRefObject<number>
+  projectDetailsRef: MutableRefObject<Record<string, ProjectDetailView>>
   runtimeSessionsRef: MutableRefObject<RuntimeSessionRecords>
   runtimeRunsRef: MutableRefObject<RuntimeRunRecords>
   autonomousRunsRef: MutableRefObject<AutonomousRunRecords>
@@ -282,6 +293,12 @@ function createAutonomousFallbackInspection(projectId: string, refs: ProjectLoad
   return {
     autonomousRun: refs.autonomousRunsRef.current[projectId] ?? null,
   }
+}
+
+function snapshotHasAutonomousRunProjection(
+  snapshot: { autonomousRun?: unknown },
+): boolean {
+  return Object.prototype.hasOwnProperty.call(snapshot, 'autonomousRun')
 }
 
 function applyAutonomousInspectionRecords(
@@ -345,6 +362,15 @@ export async function loadProjectState({
   setters.setAutonomousRunActionStatus('idle')
   setters.setNotificationRouteMutationError(null)
 
+  const cachedProject = refs.projectDetailsRef.current[projectId] ?? null
+  const cachedRepositoryStatus = cachedProject?.repositoryStatus ?? null
+  if (cachedProject) {
+    setters.setRepositoryStatus(cachedRepositoryStatus)
+    setters.setActiveProjectId(projectId)
+    setters.setActiveProject(cachedProject)
+    resetRepositoryDiffs(cachedRepositoryStatus)
+  }
+
   const runtimePromise: Promise<RuntimeLoadResult> = adapter
     .getRuntimeSession(projectId)
     .then((response) => ({
@@ -358,6 +384,7 @@ export async function loadProjectState({
       error: getDesktopErrorMessage(error),
     }))
 
+  const cachedDispatches = refs.notificationDispatchesRef.current[projectId] ?? []
   const brokerPromise: Promise<{
     ok: boolean
     dispatches: NotificationDispatchDto[]
@@ -371,7 +398,7 @@ export async function loadProjectState({
     }))
     .catch((error) => ({
       ok: false as const,
-      dispatches: refs.notificationDispatchesRef.current[projectId] ?? [],
+      dispatches: cachedDispatches,
       error: getDesktopErrorMessage(error),
     }))
 
@@ -395,23 +422,31 @@ export async function loadProjectState({
       })
 
   const snapshotPromise = adapter.getProjectSnapshot(projectId)
-  const repositoryStatusPromise = adapter.getRepositoryStatus(projectId)
+  const repositoryStatusPromise: Promise<RepositoryStatusLoadResult> = adapter
+    .getRepositoryStatus(projectId)
+    .then((response) => ({
+      ok: true as const,
+      status: mapRepositoryStatus(response),
+      error: null,
+    }))
+    .catch((error) => ({
+      ok: false as const,
+      status: cachedRepositoryStatus,
+      error: getDesktopErrorMessage(error),
+    }))
 
   try {
-    const [snapshotResponse, statusResponse, brokerResult, routeResult] = await Promise.all([
-      snapshotPromise,
-      repositoryStatusPromise,
-      brokerPromise,
-      routePromise,
-    ])
+    const snapshotResponse = await snapshotPromise
 
     if (refs.latestLoadRequestRef.current !== requestId) {
       return null
     }
 
-    refs.notificationDispatchesRef.current[projectId] = brokerResult.dispatches
+    const snapshotDispatches = cachedDispatches.length > 0
+      ? cachedDispatches
+      : snapshotResponse.notificationDispatches ?? []
     const snapshotProject = mapProjectSnapshot(snapshotResponse, {
-      notificationDispatches: brokerResult.dispatches,
+      notificationDispatches: snapshotDispatches,
     })
     const agentSessionId = snapshotProject.selectedAgentSessionId
     const runtimeRunPromise: Promise<RuntimeRunLoadResult> = adapter
@@ -427,25 +462,35 @@ export async function loadProjectState({
         error: getDesktopErrorMessage(error),
       }))
 
-    const autonomousRunPromise: Promise<AutonomousRunLoadResult> = adapter
-      .getAutonomousRun(projectId, agentSessionId)
-      .then((response) => ({
-        ok: true as const,
-        inspection: mapAutonomousRunInspection(response),
-        error: null,
-      }))
-      .catch((error) => ({
-        ok: false as const,
-        inspection: createAutonomousFallbackInspection(projectId, refs),
-        error: getDesktopErrorMessage(error),
-      }))
-    const status = mapRepositoryStatus(statusResponse)
+    const autonomousRunPromise: Promise<AutonomousRunLoadResult> = snapshotHasAutonomousRunProjection(snapshotResponse)
+      ? Promise.resolve({
+          ok: true as const,
+          inspection: {
+            autonomousRun: snapshotProject.autonomousRun ?? null,
+          },
+          error: null,
+        })
+      : adapter
+          .getAutonomousRun(projectId, agentSessionId)
+          .then((response) => ({
+            ok: true as const,
+            inspection: mapAutonomousRunInspection(response),
+            error: null,
+          }))
+          .catch((error) => ({
+            ok: false as const,
+            inspection: createAutonomousFallbackInspection(projectId, refs),
+            error: getDesktopErrorMessage(error),
+          }))
     const cachedRuntime = refs.runtimeSessionsRef.current[projectId] ?? null
     const cachedRuntimeRun = refs.runtimeRunsRef.current[projectId] ?? null
     const cachedAutonomousRun = refs.autonomousRunsRef.current[projectId] ?? snapshotProject.autonomousRun ?? null
     const nextProject = applyAutonomousRunState(
       applyRuntimeRun(
-        applyRuntimeSession(applyRepositoryStatus(snapshotProject, status), cachedRuntime),
+        applyRuntimeSession(
+          cachedRepositoryStatus ? applyRepositoryStatus(snapshotProject, cachedRepositoryStatus) : snapshotProject,
+          cachedRuntime,
+        ),
         cachedRuntimeRun,
       ),
       cachedAutonomousRun,
@@ -458,12 +503,25 @@ export async function loadProjectState({
         cachedRuntime ? applyRuntimeToProjectList(nextSummary, cachedRuntime) : nextSummary,
       ),
     )
-    setters.setRepositoryStatus(status)
+    setters.setRepositoryStatus(cachedRepositoryStatus)
     setters.setActiveProjectId(projectId)
     setters.setActiveProject(nextProject)
-    resetRepositoryDiffs(status)
+    resetRepositoryDiffs(cachedRepositoryStatus)
+    if (source === 'selection') {
+      setters.setIsProjectLoading(false)
+    }
 
-    const [runtimeResult, runtimeRunResult, autonomousRunResult] = await Promise.all([
+    const [
+      statusResult,
+      brokerResult,
+      routeResult,
+      runtimeResult,
+      runtimeRunResult,
+      autonomousRunResult,
+    ] = await Promise.all([
+      repositoryStatusPromise,
+      brokerPromise,
+      routePromise,
       runtimePromise,
       runtimeRunPromise,
       autonomousRunPromise,
@@ -472,6 +530,9 @@ export async function loadProjectState({
       return nextProject
     }
 
+    const finalDispatches = brokerResult.ok ? brokerResult.dispatches : snapshotDispatches
+    refs.notificationDispatchesRef.current[projectId] = finalDispatches
+    const finalStatus = statusResult.status
     const finalRuntime = runtimeResult.runtime ?? cachedRuntime
     const finalRuntimeRun = runtimeRunResult.ok ? runtimeRunResult.runtimeRun : runtimeRunResult.runtimeRun ?? cachedRuntimeRun
     const finalAutonomousRun = autonomousRunResult.ok
@@ -479,11 +540,20 @@ export async function loadProjectState({
       : autonomousRunResult.inspection.autonomousRun ?? cachedAutonomousRun
     const finalizedProject = applyAutonomousRunState(
       applyRuntimeRun(
-        finalRuntime ? applyRuntimeSession(nextProject, finalRuntime) : nextProject,
+        finalRuntime
+          ? applyRuntimeSession(
+              finalStatus ? applyRepositoryStatus(nextProject, finalStatus) : nextProject,
+              finalRuntime,
+            )
+          : finalStatus ? applyRepositoryStatus(nextProject, finalStatus) : nextProject,
         finalRuntimeRun,
       ),
       finalAutonomousRun,
     )
+    const finalizedProjectWithBroker = {
+      ...finalizedProject,
+      notificationBroker: mapNotificationBroker(projectId, finalDispatches),
+    }
 
     // Runtime/run/autonomous records and their load-error flags are secondary
     // data that the import UI (and most other UI) doesn't depend on directly.
@@ -546,6 +616,8 @@ export async function loadProjectState({
       }))
     })
 
+    setters.setRepositoryStatus(finalStatus)
+    resetRepositoryDiffs(finalStatus)
     // setActiveProject and setErrorMessage remain urgent — they drive
     // the import-complete transition and any error banner.
     setters.setActiveProject((currentProject) => {
@@ -553,10 +625,11 @@ export async function loadProjectState({
         return currentProject
       }
 
-      return finalizedProject
+      return finalizedProjectWithBroker
     })
     setters.setErrorMessage(
       combineLoadErrors(
+        statusResult.error,
         brokerResult.error,
         routeResult.error,
         runtimeResult.error,
@@ -565,7 +638,7 @@ export async function loadProjectState({
       ),
     )
 
-    return finalizedProject
+    return finalizedProjectWithBroker
   } catch (error) {
     if (refs.latestLoadRequestRef.current === requestId) {
       const nextMessage = getDesktopErrorMessage(error)

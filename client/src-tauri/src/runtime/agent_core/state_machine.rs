@@ -658,6 +658,7 @@ fn is_execution_tool(tool_name: &str) -> bool {
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_TOOL_ACCESS
             | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT
             | AUTONOMOUS_TOOL_TODO
             | AUTONOMOUS_TOOL_WEB_SEARCH
             | AUTONOMOUS_TOOL_WEB_FETCH
@@ -750,6 +751,8 @@ mod tests {
         RuntimeRunControlStateDto {
             active: RuntimeRunActiveControlSnapshotDto {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
                 provider_profile_id: None,
                 model_id: "fake".into(),
                 thinking_effort: None,
@@ -766,6 +769,8 @@ mod tests {
         AgentRunSnapshotRecord {
             run: project_store::AgentRunRecord {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
                 project_id: "project-1".into(),
                 agent_session_id: "session-1".into(),
                 run_id: "run-1".into(),

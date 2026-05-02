@@ -1,6 +1,6 @@
 use std::{env, process};
 
-use xero_desktop_lib::runtime::run_agent_harness_eval_suite;
+use xero_desktop_lib::runtime::run_xero_quality_eval_suites;
 
 fn main() {
     let format = env::args()
@@ -11,7 +11,7 @@ fn main() {
         eprintln!("Could not resolve current directory for harness evals: {error}");
         process::exit(2);
     });
-    let report = run_agent_harness_eval_suite(&repo_root);
+    let report = run_xero_quality_eval_suites(&repo_root);
 
     match format.as_str() {
         "json" => {

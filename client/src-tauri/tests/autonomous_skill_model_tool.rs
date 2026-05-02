@@ -105,6 +105,8 @@ fn runtime_controls() -> RuntimeRunControlStateDto {
     RuntimeRunControlStateDto {
         active: RuntimeRunActiveControlSnapshotDto {
             runtime_agent_id: xero_desktop_lib::commands::RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "test-model".into(),
             thinking_effort: None,
@@ -491,6 +493,7 @@ fn owned_agent_skill_descriptor_and_tool_search_are_gated_by_skill_support() {
     write_skill(&bundled_root, "find-skills", "find-skills", "Find skills.");
     let enabled_runtime = AutonomousToolRuntime::new(root.path())
         .expect("runtime")
+        .with_runtime_run_controls(controls.clone())
         .with_skill_tool(
             "project-1",
             skill_runtime(&root, source),

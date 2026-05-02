@@ -13,6 +13,20 @@ import {
   type StartAutonomousRunRequestDto,
 } from '@/src/lib/xero-model/autonomous'
 import {
+  agentDefinitionSummarySchema,
+  agentDefinitionVersionSummarySchema,
+  archiveAgentDefinitionRequestSchema,
+  getAgentDefinitionVersionRequestSchema,
+  listAgentDefinitionsRequestSchema,
+  listAgentDefinitionsResponseSchema,
+  type AgentDefinitionSummaryDto,
+  type AgentDefinitionVersionSummaryDto,
+  type ArchiveAgentDefinitionRequestDto,
+  type GetAgentDefinitionVersionRequestDto,
+  type ListAgentDefinitionsRequestDto,
+  type ListAgentDefinitionsResponseDto,
+} from '@/src/lib/xero-model/agent-definition'
+import {
   agentRunEventSchema,
   agentRunSchema,
   cancelAgentRunRequestSchema,
@@ -173,6 +187,7 @@ import {
   providerAuthSessionSchema,
   runtimeUpdatedPayloadSchema,
   archiveAgentSessionRequestSchema,
+  autoNameAgentSessionRequestSchema,
   createAgentSessionRequestSchema,
   deleteAgentSessionRequestSchema,
   getAgentSessionRequestSchema,
@@ -188,6 +203,7 @@ import {
   updateAgentSessionRequestSchema,
   type AgentSessionDto,
   type ArchiveAgentSessionRequestDto,
+  type AutoNameAgentSessionRequestDto,
   type CreateAgentSessionRequestDto,
   type DeleteAgentSessionRequestDto,
   type GetAgentSessionRequestDto,
@@ -260,6 +276,12 @@ import {
   type BrowserControlSettingsDto,
   type UpsertBrowserControlSettingsRequestDto,
 } from '@/src/lib/xero-model/browser'
+import {
+  soulSettingsSchema,
+  upsertSoulSettingsRequestSchema,
+  type SoulSettingsDto,
+  type UpsertSoulSettingsRequestDto,
+} from '@/src/lib/xero-model/soul'
 import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
@@ -347,9 +369,13 @@ const COMMANDS = {
   searchProject: 'search_project',
   replaceInProject: 'replace_in_project',
   createAgentSession: 'create_agent_session',
+  listAgentDefinitions: 'list_agent_definitions',
+  archiveAgentDefinition: 'archive_agent_definition',
+  getAgentDefinitionVersion: 'get_agent_definition_version',
   listAgentSessions: 'list_agent_sessions',
   getAgentSession: 'get_agent_session',
   updateAgentSession: 'update_agent_session',
+  autoNameAgentSession: 'auto_name_agent_session',
   archiveAgentSession: 'archive_agent_session',
   restoreAgentSession: 'restore_agent_session',
   deleteAgentSession: 'delete_agent_session',
@@ -427,6 +453,8 @@ const COMMANDS = {
   subscribeRuntimeStream: 'subscribe_runtime_stream',
   browserControlSettings: 'browser_control_settings',
   browserControlUpdateSettings: 'browser_control_update_settings',
+  soulSettings: 'soul_settings',
+  soulUpdateSettings: 'soul_update_settings',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
   browserHide: 'browser_hide',
@@ -642,9 +670,19 @@ export interface XeroDesktopAdapter {
   searchProject(request: SearchProjectRequestDto): Promise<SearchProjectResponseDto>
   replaceInProject(request: ReplaceInProjectRequestDto): Promise<ReplaceInProjectResponseDto>
   createAgentSession(request: CreateAgentSessionRequestDto): Promise<AgentSessionDto>
+  listAgentDefinitions(
+    request: ListAgentDefinitionsRequestDto,
+  ): Promise<ListAgentDefinitionsResponseDto>
+  archiveAgentDefinition(
+    request: ArchiveAgentDefinitionRequestDto,
+  ): Promise<AgentDefinitionSummaryDto>
+  getAgentDefinitionVersion(
+    request: GetAgentDefinitionVersionRequestDto,
+  ): Promise<AgentDefinitionVersionSummaryDto | null>
   listAgentSessions(request: ListAgentSessionsRequestDto): Promise<ListAgentSessionsResponseDto>
   getAgentSession(request: GetAgentSessionRequestDto): Promise<AgentSessionDto | null>
   updateAgentSession(request: UpdateAgentSessionRequestDto): Promise<AgentSessionDto>
+  autoNameAgentSession(request: AutoNameAgentSessionRequestDto): Promise<AgentSessionDto>
   archiveAgentSession(request: ArchiveAgentSessionRequestDto): Promise<AgentSessionDto>
   restoreAgentSession(request: RestoreAgentSessionRequestDto): Promise<AgentSessionDto>
   deleteAgentSession(request: DeleteAgentSessionRequestDto): Promise<void>
@@ -797,6 +835,8 @@ export interface XeroDesktopAdapter {
   browserControlUpdateSettings?(
     request: UpsertBrowserControlSettingsRequestDto,
   ): Promise<BrowserControlSettingsDto>
+  soulSettings?(): Promise<SoulSettingsDto>
+  soulUpdateSettings?(request: UpsertSoulSettingsRequestDto): Promise<SoulSettingsDto>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -973,13 +1013,36 @@ async function listenTyped<TPayload>(
     return () => undefined
   }
 
-  return listen(eventName, (event) => {
+  const unlisten = await listen(eventName, (event) => {
     try {
       handler(schema.parse(event.payload))
     } catch (error) {
       onError?.(normalizeError(error, `Event ${eventName}`))
     }
   })
+
+  return createSafeUnlisten(unlisten)
+}
+
+function createSafeUnlisten(unlisten: UnlistenFn): UnlistenFn {
+  let disposed = false
+
+  return () => {
+    if (disposed) {
+      return
+    }
+
+    disposed = true
+
+    try {
+      const maybePromise = unlisten() as unknown
+      if (maybePromise && typeof (maybePromise as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(maybePromise).catch(() => undefined)
+      }
+    } catch {
+      // Tauri can drop WebView listener internals during teardown; cleanup is best-effort.
+    }
+  }
 }
 
 async function createRuntimeStreamSubscription(
@@ -1461,6 +1524,32 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  listAgentDefinitions(request) {
+    const parsed = listAgentDefinitionsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.listAgentDefinitions, listAgentDefinitionsResponseSchema, {
+      request: {
+        projectId: parsed.projectId,
+        includeArchived: parsed.includeArchived,
+      },
+    })
+  },
+
+  archiveAgentDefinition(request) {
+    const parsed = archiveAgentDefinitionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.archiveAgentDefinition, agentDefinitionSummarySchema, {
+      request: parsed,
+    })
+  },
+
+  getAgentDefinitionVersion(request) {
+    const parsed = getAgentDefinitionVersionRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.getAgentDefinitionVersion,
+      agentDefinitionVersionSummarySchema.nullable(),
+      { request: parsed },
+    )
+  },
+
   listAgentSessions(request) {
     const parsed = listAgentSessionsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.listAgentSessions, listAgentSessionsResponseSchema, {
@@ -1481,6 +1570,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   updateAgentSession(request) {
     const parsed = updateAgentSessionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.updateAgentSession, agentSessionSchema, {
+      request: parsed,
+    })
+  },
+
+  autoNameAgentSession(request) {
+    const parsed = autoNameAgentSessionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autoNameAgentSession, agentSessionSchema, {
       request: parsed,
     })
   },
@@ -2109,6 +2205,17 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   browserControlUpdateSettings(request) {
     const parsedRequest = upsertBrowserControlSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.browserControlUpdateSettings, browserControlSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  soulSettings() {
+    return invokeTyped(COMMANDS.soulSettings, soulSettingsSchema)
+  },
+
+  soulUpdateSettings(request) {
+    const parsedRequest = upsertSoulSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.soulUpdateSettings, soulSettingsSchema, {
       request: parsedRequest,
     })
   },

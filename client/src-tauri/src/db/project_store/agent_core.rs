@@ -9,7 +9,7 @@ use crate::{
     db::database_path_for_repo,
 };
 
-use super::open_runtime_database;
+use super::{open_runtime_database, resolve_agent_definition_for_run};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRunStatus {
@@ -18,6 +18,7 @@ pub enum AgentRunStatus {
     Paused,
     Cancelling,
     Cancelled,
+    HandedOff,
     Completed,
     Failed,
 }
@@ -72,6 +73,8 @@ pub struct AgentRunDiagnosticRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRunRecord {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
@@ -163,6 +166,8 @@ pub struct AgentActionRequestRecord {
 pub struct AgentUsageRecord {
     pub project_id: String,
     pub run_id: String,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub provider_id: String,
     pub model_id: String,
     pub input_tokens: u64,
@@ -188,6 +193,8 @@ pub struct AgentRunSnapshotRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewAgentRunRecord {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: Option<String>,
+    pub agent_definition_version: Option<u32>,
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
@@ -274,12 +281,40 @@ pub fn insert_agent_run(
     record: &NewAgentRunRecord,
 ) -> Result<AgentRunSnapshotRecord, CommandError> {
     validate_agent_run(record)?;
+    let selection = match (
+        record.agent_definition_id.as_deref(),
+        record.agent_definition_version,
+    ) {
+        (Some(definition_id), Some(version)) => {
+            let mut selection = resolve_agent_definition_for_run(
+                repo_root,
+                Some(definition_id),
+                record.runtime_agent_id,
+            )?;
+            selection.version = version;
+            selection
+        }
+        (Some(definition_id), None) => resolve_agent_definition_for_run(
+            repo_root,
+            Some(definition_id),
+            record.runtime_agent_id,
+        )?,
+        (None, Some(version)) => {
+            let mut selection =
+                resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?;
+            selection.version = version;
+            selection
+        }
+        (None, None) => resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?,
+    };
     let connection = open_agent_database(repo_root)?;
     connection
         .execute(
             r#"
             INSERT INTO agent_runs (
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 project_id,
                 agent_session_id,
                 run_id,
@@ -292,10 +327,12 @@ pub fn insert_agent_run(
                 last_heartbeat_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'starting', ?7, ?8, ?9, ?9, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'starting', ?9, ?10, ?11, ?11, ?11)
             "#,
             params![
-                record.runtime_agent_id.as_str(),
+                selection.runtime_agent_id.as_str(),
+                selection.definition_id,
+                selection.version,
                 record.project_id,
                 record.agent_session_id,
                 record.run_id,
@@ -720,6 +757,7 @@ pub fn answer_pending_agent_action_requests(
 pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
+    validate_non_empty_text(&record.agent_definition_id, "agentDefinitionId")?;
     validate_non_empty_text(&record.provider_id, "providerId")?;
     validate_non_empty_text(&record.model_id, "modelId")?;
     let connection = open_agent_database(repo_root)?;
@@ -729,6 +767,8 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
             INSERT INTO agent_usage (
                 project_id,
                 run_id,
+                agent_definition_id,
+                agent_definition_version,
                 provider_id,
                 model_id,
                 input_tokens,
@@ -739,8 +779,10 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
                 estimated_cost_micros,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(project_id, run_id) DO UPDATE SET
+                agent_definition_id = excluded.agent_definition_id,
+                agent_definition_version = excluded.agent_definition_version,
                 provider_id = excluded.provider_id,
                 model_id = excluded.model_id,
                 input_tokens = excluded.input_tokens,
@@ -754,6 +796,8 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
             params![
                 record.project_id,
                 record.run_id,
+                record.agent_definition_id,
+                record.agent_definition_version,
                 record.provider_id,
                 record.model_id,
                 record.input_tokens,
@@ -789,7 +833,7 @@ pub fn update_agent_run_status(
             UPDATE agent_runs
             SET status = ?3,
                 last_heartbeat_at = ?4,
-                completed_at = CASE WHEN ?3 = 'completed' THEN ?4 ELSE NULL END,
+                completed_at = CASE WHEN ?3 IN ('completed', 'handed_off') THEN ?4 ELSE NULL END,
                 cancelled_at = CASE WHEN ?3 = 'cancelled' THEN ?4 ELSE NULL END,
                 last_error_code = ?5,
                 last_error_message = ?6,
@@ -852,6 +896,8 @@ pub fn load_agent_run(
             r#"
             SELECT
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 project_id,
                 agent_session_id,
                 run_id,
@@ -915,6 +961,8 @@ pub fn load_agent_usage(
             SELECT
                 project_id,
                 run_id,
+                agent_definition_id,
+                agent_definition_version,
                 provider_id,
                 model_id,
                 input_tokens,
@@ -1183,6 +1231,8 @@ pub fn list_agent_runs(
             r#"
             SELECT
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 project_id,
                 agent_session_id,
                 run_id,
@@ -1231,6 +1281,8 @@ fn list_agent_runs_for_session(
             r#"
             SELECT
                 runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
                 project_id,
                 agent_session_id,
                 run_id,
@@ -1271,6 +1323,12 @@ fn validate_agent_run(record: &NewAgentRunRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.run_id, "runId")?;
     validate_non_empty_text(&record.provider_id, "providerId")?;
     validate_non_empty_text(&record.model_id, "modelId")?;
+    if let Some(definition_id) = record.agent_definition_id.as_ref() {
+        validate_non_empty_text(definition_id, "agentDefinitionId")?;
+    }
+    if record.agent_definition_version == Some(0) {
+        return Err(CommandError::invalid_request("agentDefinitionVersion"));
+    }
     validate_non_empty_text(&record.prompt, "prompt")?;
     validate_non_empty_text(&record.system_prompt, "systemPrompt")
 }
@@ -1575,27 +1633,29 @@ fn read_agent_action_requests(
 }
 
 fn read_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecord> {
-    let last_error_code: Option<String> = row.get(13)?;
-    let last_error_message: Option<String> = row.get(14)?;
+    let last_error_code: Option<String> = row.get(15)?;
+    let last_error_message: Option<String> = row.get(16)?;
     Ok(AgentRunRecord {
         runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(0)?.as_str()),
-        project_id: row.get(1)?,
-        agent_session_id: row.get(2)?,
-        run_id: row.get(3)?,
-        provider_id: row.get(4)?,
-        model_id: row.get(5)?,
-        status: parse_agent_run_status(row.get::<_, String>(6)?.as_str()),
-        prompt: row.get(7)?,
-        system_prompt: row.get(8)?,
-        started_at: row.get(9)?,
-        last_heartbeat_at: row.get(10)?,
-        completed_at: row.get(11)?,
-        cancelled_at: row.get(12)?,
+        agent_definition_id: row.get(1)?,
+        agent_definition_version: read_positive_u32(row, 2)?,
+        project_id: row.get(3)?,
+        agent_session_id: row.get(4)?,
+        run_id: row.get(5)?,
+        provider_id: row.get(6)?,
+        model_id: row.get(7)?,
+        status: parse_agent_run_status(row.get::<_, String>(8)?.as_str()),
+        prompt: row.get(9)?,
+        system_prompt: row.get(10)?,
+        started_at: row.get(11)?,
+        last_heartbeat_at: row.get(12)?,
+        completed_at: row.get(13)?,
+        cancelled_at: row.get(14)?,
         last_error: match (last_error_code, last_error_message) {
             (Some(code), Some(message)) => Some(AgentRunDiagnosticRecord { code, message }),
             _ => None,
         },
-        updated_at: row.get(15)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -1603,16 +1663,23 @@ fn read_agent_usage_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentUsageR
     Ok(AgentUsageRecord {
         project_id: row.get(0)?,
         run_id: row.get(1)?,
-        provider_id: row.get(2)?,
-        model_id: row.get(3)?,
-        input_tokens: read_nonnegative_u64(row, 4)?,
-        output_tokens: read_nonnegative_u64(row, 5)?,
-        total_tokens: read_nonnegative_u64(row, 6)?,
-        cache_read_tokens: read_nonnegative_u64(row, 7)?,
-        cache_creation_tokens: read_nonnegative_u64(row, 8)?,
-        estimated_cost_micros: read_nonnegative_u64(row, 9)?,
-        updated_at: row.get(10)?,
+        agent_definition_id: row.get(2)?,
+        agent_definition_version: read_positive_u32(row, 3)?,
+        provider_id: row.get(4)?,
+        model_id: row.get(5)?,
+        input_tokens: read_nonnegative_u64(row, 6)?,
+        output_tokens: read_nonnegative_u64(row, 7)?,
+        total_tokens: read_nonnegative_u64(row, 8)?,
+        cache_read_tokens: read_nonnegative_u64(row, 9)?,
+        cache_creation_tokens: read_nonnegative_u64(row, 10)?,
+        estimated_cost_micros: read_nonnegative_u64(row, 11)?,
+        updated_at: row.get(12)?,
     })
+}
+
+fn read_positive_u32(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u32> {
+    let value: i64 = row.get(index)?;
+    u32::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 
 fn read_nonnegative_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
@@ -1627,6 +1694,7 @@ pub fn agent_run_status_sql_value(status: &AgentRunStatus) -> &'static str {
         AgentRunStatus::Paused => "paused",
         AgentRunStatus::Cancelling => "cancelling",
         AgentRunStatus::Cancelled => "cancelled",
+        AgentRunStatus::HandedOff => "handed_off",
         AgentRunStatus::Completed => "completed",
         AgentRunStatus::Failed => "failed",
     }
@@ -1685,6 +1753,7 @@ fn parse_agent_run_status(value: &str) -> AgentRunStatus {
         "paused" => AgentRunStatus::Paused,
         "cancelling" => AgentRunStatus::Cancelling,
         "cancelled" => AgentRunStatus::Cancelled,
+        "handed_off" => AgentRunStatus::HandedOff,
         "completed" => AgentRunStatus::Completed,
         "failed" => AgentRunStatus::Failed,
         _ => AgentRunStatus::Failed,
@@ -1694,6 +1763,8 @@ fn parse_agent_run_status(value: &str) -> AgentRunStatus {
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "engineer" => RuntimeAgentIdDto::Engineer,
+        "debug" => RuntimeAgentIdDto::Debug,
+        "agent_create" => RuntimeAgentIdDto::AgentCreate,
         _ => RuntimeAgentIdDto::Ask,
     }
 }

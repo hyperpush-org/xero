@@ -13,11 +13,12 @@ use tauri::Manager;
 use tempfile::TempDir;
 use xero_desktop_lib::{
     commands::{
-        cancel_agent_run, compact_session_history, start_agent_task, start_runtime_run,
-        update_runtime_run_controls, BrowserControlPreferenceDto, CancelAgentRunRequestDto,
-        CompactSessionHistoryRequestDto, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
-        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
-        StartAgentTaskRequestDto, StartRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
+        archive_agent_session, cancel_agent_run, compact_session_history, start_agent_task,
+        start_runtime_run, update_runtime_run_controls, ArchiveAgentSessionRequestDto,
+        BrowserControlPreferenceDto, CancelAgentRunRequestDto, CompactSessionHistoryRequestDto,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlInputDto, RuntimeRunControlStateDto, StartAgentTaskRequestDto,
+        StartRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
     },
     configure_builder_with_state, db,
     git::repository::CanonicalRepository,
@@ -161,6 +162,8 @@ fn yolo_controls() -> RuntimeRunControlStateDto {
     RuntimeRunControlStateDto {
         active: RuntimeRunActiveControlSnapshotDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "test-model".into(),
             thinking_effort: None,
@@ -173,9 +176,22 @@ fn yolo_controls() -> RuntimeRunControlStateDto {
     }
 }
 
+fn yolo_controls_input() -> RuntimeRunControlInputDto {
+    RuntimeRunControlInputDto {
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_definition_id: None,
+        provider_profile_id: None,
+        model_id: "test-model".into(),
+        thinking_effort: None,
+        approval_mode: RuntimeRunApprovalModeDto::Yolo,
+        plan_mode_required: false,
+    }
+}
+
 fn suggest_controls_input() -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
-        runtime_agent_id: RuntimeAgentIdDto::Ask,
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_definition_id: None,
         provider_profile_id: None,
         model_id: "test-model".into(),
         thinking_effort: None,
@@ -205,6 +221,58 @@ fn wait_for_agent_run_status(
                 assert!(
                     Instant::now() < deadline,
                     "owned agent run {run_id} was not persisted while waiting for {status:?}: {error:?}"
+                );
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_agent_run_inactive(state: &DesktopState, run_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let active = state
+            .agent_run_supervisor()
+            .is_active(run_id)
+            .expect("check owned-agent supervisor activity");
+        if !active {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "owned agent run {run_id} remained active after reaching a terminal status"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_runtime_run_status(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    status: db::project_store::RuntimeRunStatus,
+) -> db::project_store::RuntimeRunSnapshotRecord {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match db::project_store::load_runtime_run(repo_root, project_id, agent_session_id) {
+            Ok(Some(snapshot)) if snapshot.run.status == status => return snapshot,
+            Ok(Some(snapshot)) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} did not reach {status:?}; last status was {:?}",
+                    snapshot.run.status
+                );
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} was missing while waiting for {status:?}"
+                );
+            }
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} could not be loaded while waiting for {status:?}: {error:?}"
                 );
             }
         }
@@ -245,7 +313,10 @@ fn append_auto_compact_fixture_messages(
 
 #[test]
 fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
-    let registry = ToolRegistry::builtin();
+    let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        ..ToolRegistryOptions::default()
+    });
     let descriptor_names = registry
         .descriptors()
         .iter()
@@ -258,6 +329,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "git_status",
         "git_diff",
         "tool_access",
+        "project_context",
         "edit",
         "write",
         "patch",
@@ -338,6 +410,18 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
             .expect("tool access groups description")
             .contains("process_manager")
     );
+    let project_context = registry
+        .descriptor("project_context")
+        .expect("project context descriptor");
+    assert_eq!(project_context.input_schema["required"], json!(["action"]));
+    assert!(project_context.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("project context action enum")
+        .contains(&json!("search_project_records")));
+    assert!(project_context.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("project context action enum")
+        .contains(&json!("propose_record_candidate")));
 
     let process_manager = registry
         .descriptor("process_manager")
@@ -422,6 +506,7 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     let read_only_names = read_only.descriptor_names();
     assert!(read_only_names.contains("read"));
     assert!(read_only_names.contains("tool_access"));
+    assert!(read_only_names.contains("project_context"));
     assert!(read_only_names.contains("tool_search"));
     assert!(read_only_names.contains("todo"));
     assert!(read_only_names.contains("git_diff"));
@@ -577,7 +662,7 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
             "tool:command_echo verified-file-tools",
         ]
         .join("\n"),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -652,7 +737,7 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
             "tool:mcp_list",
         ]
         .join("\n"),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -903,7 +988,7 @@ fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
 }
 
 #[test]
-fn owned_agent_continuation_rejects_over_budget_prompt_without_mutating_history() {
+fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -933,8 +1018,23 @@ fn owned_agent_continuation_rejects_over_budget_prompt_without_mutating_history(
         provider_config: provider_config.clone(),
     })
     .expect("create owned agent run");
+    db::project_store::upsert_agent_context_policy_settings(
+        &repo_root,
+        &db::project_store::NewAgentContextPolicySettingsRecord {
+            project_id: project_id.clone(),
+            scope: db::project_store::AgentContextPolicySettingsScope::Project,
+            agent_session_id: None,
+            auto_compact_enabled: false,
+            auto_handoff_enabled: false,
+            compact_threshold_percent: 75,
+            handoff_threshold_percent: 90,
+            raw_tail_message_count: 8,
+            updated_at: "2026-04-26T00:00:00Z".into(),
+        },
+    )
+    .expect("disable automatic context handoff for prompt mutation guard");
     let before = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
-        .expect("load run before over-budget continuation");
+        .expect("load run before blocked continuation");
     let before_message_count = before.messages.len();
 
     let continue_tool_runtime = AutonomousToolRuntime::for_project(
@@ -955,17 +1055,21 @@ fn owned_agent_continuation_rejects_over_budget_prompt_without_mutating_history(
         answer_pending_actions: false,
         auto_compact: None,
     })
-    .expect_err("over-budget continuation should be rejected before mutation");
+    .expect_err("blocked context handoff should reject before prompt mutation");
 
-    assert_eq!(error.code, "agent_context_budget_exceeded");
+    assert_eq!(error.code, "agent_context_handoff_blocked");
     let after = db::project_store::load_agent_run(&repo_root, &project_id, run_id)
-        .expect("load run after over-budget continuation");
+        .expect("load run after blocked continuation");
     assert_eq!(after.messages.len(), before_message_count);
     assert!(!after
         .messages
         .iter()
         .any(|message| message.content == huge_prompt));
     assert_eq!(after.run.status, before.run.status);
+    let handoffs =
+        db::project_store::list_agent_handoff_lineage_for_source(&repo_root, &project_id, run_id)
+            .expect("list handoff lineage after blocked continuation");
+    assert!(handoffs.is_empty());
 }
 
 #[test]
@@ -1233,6 +1337,8 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
         &repo_root,
         &db::project_store::NewAgentRunRecord {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: run_id.into(),
@@ -1355,6 +1461,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
         prompt: "Please inspect the file.\ntool:read src/tracked.txt".into(),
         controls: Some(RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
             provider_profile_id: None,
             model_id: "fake-model".into(),
             thinking_effort: None,
@@ -1395,7 +1502,7 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-write-1".into(),
         prompt: "Please update the tracked file.\ntool:read src/tracked.txt\ntool:write src/tracked.txt gamma\n".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -1466,7 +1573,7 @@ fn owned_agent_omits_sensitive_file_content_from_rollback_checkpoints() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-sensitive-rollback-1".into(),
         prompt: "Please update the env file.\ntool:read .env\ntool:write .env REDACTED=1\n".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -1508,7 +1615,7 @@ fn owned_agent_refuses_unobserved_existing_file_writes() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-unobserved-write-1".into(),
         prompt: "Please update the tracked file.\ntool:write src/tracked.txt gamma\n".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -1554,7 +1661,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-approved-replay-1".into(),
         prompt: "Please update the tracked file.\ntool:write src/tracked.txt gamma\n".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -1577,7 +1684,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         project_id: project_id.clone(),
         run_id: "owned-run-approved-replay-1".into(),
         prompt: "Approved. Continue.".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         answer_pending_actions: true,
@@ -1634,7 +1741,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-stale-write-1".into(),
         prompt: "Please update safely.\ntool:read src/tracked.txt\ntool:command_sh printf outside > src/tracked.txt\ntool:write src/tracked.txt gamma\n".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -1764,7 +1871,7 @@ fn owned_agent_command_tools_emit_command_output_events() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-command-1".into(),
         prompt: "Please prove command output streaming.\ntool:command_echo hello-xero".into(),
-        controls: None,
+        controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
     })
@@ -2185,8 +2292,12 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
     assert_eq!(runtime_run.transport.kind, "internal");
     assert_eq!(runtime_run.transport.endpoint, "xero://owned-agent");
     assert_eq!(
+        runtime_run.controls.active.runtime_agent_id,
+        RuntimeAgentIdDto::Ask
+    );
+    assert_eq!(
         runtime_run.controls.active.approval_mode,
-        RuntimeRunApprovalModeDto::Yolo
+        RuntimeRunApprovalModeDto::Suggest
     );
 }
 
@@ -2222,6 +2333,54 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
         tool_call.tool_name == "read"
             && tool_call.state == db::project_store::AgentToolCallState::Succeeded
     }));
+}
+
+#[test]
+fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let agent_session_id = db::project_store::DEFAULT_AGENT_SESSION_ID.to_string();
+
+    let runtime_run = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            initial_controls: None,
+            initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+        },
+    )
+    .expect("start runtime run should execute owned agent task from initial prompt");
+
+    wait_for_agent_run_status(
+        &repo_root,
+        &project_id,
+        &runtime_run.run_id,
+        db::project_store::AgentRunStatus::Completed,
+    );
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
+
+    let archived = archive_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ArchiveAgentSessionRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+        },
+    )
+    .expect("archive should stop the idle owned runtime run first");
+
+    assert!(archived.archived_at.is_some());
+    let stopped = wait_for_runtime_run_status(
+        &repo_root,
+        &project_id,
+        &agent_session_id,
+        db::project_store::RuntimeRunStatus::Stopped,
+    );
+    assert_eq!(stopped.run.run_id, runtime_run.run_id);
+    assert!(stopped.run.stopped_at.is_some());
 }
 
 #[test]
@@ -2267,6 +2426,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
         tool_call.tool_name == "read"
             && tool_call.state == db::project_store::AgentToolCallState::Succeeded
     }));
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
 
     update_runtime_run_controls(
         app.handle().clone(),
@@ -2307,7 +2467,7 @@ fn start_agent_task_returns_running_before_background_driver_finishes() {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             prompt: "Run a slow command.\ntool:command_sh sleep 2".into(),
-            controls: None,
+            controls: Some(yolo_controls_input()),
         },
     )
     .expect("start agent task should return initial running snapshot");

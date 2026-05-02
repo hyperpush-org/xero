@@ -17,7 +17,7 @@ use crate::{
     registry::read_registry,
     runtime::{
         cancel_owned_agent_run, create_owned_agent_run, drive_owned_agent_continuation,
-        drive_owned_agent_run, prepare_owned_agent_continuation, subscribe_agent_events,
+        drive_owned_agent_run, prepare_owned_agent_continuation_for_drive, subscribe_agent_events,
         AgentAutoCompactPreference, AgentEventSubscription, AgentRunSupervisor,
         AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
     },
@@ -70,7 +70,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
     let LocatedAgentRun {
         repo_root,
         project_id,
-        snapshot: located_snapshot,
+        ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
     ensure_agent_run_not_active(state.inner(), &request.run_id)?;
     let tool_runtime = AutonomousToolRuntime::for_project(&app, state.inner(), &project_id)?;
@@ -86,12 +86,15 @@ pub fn send_agent_message<R: Runtime + 'static>(
         answer_pending_actions: false,
         auto_compact: auto_compact_preference(request.auto_compact)?,
     };
-    let snapshot = prepare_owned_agent_continuation(&continuation)?;
-    spawn_owned_agent_continuation(
-        state.inner().agent_run_supervisor().clone(),
-        located_snapshot.run.agent_session_id,
-        continuation,
-    )?;
+    let prepared = prepare_owned_agent_continuation_for_drive(&continuation)?;
+    let snapshot = prepared.snapshot.clone();
+    if prepared.drive_required {
+        spawn_owned_agent_continuation(
+            state.inner().agent_run_supervisor().clone(),
+            snapshot.run.agent_session_id.clone(),
+            prepared.drive_request,
+        )?;
+    }
     Ok(agent_run_dto(snapshot))
 }
 
@@ -129,7 +132,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
     let LocatedAgentRun {
         repo_root,
         project_id,
-        snapshot: located_snapshot,
+        ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
     ensure_agent_run_not_active(state.inner(), &request.run_id)?;
     let tool_runtime = AutonomousToolRuntime::for_project(&app, state.inner(), &project_id)?;
@@ -145,12 +148,15 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         answer_pending_actions: true,
         auto_compact: auto_compact_preference(request.auto_compact)?,
     };
-    let snapshot = prepare_owned_agent_continuation(&continuation)?;
-    spawn_owned_agent_continuation(
-        state.inner().agent_run_supervisor().clone(),
-        located_snapshot.run.agent_session_id,
-        continuation,
-    )?;
+    let prepared = prepare_owned_agent_continuation_for_drive(&continuation)?;
+    let snapshot = prepared.snapshot.clone();
+    if prepared.drive_required {
+        spawn_owned_agent_continuation(
+            state.inner().agent_run_supervisor().clone(),
+            snapshot.run.agent_session_id.clone(),
+            prepared.drive_request,
+        )?;
+    }
     Ok(agent_run_dto(snapshot))
 }
 
@@ -205,6 +211,7 @@ pub fn subscribe_agent_stream<R: Runtime>(
         dto.status,
         crate::commands::AgentRunStatusDto::Paused
             | crate::commands::AgentRunStatusDto::Cancelled
+            | crate::commands::AgentRunStatusDto::HandedOff
             | crate::commands::AgentRunStatusDto::Completed
             | crate::commands::AgentRunStatusDto::Failed
     );
@@ -518,6 +525,18 @@ mod tests {
         let repo_root = root.path();
         let project_id = "project-1";
         let run_id = "run-1";
+        let root_path = repo_root.to_string_lossy().into_owned();
+        let registry_path = root.path().join("app-data").join("xero.db");
+        crate::db::configure_project_database_paths(&registry_path);
+        crate::registry::replace_projects(
+            &registry_path,
+            vec![crate::registry::RegistryProjectRecord {
+                project_id: project_id.into(),
+                repository_id: "repo-1".into(),
+                root_path: root_path.clone(),
+            }],
+        )
+        .expect("seed registry");
         let database_path = crate::db::database_path_for_repo(repo_root);
         std::fs::create_dir_all(database_path.parent().expect("database parent"))
             .expect("create xero state dir");
@@ -533,7 +552,6 @@ mod tests {
                 [project_id],
             )
             .expect("insert project");
-        let root_path = repo_root.to_string_lossy().into_owned();
         connection
             .execute(
                 "INSERT INTO repositories (id, project_id, root_path, display_name) VALUES ('repo-1', ?1, ?2, 'repo')",
@@ -552,6 +570,8 @@ mod tests {
             repo_root,
             &NewAgentRunRecord {
                 runtime_agent_id: crate::commands::RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
                 project_id: project_id.into(),
                 agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
                 run_id: run_id.into(),

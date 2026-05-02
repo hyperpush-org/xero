@@ -53,7 +53,7 @@ export const runtimeStreamItemSchema = z
     sequence: z.number().int().positive(),
     sessionId: nonEmptyOptionalTextSchema,
     flowId: nonEmptyOptionalTextSchema,
-    text: nonEmptyOptionalTextSchema,
+    text: z.string().min(1).nullable().optional(),
     transcriptRole: runtimeStreamTranscriptRoleSchema.nullable().optional(),
     toolCallId: nonEmptyOptionalTextSchema,
     toolName: nonEmptyOptionalTextSchema,
@@ -346,6 +346,7 @@ export interface RuntimeStreamActivityItemView extends RuntimeStreamBaseItemView
   kind: 'activity'
   code: string
   title: string
+  text?: string | null
   detail: string | null
 }
 
@@ -416,6 +417,87 @@ function capRecent<T>(values: T[], limit: number): T[] {
   return values.length <= limit ? values : values.slice(values.length - limit)
 }
 
+function compareRuntimeStreamItemsBySequence(
+  left: RuntimeStreamViewItem,
+  right: RuntimeStreamViewItem,
+): number {
+  return left.sequence === right.sequence
+    ? left.id.localeCompare(right.id)
+    : left.sequence - right.sequence
+}
+
+function capRuntimeTimelineItems(
+  currentItems: RuntimeStreamViewItem[],
+  transcriptItems: RuntimeStreamTranscriptItemView[],
+  nextItem: RuntimeStreamViewItem,
+): RuntimeStreamViewItem[] {
+  let nonTranscriptItems: RuntimeStreamViewItem[] = currentItems.filter((item) => item.kind !== 'transcript')
+
+  if (nextItem.kind === 'tool') {
+    nonTranscriptItems = [
+      ...nonTranscriptItems.filter(
+        (item) => !(item.kind === 'tool' && item.toolCallId === nextItem.toolCallId),
+      ),
+      nextItem,
+    ]
+  } else if (nextItem.kind === 'action_required') {
+    nonTranscriptItems = [
+      ...nonTranscriptItems.filter(
+        (item) =>
+          !(
+            item.kind === 'action_required' &&
+            item.runId === nextItem.runId &&
+            item.actionId === nextItem.actionId
+          ),
+      ),
+      nextItem,
+    ]
+  } else if (isReasoningActivityItem(nextItem)) {
+    nonTranscriptItems = mergeReasoningActivityTimelineItem(nonTranscriptItems, nextItem)
+  } else if (nextItem.kind !== 'transcript') {
+    nonTranscriptItems = [...nonTranscriptItems, nextItem]
+  }
+
+  return [
+    ...transcriptItems,
+    ...capRecent(nonTranscriptItems, MAX_RUNTIME_STREAM_ITEMS),
+  ].sort(compareRuntimeStreamItemsBySequence)
+}
+
+function isReasoningActivityItem(
+  item: RuntimeStreamViewItem,
+): item is RuntimeStreamActivityItemView {
+  return item.kind === 'activity' && item.code === 'owned_agent_reasoning'
+}
+
+function reasoningActivityText(item: RuntimeStreamActivityItemView): string {
+  return item.text ?? item.detail ?? ''
+}
+
+function mergeReasoningActivityTimelineItem(
+  currentItems: RuntimeStreamViewItem[],
+  nextItem: RuntimeStreamActivityItemView,
+): RuntimeStreamViewItem[] {
+  const previousItem = currentItems.at(-1)
+  if (!previousItem || !isReasoningActivityItem(previousItem) || previousItem.runId !== nextItem.runId) {
+    return [...currentItems, nextItem]
+  }
+
+  const mergedText = `${reasoningActivityText(previousItem)}${reasoningActivityText(nextItem)}`
+  return [
+    ...currentItems.slice(0, -1),
+    {
+      ...previousItem,
+      sequence: nextItem.sequence,
+      createdAt: nextItem.createdAt,
+      text: mergedText,
+      detail: mergedText.trim().length > 0
+        ? mergedText.trim()
+        : previousItem.detail ?? nextItem.detail,
+    },
+  ]
+}
+
 function uniqueRuntimeStreamKinds(kinds: RuntimeStreamItemKindDto[]): RuntimeStreamItemKindDto[] {
   return Array.from(new Set(kinds))
 }
@@ -427,6 +509,38 @@ function ensureRuntimeStreamText(value: string | null | undefined, field: string
   }
 
   return normalized
+}
+
+function ensureRuntimeTranscriptText(value: string | null | undefined): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('Xero received a transcript item without non-empty text.')
+  }
+
+  return value
+}
+
+function mergeRuntimeTranscriptItems(
+  currentItems: RuntimeStreamTranscriptItemView[],
+  nextItem: RuntimeStreamTranscriptItemView,
+): RuntimeStreamTranscriptItemView[] {
+  if (nextItem.role !== 'assistant') {
+    return capRecent([...currentItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
+  }
+
+  const previousItem = currentItems.at(-1)
+  if (previousItem?.runId !== nextItem.runId || previousItem.role !== nextItem.role) {
+    return capRecent([...currentItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
+  }
+
+  const mergedItem: RuntimeStreamTranscriptItemView = {
+    ...previousItem,
+    id: previousItem.id,
+    sequence: nextItem.sequence,
+    createdAt: nextItem.createdAt,
+    text: `${previousItem.text}${nextItem.text}`,
+  }
+
+  return capRecent([...currentItems.slice(0, -1), mergedItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
 }
 
 function normalizeRuntimeToolSummary(summary: ToolResultSummaryDto | null | undefined): ToolResultSummaryDto | null {
@@ -518,7 +632,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
 
   switch (event.item.kind) {
     case 'transcript': {
-      const text = ensureRuntimeStreamText(event.item.text, 'text', 'transcript')
+      const text = ensureRuntimeTranscriptText(event.item.text)
       return {
         id: runtimeStreamItemId('transcript', itemRunId, event.item.sequence),
         kind: 'transcript',
@@ -593,6 +707,9 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         createdAt: event.item.createdAt,
         code,
         title,
+        text: typeof event.item.text === 'string' && event.item.text.length > 0
+          ? event.item.text
+          : null,
         detail: normalizeOptionalText(event.item.detail),
       }
     }
@@ -739,18 +856,6 @@ export function mergeRuntimeStreamEvent(
   }
 
   const nextItem = normalizeRuntimeStreamItem(event)
-  const nextItems =
-    nextItem.kind === 'action_required'
-      ? capRecent(
-          [
-            ...base.items.filter(
-              (item) => !(item.kind === 'action_required' && item.runId === nextItem.runId && item.actionId === nextItem.actionId),
-            ),
-            nextItem,
-          ],
-          MAX_RUNTIME_STREAM_ITEMS,
-        )
-      : capRecent([...base.items, nextItem], MAX_RUNTIME_STREAM_ITEMS)
   const nextToolCalls =
     nextItem.kind === 'tool'
       ? capRecent(
@@ -767,8 +872,9 @@ export function mergeRuntimeStreamEvent(
       : base.skillItems
   const nextTranscriptItems =
     nextItem.kind === 'transcript'
-      ? capRecent([...base.transcriptItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
+      ? mergeRuntimeTranscriptItems(base.transcriptItems, nextItem)
       : base.transcriptItems
+  const nextItems = capRuntimeTimelineItems(base.items, nextTranscriptItems, nextItem)
   const nextActivityItems =
     nextItem.kind === 'activity'
       ? capRecent([...base.activityItems, nextItem], MAX_RUNTIME_STREAM_ACTIVITY)

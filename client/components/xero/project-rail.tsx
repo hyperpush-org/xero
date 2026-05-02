@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -44,6 +45,7 @@ interface ProjectRailProps {
   isImporting: boolean
   projectRemovalStatus: 'idle' | 'running'
   pendingProjectRemovalId: string | null
+  pendingProjectSelectionId?: string | null
   errorMessage: string | null
   onSelectProject: (projectId: string) => void
   onImportProject: () => void
@@ -99,6 +101,7 @@ export function ProjectRail({
   isImporting,
   projectRemovalStatus,
   pendingProjectRemovalId,
+  pendingProjectSelectionId = null,
   errorMessage,
   onSelectProject,
   onImportProject,
@@ -119,7 +122,9 @@ export function ProjectRail({
   const [width, setWidth] = useState(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
+  const [optimisticProjectId, setOptimisticProjectId] = useState<string | null>(null)
   const targetWidth = collapsed ? COLLAPSED_WIDTH : width
+  const displayedActiveProjectId = optimisticProjectId ?? pendingProjectSelectionId ?? activeProjectId
   const {
     contentTransition: railContentTransition,
     layoutTransition: railLayoutTransition,
@@ -142,6 +147,42 @@ export function ProjectRail({
   useEffect(() => {
     writePersistedWidth(width)
   }, [width])
+
+  useEffect(() => {
+    if (!optimisticProjectId) {
+      return
+    }
+
+    if (
+      activeProjectId === optimisticProjectId ||
+      !projects.some((project) => project.id === optimisticProjectId)
+    ) {
+      setOptimisticProjectId(null)
+    }
+  }, [activeProjectId, optimisticProjectId, projects])
+
+  const handleSelectProject = useCallback(
+    (projectId: string) => {
+      setOptimisticProjectId((currentProjectId) => {
+        const currentDisplayedProjectId =
+          currentProjectId ?? pendingProjectSelectionId ?? activeProjectId
+        return currentDisplayedProjectId === projectId ? currentProjectId : projectId
+      })
+      onSelectProject(projectId)
+    },
+    [activeProjectId, onSelectProject, pendingProjectSelectionId],
+  )
+
+  const handlePreviewProject = useCallback(
+    (projectId: string) => {
+      setOptimisticProjectId((currentProjectId) => {
+        const currentDisplayedProjectId =
+          currentProjectId ?? pendingProjectSelectionId ?? activeProjectId
+        return currentDisplayedProjectId === projectId ? currentProjectId : projectId
+      })
+    },
+    [activeProjectId, pendingProjectSelectionId],
+  )
 
   const handleResizeStart = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (collapsed || event.button !== 0) return
@@ -286,27 +327,25 @@ export function ProjectRail({
             No projects imported yet.
           </div>
         ) : (
-          <motion.ul
+          <ul
             className={cn('flex flex-col', collapsed ? 'gap-1.5 px-1.5' : 'gap-1.5 px-1.5 py-1.5')}
-            layout
-            transition={railLayoutTransition}
           >
             {projects.map((project) => (
-              <motion.li key={project.id} layout="position" transition={railLayoutTransition}>
+              <li key={project.id}>
                 <ProjectRailItem
                   collapsed={collapsed}
                   contentTransition={railContentTransition}
                   project={project}
-                  isActive={project.id === activeProjectId}
+                  isActive={project.id === displayedActiveProjectId}
                   isRemovalPending={project.id === pendingProjectRemovalId}
                   isRemovalLocked={isRemovingProject}
-                  layoutTransition={railLayoutTransition}
+                  onPreviewProject={handlePreviewProject}
                   onRemoveProject={onRemoveProject}
-                  onSelectProject={onSelectProject}
+                  onSelectProject={handleSelectProject}
                 />
-              </motion.li>
+              </li>
             ))}
-          </motion.ul>
+          </ul>
         )}
       </div>
 
@@ -363,20 +402,20 @@ interface ProjectRailItemProps {
   isRemovalPending: boolean
   isRemovalLocked: boolean
   contentTransition: Transition
-  layoutTransition: Transition
   onSelectProject: (projectId: string) => void
+  onPreviewProject: (projectId: string) => void
   onRemoveProject: (projectId: string) => void
 }
 
-function ProjectRailItem({
+const ProjectRailItem = memo(function ProjectRailItem({
   project,
   collapsed,
   contentTransition,
   isActive,
   isRemovalPending,
   isRemovalLocked,
-  layoutTransition,
   onSelectProject,
+  onPreviewProject,
   onRemoveProject,
 }: ProjectRailItemProps) {
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -385,7 +424,7 @@ function ProjectRailItem({
   return (
     <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
       <div className="group relative">
-        <motion.button
+        <button
           className={cn(
             'relative w-full transition-colors duration-150',
             collapsed
@@ -398,27 +437,28 @@ function ProjectRailItem({
                   isActive
                     ? 'border border-border/40 bg-primary/[0.08]'
                     : 'border border-transparent hover:bg-secondary/50',
-                ),
+            ),
           )}
-          layout
           onClick={() => onSelectProject(project.id)}
+          onPointerDown={(event) => {
+            if (event.button === 0) {
+              onPreviewProject(project.id)
+            }
+          }}
           title={collapsed ? project.name : undefined}
-          transition={layoutTransition}
           type="button"
         >
-          <motion.div
+          <div
             className={cn(
               'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-[10px] font-semibold leading-none transition-colors duration-150',
               isActive
                 ? 'border-primary/45 bg-primary/15 text-primary'
-                : 'border-border/70 bg-secondary/70 text-muted-foreground group-hover:border-border group-hover:bg-secondary group-hover:text-foreground',
+              : 'border-border/70 bg-secondary/70 text-muted-foreground group-hover:border-border group-hover:bg-secondary group-hover:text-foreground',
             )}
-            layout="position"
-            transition={layoutTransition}
           >
             <span aria-hidden="true">{projectInitial}</span>
             {collapsed ? <span className="sr-only">{project.name}</span> : null}
-          </motion.div>
+          </div>
 
           <motion.div
             animate={{
@@ -442,7 +482,7 @@ function ProjectRailItem({
               </span>
             </div>
           </motion.div>
-        </motion.button>
+        </button>
 
         {!collapsed ? (
           <button
@@ -491,7 +531,7 @@ function ProjectRailItem({
       </AlertDialogContent>
     </AlertDialog>
   )
-}
+})
 
 interface ProjectRailSessionsSectionProps {
   railCollapsed: boolean

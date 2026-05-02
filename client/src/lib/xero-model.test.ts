@@ -15,6 +15,8 @@ import {
   mapRepositoryStatus,
   mapRuntimeRun,
   mapRuntimeSession,
+  MAX_RUNTIME_STREAM_ITEMS,
+  MAX_RUNTIME_STREAM_TRANSCRIPTS,
   mergeRuntimeStreamEvent,
   mergeRuntimeUpdated,
   projectSnapshotResponseSchema,
@@ -342,6 +344,36 @@ function makeStreamEvent(
       ...item,
     }),
   }
+}
+
+function makeTranscriptStreamEvent(
+  text: string,
+  options: {
+    sequence: number
+    role?: RuntimeStreamItemDto['transcriptRole']
+    createdAt?: string
+  },
+) {
+  return makeStreamEvent(
+    {
+      kind: 'transcript',
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      text,
+      transcriptRole: options.role ?? 'assistant',
+      toolCallId: null,
+      toolName: null,
+      toolState: null,
+      actionType: null,
+      title: null,
+      detail: null,
+      code: null,
+      message: null,
+      retryable: null,
+      createdAt: options.createdAt ?? `2026-04-13T20:03:${String(options.sequence).padStart(2, '0')}Z`,
+    },
+    { sequence: options.sequence },
+  )
 }
 
 describe('xero-model', () => {
@@ -1243,6 +1275,7 @@ describe('xero-model', () => {
         },
         controls: {
           active: {
+            runtimeAgentId: 'engineer',
             modelId: 'azure-openai/gpt-4.1-mini',
             thinkingEffort: 'medium',
             approvalMode: 'suggest',
@@ -1585,6 +1618,213 @@ describe('xero-model', () => {
     expect(completed.lastSequence).toBeGreaterThan(withActionRequired.lastSequence ?? 0)
     expect(completed.completion?.detail).toBe('Runtime bootstrap finished for project-1.')
     expect(getRuntimeStreamStatusLabel(completed.status)).toBe('Stream complete')
+  })
+
+  it('keeps stream transcripts outside the non-transcript timeline cap and dedupes tool transitions', () => {
+    let stream = mergeRuntimeStreamEvent(
+      createRuntimeStreamFromSubscription(streamSubscription),
+      makeStreamEvent(
+        {
+          kind: 'transcript',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: 'Please inspect the runtime.',
+          transcriptRole: 'user',
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          actionType: null,
+          title: null,
+          detail: null,
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:00Z',
+        },
+        { sequence: 1 },
+      ),
+    )
+
+    stream = mergeRuntimeStreamEvent(
+      stream,
+      makeStreamEvent(
+        {
+          kind: 'transcript',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: 'Reading the relevant files.',
+          transcriptRole: 'assistant',
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          actionType: null,
+          title: null,
+          detail: null,
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:01Z',
+        },
+        { sequence: 2 },
+      ),
+    )
+
+    stream = mergeRuntimeStreamEvent(
+      stream,
+      makeStreamEvent(
+        {
+          kind: 'tool',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: 'read-runtime',
+          toolName: 'read',
+          toolState: 'running',
+          actionType: null,
+          title: null,
+          detail: 'path: client/components/xero/agent-runtime.tsx',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:02Z',
+        },
+        { sequence: 3 },
+      ),
+    )
+
+    stream = mergeRuntimeStreamEvent(
+      stream,
+      makeStreamEvent(
+        {
+          kind: 'tool',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: null,
+          toolCallId: 'read-runtime',
+          toolName: 'read',
+          toolState: 'succeeded',
+          actionType: null,
+          title: null,
+          detail: 'Read 80 line(s).',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-13T20:01:03Z',
+        },
+        { sequence: 4 },
+      ),
+    )
+
+    expect(stream.items.filter((item) => item.kind === 'tool' && item.toolCallId === 'read-runtime')).toHaveLength(1)
+    expect(stream.items.find((item) => item.kind === 'tool' && item.toolCallId === 'read-runtime')).toMatchObject({
+      sequence: 4,
+      toolState: 'succeeded',
+    })
+
+    for (let index = 0; index < MAX_RUNTIME_STREAM_ITEMS + 5; index += 1) {
+      stream = mergeRuntimeStreamEvent(
+        stream,
+        makeStreamEvent(
+          {
+            kind: 'tool',
+            sessionId: 'session-1',
+            flowId: 'flow-1',
+            text: null,
+            toolCallId: `burst-tool-${index}`,
+            toolName: 'read',
+            toolState: 'succeeded',
+            actionType: null,
+            title: null,
+            detail: `Read file ${index}.`,
+            code: null,
+            message: null,
+            retryable: null,
+            createdAt: '2026-04-13T20:02:00Z',
+          },
+          { sequence: 5 + index },
+        ),
+      )
+    }
+
+    expect(stream.items.filter((item) => item.kind === 'transcript').map((item) => item.text)).toEqual([
+      'Please inspect the runtime.',
+      'Reading the relevant files.',
+    ])
+    expect(stream.items.filter((item) => item.kind !== 'transcript')).toHaveLength(MAX_RUNTIME_STREAM_ITEMS)
+  })
+
+  it('preserves whitespace-bearing assistant transcript deltas while compacting the live turn', () => {
+    let stream = createRuntimeStreamFromSubscription(streamSubscription)
+
+    for (const [index, text] of ['Repository', ' ', 'instructions', ' - ', 'In this repo.'].entries()) {
+      stream = mergeRuntimeStreamEvent(
+        stream,
+        makeTranscriptStreamEvent(text, { sequence: index + 1 }),
+      )
+    }
+
+    expect(stream.transcriptItems).toHaveLength(1)
+    expect(stream.transcriptItems[0]?.text).toBe('Repository instructions - In this repo.')
+    expect(stream.items.filter((item) => item.kind === 'transcript').map((item) => item.text)).toEqual([
+      'Repository instructions - In this repo.',
+    ])
+  })
+
+  it('keeps a long streamed assistant reply as one expanding transcript instead of a capped delta window', () => {
+    let stream = createRuntimeStreamFromSubscription(streamSubscription)
+    const deltas = Array.from(
+      { length: MAX_RUNTIME_STREAM_TRANSCRIPTS + 12 },
+      (_, index) => (index === 0 ? 'Chunk' : ` ${index}`),
+    )
+
+    deltas.forEach((text, index) => {
+      stream = mergeRuntimeStreamEvent(
+        stream,
+        makeTranscriptStreamEvent(text, { sequence: index + 1 }),
+      )
+    })
+
+    expect(stream.transcriptItems).toHaveLength(1)
+    expect(stream.transcriptItems[0]?.text).toBe(deltas.join(''))
+    expect(stream.items.filter((item) => item.kind === 'transcript')).toHaveLength(1)
+  })
+
+  it('keeps streamed reasoning activity deltas as one expanding timeline item', () => {
+    let stream = createRuntimeStreamFromSubscription(streamSubscription)
+
+    for (const [index, text] of ['I should inspect', ' the failing test', '\n\n'].entries()) {
+      stream = mergeRuntimeStreamEvent(
+        stream,
+        makeStreamEvent(
+          {
+            kind: 'activity',
+            sessionId: 'session-1',
+            flowId: 'flow-1',
+            text,
+            toolCallId: null,
+            toolName: null,
+            toolState: null,
+            actionType: null,
+            title: 'Reasoning',
+            detail: text.trim() || 'Owned agent reasoning summary updated.',
+            code: 'owned_agent_reasoning',
+            message: null,
+            retryable: null,
+            createdAt: `2026-04-13T20:03:${String(index + 1).padStart(2, '0')}Z`,
+          },
+          { sequence: index + 1 },
+        ),
+      )
+    }
+
+    const reasoningItems = stream.items.filter(
+      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
+    )
+    expect(reasoningItems).toHaveLength(1)
+    expect(reasoningItems[0]).toMatchObject({
+      text: 'I should inspect the failing test\n\n',
+      detail: 'I should inspect the failing test',
+    })
   })
 
   it('projects browser/computer-use summaries through runtime tool rows and rejects malformed follow-up payloads', () => {
@@ -2187,7 +2427,7 @@ describe('xero-model', () => {
   })
 
   it('rejects malformed runtime stream payloads and cross-project merges at the model boundary', () => {
-    expect(() =>
+    expect(
       runtimeStreamItemSchema.parse({
         kind: 'transcript',
         runId: 'run-1',
@@ -2195,6 +2435,34 @@ describe('xero-model', () => {
         sessionId: 'session-1',
         flowId: 'flow-1',
         text: '   ',
+        toolCallId: null,
+        toolName: null,
+        toolState: null,
+        skillId: null,
+        skillStage: null,
+        skillResult: null,
+        skillSource: null,
+        skillCacheStatus: null,
+        skillDiagnostic: null,
+        actionId: null,
+        actionType: null,
+        title: null,
+        detail: null,
+        code: null,
+        message: null,
+        retryable: null,
+        createdAt: '2026-04-13T20:01:00Z',
+      }).text,
+    ).toBe('   ')
+
+    expect(() =>
+      runtimeStreamItemSchema.parse({
+        kind: 'transcript',
+        runId: 'run-1',
+        sequence: 1,
+        sessionId: 'session-1',
+        flowId: 'flow-1',
+        text: '',
         toolCallId: null,
         toolName: null,
         toolState: null,

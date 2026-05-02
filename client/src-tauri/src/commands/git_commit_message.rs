@@ -42,6 +42,7 @@ pub fn git_generate_commit_message<R: Runtime>(
 
     let controls = RuntimeRunControlInputDto {
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        agent_definition_id: None,
         provider_profile_id: normalize_optional_text(request.provider_profile_id),
         model_id: request.model_id.trim().to_owned(),
         thinking_effort: request.thinking_effort.clone(),
@@ -65,6 +66,8 @@ pub fn git_generate_commit_message<R: Runtime>(
         controls: RuntimeRunControlStateDto {
             active: RuntimeRunActiveControlSnapshotDto {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
                 provider_profile_id: controls.provider_profile_id.clone(),
                 model_id: provider_model_id.clone(),
                 thinking_effort: controls.thinking_effort.clone(),

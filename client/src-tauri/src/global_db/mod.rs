@@ -205,6 +205,7 @@ mod tests {
             "runtime_settings",
             "dictation_settings",
             "browser_control_settings",
+            "soul_settings",
             "skill_sources",
             "mcp_registry",
             "provider_model_catalog_cache",

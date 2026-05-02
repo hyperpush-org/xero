@@ -349,15 +349,15 @@ export function getAgentRuntimeRunUnavailableCredentialReason(
 
   if (runtimeRun.lastError?.message) return runtimeRun.lastError.message
   if (runtimeRun.isFailed) {
-    return 'Xero recovered a failed agent run. Inspect the final checkpoint and error details before retrying.'
+    return 'Xero recovered a failed agent run. Inspect the final error details before retrying.'
   }
   if (runtimeRun.isStale) {
-    return 'Xero recovered a stale agent run. The durable checkpoint trail is still available even though the owned runtime is no longer active.'
+    return 'Xero recovered a stale agent run. The saved run history is still available even though the owned runtime is no longer active.'
   }
   if (runtimeRun.isTerminal) {
-    return 'Xero recovered a stopped agent run. Final checkpoints remain available for inspection after reload.'
+    return 'Xero recovered a stopped agent run. The final run history remains available after reload.'
   }
-  return 'Xero recovered a Xero-owned agent run and its durable checkpoints before the live runtime feed resumed.'
+  return 'Xero recovered a Xero-owned agent run before the live runtime feed resumed.'
 }
 
 export function getAgentMessagesUnavailableCredentialReason(
@@ -389,7 +389,7 @@ export function getAgentMessagesUnavailableCredentialReason(
 
   if (!runtimeStream) {
     return runtimeRun?.hasCheckpoints
-      ? 'Xero recovered an agent run, but the live runtime stream has not resumed yet. Durable checkpoints remain visible below.'
+      ? 'Xero recovered an agent run, but the live runtime stream has not resumed yet.'
       : 'Xero authenticated this project, but the live runtime stream has not started yet.'
   }
 
@@ -402,7 +402,7 @@ export function getAgentMessagesUnavailableCredentialReason(
 
   if (runtimeStream.status === 'subscribing') {
     return runtimeRun?.hasCheckpoints
-      ? 'Xero is reconnecting the live runtime stream while keeping durable checkpoints visible for this selected project.'
+      ? 'Xero is reconnecting the live runtime stream for this selected project.'
       : 'Xero is connecting the live runtime stream for this selected project.'
   }
   if (runtimeStream.status === 'replaying') {

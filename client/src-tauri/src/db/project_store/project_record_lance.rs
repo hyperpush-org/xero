@@ -12,7 +12,8 @@ use arrow_array::builder::{
     FixedSizeListBuilder, Float32Builder, Float64Builder, Int32Builder, StringBuilder,
 };
 use arrow_array::{
-    Array, ArrayRef, Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray,
+    Array, ArrayRef, FixedSizeListArray, Float64Array, Int32Array, RecordBatch,
+    RecordBatchIterator, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
@@ -22,9 +23,11 @@ use tokio::runtime::Runtime;
 
 use crate::commands::{CommandError, RuntimeAgentIdDto};
 
-use super::agent_memory_lance::PROJECT_LANCE_SUBDIR;
+use super::{
+    agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM, agent_memory_lance::PROJECT_LANCE_SUBDIR,
+};
 
-pub const PROJECT_RECORD_EMBEDDING_DIM: i32 = 768;
+pub const PROJECT_RECORD_EMBEDDING_DIM: i32 = AGENT_RETRIEVAL_EMBEDDING_DIM;
 const PROJECT_RECORDS_TABLE: &str = "project_records";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +36,8 @@ pub struct ProjectRecordRow {
     pub project_id: String,
     pub record_kind: String,
     pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
     pub agent_session_id: Option<String>,
     pub run_id: String,
     pub workflow_run_id: Option<String>,
@@ -55,6 +60,10 @@ pub struct ProjectRecordRow {
     pub visibility: String,
     pub created_at: String,
     pub updated_at: String,
+    pub embedding: Option<Vec<f32>>,
+    pub embedding_model: Option<String>,
+    pub embedding_dimension: Option<i32>,
+    pub embedding_version: Option<String>,
 }
 
 pub fn dataset_dir_for_database_path(database_path: &Path) -> PathBuf {
@@ -70,6 +79,8 @@ pub fn schema() -> SchemaRef {
         Field::new("record_id", DataType::Utf8, false),
         Field::new("record_kind", DataType::Utf8, false),
         Field::new("runtime_agent_id", DataType::Utf8, false),
+        Field::new("agent_definition_id", DataType::Utf8, false),
+        Field::new("agent_definition_version", DataType::Int32, false),
         Field::new("agent_session_id", DataType::Utf8, true),
         Field::new("run_id", DataType::Utf8, false),
         Field::new("workflow_run_id", DataType::Utf8, true),
@@ -92,6 +103,9 @@ pub fn schema() -> SchemaRef {
         Field::new("visibility", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("embedding_model", DataType::Utf8, true),
+        Field::new("embedding_dimension", DataType::Int32, true),
+        Field::new("embedding_version", DataType::Utf8, true),
         Field::new(
             "embedding",
             DataType::FixedSizeList(
@@ -257,6 +271,38 @@ impl ProjectRecordStore {
             Ok(rows)
         })
     }
+
+    pub(crate) fn list_rows(&self) -> Result<Vec<ProjectRecordRow>, CommandError> {
+        self.list()
+    }
+
+    pub(crate) fn update_embedding(
+        &self,
+        record_id: &str,
+        embedding: Vec<f32>,
+        embedding_model: String,
+        embedding_dimension: i32,
+        embedding_version: String,
+        updated_at: String,
+    ) -> Result<Option<ProjectRecordRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let record_id = record_id.to_string();
+        runtime().block_on(async move {
+            let mut row = fetch_row(&dataset, &record_id).await?;
+            let Some(mut row) = row.take() else {
+                return Ok(None);
+            };
+            row.project_id = project_id.clone();
+            row.embedding = Some(embedding);
+            row.embedding_model = Some(embedding_model);
+            row.embedding_dimension = Some(embedding_dimension);
+            row.embedding_version = Some(embedding_version);
+            row.updated_at = updated_at;
+            replace_row(&dataset, row.clone()).await?;
+            Ok(Some(row))
+        })
+    }
 }
 
 fn same_dedup_key(left: &ProjectRecordRow, right: &ProjectRecordRow) -> bool {
@@ -272,6 +318,8 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
     let mut record_id = StringBuilder::new();
     let mut record_kind = StringBuilder::new();
     let mut runtime_agent_id = StringBuilder::new();
+    let mut agent_definition_id = StringBuilder::new();
+    let mut agent_definition_version = Int32Builder::new();
     let mut agent_session_id = StringBuilder::new();
     let mut run_id = StringBuilder::new();
     let mut workflow_run_id = StringBuilder::new();
@@ -294,6 +342,9 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
     let mut visibility = StringBuilder::new();
     let mut created_at = StringBuilder::new();
     let mut updated_at = StringBuilder::new();
+    let mut embedding_model = StringBuilder::new();
+    let mut embedding_dimension = Int32Builder::new();
+    let mut embedding_version = StringBuilder::new();
     let mut embedding =
         FixedSizeListBuilder::new(Float32Builder::new(), PROJECT_RECORD_EMBEDDING_DIM);
 
@@ -301,6 +352,8 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         record_id.append_value(&row.record_id);
         record_kind.append_value(&row.record_kind);
         runtime_agent_id.append_value(row.runtime_agent_id.as_str());
+        agent_definition_id.append_value(&row.agent_definition_id);
+        agent_definition_version.append_value(row.agent_definition_version as i32);
         append_optional(&mut agent_session_id, row.agent_session_id.as_deref());
         run_id.append_value(&row.run_id);
         append_optional(&mut workflow_run_id, row.workflow_run_id.as_deref());
@@ -326,16 +379,21 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         visibility.append_value(&row.visibility);
         created_at.append_value(&row.created_at);
         updated_at.append_value(&row.updated_at);
-        for _ in 0..PROJECT_RECORD_EMBEDDING_DIM {
-            embedding.values().append_null();
+        append_optional(&mut embedding_model, row.embedding_model.as_deref());
+        match row.embedding_dimension {
+            Some(value) => embedding_dimension.append_value(value),
+            None => embedding_dimension.append_null(),
         }
-        embedding.append(false);
+        append_optional(&mut embedding_version, row.embedding_version.as_deref());
+        append_embedding(&mut embedding, row.embedding.as_deref())?;
     }
 
     let columns: Vec<ArrayRef> = vec![
         Arc::new(record_id.finish()),
         Arc::new(record_kind.finish()),
         Arc::new(runtime_agent_id.finish()),
+        Arc::new(agent_definition_id.finish()),
+        Arc::new(agent_definition_version.finish()),
         Arc::new(agent_session_id.finish()),
         Arc::new(run_id.finish()),
         Arc::new(workflow_run_id.finish()),
@@ -358,6 +416,9 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(visibility.finish()),
         Arc::new(created_at.finish()),
         Arc::new(updated_at.finish()),
+        Arc::new(embedding_model.finish()),
+        Arc::new(embedding_dimension.finish()),
+        Arc::new(embedding_version.finish()),
         Arc::new(embedding.finish()),
     ];
     RecordBatch::try_new(schema, columns).map_err(|error| {
@@ -372,6 +433,36 @@ fn append_optional(builder: &mut StringBuilder, value: Option<&str>) {
     match value {
         Some(value) => builder.append_value(value),
         None => builder.append_null(),
+    }
+}
+
+fn append_embedding(
+    builder: &mut FixedSizeListBuilder<Float32Builder>,
+    embedding: Option<&[f32]>,
+) -> Result<(), CommandError> {
+    match embedding {
+        Some(values) if values.len() == PROJECT_RECORD_EMBEDDING_DIM as usize => {
+            for value in values {
+                builder.values().append_value(*value);
+            }
+            builder.append(true);
+            Ok(())
+        }
+        Some(values) => Err(CommandError::system_fault(
+            "project_record_lance_embedding_dimension_mismatch",
+            format!(
+                "Xero project-record embedding has {} dimensions; expected {}.",
+                values.len(),
+                PROJECT_RECORD_EMBEDDING_DIM
+            ),
+        )),
+        None => {
+            for _ in 0..PROJECT_RECORD_EMBEDDING_DIM {
+                builder.values().append_null();
+            }
+            builder.append(false);
+            Ok(())
+        }
     }
 }
 
@@ -403,6 +494,40 @@ async fn insert_row(table: &Table, row: &ProjectRecordRow) -> Result<(), Command
         .map(|_| ())
 }
 
+async fn fetch_row(
+    dataset_dir: &Path,
+    record_id: &str,
+) -> Result<Option<ProjectRecordRow>, CommandError> {
+    let rows = scan_all(dataset_dir).await?;
+    Ok(rows.into_iter().find(|row| row.record_id == record_id))
+}
+
+async fn replace_row(dataset_dir: &Path, row: ProjectRecordRow) -> Result<(), CommandError> {
+    let connection = ensure_connection(dataset_dir).await?;
+    let table = open_or_create_table(&connection).await?;
+    let predicate = format!("record_id = {}", quote_string_literal(&row.record_id));
+    table
+        .delete(&predicate)
+        .await
+        .map_err(|error| map_lance_error("project_record_lance_update_failed", error))?;
+    insert_row(&table, &row).await
+}
+
+pub(crate) fn quote_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            out.push('\'');
+            out.push('\'');
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 fn batches_to_rows(batches: Vec<RecordBatch>) -> Result<Vec<ProjectRecordRow>, CommandError> {
     let mut rows = Vec::new();
     for batch in batches {
@@ -420,6 +545,8 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
     let record_id = column_str(batch, "record_id")?;
     let record_kind = column_str(batch, "record_kind")?;
     let runtime_agent_id = column_str(batch, "runtime_agent_id")?;
+    let agent_definition_id = column_str(batch, "agent_definition_id")?;
+    let agent_definition_version = column_i32(batch, "agent_definition_version")?;
     let agent_session_id = column_str(batch, "agent_session_id")?;
     let run_id = column_str(batch, "run_id")?;
     let workflow_run_id = column_str(batch, "workflow_run_id")?;
@@ -442,6 +569,10 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
     let visibility = column_str(batch, "visibility")?;
     let created_at = column_str(batch, "created_at")?;
     let updated_at = column_str(batch, "updated_at")?;
+    let embedding_model = column_str(batch, "embedding_model")?;
+    let embedding_dimension = column_i32(batch, "embedding_dimension")?;
+    let embedding_version = column_str(batch, "embedding_version")?;
+    let embedding = column_embedding(batch, "embedding")?;
 
     let mut rows = Vec::with_capacity(row_count);
     for index in 0..row_count {
@@ -454,6 +585,13 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
                 index,
                 "runtime_agent_id",
             )?),
+            agent_definition_id: require_str(agent_definition_id, index, "agent_definition_id")?
+                .to_string(),
+            agent_definition_version: read_required_u32(
+                agent_definition_version,
+                index,
+                "agent_definition_version",
+            )?,
             agent_session_id: optional_str(agent_session_id, index),
             run_id: require_str(run_id, index, "run_id")?.to_string(),
             workflow_run_id: optional_str(workflow_run_id, index),
@@ -487,6 +625,14 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
             visibility: require_str(visibility, index, "visibility")?.to_string(),
             created_at: require_str(created_at, index, "created_at")?.to_string(),
             updated_at: require_str(updated_at, index, "updated_at")?.to_string(),
+            embedding: optional_embedding(embedding, index)?,
+            embedding_model: optional_str(embedding_model, index),
+            embedding_dimension: if embedding_dimension.is_null(index) {
+                None
+            } else {
+                Some(embedding_dimension.value(index))
+            },
+            embedding_version: optional_str(embedding_version, index),
         });
     }
     Ok(rows)
@@ -510,6 +656,16 @@ fn column_f64<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float64Array
     batch
         .column_by_name(name)
         .and_then(|array| array.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| missing_column(name))
+}
+
+fn column_embedding<'a>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> Result<&'a FixedSizeListArray, CommandError> {
+    batch
+        .column_by_name(name)
+        .and_then(|array| array.as_any().downcast_ref::<FixedSizeListArray>())
         .ok_or_else(|| missing_column(name))
 }
 
@@ -542,9 +698,58 @@ fn optional_str(array: &StringArray, index: usize) -> Option<String> {
     }
 }
 
+fn read_required_u32(array: &Int32Array, index: usize, column: &str) -> Result<u32, CommandError> {
+    if array.is_null(index) {
+        return Err(CommandError::system_fault(
+            "project_record_lance_unexpected_null",
+            format!("Xero project-record lance dataset has unexpected null in `{column}`."),
+        ));
+    }
+    u32::try_from(array.value(index)).map_err(|_| {
+        CommandError::system_fault(
+            "project_record_lance_invalid_u32",
+            format!("Xero project-record lance dataset has an invalid u32 in `{column}`."),
+        )
+    })
+}
+
+fn optional_embedding(
+    array: &FixedSizeListArray,
+    index: usize,
+) -> Result<Option<Vec<f32>>, CommandError> {
+    if array.is_null(index) {
+        return Ok(None);
+    }
+    if array.value_length() != PROJECT_RECORD_EMBEDDING_DIM {
+        return Err(CommandError::system_fault(
+            "project_record_lance_embedding_dimension_mismatch",
+            format!(
+                "Xero project-record Lance embedding dimension is {}; expected {}.",
+                array.value_length(),
+                PROJECT_RECORD_EMBEDDING_DIM
+            ),
+        ));
+    }
+    let values = array.value(index);
+    let values = values
+        .as_any()
+        .downcast_ref::<arrow_array::Float32Array>()
+        .ok_or_else(|| missing_column("embedding.item"))?;
+    let mut vector = Vec::with_capacity(PROJECT_RECORD_EMBEDDING_DIM as usize);
+    for value_index in 0..PROJECT_RECORD_EMBEDDING_DIM as usize {
+        if values.is_null(value_index) {
+            return Ok(None);
+        }
+        vector.push(values.value(value_index));
+    }
+    Ok(Some(vector))
+}
+
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "engineer" => RuntimeAgentIdDto::Engineer,
+        "debug" => RuntimeAgentIdDto::Debug,
+        "agent_create" => RuntimeAgentIdDto::AgentCreate,
         _ => RuntimeAgentIdDto::Ask,
     }
 }

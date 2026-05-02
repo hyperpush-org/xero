@@ -26,7 +26,6 @@ import {
   SelectGroup,
   SelectItem,
   SelectLabel,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -45,7 +44,6 @@ import {
   developerReadStorageTableRequestSchema,
   developerStorageOverviewSchema,
   developerStorageTableRowsSchema,
-  type DeveloperProjectLanceDatabaseDto,
   type DeveloperStorageOverviewDto,
   type DeveloperStorageSourceDto,
   type DeveloperStorageTableRowsDto,
@@ -176,7 +174,6 @@ type StorageLoadState = "idle" | "loading" | "ready" | "error"
 
 const STORAGE_ROW_LIMIT = 50
 const GLOBAL_STORAGE_SOURCE_KEY = "global"
-const PROJECT_STORAGE_SOURCE_PREFIX = "project:"
 
 interface StorageSourceOption {
   key: string
@@ -338,7 +335,7 @@ function StorageInspector() {
               </Badge>
             </div>
             <p className="mt-0.5 text-[12px] leading-[1.55] text-muted-foreground">
-              App-global SQLite and project-scoped LanceDB tables.
+              App-local diagnostic tables.
             </p>
           </div>
         </div>
@@ -370,22 +367,6 @@ function StorageInspector() {
                         Global SQLite
                       </SelectItem>
                     </SelectGroup>
-                    {overview.projectLance.length > 0 ? (
-                      <>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Projects</SelectLabel>
-                          {overview.projectLance.map((project) => (
-                            <SelectItem
-                              key={project.projectId}
-                              value={projectStorageSourceKey(project.projectId)}
-                            >
-                              {project.projectName}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </>
-                    ) : null}
                   </SelectContent>
                 </Select>
               </label>
@@ -681,26 +662,7 @@ function storageSourceOptions(overview: DeveloperStorageOverviewDto): StorageSou
       tables: overview.globalSqlite.tables,
       exists: true,
     },
-    ...overview.projectLance.map((project) => projectStorageSourceOption(project)),
   ]
-}
-
-function projectStorageSourceOption(project: DeveloperProjectLanceDatabaseDto): StorageSourceOption {
-  return {
-    key: projectStorageSourceKey(project.projectId),
-    detail: project.exists
-      ? "This project LanceDB dataset does not have tables yet."
-      : "This project has not created a LanceDB dataset yet.",
-    path: project.lancePath,
-    badge: "LanceDB",
-    source: { kind: "project_lance", projectId: project.projectId },
-    tables: project.tables,
-    exists: project.exists,
-  }
-}
-
-function projectStorageSourceKey(projectId: string): string {
-  return `${PROJECT_STORAGE_SOURCE_PREFIX}${projectId}`
 }
 
 function formatStorageValue(value: unknown): string {

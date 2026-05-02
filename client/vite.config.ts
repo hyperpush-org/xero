@@ -24,6 +24,22 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (/[\\/]src[\\/]features[\\/]solana[\\/]/.test(id)) {
+            return 'solana-workbench'
+          }
+
+          if (/[\\/]src[\\/]features[\\/]xero[\\/]use-xero-desktop-state(?:[\\/]|\.ts$)/.test(id)) {
+            return 'xero-state'
+          }
+
+          if (/[\\/]src[\\/]lib[\\/]xero-model(?:[\\/]|\.ts$)/.test(id)) {
+            return 'xero-model'
+          }
+
+          if (/[\\/]src[\\/]lib[\\/]xero-desktop\.ts$/.test(id)) {
+            return 'xero-desktop-adapter'
+          }
+
           if (!/[\\/]node_modules[\\/]/.test(id)) {
             return undefined
           }

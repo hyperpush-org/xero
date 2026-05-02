@@ -56,13 +56,14 @@ function makeDiff(patch: string): RepositoryDiffResponseDto {
 function renderVcsSidebar(
   patch: string,
   options: {
+    open?: boolean
     status?: RepositoryStatusView
     onGenerateCommitMessage?: VcsSidebarProps['onGenerateCommitMessage']
   } = {},
 ) {
   const onLoadDiff = vi.fn(async () => makeDiff(patch))
   const props: VcsSidebarProps = {
-    open: true,
+    open: options.open ?? true,
     projectId: 'project-1',
     status: options.status ?? makeStatus(),
     branchLabel: 'main',
@@ -142,6 +143,57 @@ describe('VcsSidebar', () => {
     expect(screen.queryByLabelText('Resize source control sidebar')).not.toBeInTheDocument()
     expect(screen.queryByText('Select a file')).not.toBeInTheDocument()
     expect(onLoadDiff).not.toHaveBeenCalled()
+  })
+
+  it('keeps the hidden panel unpainted when closed status changes add a diff pane', () => {
+    const cleanStatus = makeStatus({
+      stagedCount: 0,
+      unstagedCount: 0,
+      untrackedCount: 0,
+      statusCount: 0,
+      additions: 0,
+      deletions: 0,
+      hasChanges: false,
+      entries: [],
+    })
+    const dirtyStatus = makeStatus()
+
+    const { rerender } = renderVcsSidebar('', {
+      open: false,
+      status: cleanStatus,
+    })
+
+    expect(screen.getByLabelText('Source control panel')).toHaveClass('invisible')
+
+    rerender(
+      <VcsSidebar
+        open={false}
+        projectId="project-1"
+        status={dirtyStatus}
+        branchLabel="main"
+        onRefreshStatus={vi.fn()}
+        onLoadDiff={vi.fn(async () => makeDiff(''))}
+        onStage={vi.fn(async () => undefined)}
+        onUnstage={vi.fn(async () => undefined)}
+        onDiscard={vi.fn(async () => undefined)}
+        onCommit={vi.fn(async () => ({
+          sha: 'def5678',
+          summary: 'Commit summary',
+          signature: { name: 'Test User', email: 'test@example.com' },
+        }))}
+        onFetch={vi.fn(async () => ({ remote: 'origin', refspecs: [] }))}
+        onPull={vi.fn(async () => ({
+          remote: 'origin',
+          branch: 'main',
+          updated: false,
+          summary: 'Already up to date.',
+          newHeadSha: null,
+        }))}
+        onPush={vi.fn(async () => ({ remote: 'origin', branch: 'main', updates: [] }))}
+      />,
+    )
+
+    expect(screen.getByLabelText('Source control panel')).toHaveClass('invisible')
   })
 
   it('generates a commit message from the staged diff', async () => {

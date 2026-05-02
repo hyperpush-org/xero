@@ -14,10 +14,19 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(INITIAL_SCHEMA_SQL),
             M::up(BROWSER_CONTROL_SETTINGS_SQL),
             M::up(ENVIRONMENT_PROFILE_SQL),
+            M::up(SOUL_SETTINGS_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const SOUL_SETTINGS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS soul_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+"#;
 
 const ENVIRONMENT_PROFILE_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS environment_profile (
@@ -128,6 +137,12 @@ const INITIAL_SCHEMA_SQL: &str = r#"
     );
 
     CREATE TABLE IF NOT EXISTS browser_control_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS soul_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         payload TEXT NOT NULL,
         updated_at TEXT NOT NULL

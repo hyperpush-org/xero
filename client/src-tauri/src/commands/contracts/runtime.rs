@@ -94,6 +94,81 @@ pub enum RuntimeRunApprovalModeDto {
 pub enum RuntimeAgentIdDto {
     Ask,
     Engineer,
+    Debug,
+    AgentCreate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAgentScopeDto {
+    BuiltIn,
+    GlobalCustom,
+    ProjectCustom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAgentLifecycleStateDto {
+    Draft,
+    Active,
+    Archived,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAgentBaseCapabilityProfileDto {
+    ObserveOnly,
+    Engineering,
+    Debugging,
+    AgentBuilder,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAgentPromptPolicyDto {
+    Ask,
+    Engineer,
+    Debug,
+    AgentCreate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAgentToolPolicyDto {
+    ObserveOnly,
+    Engineering,
+    AgentBuilder,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAgentOutputContractDto {
+    Answer,
+    EngineeringSummary,
+    DebugSummary,
+    AgentDefinitionDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeAgentDescriptorDto {
+    pub id: RuntimeAgentIdDto,
+    pub version: u32,
+    pub label: String,
+    pub short_label: String,
+    pub description: String,
+    pub task_purpose: String,
+    pub scope: RuntimeAgentScopeDto,
+    pub lifecycle_state: RuntimeAgentLifecycleStateDto,
+    pub base_capability_profile: RuntimeAgentBaseCapabilityProfileDto,
+    pub default_approval_mode: RuntimeRunApprovalModeDto,
+    pub allowed_approval_modes: Vec<RuntimeRunApprovalModeDto>,
+    pub prompt_policy: RuntimeAgentPromptPolicyDto,
+    pub tool_policy: RuntimeAgentToolPolicyDto,
+    pub output_contract: RuntimeAgentOutputContractDto,
+    pub allow_plan_gate: bool,
+    pub allow_verification_gate: bool,
+    pub allow_auto_compact: bool,
 }
 
 impl RuntimeAgentIdDto {
@@ -101,6 +176,8 @@ impl RuntimeAgentIdDto {
         match self {
             Self::Ask => "ask",
             Self::Engineer => "engineer",
+            Self::Debug => "debug",
+            Self::AgentCreate => "agent_create",
         }
     }
 
@@ -108,6 +185,8 @@ impl RuntimeAgentIdDto {
         match self {
             Self::Ask => "Ask",
             Self::Engineer => "Engineer",
+            Self::Debug => "Debug",
+            Self::AgentCreate => "Agent Create",
         }
     }
 
@@ -117,6 +196,12 @@ impl RuntimeAgentIdDto {
 
     pub fn allows_verification_gate(&self) -> bool {
         matches!(self, Self::Engineer)
+    }
+
+    /// Whether this agent is allowed to use engineering tools (file write,
+    /// shell exec, etc.). Only Engineer and Debug have this capability.
+    pub fn allows_engineering_tools(&self) -> bool {
+        matches!(self, Self::Engineer | Self::Debug)
     }
 }
 
@@ -130,6 +215,8 @@ pub fn default_runtime_agent_approval_mode(
     match agent_id {
         RuntimeAgentIdDto::Ask => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Engineer => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::Debug => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::AgentCreate => RuntimeRunApprovalModeDto::Suggest,
     }
 }
 
@@ -138,8 +225,110 @@ pub fn runtime_agent_allows_approval_mode(
     approval_mode: &RuntimeRunApprovalModeDto,
 ) -> bool {
     match agent_id {
-        RuntimeAgentIdDto::Ask => matches!(approval_mode, RuntimeRunApprovalModeDto::Suggest),
-        RuntimeAgentIdDto::Engineer => true,
+        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
+            matches!(approval_mode, RuntimeRunApprovalModeDto::Suggest)
+        }
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
+    }
+}
+
+pub fn builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
+    [
+        runtime_agent_descriptor(RuntimeAgentIdDto::Ask),
+        runtime_agent_descriptor(RuntimeAgentIdDto::Engineer),
+        runtime_agent_descriptor(RuntimeAgentIdDto::Debug),
+        runtime_agent_descriptor(RuntimeAgentIdDto::AgentCreate),
+    ]
+    .into_iter()
+    .collect()
+}
+
+pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDescriptorDto {
+    match agent_id {
+        RuntimeAgentIdDto::Ask => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Ask".into(),
+            short_label: "Ask".into(),
+            description: "Answer questions about the project without mutating files, app state, processes, or external services.".into(),
+            task_purpose: "Answer in chat using audited observe-only tools when grounding is needed.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::ObserveOnly,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: vec![RuntimeRunApprovalModeDto::Suggest],
+            prompt_policy: RuntimeAgentPromptPolicyDto::Ask,
+            tool_policy: RuntimeAgentToolPolicyDto::ObserveOnly,
+            output_contract: RuntimeAgentOutputContractDto::Answer,
+            allow_plan_gate: false,
+            allow_verification_gate: false,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::Engineer => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Engineer".into(),
+            short_label: "Build".into(),
+            description: "Implement repository changes with the existing software-building toolset and safety gates.".into(),
+            task_purpose: "Inspect, plan when needed, edit, verify, and summarize engineering work.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::Engineering,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: vec![
+                RuntimeRunApprovalModeDto::Suggest,
+                RuntimeRunApprovalModeDto::AutoEdit,
+                RuntimeRunApprovalModeDto::Yolo,
+            ],
+            prompt_policy: RuntimeAgentPromptPolicyDto::Engineer,
+            tool_policy: RuntimeAgentToolPolicyDto::Engineering,
+            output_contract: RuntimeAgentOutputContractDto::EngineeringSummary,
+            allow_plan_gate: true,
+            allow_verification_gate: true,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::Debug => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Debug".into(),
+            short_label: "Debug".into(),
+            description: "Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.".into(),
+            task_purpose: "Reproduce, gather evidence, test hypotheses, isolate root cause, fix, verify, and preserve reusable debugging knowledge.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::Debugging,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: vec![
+                RuntimeRunApprovalModeDto::Suggest,
+                RuntimeRunApprovalModeDto::AutoEdit,
+                RuntimeRunApprovalModeDto::Yolo,
+            ],
+            prompt_policy: RuntimeAgentPromptPolicyDto::Debug,
+            tool_policy: RuntimeAgentToolPolicyDto::Engineering,
+            output_contract: RuntimeAgentOutputContractDto::DebugSummary,
+            allow_plan_gate: true,
+            allow_verification_gate: true,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::AgentCreate => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Agent Create".into(),
+            short_label: "Create".into(),
+            description: "Interview the user, validate custom agent definitions, and save approved definitions without mutating repositories.".into(),
+            task_purpose: "Gather intent, clarify scope, propose least-privilege capabilities, validate definitions, and persist approved custom agents.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::AgentBuilder,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: vec![RuntimeRunApprovalModeDto::Suggest],
+            prompt_policy: RuntimeAgentPromptPolicyDto::AgentCreate,
+            tool_policy: RuntimeAgentToolPolicyDto::AgentBuilder,
+            output_contract: RuntimeAgentOutputContractDto::AgentDefinitionDraft,
+            allow_plan_gate: false,
+            allow_verification_gate: false,
+            allow_auto_compact: true,
+        },
     }
 }
 
@@ -147,6 +336,8 @@ pub fn runtime_agent_allows_approval_mode(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunControlInputDto {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     pub model_id: String,
@@ -161,6 +352,10 @@ pub struct RuntimeRunControlInputDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunActiveControlSnapshotDto {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     pub model_id: String,
@@ -177,6 +372,10 @@ pub struct RuntimeRunActiveControlSnapshotDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunPendingControlSnapshotDto {
     pub runtime_agent_id: RuntimeAgentIdDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     pub model_id: String,
@@ -366,6 +565,16 @@ pub struct UpdateAgentSessionRequestDto {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoNameAgentSessionRequestDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<RuntimeRunControlInputDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -665,6 +874,50 @@ pub struct StopRuntimeRunRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_runtime_agents_seed_agent_create_descriptor() {
+        let descriptors = builtin_runtime_agent_descriptors();
+
+        assert_eq!(
+            descriptors
+                .iter()
+                .map(|descriptor| descriptor.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ask", "engineer", "debug", "agent_create"]
+        );
+
+        let agent_create = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == RuntimeAgentIdDto::AgentCreate)
+            .expect("Agent Create descriptor should be seeded");
+
+        assert_eq!(agent_create.label, "Agent Create");
+        assert_eq!(
+            agent_create.base_capability_profile,
+            RuntimeAgentBaseCapabilityProfileDto::AgentBuilder
+        );
+        assert_eq!(
+            agent_create.allowed_approval_modes,
+            vec![RuntimeRunApprovalModeDto::Suggest]
+        );
+        assert!(!agent_create.allow_plan_gate);
+        assert!(!agent_create.allow_verification_gate);
+        assert!(!RuntimeAgentIdDto::AgentCreate.allows_engineering_tools());
+        assert!(runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::AgentCreate,
+            &RuntimeRunApprovalModeDto::Suggest
+        ));
+        assert!(!runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::AgentCreate,
+            &RuntimeRunApprovalModeDto::AutoEdit
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

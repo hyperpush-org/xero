@@ -1,4 +1,6 @@
+pub mod agent_definition;
 pub mod agent_session;
+pub mod agent_session_title;
 pub mod agent_task;
 pub mod browser;
 pub mod cancel_autonomous_run;
@@ -40,6 +42,7 @@ pub mod search_project;
 pub mod session_history;
 pub mod skills;
 pub mod solana;
+pub mod soul_settings;
 pub mod start_autonomous_run;
 pub mod start_oauth_login;
 pub mod start_openai_login;
@@ -58,10 +61,14 @@ pub mod upsert_notification_route_credentials;
 mod contracts;
 pub(crate) mod runtime_support;
 
+pub use agent_definition::{
+    archive_agent_definition, get_agent_definition_version, list_agent_definitions,
+};
 pub use agent_session::{
     archive_agent_session, create_agent_session, delete_agent_session, get_agent_session,
     list_agent_sessions, restore_agent_session, update_agent_session,
 };
+pub use agent_session_title::auto_name_agent_session;
 pub use agent_task::{
     cancel_agent_run, get_agent_run, list_agent_runs, resume_agent_run, send_agent_message,
     start_agent_task, subscribe_agent_stream,
@@ -165,6 +172,10 @@ pub use solana::{
     solana_toolchain_install_status, solana_toolchain_status, solana_tx_build, solana_tx_explain,
     solana_tx_send, solana_tx_simulate, solana_verified_build_submit, SolanaState,
 };
+pub use soul_settings::{
+    soul_settings, soul_update_settings, SoulIdDto, SoulPresetDto, SoulSettingsDto,
+    UpsertSoulSettingsRequestDto,
+};
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_oauth_login::start_oauth_login;
 pub use start_openai_login::start_openai_login;
@@ -194,3 +205,4 @@ pub(crate) use contracts::{
         parse_notification_route_kind,
     },
 };
+pub(crate) use soul_settings::{default_soul_settings, load_soul_settings, soul_prompt_fragment};

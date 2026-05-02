@@ -75,6 +75,8 @@ pub struct OpenRouterDiscoveredModel {
     pub id: String,
     pub display_name: String,
     pub supported_parameters: Vec<String>,
+    pub context_window_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +92,16 @@ struct ModelSummary {
     name: Option<String>,
     #[serde(rename = "supported_parameters")]
     supported_parameters: Vec<String>,
+    #[serde(default, rename = "context_length")]
+    context_length: Option<u64>,
+    #[serde(default, rename = "top_provider")]
+    top_provider: Option<ModelTopProvider>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelTopProvider {
+    #[serde(default, rename = "max_completion_tokens")]
+    max_completion_tokens: Option<u64>,
 }
 
 pub(crate) fn bind_openrouter_runtime_session<R: Runtime>(
@@ -242,6 +254,11 @@ fn normalize_openrouter_models(
                 id: id.to_owned(),
                 display_name,
                 supported_parameters,
+                context_window_tokens: model.context_length.filter(|tokens| *tokens > 0),
+                max_output_tokens: model
+                    .top_provider
+                    .and_then(|provider| provider.max_completion_tokens)
+                    .filter(|tokens| *tokens > 0),
             })
         })
         .collect()

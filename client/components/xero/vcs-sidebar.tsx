@@ -201,6 +201,7 @@ export function VcsSidebar(props: VcsSidebarProps) {
         aria-label="Source control panel"
         className={cn(
           "gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
+          !open && "invisible",
         )}
         initial={false}
         inert={!open ? true : undefined}

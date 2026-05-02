@@ -139,6 +139,37 @@ function getBrowserComputerUseStatusLabel(status: 'pending' | 'running' | 'succe
   }
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function getGitScopeLabel(scope: 'staged' | 'unstaged' | 'worktree'): string {
+  switch (scope) {
+    case 'staged':
+      return 'staged'
+    case 'unstaged':
+      return 'unstaged'
+    case 'worktree':
+      return 'worktree'
+  }
+}
+
+function getWebContentKindLabel(kind: 'html' | 'plain_text'): string {
+  switch (kind) {
+    case 'html':
+      return 'HTML'
+    case 'plain_text':
+      return 'plain text'
+  }
+}
+
+function getToolDetailParts(parts: Array<string | null | undefined>): string {
+  return parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(' · ')
+}
+
 export function getToolSummaryContext(item: RuntimeStreamToolItemView): string | null {
   const summary = item.toolSummary
   if (!summary) {
@@ -146,6 +177,51 @@ export function getToolSummaryContext(item: RuntimeStreamToolItemView): string |
   }
 
   switch (summary.kind) {
+    case 'command': {
+      const outcome = summary.timedOut
+        ? 'timed out'
+        : summary.exitCode != null
+          ? `exit ${summary.exitCode}`
+          : `status ${getToolStateLabel(item.toolState).toLowerCase()}`
+      return getToolDetailParts([
+        'Command',
+        outcome,
+        summary.stdoutTruncated ? 'stdout truncated' : null,
+        summary.stderrTruncated ? 'stderr truncated' : null,
+        summary.stdoutRedacted ? 'stdout redacted' : null,
+        summary.stderrRedacted ? 'stderr redacted' : null,
+      ])
+    }
+    case 'file': {
+      return getToolDetailParts([
+        'File result',
+        summary.path ? `path ${summary.path}` : null,
+        !summary.path && summary.scope ? `scope ${summary.scope}` : null,
+        summary.lineCount != null ? pluralize(summary.lineCount, 'line') : null,
+        summary.matchCount != null ? pluralize(summary.matchCount, 'match', 'matches') : null,
+        summary.truncated ? 'truncated' : null,
+      ])
+    }
+    case 'git': {
+      return getToolDetailParts([
+        'Git',
+        summary.scope ? getGitScopeLabel(summary.scope) : null,
+        pluralize(summary.changedFiles, 'changed file'),
+        summary.baseRevision ? `base ${summary.baseRevision}` : null,
+        summary.truncated ? 'truncated' : null,
+      ])
+    }
+    case 'web': {
+      return getToolDetailParts([
+        'Web',
+        summary.target,
+        summary.resultCount != null ? pluralize(summary.resultCount, 'result') : null,
+        summary.finalUrl && summary.finalUrl !== summary.target ? `final ${summary.finalUrl}` : null,
+        summary.contentKind ? getWebContentKindLabel(summary.contentKind) : null,
+        summary.contentType ?? null,
+        summary.truncated ? 'truncated' : null,
+      ])
+    }
     case 'mcp_capability': {
       const capabilityLabel = displayValue(summary.capabilityName, summary.capabilityId)
       return `MCP ${getMcpCapabilityKindLabel(summary.capabilityKind)} · ${capabilityLabel} · server ${summary.serverId} · outcome ${getToolStateLabel(item.toolState)}`
@@ -158,6 +234,191 @@ export function getToolSummaryContext(item: RuntimeStreamToolItemView): string |
     default:
       return null
   }
+}
+
+function humanizeToolName(toolName: string): string {
+  return toolName
+    .trim()
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+}
+
+function basename(path: string): string {
+  const trimmed = path.trim().replace(/\/+$/, '')
+  const lastSlash = trimmed.lastIndexOf('/')
+  return lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed
+}
+
+function compactFileTarget(path: string): string {
+  const name = basename(path)
+  return name || path
+}
+
+function parseToolDetail(detail: string | null): Map<string, string> {
+  const values = new Map<string, string>()
+  if (!detail) {
+    return values
+  }
+
+  const pattern = /(?:^|,\s*)([A-Za-z][A-Za-z0-9]*):\s*([^,]+)/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(detail)) !== null) {
+    const key = match[1]?.trim()
+    const value = match[2]?.trim()
+    if (key && value && !values.has(key)) {
+      values.set(key, value)
+    }
+  }
+
+  return values
+}
+
+function firstDetailValue(detailValues: Map<string, string>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = detailValues.get(key)
+    if (value) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function getToolActionLabel(item: RuntimeStreamToolItemView): string {
+  const summary = item.toolSummary
+  if (summary?.kind === 'browser_computer_use') {
+    return summary.action.toLowerCase()
+  }
+  if (summary?.kind === 'mcp_capability') {
+    return `MCP ${getMcpCapabilityKindLabel(summary.capabilityKind).toLowerCase()}`
+  }
+
+  switch (item.toolName) {
+    case 'read':
+      return 'read'
+    case 'search':
+      return 'search'
+    case 'find':
+      return 'find'
+    case 'list':
+      return 'list'
+    case 'edit':
+      return 'edit'
+    case 'write':
+      return 'write'
+    case 'delete':
+      return 'delete'
+    case 'mkdir':
+      return 'create directory'
+    case 'hash':
+      return 'hash'
+    case 'patch':
+      return 'patch'
+    case 'rename':
+      return 'rename'
+    case 'command':
+      return 'run'
+    case 'command_session_start':
+      return 'start command'
+    case 'command_session_read':
+      return 'read command session'
+    case 'command_session_stop':
+      return 'stop command session'
+    case 'git_status':
+      return 'check git status'
+    case 'git_diff':
+      return 'inspect git diff'
+    case 'web_search':
+    case 'web_search_only':
+      return 'search web'
+    case 'web_fetch':
+      return 'fetch web page'
+    default:
+      return humanizeToolName(item.toolName) || 'tool'
+  }
+}
+
+function getToolTargetLabel(item: RuntimeStreamToolItemView): string | null {
+  const detailValues = parseToolDetail(item.detail)
+  const summary = item.toolSummary
+
+  switch (item.toolName) {
+    case 'read':
+    case 'edit':
+    case 'write':
+    case 'delete':
+    case 'hash':
+    case 'patch': {
+      const path = summary?.kind === 'file' && summary.path
+        ? summary.path
+        : firstDetailValue(detailValues, ['path', 'fromPath', 'toPath'])
+      return path ? compactFileTarget(path) : null
+    }
+    case 'rename': {
+      const fromPath = firstDetailValue(detailValues, ['fromPath'])
+      const toPath = firstDetailValue(detailValues, ['toPath'])
+      if (fromPath && toPath) {
+        return `${compactFileTarget(fromPath)} -> ${compactFileTarget(toPath)}`
+      }
+      return fromPath ? compactFileTarget(fromPath) : toPath ? compactFileTarget(toPath) : null
+    }
+    case 'list': {
+      return summary?.kind === 'file' && summary.path
+        ? summary.path
+        : firstDetailValue(detailValues, ['path', 'scope'])
+    }
+    case 'search': {
+      return firstDetailValue(detailValues, ['query', 'pattern', 'path'])
+        ?? (summary?.kind === 'file' ? summary.scope ?? summary.path ?? null : null)
+    }
+    case 'find': {
+      return firstDetailValue(detailValues, ['pattern', 'query', 'path'])
+        ?? (summary?.kind === 'file' ? summary.scope ?? summary.path ?? null : null)
+    }
+    case 'command':
+    case 'command_session_start':
+      return firstDetailValue(detailValues, ['cmd', 'cwd'])
+    case 'command_session_read':
+    case 'command_session_stop':
+      return firstDetailValue(detailValues, ['sessionId'])
+    case 'git_diff':
+      return summary?.kind === 'git' && summary.scope
+        ? getGitScopeLabel(summary.scope)
+        : firstDetailValue(detailValues, ['scope'])
+    case 'web_search':
+    case 'web_search_only':
+      return summary?.kind === 'web'
+        ? summary.target
+        : firstDetailValue(detailValues, ['query', 'url'])
+    case 'web_fetch':
+      return summary?.kind === 'web'
+        ? summary.finalUrl ?? summary.target
+        : firstDetailValue(detailValues, ['url'])
+    default:
+      if (summary?.kind === 'file') {
+        return summary.path ? compactFileTarget(summary.path) : summary.scope ?? null
+      }
+      if (summary?.kind === 'git') {
+        return summary.scope ? getGitScopeLabel(summary.scope) : null
+      }
+      if (summary?.kind === 'web') {
+        return summary.finalUrl ?? summary.target
+      }
+      if (summary?.kind === 'browser_computer_use') {
+        return summary.target ?? null
+      }
+      if (summary?.kind === 'mcp_capability') {
+        return displayValue(summary.capabilityName, summary.capabilityId)
+      }
+      return firstDetailValue(detailValues, ['path', 'pattern', 'query', 'url', 'cmd', 'scope', 'name', 'uri'])
+  }
+}
+
+export function getToolCardTitle(item: RuntimeStreamToolItemView): string {
+  const action = getToolActionLabel(item)
+  const target = getToolTargetLabel(item)
+  return target ? `${action} ${target}` : action
 }
 
 export function getSkillStageLabel(stage: RuntimeStreamSkillItemView['stage']): string {

@@ -173,10 +173,12 @@ pub(crate) fn runtime_run_persists_active_and_pending_control_snapshots_with_que
     let project_id = "project-1";
     let repo_root = seed_project(&root, project_id, "repo-1", "repo");
     let run_id = "run-controls";
-    let control_state = project_store::build_runtime_run_control_state(
+    let control_state = project_store::build_runtime_run_control_state_with_plan_mode(
+        xero_desktop_lib::commands::RuntimeAgentIdDto::Engineer,
         "openai_codex",
         Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::High),
         xero_desktop_lib::commands::RuntimeRunApprovalModeDto::AutoEdit,
+        false,
         "2099-04-15T19:00:00Z",
         Some("Summarize the active worktree and propose the next action."),
     )

@@ -1,6 +1,9 @@
 use super::*;
 use crate::runtime::{AutonomousSubagentRole, AutonomousSubagentWriteScope};
 
+const MAX_AUTOMATIC_MEMORY_CANDIDATES: u8 = 8;
+const MIN_AUTOMATIC_MEMORY_CONFIDENCE: u8 = 50;
+
 pub(crate) fn append_message(
     repo_root: &Path,
     project_id: &str,
@@ -59,6 +62,20 @@ pub(crate) fn capture_project_record_for_run(
     repo_root: &Path,
     snapshot: &AgentRunSnapshotRecord,
 ) -> CommandResult<()> {
+    capture_terminal_summary_record(repo_root, snapshot)?;
+    capture_final_answer_record(repo_root, snapshot)?;
+    capture_latest_plan_record(repo_root, snapshot)?;
+    capture_decision_records(repo_root, snapshot)?;
+    capture_verification_record(repo_root, snapshot)?;
+    capture_diagnostic_record(repo_root, snapshot)?;
+    capture_debug_finding_record(repo_root, snapshot)?;
+    Ok(())
+}
+
+fn capture_terminal_summary_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
     let latest_assistant_message = snapshot
         .messages
         .iter()
@@ -109,6 +126,8 @@ pub(crate) fn capture_project_record_for_run(
             project_id: snapshot.run.project_id.clone(),
             record_kind,
             runtime_agent_id: snapshot.run.runtime_agent_id,
+            agent_definition_id: snapshot.run.agent_definition_id.clone(),
+            agent_definition_version: snapshot.run.agent_definition_version,
             agent_session_id: Some(snapshot.run.agent_session_id.clone()),
             run_id: snapshot.run.run_id.clone(),
             workflow_run_id: None,
@@ -145,6 +164,444 @@ pub(crate) fn capture_project_record_for_run(
     Ok(())
 }
 
+fn capture_final_answer_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let Some(message) = snapshot
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == AgentMessageRole::Assistant)
+    else {
+        return Ok(());
+    };
+    let text = message.content.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::ContextNote,
+            title: format!("{} final answer", snapshot.run.runtime_agent_id.label()),
+            summary: trim_project_record_summary(text),
+            text: text.to_string(),
+            content_json: json!({
+                "schema": "xero.project_record.final_answer.v1",
+                "runtimeAgentId": snapshot.run.runtime_agent_id.as_str(),
+                "status": format!("{:?}", snapshot.run.status),
+                "messageId": message.id,
+            }),
+            schema_name: "xero.project_record.final_answer.v1",
+            importance: project_store::ProjectRecordImportance::Normal,
+            confidence: Some(0.82),
+            tags: vec![
+                snapshot.run.runtime_agent_id.as_str().into(),
+                "final-answer".into(),
+                "phase5".into(),
+            ],
+            source_item_ids: vec![format!("agent_messages:{}", message.id)],
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+        },
+    )
+}
+
+fn capture_latest_plan_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let Some((event, payload)) = latest_event_payload(snapshot, AgentRunEventKind::PlanUpdated)
+    else {
+        return Ok(());
+    };
+    let text = serde_json::to_string_pretty(&payload).map_err(|error| {
+        CommandError::system_fault(
+            "agent_plan_record_serialize_failed",
+            format!("Xero could not serialize the latest agent plan for persistence: {error}"),
+        )
+    })?;
+    let summary = payload
+        .get("summary")
+        .and_then(JsonValue::as_str)
+        .or_else(|| payload.get("title").and_then(JsonValue::as_str))
+        .map(trim_project_record_summary)
+        .unwrap_or_else(|| "Latest structured plan captured from the run.".into());
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::Plan,
+            title: format!("{} run plan", snapshot.run.runtime_agent_id.label()),
+            summary,
+            text,
+            content_json: json!({
+                "schema": "xero.project_record.plan_capture.v1",
+                "eventId": event.id,
+                "payload": payload,
+            }),
+            schema_name: "xero.project_record.plan_capture.v1",
+            importance: project_store::ProjectRecordImportance::Normal,
+            confidence: Some(0.86),
+            tags: vec![
+                snapshot.run.runtime_agent_id.as_str().into(),
+                "plan".into(),
+                "phase5".into(),
+            ],
+            source_item_ids: vec![format!("agent_events:{}", event.id)],
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+        },
+    )
+}
+
+fn capture_decision_records(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    for (index, decision) in extract_marked_lines(snapshot, "Decision:", 6)
+        .into_iter()
+        .enumerate()
+    {
+        insert_runtime_project_record(
+            repo_root,
+            snapshot,
+            RuntimeProjectRecordDraft {
+                record_kind: project_store::ProjectRecordKind::Decision,
+                title: format!(
+                    "{} decision {}",
+                    snapshot.run.runtime_agent_id.label(),
+                    index + 1
+                ),
+                summary: trim_project_record_summary(&decision.text),
+                text: decision.text,
+                content_json: json!({
+                    "schema": "xero.project_record.decision_capture.v1",
+                    "source": decision.source,
+                    "marker": "Decision:",
+                }),
+                schema_name: "xero.project_record.decision_capture.v1",
+                importance: project_store::ProjectRecordImportance::High,
+                confidence: Some(0.78),
+                tags: vec![
+                    snapshot.run.runtime_agent_id.as_str().into(),
+                    "decision".into(),
+                    "phase5".into(),
+                ],
+                source_item_ids: vec![decision.source],
+                related_paths: run_related_paths(snapshot),
+                visibility: project_store::ProjectRecordVisibility::Retrieval,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn capture_verification_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let verification_events = snapshot
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_kind,
+                AgentRunEventKind::VerificationGate | AgentRunEventKind::ValidationCompleted
+            )
+        })
+        .collect::<Vec<_>>();
+    if verification_events.is_empty() {
+        return Ok(());
+    }
+    let evidence = verification_events
+        .iter()
+        .filter_map(|event| {
+            serde_json::from_str::<JsonValue>(&event.payload_json)
+                .ok()
+                .map(|payload| {
+                    json!({
+                        "eventId": event.id,
+                        "eventKind": event.event_kind.clone(),
+                        "createdAt": event.created_at.clone(),
+                        "payload": payload,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let text = serde_json::to_string_pretty(&evidence).map_err(|error| {
+        CommandError::system_fault(
+            "agent_verification_record_serialize_failed",
+            format!("Xero could not serialize verification evidence for persistence: {error}"),
+        )
+    })?;
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::Verification,
+            title: format!(
+                "{} verification evidence",
+                snapshot.run.runtime_agent_id.label()
+            ),
+            summary: format!(
+                "{} verification event{} captured.",
+                verification_events.len(),
+                if verification_events.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            text,
+            content_json: json!({
+                "schema": "xero.project_record.verification_capture.v1",
+                "events": evidence,
+            }),
+            schema_name: "xero.project_record.verification_capture.v1",
+            importance: project_store::ProjectRecordImportance::High,
+            confidence: Some(0.9),
+            tags: vec![
+                snapshot.run.runtime_agent_id.as_str().into(),
+                "verification".into(),
+                "phase5".into(),
+            ],
+            source_item_ids: verification_events
+                .iter()
+                .map(|event| format!("agent_events:{}", event.id))
+                .collect(),
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+        },
+    )
+}
+
+fn capture_diagnostic_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let Some(error) = snapshot.run.last_error.as_ref() else {
+        return Ok(());
+    };
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::Diagnostic,
+            title: format!("{} run diagnostic", snapshot.run.runtime_agent_id.label()),
+            summary: format!(
+                "{}: {}",
+                error.code,
+                trim_project_record_summary(&error.message)
+            ),
+            text: format!("{}: {}", error.code, error.message),
+            content_json: json!({
+                "schema": "xero.project_record.run_diagnostic.v1",
+                "status": format!("{:?}", snapshot.run.status),
+                "code": error.code,
+                "message": error.message,
+            }),
+            schema_name: "xero.project_record.run_diagnostic.v1",
+            importance: project_store::ProjectRecordImportance::High,
+            confidence: Some(0.95),
+            tags: vec![
+                snapshot.run.runtime_agent_id.as_str().into(),
+                "diagnostic".into(),
+                "phase5".into(),
+            ],
+            source_item_ids: vec![format!("agent_runs:{}", snapshot.run.run_id)],
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Diagnostic,
+        },
+    )
+}
+
+fn capture_debug_finding_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    if snapshot.run.runtime_agent_id != RuntimeAgentIdDto::Debug {
+        return Ok(());
+    }
+    let Some(message) = snapshot
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == AgentMessageRole::Assistant)
+    else {
+        return Ok(());
+    };
+    let text = message.content.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    let lowered = text.to_ascii_lowercase();
+    if !["root cause", "finding", "fix", "verified", "verification"]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+    {
+        return Ok(());
+    }
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::Finding,
+            title: "Debug finding".into(),
+            summary: trim_project_record_summary(text),
+            text: text.to_string(),
+            content_json: json!({
+                "schema": "xero.project_record.debug_finding.v1",
+                "messageId": message.id,
+                "status": format!("{:?}", snapshot.run.status),
+            }),
+            schema_name: "xero.project_record.debug_finding.v1",
+            importance: project_store::ProjectRecordImportance::High,
+            confidence: Some(0.84),
+            tags: vec![
+                "debug".into(),
+                "finding".into(),
+                "root-cause".into(),
+                "phase5".into(),
+            ],
+            source_item_ids: vec![format!("agent_messages:{}", message.id)],
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+        },
+    )
+}
+
+pub(crate) fn capture_memory_candidates_for_run(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    provider: &dyn ProviderAdapter,
+    trigger: &str,
+) -> CommandResult<()> {
+    let source = build_runtime_memory_extraction_source(snapshot);
+    if source.transcript.trim().is_empty() {
+        return Ok(());
+    }
+    let existing_memories = project_store::list_agent_memories(
+        repo_root,
+        &snapshot.run.project_id,
+        project_store::AgentMemoryListFilter {
+            agent_session_id: Some(&snapshot.run.agent_session_id),
+            include_disabled: true,
+            include_rejected: false,
+        },
+    )?;
+    let request = ProviderMemoryExtractionRequest {
+        project_id: snapshot.run.project_id.clone(),
+        agent_session_id: snapshot.run.agent_session_id.clone(),
+        run_id: Some(snapshot.run.run_id.clone()),
+        provider_id: provider.provider_id().into(),
+        model_id: provider.model_id().into(),
+        transcript: source.transcript.clone(),
+        existing_memories: existing_memories
+            .iter()
+            .map(|memory| memory.text.clone())
+            .collect(),
+        max_candidates: MAX_AUTOMATIC_MEMORY_CANDIDATES,
+    };
+    let mut ignored_stream_event = |_event| Ok(());
+    let outcome = match provider.extract_memory_candidates(&request, &mut ignored_stream_event) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            record_memory_extraction_diagnostics(
+                repo_root,
+                snapshot,
+                trigger,
+                0,
+                0,
+                &[project_store::AgentRunDiagnosticRecord {
+                    code: error.code.clone(),
+                    message: error.message.clone(),
+                }],
+            )?;
+            append_event(
+                repo_root,
+                &snapshot.run.project_id,
+                &snapshot.run.run_id,
+                AgentRunEventKind::ValidationCompleted,
+                json!({
+                    "label": "memory_extraction",
+                    "outcome": "failed",
+                    "trigger": trigger,
+                    "code": error.code,
+                    "message": error.message,
+                }),
+            )?;
+            return Ok(());
+        }
+    };
+
+    let mut created_count = 0_usize;
+    let mut skipped_duplicate_count = 0_usize;
+    let mut diagnostics = Vec::new();
+    let now = now_timestamp();
+    for candidate in outcome
+        .candidates
+        .into_iter()
+        .take(MAX_AUTOMATIC_MEMORY_CANDIDATES as usize)
+    {
+        match prepare_automatic_memory_candidate(
+            &snapshot.run.project_id,
+            &snapshot.run.agent_session_id,
+            &source,
+            candidate,
+            now.as_str(),
+        ) {
+            Ok(record) => {
+                let text_hash = project_store::agent_memory_text_hash(&record.text);
+                if project_store::find_active_agent_memory_by_hash(
+                    repo_root,
+                    &snapshot.run.project_id,
+                    &record.scope,
+                    record.agent_session_id.as_deref(),
+                    &record.kind,
+                    &text_hash,
+                )?
+                .is_some()
+                {
+                    skipped_duplicate_count = skipped_duplicate_count.saturating_add(1);
+                    continue;
+                }
+                project_store::insert_agent_memory(repo_root, &record)?;
+                created_count = created_count.saturating_add(1);
+            }
+            Err(diagnostic) => diagnostics.push(diagnostic),
+        }
+    }
+
+    append_event(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+        AgentRunEventKind::ValidationCompleted,
+        json!({
+            "label": "memory_extraction",
+            "outcome": "passed",
+            "trigger": trigger,
+            "createdCount": created_count,
+            "skippedDuplicateCount": skipped_duplicate_count,
+            "rejectedCount": diagnostics.len(),
+        }),
+    )?;
+    if !diagnostics.is_empty() {
+        record_memory_extraction_diagnostics(
+            repo_root,
+            snapshot,
+            trigger,
+            created_count,
+            skipped_duplicate_count,
+            &diagnostics,
+        )?;
+    }
+    Ok(())
+}
+
 fn trim_project_record_summary(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= 240 {
@@ -153,6 +610,449 @@ fn trim_project_record_summary(text: &str) -> String {
     let mut summary = trimmed.chars().take(240).collect::<String>();
     summary.push_str("...");
     summary
+}
+
+fn truncate_memory_source_text(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut truncated = trimmed.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+struct RuntimeProjectRecordDraft {
+    record_kind: project_store::ProjectRecordKind,
+    title: String,
+    summary: String,
+    text: String,
+    content_json: JsonValue,
+    schema_name: &'static str,
+    importance: project_store::ProjectRecordImportance,
+    confidence: Option<f64>,
+    tags: Vec<String>,
+    source_item_ids: Vec<String>,
+    related_paths: Vec<String>,
+    visibility: project_store::ProjectRecordVisibility,
+}
+
+fn insert_runtime_project_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    draft: RuntimeProjectRecordDraft,
+) -> CommandResult<()> {
+    let (text, redaction) = redact_session_context_text(&draft.text);
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let (summary, summary_redaction) = redact_session_context_text(&draft.summary);
+    let (content_json, content_redacted) = redact_runtime_project_record_json(draft.content_json);
+    let redaction_state = if redaction.redacted || summary_redaction.redacted || content_redacted {
+        project_store::ProjectRecordRedactionState::Redacted
+    } else {
+        project_store::ProjectRecordRedactionState::Clean
+    };
+    project_store::insert_project_record(
+        repo_root,
+        &project_store::NewProjectRecordRecord {
+            record_id: project_store::generate_project_record_id(),
+            project_id: snapshot.run.project_id.clone(),
+            record_kind: draft.record_kind,
+            runtime_agent_id: snapshot.run.runtime_agent_id,
+            agent_definition_id: snapshot.run.agent_definition_id.clone(),
+            agent_definition_version: snapshot.run.agent_definition_version,
+            agent_session_id: Some(snapshot.run.agent_session_id.clone()),
+            run_id: snapshot.run.run_id.clone(),
+            workflow_run_id: None,
+            workflow_step_id: None,
+            title: draft.title,
+            summary: trim_project_record_summary(&summary),
+            text,
+            content_json: Some(content_json),
+            schema_name: Some(draft.schema_name.into()),
+            schema_version: 1,
+            importance: draft.importance,
+            confidence: draft.confidence,
+            tags: draft.tags,
+            source_item_ids: draft.source_item_ids,
+            related_paths: draft.related_paths,
+            produced_artifact_refs: Vec::new(),
+            redaction_state,
+            visibility: draft.visibility,
+            created_at: now_timestamp(),
+        },
+    )?;
+    Ok(())
+}
+
+fn redact_runtime_project_record_json(value: JsonValue) -> (JsonValue, bool) {
+    redact_runtime_project_record_json_value(value, None)
+}
+
+fn redact_runtime_project_record_json_value(
+    value: JsonValue,
+    parent_key: Option<&str>,
+) -> (JsonValue, bool) {
+    match value {
+        JsonValue::String(text) => {
+            if parent_key.is_some_and(is_project_record_metadata_json_key) {
+                return (JsonValue::String(text), false);
+            }
+            let (text, redaction) = redact_session_context_text(&text);
+            (JsonValue::String(text), redaction.redacted)
+        }
+        JsonValue::Array(items) => {
+            let mut redacted_any = false;
+            let items = items
+                .into_iter()
+                .map(|item| {
+                    let (item, redacted) =
+                        redact_runtime_project_record_json_value(item, parent_key);
+                    redacted_any |= redacted;
+                    item
+                })
+                .collect();
+            (JsonValue::Array(items), redacted_any)
+        }
+        JsonValue::Object(entries) => {
+            let mut redacted_any = false;
+            let entries = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let (value, redacted) =
+                        redact_runtime_project_record_json_value(value, Some(key.as_str()));
+                    redacted_any |= redacted;
+                    (key, value)
+                })
+                .collect();
+            (JsonValue::Object(entries), redacted_any)
+        }
+        value => (value, false),
+    }
+}
+
+fn is_project_record_metadata_json_key(key: &str) -> bool {
+    matches!(
+        key,
+        "actionId"
+            | "code"
+            | "createdAt"
+            | "eventId"
+            | "eventKind"
+            | "marker"
+            | "messageId"
+            | "modelId"
+            | "providerId"
+            | "runtimeAgentId"
+            | "schema"
+            | "source"
+            | "status"
+            | "trigger"
+    )
+}
+
+fn run_related_paths(snapshot: &AgentRunSnapshotRecord) -> Vec<String> {
+    snapshot
+        .file_changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn latest_event_payload(
+    snapshot: &AgentRunSnapshotRecord,
+    event_kind: AgentRunEventKind,
+) -> Option<(&AgentEventRecord, JsonValue)> {
+    snapshot
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.event_kind == event_kind)
+        .and_then(|event| {
+            serde_json::from_str::<JsonValue>(&event.payload_json)
+                .ok()
+                .map(|payload| (event, payload))
+        })
+}
+
+struct MarkedLine {
+    source: String,
+    text: String,
+}
+
+fn extract_marked_lines(
+    snapshot: &AgentRunSnapshotRecord,
+    marker: &str,
+    limit: usize,
+) -> Vec<MarkedLine> {
+    let mut lines = Vec::new();
+    for message in snapshot.messages.iter().rev() {
+        if !matches!(
+            message.role,
+            AgentMessageRole::Assistant | AgentMessageRole::Developer | AgentMessageRole::User
+        ) {
+            continue;
+        }
+        for line in message.content.lines() {
+            let Some(text) = text_after_marker(line, marker) else {
+                continue;
+            };
+            lines.push(MarkedLine {
+                source: format!("agent_messages:{}", message.id),
+                text: text.to_string(),
+            });
+            if lines.len() >= limit {
+                return lines;
+            }
+        }
+    }
+    for event in snapshot.events.iter().rev() {
+        let Some(text) = text_after_marker(&event.payload_json, marker) else {
+            continue;
+        };
+        lines.push(MarkedLine {
+            source: format!("agent_events:{}", event.id),
+            text: text.to_string(),
+        });
+        if lines.len() >= limit {
+            break;
+        }
+    }
+    lines
+}
+
+fn text_after_marker<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let lowered = line.to_ascii_lowercase();
+    let marker = marker.to_ascii_lowercase();
+    let index = lowered.find(&marker)?;
+    line.get(index.saturating_add(marker.len())..)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+struct RuntimeMemoryExtractionSource {
+    transcript: String,
+    source_run_id: String,
+    source_item_ids: Vec<String>,
+}
+
+fn build_runtime_memory_extraction_source(
+    snapshot: &AgentRunSnapshotRecord,
+) -> RuntimeMemoryExtractionSource {
+    let transcript = crate::commands::run_transcript_from_agent_snapshot(snapshot, None);
+    let mut source_item_ids = Vec::new();
+    let mut text = format!(
+        "Review this Xero owned-agent run for durable memory candidates. Run {} provider={} model={} status={:?}.\n",
+        snapshot.run.run_id,
+        snapshot.run.provider_id,
+        snapshot.run.model_id,
+        snapshot.run.status,
+    );
+    for item in &transcript.items {
+        source_item_ids.push(item.item_id.clone());
+        let body = item
+            .text
+            .as_deref()
+            .or(item.summary.as_deref())
+            .unwrap_or_default()
+            .trim();
+        if body.is_empty() {
+            continue;
+        }
+        text.push_str(&format!(
+            "- [{}] {:?} {:?}: {}\n",
+            item.item_id,
+            item.kind,
+            item.actor,
+            truncate_memory_source_text(body, 600)
+        ));
+    }
+    RuntimeMemoryExtractionSource {
+        transcript: text,
+        source_run_id: snapshot.run.run_id.clone(),
+        source_item_ids,
+    }
+}
+
+fn prepare_automatic_memory_candidate(
+    project_id: &str,
+    agent_session_id: &str,
+    source: &RuntimeMemoryExtractionSource,
+    candidate: ProviderMemoryCandidate,
+    created_at: &str,
+) -> Result<project_store::NewAgentMemoryRecord, project_store::AgentRunDiagnosticRecord> {
+    let scope = agent_memory_scope_from_provider(&candidate.scope).ok_or_else(|| {
+        agent_memory_candidate_diagnostic(
+            "session_memory_candidate_scope_invalid",
+            "A provider memory candidate used an unsupported scope.",
+        )
+    })?;
+    let kind = agent_memory_kind_from_provider(&candidate.kind).ok_or_else(|| {
+        agent_memory_candidate_diagnostic(
+            "session_memory_candidate_kind_invalid",
+            "A provider memory candidate used an unsupported kind.",
+        )
+    })?;
+    let text = candidate.text.trim().to_string();
+    if text.is_empty() {
+        return Err(agent_memory_candidate_diagnostic(
+            "session_memory_candidate_empty",
+            "A provider memory candidate did not include text.",
+        ));
+    }
+    let confidence = candidate.confidence.unwrap_or(0).min(100);
+    if confidence < MIN_AUTOMATIC_MEMORY_CONFIDENCE {
+        return Err(agent_memory_candidate_diagnostic(
+            "session_memory_candidate_low_confidence",
+            "Xero skipped a low-confidence memory candidate.",
+        ));
+    }
+    let (_redacted_text, redaction) = redact_session_context_text(&text);
+    if redaction.redacted {
+        return Err(memory_candidate_blocked_diagnostic(&redaction));
+    }
+    let mut source_item_ids = candidate
+        .source_item_ids
+        .into_iter()
+        .map(|item_id| item_id.trim().to_string())
+        .filter(|item_id| !item_id.is_empty())
+        .collect::<Vec<_>>();
+    if source_item_ids.is_empty() {
+        source_item_ids = source.source_item_ids.iter().take(8).cloned().collect();
+    }
+    Ok(project_store::NewAgentMemoryRecord {
+        memory_id: project_store::generate_agent_memory_id(),
+        project_id: project_id.into(),
+        agent_session_id: match scope {
+            project_store::AgentMemoryScope::Project => None,
+            project_store::AgentMemoryScope::Session => Some(agent_session_id.into()),
+        },
+        scope,
+        kind,
+        text,
+        review_state: project_store::AgentMemoryReviewState::Approved,
+        enabled: true,
+        confidence: Some(confidence),
+        source_run_id: Some(source.source_run_id.clone()),
+        source_item_ids,
+        diagnostic: None,
+        created_at: created_at.into(),
+    })
+}
+
+fn record_memory_extraction_diagnostics(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    trigger: &str,
+    created_count: usize,
+    skipped_duplicate_count: usize,
+    diagnostics: &[project_store::AgentRunDiagnosticRecord],
+) -> CommandResult<()> {
+    if diagnostics.is_empty() {
+        return Ok(());
+    }
+    let text = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::Diagnostic,
+            title: "Memory extraction diagnostics".into(),
+            summary: format!(
+                "{} candidate{} rejected during {trigger} extraction.",
+                diagnostics.len(),
+                if diagnostics.len() == 1 { "" } else { "s" }
+            ),
+            text,
+            content_json: json!({
+                "schema": "xero.memory_extraction.diagnostics.v1",
+                "trigger": trigger,
+                "createdCount": created_count,
+                "skippedDuplicateCount": skipped_duplicate_count,
+                "rejectedCount": diagnostics.len(),
+                "diagnostics": diagnostics.iter().map(|diagnostic| json!({
+                    "code": diagnostic.code,
+                    "message": diagnostic.message,
+                })).collect::<Vec<_>>(),
+            }),
+            schema_name: "xero.memory_extraction.diagnostics.v1",
+            importance: project_store::ProjectRecordImportance::Normal,
+            confidence: Some(1.0),
+            tags: vec![
+                snapshot.run.runtime_agent_id.as_str().into(),
+                "memory-extraction".into(),
+                "diagnostic".into(),
+                "phase5".into(),
+            ],
+            source_item_ids: vec![format!("agent_runs:{}", snapshot.run.run_id)],
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Diagnostic,
+        },
+    )
+}
+
+fn agent_memory_candidate_diagnostic(
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> project_store::AgentRunDiagnosticRecord {
+    project_store::AgentRunDiagnosticRecord {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn memory_candidate_blocked_diagnostic(
+    redaction: &crate::commands::SessionContextRedactionDto,
+) -> project_store::AgentRunDiagnosticRecord {
+    if redaction
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("prompt-injection"))
+    {
+        agent_memory_candidate_diagnostic(
+            "session_memory_candidate_integrity",
+            "Xero skipped a memory candidate because it looked like an instruction-override attempt.",
+        )
+    } else {
+        agent_memory_candidate_diagnostic(
+            "session_memory_candidate_secret",
+            "Xero skipped a memory candidate because its text looked credential-like.",
+        )
+    }
+}
+
+fn agent_memory_scope_from_provider(value: &str) -> Option<project_store::AgentMemoryScope> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "project" => Some(project_store::AgentMemoryScope::Project),
+        "session" => Some(project_store::AgentMemoryScope::Session),
+        _ => None,
+    }
+}
+
+fn agent_memory_kind_from_provider(value: &str) -> Option<project_store::AgentMemoryKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "project_fact" | "project fact" | "fact" => {
+            Some(project_store::AgentMemoryKind::ProjectFact)
+        }
+        "user_preference" | "user preference" | "preference" => {
+            Some(project_store::AgentMemoryKind::UserPreference)
+        }
+        "decision" => Some(project_store::AgentMemoryKind::Decision),
+        "session_summary" | "session summary" | "summary" => {
+            Some(project_store::AgentMemoryKind::SessionSummary)
+        }
+        "troubleshooting" | "troubleshooting_fact" | "troubleshooting fact" => {
+            Some(project_store::AgentMemoryKind::Troubleshooting)
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {

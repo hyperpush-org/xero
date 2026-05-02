@@ -177,6 +177,84 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ON agent_sessions(project_id, last_run_id)
         WHERE last_run_id IS NOT NULL;
 
+    CREATE TABLE IF NOT EXISTS agent_definitions (
+        definition_id TEXT PRIMARY KEY,
+        current_version INTEGER NOT NULL CHECK (current_version > 0),
+        display_name TEXT NOT NULL,
+        short_label TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL,
+        lifecycle_state TEXT NOT NULL,
+        base_capability_profile TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL,
+        CHECK (definition_id <> ''),
+        CHECK (display_name <> ''),
+        CHECK (short_label <> ''),
+        CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
+        CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
+        CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder'))
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_definition_versions (
+        definition_id TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        snapshot_json TEXT NOT NULL,
+        validation_report_json TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (definition_id, version),
+        CHECK (definition_id <> ''),
+        CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+        CHECK (validation_report_json IS NULL OR (validation_report_json <> '' AND json_valid(validation_report_json))),
+        FOREIGN KEY (definition_id)
+            REFERENCES agent_definitions(definition_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_definitions_lifecycle_scope
+        ON agent_definitions(lifecycle_state, scope, display_name);
+
+    CREATE TRIGGER IF NOT EXISTS agent_definition_versions_immutable_update
+    BEFORE UPDATE ON agent_definition_versions
+    BEGIN
+        SELECT RAISE(ABORT, 'agent definition versions are immutable');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS agent_definition_versions_immutable_delete
+    BEFORE DELETE ON agent_definition_versions
+    BEGIN
+        SELECT RAISE(ABORT, 'agent definition versions are immutable');
+    END;
+
+    INSERT OR IGNORE INTO agent_definitions (
+        definition_id,
+        current_version,
+        display_name,
+        short_label,
+        description,
+        scope,
+        lifecycle_state,
+        base_capability_profile,
+        updated_at
+    )
+    VALUES
+        ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
+        ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
+        ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
+        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
+
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    VALUES
+        ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+
     CREATE TABLE IF NOT EXISTS runtime_runs (
         project_id TEXT NOT NULL,
         agent_session_id TEXT NOT NULL,
@@ -387,6 +465,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
 
     CREATE TABLE IF NOT EXISTS agent_runs (
         runtime_agent_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         agent_session_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
@@ -405,11 +485,13 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         PRIMARY KEY (project_id, run_id),
         CHECK (agent_session_id <> ''),
-        CHECK (runtime_agent_id IN ('ask', 'engineer')),
+        CHECK (runtime_agent_id <> ''),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
         CHECK (run_id <> ''),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
-        CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'completed', 'failed')),
+        CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'handed_off', 'completed', 'failed')),
         CHECK (prompt <> ''),
         CHECK (system_prompt <> ''),
         CHECK (
@@ -417,7 +499,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
         ),
         FOREIGN KEY (project_id, agent_session_id)
-            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_runs_session_updated
@@ -548,6 +632,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS agent_usage (
         project_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
         provider_id TEXT NOT NULL,
         model_id TEXT NOT NULL,
         input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
@@ -558,10 +644,14 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
         cache_creation_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_creation_tokens >= 0),
         PRIMARY KEY (project_id, run_id),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
         FOREIGN KEY (project_id, run_id)
-            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
     );
 
     CREATE INDEX IF NOT EXISTS idx_agent_usage_project_model
@@ -835,6 +925,281 @@ const BASELINE_SCHEMA_SQL: &str = r#"
           AND source_agent_session_id = old.agent_session_id;
     END;
 
+    CREATE TABLE IF NOT EXISTS agent_context_policy_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        scope_kind TEXT NOT NULL,
+        agent_session_id TEXT,
+        auto_compact_enabled INTEGER NOT NULL DEFAULT 1 CHECK (auto_compact_enabled IN (0, 1)),
+        auto_handoff_enabled INTEGER NOT NULL DEFAULT 1 CHECK (auto_handoff_enabled IN (0, 1)),
+        compact_threshold_percent INTEGER NOT NULL DEFAULT 75 CHECK (compact_threshold_percent BETWEEN 1 AND 100),
+        handoff_threshold_percent INTEGER NOT NULL DEFAULT 90 CHECK (handoff_threshold_percent BETWEEN 1 AND 100),
+        raw_tail_message_count INTEGER NOT NULL DEFAULT 8 CHECK (raw_tail_message_count >= 0),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at TEXT NOT NULL,
+        CHECK (scope_kind IN ('project', 'session')),
+        CHECK (
+            (scope_kind = 'project' AND agent_session_id IS NULL)
+            OR (scope_kind = 'session' AND agent_session_id IS NOT NULL AND agent_session_id <> '')
+        ),
+        CHECK (compact_threshold_percent < handoff_threshold_percent),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_context_policy_settings_project
+        ON agent_context_policy_settings(project_id)
+        WHERE scope_kind = 'project' AND agent_session_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_context_policy_settings_session
+        ON agent_context_policy_settings(project_id, agent_session_id)
+        WHERE scope_kind = 'session';
+
+    CREATE TABLE IF NOT EXISTS agent_context_manifests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        manifest_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT,
+        runtime_agent_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
+        provider_id TEXT,
+        model_id TEXT,
+        request_kind TEXT NOT NULL,
+        policy_action TEXT NOT NULL,
+        policy_reason_code TEXT NOT NULL,
+        budget_tokens INTEGER CHECK (budget_tokens IS NULL OR budget_tokens >= 0),
+        estimated_tokens INTEGER NOT NULL DEFAULT 0 CHECK (estimated_tokens >= 0),
+        pressure TEXT NOT NULL,
+        context_hash TEXT NOT NULL,
+        included_contributors_json TEXT NOT NULL,
+        excluded_contributors_json TEXT NOT NULL,
+        retrieval_query_ids_json TEXT NOT NULL DEFAULT '[]',
+        retrieval_result_ids_json TEXT NOT NULL DEFAULT '[]',
+        compaction_id TEXT,
+        handoff_id TEXT,
+        redaction_state TEXT NOT NULL DEFAULT 'clean',
+        manifest_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        CHECK (manifest_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id IS NULL OR run_id <> ''),
+        CHECK (runtime_agent_id <> ''),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
+        CHECK (provider_id IS NULL OR provider_id <> ''),
+        CHECK (model_id IS NULL OR model_id <> ''),
+        CHECK (request_kind IN ('provider_turn', 'handoff_source', 'diagnostic', 'test')),
+        CHECK (policy_action IN ('continue_now', 'compact_now', 'recompact_now', 'handoff_now', 'blocked')),
+        CHECK (policy_reason_code <> ''),
+        CHECK (pressure IN ('unknown', 'low', 'medium', 'high', 'over')),
+        CHECK (length(context_hash) = 64),
+        CHECK (context_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (included_contributors_json <> '' AND json_valid(included_contributors_json)),
+        CHECK (excluded_contributors_json <> '' AND json_valid(excluded_contributors_json)),
+        CHECK (retrieval_query_ids_json <> '' AND json_valid(retrieval_query_ids_json)),
+        CHECK (retrieval_result_ids_json <> '' AND json_valid(retrieval_result_ids_json)),
+        CHECK (compaction_id IS NULL OR compaction_id <> ''),
+        CHECK (handoff_id IS NULL OR handoff_id <> ''),
+        CHECK (redaction_state IN ('clean', 'redacted', 'blocked')),
+        CHECK (manifest_json <> '' AND json_valid(manifest_json)),
+        UNIQUE (project_id, manifest_id),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_context_manifests_run_created
+        ON agent_context_manifests(project_id, run_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_context_manifests_session_created
+        ON agent_context_manifests(project_id, agent_session_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_context_manifests_policy
+        ON agent_context_manifests(project_id, policy_action, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_handoff_lineage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        handoff_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        source_agent_session_id TEXT NOT NULL,
+        source_run_id TEXT NOT NULL,
+        source_runtime_agent_id TEXT NOT NULL,
+        source_agent_definition_id TEXT NOT NULL,
+        source_agent_definition_version INTEGER NOT NULL,
+        target_agent_session_id TEXT,
+        target_run_id TEXT,
+        target_runtime_agent_id TEXT NOT NULL,
+        target_agent_definition_id TEXT NOT NULL,
+        target_agent_definition_version INTEGER NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        source_context_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        handoff_record_id TEXT,
+        bundle_json TEXT NOT NULL,
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (handoff_id <> ''),
+        CHECK (source_agent_session_id <> ''),
+        CHECK (source_run_id <> ''),
+        CHECK (source_runtime_agent_id <> ''),
+        CHECK (source_agent_definition_id <> ''),
+        CHECK (source_agent_definition_version > 0),
+        CHECK (target_agent_session_id IS NULL OR target_agent_session_id <> ''),
+        CHECK (target_run_id IS NULL OR target_run_id <> ''),
+        CHECK (target_runtime_agent_id <> ''),
+        CHECK (target_agent_definition_id <> ''),
+        CHECK (target_agent_definition_version > 0),
+        CHECK (source_agent_definition_id = target_agent_definition_id),
+        CHECK (source_agent_definition_version = target_agent_definition_version),
+        CHECK (provider_id <> ''),
+        CHECK (model_id <> ''),
+        CHECK (length(source_context_hash) = 64),
+        CHECK (source_context_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (status IN ('pending', 'recorded', 'target_created', 'completed', 'failed')),
+        CHECK (idempotency_key <> ''),
+        CHECK (handoff_record_id IS NULL OR handoff_record_id <> ''),
+        CHECK (bundle_json <> '' AND json_valid(bundle_json)),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, handoff_id),
+        UNIQUE (project_id, idempotency_key),
+        FOREIGN KEY (project_id, source_agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, source_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_agent_definition_id, source_agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version),
+        FOREIGN KEY (target_agent_definition_id, target_agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_handoff_lineage_one_pending_source
+        ON agent_handoff_lineage(project_id, source_run_id)
+        WHERE status IN ('pending', 'recorded');
+    CREATE INDEX IF NOT EXISTS idx_agent_handoff_lineage_status_updated
+        ON agent_handoff_lineage(project_id, status, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_handoff_lineage_target
+        ON agent_handoff_lineage(project_id, target_run_id)
+        WHERE target_run_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_retrieval_queries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_session_id TEXT,
+        run_id TEXT,
+        runtime_agent_id TEXT NOT NULL,
+        agent_definition_id TEXT NOT NULL,
+        agent_definition_version INTEGER NOT NULL,
+        query_text TEXT NOT NULL,
+        query_hash TEXT NOT NULL,
+        search_scope TEXT NOT NULL,
+        filters_json TEXT NOT NULL DEFAULT '{}',
+        limit_count INTEGER NOT NULL CHECK (limit_count > 0),
+        status TEXT NOT NULL,
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (query_id <> ''),
+        CHECK (agent_session_id IS NULL OR agent_session_id <> ''),
+        CHECK (run_id IS NULL OR run_id <> ''),
+        CHECK (runtime_agent_id <> ''),
+        CHECK (agent_definition_id <> ''),
+        CHECK (agent_definition_version > 0),
+        CHECK (query_text <> ''),
+        CHECK (length(query_hash) = 64),
+        CHECK (query_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (search_scope IN ('project_records', 'approved_memory', 'hybrid_context', 'handoffs')),
+        CHECK (filters_json <> '' AND json_valid(filters_json)),
+        CHECK (status IN ('started', 'succeeded', 'failed')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, query_id),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_definition_id, agent_definition_version)
+            REFERENCES agent_definition_versions(definition_id, version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_retrieval_queries_run_created
+        ON agent_retrieval_queries(project_id, run_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_retrieval_queries_scope_status
+        ON agent_retrieval_queries(project_id, search_scope, status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_retrieval_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        query_id TEXT NOT NULL,
+        result_id TEXT NOT NULL,
+        source_kind TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        rank INTEGER NOT NULL CHECK (rank > 0),
+        score REAL,
+        snippet TEXT NOT NULL,
+        redaction_state TEXT NOT NULL DEFAULT 'clean',
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        CHECK (query_id <> ''),
+        CHECK (result_id <> ''),
+        CHECK (source_kind IN ('project_record', 'approved_memory', 'handoff', 'context_manifest')),
+        CHECK (source_id <> ''),
+        CHECK (score IS NULL OR score >= 0.0),
+        CHECK (snippet <> ''),
+        CHECK (redaction_state IN ('clean', 'redacted', 'blocked')),
+        CHECK (metadata_json IS NULL OR (metadata_json <> '' AND json_valid(metadata_json))),
+        UNIQUE (project_id, query_id, result_id),
+        FOREIGN KEY (project_id, query_id)
+            REFERENCES agent_retrieval_queries(project_id, query_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_retrieval_results_query_rank
+        ON agent_retrieval_results(project_id, query_id, rank ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_agent_retrieval_results_source
+        ON agent_retrieval_results(project_id, source_kind, source_id);
+
+    CREATE TABLE IF NOT EXISTS agent_embedding_backfill_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        source_kind TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        embedding_model TEXT NOT NULL,
+        embedding_dimension INTEGER NOT NULL CHECK (embedding_dimension > 0),
+        embedding_version TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (job_id <> ''),
+        CHECK (source_kind IN ('project_record', 'approved_memory')),
+        CHECK (source_id <> ''),
+        CHECK (length(source_hash) = 64),
+        CHECK (source_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (embedding_model <> ''),
+        CHECK (embedding_version <> ''),
+        CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'skipped')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, job_id),
+        UNIQUE (project_id, source_kind, source_id, embedding_model, embedding_version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_embedding_backfill_jobs_status
+        ON agent_embedding_backfill_jobs(project_id, status, created_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_agent_embedding_backfill_jobs_source
+        ON agent_embedding_backfill_jobs(project_id, source_kind, source_id);
+
     CREATE TABLE IF NOT EXISTS meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         project_id TEXT NOT NULL,
@@ -847,7 +1212,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     fn migrate_to_latest_in_memory() -> Connection {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
@@ -914,9 +1279,17 @@ mod tests {
                 "agent_action_requests",
                 "agent_checkpoints",
                 "agent_compactions",
+                "agent_context_manifests",
+                "agent_context_policy_settings",
+                "agent_definition_versions",
+                "agent_definitions",
+                "agent_embedding_backfill_jobs",
                 "agent_events",
                 "agent_file_changes",
+                "agent_handoff_lineage",
                 "agent_messages",
+                "agent_retrieval_queries",
+                "agent_retrieval_results",
                 "agent_runs",
                 "agent_session_lineage",
                 "agent_sessions",
@@ -969,6 +1342,240 @@ mod tests {
             tables.is_empty(),
             "deprecated workflow/autonomous-unit/memory tables should not exist in the fresh baseline: {tables:?}"
         );
+    }
+
+    #[test]
+    fn phase1_continuity_schema_persists_manifest_and_rejects_cross_definition_handoff() {
+        let connection = migrate_to_latest_in_memory();
+        connection
+            .execute(
+                "INSERT INTO projects (id, name) VALUES (?1, ?2)",
+                params!["project-1", "Project"],
+            )
+            .expect("seed project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_sessions (
+                    project_id,
+                    agent_session_id,
+                    title,
+                    status,
+                    selected,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, 'Main', 'active', 1, ?3, ?3)
+                "#,
+                params!["project-1", "agent-session-main", "2026-05-01T12:00:00Z"],
+            )
+            .expect("seed agent session");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_context_policy_settings (
+                    project_id,
+                    scope_kind,
+                    auto_compact_enabled,
+                    auto_handoff_enabled,
+                    compact_threshold_percent,
+                    handoff_threshold_percent,
+                    raw_tail_message_count,
+                    updated_at
+                )
+                VALUES (?1, 'project', 1, 1, 75, 90, 8, ?2)
+                "#,
+                params!["project-1", "2026-05-01T12:01:00Z"],
+            )
+            .expect("insert context policy settings");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_context_manifests (
+                    manifest_id,
+                    project_id,
+                    agent_session_id,
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    request_kind,
+                    policy_action,
+                    policy_reason_code,
+                    estimated_tokens,
+                    pressure,
+                    context_hash,
+                    included_contributors_json,
+                    excluded_contributors_json,
+                    retrieval_query_ids_json,
+                    retrieval_result_ids_json,
+                    redaction_state,
+                    manifest_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, 'ask', 'ask', 1, 'test', 'continue_now', 'schema_test', 10, 'unknown', ?4, '[]', '[]', '[]', '[]', 'clean', ?5, ?6)
+                "#,
+                params![
+                    "manifest-1",
+                    "project-1",
+                    "agent-session-main",
+                    "a".repeat(64),
+                    r#"{"kind":"pre_provider"}"#,
+                    "2026-05-01T12:02:00Z",
+                ],
+            )
+            .expect("manifest persists without run/provider/model");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_runs (
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    provider_id,
+                    model_id,
+                    status,
+                    prompt,
+                    system_prompt,
+                    started_at,
+                    updated_at
+                )
+                VALUES ('ask', 'ask', 1, ?1, ?2, ?3, 'fake_provider', 'fake-model', 'running', 'prompt', 'system', ?4, ?4)
+                "#,
+                params![
+                    "project-1",
+                    "agent-session-main",
+                    "run-1",
+                    "2026-05-01T12:03:00Z"
+                ],
+            )
+            .expect("seed agent run");
+
+        let mismatch = connection
+            .execute(
+                r#"
+                INSERT INTO agent_handoff_lineage (
+                    handoff_id,
+                    project_id,
+                    source_agent_session_id,
+                    source_run_id,
+                    source_runtime_agent_id,
+                    source_agent_definition_id,
+                    source_agent_definition_version,
+                    target_runtime_agent_id,
+                    target_agent_definition_id,
+                    target_agent_definition_version,
+                    provider_id,
+                    model_id,
+                    source_context_hash,
+                    status,
+                    idempotency_key,
+                    bundle_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('handoff-bad', ?1, ?2, ?3, 'ask', 'ask', 1, 'ask', 'debug', 1, 'fake_provider', 'fake-model', ?4, 'pending', 'handoff-bad-key', ?5, ?6, ?6)
+                "#,
+                params![
+                    "project-1",
+                    "agent-session-main",
+                    "run-1",
+                    "b".repeat(64),
+                    r#"{"targetRuntimeAgentId":"debug"}"#,
+                    "2026-05-01T12:04:00Z"
+                ],
+            )
+            .expect_err("schema rejects cross-definition handoff");
+        assert!(mismatch.to_string().contains("CHECK constraint failed"));
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_handoff_lineage (
+                    handoff_id,
+                    project_id,
+                    source_agent_session_id,
+                    source_run_id,
+                    source_runtime_agent_id,
+                    source_agent_definition_id,
+                    source_agent_definition_version,
+                    target_runtime_agent_id,
+                    target_agent_definition_id,
+                    target_agent_definition_version,
+                    provider_id,
+                    model_id,
+                    source_context_hash,
+                    status,
+                    idempotency_key,
+                    bundle_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('handoff-good', ?1, ?2, ?3, 'ask', 'ask', 1, 'ask', 'ask', 1, 'fake_provider', 'fake-model', ?4, 'pending', 'handoff-good-key', ?5, ?6, ?6)
+                "#,
+                params![
+                    "project-1",
+                    "agent-session-main",
+                    "run-1",
+                    "b".repeat(64),
+                    r#"{"targetRuntimeAgentId":"ask"}"#,
+                    "2026-05-01T12:04:00Z"
+                ],
+            )
+            .expect("schema accepts same-type handoff");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_retrieval_queries (
+                    query_id,
+                    project_id,
+                    agent_session_id,
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    query_text,
+                    query_hash,
+                    search_scope,
+                    filters_json,
+                    limit_count,
+                    status,
+                    created_at
+                )
+                VALUES ('query-1', ?1, ?2, 'ask', 'ask', 1, 'handoffs', ?3, 'handoffs', '{}', 5, 'succeeded', ?4)
+                "#,
+                params![
+                    "project-1",
+                    "agent-session-main",
+                    "c".repeat(64),
+                    "2026-05-01T12:05:00Z"
+                ],
+            )
+            .expect("insert retrieval query log");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_retrieval_results (
+                    project_id,
+                    query_id,
+                    result_id,
+                    source_kind,
+                    source_id,
+                    rank,
+                    snippet,
+                    redaction_state,
+                    created_at
+                )
+                VALUES (?1, 'query-1', 'result-1', 'handoff', 'handoff-good', 1, 'Same-type handoff.', 'clean', ?2)
+                "#,
+                params!["project-1", "2026-05-01T12:05:01Z"],
+            )
+            .expect("insert retrieval result log");
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+mod context_package;
 mod evals;
 mod events;
 mod provider_adapters;
@@ -19,9 +20,13 @@ mod tool_dispatch;
 mod types;
 
 pub use evals::{
-    run_agent_harness_eval_suite, AgentHarnessEvalCaseResult, AgentHarnessEvalCoverage,
-    AgentHarnessEvalMetrics, AgentHarnessEvalReport, AgentHarnessEvalThresholds,
-    HarnessEvalFixtureKind,
+    run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite,
+    run_xero_quality_eval_suites, AgentDefinitionEvalFixtureKind, AgentDefinitionQualityCaseResult,
+    AgentDefinitionQualityCoverage, AgentDefinitionQualityEvalReport,
+    AgentDefinitionQualityMetrics, AgentDefinitionQualitySurface, AgentDefinitionQualityThresholds,
+    AgentHarnessEvalCaseResult, AgentHarnessEvalCoverage, AgentHarnessEvalMetrics,
+    AgentHarnessEvalReport, AgentHarnessEvalThresholds, HarnessEvalFixtureKind,
+    XeroQualityEvalReport,
 };
 pub use events::{publish_agent_event, subscribe_agent_events, AgentEventSubscription};
 pub use provider_adapters::{
@@ -36,6 +41,7 @@ pub use supervisor::{
 };
 pub use types::*;
 
+pub(crate) use context_package::*;
 pub(crate) use persistence::*;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;
@@ -48,12 +54,13 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use crate::{
     auth::now_timestamp,
     commands::{
-        context_budget, default_runtime_agent_id, estimate_tokens, evaluate_compaction_policy,
-        provider_context_budget_tokens, redact_session_context_text, BrowserControlPreferenceDto,
-        CommandError, CommandErrorClass, CommandResult, RuntimeAgentIdDto,
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
-        RuntimeRunControlStateDto, SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
-        SessionContextPolicyActionDto,
+        context_budget, default_runtime_agent_approval_mode, default_runtime_agent_id,
+        estimate_tokens, evaluate_compaction_policy, redact_session_context_text,
+        resolve_context_limit, runtime_agent_allows_approval_mode, soul_prompt_fragment,
+        BrowserControlPreferenceDto, CommandError, CommandErrorClass, CommandResult,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlInputDto, RuntimeRunControlStateDto, SessionCompactionPolicyInput,
+        SessionContextBudgetPressureDto, SessionContextPolicyActionDto, SoulSettingsDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentMessageRecord, AgentMessageRole, AgentRunEventKind,
@@ -65,9 +72,10 @@ use crate::{
     runtime::{
         autonomous_tool_runtime::{
             emulator::emulator_schema, tool_access_all_known_tools, tool_access_group_tools,
-            tool_allowed_for_runtime_agent, tool_catalog_metadata_for_tool,
-            AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_BROWSER, AUTONOMOUS_TOOL_EMULATOR,
-            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_SOLANA_ALT,
+            tool_allowed_for_runtime_agent_with_policy, tool_catalog_metadata_for_tool,
+            AutonomousAgentToolPolicy, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_BROWSER,
+            AUTONOMOUS_TOOL_EMULATOR, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT, AUTONOMOUS_TOOL_SOLANA_ALT,
             AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE, AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
             AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ, AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
             AUTONOMOUS_TOOL_SOLANA_CLUSTER, AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
@@ -86,8 +94,8 @@ use crate::{
         AutonomousMacosAutomationOutput, AutonomousMcpAction, AutonomousMcpRequest,
         AutonomousProcessManagerAction, AutonomousSubagentExecutor, AutonomousSubagentTask,
         AutonomousTodoStatus, AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult,
-        AutonomousToolRuntime, XeroSkillToolContextPayload, AUTONOMOUS_TOOL_CODE_INTEL,
-        AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+        AutonomousToolRuntime, XeroSkillToolContextPayload, AUTONOMOUS_TOOL_AGENT_DEFINITION,
+        AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
         AUTONOMOUS_TOOL_COMMAND_SESSION_START, AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
         AUTONOMOUS_TOOL_DELETE, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND,
         AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH,

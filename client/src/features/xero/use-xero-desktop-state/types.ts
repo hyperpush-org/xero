@@ -75,9 +75,6 @@ import type {
   WriteProjectFileResponseDto,
 } from '@/src/lib/xero-model'
 import type {
-  CheckpointControlLoopProjectionView,
-} from '../agent-runtime-projections'
-import type {
   ComposerModelOptionView,
   SelectedModelView,
   SelectedRuntimeProviderSource,
@@ -325,7 +322,6 @@ export interface AgentPaneView {
   composerModelOptions?: ComposerModelOptionView[]
   runtimeRun?: RuntimeRunView | null
   autonomousRun?: ProjectDetailView['autonomousRun']
-  checkpointControlLoop?: CheckpointControlLoopProjectionView
   runtimeErrorMessage?: string | null
   runtimeRunErrorMessage?: string | null
   autonomousRunErrorMessage?: string | null
@@ -398,6 +394,7 @@ export interface UseXeroDesktopStateResult {
   projects: ProjectListItem[]
   activeProject: ProjectDetailView | null
   activeProjectId: string | null
+  pendingProjectSelectionId: string | null
   repositoryStatus: RepositoryStatusView | null
   workflowView: WorkflowPaneView | null
   agentView: AgentPaneView | null
@@ -450,6 +447,7 @@ export interface UseXeroDesktopStateResult {
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
   selectProject: (projectId: string) => Promise<void>
+  prefetchProject: (projectId: string) => void
   importProject: (path?: string) => Promise<boolean>
   createProject: (parentPath: string, name: string) => Promise<boolean>
   removeProject: (projectId: string) => Promise<void>

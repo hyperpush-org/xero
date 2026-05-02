@@ -22,7 +22,10 @@ use crate::{
         },
         openrouter::{fetch_openrouter_models, OpenRouterDiscoveredModel},
     },
-    commands::{provider_credentials::load_provider_credentials_view, CommandError, CommandResult},
+    commands::{
+        provider_credentials::load_provider_credentials_view, resolve_context_limit, CommandError,
+        CommandResult, SessionContextLimitConfidenceDto, SessionContextLimitSourceDto,
+    },
     provider_credentials::{
         ProviderCredentialProfile, ProviderCredentialReadinessStatus, ProviderCredentialsView,
     },
@@ -70,6 +73,16 @@ pub struct ProviderModelRecord {
     pub model_id: String,
     pub display_name: String,
     pub thinking: ProviderModelThinkingCapability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_source: Option<SessionContextLimitSourceDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_confidence: Option<SessionContextLimitConfidenceDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_fetched_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -373,13 +386,13 @@ fn refresh_provider_model_catalog(
         ProviderModelCatalogRefreshTarget::Anthropic => {
             let profile_input = anthropic_family_profile_input(profile, provider_profiles);
             discovered_anthropic_family_models(&profile_input, &state.anthropic_auth_config())
-                .map(normalize_anthropic_models)
+                .map(|models| normalize_anthropic_models(profile.provider_id.as_str(), models))
                 .map_err(diagnostic_from_auth_error)
         }
         ProviderModelCatalogRefreshTarget::AnthropicAmbient => {
             let profile_input = anthropic_family_profile_input(profile, provider_profiles);
             discovered_anthropic_family_models(&profile_input, &state.anthropic_auth_config())
-                .map(normalize_anthropic_models)
+                .map(|models| normalize_anthropic_models(profile.provider_id.as_str(), models))
                 .map_err(diagnostic_from_auth_error)
         }
         ProviderModelCatalogRefreshTarget::OpenAiCompatible(endpoint) => {
@@ -414,7 +427,9 @@ fn refresh_provider_model_catalog(
                     endpoint,
                     &state.openai_compatible_auth_config(),
                 )
-                .map(normalize_openai_compatible_models)
+                .map(|models| {
+                    normalize_openai_compatible_models(endpoint.provider_id.as_str(), models)
+                })
                 .map_err(diagnostic_from_auth_error),
                 OpenAiCompatibleModelListStrategy::Manual => {
                     Ok(manual_openai_compatible_projection(profile))
@@ -426,6 +441,16 @@ fn refresh_provider_model_catalog(
     match live_models {
         Ok(models) => {
             let now = crate::auth::now_timestamp();
+            let models = models
+                .into_iter()
+                .map(|mut model| {
+                    if model.context_limit_source == Some(SessionContextLimitSourceDto::LiveCatalog)
+                    {
+                        model.context_limit_fetched_at = Some(now.clone());
+                    }
+                    model
+                })
+                .collect::<Vec<_>>();
             let source = if matches!(
                 refresh_target,
                 ProviderModelCatalogRefreshTarget::AnthropicAmbient
@@ -492,9 +517,8 @@ fn refresh_provider_model_catalog(
 fn openai_codex_projection() -> Vec<ProviderModelRecord> {
     OPENAI_CODEX_SUPPORTED_MODEL_IDS
         .iter()
-        .map(|model_id| ProviderModelRecord {
-            model_id: (*model_id).into(),
-            display_name: match *model_id {
+        .map(|model_id| {
+            let display_name = match *model_id {
                 "gpt-5.2" => "GPT-5.2",
                 "gpt-5.3-codex" => "GPT-5.3 Codex",
                 "gpt-5.3-codex-spark" => "GPT-5.3 Codex Spark",
@@ -502,8 +526,15 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
                 "gpt-5.5" => "GPT-5.5",
                 other => other,
             }
-            .into(),
-            thinking: openai_codex_thinking_capability(model_id),
+            .into();
+            provider_model_record(
+                OPENAI_CODEX_PROVIDER_ID,
+                (*model_id).into(),
+                display_name,
+                openai_codex_thinking_capability(model_id),
+                None,
+                None,
+            )
         })
         .collect()
 }
@@ -529,13 +560,52 @@ fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
         .any(|marker| model_id.contains(marker))
 }
 
+fn provider_model_record(
+    provider_id: &str,
+    model_id: String,
+    display_name: String,
+    thinking: ProviderModelThinkingCapability,
+    live_context_window_tokens: Option<u64>,
+    live_max_output_tokens: Option<u64>,
+) -> ProviderModelRecord {
+    let context_resolution = resolve_context_limit(provider_id, &model_id);
+    let has_live_limit = live_context_window_tokens
+        .filter(|tokens| *tokens > 0)
+        .is_some();
+    ProviderModelRecord {
+        model_id,
+        display_name,
+        thinking,
+        context_window_tokens: live_context_window_tokens
+            .or(context_resolution.context_window_tokens),
+        max_output_tokens: live_max_output_tokens.or(context_resolution.max_output_tokens),
+        context_limit_source: Some(if has_live_limit {
+            SessionContextLimitSourceDto::LiveCatalog
+        } else {
+            context_resolution.source
+        }),
+        context_limit_confidence: Some(if has_live_limit {
+            SessionContextLimitConfidenceDto::High
+        } else {
+            context_resolution.confidence
+        }),
+        context_limit_fetched_at: None,
+    }
+}
+
 fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<ProviderModelRecord> {
     let mut normalized = models
         .into_iter()
-        .map(|model| ProviderModelRecord {
-            model_id: model.id,
-            display_name: model.display_name,
-            thinking: openrouter_thinking_capability(&model.supported_parameters),
+        .map(|model| {
+            let thinking = openrouter_thinking_capability(&model.supported_parameters);
+            provider_model_record(
+                OPENROUTER_PROVIDER_ID,
+                model.id,
+                model.display_name,
+                thinking,
+                model.context_window_tokens,
+                model.max_output_tokens,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -548,16 +618,22 @@ fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<Pr
     normalized
 }
 
-fn normalize_anthropic_models(models: Vec<AnthropicDiscoveredModel>) -> Vec<ProviderModelRecord> {
+fn normalize_anthropic_models(
+    provider_id: &str,
+    models: Vec<AnthropicDiscoveredModel>,
+) -> Vec<ProviderModelRecord> {
     let mut normalized = models
         .into_iter()
         .map(|model| {
             let thinking = anthropic_thinking_capability(&model);
-            ProviderModelRecord {
-                model_id: model.id,
-                display_name: model.display_name,
+            provider_model_record(
+                provider_id,
+                model.id,
+                model.display_name,
                 thinking,
-            }
+                None,
+                None,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -570,17 +646,21 @@ fn normalize_anthropic_models(models: Vec<AnthropicDiscoveredModel>) -> Vec<Prov
 }
 
 fn normalize_openai_compatible_models(
+    provider_id: &str,
     models: Vec<OpenAiCompatibleDiscoveredModel>,
 ) -> Vec<ProviderModelRecord> {
     let mut normalized = models
         .into_iter()
         .map(|model| {
             let thinking = openai_compatible_thinking_capability(&model);
-            ProviderModelRecord {
-                model_id: model.id,
-                display_name: model.display_name,
+            provider_model_record(
+                provider_id,
+                model.id,
+                model.display_name,
                 thinking,
-            }
+                model.context_window_tokens,
+                model.max_output_tokens,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -602,11 +682,14 @@ fn manual_provider_projection(profile: &ProviderCredentialProfile) -> Vec<Provid
 fn manual_openai_compatible_projection(
     profile: &ProviderCredentialProfile,
 ) -> Vec<ProviderModelRecord> {
-    vec![ProviderModelRecord {
-        model_id: profile.model_id.clone(),
-        display_name: profile.model_id.clone(),
-        thinking: unsupported_thinking_capability(),
-    }]
+    vec![provider_model_record(
+        profile.provider_id.as_str(),
+        profile.model_id.clone(),
+        profile.model_id.clone(),
+        unsupported_thinking_capability(),
+        None,
+        None,
+    )]
 }
 
 fn manual_anthropic_family_projection(
@@ -623,11 +706,14 @@ fn manual_anthropic_family_projection(
         unsupported_thinking_capability()
     };
 
-    vec![ProviderModelRecord {
-        model_id: profile.model_id.clone(),
-        display_name: profile.model_id.clone(),
+    vec![provider_model_record(
+        profile.provider_id.as_str(),
+        profile.model_id.clone(),
+        profile.model_id.clone(),
         thinking,
-    }]
+        None,
+        None,
+    )]
 }
 
 fn openai_compatible_thinking_capability(

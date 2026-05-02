@@ -330,6 +330,17 @@ pub(super) fn normalize_relative_path(value: &str, field: &'static str) -> Comma
     Ok(normalized)
 }
 
+pub(super) fn normalize_optional_relative_path(
+    value: Option<&str>,
+    field: &'static str,
+) -> CommandResult<Option<PathBuf>> {
+    value
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| normalize_relative_path(path, field))
+        .transpose()
+}
+
 pub(super) fn normalize_glob_pattern(value: &str) -> CommandResult<String> {
     validate_non_empty(value, "pattern")?;
     let normalized = value.trim().replace('\\', "/");

@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -167,7 +168,9 @@ export function AgentSessionsSidebar({
   const [renameTitle, setRenameTitle] = useState('')
   const [renameError, setRenameError] = useState<string | null>(null)
   const [pendingRename, setPendingRename] = useState(false)
+  const [optimisticSessionId, setOptimisticSessionId] = useState<string | null>(null)
   const targetWidth = collapsed ? 0 : width
+  const displayedSelectedSessionId = optimisticSessionId ?? selectedSessionId
   const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const widthRef = useRef(width)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -191,6 +194,31 @@ export function AgentSessionsSidebar({
   useEffect(() => {
     writePersistedWidth(width)
   }, [width])
+
+  useEffect(() => {
+    if (!optimisticSessionId) {
+      return
+    }
+
+    if (
+      selectedSessionId === optimisticSessionId ||
+      !activeSessions.some((session) => session.agentSessionId === optimisticSessionId)
+    ) {
+      setOptimisticSessionId(null)
+    }
+  }, [activeSessions, optimisticSessionId, selectedSessionId])
+
+  const handleSelectSession = useCallback(
+    (agentSessionId: string) => {
+      setOptimisticSessionId(agentSessionId)
+      onSelectSession(agentSessionId)
+    },
+    [onSelectSession],
+  )
+
+  const handlePreviewSession = useCallback((agentSessionId: string) => {
+    setOptimisticSessionId(agentSessionId)
+  }, [])
 
   useEffect(() => {
     if (!searchOpen) {
@@ -422,14 +450,15 @@ export function AgentSessionsSidebar({
     >
       <AgentSessionsSidebarItem
         session={entry.session}
-        isActive={entry.session.agentSessionId === selectedSessionId}
+        isActive={entry.session.agentSessionId === displayedSelectedSessionId}
         isPending={entry.session.agentSessionId === pendingSessionId}
         isPinned={isPinned}
-        onSelectSession={onSelectSession}
+        onSelectSession={handleSelectSession}
+        onPreviewSession={handlePreviewSession}
         onArchiveSession={onArchiveSession}
         onTogglePin={togglePinSession}
         onRenameSession={onRenameSession ? handleOpenRename : undefined}
-        canArchive={activeSessions.length > 1 && entry.state !== 'exiting'}
+        canArchive={entry.state !== 'exiting'}
       />
     </li>
   )
@@ -686,24 +715,32 @@ export interface AgentSessionsSidebarItemProps {
   isPinned: boolean
   canArchive: boolean
   onSelectSession: (agentSessionId: string) => void
+  onPreviewSession?: (agentSessionId: string) => void
   onArchiveSession: (agentSessionId: string) => void
   onTogglePin: (agentSessionId: string) => void
   onRenameSession?: (session: AgentSessionView) => void
   compact?: 'icon' | 'list' | 'full'
 }
 
-export function AgentSessionsSidebarItem({
+export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
   session,
   isActive,
   isPending,
   isPinned,
   canArchive,
   onSelectSession,
+  onPreviewSession,
   onArchiveSession,
   onTogglePin,
   onRenameSession,
   compact = 'full',
 }: AgentSessionsSidebarItemProps) {
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button === 0) {
+      onPreviewSession?.(session.agentSessionId)
+    }
+  }, [onPreviewSession, session.agentSessionId])
+
   if (compact === 'icon') {
     return (
       <button
@@ -713,6 +750,7 @@ export function AgentSessionsSidebarItem({
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/60',
         )}
         onClick={() => onSelectSession(session.agentSessionId)}
+        onPointerDown={handlePointerDown}
         title={session.title}
         type="button"
       >
@@ -748,6 +786,7 @@ export function AgentSessionsSidebarItem({
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
         )}
         onClick={() => onSelectSession(session.agentSessionId)}
+        onPointerDown={handlePointerDown}
         title={session.title}
         type="button"
       >
@@ -788,6 +827,7 @@ export function AgentSessionsSidebarItem({
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
         )}
         onClick={() => onSelectSession(session.agentSessionId)}
+        onPointerDown={handlePointerDown}
         type="button"
       >
         <div className="flex min-w-0 flex-1 items-center gap-1 pr-6">
@@ -878,4 +918,4 @@ export function AgentSessionsSidebarItem({
       </DropdownMenu>
     </div>
   )
-}
+})

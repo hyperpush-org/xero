@@ -448,7 +448,7 @@ export function McpSection({
                   value={formValues.id}
                   disabled={isMutating || editingServerId !== ''}
                   onChange={(event) => setFormValues((current) => ({ ...current, id: event.target.value }))}
-                  placeholder="memory"
+                  placeholder="docs"
                 />
               </FormField>
               <FormField label="Display name" htmlFor="mcp-form-name" error={formErrors.name}>
@@ -458,7 +458,7 @@ export function McpSection({
                   value={formValues.name}
                   disabled={isMutating}
                   onChange={(event) => setFormValues((current) => ({ ...current, name: event.target.value }))}
-                  placeholder="Memory Server"
+                  placeholder="Docs Server"
                 />
               </FormField>
             </div>
@@ -504,7 +504,7 @@ export function McpSection({
                     value={formValues.argsText}
                     disabled={isMutating}
                     onChange={(event) => setFormValues((current) => ({ ...current, argsText: event.target.value }))}
-                    placeholder="@modelcontextprotocol/server-memory"
+                    placeholder="@modelcontextprotocol/server-filesystem"
                   />
                 </FormField>
               </>

@@ -1,6 +1,10 @@
 import { z } from 'zod'
 import { optionalIsoTimestampSchema } from './shared'
 import { runtimeProviderIdSchema } from './runtime'
+import {
+  sessionContextLimitConfidenceSchema,
+  sessionContextLimitSourceSchema,
+} from './session-context'
 
 export const providerModelCatalogSourceSchema = z.enum(['live', 'cache', 'manual', 'unavailable'])
 export const providerModelThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
@@ -72,6 +76,11 @@ export const providerModelSchema = z
     modelId: z.string().trim().min(1),
     displayName: z.string().trim().min(1),
     thinking: providerModelThinkingCapabilitySchema,
+    contextWindowTokens: z.number().int().positive().nullable().optional(),
+    maxOutputTokens: z.number().int().positive().nullable().optional(),
+    contextLimitSource: sessionContextLimitSourceSchema.nullable().optional(),
+    contextLimitConfidence: sessionContextLimitConfidenceSchema.nullable().optional(),
+    contextLimitFetchedAt: optionalIsoTimestampSchema,
   })
   .strict()
 

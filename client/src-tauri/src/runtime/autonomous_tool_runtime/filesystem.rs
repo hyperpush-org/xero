@@ -13,8 +13,9 @@ use regex::{Regex, RegexBuilder};
 
 use super::{
     repo_scope::{
-        build_glob_matcher, normalize_glob_pattern, normalize_relative_path, path_to_forward_slash,
-        scope_relative_match_path, WalkErrorCodes, WalkState,
+        build_glob_matcher, normalize_glob_pattern, normalize_optional_relative_path,
+        normalize_relative_path, path_to_forward_slash, scope_relative_match_path, WalkErrorCodes,
+        WalkState,
     },
     AutonomousDeleteOutput, AutonomousDeleteRequest, AutonomousEditOutput, AutonomousEditRequest,
     AutonomousFindOutput, AutonomousFindRequest, AutonomousHashOutput, AutonomousHashRequest,
@@ -241,14 +242,7 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let scope = request
-            .path
-            .as_deref()
-            .map(|path| {
-                validate_non_empty(path, "path")?;
-                normalize_relative_path(path, "path")
-            })
-            .transpose()?;
+        let scope = normalize_optional_relative_path(request.path.as_deref(), "path")?;
 
         let scope_path = match scope.as_ref() {
             Some(scope) => self.resolve_existing_path(scope)?,
@@ -323,14 +317,7 @@ impl AutonomousToolRuntime {
 
         let normalized_pattern = normalize_glob_pattern(&request.pattern)?;
         let matcher = build_glob_matcher(&normalized_pattern)?;
-        let scope = request
-            .path
-            .as_deref()
-            .map(|path| {
-                validate_non_empty(path, "path")?;
-                normalize_relative_path(path, "path")
-            })
-            .transpose()?;
+        let scope = normalize_optional_relative_path(request.path.as_deref(), "path")?;
 
         let scope_path = match scope.as_ref() {
             Some(scope) => self.resolve_existing_path(scope)?,
@@ -750,11 +737,7 @@ impl AutonomousToolRuntime {
     }
 
     pub fn list(&self, request: AutonomousListRequest) -> CommandResult<AutonomousToolResult> {
-        let relative_path = request
-            .path
-            .as_deref()
-            .map(|path| normalize_relative_path(path, "path"))
-            .transpose()?;
+        let relative_path = normalize_optional_relative_path(request.path.as_deref(), "path")?;
         let scope = match relative_path.as_ref() {
             Some(path) => self.resolve_existing_path(path)?,
             None => self.repo_root.clone(),
@@ -2246,6 +2229,44 @@ mod tests {
     }
 
     #[test]
+    fn observe_tools_treat_blank_optional_paths_as_repo_root() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("source");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let list_output = list_output(runtime.list(AutonomousListRequest {
+            path: Some("  ".into()),
+            max_depth: Some(1),
+        }));
+        assert_eq!(list_output.path, ".");
+        assert!(list_output.entries.iter().any(|entry| entry.path == "src"));
+
+        let search_output = search_output(runtime.search(AutonomousSearchRequest {
+            query: "main".into(),
+            path: Some("".into()),
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+        }));
+        assert_eq!(search_output.scope, None);
+        assert_eq!(search_output.matches[0].path, "src/main.rs");
+
+        let find_output = find_output(runtime.find(AutonomousFindRequest {
+            pattern: "**/*.rs".into(),
+            path: Some("".into()),
+        }));
+        assert_eq!(find_output.scope, None);
+        assert!(find_output.matches.iter().any(|path| path == "src/main.rs"));
+    }
+
+    #[test]
     fn read_supports_images_binary_metadata_byte_ranges_and_line_hashes() {
         let tempdir = tempdir().expect("tempdir");
         let root = tempdir.path();
@@ -2485,6 +2506,20 @@ mod tests {
     fn search_output(result: CommandResult<AutonomousToolResult>) -> AutonomousSearchOutput {
         match result.expect("search").output {
             AutonomousToolOutput::Search(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn find_output(result: CommandResult<AutonomousToolResult>) -> AutonomousFindOutput {
+        match result.expect("find").output {
+            AutonomousToolOutput::Find(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn list_output(result: CommandResult<AutonomousToolResult>) -> AutonomousListOutput {
+        match result.expect("list").output {
+            AutonomousToolOutput::List(output) => output,
             output => panic!("unexpected output: {output:?}"),
         }
     }

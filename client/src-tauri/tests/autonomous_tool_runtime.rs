@@ -171,6 +171,8 @@ fn runtime_control_state(
     RuntimeRunControlStateDto {
         active: RuntimeRunActiveControlSnapshotDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "model-1".into(),
             thinking_effort: None,
@@ -181,6 +183,8 @@ fn runtime_control_state(
         },
         pending: pending.map(|approval_mode| RuntimeRunPendingControlSnapshotDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "model-1".into(),
             thinking_effort: None,
@@ -364,7 +368,9 @@ fn read_http_request_body(stream: &mut impl Read) -> String {
 #[test]
 fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
     let root = tempfile::tempdir().expect("temp dir");
-    let runtime = AutonomousToolRuntime::new(root.path()).expect("runtime");
+    let runtime = AutonomousToolRuntime::new(root.path())
+        .expect("runtime")
+        .with_runtime_run_controls(runtime_control_state(RuntimeRunApprovalModeDto::Yolo, None));
 
     let list = runtime
         .execute(AutonomousToolRequest::ToolAccess(
@@ -847,7 +853,8 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
 
     let runtime = AutonomousToolRuntime::new(root.path())
         .expect("runtime")
-        .with_mcp_registry_path(mcp_registry_path);
+        .with_mcp_registry_path(mcp_registry_path)
+        .with_runtime_run_controls(runtime_control_state(RuntimeRunApprovalModeDto::Yolo, None));
 
     let tool_search = runtime
         .tool_search(AutonomousToolSearchRequest {
@@ -1361,7 +1368,8 @@ while True:
 
     let runtime = AutonomousToolRuntime::new(root.path())
         .expect("runtime")
-        .with_mcp_registry_path(mcp_registry_path);
+        .with_mcp_registry_path(mcp_registry_path)
+        .with_runtime_run_controls(runtime_control_state(RuntimeRunApprovalModeDto::Yolo, None));
 
     for (server_id, expected_tool) in [
         ("stdio-mcp", "stdio_tool"),
@@ -1455,7 +1463,8 @@ fn tool_search_projects_mcp_tools_as_exact_dynamic_capabilities() {
 
     let runtime = AutonomousToolRuntime::new(root.path())
         .expect("runtime")
-        .with_mcp_registry_path(mcp_registry_path);
+        .with_mcp_registry_path(mcp_registry_path)
+        .with_runtime_run_controls(runtime_control_state(RuntimeRunApprovalModeDto::Yolo, None));
     let search = runtime
         .tool_search(AutonomousToolSearchRequest {
             query: "http_tool".into(),
@@ -1802,7 +1811,10 @@ fn tool_runtime_dispatches_solana_tools_through_project_runtime() {
         app.state::<DesktopState>().inner(),
         &project_id,
     )
-    .expect("build autonomous tool runtime");
+    .expect("build autonomous tool runtime")
+    .with_solana_executor(std::sync::Arc::new(
+        xero_desktop_lib::runtime::autonomous_tool_runtime::UnavailableSolanaExecutor,
+    ));
 
     let request: AutonomousToolRequest = serde_json::from_value(serde_json::json!({
         "tool": "solana_docs",

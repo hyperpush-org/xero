@@ -719,6 +719,31 @@ function createMockAdapter(options?: {
       updatedAt: request.updatedAt,
     }),
   )
+  const autoNameAgentSession = vi.fn(async (request: {
+    projectId: string
+    agentSessionId: string
+    prompt: string
+    controls?: RuntimeRunControlInputDto | null
+  }) => {
+    const snapshot = snapshots[request.projectId]
+    const existing = snapshot?.agentSessions.find((session) => session.agentSessionId === request.agentSessionId)
+    if (!snapshot || !existing) {
+      throw new Error(`Missing agent session ${request.agentSessionId}`)
+    }
+
+    const nextSession = {
+      ...existing,
+      title: existing.title.trim().toLowerCase() === 'new chat' ? 'System Prompt Investigation' : existing.title,
+      updatedAt: '2026-04-15T20:00:02Z',
+    }
+    snapshots[request.projectId] = {
+      ...snapshot,
+      agentSessions: snapshot.agentSessions.map((session) =>
+        session.agentSessionId === request.agentSessionId ? nextSession : session,
+      ),
+    }
+    return nextSession
+  })
 
   const adapter = {
     isDesktopRuntime: () => true,
@@ -771,6 +796,7 @@ function createMockAdapter(options?: {
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
+    autoNameAgentSession,
     getProviderModelCatalog: vi.fn(async (profileId: string): Promise<ProviderModelCatalogDto> => {
       const profile = providerProfiles.profiles.find((candidate) => candidate.profileId === profileId)
       if (!profile) {
@@ -1033,6 +1059,7 @@ function createMockAdapter(options?: {
     syncNotificationAdapters,
     upsertNotificationRoute,
     startRuntimeRun: adapter.startRuntimeRun,
+    autoNameAgentSession,
     updateRuntimeRunControls: adapter.updateRuntimeRunControls,
     resumeOperatorRun,
     subscribeRuntimeStream: adapter.subscribeRuntimeStream,
@@ -1093,8 +1120,6 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
   const firstApprovalBroker = firstApproval
     ? state.activeProject?.notificationBroker.byActionId[firstApproval.actionId] ?? null
     : null
-  const checkpointControlLoop = state.agentView?.checkpointControlLoop ?? null
-  const firstCheckpointCard = checkpointControlLoop?.items[0] ?? null
   const firstToolCall = state.agentView?.runtimeStream?.toolCalls?.[0] ?? null
   const firstToolSummary = firstToolCall?.toolSummary ?? null
   const firstToolMcpSummary = firstToolSummary?.kind === 'mcp_capability' ? firstToolSummary : null
@@ -1108,6 +1133,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
   return (
     <div>
       <div data-testid="active-project-id">{state.activeProjectId ?? 'none'}</div>
+      <div data-testid="selected-session-title">{state.activeProject?.selectedAgentSession?.title ?? 'none'}</div>
       <div data-testid="error">{state.errorMessage ?? 'none'}</div>
       <div data-testid="refresh-source">{state.refreshSource ?? 'none'}</div>
       <div data-testid="auth-phase">{state.agentView?.authPhase ?? 'none'}</div>
@@ -1145,30 +1171,6 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="autonomous-run-recovery">{state.agentView?.autonomousRun?.recoveryState ?? 'none'}</div>
       <div data-testid="autonomous-run-duplicate-start">{String(state.agentView?.autonomousRun?.duplicateStartDetected ?? false)}</div>
       <div data-testid="autonomous-run-error">{state.agentView?.autonomousRunErrorMessage ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-count">{String(checkpointControlLoop?.items.length ?? 0)}</div>
-      <div data-testid="checkpoint-loop-window-label">{checkpointControlLoop?.windowLabel ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-action-id">{firstCheckpointCard?.actionId ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-truth-source">{firstCheckpointCard?.truthSource ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-live-state">{firstCheckpointCard?.liveStateLabel ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-durable-state">{firstCheckpointCard?.durableStateLabel ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-broker-state">{firstCheckpointCard?.brokerStateLabel ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-resume-state">{firstCheckpointCard?.resumeStateLabel ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-resumability">{firstCheckpointCard?.resumability ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-resumability-label">{firstCheckpointCard?.resumabilityLabel ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-failure-class">{firstCheckpointCard?.advancedFailureClass ?? 'none'}</div>
-      <div data-testid="checkpoint-loop-first-failure-class-label">
-        {firstCheckpointCard?.advancedFailureClassLabel ?? 'none'}
-      </div>
-      <div data-testid="checkpoint-loop-first-failure-code">
-        {firstCheckpointCard?.advancedFailureDiagnosticCode ?? 'none'}
-      </div>
-      <div data-testid="checkpoint-loop-first-recovery-recommendation">
-        {firstCheckpointCard?.recoveryRecommendation ?? 'none'}
-      </div>
-      <div data-testid="checkpoint-loop-first-recovery-recommendation-label">
-        {firstCheckpointCard?.recoveryRecommendationLabel ?? 'none'}
-      </div>
-      <div data-testid="checkpoint-loop-first-evidence-state">{firstCheckpointCard?.evidenceStateLabel ?? 'none'}</div>
       <div data-testid="messages-reason">{state.agentView?.messagesUnavailableReason ?? 'none'}</div>
       <div data-testid="stream-status">{state.agentView?.runtimeStreamStatus ?? 'idle'}</div>
       <div data-testid="stream-run-id">{state.agentView?.runtimeStream?.runId ?? 'none'}</div>
@@ -1383,6 +1385,53 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
 
 
+
+  it('auto-names a new default-titled session from the first submitted prompt', async () => {
+    const newChatSnapshot = makeSnapshot('project-1', 'Xero')
+    newChatSnapshot.agentSessions = [
+      {
+        ...makeAgentSession('project-1'),
+        title: 'New Chat',
+        summary: '',
+        lastRunId: null,
+      },
+    ]
+    const setup = createMockAdapter({
+      snapshots: {
+        'project-1': newChatSnapshot,
+      },
+      runtimeRuns: {
+        'project-1': null,
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('none'))
+    expect(screen.getByTestId('selected-session-title')).toHaveTextContent('New Chat')
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start runtime run with controls' }))
+    })
+
+    await waitFor(() => expect(setup.startRuntimeRun).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+    await waitFor(() =>
+      expect(screen.getByTestId('selected-session-title')).toHaveTextContent('System Prompt Investigation'),
+    )
+    expect(setup.autoNameAgentSession).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      prompt: 'Review the latest diff before continuing.',
+      controls: expect.objectContaining({
+        modelId: 'openai/gpt-5-mini',
+        thinkingEffort: 'high',
+      }),
+    })
+  })
 
   it('preserves the last truthful runtime-run view when a later run refresh fails', async () => {
     const setup = createMockAdapter({
@@ -1626,7 +1675,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('autonomous-run-recovery')).toHaveTextContent('terminal')
   })
 
-  it('keeps recovered checkpoints visible while the live runtime stream is still reconnecting', async () => {
+  it('keeps recovered run state visible while the live runtime stream is still reconnecting', async () => {
     const setup = createMockAdapter({
       runtimeSessions: {
         'project-1': makeRuntimeSession('project-1', {
@@ -1649,7 +1698,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing'))
     expect(screen.getByTestId('runtime-run-checkpoint-count')).toHaveTextContent('2')
     expect(screen.getByTestId('messages-reason')).toHaveTextContent(
-      'Xero is reconnecting the live runtime stream while keeping durable checkpoints visible for this selected project.',
+      'Xero is reconnecting the live runtime stream for this selected project.',
     )
   })
 
@@ -1768,12 +1817,6 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('refresh-source')).toHaveTextContent('project:updated'))
     await waitFor(() => expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('stream-action-required-count')).toHaveTextContent('0')
-    expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
-    expect(screen.getByTestId('checkpoint-loop-first-action-id')).toHaveTextContent(
-      'scope:auto-dispatch:workflow-research:requires_user_input',
-    )
-    expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('durable_only')
-    expect(screen.getByTestId('checkpoint-loop-first-durable-state')).toHaveTextContent('Pending approval')
     expect(screen.getByTestId('first-approval-resume-state')).toHaveTextContent('waiting')
   })
 
@@ -1913,9 +1956,6 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('broker-failed-count')).toHaveTextContent('1')
     expect(screen.getByTestId('first-approval-broker-dispatch-count')).toHaveTextContent('2')
     expect(screen.getByTestId('first-approval-broker-has-failures')).toHaveTextContent('true')
-    expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
-    expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('durable_only')
-    expect(screen.getByTestId('checkpoint-loop-first-broker-state')).toHaveTextContent('1 broker failure')
   })
 
   it('surfaces broker command failures without clearing pending approvals or resume history', async () => {
@@ -2036,10 +2076,10 @@ describe('useXeroDesktopState runtime-run hydration', () => {
         'Xero could not reload project-2 during selected-project refresh.',
       ),
     )
-    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1')
-    expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1')
-    expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2')
+    expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('none')
+    expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('0')
+    expect(screen.getByTestId('resume-history-count')).toHaveTextContent('0')
 
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 
@@ -2861,13 +2901,6 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('refresh-source')).toHaveTextContent('runtime_stream:action_required'))
     await waitFor(() => expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
-    expect(screen.getByTestId('checkpoint-loop-count')).toHaveTextContent('1')
-    expect(screen.getByTestId('checkpoint-loop-first-action-id')).toHaveTextContent(actionId)
-    expect(screen.getByTestId('checkpoint-loop-first-truth-source')).toHaveTextContent('live_and_durable')
-    expect(screen.getByTestId('checkpoint-loop-first-live-state')).toHaveTextContent('Live action required')
-    expect(screen.getByTestId('checkpoint-loop-first-resume-state')).toHaveTextContent('Resume failed')
-    expect(screen.getByTestId('checkpoint-loop-first-resumability')).toHaveTextContent('awaiting_approval')
-    expect(screen.getByTestId('checkpoint-loop-first-recovery-recommendation')).toHaveTextContent('approve_resume')
     expect(screen.getByTestId('sync-polling-action-id')).toHaveTextContent('none')
     expect(screen.getByTestId('sync-polling-boundary-id')).toHaveTextContent('none')
     expect(screen.getByTestId('latest-resume-status')).toHaveTextContent('failed')

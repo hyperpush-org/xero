@@ -30,19 +30,35 @@ pub(crate) fn drive_provider_loop(
         touch_agent_run_heartbeat(repo_root, project_id, run_id)?;
         let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
         let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
-        let turn_prompt_compilation = compile_system_prompt_for_session(
-            repo_root,
-            Some(project_id),
-            Some(agent_session_id),
-            controls.active.runtime_agent_id,
-            tool_runtime.browser_control_preference(),
-            tool_registry.descriptors(),
-            owned_process_summary.as_deref(),
+        let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+        let agent_definition_snapshot =
+            load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
+        let turn_context_package = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root,
+                project_id,
+                agent_session_id,
+                run_id,
+                runtime_agent_id: controls.active.runtime_agent_id,
+                agent_definition_id: run_snapshot.run.agent_definition_id.as_str(),
+                agent_definition_version: run_snapshot.run.agent_definition_version,
+                agent_definition_snapshot: Some(&agent_definition_snapshot),
+                provider_id: provider.provider_id(),
+                model_id: provider.model_id(),
+                turn_index,
+                browser_control_preference: tool_runtime.browser_control_preference(),
+                soul_settings: Some(tool_runtime.soul_settings()),
+                tools: tool_registry.descriptors(),
+                messages: &messages,
+                owned_process_summary: owned_process_summary.as_deref(),
+            },
             skill_contexts,
         )?;
+        let _manifest_id = turn_context_package.manifest.manifest_id.as_str();
+        let _fragment_count = turn_context_package.compilation.fragments.len();
         record_tool_registry_snapshot(repo_root, project_id, run_id, turn_index, &tool_registry)?;
         let turn = ProviderTurnRequest {
-            system_prompt: turn_prompt_compilation.prompt,
+            system_prompt: turn_context_package.system_prompt,
             messages: messages.clone(),
             tools: tool_registry.descriptors().to_vec(),
             turn_index,
@@ -723,12 +739,15 @@ pub(crate) fn tool_registry_for_snapshot(
             skill_tool_enabled,
             browser_control_preference,
             runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: tool_runtime
+                .and_then(|runtime| runtime.agent_tool_policy().cloned()),
         },
     );
     let options = ToolRegistryOptions {
         skill_tool_enabled,
         browser_control_preference,
         runtime_agent_id: controls.active.runtime_agent_id,
+        agent_tool_policy: tool_runtime.and_then(|runtime| runtime.agent_tool_policy().cloned()),
     };
     let latest_registry = latest_tool_registry_snapshot(snapshot)?;
     let mut registry = if let Some(latest_registry) = latest_registry {
@@ -986,11 +1005,14 @@ fn persist_provider_usage(
             },
         )
     });
+    let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
     project_store::upsert_agent_usage(
         repo_root,
         &project_store::AgentUsageRecord {
             project_id: project_id.into(),
             run_id: run_id.into(),
+            agent_definition_id: run_snapshot.run.agent_definition_id,
+            agent_definition_version: run_snapshot.run.agent_definition_version,
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             input_tokens: usage.input_tokens,

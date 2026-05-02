@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  createEmptyCheckpointControlLoop,
-  getCheckpointControlLoopCoverageAlertMeta,
-  getCheckpointControlLoopRecoveryAlertMeta,
-  getPerActionResumeStateMeta,
-} from '@/components/xero/agent-runtime/checkpoint-control-loop-helpers'
 import { getComposerPlaceholder } from '@/components/xero/agent-runtime/composer-helpers'
-import { getStreamStatusMeta, getToolSummaryContext } from '@/components/xero/agent-runtime/runtime-stream-helpers'
+import {
+  getStreamStatusMeta,
+  getToolCardTitle,
+  getToolSummaryContext,
+} from '@/components/xero/agent-runtime/runtime-stream-helpers'
 import { displayValue, formatSequence } from '@/components/xero/agent-runtime/shared-helpers'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type { RuntimeSessionView, RuntimeStreamToolItemView } from '@/src/lib/xero-model'
@@ -139,7 +137,7 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     runtimeRunActionError: null,
     sessionUnavailableReason: 'Current session status for this project.',
     runtimeRunUnavailableReason:
-      'Xero recovered a Xero-owned agent run and its durable checkpoints before the live runtime feed resumed.',
+      'Xero recovered a Xero-owned agent run before the live runtime feed resumed.',
     messagesUnavailableReason: 'Xero authenticated this project, but the live runtime stream has not started yet.',
     ...overrides,
   }
@@ -177,6 +175,22 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
   }
 }
 
+function makeToolItem(overrides: Partial<RuntimeStreamToolItemView> = {}): RuntimeStreamToolItemView {
+  return {
+    id: 'tool:run-1:1',
+    kind: 'tool',
+    runId: 'run-1',
+    sequence: 1,
+    createdAt: '2026-04-24T17:30:00Z',
+    toolCallId: 'tool-call-1',
+    toolName: 'read',
+    toolState: 'succeeded',
+    detail: null,
+    toolSummary: null,
+    ...overrides,
+  }
+}
+
 describe('agent-runtime helpers', () => {
   it('keeps blank labels and missing sequences on the existing fallback copy', () => {
     expect(displayValue('   ', 'Unavailable')).toBe('Unavailable')
@@ -184,12 +198,7 @@ describe('agent-runtime helpers', () => {
   })
 
   it('formats browser/computer-use tool summaries with safe fallback labels for optional metadata', () => {
-    const browserItem: RuntimeStreamToolItemView = {
-      id: 'tool:run-1:1',
-      kind: 'tool',
-      runId: 'run-1',
-      sequence: 1,
-      createdAt: '2026-04-24T17:30:00Z',
+    const browserItem = makeToolItem({
       toolCallId: 'browser-click-1',
       toolName: 'browser.click',
       toolState: 'succeeded',
@@ -202,7 +211,7 @@ describe('agent-runtime helpers', () => {
         target: 'button[type=submit]',
         outcome: 'Clicked submit and advanced to confirmation.',
       },
-    }
+    })
 
     const computerItem: RuntimeStreamToolItemView = {
       ...browserItem,
@@ -230,71 +239,100 @@ describe('agent-runtime helpers', () => {
     expect(getToolSummaryContext({ ...browserItem, toolSummary: null })).toBeNull()
   })
 
-  it('keeps the bounded checkpoint empty state and coverage copy stable', () => {
-    expect(createEmptyCheckpointControlLoop()).toMatchObject({
-      windowLabel: 'No checkpoint actions are visible in the bounded control-loop window.',
-      emptyTitle: 'No checkpoint control loops recorded',
-    })
+  it('formats command, file, git, and web summaries for tool detail drawers', () => {
+    expect(
+      getToolSummaryContext(
+        makeToolItem({
+          toolName: 'command',
+          toolSummary: {
+            kind: 'command',
+            exitCode: 0,
+            timedOut: false,
+            stdoutTruncated: true,
+            stderrTruncated: false,
+            stdoutRedacted: false,
+            stderrRedacted: true,
+          },
+        }),
+      ),
+    ).toBe('Command · exit 0 · stdout truncated · stderr redacted')
 
-    const coverage = getCheckpointControlLoopCoverageAlertMeta({
-      ...createEmptyCheckpointControlLoop(),
-      items: [
-        {
-          key: 'action-1::boundary-1',
-          actionId: 'action-1',
-          boundaryId: 'boundary-1',
-          title: 'Review worktree changes',
-          detail: 'Inspect the repository diff before trusting the next operator step.',
-          truthSource: 'live_hint_only',
-          truthSourceLabel: 'Live hint only',
-          truthSourceDetail: 'Waiting for durable approval rows.',
-          liveActionRequired: null,
-          liveStateLabel: 'Live action required',
-          liveStateDetail: 'Live row only.',
-          liveUpdatedAt: '2026-04-16T20:05:00Z',
-          approval: null,
-          durableStateLabel: 'Durable approval pending refresh',
-          durableStateDetail: 'Pending durable refresh.',
-          durableUpdatedAt: null,
-          brokerAction: null,
-          brokerStateLabel: 'No broker fan-out observed',
-          brokerStateDetail: 'No broker fan-out rows retained.',
-          brokerLatestUpdatedAt: null,
-          brokerRoutePreviews: [],
-          evidenceCount: 0,
-          evidenceStateLabel: 'No durable evidence in bounded window',
-          evidenceSummary: 'No evidence retained.',
-          latestEvidenceAt: null,
-          evidencePreviews: [],
-          latestResume: null,
-          resumeStateLabel: 'Waiting on approval',
-          resumeDetail: 'Waiting for operator input before this action can resume the run.',
-          resumeUpdatedAt: '2026-04-16T20:05:00Z',
-          resumability: 'awaiting_approval',
-          resumabilityLabel: 'Awaiting approval',
-          resumabilityDetail: 'Operator approval is still required before this checkpoint can resume.',
-          isResumable: false,
-          advancedFailureClass: null,
-          advancedFailureClassLabel: null,
-          advancedFailureDiagnosticCode: null,
-          recoveryRecommendation: 'observe',
-          recoveryRecommendationLabel: 'Observe',
-          recoveryRecommendationDetail: 'Wait for durable approval or resume evidence.',
-          sortTimestamp: '2026-04-16T20:05:00Z',
-        },
-      ],
-      totalCount: 3,
-      visibleCount: 1,
-      hiddenCount: 2,
-      isTruncated: true,
-      missingEvidenceCount: 1,
-      liveHintOnlyCount: 1,
-      recoveredCount: 1,
-    })
+    expect(
+      getToolSummaryContext(
+        makeToolItem({
+          toolName: 'find',
+          toolSummary: {
+            kind: 'file',
+            path: null,
+            scope: 'client/src-tauri',
+            lineCount: null,
+            matchCount: 2,
+            truncated: true,
+          },
+        }),
+      ),
+    ).toBe('File result · scope client/src-tauri · 2 matches · truncated')
 
-    expect(coverage?.title).toBe('Bounded checkpoint coverage')
-    expect(coverage?.body).toContain('2 older checkpoint actions are outside this bounded window.')
-    expect(coverage?.body).toContain('1 card still lacks durable evidence inside the bounded artifact window.')
+    expect(
+      getToolSummaryContext(
+        makeToolItem({
+          toolName: 'git_diff',
+          toolSummary: {
+            kind: 'git',
+            scope: 'worktree',
+            changedFiles: 3,
+            truncated: true,
+            baseRevision: 'HEAD~1',
+          },
+        }),
+      ),
+    ).toBe('Git · worktree · 3 changed files · base HEAD~1 · truncated')
+
+    expect(
+      getToolSummaryContext(
+        makeToolItem({
+          toolName: 'web_fetch',
+          toolSummary: {
+            kind: 'web',
+            target: 'https://example.com',
+            resultCount: null,
+            finalUrl: 'https://www.example.com/',
+            contentKind: 'html',
+            contentType: 'text/html',
+            truncated: false,
+          },
+        }),
+      ),
+    ).toBe('Web · https://example.com · final https://www.example.com/ · HTML · text/html')
+  })
+
+  it('builds compact action-target titles for common tool cards', () => {
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'read',
+          detail: 'path: client/components/xero/agent-runtime.tsx, startLine: 12, lineCount: 40',
+        }),
+      ),
+    ).toBe('read agent-runtime.tsx')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'find',
+          detail: 'pattern: appendTranscriptDelta, path: client/components/xero',
+        }),
+      ),
+    ).toBe('find appendTranscriptDelta')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'list',
+          detail: 'path: client/components/xero, maxDepth: 2',
+        }),
+      ),
+    ).toBe('list client/components/xero')
   })
 
   it('uses generic blocked copy when no credentials are configured for the chosen provider', () => {
@@ -322,7 +360,7 @@ describe('agent-runtime helpers', () => {
     ).toBe('Ask anything to get started with GitHub Models.')
   })
 
-  it('keeps the stream meta and degraded checkpoint alert copy stable', () => {
+  it('keeps the stream meta copy stable', () => {
     const meta = getStreamStatusMeta(
       makeAgent({
         runtimeRun: { runId: 'run-unavailable' } as never,
@@ -336,106 +374,5 @@ describe('agent-runtime helpers', () => {
     )
 
     expect(meta.title).toBe('No agent run attached yet')
-
-    const alert = getCheckpointControlLoopRecoveryAlertMeta({
-      controlLoop: {
-        ...createEmptyCheckpointControlLoop(),
-        items: [{ key: 'action-1::boundary-1' } as never],
-      },
-      trustSnapshot: {
-        syncState: 'degraded',
-        syncReason: 'Xero could not sync notification adapters for this project.',
-      },
-      autonomousRunErrorMessage: null,
-      notificationSyncPollingActive: true,
-      notificationSyncPollingActionId: 'action-live-only',
-      notificationSyncPollingBoundaryId: 'boundary-live-only',
-    })
-
-    expect(alert?.title).toBe('Showing last truthful checkpoint loop')
-    expect(alert?.body).toContain('boundary-live-only')
-    expect(alert?.body).toContain('action-live-only')
-  })
-
-  it('keeps per-action resume state fail-closed when no resume exists yet', () => {
-    const resumeMeta = getPerActionResumeStateMeta({
-      card: {
-        key: 'action-1::boundary-1',
-        actionId: 'action-1',
-        boundaryId: 'boundary-1',
-        title: 'Review worktree changes',
-        detail: 'Inspect the repository diff before trusting the next operator step.',
-        truthSource: 'durable_only',
-        truthSourceLabel: 'Durable only',
-        truthSourceDetail: 'Durable approval persisted.',
-        liveActionRequired: null,
-        liveStateLabel: 'No live action required',
-        liveStateDetail: 'Waiting for durable resume.',
-        liveUpdatedAt: null,
-        approval: {
-          actionId: 'action-1',
-          sessionId: 'session-1',
-          flowId: 'flow-1',
-          actionType: 'review_worktree',
-          title: 'Review worktree changes',
-          detail: 'Inspect the repository diff before trusting the next operator step.',
-          userAnswer: null,
-          status: 'approved',
-          statusLabel: 'Approved',
-          decisionNote: null,
-          createdAt: '2026-04-13T20:01:00Z',
-          updatedAt: '2026-04-13T20:03:30Z',
-          resolvedAt: '2026-04-13T20:03:30Z',
-          isPending: false,
-          isResolved: true,
-          canResume: true,
-          isRuntimeResumable: true,
-          requiresUserAnswer: true,
-          answerRequirementReason: 'runtime_resumable',
-          answerRequirementLabel: 'Required',
-          answerShapeKind: 'plain_text',
-          answerShapeLabel: 'Required user answer',
-          answerShapeHint: 'Describe the operator decision that justifies approval.',
-          answerPlaceholder: 'Provide operator input for this action.',
-        },
-        durableStateLabel: 'Approved',
-        durableStateDetail: 'Approved by operator.',
-        durableUpdatedAt: '2026-04-13T20:03:30Z',
-        brokerAction: null,
-        brokerStateLabel: 'No broker fan-out observed',
-        brokerStateDetail: 'No broker rows retained.',
-        brokerLatestUpdatedAt: null,
-        brokerRoutePreviews: [],
-        evidenceCount: 0,
-        evidenceStateLabel: 'No durable evidence in bounded window',
-        evidenceSummary: 'No evidence retained.',
-        latestEvidenceAt: null,
-        evidencePreviews: [],
-        latestResume: null,
-        resumeStateLabel: 'Waiting',
-        resumeDetail: 'No resume recorded yet for this action.',
-        resumeUpdatedAt: '2026-04-13T20:03:30Z',
-        resumability: 'resumable',
-        resumabilityLabel: 'Resumable',
-        resumabilityDetail: 'The durable approval is resolved and can be resumed.',
-        isResumable: true,
-        advancedFailureClass: null,
-        advancedFailureClassLabel: null,
-        advancedFailureDiagnosticCode: null,
-        recoveryRecommendation: 'observe',
-        recoveryRecommendationLabel: 'Observe',
-        recoveryRecommendationDetail: 'Resume evidence has not been recorded yet.',
-        sortTimestamp: '2026-04-13T20:03:30Z',
-      },
-      operatorActionStatus: 'idle',
-      pendingOperatorActionId: null,
-      pendingOperatorIntent: null,
-    })
-
-    expect(resumeMeta).toMatchObject({
-      label: 'Waiting',
-      detail: 'No resume recorded yet for this action.',
-      badgeVariant: 'outline',
-    })
   })
 })

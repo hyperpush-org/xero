@@ -26,6 +26,7 @@ import type {
   DictationStatusDto,
   RuntimeSessionView,
   SkillRegistryDto,
+  SoulSettingsDto,
 } from '@/src/lib/xero-model'
 
 type NotificationRouteRequest = Parameters<NonNullable<SettingsDialogProps['onUpsertNotificationRoute']>>[0]
@@ -95,6 +96,74 @@ function makeDictationAdapter(
       ...request,
       updatedAt: '2026-04-26T12:30:00Z',
     })),
+  }
+}
+
+function makeSoulSettings(overrides: Partial<SoulSettingsDto> = {}): SoulSettingsDto {
+  const presets = [
+    {
+      id: 'steward' as const,
+      name: 'Steady steward',
+      summary: 'Calm, grounded, and quietly thorough.',
+      prompt:
+        'Be calm, grounded, and quietly thorough. Help the user feel oriented. Prefer evidence, plain language, scoped action, and measured next steps.',
+    },
+    {
+      id: 'pair' as const,
+      name: 'Warm pair',
+      summary: 'Collaborative, teaching-aware, and conversational.',
+      prompt:
+        'Act like a generous pair programmer. Think with the user, name tradeoffs, teach briefly when useful, and keep collaboration warm without slowing momentum.',
+    },
+    {
+      id: 'builder' as const,
+      name: 'Sharp builder',
+      summary: 'Decisive, pragmatic, and momentum-oriented.',
+      prompt:
+        'Be decisive and momentum-oriented. Minimize ceremony, choose sensible defaults, make progress in small verified steps, and keep summaries crisp.',
+    },
+    {
+      id: 'sentinel' as const,
+      name: 'Careful sentinel',
+      summary: 'Skeptical, risk-aware, and verification-minded.',
+      prompt:
+        'Be constructively skeptical. Look for hidden risks, edge cases, missing tests, security hazards, and data-loss hazards. Call out uncertainty before it becomes damage.',
+    },
+  ]
+  const selectedSoulId = overrides.selectedSoulId ?? 'steward'
+  const selectedSoul =
+    overrides.selectedSoul ??
+    presets.find((preset) => preset.id === selectedSoulId) ??
+    presets[0]
+
+  return {
+    selectedSoulId,
+    selectedSoul,
+    presets,
+    updatedAt: null,
+    ...overrides,
+  }
+}
+
+function makeSoulAdapter(
+  overrides: {
+    settings?: SoulSettingsDto
+  } = {},
+): NonNullable<SettingsDialogProps['soulAdapter']> {
+  const settings = overrides.settings ?? makeSoulSettings()
+  return {
+    isDesktopRuntime: vi.fn(() => true),
+    soulSettings: vi.fn(async () => settings),
+    soulUpdateSettings: vi.fn(async (request) =>
+      makeSoulSettings({
+        selectedSoulId: request.selectedSoulId,
+        selectedSoul:
+          settings.presets.find((preset) => preset.id === request.selectedSoulId) ??
+          settings.selectedSoul,
+        presets: settings.presets,
+        updatedAt: '2026-05-01T12:00:00Z',
+      }),
+    ),
   }
 }
 
@@ -428,7 +497,6 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     autonomousHistory: [],
     autonomousRecentArtifacts: [],
     recentAutonomousUnits: undefined,
-    checkpointControlLoop: undefined,
     runtimeErrorMessage: null,
     runtimeRunErrorMessage: null,
     autonomousRunErrorMessage: null,
@@ -528,6 +596,7 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> & Recor
     doctorReportStatus: 'idle',
     doctorReportError: null,
     onRunDoctorReport: vi.fn(async () => makeDoctorReport()),
+    soulAdapter: makeSoulAdapter(),
     mcpRegistry: makeMcpRegistry(),
     mcpImportDiagnostics: [],
     mcpRegistryLoadStatus: 'ready',
@@ -737,6 +806,32 @@ describe('SettingsDialog', () => {
         'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
       ),
     )
+  })
+
+  it('loads Soul settings and saves the selected premade soul', async () => {
+    const soulAdapter = makeSoulAdapter()
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          initialSection: 'soul',
+          soulAdapter,
+        })}
+      />,
+    )
+
+    expect((await screen.findAllByText('Steady steward'))[0]).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Steady steward' })).toBeChecked()
+    expect(screen.getByText('Calm, grounded, and quietly thorough.')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Careful sentinel' }))
+
+    await waitFor(() =>
+      expect(soulAdapter.soulUpdateSettings).toHaveBeenCalledWith({
+        selectedSoulId: 'sentinel',
+      }),
+    )
+    expect((await screen.findAllByText('Careful sentinel'))[0]).toBeVisible()
   })
 
   it('saves the agent browser control preference from the browser settings section', async () => {

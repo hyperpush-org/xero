@@ -363,16 +363,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
-name = "xero-cookie-importer"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "rookie",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2633,6 +2623,16 @@ checksum = "ec1cdab258fb55c0da61328dc52c8764709b249011b2cad0454c72f0bf10a1f6"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "xero-cookie-importer"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "rookie",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -30,8 +30,6 @@ import type {
   RuntimeStreamView,
 } from '@/src/lib/xero-model'
 
-type CheckpointControlLoopCard = NonNullable<AgentPaneView['checkpointControlLoop']>['items'][number]
-
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
   return {
     id: 'project-1',
@@ -178,6 +176,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     controls: {
       active: {
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'openai_codex',
@@ -193,6 +193,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       selected: {
         source: 'active',
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'openai_codex',
@@ -332,132 +334,6 @@ function makeProviderModelCatalog(): AgentProviderModelCatalogView {
   }
 }
 
-function makeCheckpointControlLoopCard(
-  overrides: Partial<CheckpointControlLoopCard> = {},
-): CheckpointControlLoopCard {
-  const approval = overrides.approval ?? {
-    actionId: 'flow:flow-1:run:run-1:boundary:boundary-1:terminal_input_required',
-    sessionId: 'session-1',
-    flowId: 'flow-1',
-    actionType: 'terminal_input_required',
-    title: 'Terminal input required',
-    detail: 'Provide terminal input before the run can continue.',
-    userAnswer: 'Looks good to resume.',
-    status: 'approved' as const,
-    statusLabel: 'Approved',
-    decisionNote: 'Ready to resume.',
-    createdAt: '2026-04-16T20:03:00Z',
-    updatedAt: '2026-04-16T20:03:30Z',
-    resolvedAt: '2026-04-16T20:03:30Z',
-    isPending: false,
-    isResolved: true,
-    canResume: true,
-    isRuntimeResumable: true,
-    requiresUserAnswer: true,
-    answerRequirementReason: 'runtime_resumable' as const,
-    answerRequirementLabel: 'Required',
-    answerShapeKind: 'plain_text' as const,
-    answerShapeLabel: 'Required user answer',
-    answerShapeHint: 'Describe the operator decision that justifies approval.',
-    answerPlaceholder: 'Provide operator input for this action.',
-  }
-
-  return {
-    key: 'flow:flow-1:run:run-1:boundary:boundary-1:terminal_input_required::boundary-1',
-    actionId: approval.actionId,
-    boundaryId: 'boundary-1',
-    title: approval.title,
-    detail: approval.detail,
-    truthSource: 'durable_only',
-    truthSourceLabel: 'Durable only',
-    truthSourceDetail: 'The live row has cleared or is unavailable, so this card is anchored to durable approval and resume truth.',
-    liveActionRequired: null,
-    liveStateLabel: 'Live row unavailable',
-    liveStateDetail:
-      'The selected project snapshot still shows this checkpoint as pending even though the live stream no longer has a matching row.',
-    liveUpdatedAt: '2026-04-16T20:03:30Z',
-    approval,
-    durableStateLabel: approval.statusLabel,
-    durableStateDetail: approval.detail,
-    durableUpdatedAt: approval.updatedAt,
-    latestResume: {
-      id: 1,
-      sourceActionId: approval.actionId,
-      sessionId: 'session-1',
-      status: 'started',
-      statusLabel: 'Resume started',
-      summary: 'Operator resumed the selected project runtime session.',
-      createdAt: '2026-04-16T20:04:00Z',
-    },
-    resumeStateLabel: 'Resume started',
-    resumeDetail: 'Operator resumed the selected project runtime session.',
-    resumeUpdatedAt: '2026-04-16T20:04:00Z',
-    resumability: 'resumable',
-    resumabilityLabel: 'Resumable',
-    resumabilityDetail: 'Xero can resume this checkpoint from durable action truth.',
-    isResumable: true,
-    advancedFailureClass: null,
-    advancedFailureClassLabel: null,
-    advancedFailureDiagnosticCode: null,
-    recoveryRecommendation: 'approve_resume',
-    recoveryRecommendationLabel: 'Approve and resume',
-    recoveryRecommendationDetail: 'Resume the run after operator approval.',
-    brokerAction: {
-      actionId: approval.actionId,
-      dispatches: [],
-      dispatchCount: 0,
-      pendingCount: 0,
-      sentCount: 0,
-      failedCount: 0,
-      claimedCount: 0,
-      latestUpdatedAt: null,
-      hasFailures: false,
-      hasPending: false,
-      hasClaimed: false,
-    },
-    brokerStateLabel: 'Broker diagnostics unavailable',
-    brokerStateDetail: 'No notification broker fan-out rows were retained for this action in the bounded dispatch window.',
-    brokerLatestUpdatedAt: null,
-    brokerRoutePreviews: [],
-    evidenceCount: 1,
-    evidenceStateLabel: '1 durable evidence row',
-    evidenceSummary: 'Showing the latest durable evidence row linked to this action.',
-    latestEvidenceAt: '2026-04-16T20:04:10Z',
-    evidencePreviews: [
-      {
-        artifactId: 'artifact-checkpoint-1',
-        artifactKindLabel: 'Verification evidence',
-        statusLabel: 'Recorded',
-        summary: 'Captured resume verification evidence for this action.',
-        updatedAt: '2026-04-16T20:04:10Z',
-      },
-    ],
-    sortTimestamp: '2026-04-16T20:04:10Z',
-    ...overrides,
-  }
-}
-
-function makeCheckpointControlLoop(
-  overrides: Partial<NonNullable<AgentPaneView['checkpointControlLoop']>> = {},
-): NonNullable<AgentPaneView['checkpointControlLoop']> {
-  return {
-    items: [makeCheckpointControlLoopCard()],
-    totalCount: 1,
-    visibleCount: 1,
-    hiddenCount: 0,
-    isTruncated: false,
-    windowLabel: 'Showing 1 checkpoint action from the bounded control-loop window.',
-    emptyTitle: 'No checkpoint control loops recorded',
-    emptyBody:
-      'Xero has not observed a live or durable checkpoint boundary for this project yet. Waiting boundaries, resume outcomes, and broker fan-out will appear here once recorded.',
-    missingEvidenceCount: 0,
-    liveHintOnlyCount: 0,
-    durableOnlyCount: 1,
-    recoveredCount: 0,
-    ...overrides,
-  }
-}
-
 function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = {}): AgentPaneView {
   const runtimeSession = overrides.runtimeSession ?? null
   const runtimeRun = overrides.runtimeRun ?? project.runtimeRun ?? null
@@ -557,7 +433,7 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     runtimeRunUnavailableReason:
       overrides.runtimeRunUnavailableReason ??
       (runtimeRun
-        ? 'Xero recovered a Xero-owned agent run and its durable checkpoints before the live runtime feed resumed.'
+        ? 'Xero recovered a Xero-owned agent run before the live runtime feed resumed.'
         : 'Authenticate and launch a Xero-owned agent run to populate durable app-data run state for this project.'),
     messagesUnavailableReason:
       overrides.messagesUnavailableReason ??
@@ -647,122 +523,6 @@ describe('live views', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
     await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
-  })
-
-  it('keeps the live feed visible while rendering checkpoint control-loop cards', () => {
-    const pendingApproval = {
-      actionId: 'action-pending',
-      sessionId: 'session-1',
-      flowId: 'flow-1',
-      actionType: 'review_worktree',
-      title: 'Review worktree changes',
-      detail: 'Inspect the repository diff before trusting the next operator step.',
-      userAnswer: null,
-      status: 'pending' as const,
-      statusLabel: 'Pending approval',
-      decisionNote: null,
-      createdAt: '2026-04-13T20:02:00Z',
-      updatedAt: '2026-04-13T20:02:00Z',
-      resolvedAt: null,
-      isPending: true,
-      isResolved: false,
-      canResume: false,
-      isRuntimeResumable: true,
-      requiresUserAnswer: true,
-      answerRequirementReason: 'runtime_resumable' as const,
-      answerRequirementLabel: 'Required',
-      answerShapeKind: 'plain_text' as const,
-      answerShapeLabel: 'Required user answer',
-      answerShapeHint: 'Describe the operator decision that justifies approval.',
-      answerPlaceholder: 'Provide operator input for this action.',
-    }
-    const approvedCard = makeCheckpointControlLoopCard({
-      actionId: 'action-approved',
-      key: 'action-approved::boundary-2',
-      boundaryId: 'boundary-2',
-      title: 'Resume after plan review',
-      detail: 'Retry resume after the operator confirms the plan is safe.',
-      approval: {
-        actionId: 'action-approved',
-        sessionId: 'session-1',
-        flowId: 'flow-1',
-        actionType: 'review_plan',
-        title: 'Resume after plan review',
-        detail: 'Retry resume after the operator confirms the plan is safe.',
-        userAnswer: 'Looks good to resume.',
-        status: 'approved',
-        statusLabel: 'Approved',
-        decisionNote: 'Ready to resume.',
-        createdAt: '2026-04-13T20:01:00Z',
-        updatedAt: '2026-04-13T20:03:30Z',
-        resolvedAt: '2026-04-13T20:03:30Z',
-        isPending: false,
-        isResolved: true,
-        canResume: true,
-        isRuntimeResumable: true,
-        requiresUserAnswer: true,
-        answerRequirementReason: 'runtime_resumable',
-        answerRequirementLabel: 'Required',
-        answerShapeKind: 'plain_text',
-        answerShapeLabel: 'Required user answer',
-        answerShapeHint: 'Describe the operator decision that justifies approval.',
-        answerPlaceholder: 'Provide operator input for this action.',
-      },
-    })
-
-    const project = makeProject({
-      approvalRequests: [pendingApproval, approvedCard.approval!],
-      pendingApprovalCount: 1,
-    })
-
-    render(
-      <AgentRuntime
-        agent={makeAgent(project, {
-          runtimeSession: makeRuntimeSession({
-            phase: 'authenticated',
-            phaseLabel: 'Authenticated',
-            runtimeLabel: 'Openai Codex · Authenticated',
-            accountId: 'acct@example.com',
-            accountLabel: 'acct@example.com',
-            sessionId: 'session-1',
-            sessionLabel: 'session-1',
-            lastErrorCode: null,
-            lastError: null,
-            isAuthenticated: true,
-            isLoginInProgress: false,
-            needsManualInput: false,
-            isSignedOut: false,
-            isFailed: false,
-          }),
-          runtimeRun: makeRuntimeRun(),
-          runtimeStream: makeRuntimeStream({ status: 'idle' }),
-          checkpointControlLoop: makeCheckpointControlLoop({
-            items: [
-              makeCheckpointControlLoopCard({
-                actionId: 'action-pending',
-                key: 'action-pending::boundary-1',
-                boundaryId: 'boundary-1',
-                title: pendingApproval.title,
-                detail: pendingApproval.detail,
-                approval: pendingApproval,
-              }),
-              approvedCard,
-            ],
-            totalCount: 2,
-            visibleCount: 2,
-            hiddenCount: 0,
-            windowLabel: 'Showing 2 checkpoint actions from the bounded control-loop window.',
-            durableOnlyCount: 2,
-          }),
-          runtimeRunUnavailableReason: 'Xero recovered a Xero-owned agent run and its durable checkpoints before the live runtime feed resumed.',
-          messagesUnavailableReason: 'Xero recovered a Xero-owned agent run, but the live runtime stream has not resumed yet. Durable checkpoints remain visible below.',
-        })}
-      />,
-    )
-
-    expect(screen.getByRole('heading', { name: 'Checkpoint control loop' })).toBeVisible()
-    expect(screen.getByText('Review worktree changes')).toBeVisible()
-    expect(screen.getByText('Resume after plan review')).toBeVisible()
   })
 
   it('renders the editor against the selected project tree', async () => {

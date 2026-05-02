@@ -1485,6 +1485,11 @@ function createAdapter(options?: {
       filesChanged: 0,
       totalReplacements: 0,
     }),
+    listAgentDefinitions: async () => ({ definitions: [] }),
+    archiveAgentDefinition: async () => {
+      throw new Error('archiveAgentDefinition not stubbed in test adapter')
+    },
+    getAgentDefinitionVersion: async () => null,
     createAgentSession: async (request) => {
       const now = '2026-04-23T12:00:00Z'
       const selected = request.selected ?? true
@@ -1540,6 +1545,28 @@ function createAdapter(options?: {
           }
           return selected ? { ...session, selected: false } : session
         }),
+      )
+      return nextSession
+    },
+    autoNameAgentSession: async (request) => {
+      const existing = currentSnapshot.agentSessions.find(
+        (session) => session.projectId === request.projectId && session.agentSessionId === request.agentSessionId,
+      )
+      if (!existing) {
+        throw new Error(`Missing agent session ${request.agentSessionId}`)
+      }
+
+      const nextSession = {
+        ...existing,
+        title: existing.title.trim().toLowerCase() === 'new chat' ? 'Generated Session Title' : existing.title,
+        updatedAt: '2026-04-23T12:06:00Z',
+      }
+      updateAgentSessions(
+        currentSnapshot.agentSessions.map((session) =>
+          session.projectId === request.projectId && session.agentSessionId === request.agentSessionId
+            ? nextSession
+            : session,
+        ),
       )
       return nextSession
     },
@@ -2493,7 +2520,7 @@ describe('XeroApp current UI', () => {
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
     expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Auto' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
 
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
     expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
@@ -2606,7 +2633,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
     await waitFor(() => expect(setup.onProjectUpdated).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('button', { name: 'Project actions for Xero' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Xero' })).toBeVisible()
 
     act(() => {
       setup.emitProjectUpdated({
@@ -2616,9 +2643,9 @@ describe('XeroApp current UI', () => {
     })
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Project actions for Xero Prime' })).toBeVisible(),
+      expect(screen.getByRole('button', { name: 'Xero Prime' })).toBeVisible(),
     )
-    expect(screen.queryByRole('button', { name: 'Project actions for Xero' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Xero' })).not.toBeInTheDocument()
   })
 
 
@@ -2708,7 +2735,7 @@ describe('XeroApp current UI', () => {
     expect(executionPane).toHaveAttribute('aria-hidden', 'false')
     fireEvent.change(editor, { target: { value: '# Draft changes\n' } })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Auto' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     await waitFor(() => expect(executionPane).toHaveAttribute('aria-hidden', 'true'))
     expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
     expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()

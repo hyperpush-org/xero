@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ProjectRail } from './project-rail'
@@ -148,6 +148,35 @@ describe('ProjectRail', () => {
     expect(screen.queryByRole('separator', { name: 'Resize projects sidebar' })).not.toBeInTheDocument()
     expect(rail).toHaveAttribute('data-collapsed', 'true')
     expect(rail).toHaveClass('w-11')
+  })
+
+  it('keeps the project monogram visible while selection is pending', () => {
+    const pendingProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        pendingProjectSelectionId="project-2"
+        projectRemovalStatus="idle"
+        projects={[...projects, pendingProject]}
+      />,
+    )
+
+    const pendingProjectButton = screen.getByText('nova-ui').closest('button') as HTMLElement
+
+    expect(pendingProjectButton).not.toHaveAttribute('aria-busy')
+    expect(within(pendingProjectButton).getByText('N')).toBeVisible()
   })
 
   it('hides collapsed sessions and keeps only the expand control at the bottom', () => {

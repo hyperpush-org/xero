@@ -84,6 +84,11 @@ fn catalog(
                 effort_options: vec![],
                 default_effort: None,
             },
+            context_window_tokens: None,
+            max_output_tokens: None,
+            context_limit_source: None,
+            context_limit_confidence: None,
+            context_limit_fetched_at: None,
         }],
     }
 }

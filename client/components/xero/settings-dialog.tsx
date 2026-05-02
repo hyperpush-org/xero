@@ -13,6 +13,7 @@ import type {
   SkillRegistryMutationStatus,
 } from "@/src/features/xero/use-xero-desktop-state"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
+import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
 import type {
   EnvironmentDiscoveryStatusDto,
   EnvironmentProfileSummaryDto,
@@ -46,7 +47,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Code2, Globe, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Code2, Globe, Heart, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -56,6 +57,7 @@ import {
 import { cn } from "@/lib/utils"
 import { AccountSection } from "@/components/xero/settings-dialog/account-section"
 import { BrowserSection } from "@/components/xero/settings-dialog/browser-section"
+import { AgentsSection } from "@/components/xero/settings-dialog/agents-section"
 import { DevelopmentSection } from "@/components/xero/settings-dialog/development-section"
 import { DictationSection } from "@/components/xero/settings-dialog/dictation-section"
 import { DiagnosticsSection } from "@/components/xero/settings-dialog/diagnostics-section"
@@ -64,16 +66,19 @@ import { NotificationsSection } from "@/components/xero/settings-dialog/notifica
 import { ProvidersSection } from "@/components/xero/settings-dialog/providers-section"
 import { PluginsSection } from "@/components/xero/settings-dialog/plugins-section"
 import { SkillsSection } from "@/components/xero/settings-dialog/skills-section"
+import { SoulSection } from "@/components/xero/settings-dialog/soul-section"
 import { ThemesSection } from "@/components/xero/settings-dialog/themes-section"
 
 export type SettingsSection =
   | "account"
   | "providers"
   | "diagnostics"
+  | "soul"
   | "dictation"
   | "notifications"
   | "mcp"
   | "skills"
+  | "agents"
   | "plugins"
   | "browser"
   | "themes"
@@ -103,9 +108,11 @@ const WORKSPACE_GROUP: NavGroup = {
   items: [
     { id: "providers", label: "Providers", icon: KeyRound },
     { id: "diagnostics", label: "Diagnostics", icon: Activity },
+    { id: "soul", label: "Soul", icon: Heart },
     { id: "dictation", label: "Dictation", icon: Mic },
     { id: "notifications", label: "Notifications", icon: Bell },
     { id: "mcp", label: "MCP", icon: PlugZap },
+    { id: "agents", label: "Agents", icon: Bot },
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
@@ -159,6 +166,7 @@ export interface SettingsDialogProps {
   onRefreshEnvironmentDiscovery?: (options?: { force?: boolean }) => Promise<EnvironmentDiscoveryStatusDto | null>
   onRunDoctorReport?: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
   dictationAdapter?: DictationSettingsAdapter
+  soulAdapter?: SoulSettingsAdapter
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -198,6 +206,20 @@ export interface SettingsDialogProps {
   githubAuthError?: GitHubAuthError | null
   onGithubLogin?: () => void
   onGithubLogout?: () => void
+  onListAgentDefinitions?: (request: {
+    projectId: string
+    includeArchived: boolean
+  }) => Promise<{ definitions: import("@/src/lib/xero-model/agent-definition").AgentDefinitionSummaryDto[] }>
+  onArchiveAgentDefinition?: (request: {
+    projectId: string
+    definitionId: string
+  }) => Promise<import("@/src/lib/xero-model/agent-definition").AgentDefinitionSummaryDto>
+  onGetAgentDefinitionVersion?: (request: {
+    projectId: string
+    definitionId: string
+    version: number
+  }) => Promise<import("@/src/lib/xero-model/agent-definition").AgentDefinitionVersionSummaryDto | null>
+  onAgentRegistryChanged?: () => void
 }
 
 export function SettingsDialog({
@@ -222,6 +244,7 @@ export function SettingsDialog({
   onRefreshEnvironmentDiscovery,
   onRunDoctorReport,
   dictationAdapter,
+  soulAdapter,
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -261,6 +284,10 @@ export function SettingsDialog({
   githubAuthError = null,
   onGithubLogin,
   onGithubLogout,
+  onListAgentDefinitions,
+  onArchiveAgentDefinition,
+  onGetAgentDefinitionVersion,
+  onAgentRegistryChanged,
 }: SettingsDialogProps) {
   const [section, setSection] = useState<SettingsSection>("providers")
   const refreshOnOpenCallbacksRef = useRef({
@@ -396,6 +423,8 @@ export function SettingsDialog({
                   onRefreshEnvironmentDiscovery={onRefreshEnvironmentDiscovery}
                   onRunDoctorReport={onRunDoctorReport}
                 />
+              ) : section === "soul" ? (
+                <SoulSection adapter={soulAdapter} />
               ) : section === "dictation" ? (
                 <DictationSection adapter={dictationAdapter} />
               ) : section === "notifications" ? (
@@ -424,6 +453,15 @@ export function SettingsDialog({
                   onRemoveMcpServer={onRemoveMcpServer}
                   onImportMcpServers={onImportMcpServers}
                   onRefreshMcpServerStatuses={onRefreshMcpServerStatuses}
+                />
+              ) : section === "agents" ? (
+                <AgentsSection
+                  projectId={agent?.project.id ?? null}
+                  projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+                  onListAgentDefinitions={onListAgentDefinitions}
+                  onArchiveAgentDefinition={onArchiveAgentDefinition}
+                  onGetAgentDefinitionVersion={onGetAgentDefinitionVersion}
+                  onRegistryChanged={onAgentRegistryChanged}
                 />
               ) : section === "skills" ? (
                 <SkillsSection

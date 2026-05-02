@@ -67,6 +67,8 @@ function makeSelectedRunControls(
 ): RuntimeRunControlSelectionView {
   return {
     providerProfileId: null,
+    agentDefinitionId: null,
+    agentDefinitionVersion: null,
     runtimeAgentId: 'ask',
     runtimeAgentLabel: 'Ask',
     modelId: 'gpt-5',
@@ -106,6 +108,8 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     controls: {
       active: {
         providerProfileId: null,
+        agentDefinitionId: null,
+        agentDefinitionVersion: null,
         runtimeAgentId: 'ask',
         runtimeAgentLabel: 'Ask',
         modelId: 'gpt-5',

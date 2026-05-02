@@ -47,8 +47,7 @@ fn run() -> Output {
         Some(s) => s,
         None => {
             return Output::Err {
-                message: "usage: xero-cookie-importer <probe|import> <source> [domain ...]"
-                    .into(),
+                message: "usage: xero-cookie-importer <probe|import> <source> [domain ...]".into(),
             }
         }
     };

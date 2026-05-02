@@ -24,6 +24,7 @@ import { UsageStatsSidebar } from '@/components/xero/usage-stats-sidebar'
 import { VcsSidebar, type VcsCommitMessageModel } from '@/components/xero/vcs-sidebar'
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { mapAgentSession, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
+import type { AgentDefinitionSummaryDto } from '@/src/lib/xero-model/agent-definition'
 import type {
   SessionTranscriptSearchResultSnippetDto,
 } from '@/src/lib/xero-model/session-context'
@@ -125,6 +126,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     projects,
     activeProject,
     activeProjectId,
+    pendingProjectSelectionId,
     repositoryStatus,
     workflowView,
     agentView,
@@ -245,10 +247,41 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [environmentProfileSummary, setEnvironmentProfileSummary] =
     useState<EnvironmentProfileSummaryDto>(null)
   const environmentDiscoveryCheckedRef = useRef(false)
+  const [customAgentDefinitions, setCustomAgentDefinitions] = useState<
+    readonly AgentDefinitionSummaryDto[]
+  >([])
+  const [customAgentDefinitionsRevision, setCustomAgentDefinitionsRevision] = useState(0)
+  const refreshCustomAgentDefinitions = useCallback(() => {
+    setCustomAgentDefinitionsRevision((current) => current + 1)
+  }, [])
 
   useEffect(() => {
     setAgentComposerControls(null)
   }, [activeProjectId])
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      setCustomAgentDefinitions([])
+      return
+    }
+
+    let cancelled = false
+    void resolvedAdapter
+      .listAgentDefinitions({ projectId: activeProjectId, includeArchived: false })
+      .then((response) => {
+        if (cancelled) return
+        const customs = response.definitions.filter((definition) => !definition.isBuiltIn)
+        setCustomAgentDefinitions(customs)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setCustomAgentDefinitions([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeProjectId, customAgentDefinitionsRevision, resolvedAdapter])
 
   const openSettings = (section: SettingsSection = 'providers') => {
     setSettingsInitialSection(section)
@@ -509,33 +542,34 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
   }, [isLoading, onboardingDismissed, projects.length])
 
-  const handleSelectAgentSession = (agentSessionId: string) => {
-    if (!activeProject) return
-    if (agentSessionId === activeProject.selectedAgentSessionId) return
-    setPendingAgentSessionId(agentSessionId)
-    void selectAgentSession(agentSessionId).finally(() => {
-      setPendingAgentSessionId(null)
-    })
-  }
+  const selectedAgentSessionId = activeProject?.selectedAgentSessionId ?? null
+  const handleSelectAgentSession = useCallback(
+    (agentSessionId: string) => {
+      if (!activeProjectId) return
+      if (agentSessionId === selectedAgentSessionId) return
+      void selectAgentSession(agentSessionId)
+    },
+    [activeProjectId, selectAgentSession, selectedAgentSessionId],
+  )
 
-  const handleCreateAgentSession = () => {
-    if (!activeProject) return
+  const handleCreateAgentSession = useCallback(() => {
+    if (!activeProjectId) return
     setIsCreatingAgentSession(true)
     void createAgentSession().finally(() => {
       setIsCreatingAgentSession(false)
     })
-  }
+  }, [activeProjectId, createAgentSession])
 
-  const handleArchiveAgentSession = (agentSessionId: string) => {
+  const handleArchiveAgentSession = useCallback((agentSessionId: string) => {
     setPendingAgentSessionId(agentSessionId)
     void archiveAgentSession(agentSessionId).finally(() => {
       setPendingAgentSessionId(null)
     })
-  }
+  }, [archiveAgentSession])
 
-  const handleRenameAgentSession = async (agentSessionId: string, title: string) => {
+  const handleRenameAgentSession = useCallback(async (agentSessionId: string, title: string) => {
     await renameAgentSession(agentSessionId, title)
-  }
+  }, [renameAgentSession])
 
   const handleOpenSearchResult = (result: SessionTranscriptSearchResultSnippetDto) => {
     if (!activeProject) return
@@ -544,6 +578,20 @@ export function XeroApp({ adapter }: XeroAppProps) {
       handleSelectAgentSession(result.agentSessionId)
     }
   }
+
+  const handleSelectProject = useCallback(
+    (projectId: string) => {
+      void selectProject(projectId)
+    },
+    [selectProject],
+  )
+
+  const handleRemoveProject = useCallback(
+    (projectId: string) => {
+      void removeProject(projectId)
+    },
+    [removeProject],
+  )
 
   const renderBody = () => {
     if (isLoading && !activeProject) {
@@ -674,14 +722,22 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 desktopAdapter={resolvedAdapter}
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}
+                customAgentDefinitions={customAgentDefinitions}
+                onOpenAgentManagement={() => openSettings('agents')}
                 onCreateSession={handleCreateAgentSession}
                 isCreatingSession={isCreatingAgentSession}
                 onLogout={() => logoutRuntimeSession()}
                 onOpenSettings={() => openSettings('providers')}
                 onOpenDiagnostics={() => openSettings('diagnostics')}
-                onResolveOperatorAction={(actionId, decision, options) =>
-                  resolveOperatorAction(actionId, decision, { userAnswer: options?.userAnswer ?? null })
-                }
+                onResolveOperatorAction={async (actionId, decision, options) => {
+                  const result = await resolveOperatorAction(actionId, decision, {
+                    userAnswer: options?.userAnswer ?? null,
+                  })
+                  if (decision === 'approve') {
+                    refreshCustomAgentDefinitions()
+                  }
+                  return result
+                }}
                 onResumeOperatorRun={(actionId, options) =>
                   resumeOperatorRun(actionId, { userAnswer: options?.userAnswer ?? null })
                 }
@@ -711,6 +767,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
               inert={!isExecutionVisible ? true : undefined}
             >
               <ExecutionView
+                active={isExecutionVisible}
                 execution={executionView}
                 listProjectFiles={listProjectFiles}
                 readProjectFile={readProjectFile}
@@ -880,8 +937,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
         isImporting={isImporting}
         isLoading={isLoading || isProjectLoading}
         onImportProject={() => setProjectAddOpen(true)}
-        onRemoveProject={(projectId) => void removeProject(projectId)}
-        onSelectProject={(projectId) => void selectProject(projectId)}
+        onRemoveProject={handleRemoveProject}
+        onSelectProject={handleSelectProject}
+        pendingProjectSelectionId={pendingProjectSelectionId}
         pendingProjectRemovalId={pendingProjectRemovalId}
         projectRemovalStatus={projectRemovalStatus}
         projects={projects}
@@ -964,6 +1022,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onRefreshEnvironmentDiscovery={(options) => refreshEnvironmentDiscovery(options)}
         onRunDoctorReport={(request) => runDoctorReport(request)}
         dictationAdapter={resolvedAdapter}
+        soulAdapter={resolvedAdapter}
         onUpsertNotificationRoute={(request) =>
           upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
         }
@@ -1009,6 +1068,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
         githubAuthError={githubAuthError}
         onGithubLogin={() => void loginWithGithub()}
         onGithubLogout={() => void logoutGithub()}
+        onListAgentDefinitions={(request) => resolvedAdapter.listAgentDefinitions(request)}
+        onArchiveAgentDefinition={(request) => resolvedAdapter.archiveAgentDefinition(request)}
+        onGetAgentDefinitionVersion={(request) => resolvedAdapter.getAgentDefinitionVersion(request)}
+        onAgentRegistryChanged={refreshCustomAgentDefinitions}
       />
       <ProjectAddDialog
         open={projectAddOpen}

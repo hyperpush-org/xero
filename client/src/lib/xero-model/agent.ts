@@ -8,6 +8,7 @@ export const agentRunStatusSchema = z.enum([
   'paused',
   'cancelling',
   'cancelled',
+  'handed_off',
   'completed',
   'failed',
 ])
@@ -143,6 +144,8 @@ export const agentActionRequestSchema = z
 export const agentRunSchema = z
   .object({
     runtimeAgentId: runtimeAgentIdSchema,
+    agentDefinitionId: z.string().trim().min(1),
+    agentDefinitionVersion: z.number().int().positive(),
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
     runId: z.string().trim().min(1),
@@ -302,6 +305,8 @@ export function getAgentRunStatusLabel(status: AgentRunStatusDto): string {
       return 'Cancelling'
     case 'cancelled':
       return 'Cancelled'
+    case 'handed_off':
+      return 'Handed off'
     case 'completed':
       return 'Completed'
     case 'failed':
@@ -324,7 +329,11 @@ export function mapAgentRun(run: AgentRunDto): AgentRunView {
     lastErrorMessage,
     latestEvent,
     isActive: run.status === 'starting' || run.status === 'running' || run.status === 'cancelling',
-    isTerminal: run.status === 'cancelled' || run.status === 'completed' || run.status === 'failed',
+    isTerminal:
+      run.status === 'cancelled' ||
+      run.status === 'handed_off' ||
+      run.status === 'completed' ||
+      run.status === 'failed',
     isFailed: run.status === 'failed',
   }
 }

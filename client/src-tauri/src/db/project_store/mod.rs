@@ -1,8 +1,12 @@
 mod agent_context;
+mod agent_continuity;
 mod agent_core;
+mod agent_definition;
+mod agent_embeddings;
 mod agent_lineage;
 mod agent_memory;
 pub(crate) mod agent_memory_lance;
+mod agent_retrieval;
 mod agent_session;
 mod autonomous;
 mod connection;
@@ -17,9 +21,13 @@ mod runtime_boundary;
 mod skills;
 
 pub use agent_context::*;
+pub use agent_continuity::*;
 pub use agent_core::*;
+pub use agent_definition::*;
+pub use agent_embeddings::*;
 pub use agent_lineage::*;
 pub use agent_memory::*;
+pub use agent_retrieval::*;
 pub use agent_session::*;
 pub(crate) use agent_session::{ensure_agent_session_active, touch_agent_session_runtime_run};
 pub use autonomous::*;

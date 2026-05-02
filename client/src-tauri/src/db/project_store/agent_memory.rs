@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::{auth::now_timestamp, commands::CommandError, db::database_path_for_repo};
 
 use super::agent_core::AgentRunDiagnosticRecord;
+use super::agent_embeddings::embedding_for_storage;
 use super::agent_memory_lance::{
     self, AgentMemoryListFilterOwned, AgentMemoryRow, AgentMemoryUpdate, ProjectMemoryStore,
 };
@@ -112,6 +113,7 @@ pub fn insert_agent_memory(
     validate_new_agent_memory(record)?;
     let store = open_store_with_project_check(repo_root, &record.project_id)?;
     let text_hash = agent_memory_text_hash(&record.text);
+    let embedding = embedding_for_storage(&agent_memory_embedding_text(record))?;
     let row = AgentMemoryRow {
         memory_id: record.memory_id.clone(),
         project_id: record.project_id.clone(),
@@ -128,6 +130,10 @@ pub fn insert_agent_memory(
         diagnostic: record.diagnostic.clone(),
         created_at: record.created_at.clone(),
         updated_at: record.created_at.clone(),
+        embedding: Some(embedding.vector),
+        embedding_model: Some(embedding.model),
+        embedding_dimension: Some(embedding.dimension),
+        embedding_version: Some(embedding.version),
     };
     store.insert(row)
 }
@@ -300,6 +306,15 @@ fn normalize_memory_text(text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+fn agent_memory_embedding_text(record: &NewAgentMemoryRecord) -> String {
+    format!(
+        "{:?} {:?}\n{}",
+        record.scope,
+        record.kind,
+        record.text.trim()
+    )
 }
 
 fn validate_sha256(value: &str, field: &'static str) -> Result<(), CommandError> {

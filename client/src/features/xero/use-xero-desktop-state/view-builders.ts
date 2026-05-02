@@ -30,7 +30,6 @@ import {
   type RuntimeProviderIdDto,
 } from '@/src/lib/xero-model'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
-import { projectCheckpointControlLoops } from '../agent-runtime-projections/checkpoint-control-loops'
 import {
   composeAgentTrustSnapshot,
   createUnavailableTrustSnapshot,
@@ -643,12 +642,6 @@ export function buildAgentView({
     })
   }
 
-  const checkpointControlLoop = projectCheckpointControlLoops({
-    actionRequiredItems: runtimeStream?.actionRequired ?? [],
-    approvalRequests: project.approvalRequests,
-    resumeHistory: project.resumeHistory,
-    notificationBroker: project.notificationBroker,
-  })
   // Selected model + composer options + blocked flag (credentials-driven).
   const selectedRunControls = runtimeRun?.controls.selected ?? null
   const selectedModel: SelectedModelView = resolveSelectedModel(
@@ -725,7 +718,6 @@ export function buildAgentView({
       composerModelOptions,
       runtimeRun,
       autonomousRun,
-      checkpointControlLoop,
       runtimeErrorMessage,
       runtimeRunErrorMessage,
       autonomousRunErrorMessage,
