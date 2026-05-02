@@ -1,9 +1,9 @@
 /**
- * Redesigned agent conversation panel.
+ * Agent conversation panel.
  *
  * Renders user / assistant transcripts as polished message rows with
  * avatars, role labels, and (for assistant content) markdown + code
- * highlighting. Tool/action items render as inline activity cards and
+ * highlighting. Tool/action items render as inline activity rows and
  * failures get a distinct destructive treatment.
  *
  * The component preserves the public ARIA surface (`Agent conversation`
@@ -18,15 +18,14 @@ import {
   Brain,
   CheckCircle2,
   ChevronDown,
+  Circle,
   Info,
   Loader2,
   User,
-  Wrench,
   XCircle,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
 import {
   Collapsible,
   CollapsibleContent,
@@ -42,13 +41,19 @@ import type {
 
 import { AppLogo } from '../app-logo'
 import { Markdown } from './conversation-markdown'
-import { getToolStateBadgeVariant, getToolStateLabel } from './runtime-stream-helpers'
+import { getToolStateLabel } from './runtime-stream-helpers'
 
 export type ConversationTurn =
   | {
       id: string
       kind: 'message'
       role: 'user' | 'assistant'
+      sequence: number
+      text: string
+    }
+  | {
+      id: string
+      kind: 'thinking'
       sequence: number
       text: string
     }
@@ -90,6 +95,7 @@ interface ConversationSectionProps {
   visibleTurns: ConversationTurn[]
   streamIssue: RuntimeStreamIssueView | null
   streamFailure: RuntimeStreamFailureItemView | null
+  showActivityIndicator?: boolean
   /** Stream completion item, used to surface same-type handoff continuations. */
   streamCompletion?: RuntimeStreamCompleteItemView | null
   /** GitHub avatar URL for the signed-in user, when available. */
@@ -117,6 +123,7 @@ export function ConversationSection({
   visibleTurns,
   streamIssue,
   streamFailure,
+  showActivityIndicator = false,
   streamCompletion = null,
   accountAvatarUrl = null,
   accountLogin = null,
@@ -143,9 +150,9 @@ export function ConversationSection({
   const showAnyTurn = visibleTurns.length > 0
 
   return (
-    <section aria-label="Agent conversation" className="flex flex-col gap-5">
+    <section aria-label="Agent conversation" className="flex flex-col gap-6">
       {showAnyTurn ? (
-        <ol aria-label="Agent conversation turns" className="flex flex-col gap-5">
+        <ol aria-label="Agent conversation turns" className="flex flex-col gap-6">
           {visibleTurns.map((turn) => (
             <li key={turn.id}>
               <ConversationTurnRow
@@ -157,6 +164,8 @@ export function ConversationSection({
           ))}
         </ol>
       ) : null}
+
+      {showActivityIndicator ? <AgentActivityIndicator /> : null}
 
       {showAnyNotice ? (
         <ul aria-label="Agent run notices" className="flex flex-col gap-3">
@@ -252,6 +261,20 @@ function ConversationTurnRow({ turn, accountAvatarUrl, accountLogin }: Conversat
     )
   }
 
+  if (turn.kind === 'thinking') {
+    return (
+      <div className="flex gap-3">
+        <AgentAvatar />
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+          <span className="px-0.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            Agent
+          </span>
+          <ThinkingBlock text={turn.text} />
+        </div>
+      </div>
+    )
+  }
+
   if (turn.kind === 'failure') {
     return <FailureCard message={turn.message} code={turn.code} />
   }
@@ -277,6 +300,102 @@ function ConversationTurnRow({ turn, accountAvatarUrl, accountLogin }: Conversat
   )
 }
 
+// ---------------------------------------------------------------------------
+// Action / tool card — flat, inline row with a leading status icon.
+// ---------------------------------------------------------------------------
+
+interface ActionCardProps {
+  title: string
+  detail: string
+  detailRows: Array<{ label: string; value: string }>
+  state: RuntimeStreamToolItemView['toolState'] | null
+}
+
+function ActionCard({ title, detail, detailRows, state }: ActionCardProps) {
+  const [open, setOpen] = useState(false)
+  const hasDetails = detailRows.length > 0
+
+  return (
+    <div
+      className={cn(
+        'group rounded-xl border border-border/40 bg-card/30 px-3.5 py-2.5 transition-colors',
+        'hover:border-border/70 hover:bg-card/50',
+      )}
+    >
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <div className="flex items-start gap-2.5">
+          <ToolStatusIcon state={state} className="mt-[3px]" />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground" title={title}>
+                {title}
+              </span>
+              {state ? (
+                <span
+                  className={cn(
+                    'shrink-0 text-[11px] font-medium tabular-nums',
+                    getToolStateTextClass(state),
+                  )}
+                >
+                  {getToolStateLabel(state)}
+                </span>
+              ) : null}
+              {hasDetails ? (
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`${open ? 'Hide' : 'Show'} tool details for ${title}`}
+                    className={cn(
+                      'flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70',
+                      'hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                    )}
+                  >
+                    <ChevronDown
+                      className={cn(
+                        'h-3.5 w-3.5 transition-transform duration-150',
+                        open ? 'rotate-180' : 'rotate-0',
+                      )}
+                    />
+                  </button>
+                </CollapsibleTrigger>
+              ) : null}
+            </div>
+            <p
+              className="mt-0.5 truncate text-[12.5px] leading-relaxed text-muted-foreground"
+              title={detail}
+            >
+              {detail}
+            </p>
+            {hasDetails ? (
+              <CollapsibleContent>
+                <dl className="mt-2.5 grid gap-2 border-t border-border/40 pt-2.5">
+                  {detailRows.map((row, index) => (
+                    <div key={`${row.label}:${index}`} className="grid gap-0.5">
+                      <dt className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">
+                        {row.label}
+                      </dt>
+                      <dd
+                        className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-foreground/85"
+                        title={row.value}
+                      >
+                        {row.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </CollapsibleContent>
+            ) : null}
+          </div>
+        </div>
+      </Collapsible>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Action group card — collapsed summary + expandable inline list.
+// ---------------------------------------------------------------------------
+
 interface ActionGroupCardProps {
   title: string
   detail: string
@@ -293,80 +412,80 @@ function ActionGroupCard({ title, detail, state, actions }: ActionGroupCardProps
   const [open, setOpen] = useState(false)
 
   return (
-    <div className="flex gap-3">
-      <ToolAvatar state={state} />
-      <div className="min-w-0 max-w-[82%] flex-1">
-        <Collapsible
-          open={open}
-          onOpenChange={setOpen}
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="overflow-hidden rounded-xl border border-border/40 bg-card/30"
+    >
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${open ? 'Hide' : 'Show'} grouped tool details for ${title}`}
           className={cn(
-            'rounded-lg border border-border/50 bg-muted/30 px-3.5 py-2.5',
-            'shadow-sm transition-colors',
+            'flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left transition-colors',
+            'hover:bg-card/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
           )}
         >
-          <div className="flex min-w-0 items-center gap-2">
-            <Badge variant={state ? getToolStateBadgeVariant(state) : 'secondary'} className="font-mono text-[10px] uppercase tracking-wider">
-              Activity
-            </Badge>
-            <p className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-foreground" title={title}>
-              {title}
-            </p>
-            <CollapsibleTrigger asChild>
-              <button
-                type="button"
-                aria-label={`${open ? 'Hide' : 'Show'} grouped tool details for ${title}`}
+          <ToolStatusIcon state={state} className="mt-[3px]" />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground" title={title}>
+                {title}
+              </span>
+              <ChevronDown
                 className={cn(
-                  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground',
-                  'hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+                  'h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150',
+                  open ? 'rotate-180' : 'rotate-0',
                 )}
-              >
-                <ChevronDown
-                  className={cn(
-                    'h-3.5 w-3.5 transition-transform duration-150',
-                    open ? 'rotate-180' : 'rotate-0',
-                  )}
-                />
-              </button>
-            </CollapsibleTrigger>
+              />
+            </div>
+            <p
+              className="mt-0.5 truncate text-[12.5px] leading-relaxed text-muted-foreground"
+              title={detail}
+            >
+              {detail}
+            </p>
           </div>
-          <p className="mt-1.5 truncate text-[13px] leading-relaxed text-muted-foreground" title={detail}>
-            {detail}
-          </p>
-          <CollapsibleContent>
-            <ol className="mt-2 grid gap-2 border-t border-border/50 pt-2">
-              {actions.map((action) => (
-                <li key={action.id} className="grid gap-1">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {action.state ? (
-                      <Badge
-                        variant={getToolStateBadgeVariant(action.state)}
-                        className="font-mono text-[10px] uppercase tracking-wider"
-                      >
-                        {getToolStateLabel(action.state)}
-                      </Badge>
-                    ) : null}
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={action.title}>
-                      {action.title}
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ol className="divide-y divide-border/30 border-t border-border/30">
+          {actions.map((action) => (
+            <li key={action.id} className="flex items-start gap-2.5 px-3.5 py-2">
+              <ToolStatusIcon state={action.state} className="mt-[3px]" />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-foreground" title={action.title}>
+                    {action.title}
+                  </span>
+                  {action.state ? (
+                    <span
+                      className={cn(
+                        'shrink-0 text-[10.5px] font-medium tabular-nums',
+                        getToolStateTextClass(action.state),
+                      )}
+                    >
+                      {getToolStateLabel(action.state)}
                     </span>
-                  </div>
-                  <p
-                    className="truncate text-[11px] leading-relaxed text-muted-foreground"
-                    title={action.detail}
-                  >
-                    {action.detail}
-                  </p>
-                </li>
-              ))}
-            </ol>
-          </CollapsibleContent>
-        </Collapsible>
-      </div>
-    </div>
+                  ) : null}
+                </div>
+                <p
+                  className="mt-0.5 truncate text-[11.5px] leading-relaxed text-muted-foreground/90"
+                  title={action.detail}
+                >
+                  {action.detail}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
 // ---------------------------------------------------------------------------
-// User message — right-aligned bubble with subtle primary tint.
+// User message — right-aligned bubble with a soft primary tint.
 // ---------------------------------------------------------------------------
 
 interface UserMessageProps {
@@ -378,14 +497,15 @@ interface UserMessageProps {
 function UserMessage({ text, accountAvatarUrl, accountLogin }: UserMessageProps) {
   return (
     <div className="flex justify-end gap-3">
-      <div className="flex min-w-0 max-w-[82%] flex-col items-end gap-1">
-        <span className="px-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+      <div className="flex min-w-0 max-w-[82%] flex-col items-end gap-1.5">
+        <span className="px-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
           You
         </span>
         <div
           className={cn(
-            'rounded-2xl rounded-tr-md border border-primary/30 px-4 py-2.5',
-            'bg-primary/15 text-foreground shadow-sm',
+            'rounded-2xl px-4 py-2.5',
+            'bg-primary/10 text-foreground',
+            'ring-1 ring-inset ring-primary/15',
             'whitespace-pre-wrap break-words text-sm leading-relaxed',
           )}
         >
@@ -447,8 +567,8 @@ function AssistantMessage({ text }: { text: string }) {
   return (
     <div className="flex gap-3">
       <AgentAvatar />
-      <div className="flex min-w-0 max-w-[82%] flex-col items-start gap-2">
-        <span className="px-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+      <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+        <span className="px-0.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
           Agent
         </span>
         <div className="flex w-full min-w-0 flex-col items-start gap-2.5">
@@ -467,12 +587,7 @@ function AssistantMessage({ text }: { text: string }) {
 
 function ResponseBlock({ text }: { text: string }) {
   return (
-    <div
-      className={cn(
-        'inline-block max-w-full min-w-0 rounded-2xl rounded-tl-md border border-border/60 bg-card/60',
-        'px-4 py-3 text-foreground shadow-sm backdrop-blur-sm',
-      )}
-    >
+    <div className="w-full min-w-0 px-0.5 text-foreground">
       <Markdown text={text} />
     </div>
   )
@@ -480,19 +595,35 @@ function ResponseBlock({ text }: { text: string }) {
 
 function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
+  const normalizedText = text.trim()
+  const previewLines = normalizedText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(-4)
+  const hiddenLineCount = Math.max(
+    0,
+    normalizedText.split(/\r?\n/).filter((line) => line.trim()).length - previewLines.length,
+  )
+
   return (
-    <div className="w-full max-w-full min-w-0 rounded-xl border border-dashed border-border/60 bg-muted/25 px-3 py-2">
+    <div className="w-full max-w-full min-w-0 rounded-xl border border-dashed border-border/50 bg-muted/20 px-3 py-2">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
         className={cn(
-          'flex w-full items-center gap-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground',
+          'flex w-full items-center gap-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground/90',
           'hover:text-foreground focus-visible:outline-none focus-visible:text-foreground',
         )}
       >
         <Brain className="h-3.5 w-3.5 text-primary/80" />
         <span>Thoughts</span>
+        {!open && hiddenLineCount > 0 ? (
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] normal-case tracking-normal text-muted-foreground/80">
+            +{hiddenLineCount}
+          </span>
+        ) : null}
         <ChevronDown
           className={cn(
             'ml-auto h-3.5 w-3.5 transition-transform duration-150',
@@ -501,96 +632,37 @@ function ThinkingBlock({ text }: { text: string }) {
         />
       </button>
       {open ? (
-        <div className="mt-2 border-t border-border/40 pt-2">
+        <div className="mt-2 border-t border-border/30 pt-2">
           <Markdown text={text} muted />
+        </div>
+      ) : previewLines.length > 0 ? (
+        <div className="mt-2 space-y-1 border-l-2 border-border/50 pl-3">
+          {previewLines.map((line, index) => (
+            <p
+              key={`${index}:${line}`}
+              className="line-clamp-1 text-[12px] leading-relaxed text-muted-foreground"
+            >
+              {line}
+            </p>
+          ))}
         </div>
       ) : null}
     </div>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Action / tool card.
-// ---------------------------------------------------------------------------
-
-interface ActionCardProps {
-  title: string
-  detail: string
-  detailRows: Array<{ label: string; value: string }>
-  state: RuntimeStreamToolItemView['toolState'] | null
-}
-
-function ActionCard({ title, detail, detailRows, state }: ActionCardProps) {
-  const [open, setOpen] = useState(false)
-  const hasDetails = detailRows.length > 0
-
+function AgentActivityIndicator() {
   return (
-    <div className="flex gap-3">
-      <ToolAvatar state={state} />
-      <div className="min-w-0 max-w-[82%] flex-1">
-        <Collapsible
-          open={open}
-          onOpenChange={setOpen}
-          className={cn(
-            'rounded-lg border border-border/50 bg-muted/30 px-3.5 py-2.5',
-            'shadow-sm transition-colors',
-          )}
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            {state ? (
-              <Badge variant={getToolStateBadgeVariant(state)} className="font-mono text-[10px] uppercase tracking-wider">
-                {getToolStateLabel(state)}
-              </Badge>
-            ) : null}
-            <p className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-foreground" title={title}>
-              {title}
-            </p>
-            {hasDetails ? (
-              <CollapsibleTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={`${open ? 'Hide' : 'Show'} tool details for ${title}`}
-                  className={cn(
-                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground',
-                    'hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-                  )}
-                >
-                  <ChevronDown
-                    className={cn(
-                      'h-3.5 w-3.5 transition-transform duration-150',
-                      open ? 'rotate-180' : 'rotate-0',
-                    )}
-                  />
-                </button>
-              </CollapsibleTrigger>
-            ) : null}
-          </div>
-          <p
-            className="mt-1.5 truncate text-[13px] leading-relaxed text-muted-foreground"
-            title={detail}
-          >
-            {detail}
-          </p>
-          {hasDetails ? (
-            <CollapsibleContent>
-              <dl className="mt-2 grid gap-2 border-t border-border/50 pt-2">
-                {detailRows.map((row, index) => (
-                  <div key={`${row.label}:${index}`} className="grid gap-0.5">
-                    <dt className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                      {row.label}
-                    </dt>
-                    <dd
-                      className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground/85"
-                      title={row.value}
-                    >
-                      {row.value}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </CollapsibleContent>
-          ) : null}
-        </Collapsible>
+    <div className="flex items-start gap-3" role="status" aria-label="Agent is thinking">
+      <AgentAvatar />
+      <div className="mt-0.5 flex min-w-0 items-center gap-2 rounded-full border border-border/40 bg-card/35 px-3 py-1.5 text-[12.5px] font-medium text-muted-foreground shadow-sm">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary/80" aria-hidden="true" />
+        <span>Thinking</span>
+        <span className="flex items-center gap-0.5" aria-hidden="true">
+          <span className="h-1 w-1 animate-pulse rounded-full bg-muted-foreground/70 [animation-delay:0ms]" />
+          <span className="h-1 w-1 animate-pulse rounded-full bg-muted-foreground/70 [animation-delay:120ms]" />
+          <span className="h-1 w-1 animate-pulse rounded-full bg-muted-foreground/70 [animation-delay:240ms]" />
+        </span>
       </div>
     </div>
   )
@@ -611,50 +683,42 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
   const toneStyles =
     tone === 'destructive'
       ? {
-          avatar: 'border-destructive/40 bg-destructive/15 text-destructive',
-          card: 'border-destructive/40 bg-destructive/10 text-destructive',
-          codeText: 'opacity-80',
+          card: 'border-destructive/30 bg-destructive/8 text-destructive',
+          icon: 'text-destructive',
+          codeText: 'text-destructive/70',
         }
       : tone === 'warning'
         ? {
-            avatar: 'border-warning/40 bg-warning/15 text-warning',
-            card: 'border-warning/30 bg-warning/5 text-foreground',
+            card: 'border-warning/30 bg-warning/8 text-foreground',
+            icon: 'text-warning',
             codeText: 'text-muted-foreground',
           }
         : {
-            avatar: 'border-border/70 bg-muted/40 text-primary',
-            card: 'border-border/60 bg-muted/30 text-foreground',
+            card: 'border-border/50 bg-muted/30 text-foreground',
+            icon: 'text-primary/80',
             codeText: 'text-muted-foreground',
           }
 
   const Icon = tone === 'destructive' ? AlertTriangle : tone === 'warning' ? AlertCircle : Info
 
   return (
-    <div className="flex gap-3">
-      <span
-        aria-hidden="true"
-        className={cn(
-          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border',
-          toneStyles.avatar,
-        )}
-      >
-        <Icon className="h-4 w-4" />
-      </span>
-      <div className="min-w-0 max-w-[82%] flex-1">
-        <div
-          className={cn(
-            'rounded-2xl rounded-tl-md border px-3.5 py-2.5 shadow-sm',
-            toneStyles.card,
-          )}
-        >
-          <p className="m-0 text-sm font-medium">{title}</p>
-          <p className="mt-1 whitespace-pre-wrap break-words text-[13px] leading-relaxed">{message}</p>
-          {code ? (
-            <p className={cn('mt-1.5 break-words font-mono text-[11px]', toneStyles.codeText)}>
-              code: {code}
-            </p>
-          ) : null}
-        </div>
+    <div
+      className={cn(
+        'flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5',
+        toneStyles.card,
+      )}
+    >
+      <Icon className={cn('mt-[2px] h-4 w-4 shrink-0', toneStyles.icon)} />
+      <div className="min-w-0 flex-1">
+        <p className="m-0 text-[13px] font-medium">{title}</p>
+        <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
+          {message}
+        </p>
+        {code ? (
+          <p className={cn('mt-1 break-words font-mono text-[10.5px]', toneStyles.codeText)}>
+            code: {code}
+          </p>
+        ) : null}
       </div>
     </div>
   )
@@ -666,31 +730,23 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
 
 function FailureCard({ message, code }: { message: string; code: string }) {
   return (
-    <div className="flex gap-3">
-      <span
-        aria-hidden="true"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-destructive/40 bg-destructive/15 text-destructive"
-      >
-        <AlertTriangle className="h-4 w-4" />
-      </span>
+    <div className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/8 px-3.5 py-2.5 text-destructive">
+      <XCircle className="mt-[2px] h-4 w-4 shrink-0" />
       <div className="min-w-0 flex-1">
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-2.5 text-destructive">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="destructive" className="text-[10px] uppercase tracking-wider">
-              Failed
-            </Badge>
-            <p className="min-w-0 flex-1 truncate text-sm font-medium">Agent run failed</p>
-          </div>
-          <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">{message}</p>
-          <p className="mt-1 break-words font-mono text-[11px] opacity-80">code: {code}</p>
-        </div>
+        <p className="m-0 text-[13px] font-medium">Agent run failed</p>
+        <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
+          {message}
+        </p>
+        <p className="mt-1 break-words font-mono text-[10.5px] text-destructive/70">
+          code: {code}
+        </p>
       </div>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Avatars.
+// Avatars and small leading icons.
 // ---------------------------------------------------------------------------
 
 interface UserAvatarProps {
@@ -707,10 +763,10 @@ function UserAvatar({ avatarUrl, login }: UserAvatarProps) {
       aria-hidden={showImage ? undefined : 'true'}
       aria-label={showImage && login ? `${login}'s avatar` : undefined}
       className={cn(
-        'flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border',
+        'mt-[18px] flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full',
         showImage
-          ? 'border-border/60 bg-muted/40'
-          : 'border-primary/40 bg-primary/15 text-primary',
+          ? 'ring-1 ring-border/50'
+          : 'bg-primary/15 text-primary ring-1 ring-primary/25',
       )}
     >
       {showImage ? (
@@ -721,7 +777,7 @@ function UserAvatar({ avatarUrl, login }: UserAvatarProps) {
           onError={() => setFailed(true)}
         />
       ) : (
-        <User className="h-4 w-4" />
+        <User className="h-3.5 w-3.5" />
       )}
     </span>
   )
@@ -731,23 +787,19 @@ function AgentAvatar() {
   return (
     <span
       aria-hidden="true"
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/70 bg-card/80 shadow-sm"
+      className="mt-[2px] flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card/80 ring-1 ring-border/50"
     >
-      <AppLogo className="h-4 w-4" />
+      <AppLogo className="h-3.5 w-3.5" />
     </span>
   )
 }
 
-function ToolAvatar({ state }: { state: RuntimeStreamToolItemView['toolState'] | null }) {
-  const toneClass =
-    state === 'running'
-      ? 'border-border/70 bg-muted/60 text-primary'
-      : state === 'failed'
-        ? 'border-destructive/40 bg-destructive/15 text-destructive'
-        : state === 'succeeded'
-          ? 'border-success/40 bg-success/15 text-success'
-          : 'border-border/70 bg-muted/40 text-muted-foreground'
+interface ToolStatusIconProps {
+  state: RuntimeStreamToolItemView['toolState'] | null
+  className?: string
+}
 
+function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
   const Icon =
     state === 'running'
       ? Loader2
@@ -755,14 +807,34 @@ function ToolAvatar({ state }: { state: RuntimeStreamToolItemView['toolState'] |
         ? XCircle
         : state === 'succeeded'
           ? CheckCircle2
-          : Wrench
+          : Circle
+
+  const tone =
+    state === 'running'
+      ? 'text-primary'
+      : state === 'failed'
+        ? 'text-destructive'
+        : state === 'succeeded'
+          ? 'text-success'
+          : 'text-muted-foreground/60'
 
   return (
-    <span
+    <Icon
       aria-hidden="true"
-      className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-full border', toneClass)}
-    >
-      <Icon className={cn('h-4 w-4', state === 'running' && 'animate-spin')} />
-    </span>
+      className={cn('h-3.5 w-3.5 shrink-0', tone, state === 'running' && 'animate-spin', className)}
+    />
   )
+}
+
+function getToolStateTextClass(state: RuntimeStreamToolItemView['toolState']): string {
+  switch (state) {
+    case 'succeeded':
+      return 'text-success/90'
+    case 'failed':
+      return 'text-destructive/90'
+    case 'running':
+      return 'text-primary/90'
+    case 'pending':
+      return 'text-muted-foreground/80'
+  }
 }

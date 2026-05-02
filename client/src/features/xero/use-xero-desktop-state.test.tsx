@@ -44,6 +44,17 @@ type RemovePluginRootRequest = Parameters<XeroDesktopAdapter['removePluginRoot']
 type SetPluginEnabledRequest = Parameters<XeroDesktopAdapter['setPluginEnabled']>[0]
 type RemovePluginRequest = Parameters<XeroDesktopAdapter['removePlugin']>[0]
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+
+  return { promise, resolve, reject }
+}
+
 function makeProjectSummary(id: string, name: string) {
   return {
     id,
@@ -853,6 +864,16 @@ function createMockAdapter(options?: {
     selected: request.selected ?? true,
     updatedAt: '2026-04-15T18:00:00Z',
   }))
+  const autoNameAgentSession = vi.fn(async (request: {
+    projectId: string
+    agentSessionId: string
+    prompt: string
+  }) => ({
+    ...makeAgentSession(request.projectId),
+    agentSessionId: request.agentSessionId,
+    title: 'Generated Session Title',
+    updatedAt: '2026-04-15T18:00:01Z',
+  }))
   const archiveAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => ({
     ...makeAgentSession(request.projectId),
     agentSessionId: request.agentSessionId,
@@ -876,7 +897,9 @@ function createMockAdapter(options?: {
     const configuredDiff = options?.diffs?.[scope]
     return configuredDiff ?? makeDiff('project-1', scope, scope === 'unstaged' ? 'diff --git a/file b/file\n+change' : '')
   })
-  const getRuntimeRun = vi.fn(async (projectId: string): Promise<RuntimeRunDto | null> => runtimeRuns[projectId] ?? null)
+  const getRuntimeRun = vi.fn(async (projectId: string, _agentSessionId?: string): Promise<RuntimeRunDto | null> =>
+    runtimeRuns[projectId] ?? null,
+  )
   const getAutonomousRun = vi.fn(async (projectId: string): Promise<AutonomousRunStateDto> =>
     autonomousStates[projectId] ?? { run: null },
   )
@@ -1732,6 +1755,7 @@ function createMockAdapter(options?: {
     listAgentSessions,
     getAgentSession,
     updateAgentSession,
+    autoNameAgentSession,
     archiveAgentSession,
     restoreAgentSession,
     deleteAgentSession,
@@ -1911,6 +1935,7 @@ function createMockAdapter(options?: {
     deleteProjectEntry,
     searchProject,
     replaceInProject,
+    updateAgentSession,
     upsertRuntimeSettings,
     upsertProviderProfile,
     setActiveProviderProfile,
@@ -1982,6 +2007,8 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="project-loading">{String(state.isProjectLoading)}</div>
       <div data-testid="active-project">{state.activeProject?.name ?? 'none'}</div>
       <div data-testid="active-project-id">{state.activeProjectId ?? 'none'}</div>
+      <div data-testid="pending-project-selection-id">{state.pendingProjectSelectionId ?? 'none'}</div>
+      <div data-testid="selected-agent-session-id">{state.activeProject?.selectedAgentSessionId ?? 'none'}</div>
       <div data-testid="branch">{state.activeProject?.branch ?? 'none'}</div>
       <div data-testid="runtime-label">{state.agentView?.runtimeLabel ?? 'none'}</div>
       <div data-testid="runtime-provider-id">{state.agentView?.runtimeSession?.providerId ?? 'none'}</div>
@@ -2006,6 +2033,8 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="stream-status">{state.agentView?.runtimeStreamStatus ?? 'idle'}</div>
       <div data-testid="stream-status-label">{state.agentView?.runtimeStreamStatusLabel ?? 'No live stream'}</div>
       <div data-testid="stream-run-id">{state.agentView?.runtimeStream?.runId ?? 'none'}</div>
+      <div data-testid="runtime-run-agent-session-id">{state.agentView?.runtimeRun?.agentSessionId ?? 'none'}</div>
+      <div data-testid="runtime-run-id">{state.agentView?.runtimeRun?.runId ?? 'none'}</div>
       <div data-testid="stream-last-sequence">{String(state.agentView?.runtimeStream?.lastSequence ?? 0)}</div>
       <div data-testid="stream-error">{state.agentView?.runtimeStreamError?.message ?? 'none'}</div>
       <div data-testid="stream-item-count">{String(state.agentView?.runtimeStreamItems?.length ?? 0)}</div>
@@ -2089,6 +2118,9 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="diff-patch">{state.activeRepositoryDiff.diff?.patch ?? 'none'}</div>
       <button onClick={() => void state.selectProject('project-2')} type="button">
         Select project 2
+      </button>
+      <button onClick={() => void state.selectAgentSession('agent-session-alt')} type="button">
+        Select alt session
       </button>
       <button onClick={() => void state.importProject()} type="button">
         Import project
@@ -2905,7 +2937,7 @@ describe('useXeroDesktopState', () => {
 
 
 
-  it('keeps the current selection intact when snapshot loading fails', async () => {
+  it('keeps the clicked project visible when snapshot loading fails', async () => {
     const setup = createMockAdapter({
       listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
     })
@@ -2925,8 +2957,122 @@ describe('useXeroDesktopState', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('snapshot failed'))
-    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('active-project')).toHaveTextContent('Xero')
+    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+  })
+
+  it('switches project selection after the snapshot without waiting for secondary hydration', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+
+    const statusDeferred = createDeferred<RepositoryStatusResponseDto>()
+    const runtimeDeferred = createDeferred<RuntimeSessionDto>()
+    const routeDeferred = createDeferred<ListNotificationRoutesResponseDto>()
+    const dispatchDeferred = createDeferred<ListNotificationDispatchesResponseDto>()
+
+    setup.getRepositoryStatus.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-2') {
+        return statusDeferred.promise
+      }
+
+      return makeStatus(projectId, 'main')
+    })
+    setup.getRuntimeSession.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-2') {
+        return runtimeDeferred.promise
+      }
+
+      return makeRuntimeSession(projectId)
+    })
+    setup.listNotificationRoutes.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-2') {
+        return routeDeferred.promise
+      }
+
+      return { routes: [] }
+    })
+    setup.listNotificationDispatches.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-2') {
+        return dispatchDeferred.promise
+      }
+
+      return { dispatches: [] }
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+
+    await waitFor(() => expect(screen.getByTestId('pending-project-selection-id')).toHaveTextContent('project-2'))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+    expect(screen.getByTestId('project-loading')).toHaveTextContent('false')
+
+    await act(async () => {
+      statusDeferred.resolve(makeStatus('project-2', 'feature/import'))
+      runtimeDeferred.resolve(makeRuntimeSession('project-2'))
+      routeDeferred.resolve({ routes: [] })
+      dispatchDeferred.resolve({ dispatches: [] })
+      await Promise.all([
+        statusDeferred.promise,
+        runtimeDeferred.promise,
+        routeDeferred.promise,
+        dispatchDeferred.promise,
+      ])
+    })
+
+    await waitFor(() => expect(screen.getByTestId('pending-project-selection-id')).toHaveTextContent('none'))
+  })
+
+  it('switches agent sessions optimistically without reloading the full project', async () => {
+    const mainSession = makeAgentSession('project-1')
+    const altSession = {
+      ...makeAgentSession('project-1'),
+      agentSessionId: 'agent-session-alt',
+      title: 'Alt session',
+      selected: false,
+      updatedAt: '2026-04-15T18:01:00Z',
+    }
+    const updateSelection = createDeferred<typeof altSession>()
+    const setup = createMockAdapter({
+      snapshots: {
+        'project-1': {
+          ...makeSnapshot('project-1', 'Xero'),
+          agentSessions: [mainSession, altSession],
+        },
+      },
+    })
+    setup.getRuntimeRun.mockImplementation(async (projectId: string, agentSessionId = 'agent-session-main') =>
+      makeRuntimeRun(projectId, {
+        agentSessionId,
+        runId: agentSessionId === 'agent-session-alt' ? 'run-alt' : 'run-main',
+      }),
+    )
+    setup.updateAgentSession.mockImplementationOnce(async () => ({
+      ...(await updateSelection.promise),
+      selected: true,
+    }))
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+    await waitFor(() => expect(screen.getByTestId('runtime-run-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    const snapshotCallsBeforeSelection = setup.getProjectSnapshot.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Select alt session' }))
+
+    expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-alt')
+    expect(screen.getByTestId('runtime-run-agent-session-id')).toHaveTextContent('none')
+    expect(setup.getProjectSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeSelection)
+
+    updateSelection.resolve(altSession)
+
+    await waitFor(() => expect(setup.getRuntimeRun).toHaveBeenCalledWith('project-1', 'agent-session-alt'))
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-alt'))
+    expect(setup.getProjectSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeSelection)
   })
 
   it('accepts snapshots without lifecycle projection after workflow model removal', async () => {
@@ -2953,10 +3099,10 @@ describe('useXeroDesktopState', () => {
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
     expect(screen.getByTestId('error')).toHaveTextContent('none')
     expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
-    expect(screen.getByTestId('workflow-active-phase')).toHaveTextContent('Import')
+    await waitFor(() => expect(screen.getByTestId('workflow-active-phase')).toHaveTextContent('Import'))
   })
 
-  it('keeps the current selection intact when repository status loading fails', async () => {
+  it('keeps the selected project visible when repository status loading fails', async () => {
     const setup = createMockAdapter({
       listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
     })
@@ -2976,9 +3122,9 @@ describe('useXeroDesktopState', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('status failed'))
-    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('active-project')).toHaveTextContent('Xero')
-    expect(screen.getByTestId('branch')).toHaveTextContent('main')
+    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+    expect(screen.getByTestId('branch')).toHaveTextContent('No branch')
   })
 
   it('preserves the newly selected project when runtime loading fails after project selection', async () => {
@@ -3002,7 +3148,7 @@ describe('useXeroDesktopState', () => {
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
     expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
-    expect(screen.getByTestId('error')).toHaveTextContent('runtime failed')
+    await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('runtime failed'))
     expect(screen.getByTestId('runtime-label')).toHaveTextContent('Runtime unavailable')
     expect(setup.listNotificationRoutes).toHaveBeenLastCalledWith('project-2')
     expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()

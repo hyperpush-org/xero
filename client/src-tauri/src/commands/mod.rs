@@ -1,5 +1,6 @@
 pub mod agent_definition;
 pub mod agent_session;
+pub mod agent_session_title;
 pub mod agent_task;
 pub mod browser;
 pub mod cancel_autonomous_run;
@@ -67,6 +68,7 @@ pub use agent_session::{
     archive_agent_session, create_agent_session, delete_agent_session, get_agent_session,
     list_agent_sessions, restore_agent_session, update_agent_session,
 };
+pub use agent_session_title::auto_name_agent_session;
 pub use agent_task::{
     cancel_agent_run, get_agent_run, list_agent_runs, resume_agent_run, send_agent_message,
     start_agent_task, subscribe_agent_stream,

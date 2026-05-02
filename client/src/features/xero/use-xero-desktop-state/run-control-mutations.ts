@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { mapAutonomousRunInspection } from '@/src/lib/xero-model/autonomous'
 import {
+  mapAgentSession,
   mapRuntimeRun,
   selectAgentSessionId,
   type RuntimeAutoCompactPreferenceDto,
@@ -17,6 +18,8 @@ import {
   getActiveProjectId,
   getOperatorActionError,
 } from './mutation-support'
+
+const DEFAULT_AGENT_SESSION_TITLE = 'New Chat'
 
 export function useRunControlMutations({
   adapter,
@@ -42,6 +45,7 @@ export function useRunControlMutations({
     setRuntimeRunActionError,
   } = setters
   const {
+    applyAgentSessionSelection,
     syncRuntimeRun,
     syncAutonomousRun,
     applyRuntimeRunUpdate,
@@ -186,6 +190,17 @@ export function useRunControlMutations({
     const agentSessionId = selectAgentSessionId(
       activeProjectRef.current?.id === projectId ? activeProjectRef.current.agentSessions : null,
     )
+    const selectedSession =
+      activeProjectRef.current?.id === projectId
+        ? activeProjectRef.current.agentSessions.find((session) => session.agentSessionId === agentSessionId) ?? null
+        : null
+    const promptForAutoName = options?.prompt?.trim() ?? ''
+    const shouldAutoNameSession = Boolean(
+      promptForAutoName.length > 0 &&
+        selectedSession &&
+        selectedSession.lastRunId === null &&
+        selectedSession.title.trim().toLowerCase() === DEFAULT_AGENT_SESSION_TITLE.toLowerCase(),
+    )
 
     setRuntimeRunActionStatus('running')
     setPendingRuntimeRunAction('start')
@@ -196,10 +211,30 @@ export function useRunControlMutations({
         initialControls: options?.controls ?? null,
         initialPrompt: options?.prompt ?? null,
       })
-      return applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
+      const runtimeRun = applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
         clearGlobalError: false,
         loadError: null,
       })
+
+      if (shouldAutoNameSession) {
+        void adapter
+          .autoNameAgentSession({
+            projectId,
+            agentSessionId,
+            prompt: promptForAutoName,
+            controls: options?.controls ?? null,
+          })
+          .then((session) => {
+            if (activeProjectIdRef.current === projectId) {
+              applyAgentSessionSelection(mapAgentSession(session))
+            }
+          })
+          .catch(() => {
+            // Auto-naming should never interrupt the user's first prompt.
+          })
+      }
+
+      return runtimeRun
     } catch (error) {
       setRuntimeRunActionError(
         getOperatorActionError(
@@ -223,6 +258,7 @@ export function useRunControlMutations({
     activeProjectIdRef,
     activeProjectRef,
     adapter,
+    applyAgentSessionSelection,
     applyRuntimeRunUpdate,
     setPendingRuntimeRunAction,
     setRuntimeRunActionError,

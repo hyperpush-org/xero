@@ -229,26 +229,24 @@ export function ComposerDock({
   }
 
   return (
-    <div className="relative shrink-0 px-4 pb-6 pt-10">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 -top-14 h-24 bg-gradient-to-b from-background/0 via-background/86 to-background"
-      />
-      <div className="relative mx-auto flex w-full max-w-[880px] items-end justify-center gap-3">
+    <div className="relative shrink-0 px-4 pb-3 pt-0">
+      <div className="relative mx-auto flex w-full max-w-[720px] items-end justify-center gap-3">
         <div className="w-full max-w-[720px]">
           <div className="group/composer relative overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur transition-colors supports-[backdrop-filter]:bg-card/75 hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]">
-            <Textarea
-              aria-label={promptInputLabel}
-              className="max-h-56 min-h-[92px] resize-none border-0 bg-transparent px-4 pb-3 pt-3.5 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
-              disabled={isPromptDisabled}
-              onChange={(event) => onDraftPromptChange(event.target.value)}
-              onKeyDown={handlePromptKeyDown}
-              placeholder={placeholder}
-              ref={promptInputRef}
-              rows={3}
-              value={draftPrompt}
-            />
-            <div className="border-t border-border/40 bg-background/20 px-2 py-1.5">
+            <div className="pb-1.5 pt-2.5">
+              <Textarea
+                aria-label={promptInputLabel}
+                className="min-h-[24px] max-h-[68px] resize-none overflow-y-auto border-0 bg-transparent dark:bg-transparent px-3 py-0 text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground/50 shadow-none outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-100"
+                disabled={isPromptDisabled}
+                onChange={(event) => onDraftPromptChange(event.target.value)}
+                onKeyDown={handlePromptKeyDown}
+                placeholder={placeholder}
+                ref={promptInputRef}
+                rows={1}
+                value={draftPrompt}
+              />
+            </div>
+            <div className="border-t border-border/40 px-2 py-1.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
                   <Select

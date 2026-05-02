@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
@@ -16,7 +18,10 @@ use crate::{
     state::DesktopState,
 };
 
-use super::runtime_support::resolve_project_root;
+use super::runtime_support::{
+    emit_runtime_run_updated_if_changed, load_persisted_runtime_run, resolve_project_root,
+    stop_owned_runtime_run,
+};
 
 #[tauri::command]
 pub fn create_agent_session<R: Runtime>(
@@ -115,12 +120,56 @@ pub fn archive_agent_session<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    stop_idle_owned_runtime_run_before_archive(
+        &app,
+        state.inner(),
+        &repo_root,
+        &request.project_id,
+        &request.agent_session_id,
+    )?;
     let session = project_store::archive_agent_session(
         &repo_root,
         &request.project_id,
         &request.agent_session_id,
     )?;
     Ok(agent_session_dto(&session))
+}
+
+fn stop_idle_owned_runtime_run_before_archive<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+) -> CommandResult<()> {
+    let before = load_persisted_runtime_run(repo_root, project_id, agent_session_id)?;
+    let Some(snapshot) = before.as_ref() else {
+        return Ok(());
+    };
+
+    if snapshot.run.supervisor_kind != crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
+        return Ok(());
+    }
+
+    if !matches!(
+        snapshot.run.status,
+        project_store::RuntimeRunStatus::Starting
+            | project_store::RuntimeRunStatus::Running
+            | project_store::RuntimeRunStatus::Stale
+    ) {
+        return Ok(());
+    }
+
+    if state
+        .agent_run_supervisor()
+        .is_active(&snapshot.run.run_id)?
+    {
+        return Ok(());
+    }
+
+    let after = stop_owned_runtime_run(repo_root, snapshot)?;
+    emit_runtime_run_updated_if_changed(app, project_id, agent_session_id, &before, &Some(after))?;
+    Ok(())
 }
 
 #[tauri::command]

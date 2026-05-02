@@ -82,6 +82,32 @@ describe('AgentSessionsSidebar', () => {
     expect(window.localStorage.getItem('xero.agentSessions.width')).toBe(String(after))
   })
 
+  it('previews session selection on pointer down before the click handler settles', () => {
+    const onSelectSession = vi.fn()
+    const altSession = {
+      ...sessions[0],
+      agentSessionId: 'agent-session-alt',
+      title: 'Alt session',
+      selected: false,
+    }
+
+    renderSidebar({
+      sessions: [...sessions, altSession],
+      onSelectSession,
+    })
+
+    const altButton = screen.getByRole('button', { name: 'Alt session' })
+
+    fireEvent.pointerDown(altButton, { button: 0 })
+
+    expect(altButton).toHaveClass('bg-primary/[0.08]')
+    expect(onSelectSession).not.toHaveBeenCalled()
+
+    fireEvent.click(altButton)
+
+    expect(onSelectSession).toHaveBeenCalledWith('agent-session-alt')
+  })
+
   it('keeps the resize control hidden while collapsed', () => {
     const { container } = renderSidebar({ collapsed: true })
 

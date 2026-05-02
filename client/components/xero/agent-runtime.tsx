@@ -17,6 +17,7 @@ import type {
   RuntimeAutoCompactPreferenceDto,
   ProviderAuthSessionView,
   RuntimeSessionView,
+  RuntimeStreamActivityItemView,
   RuntimeStreamFailureItemView,
   RuntimeStreamToolItemView,
   RuntimeStreamViewItem,
@@ -125,6 +126,18 @@ function appendTranscriptDelta(current: string, delta: string): string {
 
 function shouldShowActionItem(item: RuntimeStreamViewItem): item is RuntimeStreamToolItemView | RuntimeStreamFailureItemView {
   return item.kind === 'tool' || item.kind === 'failure'
+}
+
+function isReasoningActivityItem(item: RuntimeStreamViewItem): item is RuntimeStreamActivityItemView {
+  return item.kind === 'activity' && item.code === 'owned_agent_reasoning'
+}
+
+function getReasoningActivityText(item: RuntimeStreamActivityItemView): string {
+  return item.text ?? item.detail ?? ''
+}
+
+function appendThinkingDelta(current: string, delta: string): string {
+  return `${current}${delta}`
 }
 
 function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
@@ -358,6 +371,33 @@ function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): Co
       continue
     }
 
+    if (isReasoningActivityItem(item)) {
+      const text = getReasoningActivityText(item)
+      if (text.trim().length === 0) {
+        const previousThinking = turns.at(-1)
+        if (previousThinking?.kind === 'thinking') {
+          previousThinking.text = appendThinkingDelta(previousThinking.text, text)
+          previousThinking.sequence = item.sequence
+        }
+        continue
+      }
+
+      const previous = turns.at(-1)
+      if (previous?.kind === 'thinking') {
+        previous.text = appendThinkingDelta(previous.text, text)
+        previous.sequence = item.sequence
+        continue
+      }
+
+      turns.push({
+        id: item.id,
+        kind: 'thinking',
+        sequence: item.sequence,
+        text,
+      })
+      continue
+    }
+
     if (!shouldShowActionItem(item)) {
       continue
     }
@@ -436,6 +476,7 @@ function useAgentContextMeterSnapshot(options: {
   refresh: () => void
 } {
   const debouncedPendingPrompt = useDebouncedValue(options.pendingPrompt, 350)
+  const debouncedLifecycleKey = useDebouncedValue(options.lifecycleKey, 400)
   const [status, setStatus] = useState<AgentContextMeterStatus>('idle')
   const [snapshot, setSnapshot] = useState<SessionContextSnapshotDto | null>(null)
   const [error, setError] = useState<ReturnType<typeof toContextMeterError> | null>(null)
@@ -457,7 +498,9 @@ function useAgentContextMeterSnapshot(options: {
 
     const requestId = requestIdRef.current + 1
     requestIdRef.current = requestId
-    setStatus((current) => (snapshotRef.current || current === 'ready' ? 'stale' : 'loading'))
+    if (!snapshotRef.current) {
+      setStatus('loading')
+    }
     setError(null)
 
     void options.adapter
@@ -492,7 +535,7 @@ function useAgentContextMeterSnapshot(options: {
 
   useEffect(() => {
     refresh()
-  }, [refresh, options.lifecycleKey])
+  }, [refresh, debouncedLifecycleKey])
 
   return { status, snapshot, error, refresh }
 }
@@ -530,6 +573,21 @@ export function AgentRuntime({
   const toolCalls = runtimeStream?.toolCalls ?? []
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
   const visibleTurns = useMemo(() => buildConversationTurns(runtimeStreamItems), [runtimeStreamItems])
+  const pendingRuntimeRunAction = agent.pendingRuntimeRunAction ?? null
+  const runtimeRunActionStatus = agent.runtimeRunActionStatus
+  const isQueueingRuntimePrompt =
+    runtimeRunActionStatus === 'running' &&
+    (pendingRuntimeRunAction === 'start' || pendingRuntimeRunAction === 'update_controls')
+  const showAgentActivityIndicator = Boolean(
+    isQueueingRuntimePrompt ||
+      agent.selectedPrompt.hasQueuedPrompt ||
+      (
+        renderableRuntimeRun?.isActive &&
+        streamStatus !== 'complete' &&
+        streamStatus !== 'error' &&
+        !runtimeStream?.failure
+      ),
+  )
   const hasUserMessage = useMemo(
     () => runtimeStreamItems.some((item) => item.kind === 'transcript' && item.role === 'user'),
     [runtimeStreamItems],
@@ -695,6 +753,7 @@ export function AgentRuntime({
       renderableRuntimeRun ||
       controller.recentRunReplacement ||
       streamIssue ||
+      showAgentActivityIndicator ||
       transcriptItems.length > 0 ||
       activityItems.length > 0 ||
       toolCalls.length > 0 ||
@@ -787,32 +846,38 @@ export function AgentRuntime({
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="relative flex min-w-0 flex-1 flex-col">
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 px-4 pt-2.5 pb-2.5">
-          <div className="pointer-events-auto flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
-            <span className="truncate font-semibold text-foreground">{projectLabel}</span>
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
-            <span className="truncate font-medium">{sessionLabel}</span>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
+          <div className="flex items-center justify-between gap-2 bg-background px-4 pt-2.5 pb-2.5">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
+              <span className="truncate font-semibold text-foreground">{projectLabel}</span>
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+              <span className="truncate font-medium">{sessionLabel}</span>
+            </div>
+            {onCreateSession ? (
+              <button
+                type="button"
+                aria-label="New session"
+                onClick={onCreateSession}
+                disabled={isCreatingSession}
+                className={cn(
+                  'pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-semibold text-muted-foreground transition-colors',
+                  'hover:bg-primary/10 hover:text-primary',
+                  'disabled:cursor-not-allowed disabled:opacity-50',
+                )}
+              >
+                {isCreatingSession ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                <span>New Session</span>
+              </button>
+            ) : null}
           </div>
-          {onCreateSession ? (
-            <button
-              type="button"
-              aria-label="New session"
-              onClick={onCreateSession}
-              disabled={isCreatingSession}
-              className={cn(
-                'pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-semibold text-muted-foreground transition-colors',
-                'hover:bg-primary/10 hover:text-primary',
-                'disabled:cursor-not-allowed disabled:opacity-50',
-              )}
-            >
-              {isCreatingSession ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Plus className="h-4 w-4" />
-              )}
-              <span>New Session</span>
-            </button>
-          ) : null}
+          <div
+            aria-hidden="true"
+            className="h-8 bg-gradient-to-b from-background to-background/0"
+          />
         </div>
         <div className="relative min-h-0 flex-1">
           <div
@@ -822,7 +887,7 @@ export function AgentRuntime({
             className={
               showAgentSetupEmptyState || showEmptySessionState
                 ? 'flex h-full items-center justify-center overflow-y-auto scrollbar-thin px-6 py-5'
-                : 'flex h-full overflow-y-auto scrollbar-thin px-4 pt-14 pb-24'
+                : 'flex h-full overflow-y-auto scrollbar-thin px-4 pt-20'
             }
           >
             {showAgentSetupEmptyState ? (
@@ -836,12 +901,13 @@ export function AgentRuntime({
                 }}
               />
             ) : (
-              <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col justify-end gap-4">
+              <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
                 <ConversationSection
                   runtimeRun={renderableRuntimeRun}
                   visibleTurns={visibleTurns}
                   streamIssue={streamIssue}
                   streamFailure={runtimeStream?.failure ?? null}
+                  showActivityIndicator={showAgentActivityIndicator}
                   streamCompletion={runtimeStream?.completion ?? null}
                   accountAvatarUrl={accountAvatarUrl}
                   accountLogin={accountLogin}
@@ -853,7 +919,7 @@ export function AgentRuntime({
                     onOpenAgentManagement={onOpenAgentManagement}
                   />
                 ) : null}
-                <div ref={bottomSentinelRef} aria-hidden="true" className="h-px scroll-mb-8" />
+                <div ref={bottomSentinelRef} aria-hidden="true" className="h-1 shrink-0 scroll-mb-8" />
               </div>
             )}
           </div>
@@ -904,14 +970,14 @@ export function AgentRuntime({
           onComposerThinkingLevelChange={controller.handleComposerThinkingLevelChange}
           onDraftPromptChange={controller.handleDraftPromptChange}
           onSubmitDraftPrompt={handleSubmitDraftPrompt}
-          pendingRuntimeRunAction={agent.pendingRuntimeRunAction ?? null}
+          pendingRuntimeRunAction={pendingRuntimeRunAction}
           placeholder={composerPlaceholder}
           promptInputRef={controller.promptInputRef}
           promptInputLabel={promptInputLabel}
           runtimeSessionBindInFlight={controller.runtimeSessionBindInFlight}
           runtimeRunActionError={controller.runtimeRunActionError}
           runtimeRunActionErrorTitle={controller.runtimeRunActionErrorTitle}
-          runtimeRunActionStatus={agent.runtimeRunActionStatus}
+          runtimeRunActionStatus={runtimeRunActionStatus}
           sendButtonLabel={sendButtonLabel}
           onOpenDiagnostics={onOpenDiagnostics}
         />

@@ -532,6 +532,15 @@ export const updateAgentSessionRequestSchema = z
   })
   .strict()
 
+export const autoNameAgentSessionRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: z.string().trim().min(1),
+    prompt: z.string().trim().min(1),
+    controls: runtimeRunControlInputSchema.nullable().optional(),
+  })
+  .strict()
+
 export const archiveAgentSessionRequestSchema = getAgentSessionRequestSchema
 
 export const restoreAgentSessionRequestSchema = getAgentSessionRequestSchema
@@ -674,6 +683,7 @@ export type CreateAgentSessionRequestDto = z.infer<typeof createAgentSessionRequ
 export type ListAgentSessionsRequestDto = z.infer<typeof listAgentSessionsRequestSchema>
 export type GetAgentSessionRequestDto = z.infer<typeof getAgentSessionRequestSchema>
 export type UpdateAgentSessionRequestDto = z.infer<typeof updateAgentSessionRequestSchema>
+export type AutoNameAgentSessionRequestDto = z.infer<typeof autoNameAgentSessionRequestSchema>
 export type ArchiveAgentSessionRequestDto = z.infer<typeof archiveAgentSessionRequestSchema>
 export type RestoreAgentSessionRequestDto = z.infer<typeof restoreAgentSessionRequestSchema>
 export type DeleteAgentSessionRequestDto = z.infer<typeof deleteAgentSessionRequestSchema>

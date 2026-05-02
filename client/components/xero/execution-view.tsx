@@ -31,6 +31,7 @@ import { useExecutionWorkspaceController } from './execution-view/use-execution-
 
 export interface ExecutionViewProps {
   execution: ExecutionPaneView
+  active?: boolean
   listProjectFiles: (projectId: string) => Promise<ListProjectFilesResponseDto>
   readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
   writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
@@ -44,6 +45,7 @@ export interface ExecutionViewProps {
 
 function EditorView({
   execution,
+  active = true,
   listProjectFiles,
   readProjectFile,
   writeProjectFile,
@@ -101,6 +103,7 @@ function EditorView({
     handleCreateSubmit,
   } = useExecutionWorkspaceController({
     projectId,
+    active,
     listProjectFiles,
     readProjectFile,
     writeProjectFile,

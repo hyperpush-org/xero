@@ -567,6 +567,16 @@ pub struct UpdateAgentSessionRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoNameAgentSessionRequestDto {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<RuntimeRunControlInputDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArchiveAgentSessionRequestDto {
     pub project_id: String,
     pub agent_session_id: String,

@@ -7,7 +7,9 @@ import {
 import {
   applyRuntimeRun,
   applyRuntimeSession,
+  applyRepositoryStatus,
   mapAutonomousRunInspection,
+  mapProjectSnapshot,
   mapProjectSummary,
   mapRepositoryDiff,
   mapRepositoryStatus,
@@ -19,6 +21,7 @@ import {
   type McpRegistryDto,
   type NotificationDispatchDto,
   type NotificationRouteDto,
+  type AgentSessionView,
   type Phase,
   type ProjectDetailView,
   type ProjectListItem,
@@ -35,6 +38,7 @@ import {
   type SkillRegistryDto,
   type SyncNotificationAdaptersResponseDto,
 } from '@/src/lib/xero-model'
+import { mapNotificationBroker } from '@/src/lib/xero-model/notifications'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
 
 import {
@@ -127,6 +131,130 @@ export type {
 export { BLOCKED_NOTIFICATION_SYNC_POLL_MS } from './use-xero-desktop-state/notification-health'
 
 const REPOSITORY_STATUS_POLL_MS = 5_000
+const PREFETCH_FALLBACK_DELAY_MS = 250
+
+type IdleWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+  cancelIdleCallback?: (handle: number) => void
+}
+
+type DeferredTaskHandle = {
+  kind: 'idle' | 'timeout'
+  handle: number
+}
+
+function waitForProjectSelectionPaint(): Promise<void> {
+  if (typeof window === 'undefined') {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    const finishAfterFrame = () => window.setTimeout(resolve, 0)
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(finishAfterFrame)
+      return
+    }
+
+    finishAfterFrame()
+  })
+}
+
+function scheduleDeferredTask(
+  win: IdleWindow,
+  callback: () => void,
+  options: { timeoutMs: number },
+): DeferredTaskHandle {
+  if (win.requestIdleCallback) {
+    return {
+      kind: 'idle',
+      handle: win.requestIdleCallback(callback, { timeout: options.timeoutMs }),
+    }
+  }
+
+  return {
+    kind: 'timeout',
+    handle: win.setTimeout(callback, PREFETCH_FALLBACK_DELAY_MS),
+  }
+}
+
+function cancelDeferredTask(win: IdleWindow, task: DeferredTaskHandle): void {
+  if (task.kind === 'idle') {
+    win.cancelIdleCallback?.(task.handle)
+    return
+  }
+
+  win.clearTimeout(task.handle)
+}
+
+function createProjectShell(project: ProjectListItem): ProjectDetailView {
+  return {
+    ...project,
+    phases: [],
+    repository: null,
+    repositoryStatus: null,
+    approvalRequests: [],
+    pendingApprovalCount: 0,
+    latestDecisionOutcome: null,
+    verificationRecords: [],
+    resumeHistory: [],
+    agentSessions: [],
+    selectedAgentSession: null,
+    selectedAgentSessionId: selectAgentSessionId([]),
+    notificationBroker: mapNotificationBroker(project.id, []),
+    runtimeSession: null,
+    runtimeRun: null,
+    autonomousRun: null,
+  }
+}
+
+function createAgentSessionStateKey(projectId: string, agentSessionId: string): string {
+  return `${projectId}::${agentSessionId}`
+}
+
+function hasOwnRecord<T>(record: Record<string, T>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function selectAgentSessionInProject(
+  project: ProjectDetailView,
+  agentSessionId: string,
+  updatedSession?: AgentSessionView,
+): ProjectDetailView {
+  let selectedAgentSession: AgentSessionView | null = null
+  let matched = false
+  const agentSessions = project.agentSessions.map((session) => {
+    if (session.agentSessionId === agentSessionId) {
+      matched = true
+      selectedAgentSession = {
+        ...session,
+        ...(updatedSession?.agentSessionId === agentSessionId ? updatedSession : {}),
+        selected: true,
+      }
+      return selectedAgentSession
+    }
+
+    return session.selected ? { ...session, selected: false } : session
+  })
+
+  if (!matched && updatedSession?.projectId === project.id) {
+    selectedAgentSession = {
+      ...updatedSession,
+      selected: true,
+    }
+    agentSessions.push(selectedAgentSession)
+  }
+
+  if (!selectedAgentSession) {
+    return project
+  }
+
+  return {
+    ...project,
+    agentSessions,
+    selectedAgentSession,
+    selectedAgentSessionId: selectedAgentSession.agentSessionId,
+  }
+}
 
 function createRepositoryStatusSyncKey(status: RepositoryStatusView | null): string {
   if (!status) {
@@ -264,6 +392,7 @@ export function useXeroDesktopState(
   const [activeDiffScope, setActiveDiffScope] = useState<RepositoryDiffScope>('unstaged')
   const [isLoading, setIsLoading] = useState(true)
   const [isProjectLoading, setIsProjectLoading] = useState(false)
+  const [pendingProjectSelectionId, setPendingProjectSelectionId] = useState<string | null>(null)
   const [isImporting, setIsImporting] = useState(false)
   const [projectRemovalStatus, setProjectRemovalStatus] = useState<ProjectRemovalStatus>('idle')
   const [pendingProjectRemovalId, setPendingProjectRemovalId] = useState<string | null>(null)
@@ -326,6 +455,9 @@ export function useXeroDesktopState(
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
   const activeProjectRef = useRef<ProjectDetailView | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
+  const projectDetailsRef = useRef<Record<string, ProjectDetailView>>({})
+  const projectSelectionRequestRef = useRef(0)
+  const projectPrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
   const repositoryStatusRef = useRef<RepositoryStatusView | null>(null)
   const repositoryStatusSyncKeyRef = useRef('none')
   const repositoryStatusRefreshInFlightRef = useRef(false)
@@ -339,6 +471,10 @@ export function useXeroDesktopState(
   const runtimeSessionsRef = useRef<Record<string, RuntimeSessionView>>({})
   const runtimeRunsRef = useRef<Record<string, RuntimeRunView>>({})
   const autonomousRunsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousRun']>>>({})
+  const runtimeRunsBySessionRef = useRef<Record<string, RuntimeRunView | null>>({})
+  const autonomousRunsBySessionRef = useRef<Record<string, ProjectDetailView['autonomousRun']>>({})
+  const runtimeStreamsBySessionRef = useRef<Record<string, RuntimeStreamView>>({})
+  const agentSessionRuntimePrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
   const notificationRoutesRef = useRef<Record<string, NotificationRouteDto[]>>({})
   const notificationRouteLoadStatusesRef = useRef<Record<string, NotificationRoutesLoadStatus>>({})
   const notificationRouteLoadErrorsRef = useRef<Record<string, OperatorActionErrorView | null>>({})
@@ -373,7 +509,31 @@ export function useXeroDesktopState(
 
   useEffect(() => {
     activeProjectRef.current = activeProject
+    if (activeProject) {
+      projectDetailsRef.current[activeProject.id] = activeProject
+    }
   }, [activeProject])
+
+  useEffect(() => {
+    const liveProjectIds = new Set(projects.map((project) => project.id))
+    for (const projectId of Object.keys(projectDetailsRef.current)) {
+      if (!liveProjectIds.has(projectId)) {
+        delete projectDetailsRef.current[projectId]
+      }
+    }
+    const removeStaleSessionRecords = (record: Record<string, unknown>) => {
+      for (const key of Object.keys(record)) {
+        const [projectId] = key.split('::', 1)
+        if (!liveProjectIds.has(projectId)) {
+          delete record[key]
+        }
+      }
+    }
+    removeStaleSessionRecords(runtimeRunsBySessionRef.current)
+    removeStaleSessionRecords(autonomousRunsBySessionRef.current)
+    removeStaleSessionRecords(runtimeStreamsBySessionRef.current)
+    removeStaleSessionRecords(agentSessionRuntimePrefetchInFlightRef.current)
+  }, [projects])
 
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId
@@ -399,6 +559,31 @@ export function useXeroDesktopState(
   useEffect(() => {
     autonomousRunsRef.current = autonomousRuns
   }, [autonomousRuns])
+
+  useEffect(() => {
+    if (!activeProject || !activeProjectId) {
+      return
+    }
+
+    const agentSessionId = activeProject.selectedAgentSessionId
+    if (!activeProject.agentSessions.some((session) => session.agentSessionId === agentSessionId)) {
+      return
+    }
+
+    const cacheKey = createAgentSessionStateKey(activeProjectId, agentSessionId)
+    const runtimeRun = runtimeRuns[activeProjectId] ?? activeProject.runtimeRun ?? null
+    runtimeRunsBySessionRef.current[cacheKey] =
+      runtimeRun?.agentSessionId === agentSessionId ? runtimeRun : null
+
+    const autonomousRun = autonomousRuns[activeProjectId] ?? activeProject.autonomousRun ?? null
+    autonomousRunsBySessionRef.current[cacheKey] =
+      autonomousRun?.agentSessionId === agentSessionId ? autonomousRun : null
+
+    const runtimeStream = runtimeStreams[activeProjectId] ?? null
+    if (runtimeStream?.agentSessionId === agentSessionId) {
+      runtimeStreamsBySessionRef.current[cacheKey] = runtimeStream
+    }
+  }, [activeProject, activeProjectId, autonomousRuns, runtimeRuns, runtimeStreams])
 
   useEffect(() => {
     notificationRoutesRef.current = notificationRoutes
@@ -458,6 +643,10 @@ export function useXeroDesktopState(
         if (!nextStream) {
           return removeProjectRecord(currentStreams, projectId)
         }
+
+        runtimeStreamsBySessionRef.current[
+          createAgentSessionStateKey(projectId, nextStream.agentSessionId)
+        ] = nextStream
 
         return {
           ...currentStreams,
@@ -577,6 +766,16 @@ export function useXeroDesktopState(
       options: { clearGlobalError?: boolean; loadError?: string | null } = {},
     ) => {
       supersedeInFlightProjectLoad(projectId)
+      const agentSessionId =
+        runtimeRun?.agentSessionId ??
+        (activeProjectRef.current?.id === projectId
+          ? selectAgentSessionId(activeProjectRef.current.agentSessions)
+          : null)
+      if (agentSessionId) {
+        runtimeRunsBySessionRef.current[
+          createAgentSessionStateKey(projectId, agentSessionId)
+        ] = runtimeRun
+      }
 
       setRuntimeRuns((currentRuntimeRuns) => {
         if (!runtimeRun) {
@@ -614,6 +813,16 @@ export function useXeroDesktopState(
       options: { clearGlobalError?: boolean; loadError?: string | null } = {},
     ) => {
       supersedeInFlightProjectLoad(projectId)
+      const agentSessionId =
+        inspection.autonomousRun?.agentSessionId ??
+        (activeProjectRef.current?.id === projectId
+          ? selectAgentSessionId(activeProjectRef.current.agentSessions)
+          : null)
+      if (agentSessionId) {
+        autonomousRunsBySessionRef.current[
+          createAgentSessionStateKey(projectId, agentSessionId)
+        ] = inspection.autonomousRun ?? null
+      }
 
       setAutonomousRuns((currentRuns) => {
         if (!inspection.autonomousRun) {
@@ -702,6 +911,430 @@ export function useXeroDesktopState(
       }),
     [adapter],
   )
+
+  const applyAgentSessionRuntimeState = useCallback(
+    (
+      projectId: string,
+      agentSessionId: string,
+      runtimeRun: RuntimeRunView | null,
+      autonomousRun: ProjectDetailView['autonomousRun'],
+      runtimeStream: RuntimeStreamView | null,
+    ) => {
+      const runtimeRunRecords = runtimeRun
+        ? { ...runtimeRunsRef.current, [projectId]: runtimeRun }
+        : removeProjectRecord(runtimeRunsRef.current, projectId)
+      runtimeRunsRef.current = runtimeRunRecords
+      setRuntimeRuns(runtimeRunRecords)
+
+      const autonomousRunRecords = autonomousRun
+        ? { ...autonomousRunsRef.current, [projectId]: autonomousRun }
+        : removeProjectRecord(autonomousRunsRef.current, projectId)
+      autonomousRunsRef.current = autonomousRunRecords
+      setAutonomousRuns(autonomousRunRecords)
+
+      setRuntimeStreams((currentStreams) =>
+        runtimeStream ? { ...currentStreams, [projectId]: runtimeStream } : removeProjectRecord(currentStreams, projectId),
+      )
+
+      const currentProject = activeProjectRef.current
+      if (!currentProject || currentProject.id !== projectId) {
+        return null
+      }
+
+      const selectedSessionId = selectAgentSessionId(currentProject.agentSessions)
+      if (selectedSessionId !== agentSessionId) {
+        return currentProject
+      }
+
+      const nextProject = applyAutonomousRunState(
+        applyRuntimeRun(currentProject, runtimeRun),
+        autonomousRun,
+      )
+      activeProjectRef.current = nextProject
+      projectDetailsRef.current[projectId] = nextProject
+      setActiveProject(nextProject)
+      return nextProject
+    },
+    [],
+  )
+
+  const optimisticallySelectAgentSession = useCallback(
+    (agentSessionId: string) => {
+      const currentProject = activeProjectRef.current
+      const projectId = activeProjectIdRef.current
+      if (!currentProject || !projectId || currentProject.id !== projectId) {
+        return null
+      }
+
+      const nextSelection = selectAgentSessionInProject(currentProject, agentSessionId)
+      if (nextSelection === currentProject) {
+        return { projectId, previousProject: currentProject }
+      }
+
+      latestLoadRequestRef.current += 1
+      setIsProjectLoading(false)
+      setRefreshSource('selection')
+      setErrorMessage(null)
+      setRuntimeRunActionError(null)
+      setPendingRuntimeRunAction(null)
+      setRuntimeRunActionStatus('idle')
+      setAutonomousRunActionError(null)
+      setPendingAutonomousRunAction(null)
+      setAutonomousRunActionStatus('idle')
+
+      const cacheKey = createAgentSessionStateKey(projectId, agentSessionId)
+      const cachedRuntimeRun = hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey)
+        ? runtimeRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedAutonomousRun = hasOwnRecord(autonomousRunsBySessionRef.current, cacheKey)
+        ? autonomousRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedRuntimeStream = runtimeStreamsBySessionRef.current[cacheKey] ?? null
+      const nextRuntimeStream =
+        cachedRuntimeStream && (!cachedRuntimeRun || cachedRuntimeStream.runId === cachedRuntimeRun.runId)
+          ? cachedRuntimeStream
+          : null
+      const nextProject = applyAutonomousRunState(
+        applyRuntimeRun(nextSelection, cachedRuntimeRun ?? null),
+        cachedAutonomousRun ?? null,
+      )
+
+      activeProjectRef.current = nextProject
+      projectDetailsRef.current[projectId] = nextProject
+      setActiveProject(nextProject)
+      applyAgentSessionRuntimeState(
+        projectId,
+        agentSessionId,
+        cachedRuntimeRun ?? null,
+        cachedAutonomousRun ?? null,
+        nextRuntimeStream,
+      )
+
+      return { projectId, previousProject: currentProject }
+    },
+    [applyAgentSessionRuntimeState],
+  )
+
+  const applyAgentSessionSelection = useCallback((agentSession: AgentSessionView) => {
+    const currentProject = activeProjectRef.current
+    if (!currentProject || currentProject.id !== agentSession.projectId) {
+      return null
+    }
+
+    const nextProject = selectAgentSessionInProject(
+      currentProject,
+      agentSession.agentSessionId,
+      agentSession,
+    )
+    activeProjectRef.current = nextProject
+    projectDetailsRef.current[nextProject.id] = nextProject
+    setActiveProject(nextProject)
+    return nextProject
+  }, [])
+
+  const rollbackAgentSessionSelection = useCallback(
+    (previousProject: ProjectDetailView | null) => {
+      if (!previousProject || activeProjectIdRef.current !== previousProject.id) {
+        return
+      }
+
+      const agentSessionId = previousProject.selectedAgentSessionId
+      const cacheKey = createAgentSessionStateKey(previousProject.id, agentSessionId)
+      const cachedRuntimeStream = runtimeStreamsBySessionRef.current[cacheKey] ?? null
+
+      activeProjectRef.current = previousProject
+      projectDetailsRef.current[previousProject.id] = previousProject
+      setActiveProject(previousProject)
+      applyAgentSessionRuntimeState(
+        previousProject.id,
+        agentSessionId,
+        previousProject.runtimeRun ?? null,
+        previousProject.autonomousRun ?? null,
+        cachedRuntimeStream,
+      )
+    },
+    [applyAgentSessionRuntimeState],
+  )
+
+  const hydrateAgentSessionRuntimeState = useCallback(
+    async (
+      projectId: string,
+      agentSessionId: string,
+      options: { force?: boolean } = {},
+    ): Promise<ProjectDetailView | null> => {
+      const cacheKey = createAgentSessionStateKey(projectId, agentSessionId)
+      const hasRuntimeRunCache = hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey)
+      const hasAutonomousRunCache = hasOwnRecord(autonomousRunsBySessionRef.current, cacheKey)
+      if (
+        !options.force &&
+        hasRuntimeRunCache &&
+        hasAutonomousRunCache
+      ) {
+        return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+      }
+
+      const inFlight = agentSessionRuntimePrefetchInFlightRef.current[cacheKey]
+      if (inFlight) {
+        await inFlight
+        return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+      }
+
+      const requestPromise = (async () => {
+        const previousRuntimeRun = hasRuntimeRunCache
+          ? runtimeRunsBySessionRef.current[cacheKey]
+          : null
+        const previousAutonomousRun = hasAutonomousRunCache
+          ? autonomousRunsBySessionRef.current[cacheKey]
+          : null
+        const [runtimeRunResult, autonomousRunResult] = await Promise.all([
+          adapter
+            .getRuntimeRun(projectId, agentSessionId)
+            .then((response) => ({
+              runtimeRun: response ? mapRuntimeRun(response) : null,
+              error: null as string | null,
+            }))
+            .catch((error) => ({
+              runtimeRun: previousRuntimeRun,
+              error: getDesktopErrorMessage(error),
+            })),
+          adapter
+            .getAutonomousRun(projectId, agentSessionId)
+            .then((response) => ({
+              autonomousRun: mapAutonomousRunInspection(response).autonomousRun,
+              error: null as string | null,
+            }))
+            .catch((error) => ({
+              autonomousRun: previousAutonomousRun,
+              error: getDesktopErrorMessage(error),
+            })),
+        ])
+
+        runtimeRunsBySessionRef.current[cacheKey] = runtimeRunResult.runtimeRun
+        autonomousRunsBySessionRef.current[cacheKey] = autonomousRunResult.autonomousRun ?? null
+
+        if (
+          activeProjectIdRef.current !== projectId ||
+          selectAgentSessionId(activeProjectRef.current?.agentSessions) !== agentSessionId
+        ) {
+          return
+        }
+
+        const cachedRuntimeStream = runtimeStreamsBySessionRef.current[cacheKey] ?? null
+        const nextRuntimeStream =
+          cachedRuntimeStream &&
+          (!runtimeRunResult.runtimeRun || cachedRuntimeStream.runId === runtimeRunResult.runtimeRun.runId)
+            ? cachedRuntimeStream
+            : null
+        applyAgentSessionRuntimeState(
+          projectId,
+          agentSessionId,
+          runtimeRunResult.runtimeRun,
+          autonomousRunResult.autonomousRun ?? null,
+          nextRuntimeStream,
+        )
+        setRuntimeRunLoadErrors((currentErrors) => ({
+          ...currentErrors,
+          [projectId]: runtimeRunResult.error,
+        }))
+        setAutonomousRunLoadErrors((currentErrors) => ({
+          ...currentErrors,
+          [projectId]: autonomousRunResult.error,
+        }))
+        if (runtimeRunResult.error || autonomousRunResult.error) {
+          setErrorMessage(
+            [runtimeRunResult.error, autonomousRunResult.error]
+              .filter((message): message is string => Boolean(message))
+              .join('\n'),
+          )
+        } else {
+          setErrorMessage(null)
+        }
+      })()
+        .catch(() => undefined)
+        .finally(() => {
+          if (agentSessionRuntimePrefetchInFlightRef.current[cacheKey] === requestPromise) {
+            delete agentSessionRuntimePrefetchInFlightRef.current[cacheKey]
+          }
+        })
+
+      agentSessionRuntimePrefetchInFlightRef.current[cacheKey] = requestPromise
+      await requestPromise
+      return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+    },
+    [adapter, applyAgentSessionRuntimeState],
+  )
+
+  const prefetchProject = useCallback(
+    (projectId: string) => {
+      const trimmedProjectId = projectId.trim()
+      if (
+        !trimmedProjectId ||
+        trimmedProjectId === activeProjectIdRef.current ||
+        projectDetailsRef.current[trimmedProjectId] ||
+        projectPrefetchInFlightRef.current[trimmedProjectId]
+      ) {
+        return
+      }
+
+      const requestPromise = (async () => {
+        const statusPromise = adapter
+          .getRepositoryStatus(trimmedProjectId)
+          .then(mapRepositoryStatus)
+          .catch(() => null)
+        const snapshotResponse = await adapter.getProjectSnapshot(trimmedProjectId)
+        const dispatches =
+          notificationDispatchesRef.current[trimmedProjectId] ??
+          snapshotResponse.notificationDispatches ??
+          []
+        const snapshotProject = mapProjectSnapshot(snapshotResponse, {
+          notificationDispatches: dispatches,
+        })
+        const cachedRuntime = runtimeSessionsRef.current[trimmedProjectId] ?? null
+        const cachedRuntimeRun = runtimeRunsRef.current[trimmedProjectId] ?? null
+        const cachedAutonomousRun =
+          autonomousRunsRef.current[trimmedProjectId] ?? snapshotProject.autonomousRun ?? null
+        const prefetchedProject = applyAutonomousRunState(
+          applyRuntimeRun(
+            applyRuntimeSession(snapshotProject, cachedRuntime),
+            cachedRuntimeRun,
+          ),
+          cachedAutonomousRun,
+        )
+
+        projectDetailsRef.current[trimmedProjectId] = prefetchedProject
+
+        const status = await statusPromise
+        if (status) {
+          projectDetailsRef.current[trimmedProjectId] = applyRepositoryStatus(
+            projectDetailsRef.current[trimmedProjectId] ?? prefetchedProject,
+            status,
+          )
+        }
+      })()
+        .catch(() => undefined)
+        .finally(() => {
+          if (projectPrefetchInFlightRef.current[trimmedProjectId] === requestPromise) {
+            delete projectPrefetchInFlightRef.current[trimmedProjectId]
+          }
+        })
+
+      projectPrefetchInFlightRef.current[trimmedProjectId] = requestPromise
+    },
+    [adapter],
+  )
+
+  useEffect(() => {
+    if (isLoading || projects.length < 2 || typeof window === 'undefined') {
+      return
+    }
+
+    const candidates = projects
+      .map((project) => project.id)
+      .filter((projectId) => projectId !== activeProjectId && !projectDetailsRef.current[projectId])
+    if (candidates.length === 0) {
+      return
+    }
+
+    const win = window as IdleWindow
+
+    let cancelled = false
+    let scheduledHandle: DeferredTaskHandle | null = null
+
+    function runNext() {
+      scheduledHandle = null
+      if (cancelled) {
+        return
+      }
+
+      const nextProjectId = candidates.shift()
+      if (!nextProjectId) {
+        return
+      }
+
+      const inFlight = projectPrefetchInFlightRef.current[nextProjectId] ?? null
+      prefetchProject(nextProjectId)
+      void (inFlight ?? projectPrefetchInFlightRef.current[nextProjectId] ?? Promise.resolve()).finally(scheduleNext)
+    }
+
+    function scheduleNext() {
+      if (cancelled) {
+        return
+      }
+
+      scheduledHandle = scheduleDeferredTask(win, runNext, { timeoutMs: 1_500 })
+    }
+
+    scheduleNext()
+
+    return () => {
+      cancelled = true
+      if (scheduledHandle === null) {
+        return
+      }
+
+      cancelDeferredTask(win, scheduledHandle)
+    }
+  }, [activeProjectId, isLoading, prefetchProject, projects])
+
+  useEffect(() => {
+    if (!activeProjectId || !activeProject || isLoading || isProjectLoading || typeof window === 'undefined') {
+      return
+    }
+
+    const warmProjectId = activeProjectId
+    const candidates = activeProject.agentSessions
+      .filter((session) => session.isActive)
+      .map((session) => session.agentSessionId)
+      .filter((agentSessionId) => {
+        const cacheKey = createAgentSessionStateKey(warmProjectId, agentSessionId)
+        return (
+          !hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey) ||
+          !hasOwnRecord(autonomousRunsBySessionRef.current, cacheKey)
+        )
+      })
+
+    if (candidates.length === 0) {
+      return
+    }
+
+    const win = window as IdleWindow
+
+    let cancelled = false
+    let scheduledHandle: DeferredTaskHandle | null = null
+
+    function runNext() {
+      scheduledHandle = null
+      if (cancelled) {
+        return
+      }
+
+      const nextAgentSessionId = candidates.shift()
+      if (!nextAgentSessionId) {
+        return
+      }
+
+      void hydrateAgentSessionRuntimeState(warmProjectId, nextAgentSessionId).finally(scheduleNext)
+    }
+
+    function scheduleNext() {
+      if (cancelled) {
+        return
+      }
+
+      scheduledHandle = scheduleDeferredTask(win, runNext, { timeoutMs: 1_500 })
+    }
+
+    scheduleNext()
+
+    return () => {
+      cancelled = true
+      if (scheduledHandle === null) {
+        return
+      }
+
+      cancelDeferredTask(win, scheduledHandle)
+    }
+  }, [activeProject, activeProjectId, hydrateAgentSessionRuntimeState, isLoading, isProjectLoading])
 
   const refreshProviderModelCatalog = useCallback(
     async (profileId: string, options: { force?: boolean } = {}): Promise<ProviderModelCatalogDto> => {
@@ -851,6 +1484,7 @@ export function useXeroDesktopState(
         source,
         refs: {
           latestLoadRequestRef,
+          projectDetailsRef,
           runtimeSessionsRef,
           runtimeRunsRef,
           autonomousRunsRef,
@@ -1138,13 +1772,43 @@ export function useXeroDesktopState(
 
   const selectProject = useCallback(
     async (projectId: string) => {
-      if (projectId === activeProjectIdRef.current) {
+      if (projectId === activeProjectIdRef.current && !errorMessage) {
         return
       }
 
-      await loadProject(projectId, 'selection')
+      const requestId = projectSelectionRequestRef.current + 1
+      projectSelectionRequestRef.current = requestId
+      setPendingProjectSelectionId(projectId)
+
+      const cachedProject = projectDetailsRef.current[projectId] ?? null
+      if (cachedProject) {
+        setRepositoryStatus(cachedProject.repositoryStatus)
+        setActiveProjectId(projectId)
+        setActiveProject(cachedProject)
+        resetRepositoryDiffs(cachedProject.repositoryStatus)
+      } else {
+        const projectSummary = projects.find((project) => project.id === projectId)
+        if (projectSummary) {
+          const projectShell = createProjectShell(projectSummary)
+          projectDetailsRef.current[projectId] = projectShell
+          setRepositoryStatus(null)
+          setActiveProjectId(projectId)
+          setActiveProject(projectShell)
+          resetRepositoryDiffs(null)
+        }
+      }
+
+      await waitForProjectSelectionPaint()
+
+      try {
+        await loadProject(projectId, 'selection')
+      } finally {
+        if (projectSelectionRequestRef.current === requestId) {
+          setPendingProjectSelectionId(null)
+        }
+      }
     },
-    [loadProject],
+    [errorMessage, loadProject, projects, resetRepositoryDiffs],
   )
 
   const retry = useCallback(async () => {
@@ -1280,6 +1944,10 @@ export function useXeroDesktopState(
       syncRuntimeSession,
       syncRuntimeRun,
       syncAutonomousRun,
+      optimisticallySelectAgentSession,
+      applyAgentSessionSelection,
+      rollbackAgentSessionSelection,
+      hydrateAgentSessionRuntimeState,
       applyRuntimeSessionUpdate,
       applyRuntimeRunUpdate,
       applyAutonomousRunStateUpdate,
@@ -1358,10 +2026,14 @@ export function useXeroDesktopState(
     ? runtimeSessions[activeProjectId] ?? activeProject?.runtimeSession ?? null
     : null
   const activeAgentSessionId = activeProject ? selectAgentSessionId(activeProject.agentSessions) : null
-  const activeRuntimeRun = activeProjectId ? runtimeRuns[activeProjectId] ?? activeProject?.runtimeRun ?? null : null
-  const activeAutonomousRun = activeProjectId
+  const activeRuntimeRunCandidate = activeProjectId ? runtimeRuns[activeProjectId] ?? activeProject?.runtimeRun ?? null : null
+  const activeRuntimeRun =
+    activeRuntimeRunCandidate?.agentSessionId === activeAgentSessionId ? activeRuntimeRunCandidate : null
+  const activeAutonomousRunCandidate = activeProjectId
     ? autonomousRuns[activeProjectId] ?? activeProject?.autonomousRun ?? null
     : null
+  const activeAutonomousRun =
+    activeAutonomousRunCandidate?.agentSessionId === activeAgentSessionId ? activeAutonomousRunCandidate : null
   const activeAutonomousRunErrorMessage = activeProjectId ? autonomousRunLoadErrors[activeProjectId] ?? null : null
   const activeRuntimeRunId = activeRuntimeRun?.runId ?? null
   const activeRuntimeSessionId = activeRuntimeSession?.sessionId ?? null
@@ -1436,7 +2108,11 @@ export function useXeroDesktopState(
   const activePhase = useMemo(() => getActivePhase(activeProject), [activeProject])
   const activeRuntimeErrorMessage = activeProject ? runtimeLoadErrors[activeProject.id] ?? null : null
   const activeRuntimeRunErrorMessage = activeProject ? runtimeRunLoadErrors[activeProject.id] ?? null : null
-  const activeRuntimeStream = activeProject ? runtimeStreams[activeProject.id] ?? null : null
+  const activeRuntimeStreamCandidate = activeProject ? runtimeStreams[activeProject.id] ?? null : null
+  const activeRuntimeStream =
+    activeRuntimeStreamCandidate?.agentSessionId === activeAgentSessionId
+      ? activeRuntimeStreamCandidate
+      : null
   const activeNotificationRoutes = activeProject
     ? (notificationRoutes[activeProject.id] ?? []).filter(
         (route) => route.projectId === activeProject.id && route.routeId.trim().length > 0,
@@ -1570,6 +2246,7 @@ export function useXeroDesktopState(
     projects,
     activeProject,
     activeProjectId,
+    pendingProjectSelectionId,
     repositoryStatus,
     workflowView,
     agentView,
@@ -1622,6 +2299,7 @@ export function useXeroDesktopState(
     pendingRuntimeRunAction,
     runtimeRunActionError,
     selectProject,
+    prefetchProject,
     importProject,
     createProject,
     removeProject,

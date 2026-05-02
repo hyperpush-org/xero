@@ -114,7 +114,7 @@ export function AgentContextMeter({ status, snapshot, hasUserMessage = true }: A
             aria-valuenow={knownBudget ? pressure : undefined}
             aria-valuetext={ariaValueText}
           >
-            <svg className="h-5 w-5" viewBox="0 0 20 20" aria-hidden="true">
+            <svg className="h-4.5 w-4.5" viewBox="0 0 20 20" aria-hidden="true">
               <circle
                 className="fill-none stroke-muted/80"
                 cx="10"
@@ -149,7 +149,6 @@ export function AgentContextMeter({ status, snapshot, hasUserMessage = true }: A
               <AlertTriangle className="absolute h-2.5 w-2.5 text-destructive" />
             ) : null}
           </span>
-          <span className="hidden max-w-[6.25rem] truncate sm:inline">{label}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent side="top">{tooltip}</TooltipContent>

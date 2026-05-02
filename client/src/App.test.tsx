@@ -1548,6 +1548,28 @@ function createAdapter(options?: {
       )
       return nextSession
     },
+    autoNameAgentSession: async (request) => {
+      const existing = currentSnapshot.agentSessions.find(
+        (session) => session.projectId === request.projectId && session.agentSessionId === request.agentSessionId,
+      )
+      if (!existing) {
+        throw new Error(`Missing agent session ${request.agentSessionId}`)
+      }
+
+      const nextSession = {
+        ...existing,
+        title: existing.title.trim().toLowerCase() === 'new chat' ? 'Generated Session Title' : existing.title,
+        updatedAt: '2026-04-23T12:06:00Z',
+      }
+      updateAgentSessions(
+        currentSnapshot.agentSessions.map((session) =>
+          session.projectId === request.projectId && session.agentSessionId === request.agentSessionId
+            ? nextSession
+            : session,
+        ),
+      )
+      return nextSession
+    },
     archiveAgentSession: async (request) => {
       const existing = currentSnapshot.agentSessions.find(
         (session) => session.projectId === request.projectId && session.agentSessionId === request.agentSessionId,

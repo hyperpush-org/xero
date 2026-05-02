@@ -22,11 +22,10 @@ pub fn list_agent_definitions<R: Runtime>(
 ) -> CommandResult<ListAgentDefinitionsResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let definitions =
-        project_store::list_agent_definitions(&repo_root, request.include_archived)?
-            .into_iter()
-            .map(agent_definition_summary_dto)
-            .collect();
+    let definitions = project_store::list_agent_definitions(&repo_root, request.include_archived)?
+        .into_iter()
+        .map(agent_definition_summary_dto)
+        .collect();
     Ok(ListAgentDefinitionsResponseDto { definitions })
 }
 

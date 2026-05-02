@@ -719,6 +719,31 @@ function createMockAdapter(options?: {
       updatedAt: request.updatedAt,
     }),
   )
+  const autoNameAgentSession = vi.fn(async (request: {
+    projectId: string
+    agentSessionId: string
+    prompt: string
+    controls?: RuntimeRunControlInputDto | null
+  }) => {
+    const snapshot = snapshots[request.projectId]
+    const existing = snapshot?.agentSessions.find((session) => session.agentSessionId === request.agentSessionId)
+    if (!snapshot || !existing) {
+      throw new Error(`Missing agent session ${request.agentSessionId}`)
+    }
+
+    const nextSession = {
+      ...existing,
+      title: existing.title.trim().toLowerCase() === 'new chat' ? 'System Prompt Investigation' : existing.title,
+      updatedAt: '2026-04-15T20:00:02Z',
+    }
+    snapshots[request.projectId] = {
+      ...snapshot,
+      agentSessions: snapshot.agentSessions.map((session) =>
+        session.agentSessionId === request.agentSessionId ? nextSession : session,
+      ),
+    }
+    return nextSession
+  })
 
   const adapter = {
     isDesktopRuntime: () => true,
@@ -771,6 +796,7 @@ function createMockAdapter(options?: {
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
+    autoNameAgentSession,
     getProviderModelCatalog: vi.fn(async (profileId: string): Promise<ProviderModelCatalogDto> => {
       const profile = providerProfiles.profiles.find((candidate) => candidate.profileId === profileId)
       if (!profile) {
@@ -1033,6 +1059,7 @@ function createMockAdapter(options?: {
     syncNotificationAdapters,
     upsertNotificationRoute,
     startRuntimeRun: adapter.startRuntimeRun,
+    autoNameAgentSession,
     updateRuntimeRunControls: adapter.updateRuntimeRunControls,
     resumeOperatorRun,
     subscribeRuntimeStream: adapter.subscribeRuntimeStream,
@@ -1106,6 +1133,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
   return (
     <div>
       <div data-testid="active-project-id">{state.activeProjectId ?? 'none'}</div>
+      <div data-testid="selected-session-title">{state.activeProject?.selectedAgentSession?.title ?? 'none'}</div>
       <div data-testid="error">{state.errorMessage ?? 'none'}</div>
       <div data-testid="refresh-source">{state.refreshSource ?? 'none'}</div>
       <div data-testid="auth-phase">{state.agentView?.authPhase ?? 'none'}</div>
@@ -1357,6 +1385,53 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
 
 
+
+  it('auto-names a new default-titled session from the first submitted prompt', async () => {
+    const newChatSnapshot = makeSnapshot('project-1', 'Xero')
+    newChatSnapshot.agentSessions = [
+      {
+        ...makeAgentSession('project-1'),
+        title: 'New Chat',
+        summary: '',
+        lastRunId: null,
+      },
+    ]
+    const setup = createMockAdapter({
+      snapshots: {
+        'project-1': newChatSnapshot,
+      },
+      runtimeRuns: {
+        'project-1': null,
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('none'))
+    expect(screen.getByTestId('selected-session-title')).toHaveTextContent('New Chat')
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start runtime run with controls' }))
+    })
+
+    await waitFor(() => expect(setup.startRuntimeRun).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+    await waitFor(() =>
+      expect(screen.getByTestId('selected-session-title')).toHaveTextContent('System Prompt Investigation'),
+    )
+    expect(setup.autoNameAgentSession).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      prompt: 'Review the latest diff before continuing.',
+      controls: expect.objectContaining({
+        modelId: 'openai/gpt-5-mini',
+        thinkingEffort: 'high',
+      }),
+    })
+  })
 
   it('preserves the last truthful runtime-run view when a later run refresh fails', async () => {
     const setup = createMockAdapter({
@@ -2001,10 +2076,10 @@ describe('useXeroDesktopState runtime-run hydration', () => {
         'Xero could not reload project-2 during selected-project refresh.',
       ),
     )
-    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1')
-    expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1')
-    expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1')
-    expect(screen.getByTestId('resume-history-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2')
+    expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('none')
+    expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('0')
+    expect(screen.getByTestId('resume-history-count')).toHaveTextContent('0')
 
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 

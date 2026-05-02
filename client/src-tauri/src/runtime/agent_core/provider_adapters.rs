@@ -741,7 +741,10 @@ fn openai_responses_request_body(
     if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
         body.insert(
             "reasoning".into(),
-            json!({ "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort) }),
+            json!({
+                "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort),
+                "summary": "auto",
+            }),
         );
     }
     Ok(JsonValue::Object(body))
@@ -1154,6 +1157,10 @@ struct OpenAiChatDelta {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Vec<OpenAiToolCallDelta>,
 }
 
@@ -1241,11 +1248,23 @@ fn parse_openai_chat_sse(
             usage = Some(mapped);
         }
         for choice in chunk.choices {
-            if let Some(content) = choice.delta.content {
+            let OpenAiChatDelta {
+                content,
+                reasoning,
+                reasoning_content,
+                tool_calls,
+            } = choice.delta;
+            if let Some(reasoning) = reasoning_content
+                .or(reasoning)
+                .filter(|reasoning| !reasoning.is_empty())
+            {
+                emit(ProviderStreamEvent::ReasoningSummary(reasoning))?;
+            }
+            if let Some(content) = content {
                 message.push_str(&content);
                 emit(ProviderStreamEvent::MessageDelta(content))?;
             }
-            for tool_call in choice.delta.tool_calls {
+            for tool_call in tool_calls {
                 let partial = partial_calls.entry(tool_call.index).or_default();
                 if let Some(id) = tool_call.id {
                     partial.id = Some(id);
@@ -1300,6 +1319,9 @@ fn parse_openai_responses_sse(
                 format!("Xero could not decode a {provider_id} Responses chunk: {error}"),
             )
         })?;
+        if emit_openai_responses_reasoning_summary_event(&value, emit)? {
+            continue;
+        }
         match value
             .get("type")
             .and_then(JsonValue::as_str)
@@ -1367,6 +1389,35 @@ fn parse_openai_responses_sse(
     }
 
     finish_provider_turn(provider_id, message, partial_calls, usage)
+}
+
+fn emit_openai_responses_reasoning_summary_event(
+    value: &JsonValue,
+    emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+) -> CommandResult<bool> {
+    match value
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default()
+    {
+        "response.reasoning_summary_text.delta" => {
+            let delta = value
+                .get("delta")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !delta.is_empty() {
+                emit(ProviderStreamEvent::ReasoningSummary(delta))?;
+            }
+            Ok(true)
+        }
+        "response.reasoning_summary_part.done" | "response.reasoning_summary_text.done" => {
+            emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+            Ok(true)
+        }
+        "response.reasoning_summary_part.added" => Ok(true),
+        _ => Ok(false),
+    }
 }
 
 fn apply_openai_response_function_call_item(
@@ -2332,6 +2383,7 @@ mod tests {
         let openai_api = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
             .expect("openai api body");
         assert_eq!(openai_api["reasoning"]["effort"], "minimal");
+        assert_eq!(openai_api["reasoning"]["summary"], "auto");
 
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
         let gpt_5_1 = openai_codex_responses_request_body(
@@ -2557,6 +2609,42 @@ mod tests {
             }
             ProviderTurnOutcome::Complete { .. } => panic!("expected tool call turn"),
         }
+    }
+
+    #[test]
+    fn openai_responses_reasoning_summary_events_emit_thinking_deltas() {
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "I should inspect the failing test"
+            }),
+            &mut emit,
+        )
+        .expect("delta event handled"));
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({ "type": "response.reasoning_summary_part.done" }),
+            &mut emit,
+        )
+        .expect("part done event handled"));
+        assert!(!emit_openai_responses_reasoning_summary_event(
+            &json!({ "type": "response.output_text.delta", "delta": "Done." }),
+            &mut emit,
+        )
+        .expect("text event ignored"));
+
+        assert_eq!(
+            events,
+            vec![
+                ProviderStreamEvent::ReasoningSummary("I should inspect the failing test".into()),
+                ProviderStreamEvent::ReasoningSummary("\n\n".into()),
+            ]
+        );
     }
 
     #[test]

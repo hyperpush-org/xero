@@ -269,16 +269,24 @@ fn owned_agent_event_runtime_item(
     match event_kind {
         AgentRunEventKind::MessageDelta => {
             item.kind = RuntimeStreamItemKind::Transcript;
-            item.text = payload_string(&payload, "text");
+            item.text = payload_verbatim_string(&payload, "text");
             item.transcript_role = payload_transcript_role(&payload);
         }
         AgentRunEventKind::ReasoningSummary => {
             item.kind = RuntimeStreamItemKind::Activity;
-            item.code = Some("owned_agent_reasoning".into());
-            item.title = Some("Reasoning".into());
-            item.detail = payload_string(&payload, "summary")
-                .or_else(|| Some("Owned agent reasoning summary updated.".into()));
-            item.text = item.detail.clone();
+            if payload.get("usage").is_some() {
+                item.code = Some("owned_agent_usage".into());
+                item.title = Some("Provider usage".into());
+                item.detail = payload_string(&payload, "summary")
+                    .or_else(|| Some("Provider usage updated.".into()));
+                item.text = item.detail.clone();
+            } else {
+                item.code = Some("owned_agent_reasoning".into());
+                item.title = Some("Reasoning".into());
+                item.text = payload_verbatim_string(&payload, "summary");
+                item.detail = payload_string(&payload, "summary")
+                    .or_else(|| Some("Owned agent reasoning summary updated.".into()));
+            }
         }
         AgentRunEventKind::ToolStarted => {
             item.kind = RuntimeStreamItemKind::Tool;
@@ -846,6 +854,14 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn payload_verbatim_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn payload_bool(payload: &serde_json::Value, key: &str) -> Option<bool> {
     payload.get(key).and_then(|value| value.as_bool())
 }
@@ -963,6 +979,62 @@ mod tests {
             fallback_action.detail.as_deref(),
             Some("Owned agent requires operator input before continuing.")
         );
+    }
+
+    #[test]
+    fn owned_agent_event_projection_keeps_reasoning_text_visible() {
+        let reasoning = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"I should inspect the latest build output"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("reasoning item");
+
+        assert_eq!(reasoning.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(reasoning.code.as_deref(), Some("owned_agent_reasoning"));
+        assert_eq!(reasoning.title.as_deref(), Some("Reasoning"));
+        assert_eq!(
+            reasoning.text.as_deref(),
+            Some("I should inspect the latest build output")
+        );
+        assert_eq!(
+            reasoning.detail.as_deref(),
+            Some("I should inspect the latest build output")
+        );
+
+        let whitespace_delta = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ReasoningSummary, r#"{"summary":"\n\n"}"#),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("reasoning whitespace item");
+
+        assert_eq!(
+            whitespace_delta.code.as_deref(),
+            Some("owned_agent_reasoning")
+        );
+        assert_eq!(whitespace_delta.text.as_deref(), Some("\n\n"));
+        assert_eq!(
+            whitespace_delta.detail.as_deref(),
+            Some("Owned agent reasoning summary updated.")
+        );
+
+        let usage = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"Provider usage updated.","usage":{"totalTokens":12}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("usage activity item");
+
+        assert_eq!(usage.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(usage.code.as_deref(), Some("owned_agent_usage"));
+        assert_eq!(usage.title.as_deref(), Some("Provider usage"));
     }
 
     #[test]
@@ -1210,5 +1282,35 @@ mod tests {
             assistant.transcript_role,
             Some(RuntimeStreamTranscriptRole::Assistant)
         );
+    }
+
+    #[test]
+    fn owned_agent_event_projection_preserves_transcript_delta_whitespace() {
+        let assistant = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"assistant","text":" instructions and natural wrapping "}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("assistant transcript item");
+
+        assert_eq!(
+            assistant.text.as_deref(),
+            Some(" instructions and natural wrapping ")
+        );
+
+        let space_only = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"assistant","text":" "}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("assistant transcript item");
+
+        assert_eq!(space_only.text.as_deref(), Some(" "));
     }
 }

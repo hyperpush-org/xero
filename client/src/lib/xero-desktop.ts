@@ -187,6 +187,7 @@ import {
   providerAuthSessionSchema,
   runtimeUpdatedPayloadSchema,
   archiveAgentSessionRequestSchema,
+  autoNameAgentSessionRequestSchema,
   createAgentSessionRequestSchema,
   deleteAgentSessionRequestSchema,
   getAgentSessionRequestSchema,
@@ -202,6 +203,7 @@ import {
   updateAgentSessionRequestSchema,
   type AgentSessionDto,
   type ArchiveAgentSessionRequestDto,
+  type AutoNameAgentSessionRequestDto,
   type CreateAgentSessionRequestDto,
   type DeleteAgentSessionRequestDto,
   type GetAgentSessionRequestDto,
@@ -373,6 +375,7 @@ const COMMANDS = {
   listAgentSessions: 'list_agent_sessions',
   getAgentSession: 'get_agent_session',
   updateAgentSession: 'update_agent_session',
+  autoNameAgentSession: 'auto_name_agent_session',
   archiveAgentSession: 'archive_agent_session',
   restoreAgentSession: 'restore_agent_session',
   deleteAgentSession: 'delete_agent_session',
@@ -679,6 +682,7 @@ export interface XeroDesktopAdapter {
   listAgentSessions(request: ListAgentSessionsRequestDto): Promise<ListAgentSessionsResponseDto>
   getAgentSession(request: GetAgentSessionRequestDto): Promise<AgentSessionDto | null>
   updateAgentSession(request: UpdateAgentSessionRequestDto): Promise<AgentSessionDto>
+  autoNameAgentSession(request: AutoNameAgentSessionRequestDto): Promise<AgentSessionDto>
   archiveAgentSession(request: ArchiveAgentSessionRequestDto): Promise<AgentSessionDto>
   restoreAgentSession(request: RestoreAgentSessionRequestDto): Promise<AgentSessionDto>
   deleteAgentSession(request: DeleteAgentSessionRequestDto): Promise<void>
@@ -1566,6 +1570,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   updateAgentSession(request) {
     const parsed = updateAgentSessionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.updateAgentSession, agentSessionSchema, {
+      request: parsed,
+    })
+  },
+
+  autoNameAgentSession(request) {
+    const parsed = autoNameAgentSessionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autoNameAgentSession, agentSessionSchema, {
       request: parsed,
     })
   },

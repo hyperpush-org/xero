@@ -394,6 +394,7 @@ export interface UseXeroDesktopStateResult {
   projects: ProjectListItem[]
   activeProject: ProjectDetailView | null
   activeProjectId: string | null
+  pendingProjectSelectionId: string | null
   repositoryStatus: RepositoryStatusView | null
   workflowView: WorkflowPaneView | null
   agentView: AgentPaneView | null
@@ -446,6 +447,7 @@ export interface UseXeroDesktopStateResult {
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
   selectProject: (projectId: string) => Promise<void>
+  prefetchProject: (projectId: string) => void
   importProject: (path?: string) => Promise<boolean>
   createProject: (parentPath: string, name: string) => Promise<boolean>
   removeProject: (projectId: string) => Promise<void>

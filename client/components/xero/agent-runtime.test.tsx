@@ -473,15 +473,35 @@ function makeToolItem(
     toolState: RuntimeStreamToolItemView['toolState']
   },
 ): RuntimeStreamToolItemView {
+  const { sequence, ...rest } = options
+
   return {
-    id: `tool:run-1:${options.sequence}`,
+    id: `tool:run-1:${sequence}`,
     kind: 'tool',
+    runId: 'run-1',
+    sequence,
+    createdAt: `2026-04-29T00:48:${String(sequence).padStart(2, '0')}Z`,
+    detail: null,
+    toolSummary: null,
+    ...rest,
+  }
+}
+
+function makeReasoningItem(options: {
+  sequence: number
+  text: string
+}) {
+  const detail = options.text.trim() || 'Owned agent reasoning summary updated.'
+  return {
+    id: `activity:run-1:${options.sequence}`,
+    kind: 'activity' as const,
     runId: 'run-1',
     sequence: options.sequence,
     createdAt: `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
-    detail: null,
-    toolSummary: null,
-    ...options,
+    code: 'owned_agent_reasoning',
+    title: 'Reasoning',
+    text: options.text,
+    detail,
   }
 }
 
@@ -814,6 +834,23 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText('Validation started')).not.toBeInTheDocument()
   })
 
+  it('shows an agent thinking row immediately while a submitted prompt is starting', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          runtimeRunActionStatus: 'running',
+          pendingRuntimeRunAction: 'start',
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('status', { name: 'Agent is thinking' })).toBeVisible()
+    expect(screen.getByText('Thinking')).toBeVisible()
+    expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
+  })
+
   it('pauses auto-follow when the user scrolls away and resumes from the latest button', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     const initialItems: NonNullable<AgentPaneView['runtimeStreamItems']> = [
@@ -931,6 +968,27 @@ describe('AgentRuntime current UI', () => {
     expect(codeBlock.tagName).toBe('CODE')
     expect(boldText.closest('li')).toHaveTextContent('Keep bold text')
     expect(inlineCode.closest('li')).toHaveTextContent('Run pnpm test')
+  })
+
+  it('renders streamed reasoning activity as an inline thoughts block', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Why is the build failing?' }),
+      makeReasoningItem({ sequence: 3, text: 'I should inspect the latest build output' }),
+      makeReasoningItem({ sequence: 4, text: ' before suggesting a fix.' }),
+      makeToolItem({
+        sequence: 5,
+        toolCallId: 'call-read-build-log',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read build log.',
+      }),
+      makeTranscriptItem({ sequence: 6, text: 'The build is failing because the generated type is stale.' }),
+    ])
+
+    expect(screen.getByText('Thoughts')).toBeVisible()
+    expect(screen.getByText('I should inspect the latest build output before suggesting a fix.')).toBeVisible()
+    expect(screen.getByText('read')).toBeVisible()
+    expect(screen.getByText('The build is failing because the generated type is stale.')).toBeVisible()
   })
 
   it('keeps consecutive full user transcript items as separate prompts', () => {

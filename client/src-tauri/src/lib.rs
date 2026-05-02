@@ -176,6 +176,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::agent_session::list_agent_sessions,
             commands::agent_session::get_agent_session,
             commands::agent_session::update_agent_session,
+            commands::agent_session_title::auto_name_agent_session,
             commands::agent_session::archive_agent_session,
             commands::agent_session::restore_agent_session,
             commands::agent_session::delete_agent_session,

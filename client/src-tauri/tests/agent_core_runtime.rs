@@ -13,11 +13,12 @@ use tauri::Manager;
 use tempfile::TempDir;
 use xero_desktop_lib::{
     commands::{
-        cancel_agent_run, compact_session_history, start_agent_task, start_runtime_run,
-        update_runtime_run_controls, BrowserControlPreferenceDto, CancelAgentRunRequestDto,
-        CompactSessionHistoryRequestDto, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
-        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
-        StartAgentTaskRequestDto, StartRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
+        archive_agent_session, cancel_agent_run, compact_session_history, start_agent_task,
+        start_runtime_run, update_runtime_run_controls, ArchiveAgentSessionRequestDto,
+        BrowserControlPreferenceDto, CancelAgentRunRequestDto, CompactSessionHistoryRequestDto,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlInputDto, RuntimeRunControlStateDto, StartAgentTaskRequestDto,
+        StartRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
     },
     configure_builder_with_state, db,
     git::repository::CanonicalRepository,
@@ -241,6 +242,40 @@ fn wait_for_agent_run_inactive(state: &DesktopState, run_id: &str) {
             Instant::now() < deadline,
             "owned agent run {run_id} remained active after reaching a terminal status"
         );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_runtime_run_status(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    status: db::project_store::RuntimeRunStatus,
+) -> db::project_store::RuntimeRunSnapshotRecord {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match db::project_store::load_runtime_run(repo_root, project_id, agent_session_id) {
+            Ok(Some(snapshot)) if snapshot.run.status == status => return snapshot,
+            Ok(Some(snapshot)) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} did not reach {status:?}; last status was {:?}",
+                    snapshot.run.status
+                );
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} was missing while waiting for {status:?}"
+                );
+            }
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} could not be loaded while waiting for {status:?}: {error:?}"
+                );
+            }
+        }
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -2298,6 +2333,54 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
         tool_call.tool_name == "read"
             && tool_call.state == db::project_store::AgentToolCallState::Succeeded
     }));
+}
+
+#[test]
+fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let agent_session_id = db::project_store::DEFAULT_AGENT_SESSION_ID.to_string();
+
+    let runtime_run = start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            initial_controls: None,
+            initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+        },
+    )
+    .expect("start runtime run should execute owned agent task from initial prompt");
+
+    wait_for_agent_run_status(
+        &repo_root,
+        &project_id,
+        &runtime_run.run_id,
+        db::project_store::AgentRunStatus::Completed,
+    );
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
+
+    let archived = archive_agent_session(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ArchiveAgentSessionRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+        },
+    )
+    .expect("archive should stop the idle owned runtime run first");
+
+    assert!(archived.archived_at.is_some());
+    let stopped = wait_for_runtime_run_status(
+        &repo_root,
+        &project_id,
+        &agent_session_id,
+        db::project_store::RuntimeRunStatus::Stopped,
+    );
+    assert_eq!(stopped.run.run_id, runtime_run.run_id);
+    assert!(stopped.run.stopped_at.is_some());
 }
 
 #[test]

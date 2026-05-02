@@ -1,10 +1,27 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import type {
   XeroDesktopMutationActions,
   UseXeroDesktopMutationsArgs,
 } from './mutation-support'
 import { getActiveProjectId } from './mutation-support'
+import { mapAgentSession } from '@/src/lib/xero-model'
+
+function waitForAgentSessionSelectionPaint(): Promise<void> {
+  if (typeof window === 'undefined') {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    const finishAfterFrame = () => window.setTimeout(resolve, 0)
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(finishAfterFrame)
+      return
+    }
+
+    finishAfterFrame()
+  })
+}
 
 export function useAgentSessionMutations({
   adapter,
@@ -20,7 +37,14 @@ export function useAgentSessionMutations({
   | 'renameAgentSession'
 > {
   const { activeProjectIdRef, activeProjectRef } = refs
-  const { loadProject } = operations
+  const {
+    loadProject,
+    optimisticallySelectAgentSession,
+    applyAgentSessionSelection,
+    rollbackAgentSessionSelection,
+    hydrateAgentSessionRuntimeState,
+  } = operations
+  const selectionRequestRef = useRef(0)
 
   const createAgentSession = useCallback(
     async (options: { title?: string | null; summary?: string | null } = {}) => {
@@ -47,16 +71,45 @@ export function useAgentSessionMutations({
         activeProjectIdRef,
         'Select an imported project before switching agent sessions.',
       )
+      const requestId = selectionRequestRef.current + 1
+      selectionRequestRef.current = requestId
+      const optimisticSelection = optimisticallySelectAgentSession(agentSessionId)
 
-      await adapter.updateAgentSession({
-        projectId,
-        agentSessionId,
-        selected: true,
-      })
-      await loadProject(projectId, 'selection')
-      return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+      try {
+        const response = await adapter.updateAgentSession({
+          projectId,
+          agentSessionId,
+          selected: true,
+        })
+
+        if (selectionRequestRef.current !== requestId || activeProjectIdRef.current !== projectId) {
+          return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+        }
+
+        applyAgentSessionSelection(mapAgentSession(response))
+        await waitForAgentSessionSelectionPaint()
+
+        if (selectionRequestRef.current === requestId && activeProjectIdRef.current === projectId) {
+          void hydrateAgentSessionRuntimeState(projectId, agentSessionId, { force: true })
+        }
+
+        return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+      } catch (error) {
+        if (selectionRequestRef.current === requestId && activeProjectIdRef.current === projectId) {
+          rollbackAgentSessionSelection(optimisticSelection?.previousProject ?? null)
+        }
+        throw error
+      }
     },
-    [activeProjectIdRef, activeProjectRef, adapter, loadProject],
+    [
+      activeProjectIdRef,
+      activeProjectRef,
+      adapter,
+      applyAgentSessionSelection,
+      hydrateAgentSessionRuntimeState,
+      optimisticallySelectAgentSession,
+      rollbackAgentSessionSelection,
+    ],
   )
 
   const archiveAgentSession = useCallback(

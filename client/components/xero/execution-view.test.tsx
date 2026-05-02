@@ -437,6 +437,49 @@ function renderExecutionView(
 }
 
 describe('ExecutionView', () => {
+  it('defers project tree loading while the editor pane is hidden', async () => {
+    const { rerender, workspace } = renderExecutionView({ active: false })
+
+    expect(workspace.listProjectFiles).not.toHaveBeenCalled()
+    expect(screen.getByText('No files open')).toBeVisible()
+
+    rerender(
+      <ExecutionView
+        active={false}
+        execution={makeExecution('project-2', 'Project Two')}
+        listProjectFiles={workspace.listProjectFiles}
+        readProjectFile={workspace.readProjectFile}
+        writeProjectFile={workspace.writeProjectFile}
+        createProjectEntry={workspace.createProjectEntry}
+        renameProjectEntry={workspace.renameProjectEntry}
+        moveProjectEntry={workspace.moveProjectEntry}
+        deleteProjectEntry={workspace.deleteProjectEntry}
+        searchProject={workspace.searchProject}
+        replaceInProject={workspace.replaceInProject}
+      />,
+    )
+
+    expect(workspace.listProjectFiles).not.toHaveBeenCalled()
+
+    rerender(
+      <ExecutionView
+        active
+        execution={makeExecution('project-2', 'Project Two')}
+        listProjectFiles={workspace.listProjectFiles}
+        readProjectFile={workspace.readProjectFile}
+        writeProjectFile={workspace.writeProjectFile}
+        createProjectEntry={workspace.createProjectEntry}
+        renameProjectEntry={workspace.renameProjectEntry}
+        moveProjectEntry={workspace.moveProjectEntry}
+        deleteProjectEntry={workspace.deleteProjectEntry}
+        searchProject={workspace.searchProject}
+        replaceInProject={workspace.replaceInProject}
+      />,
+    )
+
+    await waitFor(() => expect(workspace.listProjectFiles).toHaveBeenCalledWith('project-2'))
+  })
+
   it('opens files, tracks dirty state, reverts edits, and saves through the workspace controller', async () => {
     const { workspace } = renderExecutionView()
 

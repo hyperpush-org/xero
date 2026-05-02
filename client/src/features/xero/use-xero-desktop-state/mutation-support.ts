@@ -16,6 +16,7 @@ import {
   type ProviderCredentialsSnapshotDto,
 } from '@/src/lib/xero-model/provider-credentials'
 import {
+  type AgentSessionView,
   type RuntimeRunView,
   type RuntimeSessionView,
 } from '@/src/lib/xero-model/runtime'
@@ -171,6 +172,16 @@ export interface UseXeroDesktopMutationsOperations {
   syncRuntimeSession: (projectId: string) => Promise<RuntimeSessionView>
   syncRuntimeRun: (projectId: string) => Promise<RuntimeRunView | null>
   syncAutonomousRun: (projectId: string) => Promise<ProjectDetailView['autonomousRun'] | null>
+  optimisticallySelectAgentSession: (
+    agentSessionId: string,
+  ) => { projectId: string; previousProject: ProjectDetailView | null } | null
+  applyAgentSessionSelection: (agentSession: AgentSessionView) => ProjectDetailView | null
+  rollbackAgentSessionSelection: (previousProject: ProjectDetailView | null) => void
+  hydrateAgentSessionRuntimeState: (
+    projectId: string,
+    agentSessionId: string,
+    options?: { force?: boolean },
+  ) => Promise<ProjectDetailView | null>
   applyRuntimeSessionUpdate: (
     runtimeSession: RuntimeSessionView,
     options?: { clearGlobalError?: boolean },
