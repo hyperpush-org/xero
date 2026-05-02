@@ -2,9 +2,7 @@ import {
   Apple,
   AppWindow,
   AlertTriangle,
-  Cpu,
   Database,
-  Eye,
   FlaskConical,
   Laptop,
   Loader2,
@@ -99,59 +97,37 @@ export function DevelopmentSection({
       <StorageInspector />
 
       <section className="flex flex-col gap-3">
-        <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+        <h4 className="text-[12.5px] font-semibold text-foreground">
           Toolbar platform
         </h4>
 
-        <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/30 p-3.5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span
-                className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground"
-                aria-hidden
+        <div className="flex gap-1 rounded-md border border-border/60 bg-secondary/30 p-1">
+          {PLATFORM_OPTIONS.map((option) => {
+            const active = current === option.value
+            const Icon = option.icon
+            return (
+              <button
+                key={option.label}
+                type="button"
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[12.5px] font-medium transition-all motion-fast",
+                  active
+                    ? "bg-background text-foreground shadow-sm ring-1 ring-border/40"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => onPlatformOverrideChange?.(option.value)}
+                aria-pressed={active}
               >
-                <Cpu className="h-3 w-3" />
-              </span>
-              <label className="text-[12px] font-medium text-foreground">Render toolbar as</label>
-            </div>
-            <span className="text-[11px] text-muted-foreground">
-              Detected{" "}
-              <span className="font-mono text-foreground/80">{detected}</span>
-            </span>
-          </div>
-
-          <div className="flex gap-1 rounded-md border border-border/70 bg-secondary/30 p-1">
-            {PLATFORM_OPTIONS.map((option) => {
-              const active = current === option.value
-              const Icon = option.icon
-              return (
-                <button
-                  key={option.label}
-                  type="button"
-                  className={cn(
-                    "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[12.5px] font-medium transition-all motion-fast",
-                    active
-                      ? "bg-background text-foreground shadow-sm ring-1 ring-border/40"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                  onClick={() => onPlatformOverrideChange?.(option.value)}
-                  aria-pressed={active}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {option.label}
-                </button>
-              )
-            })}
-          </div>
-
-          <p className="text-[11.5px] leading-[1.5] text-muted-foreground">
-            <span className="text-muted-foreground/70">Behavior:</span> {currentOption.hint}
-          </p>
+                <Icon className="h-3.5 w-3.5" />
+                {option.label}
+              </button>
+            )
+          })}
         </div>
       </section>
 
       <section className="flex flex-col gap-3">
-        <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+        <h4 className="text-[12.5px] font-semibold text-foreground">
           Tools
         </h4>
         <ul className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30">
@@ -302,7 +278,7 @@ function StorageInspector() {
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+        <h4 className="text-[12.5px] font-semibold text-foreground">
           Storage inspector
         </h4>
         <Button
@@ -708,50 +684,33 @@ function PreviewCard({
 }) {
   const tone = overriding ? "warn" : "muted"
 
-  return (
-    <div className="rounded-xl border border-border/70 bg-card/40 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]">
-      <div className="flex items-start gap-4 p-5">
-        <div
-          className={cn(
-            "flex size-12 shrink-0 items-center justify-center rounded-full ring-1 ring-inset",
-            tone === "warn"
-              ? "bg-warning/10 ring-warning/25"
-              : "bg-muted/40 ring-border/60",
-          )}
-          aria-hidden
-        >
-          <FlaskConical
-            className={cn(
-              "h-5 w-5",
-              tone === "warn"
-                ? "text-warning dark:text-warning"
-                : "text-muted-foreground",
-            )}
-          />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="truncate text-[14px] font-semibold leading-tight text-foreground">
-              Developer preview
-            </p>
-            {overriding ? (
-              <PreviewPill tone="warn" label="Overriding" />
-            ) : (
-              <PreviewPill tone="muted" label="Auto" />
-            )}
-          </div>
-          <p className="text-[12.5px] leading-[1.55] text-muted-foreground">
-            {overriding
-              ? `Toolbar is rendering as ${formatPlatform(effective)} instead of the detected ${formatPlatform(detected)}. Switch back to Auto to use the real platform.`
-              : "Xero is using the toolbar layout for the detected operating system. Override below to preview other platforms."}
-          </p>
-        </div>
-      </div>
+  void currentOption
 
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/60 px-5 py-3 text-[12px] text-muted-foreground">
-        <MetaItem icon={Eye} label="Active" value={formatPlatform(effective)} />
-        <MetaItem icon={Cpu} label="Detected" value={formatPlatform(detected)} mono />
-        <MetaItem icon={currentOption.icon} label="Mode" value={currentOption.label} />
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+      <FlaskConical
+        className={cn(
+          "mt-0.5 h-4 w-4 shrink-0",
+          tone === "warn" ? "text-warning dark:text-warning" : "text-muted-foreground",
+        )}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <p className="truncate text-[12.5px] font-semibold text-foreground">
+            Developer preview
+          </p>
+          {overriding ? (
+            <PreviewPill tone="warn" label="Overriding" />
+          ) : (
+            <PreviewPill tone="muted" label="Auto" />
+          )}
+        </div>
+        <p className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-foreground">
+          {overriding
+            ? `Rendering as ${formatPlatform(effective)} instead of detected ${formatPlatform(detected)}. Switch back to Auto to use the real platform.`
+            : "Using the toolbar layout for the detected operating system."}
+        </p>
       </div>
     </div>
   )
@@ -815,26 +774,6 @@ function PreviewPill({ tone, label }: { tone: "warn" | "muted"; label: string })
         aria-hidden
       />
       {label}
-    </span>
-  )
-}
-
-function MetaItem({
-  icon: Icon,
-  label,
-  value,
-  mono = false,
-}: {
-  icon: React.ElementType
-  label: string
-  value: string
-  mono?: boolean
-}) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <Icon className="h-3 w-3 text-muted-foreground/70" aria-hidden />
-      <span className="text-muted-foreground/70">{label}</span>
-      <span className={cn("text-foreground/80", mono && "font-mono text-[11.5px]")}>{value}</span>
     </span>
   )
 }

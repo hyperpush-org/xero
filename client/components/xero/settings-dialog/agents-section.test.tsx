@@ -76,7 +76,6 @@ describe('AgentsSection', () => {
 
     expect(await screen.findByText('Ask')).toBeInTheDocument()
     expect(await screen.findByText('Project Research')).toBeInTheDocument()
-    expect(screen.getByText(/Immutable built-in/i)).toBeInTheDocument()
     // built-ins do not get an Archive button
     const archiveButtons = screen.queryAllByRole('button', { name: /^Archive$/i })
     expect(archiveButtons).toHaveLength(1)

@@ -75,6 +75,12 @@ pub enum EnvironmentToolCategory {
     DatabaseCli,
     SolanaTooling,
     AgentAiCli,
+    Editor,
+    BuildTool,
+    Linter,
+    VersionManager,
+    IacTool,
+    ShellUtility,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]

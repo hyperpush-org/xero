@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Archive, Bot, Bug, History, Loader2, MessageCircle, RefreshCw, Sparkles, Wrench } from "lucide-react"
+import {
+  AlertCircle,
+  Archive,
+  Bot,
+  Bug,
+  History,
+  Loader2,
+  MessageCircle,
+  RefreshCw,
+  Sparkles,
+  Wrench,
+  X,
+} from "lucide-react"
 
 import {
-  getAgentDefinitionBaseCapabilityLabel,
   getAgentDefinitionLifecycleLabel,
-  getAgentDefinitionScopeLabel,
   type AgentDefinitionBaseCapabilityProfileDto,
+  type AgentDefinitionLifecycleStateDto,
   type AgentDefinitionSummaryDto,
   type AgentDefinitionVersionSummaryDto,
 } from "@/src/lib/xero-model/agent-definition"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 
 import { SectionHeader } from "./section-header"
@@ -48,6 +56,29 @@ const INITIAL_STATE: DefinitionsState = {
   definitions: [],
 }
 
+type Tone = "good" | "info" | "warn" | "bad" | "neutral"
+
+const TONE_CLASS: Record<Tone, string> = {
+  good: "border-success/30 bg-success/[0.08] text-success",
+  info: "border-info/30 bg-info/[0.08] text-info",
+  warn: "border-warning/30 bg-warning/[0.08] text-warning",
+  bad: "border-destructive/40 bg-destructive/[0.08] text-destructive",
+  neutral: "border-border bg-secondary/60 text-foreground/70",
+}
+
+function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-[18px] items-center rounded-full border px-1.5 text-[10.5px] font-medium",
+        TONE_CLASS[tone],
+      )}
+    >
+      {children}
+    </span>
+  )
+}
+
 function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {
   switch (profile) {
     case "engineering":
@@ -60,6 +91,25 @@ function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {
     default:
       return MessageCircle
   }
+}
+
+function lifecycleTone(state: AgentDefinitionLifecycleStateDto): Tone {
+  switch (state) {
+    case "active":
+      return "good"
+    case "draft":
+      return "info"
+    case "archived":
+      return "warn"
+  }
+}
+
+function formatTimestamp(value: string): string {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) {
+    return value
+  }
+  return new Date(parsed).toLocaleString()
 }
 
 export function AgentsSection({
@@ -203,20 +253,27 @@ export function AgentsSection({
 
   if (!projectId) {
     return (
-      <div className="flex flex-1 flex-col gap-4 p-4">
+      <div className="flex flex-col gap-4">
         <SectionHeader
           title="Agents"
           description="Manage built-in and custom agents available to this workspace."
         />
-        <p className="text-[12px] text-muted-foreground">
-          Open a project to inspect or manage agent definitions.
-        </p>
+        <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
+          <Bot className="mx-auto h-4 w-4 text-muted-foreground" />
+          <p className="mt-2 text-[12.5px] font-medium text-foreground">No project open</p>
+          <p className="mt-0.5 text-[11.5px] text-muted-foreground">
+            Open a project to inspect or manage agent definitions.
+          </p>
+        </div>
       </div>
     )
   }
 
+  const totalCount = state.definitions.length
+  const isLoading = state.status === "loading"
+
   return (
-    <div className="flex flex-1 flex-col gap-4 p-4">
+    <div className="flex flex-col gap-7">
       <SectionHeader
         title="Agents"
         description={
@@ -229,10 +286,10 @@ export function AgentsSection({
             variant="outline"
             size="sm"
             onClick={refresh}
-            disabled={state.status === "loading"}
-            className="h-7 gap-1.5"
+            disabled={isLoading}
+            className="h-8 gap-1.5 text-[12px]"
           >
-            {state.status === "loading" ? (
+            {isLoading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <RefreshCw className="h-3.5 w-3.5" />
@@ -242,117 +299,72 @@ export function AgentsSection({
         }
       />
 
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] text-muted-foreground">
-          Use Agent Create to design new custom agents. Activation, save and update happen there;
-          this surface is for management.
+      <div className="flex items-start justify-between gap-4">
+        <p className="max-w-prose text-[12px] leading-[1.5] text-muted-foreground">
+          Use Agent Create to design new custom agents. Activation, save and update happen
+          there; this surface is for management.
         </p>
-        <label className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
           <input
             type="checkbox"
             checked={includeArchived}
             onChange={(event) => setIncludeArchived(event.target.checked)}
-            className="size-3.5 accent-primary"
+            className="size-3.5 cursor-pointer accent-primary"
           />
           Include archived
         </label>
       </div>
 
-      {state.status === "error" ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[12px] text-destructive">
-          {state.errorMessage}
+      {state.status === "error" ? <ErrorBanner message={state.errorMessage ?? ""} /> : null}
+      {archiveError ? <ErrorBanner message={archiveError} /> : null}
+
+      {isLoading && totalCount === 0 ? (
+        <div className="flex items-center justify-center gap-2 rounded-md border border-border/60 px-4 py-10 text-[12px] text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading agents
         </div>
-      ) : null}
+      ) : (
+        <>
+          <AgentDefinitionGroup
+            title="Built-in"
+            count={groups.builtIns.length}
+            emptyMessage="Built-in agents have not been seeded for this project."
+            definitions={groups.builtIns}
+            pendingArchiveId={pendingArchiveId}
+            onArchive={handleArchive}
+            onViewHistory={handleViewVersion}
+            canMutate={false}
+            showHistory={Boolean(onGetAgentDefinitionVersion)}
+          />
 
-      {archiveError ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-[12px] text-destructive">
-          {archiveError}
-        </div>
-      ) : null}
+          <AgentDefinitionGroup
+            title="Project agents"
+            count={groups.projectAgents.length}
+            emptyMessage="No project-scoped custom agents yet. Pick Agent Create in the composer to design one."
+            definitions={groups.projectAgents}
+            pendingArchiveId={pendingArchiveId}
+            onArchive={handleArchive}
+            onViewHistory={handleViewVersion}
+            canMutate={Boolean(onArchiveAgentDefinition)}
+            showHistory={Boolean(onGetAgentDefinitionVersion)}
+          />
 
-      <AgentDefinitionGroup
-        title="Built-in agents"
-        emptyMessage="Built-in agents have not been seeded for this project."
-        definitions={groups.builtIns}
-        pendingArchiveId={pendingArchiveId}
-        onArchive={handleArchive}
-        onViewHistory={handleViewVersion}
-        canMutate={false}
-        showHistory={Boolean(onGetAgentDefinitionVersion)}
-      />
-
-      <AgentDefinitionGroup
-        title="Project agents"
-        emptyMessage="No project-scoped custom agents yet. Pick Agent Create in the composer to design one."
-        definitions={groups.projectAgents}
-        pendingArchiveId={pendingArchiveId}
-        onArchive={handleArchive}
-        onViewHistory={handleViewVersion}
-        canMutate={Boolean(onArchiveAgentDefinition)}
-        showHistory={Boolean(onGetAgentDefinitionVersion)}
-      />
-
-      <AgentDefinitionGroup
-        title="Global agents"
-        emptyMessage="No global custom agents yet."
-        definitions={groups.globalAgents}
-        pendingArchiveId={pendingArchiveId}
-        onArchive={handleArchive}
-        onViewHistory={handleViewVersion}
-        canMutate={Boolean(onArchiveAgentDefinition)}
-        showHistory={Boolean(onGetAgentDefinitionVersion)}
-      />
+          <AgentDefinitionGroup
+            title="Global agents"
+            count={groups.globalAgents.length}
+            emptyMessage="No global custom agents yet."
+            definitions={groups.globalAgents}
+            pendingArchiveId={pendingArchiveId}
+            onArchive={handleArchive}
+            onViewHistory={handleViewVersion}
+            canMutate={Boolean(onArchiveAgentDefinition)}
+            showHistory={Boolean(onGetAgentDefinitionVersion)}
+          />
+        </>
+      )}
 
       {versionPanel ? (
-        <Card className="border-border/60">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-[13px] font-semibold">
-              <History className="h-4 w-4 text-muted-foreground" />
-              Version history · {versionPanel.definitionId}
-            </CardTitle>
-            <CardDescription className="text-[12px]">
-              {versionPanel.status === "loading"
-                ? "Loading recent versions..."
-                : versionPanel.status === "error"
-                  ? versionPanel.errorMessage
-                  : versionPanel.versions.length > 0
-                    ? `Showing the most recent ${versionPanel.versions.length} version snapshot(s).`
-                    : "No version snapshots are available."}
-            </CardDescription>
-          </CardHeader>
-          {versionPanel.status === "ready" && versionPanel.versions.length > 0 ? (
-            <CardContent className="flex flex-col gap-2">
-              {versionPanel.versions.map((version) => (
-                <div
-                  key={`${version.definitionId}-${version.version}`}
-                  className="rounded-md border border-border/60 bg-card/50 p-3"
-                >
-                  <div className="flex items-center justify-between text-[12px] text-foreground">
-                    <span className="font-semibold">Version {version.version}</span>
-                    <span className="text-muted-foreground">
-                      {new Date(version.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span>
-                      Validation: {version.validationStatus ?? "unknown"}
-                      {version.validationDiagnosticCount > 0
-                        ? ` · ${version.validationDiagnosticCount} diagnostic${
-                            version.validationDiagnosticCount === 1 ? "" : "s"
-                          }`
-                        : ""}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          ) : null}
-          <CardFooter className="pt-3">
-            <Button variant="ghost" size="sm" onClick={() => setVersionPanel(null)}>
-              Close
-            </Button>
-          </CardFooter>
-        </Card>
+        <VersionHistoryPanel panel={versionPanel} onClose={() => setVersionPanel(null)} />
       ) : null}
     </div>
   )
@@ -360,6 +372,7 @@ export function AgentsSection({
 
 interface AgentDefinitionGroupProps {
   title: string
+  count: number
   emptyMessage: string
   definitions: AgentDefinitionSummaryDto[]
   pendingArchiveId: string | null
@@ -371,6 +384,7 @@ interface AgentDefinitionGroupProps {
 
 function AgentDefinitionGroup({
   title,
+  count,
   emptyMessage,
   definitions,
   pendingArchiveId,
@@ -380,109 +394,212 @@ function AgentDefinitionGroup({
   showHistory,
 }: AgentDefinitionGroupProps) {
   return (
-    <section className="flex flex-col gap-2">
-      <h4 className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </h4>
+    <section className="flex flex-col gap-2.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <h4 className="text-[12.5px] font-semibold text-foreground">
+          {title}
+          <span className="ml-1.5 font-normal text-muted-foreground">{count}</span>
+        </h4>
+      </div>
       {definitions.length === 0 ? (
-        <p className="rounded-md border border-dashed border-border/60 bg-muted/30 px-3 py-2 text-[12px] text-muted-foreground">
+        <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-3.5 py-3 text-[11.5px] text-muted-foreground">
           {emptyMessage}
-        </p>
+        </div>
       ) : (
-        <div className="flex flex-col gap-2">
-          {definitions.map((definition) => {
-            const Icon = profileIcon(definition.baseCapabilityProfile)
-            const isArchiving = pendingArchiveId === definition.definitionId
-            const isArchived = definition.lifecycleState === "archived"
-            return (
-              <Card
-                key={definition.definitionId}
-                className={cn(
-                  "border-border/60 transition-opacity",
-                  isArchived ? "opacity-70" : null,
-                )}
-              >
-                <CardHeader className="flex flex-row items-start gap-3 pb-2">
-                  <Icon className="mt-0.5 h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                  <div className="min-w-0 flex-1">
-                    <CardTitle className="flex flex-wrap items-center gap-2 text-[13px] font-semibold">
-                      <span className="truncate">{definition.displayName}</span>
-                      <span className="font-mono text-[10.5px] font-normal text-muted-foreground">
-                        {definition.definitionId}
-                      </span>
-                    </CardTitle>
-                    <CardDescription className="mt-1 line-clamp-2 text-[12px]">
-                      {definition.description}
-                    </CardDescription>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <Badge variant="outline" className="text-[10px]">
-                      {getAgentDefinitionScopeLabel(definition.scope)}
-                    </Badge>
-                    <Badge
-                      variant={isArchived ? "destructive" : "secondary"}
-                      className="text-[10px]"
-                    >
-                      {getAgentDefinitionLifecycleLabel(definition.lifecycleState)}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <Separator className="bg-border/40" />
-                <CardContent className="grid grid-cols-2 gap-2 py-2 text-[11px] text-muted-foreground">
-                  <div>
-                    <span className="font-medium text-foreground">Capability:</span>{" "}
-                    {getAgentDefinitionBaseCapabilityLabel(definition.baseCapabilityProfile)}
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">Version:</span>{" "}
-                    {definition.currentVersion}
-                  </div>
-                  <div className="col-span-2">
-                    <span className="font-medium text-foreground">Updated:</span>{" "}
-                    {new Date(definition.updatedAt).toLocaleString()}
-                  </div>
-                </CardContent>
-                {(canMutate && !definition.isBuiltIn) || showHistory ? (
-                  <CardFooter className="flex justify-end gap-1.5 pt-2">
-                    {showHistory ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 gap-1 text-[11.5px]"
-                        onClick={() => void onViewHistory(definition)}
-                      >
-                        <History className="h-3 w-3" />
-                        Version history
-                      </Button>
-                    ) : null}
-                    {canMutate && !definition.isBuiltIn && !isArchived ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 gap-1 text-[11.5px]"
-                        onClick={() => void onArchive(definition)}
-                        disabled={isArchiving}
-                      >
-                        {isArchiving ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Archive className="h-3 w-3" />
-                        )}
-                        Archive
-                      </Button>
-                    ) : null}
-                    {definition.isBuiltIn ? (
-                      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                        <Bot className="h-3 w-3" /> Immutable built-in
-                      </span>
-                    ) : null}
-                  </CardFooter>
-                ) : null}
-              </Card>
-            )
-          })}
+        <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+          {definitions.map((definition) => (
+            <AgentDefinitionRow
+              key={definition.definitionId}
+              definition={definition}
+              isArchiving={pendingArchiveId === definition.definitionId}
+              onArchive={onArchive}
+              onViewHistory={onViewHistory}
+              canMutate={canMutate}
+              showHistory={showHistory}
+            />
+          ))}
         </div>
       )}
     </section>
+  )
+}
+
+interface AgentDefinitionRowProps {
+  definition: AgentDefinitionSummaryDto
+  isArchiving: boolean
+  onArchive: (definition: AgentDefinitionSummaryDto) => Promise<void>
+  onViewHistory: (definition: AgentDefinitionSummaryDto) => Promise<void>
+  canMutate: boolean
+  showHistory: boolean
+}
+
+function AgentDefinitionRow({
+  definition,
+  isArchiving,
+  onArchive,
+  onViewHistory,
+  canMutate,
+  showHistory,
+}: AgentDefinitionRowProps) {
+  const Icon = profileIcon(definition.baseCapabilityProfile)
+  const isArchived = definition.lifecycleState === "archived"
+  const showArchive = canMutate && !definition.isBuiltIn && !isArchived
+  const showLifecyclePill = definition.lifecycleState !== "active"
+
+  return (
+    <div
+      className={cn(
+        "group flex items-start gap-3 px-3.5 py-3 transition-opacity",
+        isArchived && "opacity-60",
+      )}
+    >
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-secondary/40 text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <p className="truncate text-[13px] font-medium text-foreground">
+            {definition.displayName}
+          </p>
+          {showLifecyclePill ? (
+            <Pill tone={lifecycleTone(definition.lifecycleState)}>
+              {getAgentDefinitionLifecycleLabel(definition.lifecycleState)}
+            </Pill>
+          ) : null}
+        </div>
+        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[1.5] text-muted-foreground">
+          {definition.description}
+        </p>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-0.5">
+        {showHistory ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 text-muted-foreground/70 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+            aria-label="Version history"
+            title="Version history"
+            onClick={() => void onViewHistory(definition)}
+          >
+            <History className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+        {showArchive ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 text-muted-foreground/70 opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+            aria-label="Archive"
+            title="Archive"
+            onClick={() => void onArchive(definition)}
+            disabled={isArchiving}
+          >
+            {isArchiving ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Archive className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+interface VersionHistoryPanelProps {
+  panel: {
+    definitionId: string
+    versions: AgentDefinitionVersionSummaryDto[]
+    status: "loading" | "ready" | "error"
+    errorMessage: string | null
+  }
+  onClose: () => void
+}
+
+function VersionHistoryPanel({ panel, onClose }: VersionHistoryPanelProps) {
+  return (
+    <section className="overflow-hidden rounded-md border border-border/60 bg-secondary/10">
+      <header className="flex items-center justify-between gap-3 border-b border-border/40 px-3.5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <p className="truncate text-[12.5px] font-semibold text-foreground">
+            Version history
+          </p>
+          <span className="truncate font-mono text-[11px] text-muted-foreground">
+            {panel.definitionId}
+          </span>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 text-muted-foreground hover:text-foreground"
+          onClick={onClose}
+          aria-label="Close version history"
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </header>
+
+      <div className="px-3.5 py-2.5">
+        {panel.status === "loading" ? (
+          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Loading recent versions
+          </div>
+        ) : panel.status === "error" ? (
+          <p className="text-[12px] text-destructive">
+            {panel.errorMessage ?? "Could not load version history."}
+          </p>
+        ) : panel.versions.length === 0 ? (
+          <p className="text-[12px] text-muted-foreground">
+            No version snapshots are available.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1.5">
+            {panel.versions.map((version) => {
+              const validationTone: Tone =
+                version.validationStatus === "valid"
+                  ? "good"
+                  : version.validationStatus === "invalid"
+                    ? "bad"
+                    : "neutral"
+              return (
+                <li
+                  key={`${version.definitionId}-${version.version}`}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/40 px-3 py-2"
+                >
+                  <div className="flex items-center gap-2 text-[12px]">
+                    <span className="font-medium text-foreground">
+                      Version {version.version}
+                    </span>
+                    <Pill tone={validationTone}>{version.validationStatus ?? "unknown"}</Pill>
+                    {version.validationDiagnosticCount > 0 ? (
+                      <span className="text-[11px] text-muted-foreground">
+                        {version.validationDiagnosticCount} diagnostic
+                        {version.validationDiagnosticCount === 1 ? "" : "s"}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="text-[11px] text-muted-foreground">
+                    {formatTimestamp(version.createdAt)}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] text-destructive">
+      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+      <span>{message}</span>
+    </div>
   )
 }

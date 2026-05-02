@@ -162,41 +162,37 @@ export function SoulSection({ adapter }: SoulSectionProps) {
       />
 
       {!canUseAdapter ? (
-        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border/70 bg-secondary/15 px-5 py-7 text-center">
-          <div className="flex size-9 items-center justify-center rounded-full border border-border/60 bg-background/60 text-muted-foreground">
-            <Heart className="h-4 w-4" />
-          </div>
+        <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border/60 bg-secondary/10 px-5 py-8 text-center">
+          <Heart className="h-4 w-4 text-muted-foreground" />
           <p className="text-[12.5px] font-medium text-foreground">Desktop runtime required</p>
-          <p className="max-w-sm text-[12px] leading-[1.55] text-muted-foreground">
+          <p className="max-w-sm text-[11.5px] leading-[1.5] text-muted-foreground">
             Soul settings are available when Xero is running as a desktop app.
           </p>
         </div>
       ) : (
         <>
           {error ? (
-            <Alert variant="destructive" className="rounded-lg px-3.5 py-3 text-[12px]">
+            <Alert variant="destructive" className="rounded-md px-3 py-2 text-[12px]">
               <AlertTriangle className="h-3.5 w-3.5" />
-              <AlertTitle className="text-[12.5px]">Soul settings need attention</AlertTitle>
+              <AlertTitle className="text-[12px]">Soul settings need attention</AlertTitle>
               <AlertDescription className="text-[12px]">{error}</AlertDescription>
             </Alert>
           ) : null}
 
-          <div className="rounded-lg border border-border/70 bg-secondary/15 p-4">
-            <div className="flex items-start gap-3">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-full border border-border/60 bg-background/70 text-foreground">
-                <Heart className="h-4 w-4" />
-              </div>
+          <div className="rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+            <div className="flex items-start gap-2.5">
+              <Heart className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-semibold text-foreground">{selectedSoul.name}</p>
-                <p className="mt-1 text-[12px] leading-[1.55] text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <p className="text-[12.5px] font-semibold text-foreground">{selectedSoul.name}</p>
+                  {saveState === "saving" ? (
+                    <LoaderCircle className="h-3 w-3 animate-spin text-muted-foreground" />
+                  ) : null}
+                </div>
+                <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
                   {selectedSoul.prompt}
                 </p>
               </div>
-              {saveState === "saving" ? (
-                <LoaderCircle className="mt-1 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-              ) : (
-                <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-success" />
-              )}
             </div>
           </div>
 

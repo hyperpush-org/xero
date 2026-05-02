@@ -35,6 +35,12 @@ export const environmentToolCategorySchema = z.enum([
   'database_cli',
   'solana_tooling',
   'agent_ai_cli',
+  'editor',
+  'build_tool',
+  'linter',
+  'version_manager',
+  'iac_tool',
+  'shell_utility',
 ])
 export const environmentToolProbeStatusSchema = z.enum([
   'ok',

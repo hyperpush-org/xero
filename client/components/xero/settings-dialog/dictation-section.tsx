@@ -1,20 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type React from "react"
 import { openUrl } from "@tauri-apps/plugin-opener"
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Cpu,
-  Globe2,
-  Languages,
-  LoaderCircle,
-  Mic,
-  PackageOpen,
-  RotateCcw,
-  ShieldCheck,
-  Sparkles,
-  Volume2,
-} from "lucide-react"
+import { AlertTriangle, LoaderCircle, Mic, RotateCcw } from "lucide-react"
 
 import type { XeroDesktopAdapter } from "@/src/lib/xero-desktop"
 import type {
@@ -230,7 +217,7 @@ export function DictationSection({ adapter }: DictationSectionProps) {
             </Alert>
           ) : null}
 
-          <ReadinessCard status={status!} settings={selectedSettings} saving={saveState === "saving"} />
+          <ReadinessCard status={status!} saving={saveState === "saving"} />
 
           <PreferencesPanel
             settings={selectedSettings}
@@ -251,61 +238,30 @@ export function DictationSection({ adapter }: DictationSectionProps) {
 
 function ReadinessCard({
   status,
-  settings,
   saving,
 }: {
   status: DictationStatusDto
-  settings: DictationSettingsDto
   saving: boolean
 }) {
   const summary = summarizeReadiness(status)
-  const activeEngineLabel =
-    status.modern.available && (settings.enginePreference === "automatic" || settings.enginePreference === "modern")
-      ? "Modern engine"
-      : status.legacy.available
-        ? "Legacy engine"
-        : status.modern.available
-          ? "Modern engine"
-          : "No engine available"
-  const localeLabel = settings.locale ?? status.defaultLocale ?? "System default"
-  const updatedLabel = useMemo(() => formatTimestamp(settings.updatedAt), [settings.updatedAt])
 
   return (
-    <div className="rounded-xl border border-border/70 bg-card/40 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]">
-      <div className="flex items-start gap-4 p-5">
-        <div
-          className={cn(
-            "flex size-12 shrink-0 items-center justify-center rounded-full ring-1 ring-inset",
-            TONE_BG[summary.tone],
-            TONE_RING[summary.tone],
-          )}
-          aria-hidden
-        >
-          <Mic className={cn("h-5 w-5", TONE_TEXT[summary.tone])} />
+    <div className="flex items-start gap-3 rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+      <Mic className={cn("mt-0.5 h-4 w-4 shrink-0", TONE_TEXT[summary.tone])} aria-hidden />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <p className="truncate text-[12.5px] font-semibold text-foreground">
+            Native macOS dictation
+          </p>
+          <StatusPill tone={summary.tone} label={summary.label} />
+          {saving ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <LoaderCircle className="h-3 w-3 animate-spin" />
+              Saving…
+            </span>
+          ) : null}
         </div>
-
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="truncate text-[14px] font-semibold leading-tight text-foreground">
-              Native macOS dictation
-            </p>
-            <StatusPill tone={summary.tone} label={summary.label} />
-            {saving ? (
-              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                <LoaderCircle className="h-3 w-3 animate-spin" />
-                Saving…
-              </span>
-            ) : null}
-          </div>
-          <p className="text-[12.5px] leading-[1.55] text-muted-foreground">{summary.body}</p>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/60 px-5 py-3 text-[12px] text-muted-foreground">
-        <MetaItem icon={Cpu} label="Active" value={activeEngineLabel} />
-        <MetaItem icon={Globe2} label="Locale" value={localeLabel} mono />
-        {status.osVersion ? <MetaItem icon={Sparkles} label="macOS" value={status.osVersion} /> : null}
-        {updatedLabel ? <MetaItem icon={CheckCircle2} label="Updated" value={updatedLabel} /> : null}
+        <p className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-foreground">{summary.body}</p>
       </div>
     </div>
   )
@@ -329,28 +285,24 @@ function PreferencesPanel({
   onUpdate: (patch: Partial<UpsertDictationSettingsRequestDto>) => void
 }) {
   return (
-    <section className="flex flex-col gap-3">
-      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
-        Preferences
-      </h4>
-      <div className="grid gap-3 lg:grid-cols-3">
-        <PreferenceCard
-          icon={Cpu}
-          label="Engine preference"
+    <section className="flex flex-col gap-2.5">
+      <h4 className="text-[12.5px] font-semibold text-foreground">Preferences</h4>
+      <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+        <PreferenceRow
+          label="Engine"
           value={settings.enginePreference}
           disabled={disabled}
           options={ENGINE_OPTIONS}
           onValueChange={(enginePreference) => onUpdate({ enginePreference })}
         />
-        <PreferenceCard
-          icon={ShieldCheck}
-          label="Privacy mode"
+        <PreferenceRow
+          label="Privacy"
           value={settings.privacyMode}
           disabled={disabled}
           options={PRIVACY_OPTIONS}
           onValueChange={(privacyMode) => onUpdate({ privacyMode })}
         />
-        <LocaleCard
+        <LocaleRow
           disabled={disabled}
           localeOptions={localeOptions}
           selectedLocale={selectedLocale}
@@ -363,36 +315,28 @@ function PreferencesPanel({
   )
 }
 
-function PreferenceCard<T extends string>({
-  icon: Icon,
+function PreferenceRow<T extends string>({
   label,
   value,
   disabled,
   options,
   onValueChange,
 }: {
-  icon: React.ElementType
   label: string
   value: T
   disabled: boolean
   options: Array<{ value: T; label: string; detail: string }>
   onValueChange: (value: T) => void
 }) {
-  const selected = options.find((option) => option.value === value)
-
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/30 px-3.5 py-3.5">
-      <div className="flex items-center gap-2">
-        <span
-          className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground"
-          aria-hidden
-        >
-          <Icon className="h-3 w-3" />
-        </span>
-        <label className="text-[12px] font-medium text-foreground">{label}</label>
-      </div>
+    <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+      <label className="text-[12.5px] font-medium text-foreground">{label}</label>
       <Select value={value} disabled={disabled} onValueChange={(nextValue) => onValueChange(nextValue as T)}>
-        <SelectTrigger aria-label={label} className="h-8 w-full text-[12.5px]" size="sm">
+        <SelectTrigger
+          aria-label={label}
+          className="h-8 w-auto min-w-[180px] text-[12.5px]"
+          size="sm"
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -403,12 +347,11 @@ function PreferenceCard<T extends string>({
           ))}
         </SelectContent>
       </Select>
-      <p className="text-[11.5px] leading-[1.45] text-muted-foreground">{selected?.detail}</p>
     </div>
   )
 }
 
-function LocaleCard({
+function LocaleRow({
   disabled,
   localeOptions,
   selectedLocale,
@@ -424,23 +367,20 @@ function LocaleCard({
   onValueChange: (value: string) => void
 }) {
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/30 px-3.5 py-3.5">
-      <div className="flex items-center gap-2">
-        <span
-          className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground"
-          aria-hidden
-        >
-          <Languages className="h-3 w-3" />
-        </span>
-        <label className="text-[12px] font-medium text-foreground" htmlFor="dictation-locale">
-          Locale
-        </label>
-      </div>
+    <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+      <label className="text-[12.5px] font-medium text-foreground" htmlFor="dictation-locale">
+        Locale
+        {selectedLocaleUnsupported ? (
+          <span className="ml-1.5 text-[11px] font-normal text-warning dark:text-warning">
+            (unsupported)
+          </span>
+        ) : null}
+      </label>
       <Select value={selectedLocale} disabled={disabled} onValueChange={onValueChange}>
         <SelectTrigger
           id="dictation-locale"
           aria-label="Dictation locale"
-          className="h-8 w-full text-[12.5px]"
+          className="h-8 w-auto min-w-[180px] text-[12.5px]"
           size="sm"
         >
           <SelectValue />
@@ -456,16 +396,6 @@ function LocaleCard({
           ))}
         </SelectContent>
       </Select>
-      <p
-        className={cn(
-          "text-[11.5px] leading-[1.45]",
-          selectedLocaleUnsupported ? "text-warning dark:text-warning" : "text-muted-foreground",
-        )}
-      >
-        {selectedLocaleUnsupported
-          ? "The selected locale is not in the current backend-supported list."
-          : "Use System default unless a project needs a specific recognition locale."}
-      </p>
     </div>
   )
 }
@@ -475,37 +405,29 @@ function CapabilitiesPanel({ status }: { status: DictationStatusDto }) {
     status.modernAssets.status === "installed" ? "ok" : status.modern.available ? "warn" : "muted"
 
   return (
-    <section className="flex flex-col gap-3">
-      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
-        System availability
-      </h4>
-      <ul className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30">
+    <section className="flex flex-col gap-2.5">
+      <h4 className="text-[12.5px] font-semibold text-foreground">System availability</h4>
+      <ul className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
         <EngineRow
-          icon={Sparkles}
           label="Modern engine"
           available={status.modern.available}
           reason={status.modern.reason}
-          hint="macOS 26 SpeechAnalyzer path"
         />
         <EngineRow
-          icon={Cpu}
           label="Legacy engine"
           available={status.legacy.available}
           reason={status.legacy.reason}
-          hint="SFSpeechRecognizer fallback"
         />
         <PermissionRow kind="microphone" state={status.microphonePermission} />
         <PermissionRow kind="speech recognition" state={status.speechPermission} />
         <CapabilityRow
-          icon={PackageOpen}
           label="Modern speech assets"
           tone={modernAssetsTone}
-          value={modernAssetLabel(status)}
           pillLabel={
             status.modernAssets.status === "installed"
               ? "Installed"
               : status.modern.available
-                ? "Check"
+                ? "Missing"
                 : "—"
           }
         />
@@ -515,25 +437,19 @@ function CapabilitiesPanel({ status }: { status: DictationStatusDto }) {
 }
 
 function EngineRow({
-  icon,
   label,
   available,
   reason,
-  hint,
 }: {
-  icon: React.ElementType
   label: string
   available: boolean
   reason?: string | null
-  hint: string
 }) {
   return (
     <CapabilityRow
-      icon={icon}
       label={label}
       tone={available ? "ok" : "warn"}
-      value={available ? hint : reason ? humanizeReason(reason) : "Unavailable"}
-      pillLabel={available ? "Ready" : "Unavailable"}
+      pillLabel={available ? "Ready" : reason ? humanizeReason(reason) : "Unavailable"}
     />
   )
 }
@@ -548,7 +464,6 @@ function PermissionRow({
   const denied = state === "denied" || state === "restricted"
   const tone: StatusTone = state === "authorized" ? "ok" : denied ? "bad" : "warn"
   const pane = kind === "microphone" ? "Privacy_Microphone" : "Privacy_SpeechRecognition"
-  const Icon = kind === "microphone" ? Mic : Volume2
   const pillLabel =
     state === "authorized"
       ? "Allowed"
@@ -560,10 +475,8 @@ function PermissionRow({
 
   return (
     <CapabilityRow
-      icon={Icon}
       label={`${capitalize(kind)} permission`}
       tone={tone}
-      value={permissionLabel(state)}
       pillLabel={pillLabel}
       action={
         denied ? (
@@ -583,35 +496,19 @@ function PermissionRow({
 }
 
 function CapabilityRow({
-  icon: Icon,
   label,
   tone,
-  value,
   pillLabel,
   action,
 }: {
-  icon: React.ElementType
   label: string
   tone: StatusTone
-  value: string
   pillLabel: string
   action?: React.ReactNode
 }) {
   return (
-    <li className="flex items-start gap-3 px-4 py-3">
-      <div
-        className={cn(
-          "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60",
-          TONE_TEXT[tone],
-        )}
-        aria-hidden
-      >
-        <Icon className="h-3.5 w-3.5" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-[12.5px] font-medium text-foreground">{label}</p>
-        <p className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">{value}</p>
-      </div>
+    <li className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+      <p className="text-[12.5px] text-foreground">{label}</p>
       <div className="flex shrink-0 items-center gap-1.5">
         {action}
         <StatusPill tone={tone} label={pillLabel} />
@@ -636,47 +533,21 @@ function StatusPill({ tone, label }: { tone: StatusTone; label: string }) {
   )
 }
 
-function MetaItem({
-  icon: Icon,
-  label,
-  value,
-  mono = false,
-}: {
-  icon: React.ElementType
-  label: string
-  value: string
-  mono?: boolean
-}) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <Icon className="h-3 w-3 text-muted-foreground/70" aria-hidden />
-      <span className="text-muted-foreground/70">{label}</span>
-      <span className={cn("text-foreground/80", mono && "font-mono text-[11.5px]")}>{value}</span>
-    </span>
-  )
-}
-
 function UnavailableCard({ title, body }: { title: string; body: string }) {
   return (
-    <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/70 bg-secondary/15 px-6 py-10 text-center">
-      <div className="flex size-11 items-center justify-center rounded-full border border-border/60 bg-background/60 text-muted-foreground">
-        <Mic className="h-5 w-5" />
-      </div>
-      <div className="flex max-w-sm flex-col gap-1.5">
-        <p className="text-[14px] font-semibold text-foreground">{title}</p>
-        <p className="text-[12.5px] leading-[1.55] text-muted-foreground">{body}</p>
-      </div>
+    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border/60 bg-secondary/10 px-5 py-8 text-center">
+      <Mic className="h-4 w-4 text-muted-foreground" />
+      <p className="text-[12.5px] font-medium text-foreground">{title}</p>
+      <p className="max-w-sm text-[11.5px] leading-[1.5] text-muted-foreground">{body}</p>
     </div>
   )
 }
 
 function LoadingCard() {
   return (
-    <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/70 bg-secondary/15 px-6 py-10 text-center">
-      <div className="flex size-11 items-center justify-center rounded-full border border-border/60 bg-background/60 text-muted-foreground">
-        <LoaderCircle className="h-5 w-5 animate-spin" />
-      </div>
-      <p className="text-[12.5px] font-medium text-foreground">Loading dictation settings</p>
+    <div className="flex items-center justify-center gap-2 rounded-md border border-border/60 px-4 py-10 text-[12px] text-muted-foreground">
+      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+      Loading dictation settings
     </div>
   )
 }
@@ -743,37 +614,6 @@ function summarizeReadiness(status: DictationStatusDto): {
   }
 }
 
-function permissionLabel(state: DictationPermissionStateDto): string {
-  switch (state) {
-    case "authorized":
-      return "Allowed"
-    case "denied":
-    case "restricted":
-      return "Open System Settings > Privacy & Security and allow Xero."
-    case "not_determined":
-      return "macOS will ask the first time dictation starts."
-    case "unsupported":
-      return "Unsupported on this system."
-    case "unknown":
-      return "Current permission state is unknown."
-  }
-}
-
-function modernAssetLabel(status: DictationStatusDto): string {
-  if (!status.modern.available) return "Modern engine unavailable"
-  switch (status.modernAssets.status) {
-    case "installed":
-      return status.modernAssets.locale ? `Installed for ${status.modernAssets.locale}` : "Installed"
-    case "not_installed":
-      return status.modernAssets.locale ? `Not installed for ${status.modernAssets.locale}` : "Not installed"
-    case "unsupported_locale":
-      return "Unsupported locale"
-    case "unavailable":
-    case "unknown":
-      return "Asset status unknown"
-  }
-}
-
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message
   if (typeof error === "string" && error.trim().length > 0) return error
@@ -792,17 +632,6 @@ function normalizeLocale(locale: string | null | undefined): string {
 
 function capitalize(value: string): string {
   return value.replace(/^\w/, (letter: string) => letter.toUpperCase())
-}
-
-function formatTimestamp(iso: string | null | undefined): string | null {
-  if (!iso) return null
-  const parsed = new Date(iso)
-  if (Number.isNaN(parsed.getTime())) return null
-  return parsed.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
 }
 
 async function openMacosPrivacyPane(pane: string): Promise<void> {

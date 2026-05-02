@@ -29,11 +29,10 @@ type RoutePending = "save" | "toggle" | null
 const CHANNELS: Array<{
   kind: NotificationRouteKindDto
   label: string
-  description: string
   Icon: React.ElementType
 }> = [
-  { kind: "telegram", label: "Telegram", description: "Route operator prompts via Telegram", Icon: TelegramIcon },
-  { kind: "discord", label: "Discord", description: "Route operator prompts via Discord", Icon: DiscordIcon },
+  { kind: "telegram", label: "Telegram", Icon: TelegramIcon },
+  { kind: "discord", label: "Discord", Icon: DiscordIcon },
 ]
 
 interface NotificationsSectionProps {
@@ -158,7 +157,7 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
       />
 
       <div className="flex flex-col gap-7">
-        {CHANNELS.map(({ kind, label, description, Icon }, channelIndex) => {
+        {CHANNELS.map(({ kind, label, Icon }, channelIndex) => {
           const channelRoutes = routes.filter((route) => route.routeKind === kind)
           const formOpen = formKind === kind
           const hasRoutes = channelRoutes.length > 0
@@ -172,21 +171,14 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
               )}
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <Icon className="mt-[3px] h-3.5 w-3.5 shrink-0 text-foreground/70" />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-[12.5px] font-semibold text-foreground">{label}</h4>
-                      {hasRoutes ? (
-                        <span className="text-[11px] text-muted-foreground">
-                          {channelRoutes.length} {channelRoutes.length === 1 ? "route" : "routes"}
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-muted-foreground/70">Not configured</span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-[12px] text-muted-foreground">{description}</p>
-                  </div>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Icon className="h-3.5 w-3.5 shrink-0 text-foreground/70" />
+                  <h4 className="text-[12.5px] font-semibold text-foreground">{label}</h4>
+                  {hasRoutes ? (
+                    <span className="text-[11px] text-muted-foreground">
+                      {channelRoutes.length}
+                    </span>
+                  ) : null}
                 </div>
                 {!formOpen ? (
                   <Button

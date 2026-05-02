@@ -1,4 +1,4 @@
-import { Check, Code2, Moon, Palette, Pencil, Plus, Sun, Trash2, X } from "lucide-react"
+import { Check, Moon, Palette, Pencil, Plus, Sun, Trash2, X } from "lucide-react"
 import { useMemo, useState } from "react"
 import { useTheme } from "@/src/features/theme/theme-provider"
 import {
@@ -18,7 +18,6 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Select,
   SelectContent,
@@ -109,27 +108,25 @@ export function ThemesSection() {
         description="Pick a palette for the entire app, or design your own in advanced mode."
       />
 
-      {activeTheme ? (
-        <ActiveThemeCard
-          theme={activeTheme}
-          darkCount={presetDark.length}
-          lightCount={presetLight.length}
+      {activeTheme ? <ActiveThemeCard theme={activeTheme} /> : null}
+
+      <div role="tablist" className="flex items-center gap-5 border-b border-border/50">
+        <TabButton
+          icon={Palette}
+          label="Presets"
+          active={tab === "presets"}
+          onClick={() => setTab("presets")}
         />
-      ) : null}
+        <TabButton
+          icon={Pencil}
+          label="Advanced"
+          active={tab === "custom"}
+          onClick={() => setTab("custom")}
+        />
+      </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as "presets" | "custom")}>
-        <TabsList className="w-full">
-          <TabsTrigger value="presets">
-            <Palette className="h-3.5 w-3.5" />
-            Presets
-          </TabsTrigger>
-          <TabsTrigger value="custom">
-            <Pencil className="h-3.5 w-3.5" />
-            Advanced
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="presets" className="flex flex-col gap-7 pt-2">
+      {tab === "presets" ? (
+        <div className="flex flex-col gap-7">
           {presetDark.length > 0 ? (
             <ThemeGroup
               icon={Moon}
@@ -149,9 +146,9 @@ export function ThemesSection() {
               onSelect={setThemeId}
             />
           ) : null}
-        </TabsContent>
-
-        <TabsContent value="custom" className="flex flex-col gap-4 pt-2">
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
           {draft ? (
             <ThemeEditor
               draft={draft}
@@ -175,51 +172,33 @@ export function ThemesSection() {
               onCreate={startNewDraft}
             />
           )}
-        </TabsContent>
-      </Tabs>
+        </div>
+      )}
     </div>
   )
 }
 
-function ActiveThemeCard({
-  theme,
-  darkCount,
-  lightCount,
-}: {
-  theme: ThemeDefinition
-  darkCount: number
-  lightCount: number
-}) {
+function ActiveThemeCard({ theme }: { theme: ThemeDefinition }) {
   const isDark = theme.appearance !== "light"
   const ToneIcon = isDark ? Moon : Sun
   const appearanceLabel = isDark ? "Dark" : "Light"
   const isCustom = isCustomThemeId(theme.id)
 
   return (
-    <div className="rounded-xl border border-border/70 bg-card/40 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]">
-      <div className="flex items-start gap-4 p-5">
-        <ThemePreview theme={theme} size="lg" />
-
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="truncate text-[14px] font-semibold leading-tight text-foreground">{theme.name}</p>
-            <AppearancePill icon={ToneIcon} label={appearanceLabel} dark={isDark} />
-            {isCustom ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-primary ring-1 ring-inset ring-primary/20">
-                <Pencil className="h-3 w-3" />
-                Custom
-              </span>
-            ) : null}
-          </div>
-          <p className="text-[12.5px] leading-[1.55] text-muted-foreground">{theme.description}</p>
+    <div className="flex items-center gap-3 rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+      <ThemePreview theme={theme} size="sm" />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <p className="truncate text-[12.5px] font-semibold text-foreground">{theme.name}</p>
+          <AppearancePill icon={ToneIcon} label={appearanceLabel} dark={isDark} />
+          {isCustom ? (
+            <span className="inline-flex h-[18px] items-center gap-1 rounded-full bg-primary/10 px-1.5 text-[10.5px] font-medium text-primary">
+              <Pencil className="h-3 w-3" />
+              Custom
+            </span>
+          ) : null}
         </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/60 px-5 py-3 text-[12px] text-muted-foreground">
-        <MetaItem icon={Palette} label="Palette" value={theme.id} mono />
-        <MetaItem icon={Moon} label="Dark" value={`${darkCount}`} />
-        <MetaItem icon={Sun} label="Light" value={`${lightCount}`} />
-        <MetaItem icon={Code2} label="Syntax" value="follows theme" />
+        <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">{theme.description}</p>
       </div>
     </div>
   )
@@ -628,6 +607,36 @@ function PreviewSwatch({ colors }: { colors: ThemeDefinition["colors"] }) {
   )
 }
 
+function TabButton({
+  icon: Icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ElementType
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 py-2 text-[12.5px] font-medium transition-colors",
+        active
+          ? "border-foreground text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </button>
+  )
+}
+
 function ThemePreview({ theme, size }: { theme: ThemeDefinition; size: "sm" | "lg" }) {
   const c = theme.colors
   const dimensions = size === "lg" ? "h-12 w-12" : "h-9 w-9"
@@ -673,22 +682,3 @@ function AppearancePill({
   )
 }
 
-function MetaItem({
-  icon: Icon,
-  label,
-  value,
-  mono = false,
-}: {
-  icon: React.ElementType
-  label: string
-  value: string
-  mono?: boolean
-}) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <Icon className="h-3 w-3 text-muted-foreground/70" aria-hidden />
-      <span className="text-muted-foreground/70">{label}</span>
-      <span className={cn("text-foreground/80", mono && "font-mono text-[11.5px]")}>{value}</span>
-    </span>
-  )
-}
