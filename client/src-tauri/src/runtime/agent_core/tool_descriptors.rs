@@ -1051,6 +1051,28 @@ pub(crate) fn select_tool_names_for_prompt(
     if contains_any(
         &lowered,
         &[
+            "system diagnostics",
+            "diagnostics bundle",
+            "open files",
+            "file descriptor",
+            "file descriptors",
+            "lsof",
+            "process sample",
+            "process sampling",
+            "resource snapshot",
+            "thread inspection",
+            "process threads",
+            "unified log",
+            "system log",
+            "accessibility snapshot",
+        ],
+    ) {
+        add_tool_group(&mut names, "system_diagnostics");
+    }
+
+    if contains_any(
+        &lowered,
+        &[
             "macos",
             "mac os",
             "desktop automation",
@@ -1267,6 +1289,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:process_manager ") => {
                 names.insert(AUTONOMOUS_TOOL_PROCESS_MANAGER.into());
             }
+            line if line.starts_with("tool:system_diagnostics ") => {
+                names.insert(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS.into());
+            }
             line if line.starts_with("tool:macos_automation ")
                 || line.starts_with("tool:mac_permissions")
                 || line.starts_with("tool:mac_app_")
@@ -1458,7 +1483,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -1690,6 +1715,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
             "Manage Xero-owned long-running, interactive, grouped, restartable, and async-job processes, plus phase 5 system process visibility and approval-gated external signaling.",
             process_manager_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+            "Typed, policy-aware advanced diagnostics for process open files, resource snapshots, threads, sampling, unified logs, macOS accessibility snapshots, and diagnostics bundles.",
+            system_diagnostics_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
@@ -2478,6 +2508,129 @@ fn process_manager_schema() -> JsonValue {
             ("waitPort", integer_schema("Local TCP port readiness probe.")),
             ("waitUrl", string_schema("HTTP URL readiness probe.")),
             ("signal", string_schema("Signal name for signal actions.")),
+        ],
+    )
+}
+
+fn system_diagnostics_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "System diagnostics action. process_sample and macos_accessibility_snapshot require operator approval.",
+                    &[
+                        "process_open_files",
+                        "process_resource_snapshot",
+                        "process_threads",
+                        "process_sample",
+                        "system_log_query",
+                        "macos_accessibility_snapshot",
+                        "diagnostics_bundle",
+                    ],
+                ),
+            ),
+            (
+                "preset",
+                enum_schema(
+                    "Preset for diagnostics_bundle.",
+                    &[
+                        "hung_process",
+                        "port_conflict",
+                        "tauri_window_issue",
+                        "macos_app_focus_issue",
+                        "high_cpu_process",
+                    ],
+                ),
+            ),
+            ("pid", integer_schema("Target process id for process diagnostics.")),
+            ("processName", string_schema("Optional process name target or filter.")),
+            ("bundleId", string_schema("Optional macOS bundle identifier target.")),
+            ("appName", string_schema("Optional macOS app display-name target.")),
+            ("windowId", integer_schema("Optional macOS window id target.")),
+            ("since", string_schema("Optional ISO-ish lower bound for time-based diagnostics.")),
+            ("durationMs", integer_schema("Duration in milliseconds for sampling-style diagnostics.")),
+            ("intervalMs", integer_schema("Interval in milliseconds for sampling-style diagnostics.")),
+            ("limit", integer_schema("Maximum structured rows to return, capped by runtime.")),
+            ("filter", string_schema("Optional regex applied to structured diagnostic row fields.")),
+            (
+                "includeChildren",
+                boolean_schema("Include child processes where supported by the selected action."),
+            ),
+            (
+                "artifactMode",
+                enum_schema(
+                    "Artifact mode for large diagnostics.",
+                    &["none", "summary", "full"],
+                ),
+            ),
+            (
+                "fdKinds",
+                json!({
+                    "type": "array",
+                    "description": "Optional fd kind filter for process_open_files.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["cwd", "executable", "file", "directory", "socket", "pipe", "device", "deleted", "other"]
+                    }
+                }),
+            ),
+            (
+                "includeSockets",
+                boolean_schema("For process_open_files, include socket descriptors when include filters are used."),
+            ),
+            (
+                "includeFiles",
+                boolean_schema("For process_open_files, include file-like descriptors when include filters are used."),
+            ),
+            (
+                "includeDeleted",
+                boolean_schema("For process_open_files, include deleted file descriptors when include filters are used."),
+            ),
+            ("sampleCount", integer_schema("Optional sample count for resource snapshots.")),
+            ("includePorts", boolean_schema("Include port metadata where supported.")),
+            (
+                "includeThreadsSummary",
+                boolean_schema("Include thread summary metadata where supported."),
+            ),
+            (
+                "includeWaitChannel",
+                boolean_schema("Include wait-channel data for thread diagnostics where supported."),
+            ),
+            (
+                "includeStackHints",
+                boolean_schema("Include bounded stack hints for thread diagnostics where supported."),
+            ),
+            (
+                "maxArtifactBytes",
+                integer_schema("Maximum persisted artifact bytes for large diagnostics."),
+            ),
+            ("lastMs", integer_schema("Recent log window in milliseconds.")),
+            (
+                "level",
+                enum_schema(
+                    "System log level filter.",
+                    &["debug", "info", "notice", "error", "fault"],
+                ),
+            ),
+            ("subsystem", string_schema("System log subsystem filter.")),
+            ("category", string_schema("System log category filter.")),
+            ("messageContains", string_schema("System log message substring filter.")),
+            ("processPredicate", string_schema("System log process predicate filter.")),
+            ("maxDepth", integer_schema("Maximum Accessibility tree depth.")),
+            (
+                "focusedOnly",
+                boolean_schema("Limit Accessibility snapshots to focused UI where supported."),
+            ),
+            (
+                "attributes",
+                json!({
+                    "type": "array",
+                    "description": "Optional Accessibility attributes to include.",
+                    "items": { "type": "string" }
+                }),
+            ),
         ],
     )
 }

@@ -46,6 +46,7 @@ pub mod session_history;
 pub mod skills;
 pub mod solana;
 pub mod soul_settings;
+pub mod stage_agent_attachment;
 pub mod start_autonomous_run;
 pub mod start_oauth_login;
 pub mod start_openai_login;
@@ -182,6 +183,7 @@ pub use soul_settings::{
     soul_settings, soul_update_settings, SoulIdDto, SoulPresetDto, SoulSettingsDto,
     UpsertSoulSettingsRequestDto,
 };
+pub use stage_agent_attachment::{discard_agent_attachment, stage_agent_attachment};
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_oauth_login::start_oauth_login;
 pub use start_openai_login::start_openai_login;

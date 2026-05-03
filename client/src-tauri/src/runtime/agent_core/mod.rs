@@ -71,7 +71,8 @@ use crate::{
     },
     runtime::{
         autonomous_tool_runtime::{
-            emulator::emulator_schema, tool_access_all_known_tools, tool_access_group_tools,
+            emulator::emulator_schema, system_diagnostics_action_approval_id,
+            tool_access_all_known_tools, tool_access_group_tools,
             tool_allowed_for_runtime_agent_with_policy, tool_catalog_metadata_for_tool,
             AutonomousAgentToolPolicy, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_BROWSER,
             AUTONOMOUS_TOOL_EMULATOR, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
@@ -93,9 +94,10 @@ use crate::{
         AutonomousDynamicToolRoute, AutonomousMacosAutomationAction,
         AutonomousMacosAutomationOutput, AutonomousMcpAction, AutonomousMcpRequest,
         AutonomousProcessManagerAction, AutonomousSubagentExecutor, AutonomousSubagentTask,
-        AutonomousTodoStatus, AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult,
-        AutonomousToolRuntime, XeroSkillToolContextPayload, AUTONOMOUS_TOOL_AGENT_DEFINITION,
-        AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+        AutonomousSystemDiagnosticsOutput, AutonomousTodoStatus, AutonomousToolOutput,
+        AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
+        XeroSkillToolContextPayload, AUTONOMOUS_TOOL_AGENT_DEFINITION, AUTONOMOUS_TOOL_CODE_INTEL,
+        AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
         AUTONOMOUS_TOOL_COMMAND_SESSION_START, AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
         AUTONOMOUS_TOOL_DELETE, AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_FIND,
         AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH,
@@ -103,9 +105,10 @@ use crate::{
         AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_MKDIR, AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
         AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_PROCESS_MANAGER,
         AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_RENAME, AUTONOMOUS_TOOL_SEARCH,
-        AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO,
-        AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WEB_FETCH,
-        AUTONOMOUS_TOOL_WEB_SEARCH, AUTONOMOUS_TOOL_WRITE, OPENAI_CODEX_PROVIDER_ID,
+        AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+        AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
+        AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH, AUTONOMOUS_TOOL_WRITE,
+        OPENAI_CODEX_PROVIDER_ID,
     },
 };
 

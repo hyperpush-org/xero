@@ -3,11 +3,44 @@ use std::sync::LazyLock;
 use rusqlite_migration::{Migrations, M};
 
 pub fn migrations() -> &'static Migrations<'static> {
-    static MIGRATIONS: LazyLock<Migrations<'static>> =
-        LazyLock::new(|| Migrations::new(vec![M::up(BASELINE_SCHEMA_SQL)]));
+    static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
+        Migrations::new(vec![
+            M::up(BASELINE_SCHEMA_SQL),
+            M::up(MIGRATION_001_AGENT_MESSAGE_ATTACHMENTS_SQL),
+        ])
+    });
 
     &MIGRATIONS
 }
+
+const MIGRATION_001_AGENT_MESSAGE_ATTACHMENTS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_message_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        storage_path TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        original_name TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        width INTEGER,
+        height INTEGER,
+        created_at TEXT NOT NULL,
+        CHECK (kind IN ('image', 'document', 'text')),
+        CHECK (storage_path <> ''),
+        CHECK (media_type <> ''),
+        CHECK (original_name <> ''),
+        CHECK (size_bytes >= 0),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_message
+        ON agent_message_attachments(message_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_run
+        ON agent_message_attachments(project_id, run_id);
+"#;
 
 const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS projects (
@@ -1287,6 +1320,7 @@ mod tests {
                 "agent_events",
                 "agent_file_changes",
                 "agent_handoff_lineage",
+                "agent_message_attachments",
                 "agent_messages",
                 "agent_retrieval_queries",
                 "agent_retrieval_results",

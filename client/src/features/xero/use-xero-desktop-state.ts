@@ -15,6 +15,7 @@ import {
   mapProjectSummary,
   mapRepositoryDiff,
   mapRepositoryStatus,
+  mapAgentSession,
   mapRuntimeRun,
   mapRuntimeSession,
   selectAgentSessionId,
@@ -74,6 +75,9 @@ import {
 } from './use-xero-desktop-state/view-builders'
 import {
   createXeroHighChurnStore,
+  createRuntimeStreamStoreKey,
+  removeRuntimeStreamForSession,
+  removeRuntimeStreamsForProject,
   selectRepositoryStatus,
   selectRuntimeStreams,
   useSelectorStoreValue,
@@ -81,6 +85,9 @@ import {
 } from './use-xero-desktop-state/high-churn-store'
 import type {
   AgentTrustSnapshotView,
+  AgentWorkspaceLayoutState,
+  AgentWorkspacePaneSlot,
+  AgentWorkspacePaneView,
   AutonomousRunActionKind,
   AutonomousRunActionStatus,
   DoctorReportRunStatus,
@@ -109,6 +116,9 @@ import type {
 
 export type {
   AgentPaneView,
+  AgentWorkspaceLayoutState,
+  AgentWorkspacePaneSlot,
+  AgentWorkspacePaneView,
   AgentProviderModelView,
   AgentTrustSignalState,
   AgentTrustSnapshotView,
@@ -158,6 +168,11 @@ const RUNTIME_STREAM_SESSION_CACHE_MAX_BYTES = 3 * 1024 * 1024
 const RUNTIME_STREAM_SESSION_CACHE_MAX_ENTRIES = 24
 const PROVIDER_MODEL_CATALOG_CACHE_MAX_BYTES = 2 * 1024 * 1024
 const PROVIDER_MODEL_CATALOG_CACHE_MAX_ENTRIES = 24
+const AGENT_WORKSPACE_LAYOUT_STORAGE_KEY = 'agentWorkspaceLayout'
+const AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS = 250
+const AGENT_WORKSPACE_MAX_PANES = 6
+
+let agentWorkspacePaneIdSequence = 0
 
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
@@ -237,6 +252,224 @@ function createAgentSessionStateKey(projectId: string, agentSessionId: string): 
   return `${projectId}::${agentSessionId}`
 }
 
+function createDefaultAgentWorkspacePaneId(projectId: string): string {
+  return `agent-pane-${projectId}`
+}
+
+function createAgentWorkspacePaneId(): string {
+  agentWorkspacePaneIdSequence += 1
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `agent-pane-${crypto.randomUUID()}`
+  }
+
+  return `agent-pane-${Date.now().toString(36)}-${agentWorkspacePaneIdSequence.toString(36)}`
+}
+
+function readAgentWorkspaceLayoutStore(): Record<string, AgentWorkspaceLayoutState> {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+
+  try {
+    const raw = window.localStorage?.getItem?.(AGENT_WORKSPACE_LAYOUT_STORAGE_KEY)
+    if (!raw) {
+      return {}
+    }
+
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const layouts: Record<string, AgentWorkspaceLayoutState> = {}
+    for (const [projectId, value] of Object.entries(parsed)) {
+      const layout = sanitizeAgentWorkspaceLayout(value)
+      if (layout) {
+        layouts[projectId] = layout
+      }
+    }
+    return layouts
+  } catch {
+    return {}
+  }
+}
+
+function writeAgentWorkspaceLayoutStore(layouts: Record<string, AgentWorkspaceLayoutState>): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    window.localStorage?.setItem?.(AGENT_WORKSPACE_LAYOUT_STORAGE_KEY, JSON.stringify(layouts))
+  } catch {
+    // Layout persistence is best-effort app UI state.
+  }
+}
+
+function sanitizeAgentWorkspaceLayout(value: unknown): AgentWorkspaceLayoutState | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const candidate = value as Partial<AgentWorkspaceLayoutState>
+  const paneSlots: AgentWorkspacePaneSlot[] = []
+  const seenPaneIds = new Set<string>()
+  if (Array.isArray(candidate.paneSlots)) {
+    for (const slot of candidate.paneSlots) {
+      if (!slot || typeof slot !== 'object') {
+        continue
+      }
+      const maybeSlot = slot as Partial<AgentWorkspacePaneSlot>
+      const id = typeof maybeSlot.id === 'string' ? maybeSlot.id.trim() : ''
+      const agentSessionId =
+        maybeSlot.agentSessionId === null
+          ? null
+          : typeof maybeSlot.agentSessionId === 'string'
+            ? maybeSlot.agentSessionId.trim()
+            : ''
+      if (!id || agentSessionId === '' || seenPaneIds.has(id)) {
+        continue
+      }
+
+      seenPaneIds.add(id)
+      paneSlots.push({ id, agentSessionId })
+      if (paneSlots.length >= AGENT_WORKSPACE_MAX_PANES) {
+        break
+      }
+    }
+  }
+
+  const focusedPaneId =
+    typeof candidate.focusedPaneId === 'string' ? candidate.focusedPaneId.trim() : ''
+  const splitterRatios: Record<string, number[]> = {}
+  if (
+    candidate.splitterRatios &&
+    typeof candidate.splitterRatios === 'object' &&
+    !Array.isArray(candidate.splitterRatios)
+  ) {
+    for (const [key, ratios] of Object.entries(candidate.splitterRatios)) {
+      if (!key.trim() || !Array.isArray(ratios)) {
+        continue
+      }
+      const sanitizedRatios = ratios.filter(
+        (ratio): ratio is number => typeof ratio === 'number' && Number.isFinite(ratio) && ratio > 0,
+      )
+      if (sanitizedRatios.length === ratios.length && sanitizedRatios.length > 0) {
+        splitterRatios[key] = sanitizedRatios
+      }
+    }
+  }
+
+  return {
+    paneSlots,
+    focusedPaneId,
+    splitterRatios,
+    preSpawnSidebarMode:
+      candidate.preSpawnSidebarMode === 'pinned' || candidate.preSpawnSidebarMode === 'collapsed'
+        ? candidate.preSpawnSidebarMode
+        : null,
+  }
+}
+
+function createDefaultAgentWorkspaceLayout(project: ProjectDetailView): AgentWorkspaceLayoutState {
+  const selectedAgentSessionId = selectAgentSessionId(project.agentSessions)
+  const paneId = createDefaultAgentWorkspacePaneId(project.id)
+  return {
+    paneSlots: [{ id: paneId, agentSessionId: selectedAgentSessionId || null }],
+    focusedPaneId: paneId,
+    splitterRatios: {},
+    preSpawnSidebarMode: null,
+  }
+}
+
+function reconcileAgentWorkspaceLayout(
+  project: ProjectDetailView,
+  layout: AgentWorkspaceLayoutState | null | undefined,
+): AgentWorkspaceLayoutState {
+  const selectedAgentSessionId = selectAgentSessionId(project.agentSessions)
+  const activeSessionIds = new Set(
+    project.agentSessions
+      .filter((session) => session.isActive)
+      .map((session) => session.agentSessionId),
+  )
+  const isKnownSession = (agentSessionId: string) =>
+    activeSessionIds.size === 0
+      ? agentSessionId === selectedAgentSessionId
+      : activeSessionIds.has(agentSessionId)
+
+  const sanitizedLayout = sanitizeAgentWorkspaceLayout(layout) ?? createDefaultAgentWorkspaceLayout(project)
+  const paneSlots = sanitizedLayout.paneSlots.map((slot) => {
+    if (!slot.agentSessionId) {
+      return slot
+    }
+
+    return isKnownSession(slot.agentSessionId)
+      ? slot
+      : {
+          ...slot,
+          agentSessionId: null,
+        }
+  })
+
+  if (paneSlots.length === 0) {
+    return createDefaultAgentWorkspaceLayout(project)
+  }
+
+  const normalizedPaneSlots =
+    paneSlots.length === 1 && paneSlots[0]?.agentSessionId && paneSlots[0].agentSessionId !== selectedAgentSessionId
+      ? [{ ...paneSlots[0], agentSessionId: selectedAgentSessionId }]
+      : paneSlots
+
+  const focusedPaneId = normalizedPaneSlots.some((slot) => slot.id === sanitizedLayout.focusedPaneId)
+    ? sanitizedLayout.focusedPaneId
+    : normalizedPaneSlots[0].id
+
+  return {
+    ...sanitizedLayout,
+    paneSlots: normalizedPaneSlots,
+    focusedPaneId,
+  }
+}
+
+function areAgentWorkspaceLayoutsEqual(
+  left: AgentWorkspaceLayoutState | null | undefined,
+  right: AgentWorkspaceLayoutState,
+): boolean {
+  if (!left) {
+    return false
+  }
+
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function applyAgentSessionToProject(
+  project: ProjectDetailView,
+  agentSession: AgentSessionView,
+): ProjectDetailView {
+  if (project.id !== agentSession.projectId) {
+    return project
+  }
+
+  const existingIndex = project.agentSessions.findIndex(
+    (session) => session.agentSessionId === agentSession.agentSessionId,
+  )
+  const agentSessions =
+    existingIndex >= 0
+      ? project.agentSessions.map((session) =>
+          session.agentSessionId === agentSession.agentSessionId ? agentSession : session,
+        )
+      : [...project.agentSessions, agentSession]
+  const selectedAgentSessionId = selectAgentSessionId(agentSessions)
+
+  return {
+    ...project,
+    agentSessions,
+    selectedAgentSessionId,
+    selectedAgentSession:
+      agentSessions.find((session) => session.agentSessionId === selectedAgentSessionId) ?? null,
+  }
+}
+
 function hasOwnRecord<T>(record: Record<string, T>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key)
 }
@@ -279,6 +512,19 @@ function selectAgentSessionInProject(
     agentSessions,
     selectedAgentSession,
     selectedAgentSessionId: selectedAgentSession.agentSessionId,
+  }
+}
+
+function createEmptyAgentSessionProject(project: ProjectDetailView): ProjectDetailView {
+  return {
+    ...project,
+    agentSessions: project.agentSessions.map((session) =>
+      session.selected ? { ...session, selected: false } : session,
+    ),
+    selectedAgentSession: null,
+    selectedAgentSessionId: '',
+    runtimeRun: null,
+    autonomousRun: null,
   }
 }
 
@@ -385,6 +631,8 @@ export function useXeroDesktopState(
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetailView | null>(null)
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
+  const [agentWorkspaceLayouts, setAgentWorkspaceLayouts] =
+    useState<Record<string, AgentWorkspaceLayoutState>>(readAgentWorkspaceLayoutStore)
   const [repositoryDiffs, setRepositoryDiffs] = useState<Record<RepositoryDiffScope, RepositoryDiffState>>(
     createInitialRepositoryDiffs,
   )
@@ -471,6 +719,7 @@ export function useXeroDesktopState(
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
+  const [agentSessionRuntimeCacheRevision, setAgentSessionRuntimeCacheRevision] = useState(0)
   const activeProjectRef = useRef<ProjectDetailView | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
   const projectDetailsRef = useRef<Record<string, ProjectDetailView>>({})
@@ -494,6 +743,8 @@ export function useXeroDesktopState(
   const autonomousRunsBySessionRef = useRef<Record<string, ProjectDetailView['autonomousRun']>>({})
   const runtimeStreamsBySessionRef = useRef<Record<string, RuntimeStreamView>>({})
   const agentSessionRuntimePrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
+  const agentWorkspaceLayoutsRef = useRef<Record<string, AgentWorkspaceLayoutState>>(agentWorkspaceLayouts)
+  const pendingSpawnPaneIdsRef = useRef<Set<string>>(new Set())
   const notificationRoutesRef = useRef<Record<string, NotificationRouteDto[]>>({})
   const notificationRouteLoadStatusesRef = useRef<Record<string, NotificationRoutesLoadStatus>>({})
   const notificationRouteLoadErrorsRef = useRef<Record<string, OperatorActionErrorView | null>>({})
@@ -551,8 +802,8 @@ export function useXeroDesktopState(
   const setRuntimeStreams = useCallback(
     (action: SetStateAction<Record<string, RuntimeStreamView>>) => {
       const nextStreams = highChurnStore.setRuntimeStreams(action)
-      for (const [projectId, runtimeStream] of Object.entries(nextStreams)) {
-        const cacheKey = createAgentSessionStateKey(projectId, runtimeStream.agentSessionId)
+      for (const runtimeStream of Object.values(nextStreams)) {
+        const cacheKey = createAgentSessionStateKey(runtimeStream.projectId, runtimeStream.agentSessionId)
         runtimeStreamsBySessionRef.current[cacheKey] = runtimeStream
         trimRuntimeStreamSessionCache(cacheKey)
       }
@@ -569,6 +820,47 @@ export function useXeroDesktopState(
   }, [activeProject])
 
   useEffect(() => {
+    agentWorkspaceLayoutsRef.current = agentWorkspaceLayouts
+  }, [agentWorkspaceLayouts])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const handle = window.setTimeout(() => {
+      writeAgentWorkspaceLayoutStore(agentWorkspaceLayoutsRef.current)
+    }, AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(handle)
+  }, [agentWorkspaceLayouts])
+
+  useEffect(() => {
+    if (!activeProject) {
+      return
+    }
+
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      const nextLayout = reconcileAgentWorkspaceLayout(
+        activeProject,
+        currentLayouts[activeProject.id],
+      )
+      if (areAgentWorkspaceLayoutsEqual(currentLayouts[activeProject.id], nextLayout)) {
+        return currentLayouts
+      }
+
+      return {
+        ...currentLayouts,
+        [activeProject.id]: nextLayout,
+      }
+    })
+  }, [activeProject])
+
+  useEffect(() => {
+    if (isLoading) {
+      return
+    }
+
     const liveProjectIds = new Set(projects.map((project) => project.id))
     for (const projectId of Object.keys(projectDetailsRef.current)) {
       if (!liveProjectIds.has(projectId)) {
@@ -587,7 +879,18 @@ export function useXeroDesktopState(
     removeStaleSessionRecords(autonomousRunsBySessionRef.current)
     removeStaleSessionRecords(runtimeStreamsBySessionRef.current)
     removeStaleSessionRecords(agentSessionRuntimePrefetchInFlightRef.current)
-  }, [projects])
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      let changed = false
+      const nextLayouts = { ...currentLayouts }
+      for (const projectId of Object.keys(nextLayouts)) {
+        if (!liveProjectIds.has(projectId)) {
+          delete nextLayouts[projectId]
+          changed = true
+        }
+      }
+      return changed ? nextLayouts : currentLayouts
+    })
+  }, [isLoading, projects])
 
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId
@@ -633,7 +936,10 @@ export function useXeroDesktopState(
     autonomousRunsBySessionRef.current[cacheKey] =
       autonomousRun?.agentSessionId === agentSessionId ? autonomousRun : null
 
-    const runtimeStream = runtimeStreams[activeProjectId] ?? null
+    const runtimeStream =
+      runtimeStreams[createRuntimeStreamStoreKey(activeProjectId, agentSessionId)] ??
+      runtimeStreams[activeProjectId] ??
+      null
     if (runtimeStream?.agentSessionId === agentSessionId) {
       runtimeStreamsBySessionRef.current[cacheKey] = runtimeStream
       trimRuntimeStreamSessionCache(cacheKey)
@@ -730,21 +1036,40 @@ export function useXeroDesktopState(
   }, [])
 
   const updateRuntimeStream = useCallback(
-    (projectId: string, updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null) => {
+    (
+      projectId: string,
+      agentSessionId: string,
+      updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+    ) => {
       setRuntimeStreams((currentStreams) => {
-        const nextStream = updater(currentStreams[projectId] ?? null)
+        const currentProject = activeProjectRef.current
+        const activeAgentSessionId =
+          currentProject?.id === projectId ? selectAgentSessionId(currentProject.agentSessions) : null
+        const currentStream =
+          currentStreams[createRuntimeStreamStoreKey(projectId, agentSessionId)] ??
+          (activeAgentSessionId === agentSessionId ? currentStreams[projectId] ?? null : null)
+        const nextStream = updater(currentStream)
         if (!nextStream) {
-          return removeProjectRecord(currentStreams, projectId)
+          return removeRuntimeStreamForSession(currentStreams, projectId, agentSessionId)
         }
 
+        const nextKey = createRuntimeStreamStoreKey(projectId, nextStream.agentSessionId)
         runtimeStreamsBySessionRef.current[
           createAgentSessionStateKey(projectId, nextStream.agentSessionId)
         ] = nextStream
 
-        return {
+        const nextStreams = {
           ...currentStreams,
-          [projectId]: nextStream,
+          [nextKey]: nextStream,
         }
+
+        if (nextStream.agentSessionId === activeAgentSessionId) {
+          nextStreams[projectId] = nextStream
+        } else if (currentStreams[projectId]?.agentSessionId === nextStream.agentSessionId) {
+          delete nextStreams[projectId]
+        }
+
+        return nextStreams
       })
     },
     [],
@@ -846,7 +1171,7 @@ export function useXeroDesktopState(
       )
 
       if ((runtimeSession.isSignedOut || runtimeSession.isFailed) && runtimeSession.projectId) {
-        setRuntimeStreams((currentStreams) => removeProjectRecord(currentStreams, runtimeSession.projectId))
+        setRuntimeStreams((currentStreams) => removeRuntimeStreamsForProject(currentStreams, runtimeSession.projectId))
       }
 
       if (options.clearGlobalError ?? true) {
@@ -874,24 +1199,34 @@ export function useXeroDesktopState(
         runtimeRunsBySessionRef.current[
           createAgentSessionStateKey(projectId, agentSessionId)
         ] = runtimeRun
+        setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
       }
+      const isSelectedSession = Boolean(
+        agentSessionId &&
+          activeProjectRef.current?.id === projectId &&
+          selectAgentSessionId(activeProjectRef.current.agentSessions) === agentSessionId,
+      )
 
-      setRuntimeRuns((currentRuntimeRuns) => {
-        if (!runtimeRun) {
-          return removeProjectRecord(currentRuntimeRuns, projectId)
-        }
+      if (isSelectedSession) {
+        setRuntimeRuns((currentRuntimeRuns) => {
+          if (!runtimeRun) {
+            return removeProjectRecord(currentRuntimeRuns, projectId)
+          }
 
-        return {
-          ...currentRuntimeRuns,
-          [projectId]: runtimeRun,
-        }
-      })
+          return {
+            ...currentRuntimeRuns,
+            [projectId]: runtimeRun,
+          }
+        })
+      }
       setRuntimeRunLoadErrors((currentErrors) => ({
         ...currentErrors,
         [projectId]: options.loadError ?? null,
       }))
       setActiveProject((currentProject) =>
-        currentProject && currentProject.id === projectId ? applyRuntimeRun(currentProject, runtimeRun) : currentProject,
+        currentProject && currentProject.id === projectId && isSelectedSession
+          ? applyRuntimeRun(currentProject, runtimeRun)
+          : currentProject,
       )
 
       if (options.clearGlobalError ?? false) {
@@ -921,24 +1256,32 @@ export function useXeroDesktopState(
         autonomousRunsBySessionRef.current[
           createAgentSessionStateKey(projectId, agentSessionId)
         ] = inspection.autonomousRun ?? null
+        setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
       }
+      const isSelectedSession = Boolean(
+        agentSessionId &&
+          activeProjectRef.current?.id === projectId &&
+          selectAgentSessionId(activeProjectRef.current.agentSessions) === agentSessionId,
+      )
 
-      setAutonomousRuns((currentRuns) => {
-        if (!inspection.autonomousRun) {
-          return removeProjectRecord(currentRuns, projectId)
-        }
+      if (isSelectedSession) {
+        setAutonomousRuns((currentRuns) => {
+          if (!inspection.autonomousRun) {
+            return removeProjectRecord(currentRuns, projectId)
+          }
 
-        return {
-          ...currentRuns,
-          [projectId]: inspection.autonomousRun,
-        }
-      })
+          return {
+            ...currentRuns,
+            [projectId]: inspection.autonomousRun,
+          }
+        })
+      }
       setAutonomousRunLoadErrors((currentErrors) => ({
         ...currentErrors,
         [projectId]: options.loadError ?? null,
       }))
       setActiveProject((currentProject) =>
-        currentProject && currentProject.id === projectId
+        currentProject && currentProject.id === projectId && isSelectedSession
           ? applyAutonomousRunState(
               currentProject,
               inspection.autonomousRun,
@@ -969,7 +1312,8 @@ export function useXeroDesktopState(
         activeProjectRef.current?.id === projectId ? activeProjectRef.current.agentSessions : null,
       )
       const response = await adapter.getRuntimeRun(projectId, agentSessionId)
-      return applyRuntimeRunUpdate(projectId, response ? mapRuntimeRun(response) : null, {
+      const runtimeRun = response ? mapRuntimeRun(response) : null
+      return applyRuntimeRunUpdate(projectId, runtimeRun?.agentSessionId === agentSessionId ? runtimeRun : null, {
         clearGlobalError: false,
         loadError: null,
       })
@@ -984,6 +1328,9 @@ export function useXeroDesktopState(
       )
       const response = await adapter.getAutonomousRun(projectId, agentSessionId)
       const inspection = mapAutonomousRunInspection(response)
+      if (inspection.autonomousRun?.agentSessionId !== agentSessionId) {
+        inspection.autonomousRun = null
+      }
       applyAutonomousRunStateUpdate(projectId, inspection, {
         clearGlobalError: false,
         loadError: null,
@@ -1019,6 +1366,41 @@ export function useXeroDesktopState(
       autonomousRun: ProjectDetailView['autonomousRun'],
       runtimeStream: RuntimeStreamView | null,
     ) => {
+      runtimeRunsBySessionRef.current[
+        createAgentSessionStateKey(projectId, agentSessionId)
+      ] = runtimeRun
+      autonomousRunsBySessionRef.current[
+        createAgentSessionStateKey(projectId, agentSessionId)
+      ] = autonomousRun ?? null
+      setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
+
+      setRuntimeStreams((currentStreams) => {
+        if (!runtimeStream) {
+          return removeRuntimeStreamForSession(currentStreams, projectId, agentSessionId)
+        }
+
+        const nextStreams = {
+          ...currentStreams,
+          [createRuntimeStreamStoreKey(projectId, agentSessionId)]: runtimeStream,
+        }
+
+        if (selectAgentSessionId(activeProjectRef.current?.agentSessions) === agentSessionId) {
+          nextStreams[projectId] = runtimeStream
+        }
+
+        return nextStreams
+      })
+
+      const currentProject = activeProjectRef.current
+      if (!currentProject || currentProject.id !== projectId) {
+        return null
+      }
+
+      const selectedSessionId = selectAgentSessionId(currentProject.agentSessions)
+      if (selectedSessionId !== agentSessionId) {
+        return currentProject
+      }
+
       const runtimeRunRecords = runtimeRun
         ? { ...runtimeRunsRef.current, [projectId]: runtimeRun }
         : removeProjectRecord(runtimeRunsRef.current, projectId)
@@ -1030,20 +1412,6 @@ export function useXeroDesktopState(
         : removeProjectRecord(autonomousRunsRef.current, projectId)
       autonomousRunsRef.current = autonomousRunRecords
       setAutonomousRuns(autonomousRunRecords)
-
-      setRuntimeStreams((currentStreams) =>
-        runtimeStream ? { ...currentStreams, [projectId]: runtimeStream } : removeProjectRecord(currentStreams, projectId),
-      )
-
-      const currentProject = activeProjectRef.current
-      if (!currentProject || currentProject.id !== projectId) {
-        return null
-      }
-
-      const selectedSessionId = selectAgentSessionId(currentProject.agentSessions)
-      if (selectedSessionId !== agentSessionId) {
-        return currentProject
-      }
 
       const nextProject = applyAutonomousRunState(
         applyRuntimeRun(currentProject, runtimeRun),
@@ -1188,20 +1556,26 @@ export function useXeroDesktopState(
         const [runtimeRunResult, autonomousRunResult] = await Promise.all([
           adapter
             .getRuntimeRun(projectId, agentSessionId)
-            .then((response) => ({
-              runtimeRun: response ? mapRuntimeRun(response) : null,
-              error: null as string | null,
-            }))
+            .then((response) => {
+              const runtimeRun = response ? mapRuntimeRun(response) : null
+              return {
+                runtimeRun: runtimeRun?.agentSessionId === agentSessionId ? runtimeRun : null,
+                error: null as string | null,
+              }
+            })
             .catch((error) => ({
               runtimeRun: previousRuntimeRun,
               error: getDesktopErrorMessage(error),
             })),
           adapter
             .getAutonomousRun(projectId, agentSessionId)
-            .then((response) => ({
-              autonomousRun: mapAutonomousRunInspection(response).autonomousRun,
-              error: null as string | null,
-            }))
+            .then((response) => {
+              const autonomousRun = mapAutonomousRunInspection(response).autonomousRun
+              return {
+                autonomousRun: autonomousRun?.agentSessionId === agentSessionId ? autonomousRun : null,
+                error: null as string | null,
+              }
+            })
             .catch((error) => ({
               autonomousRun: previousAutonomousRun,
               error: getDesktopErrorMessage(error),
@@ -2057,6 +2431,248 @@ export function useXeroDesktopState(
     skillRegistryLoadStatus,
   })
 
+  const spawnPane = useCallback(async (): Promise<AgentWorkspaceLayoutState | null> => {
+    const projectId = activeProjectIdRef.current
+    const currentProject = activeProjectRef.current
+    if (!projectId || !currentProject || currentProject.id !== projectId) {
+      return null
+    }
+
+    const currentLayout = reconcileAgentWorkspaceLayout(
+      currentProject,
+      agentWorkspaceLayoutsRef.current[projectId],
+    )
+    const reusablePaneIndex = currentLayout.paneSlots.findIndex(
+      (slot) => !slot.agentSessionId && !pendingSpawnPaneIdsRef.current.has(slot.id),
+    )
+    if (currentLayout.paneSlots.length >= AGENT_WORKSPACE_MAX_PANES && reusablePaneIndex < 0) {
+      return currentLayout
+    }
+
+    const paneId = createAgentWorkspacePaneId()
+    const targetPaneId =
+      reusablePaneIndex >= 0 ? currentLayout.paneSlots[reusablePaneIndex]?.id ?? paneId : paneId
+    const pendingPaneSlots =
+      reusablePaneIndex >= 0
+        ? currentLayout.paneSlots
+        : [
+            ...currentLayout.paneSlots,
+            { id: paneId, agentSessionId: null },
+          ]
+    const pendingLayout: AgentWorkspaceLayoutState = {
+      ...currentLayout,
+      paneSlots: pendingPaneSlots,
+      focusedPaneId: targetPaneId,
+    }
+    const pendingLayouts = {
+      ...agentWorkspaceLayoutsRef.current,
+      [projectId]: pendingLayout,
+    }
+
+    agentWorkspaceLayoutsRef.current = pendingLayouts
+    pendingSpawnPaneIdsRef.current.add(targetPaneId)
+    setAgentWorkspaceLayouts(pendingLayouts)
+
+    let createdSession: AgentSessionView
+    try {
+      createdSession = {
+        ...mapAgentSession(
+          await adapter.createAgentSession({
+            projectId,
+            title: null,
+            summary: '',
+            selected: false,
+          }),
+        ),
+        selected: false,
+      }
+    } catch (error) {
+      pendingSpawnPaneIdsRef.current.delete(targetPaneId)
+      if (reusablePaneIndex < 0) {
+        setAgentWorkspaceLayouts((currentLayouts) => {
+          const activeProject = activeProjectRef.current
+          if (!activeProject || activeProject.id !== projectId) {
+            return currentLayouts
+          }
+
+          const layout = reconcileAgentWorkspaceLayout(activeProject, currentLayouts[projectId])
+          const targetSlot = layout.paneSlots.find((slot) => slot.id === targetPaneId)
+          if (!targetSlot || targetSlot.agentSessionId) {
+            return currentLayouts
+          }
+
+          const paneIndex = layout.paneSlots.findIndex((slot) => slot.id === targetPaneId)
+          const paneSlots = layout.paneSlots.filter((slot) => slot.id !== targetPaneId)
+          const nextLayout =
+            paneSlots.length > 0
+              ? {
+                  ...layout,
+                  paneSlots,
+                  focusedPaneId:
+                    layout.focusedPaneId === targetPaneId
+                      ? paneSlots[Math.max(0, paneIndex - 1)]?.id ?? paneSlots[0].id
+                      : layout.focusedPaneId,
+                }
+              : createDefaultAgentWorkspaceLayout(activeProject)
+          const nextLayouts = {
+            ...currentLayouts,
+            [projectId]: nextLayout,
+          }
+          agentWorkspaceLayoutsRef.current = nextLayouts
+          return nextLayouts
+        })
+      }
+      setErrorMessage(getDesktopErrorMessage(error))
+      throw error
+    }
+    pendingSpawnPaneIdsRef.current.delete(targetPaneId)
+
+    setActiveProject((project) => {
+      if (!project || project.id !== projectId) {
+        return project
+      }
+      const nextProject = applyAgentSessionToProject(project, createdSession)
+      activeProjectRef.current = nextProject
+      projectDetailsRef.current[projectId] = nextProject
+      return nextProject
+    })
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      const project = activeProjectRef.current
+      if (!project || project.id !== projectId) {
+        return currentLayouts
+      }
+
+      const layout = reconcileAgentWorkspaceLayout(project, currentLayouts[projectId])
+      if (!layout.paneSlots.some((slot) => slot.id === targetPaneId)) {
+        return currentLayouts
+      }
+
+      const paneSlots = layout.paneSlots.map((slot) =>
+        slot.id === targetPaneId
+          ? { ...slot, agentSessionId: createdSession.agentSessionId }
+          : slot,
+      )
+      const nextLayout: AgentWorkspaceLayoutState = {
+        ...layout,
+        paneSlots,
+        focusedPaneId: targetPaneId,
+      }
+      const nextLayouts = {
+        ...currentLayouts,
+        [projectId]: nextLayout,
+      }
+      agentWorkspaceLayoutsRef.current = nextLayouts
+      return nextLayouts
+    })
+    void hydrateAgentSessionRuntimeState(projectId, createdSession.agentSessionId).catch(() => undefined)
+
+    return {
+      ...pendingLayout,
+      paneSlots: pendingLayout.paneSlots.map((slot) =>
+        slot.id === targetPaneId
+          ? { ...slot, agentSessionId: createdSession.agentSessionId }
+          : slot,
+      ),
+    }
+  }, [adapter, hydrateAgentSessionRuntimeState])
+
+  const closePane = useCallback((paneId: string) => {
+    const projectId = activeProjectIdRef.current
+    const currentProject = activeProjectRef.current
+    if (!projectId || !currentProject || currentProject.id !== projectId) {
+      return
+    }
+
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      const currentLayout = reconcileAgentWorkspaceLayout(
+        currentProject,
+        currentLayouts[projectId],
+      )
+      if (currentLayout.paneSlots.length <= 1) {
+        return currentLayouts
+      }
+
+      const paneIndex = currentLayout.paneSlots.findIndex((slot) => slot.id === paneId)
+      if (paneIndex < 0) {
+        return currentLayouts
+      }
+
+      const paneSlots = currentLayout.paneSlots.filter((slot) => slot.id !== paneId)
+      const nextFocusedPaneId =
+        currentLayout.focusedPaneId === paneId
+          ? paneSlots[Math.max(0, paneIndex - 1)]?.id ?? paneSlots[0].id
+          : currentLayout.focusedPaneId
+      return {
+        ...currentLayouts,
+        [projectId]: {
+          ...currentLayout,
+          paneSlots,
+          focusedPaneId: nextFocusedPaneId,
+        },
+      }
+    })
+  }, [])
+
+  const focusPane = useCallback((paneId: string) => {
+    const projectId = activeProjectIdRef.current
+    const currentProject = activeProjectRef.current
+    if (!projectId || !currentProject || currentProject.id !== projectId) {
+      return
+    }
+
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      const currentLayout = reconcileAgentWorkspaceLayout(
+        currentProject,
+        currentLayouts[projectId],
+      )
+      if (
+        currentLayout.focusedPaneId === paneId ||
+        !currentLayout.paneSlots.some((slot) => slot.id === paneId)
+      ) {
+        return currentLayouts
+      }
+
+      return {
+        ...currentLayouts,
+        [projectId]: {
+          ...currentLayout,
+          focusedPaneId: paneId,
+        },
+      }
+    })
+  }, [])
+
+  const setSplitterRatios = useCallback((arrangementKey: string, ratios: number[]) => {
+    const key = arrangementKey.trim()
+    const projectId = activeProjectIdRef.current
+    const currentProject = activeProjectRef.current
+    if (!projectId || !key || !currentProject || currentProject.id !== projectId) {
+      return
+    }
+
+    const sanitizedRatios = ratios.filter((ratio) => Number.isFinite(ratio) && ratio > 0)
+    if (sanitizedRatios.length !== ratios.length || sanitizedRatios.length === 0) {
+      return
+    }
+
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      const currentLayout = reconcileAgentWorkspaceLayout(
+        currentProject,
+        currentLayouts[projectId],
+      )
+      return {
+        ...currentLayouts,
+        [projectId]: {
+          ...currentLayout,
+          splitterRatios: {
+            ...currentLayout.splitterRatios,
+            [key]: sanitizedRatios,
+          },
+        },
+      }
+    })
+  }, [])
+
   useEffect(() => {
     if (providerCredentialsLoadStatus !== 'idle') {
       return
@@ -2135,7 +2751,6 @@ export function useXeroDesktopState(
   const activeAutonomousRun =
     activeAutonomousRunCandidate?.agentSessionId === activeAgentSessionId ? activeAutonomousRunCandidate : null
   const activeAutonomousRunErrorMessage = activeProjectId ? autonomousRunLoadErrors[activeProjectId] ?? null : null
-  const activeRuntimeRunId = activeRuntimeRun?.runId ?? null
   const activeRuntimeSessionId = activeRuntimeSession?.sessionId ?? null
   const activeRuntimeSessionFlowId = activeRuntimeSession?.flowId ?? null
   const activeRuntimeSessionKind = activeRuntimeSession?.runtimeKind ?? null
@@ -2149,39 +2764,95 @@ export function useXeroDesktopState(
       activeRuntimeSessionKind,
     ],
   )
-  const activeRuntimeSubscriptionKey =
-    activeProjectId
-    && activeAgentSessionId
-    && activeRuntimeSessionAuthenticated
-    && activeRuntimeSessionId
-    && activeRuntimeRunId
-      ? [
-          activeProjectId,
-          activeAgentSessionId,
-          activeRuntimeSessionKind,
-          activeRuntimeSessionId,
-          activeRuntimeSessionFlowId ?? 'none',
-          activeRuntimeRunId,
-          runtimeStreamRetryToken,
-        ].join(':')
-      : null
+  const agentWorkspaceLayout = useMemo(
+    () =>
+      activeProject
+        ? reconcileAgentWorkspaceLayout(activeProject, agentWorkspaceLayouts[activeProject.id])
+        : null,
+    [activeProject, agentWorkspaceLayouts],
+  )
+  const activeRuntimeSubscriptionTargets = useMemo(() => {
+    if (
+      !activeProjectId ||
+      !activeProject ||
+      !activeRuntimeSubscriptionSession?.isAuthenticated ||
+      !activeRuntimeSubscriptionSession.sessionId
+    ) {
+      return []
+    }
 
-  useEffect(() => {
-    return attachRuntimeStreamSubscription({
-      projectId: activeProjectId,
-      agentSessionId: activeAgentSessionId,
-      runtimeSession: activeRuntimeSubscriptionSession,
-      runId: activeRuntimeRunId,
-      adapter,
-      runtimeActionRefreshKeysRef,
-      updateRuntimeStream,
-      scheduleRuntimeMetadataRefresh,
+    const seenSessionIds = new Set<string>()
+    const slots = agentWorkspaceLayout?.paneSlots ?? [
+      { id: createDefaultAgentWorkspacePaneId(activeProjectId), agentSessionId: activeAgentSessionId },
+    ]
+
+    return slots.flatMap((slot) => {
+      const agentSessionId = slot.agentSessionId
+      if (!agentSessionId || seenSessionIds.has(agentSessionId)) {
+        return []
+      }
+      seenSessionIds.add(agentSessionId)
+
+      const cacheKey = createAgentSessionStateKey(activeProjectId, agentSessionId)
+      const runtimeRun =
+        agentSessionId === activeAgentSessionId
+          ? activeRuntimeRun
+          : runtimeRunsBySessionRef.current[cacheKey] ?? null
+      const runId = runtimeRun?.runId ?? null
+      if (!runId) {
+        return []
+      }
+
+      return [{
+        key: [
+          activeProjectId,
+          agentSessionId,
+          activeRuntimeSubscriptionSession.runtimeKind,
+          activeRuntimeSubscriptionSession.sessionId,
+          activeRuntimeSubscriptionSession.flowId ?? 'none',
+          runId,
+          runtimeStreamRetryToken,
+        ].join(':'),
+        projectId: activeProjectId,
+        agentSessionId,
+        runId,
+        runtimeSession: activeRuntimeSubscriptionSession,
+      }]
     })
   }, [
-    activeProjectId,
     activeAgentSessionId,
-    activeRuntimeRunId,
+    activeProject,
+    activeProjectId,
+    activeRuntimeRun,
     activeRuntimeSubscriptionSession,
+    agentSessionRuntimeCacheRevision,
+    agentWorkspaceLayout,
+    runtimeStreamRetryToken,
+  ])
+  const activeRuntimeSubscriptionKey = activeRuntimeSubscriptionTargets
+    .map((target) => target.key)
+    .join('|')
+
+  useEffect(() => {
+    const cleanups = activeRuntimeSubscriptionTargets.map((target) =>
+      attachRuntimeStreamSubscription({
+        projectId: target.projectId,
+        agentSessionId: target.agentSessionId,
+        runtimeSession: target.runtimeSession,
+        runId: target.runId,
+        adapter,
+        runtimeActionRefreshKeysRef,
+        updateRuntimeStream,
+        scheduleRuntimeMetadataRefresh,
+      }),
+    )
+
+    return () => {
+      for (const cleanup of cleanups) {
+        cleanup()
+      }
+    }
+  }, [
     activeRuntimeSubscriptionKey,
     adapter,
     scheduleRuntimeMetadataRefresh,
@@ -2208,7 +2879,12 @@ export function useXeroDesktopState(
   const activePhase = useMemo(() => getActivePhase(activeProject), [activeProject])
   const activeRuntimeErrorMessage = activeProject ? runtimeLoadErrors[activeProject.id] ?? null : null
   const activeRuntimeRunErrorMessage = activeProject ? runtimeRunLoadErrors[activeProject.id] ?? null : null
-  const activeRuntimeStreamCandidate = activeProject ? runtimeStreams[activeProject.id] ?? null : null
+  const activeRuntimeStreamCandidate =
+    activeProject && activeAgentSessionId
+      ? runtimeStreams[createRuntimeStreamStoreKey(activeProject.id, activeAgentSessionId)] ?? runtimeStreams[activeProject.id] ?? null
+      : activeProject
+        ? runtimeStreams[activeProject.id] ?? null
+        : null
   const activeRuntimeStream =
     activeRuntimeStreamCandidate?.agentSessionId === activeAgentSessionId
       ? activeRuntimeStreamCandidate
@@ -2322,6 +2998,164 @@ export function useXeroDesktopState(
     ],
   )
   const agentView = agentViewProjection.view
+  const agentWorkspacePanes = useMemo<AgentWorkspacePaneView[]>(() => {
+    if (!activeProject || !agentWorkspaceLayout) {
+      return []
+    }
+
+    return agentWorkspaceLayout.paneSlots.flatMap<AgentWorkspacePaneView>((slot) => {
+      if (!slot.agentSessionId) {
+        const projection = buildAgentView({
+          project: createEmptyAgentSessionProject(activeProject),
+          activePhase,
+          repositoryStatus,
+          providerCredentials,
+          runtimeSession: activeRuntimeSession,
+          providerModelCatalogs,
+          providerModelCatalogLoadStatuses,
+          providerModelCatalogLoadErrors,
+          activeProviderModelCatalog,
+          activeProviderModelCatalogLoadStatus,
+          activeProviderModelCatalogLoadError,
+          runtimeRun: null,
+          autonomousRun: null,
+          runtimeErrorMessage: activeRuntimeErrorMessage,
+          runtimeRunErrorMessage: null,
+          autonomousRunErrorMessage: null,
+          runtimeStream: null,
+          notificationRoutes: activeNotificationRoutes,
+          notificationRouteLoadStatus: activeNotificationRouteLoadStatus,
+          notificationRouteError: activeNotificationRouteLoadError,
+          notificationSyncSummary: activeNotificationSyncSummary,
+          notificationSyncError: activeNotificationSyncError,
+          blockedNotificationSyncPollTarget: activeBlockedNotificationSyncPollTarget,
+          notificationRouteMutationStatus,
+          pendingNotificationRouteId,
+          notificationRouteMutationError,
+          previousTrustSnapshot: null,
+          operatorActionStatus,
+          pendingOperatorActionId,
+          operatorActionError,
+          autonomousRunActionStatus,
+          pendingAutonomousRunAction,
+          autonomousRunActionError,
+          runtimeRunActionStatus,
+          pendingRuntimeRunAction,
+          runtimeRunActionError,
+        }).view
+
+        return projection
+          ? [{
+              paneId: slot.id,
+              agentSessionId: null,
+              agent: projection,
+            }]
+          : []
+      }
+
+      if (slot.agentSessionId === activeAgentSessionId && agentView) {
+        return [{
+          paneId: slot.id,
+          agentSessionId: slot.agentSessionId,
+          agent: agentView,
+        }]
+      }
+
+      const paneProject = selectAgentSessionInProject(activeProject, slot.agentSessionId)
+      const cacheKey = createAgentSessionStateKey(activeProject.id, slot.agentSessionId)
+      const cachedRuntimeRun = hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey)
+        ? runtimeRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedAutonomousRun = hasOwnRecord(autonomousRunsBySessionRef.current, cacheKey)
+        ? autonomousRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedRuntimeStream = runtimeStreamsBySessionRef.current[cacheKey] ?? null
+      const projection = buildAgentView({
+        project: paneProject,
+        activePhase,
+        repositoryStatus,
+        providerCredentials,
+        runtimeSession: activeRuntimeSession,
+        providerModelCatalogs,
+        providerModelCatalogLoadStatuses,
+        providerModelCatalogLoadErrors,
+        activeProviderModelCatalog,
+        activeProviderModelCatalogLoadStatus,
+        activeProviderModelCatalogLoadError,
+        runtimeRun: cachedRuntimeRun,
+        autonomousRun: cachedAutonomousRun,
+        runtimeErrorMessage: activeRuntimeErrorMessage,
+        runtimeRunErrorMessage: activeRuntimeRunErrorMessage,
+        autonomousRunErrorMessage: activeAutonomousRunErrorMessage,
+        runtimeStream: cachedRuntimeStream,
+        notificationRoutes: activeNotificationRoutes,
+        notificationRouteLoadStatus: activeNotificationRouteLoadStatus,
+        notificationRouteError: activeNotificationRouteLoadError,
+        notificationSyncSummary: activeNotificationSyncSummary,
+        notificationSyncError: activeNotificationSyncError,
+        blockedNotificationSyncPollTarget: activeBlockedNotificationSyncPollTarget,
+        notificationRouteMutationStatus,
+        pendingNotificationRouteId,
+        notificationRouteMutationError,
+        previousTrustSnapshot: null,
+        operatorActionStatus,
+        pendingOperatorActionId,
+        operatorActionError,
+        autonomousRunActionStatus,
+        pendingAutonomousRunAction,
+        autonomousRunActionError,
+        runtimeRunActionStatus,
+        pendingRuntimeRunAction,
+        runtimeRunActionError,
+      }).view
+
+      if (!projection) {
+        return []
+      }
+
+      return [{
+        paneId: slot.id,
+        agentSessionId: slot.agentSessionId,
+        agent: projection,
+      }]
+    })
+  }, [
+    activeAgentSessionId,
+    activeAutonomousRunErrorMessage,
+    activeBlockedNotificationSyncPollTarget,
+    activeNotificationRouteLoadError,
+    activeNotificationRouteLoadStatus,
+    activeNotificationRoutes,
+    activeNotificationSyncError,
+    activeNotificationSyncSummary,
+    activePhase,
+    activeProject,
+    activeProviderModelCatalog,
+    activeProviderModelCatalogLoadError,
+    activeProviderModelCatalogLoadStatus,
+    activeRuntimeErrorMessage,
+    activeRuntimeRunErrorMessage,
+    activeRuntimeSession,
+    agentView,
+    agentWorkspaceLayout,
+    autonomousRunActionError,
+    autonomousRunActionStatus,
+    notificationRouteMutationError,
+    notificationRouteMutationStatus,
+    operatorActionError,
+    operatorActionStatus,
+    pendingAutonomousRunAction,
+    pendingNotificationRouteId,
+    pendingOperatorActionId,
+    pendingRuntimeRunAction,
+    providerCredentials,
+    providerModelCatalogLoadErrors,
+    providerModelCatalogLoadStatuses,
+    providerModelCatalogs,
+    repositoryStatus,
+    runtimeRunActionError,
+    runtimeRunActionStatus,
+  ])
 
   useEffect(() => {
     if (!activeProject || !agentViewProjection.trustSnapshot) {
@@ -2351,6 +3185,8 @@ export function useXeroDesktopState(
     repositoryStatus,
     workflowView,
     agentView,
+    agentWorkspaceLayout,
+    agentWorkspacePanes,
     executionView,
     repositoryDiffs,
     activeDiffScope,
@@ -2461,6 +3297,10 @@ export function useXeroDesktopState(
     restoreAgentSession,
     deleteAgentSession,
     renameAgentSession,
+    spawnPane,
+    closePane,
+    focusPane,
+    setSplitterRatios,
     usageSummaries,
     activeUsageSummary: activeProjectId ? (usageSummaries[activeProjectId] ?? null) : null,
     activeUsageSummaryLoadError: activeProjectId

@@ -139,6 +139,7 @@ pub(crate) fn drive_provider_loop(
                         )?;
                         messages.push(ProviderMessage::User {
                             content: gate_prompt,
+                            attachments: Vec::new(),
                         });
                         if controls.active.runtime_agent_id.allows_verification_gate() {
                             tool_registry.expand_with_tool_names([
@@ -237,7 +238,10 @@ pub(crate) fn drive_provider_loop(
                             AgentMessageRole::Developer,
                             message.clone(),
                         )?;
-                        messages.push(ProviderMessage::User { content: message });
+                        messages.push(ProviderMessage::User {
+                            content: message,
+                            attachments: Vec::new(),
+                        });
                         continue;
                     }
                     ToolBatchGate::RequirePlanApproval { action_id, message } => {
@@ -335,7 +339,7 @@ fn provider_messages_task_text(messages: &[ProviderMessage]) -> String {
     messages
         .iter()
         .filter_map(|message| match message {
-            ProviderMessage::User { content } => Some(content.as_str()),
+            ProviderMessage::User { content, .. } => Some(content.as_str()),
             ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => None,
         })
         .collect::<Vec<_>>()
@@ -606,6 +610,7 @@ pub(crate) fn provider_messages_from_snapshot(
                 "Compacted prior session context from Xero. Raw transcript rows are still durable for search/export, but replay should use this summary plus the raw tail below.\n\n{}",
                 compaction.summary
             ),
+            attachments: Vec::new(),
         });
     }
     for message in &snapshot.messages {
@@ -620,6 +625,7 @@ pub(crate) fn provider_messages_from_snapshot(
             AgentMessageRole::Developer | AgentMessageRole::User => {
                 messages.push(ProviderMessage::User {
                     content: message.content.clone(),
+                    attachments: provider_attachments_from_records(&message.attachments),
                 });
             }
             AgentMessageRole::Assistant => {

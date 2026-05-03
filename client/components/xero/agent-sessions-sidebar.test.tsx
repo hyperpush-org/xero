@@ -279,4 +279,27 @@ describe('AgentSessionsSidebar', () => {
     fireEvent.click(searchToggle)
     expect(screen.getByRole('searchbox', { name: 'Search sessions' })).toHaveValue('')
   })
+
+  it('renders pane number chips for sessions loaded in non-focused panes', () => {
+    const altSession: AgentSessionView = {
+      ...sessions[0],
+      agentSessionId: 'agent-session-alt',
+      title: 'Side session',
+      selected: false,
+    }
+
+    renderSidebar({
+      sessions: [...sessions, altSession],
+      // Main session is focused (selectedSessionId), alt session is loaded in pane 2.
+      sessionPaneAssignments: {
+        'agent-session-main': 1,
+        'agent-session-alt': 2,
+      },
+    })
+
+    // The focused session should NOT show a pane chip.
+    expect(screen.queryByLabelText('Loaded in pane 1')).not.toBeInTheDocument()
+    // The non-focused loaded session should show a P2 chip.
+    expect(screen.getByLabelText('Loaded in pane 2')).toHaveTextContent('P2')
+  })
 })

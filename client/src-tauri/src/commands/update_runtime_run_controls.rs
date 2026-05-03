@@ -65,6 +65,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
             &request.agent_session_id,
             request.controls.clone(),
             request.prompt.clone(),
+            request.attachments.clone(),
         )?;
         emit_runtime_run_updated_if_changed(
             &app,
@@ -100,6 +101,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
             &repo_root,
             &after,
             prompt,
+            request.attachments.clone(),
             auto_compact,
         )? {
             let before_bind = Some(after.clone());
@@ -137,6 +139,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
     prompt: String,
+    attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
     auto_compact: Option<AgentAutoCompactPreference>,
 ) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
     if state
@@ -166,6 +169,10 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 project_id: snapshot.run.project_id.clone(),
                 run_id: snapshot.run.run_id.clone(),
                 prompt,
+                attachments: attachments
+                    .iter()
+                    .map(super::runtime_support::staged_attachment_dto_to_message_attachment)
+                    .collect(),
                 controls,
                 tool_runtime,
                 provider_config,
@@ -209,6 +216,10 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 agent_session_id: snapshot.run.agent_session_id.clone(),
                 run_id: snapshot.run.run_id.clone(),
                 prompt,
+                attachments: attachments
+                    .iter()
+                    .map(super::runtime_support::staged_attachment_dto_to_message_attachment)
+                    .collect(),
                 controls,
                 tool_runtime,
                 provider_config,

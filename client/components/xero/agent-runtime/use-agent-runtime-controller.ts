@@ -12,6 +12,7 @@ import type {
   RuntimeRunControlInputDto,
   RuntimeRunView,
   RuntimeSessionView,
+  StagedAgentAttachmentDto,
 } from '@/src/lib/xero-model'
 
 import {
@@ -62,13 +63,19 @@ interface UseAgentRuntimeControllerOptions {
   onStartRuntimeRun?: (options?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
+    attachments?: StagedAgentAttachmentDto[]
   }) => Promise<RuntimeRunView | null>
   onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
   onUpdateRuntimeRunControls?: (request?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
+    attachments?: StagedAgentAttachmentDto[]
     autoCompact?: RuntimeAutoCompactPreferenceDto | null
   }) => Promise<RuntimeRunView | null>
+  /** Returns the staged attachments that should be sent with the next prompt. */
+  getPendingAttachments?: () => StagedAgentAttachmentDto[]
+  /** Called after a prompt+attachments submission succeeds, so the caller can clear chips. */
+  onSubmitAttachmentsSettled?: () => void
   onComposerControlsChange?: (controls: RuntimeRunControlInputDto | null) => void
   onStopRuntimeRun?: (runId: string) => Promise<RuntimeRunView | null>
   onResolveOperatorAction?: (
@@ -157,6 +164,8 @@ export function useAgentRuntimeController({
   onStopRuntimeRun,
   onResolveOperatorAction,
   onResumeOperatorRun,
+  getPendingAttachments,
+  onSubmitAttachmentsSettled,
 }: UseAgentRuntimeControllerOptions) {
   const [draftPrompt, setDraftPrompt] = useState('')
   const [draftModelSelectionKey, setDraftModelSelectionKey] = useState<string | null>(selectedModelSelectionKey)
@@ -487,13 +496,20 @@ export function useAgentRuntimeController({
       }
 
       const promptToSubmit = draftPromptRef.current.trim()
+      const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
+        (attachment) => attachment.absolutePath != null,
+      )
       await onStartRuntimeRun({
         controls: selectedControlInput,
         prompt: promptToSubmit.length > 0 ? promptToSubmit : null,
+        attachments: attachmentsToSubmit.length > 0 ? attachmentsToSubmit : undefined,
       })
-      if (promptToSubmit.length > 0) {
+      if (promptToSubmit.length > 0 || attachmentsToSubmit.length > 0) {
         clearSubmittedDraft()
-        setQueuedDraftAcknowledgement(promptToSubmit)
+        if (promptToSubmit.length > 0) {
+          setQueuedDraftAcknowledgement(promptToSubmit)
+        }
+        onSubmitAttachmentsSettled?.()
       }
     } catch (error) {
       setQueuedDraftAcknowledgement(null)
@@ -528,12 +544,17 @@ export function useAgentRuntimeController({
         return
       }
 
+      const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
+        (attachment) => attachment.absolutePath != null,
+      )
       await onUpdateRuntimeRunControls({
         prompt: promptToSubmit,
+        ...(attachmentsToSubmit.length > 0 ? { attachments: attachmentsToSubmit } : {}),
         ...(autoCompactEnabled ? { autoCompact: AUTO_COMPACT_DEFAULT_PREFERENCE } : {}),
       })
       clearSubmittedDraft()
       setQueuedDraftAcknowledgement(promptToSubmit)
+      onSubmitAttachmentsSettled?.()
     } catch (error) {
       setQueuedDraftAcknowledgement(null)
       setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not queue the next prompt for this agent run.'))

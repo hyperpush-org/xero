@@ -203,6 +203,7 @@ import {
   agentSessionSchema,
   listAgentSessionsRequestSchema,
   listAgentSessionsResponseSchema,
+  stagedAgentAttachmentSchema,
   startRuntimeSessionRequestSchema,
   startRuntimeRunRequestSchema,
   stopRuntimeRunRequestSchema,
@@ -224,6 +225,7 @@ import {
   type RuntimeSessionDto,
   type ProviderAuthSessionDto,
   type RuntimeUpdatedPayloadDto,
+  type StagedAgentAttachmentDto,
   type StartRuntimeRunRequestDto,
   type StartRuntimeSessionRequestDto,
   type StopRuntimeRunRequestDto,
@@ -446,6 +448,8 @@ const COMMANDS = {
   startOpenAiLogin: 'start_openai_login',
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
+  stageAgentAttachment: 'stage_agent_attachment',
+  discardAgentAttachment: 'discard_agent_attachment',
   startRuntimeRun: 'start_runtime_run',
   updateRuntimeRunControls: 'update_runtime_run_controls',
   startRuntimeSession: 'start_runtime_session',
@@ -613,6 +617,15 @@ export interface SubmitOpenAiCallbackOptions {
 export interface StartRuntimeRunOptions {
   initialControls?: RuntimeRunControlInputDto | null
   initialPrompt?: string | null
+  initialAttachments?: StagedAgentAttachmentDto[]
+}
+
+export interface StageAgentAttachmentInput {
+  projectId: string
+  runId: string
+  originalName: string
+  mediaType: string
+  bytes: Uint8Array
 }
 
 export interface StartRuntimeSessionOptions {
@@ -794,6 +807,8 @@ export interface XeroDesktopAdapter {
     agentSessionId: string,
     options?: StartRuntimeRunOptions,
   ): Promise<RuntimeRunDto>
+  stageAgentAttachment(input: StageAgentAttachmentInput): Promise<StagedAgentAttachmentDto>
+  discardAgentAttachment(projectId: string, absolutePath: string): Promise<void>
   updateRuntimeRunControls(request: UpdateRuntimeRunControlsRequestDto): Promise<RuntimeRunDto>
   startRuntimeSession(projectId: string, options?: StartRuntimeSessionOptions): Promise<RuntimeSessionDto>
   cancelAutonomousRun(projectId: string, agentSessionId: string, runId: string): Promise<AutonomousRunStateDto>
@@ -2064,10 +2079,30 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       agentSessionId,
       initialControls: options?.initialControls ?? null,
       initialPrompt: options?.initialPrompt ?? null,
+      initialAttachments: options?.initialAttachments ?? [],
     })
 
     return invokeTyped(COMMANDS.startRuntimeRun, runtimeRunSchema, {
       request,
+    })
+  },
+
+  stageAgentAttachment(input) {
+    const request = {
+      projectId: input.projectId,
+      runId: input.runId,
+      originalName: input.originalName,
+      mediaType: input.mediaType,
+      bytes: Array.from(input.bytes),
+    }
+    return invokeTyped(COMMANDS.stageAgentAttachment, stagedAgentAttachmentSchema, {
+      request,
+    })
+  },
+
+  discardAgentAttachment(projectId, absolutePath) {
+    return invoke<void>(COMMANDS.discardAgentAttachment, {
+      request: { projectId, absolutePath },
     })
   },
 

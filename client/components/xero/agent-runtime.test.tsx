@@ -1943,4 +1943,125 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('Configure agent runtime')).toBeVisible()
   })
+
+  describe('multi-pane density and pane controls', () => {
+    it('hides the close button when only one pane is open', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      expect(screen.queryByRole('button', { name: 'Close pane' })).not.toBeInTheDocument()
+    })
+
+    it('shows the close button and pane number chip when multiple panes are open', () => {
+      const onClose = vi.fn()
+      render(
+        <AgentRuntime
+          agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+          paneCount={2}
+          paneNumber={2}
+          onClosePane={onClose}
+        />,
+      )
+
+      const closeButton = screen.getByRole('button', { name: 'Close pane' })
+      expect(closeButton).toBeVisible()
+      expect(screen.getByLabelText('Pane 2')).toHaveTextContent('P2')
+
+      fireEvent.click(closeButton)
+      expect(onClose).toHaveBeenCalledTimes(1)
+    })
+
+    it('reports close guard state for running runs and unsent composer text', async () => {
+      const onPaneCloseStateChange = vi.fn()
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            runtimeRun: makeRuntimeRun(),
+          })}
+          paneCount={2}
+          paneNumber={1}
+          onUpdateRuntimeRunControls={vi.fn()}
+          onPaneCloseStateChange={onPaneCloseStateChange}
+        />,
+      )
+
+      await waitFor(() =>
+        expect(onPaneCloseStateChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            hasRunningRun: true,
+            hasUnsavedComposerText: false,
+          }),
+        ),
+      )
+
+      fireEvent.change(screen.getByLabelText('Agent input'), {
+        target: { value: 'Please inspect the failing build.' },
+      })
+
+      await waitFor(() =>
+        expect(onPaneCloseStateChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            hasRunningRun: true,
+            hasUnsavedComposerText: true,
+          }),
+        ),
+      )
+    })
+
+    it('disables the spawn-pane button when the workspace is at capacity', () => {
+      const onSpawn = vi.fn()
+      render(
+        <AgentRuntime
+          agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+          paneCount={6}
+          paneNumber={6}
+          onSpawnPane={onSpawn}
+          spawnPaneDisabled
+        />,
+      )
+
+      const spawnBtn = screen.getByRole('button', { name: 'Pane limit reached' })
+      expect(spawnBtn).toBeDisabled()
+    })
+
+    it('renders the compact composer variant with a gear popover when density is compact', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          })}
+          density="compact"
+          paneCount={3}
+          paneNumber={1}
+        />,
+      )
+
+      // Compact composer: gear popover trigger is visible.
+      expect(screen.getByRole('button', { name: 'Composer settings' })).toBeVisible()
+      // Comfortable-mode inline thinking selector is hidden in compact mode (lives inside gear popover).
+      expect(screen.queryByLabelText('Thinking level selector')).not.toBeInTheDocument()
+    })
+
+    it('renders the comfortable composer variant with inline thinking selector when density is comfortable', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          })}
+          density="comfortable"
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      expect(screen.queryByRole('button', { name: 'Composer settings' })).not.toBeInTheDocument()
+      expect(screen.getByLabelText('Thinking level selector')).toBeVisible()
+    })
+  })
 })

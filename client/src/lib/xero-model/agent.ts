@@ -64,6 +64,23 @@ export const agentActionRequestStatusSchema = z.enum([
 ])
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/)
 
+export const agentMessageAttachmentKindSchema = z.enum(['image', 'document', 'text'])
+
+export const agentMessageAttachmentSchema = z
+  .object({
+    id: z.number().int(),
+    messageId: z.number().int(),
+    kind: agentMessageAttachmentKindSchema,
+    absolutePath: z.string().min(1),
+    mediaType: z.string().min(1),
+    originalName: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+    width: z.number().int().nonnegative().nullable().optional(),
+    height: z.number().int().nonnegative().nullable().optional(),
+    createdAt: isoTimestampSchema,
+  })
+  .strict()
+
 export const agentMessageSchema = z
   .object({
     id: z.number().int().positive(),
@@ -72,6 +89,7 @@ export const agentMessageSchema = z
     role: agentMessageRoleSchema,
     content: z.string(),
     createdAt: isoTimestampSchema,
+    attachments: z.array(agentMessageAttachmentSchema).default([]),
   })
   .strict()
 
@@ -262,6 +280,8 @@ export type AgentFileChangeOperationDto = z.infer<typeof agentFileChangeOperatio
 export type AgentCheckpointKindDto = z.infer<typeof agentCheckpointKindSchema>
 export type AgentActionRequestStatusDto = z.infer<typeof agentActionRequestStatusSchema>
 export type AgentMessageDto = z.infer<typeof agentMessageSchema>
+export type AgentMessageAttachmentDto = z.infer<typeof agentMessageAttachmentSchema>
+export type AgentMessageAttachmentKindDto = z.infer<typeof agentMessageAttachmentKindSchema>
 export type AgentRunEventDto = z.infer<typeof agentRunEventSchema>
 export type AgentToolCallDto = z.infer<typeof agentToolCallSchema>
 export type AgentFileChangeDto = z.infer<typeof agentFileChangeSchema>

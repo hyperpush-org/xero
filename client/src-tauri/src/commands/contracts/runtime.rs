@@ -849,6 +849,47 @@ pub struct StartRuntimeRunRequestDto {
     pub initial_controls: Option<RuntimeRunControlInputDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_attachments: Vec<StagedAgentAttachmentDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAttachmentKindDto {
+    Image,
+    Document,
+    Text,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StagedAgentAttachmentDto {
+    pub kind: AgentAttachmentKindDto,
+    pub absolute_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StageAgentAttachmentRequestDto {
+    pub project_id: String,
+    pub run_id: String,
+    pub original_name: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscardAgentAttachmentRequestDto {
+    pub project_id: String,
+    pub absolute_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -869,6 +910,8 @@ pub struct UpdateRuntimeRunControlsRequestDto {
     pub controls: Option<RuntimeRunControlInputDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<StagedAgentAttachmentDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<AgentAutoCompactPreferenceDto>,
 }

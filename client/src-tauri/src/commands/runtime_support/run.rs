@@ -192,6 +192,7 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
     agent_session_id: &str,
     requested_controls: Option<RuntimeRunControlInputDto>,
     initial_prompt: Option<String>,
+    initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
     launch_owned_runtime_run(
         app,
@@ -200,6 +201,7 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
         agent_session_id,
         requested_controls,
         initial_prompt,
+        initial_attachments,
     )
 }
 
@@ -210,6 +212,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     agent_session_id: &str,
     requested_controls: Option<RuntimeRunControlInputDto>,
     initial_prompt: Option<String>,
+    initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
     let repo_root = resolve_project_root(app, state, project_id)?;
     project_store::ensure_agent_session_active(&repo_root, project_id, agent_session_id)?;
@@ -277,6 +280,10 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
             agent_session_id: agent_session_id.into(),
             run_id: run_id.clone(),
             prompt,
+            attachments: initial_attachments
+                .iter()
+                .map(staged_attachment_dto_to_message_attachment)
+                .collect(),
             controls: Some(runtime_control_input_from_active(&run_controls.active)),
             tool_runtime,
             provider_config,
@@ -1278,6 +1285,30 @@ fn runtime_run_checkpoint_kind_dto(kind: RuntimeRunCheckpointKind) -> RuntimeRun
         RuntimeRunCheckpointKind::Tool => RuntimeRunCheckpointKindDto::Tool,
         RuntimeRunCheckpointKind::ActionRequired => RuntimeRunCheckpointKindDto::ActionRequired,
         RuntimeRunCheckpointKind::Diagnostic => RuntimeRunCheckpointKindDto::Diagnostic,
+    }
+}
+
+pub(crate) fn staged_attachment_dto_to_message_attachment(
+    dto: &crate::commands::StagedAgentAttachmentDto,
+) -> crate::runtime::MessageAttachment {
+    crate::runtime::MessageAttachment {
+        kind: match dto.kind {
+            crate::commands::AgentAttachmentKindDto::Image => {
+                crate::runtime::MessageAttachmentKind::Image
+            }
+            crate::commands::AgentAttachmentKindDto::Document => {
+                crate::runtime::MessageAttachmentKind::Document
+            }
+            crate::commands::AgentAttachmentKindDto::Text => {
+                crate::runtime::MessageAttachmentKind::Text
+            }
+        },
+        absolute_path: std::path::PathBuf::from(&dto.absolute_path),
+        media_type: dto.media_type.clone(),
+        original_name: dto.original_name.clone(),
+        size_bytes: dto.size_bytes,
+        width: dto.width,
+        height: dto.height,
     }
 }
 

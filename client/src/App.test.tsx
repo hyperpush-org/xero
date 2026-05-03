@@ -1772,6 +1772,14 @@ function createAdapter(options?: {
       })
       return currentRuntimeRun
     },
+    stageAgentAttachment: async () => ({
+      kind: 'image' as const,
+      absolutePath: '/tmp/stage.png',
+      mediaType: 'image/png',
+      originalName: 'stage.png',
+      sizeBytes: 0,
+    }),
+    discardAgentAttachment: async () => undefined,
     cancelAutonomousRun: async (_projectId, _agentSessionId, runId) => {
       currentAutonomousState = {
         run: {
@@ -2062,14 +2070,14 @@ function ActivatedSurfaceProbe({
 }
 
 describe('useActivatedSurface', () => {
-  it('does not permanently activate a surface just because it was prewarmed', () => {
+  it('keeps a prewarmed surface mounted after the warmup window ends', () => {
     const { rerender } = render(<ActivatedSurfaceProbe active={false} prewarm />)
 
     expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
 
     rerender(<ActivatedSurfaceProbe active={false} prewarm={false} />)
 
-    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'false')
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
   })
 
   it('keeps a user-opened surface mounted after it closes', () => {
@@ -2438,6 +2446,51 @@ describe('XeroApp current UI', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Agent conversation viewport')).not.toBeVisible(),
     )
+  })
+
+  it('renders the existing single-pane agent runtime through the workspace shell', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+
+    expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
+    expect(screen.getByText('New Session')).toBeVisible()
+    expect(screen.getAllByText('Main session').length).toBeGreaterThan(0)
+  })
+
+  it('confirms before closing a pane with a running agent run', async () => {
+    const { adapter } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn agent pane' }))
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Close pane' })).toHaveLength(2))
+
+    const firstPane = screen.getByRole('region', { name: 'Agent pane 1 - Session "Main session"' })
+    fireEvent.click(within(firstPane).getByRole('button', { name: 'Close pane' }))
+
+    expect(await screen.findByRole('alertdialog')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Close agent pane?' })).toBeVisible()
+    expect(screen.getByText(/The agent is still running/)).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(screen.getAllByRole('button', { name: 'Close pane' })).toHaveLength(2)
   })
 
   it('hides the collapsed sessions strip outside the Agent view', async () => {
@@ -2841,6 +2894,7 @@ describe('XeroApp current UI', () => {
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
+    await act(async () => {})
     await waitFor(() => expect(setup.onProjectUpdated).toHaveBeenCalledTimes(1))
     expect(screen.getByRole('button', { name: 'Xero' })).toBeVisible()
 

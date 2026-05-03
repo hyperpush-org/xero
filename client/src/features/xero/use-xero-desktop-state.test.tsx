@@ -839,13 +839,31 @@ function createMockAdapter(options?: {
       ) ?? null
     )
   })
-  const createAgentSession = vi.fn(async (request: { projectId: string; title?: string | null; summary?: string; selected?: boolean }) => ({
-    ...makeAgentSession(request.projectId),
-    agentSessionId: `agent-session-${request.projectId}`,
-    title: request.title?.trim() || 'New session',
-    summary: request.summary ?? '',
-    selected: request.selected ?? true,
-  }))
+  const createAgentSession = vi.fn(async (request: { projectId: string; title?: string | null; summary?: string; selected?: boolean }) => {
+    const existingSessions = snapshots[request.projectId]?.agentSessions ?? [makeAgentSession(request.projectId)]
+    const selected = request.selected ?? true
+    const session = {
+      ...makeAgentSession(request.projectId),
+      agentSessionId: `agent-session-${existingSessions.length + 1}`,
+      title: request.title?.trim() || 'New session',
+      summary: request.summary ?? '',
+      selected,
+      createdAt: '2026-04-15T18:05:00Z',
+      updatedAt: '2026-04-15T18:05:00Z',
+    }
+    if (snapshots[request.projectId]) {
+      snapshots[request.projectId] = {
+        ...snapshots[request.projectId],
+        agentSessions: [
+          ...existingSessions.map((existing) =>
+            selected ? { ...existing, selected: false } : existing,
+          ),
+          session,
+        ],
+      }
+    }
+    return session
+  })
   const listAgentDefinitions = vi.fn(async () => ({ definitions: [] }))
   const archiveAgentDefinition = vi.fn(async () => {
     throw new Error('archiveAgentDefinition not stubbed in test adapter')
@@ -875,22 +893,52 @@ function createMockAdapter(options?: {
     title: 'Generated Session Title',
     updatedAt: '2026-04-15T18:00:01Z',
   }))
-  const archiveAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => ({
-    ...makeAgentSession(request.projectId),
-    agentSessionId: request.agentSessionId,
-    status: 'archived' as const,
-    selected: false,
-    archivedAt: '2026-04-15T18:00:00Z',
-    updatedAt: '2026-04-15T18:00:00Z',
-  }))
-  const restoreAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => ({
-    ...makeAgentSession(request.projectId),
-    agentSessionId: request.agentSessionId,
-    status: 'active' as const,
-    archivedAt: null,
-    updatedAt: '2026-04-15T18:00:00Z',
-  }))
+  const archiveAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => {
+    const archivedSession = {
+      ...makeAgentSession(request.projectId),
+      agentSessionId: request.agentSessionId,
+      status: 'archived' as const,
+      selected: false,
+      archivedAt: '2026-04-15T18:00:00Z',
+      updatedAt: '2026-04-15T18:00:00Z',
+    }
+    if (snapshots[request.projectId]) {
+      snapshots[request.projectId] = {
+        ...snapshots[request.projectId],
+        agentSessions: snapshots[request.projectId].agentSessions.map((session) =>
+          session.agentSessionId === request.agentSessionId ? archivedSession : session,
+        ),
+      }
+    }
+    return archivedSession
+  })
+  const restoreAgentSession = vi.fn(async (request: { projectId: string; agentSessionId: string }) => {
+    const restoredSession = {
+      ...makeAgentSession(request.projectId),
+      agentSessionId: request.agentSessionId,
+      status: 'active' as const,
+      archivedAt: null,
+      updatedAt: '2026-04-15T18:00:00Z',
+    }
+    if (snapshots[request.projectId]) {
+      snapshots[request.projectId] = {
+        ...snapshots[request.projectId],
+        agentSessions: snapshots[request.projectId].agentSessions.map((session) =>
+          session.agentSessionId === request.agentSessionId ? restoredSession : session,
+        ),
+      }
+    }
+    return restoredSession
+  })
   const deleteAgentSession = vi.fn(async (_request: { projectId: string; agentSessionId: string }) => {
+    if (snapshots[_request.projectId]) {
+      snapshots[_request.projectId] = {
+        ...snapshots[_request.projectId],
+        agentSessions: snapshots[_request.projectId].agentSessions.filter(
+          (session) => session.agentSessionId !== _request.agentSessionId,
+        ),
+      }
+    }
     return undefined
   })
   const getRepositoryStatus = vi.fn(async (projectId: string) => statuses[projectId])
@@ -1799,6 +1847,14 @@ function createMockAdapter(options?: {
     submitOpenAiCallback,
     startAutonomousRun,
     startRuntimeRun,
+    stageAgentAttachment: vi.fn(async () => ({
+      kind: 'image' as const,
+      absolutePath: '/tmp/stage.png',
+      mediaType: 'image/png',
+      originalName: 'stage.png',
+      sizeBytes: 0,
+    })),
+    discardAgentAttachment: vi.fn(async () => undefined),
     updateRuntimeRunControls,
     startRuntimeSession,
     cancelAutonomousRun,
@@ -1937,6 +1993,7 @@ function createMockAdapter(options?: {
     deleteProjectEntry,
     searchProject,
     replaceInProject,
+    createAgentSession,
     updateAgentSession,
     upsertRuntimeSettings,
     upsertProviderProfile,
@@ -2011,6 +2068,15 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="active-project-id">{state.activeProjectId ?? 'none'}</div>
       <div data-testid="pending-project-selection-id">{state.pendingProjectSelectionId ?? 'none'}</div>
       <div data-testid="selected-agent-session-id">{state.activeProject?.selectedAgentSessionId ?? 'none'}</div>
+      <div data-testid="workspace-pane-count">{String(state.agentWorkspaceLayout?.paneSlots.length ?? 0)}</div>
+      <div data-testid="workspace-focused-pane-id">{state.agentWorkspaceLayout?.focusedPaneId ?? 'none'}</div>
+      <div data-testid="workspace-pane-session-ids">
+        {state.agentWorkspaceLayout?.paneSlots.map((slot) => slot.agentSessionId ?? 'empty').join(',') ?? 'none'}
+      </div>
+      <div data-testid="workspace-pane-view-count">{String(state.agentWorkspacePanes.length)}</div>
+      <div data-testid="workspace-splitter-ratios">
+        {state.agentWorkspaceLayout?.splitterRatios['1x2']?.join(',') ?? 'none'}
+      </div>
       <div data-testid="branch">{state.activeProject?.branch ?? 'none'}</div>
       <div data-testid="runtime-label">{state.agentView?.runtimeLabel ?? 'none'}</div>
       <div data-testid="runtime-provider-id">{state.agentView?.runtimeSession?.providerId ?? 'none'}</div>
@@ -2121,8 +2187,50 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <button onClick={() => void state.selectProject('project-2')} type="button">
         Select project 2
       </button>
+      <button onClick={() => void state.selectProject('project-1')} type="button">
+        Select project 1
+      </button>
       <button onClick={() => void state.selectAgentSession('agent-session-alt')} type="button">
         Select alt session
+      </button>
+      <button onClick={() => void state.spawnPane().catch(() => undefined)} type="button">
+        Spawn pane
+      </button>
+      <button
+        onClick={() => {
+          const paneId = state.agentWorkspaceLayout?.paneSlots[0]?.id
+          if (paneId) {
+            state.focusPane(paneId)
+          }
+        }}
+        type="button"
+      >
+        Focus first pane
+      </button>
+      <button
+        onClick={() => {
+          const paneId = state.agentWorkspaceLayout?.paneSlots[1]?.id
+          if (paneId) {
+            state.closePane(paneId)
+          }
+        }}
+        type="button"
+      >
+        Close second pane
+      </button>
+      <button
+        onClick={() => {
+          const agentSessionId = state.agentWorkspaceLayout?.paneSlots[1]?.agentSessionId
+          if (agentSessionId) {
+            void state.archiveAgentSession(agentSessionId)
+          }
+        }}
+        type="button"
+      >
+        Archive second pane session
+      </button>
+      <button onClick={() => state.setSplitterRatios('1x2', [2, 1, 1])} type="button">
+        Save splitter ratios
       </button>
       <button onClick={() => void state.importProject()} type="button">
         Import project
@@ -3074,7 +3182,161 @@ describe('useXeroDesktopState', () => {
 
     await waitFor(() => expect(setup.getRuntimeRun).toHaveBeenCalledWith('project-1', 'agent-session-alt'))
     await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-alt'))
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-alt'))
     expect(setup.getProjectSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeSelection)
+  })
+
+  it('persists agent workspace panes per project and hydrates them on reload', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
+    })
+
+    const firstRender = render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+
+    await waitFor(() => expect(setup.createAgentSession).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      title: null,
+      summary: '',
+      selected: false,
+    }))
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-2')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Focus first pane' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save splitter ratios' }))
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem('agentWorkspaceLayout')
+      expect(raw).toContain('agent-session-2')
+      expect(raw).toContain('"1x2":[2,1,1]')
+    })
+
+    firstRender.unmount()
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-2')
+    expect(screen.getByTestId('workspace-splitter-ratios')).toHaveTextContent('2,1,1')
+  })
+
+  it('renders a spawned pane before the fresh session create call resolves', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
+    })
+    const createSession = createDeferred<void>()
+    setup.createAgentSession.mockImplementationOnce(async (request) => {
+      await createSession.promise
+      return {
+        ...makeAgentSession(request.projectId),
+        agentSessionId: 'agent-session-delayed',
+        title: 'New session',
+        summary: request.summary ?? '',
+        selected: request.selected ?? false,
+        createdAt: '2026-04-15T18:05:00Z',
+        updatedAt: '2026-04-15T18:05:00Z',
+      }
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+
+    expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2')
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,empty')
+    expect(screen.getByTestId('workspace-focused-pane-id')).not.toHaveTextContent('agent-pane-project-1')
+
+    createSession.resolve()
+
+    await waitFor(() =>
+      expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent(
+        'agent-session-main,agent-session-delayed',
+      ),
+    )
+  })
+
+  it('turns an archived loaded pane into an empty slot and reuses it on the next spawn', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-2'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive second pane session' }))
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,empty')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-3')
+    expect(setup.createAgentSession).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores the target project workspace layout when switching projects', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-2'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 1' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() =>
+      expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-2'),
+    )
+  })
+
+  it('keeps stale persisted workspace pane slots as empty reusable panes', async () => {
+    window.localStorage.setItem(
+      'agentWorkspaceLayout',
+      JSON.stringify({
+        'project-1': {
+          paneSlots: [
+            { id: 'stale-pane', agentSessionId: 'missing-session' },
+            { id: 'main-pane', agentSessionId: 'agent-session-main' },
+          ],
+          focusedPaneId: 'stale-pane',
+          splitterRatios: {},
+          preSpawnSidebarMode: null,
+        },
+      }),
+    )
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('empty,agent-session-main')
+    expect(screen.getByTestId('workspace-focused-pane-id')).toHaveTextContent('stale-pane')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-2,agent-session-main')
+    expect(screen.getByTestId('workspace-focused-pane-id')).toHaveTextContent('stale-pane')
   })
 
   it('accepts snapshots without lifecycle projection after workflow model removal', async () => {

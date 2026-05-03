@@ -1,6 +1,5 @@
 import {
   Activity,
-  memo,
   useCallback,
   useEffect,
   lazy,
@@ -10,9 +9,11 @@ import {
   Suspense,
   type ReactNode,
 } from 'react'
-import type { AgentRuntimeProps } from '@/components/xero/agent-runtime'
+import type { AgentPaneCloseState, AgentRuntimeProps } from '@/components/xero/agent-runtime'
 import { SetupEmptyState } from '@/components/xero/agent-runtime/setup-empty-state'
+import { AgentWorkspace } from '@/components/xero/agent-workspace'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
+import { AgentCommandPalette } from '@/components/xero/agent-runtime/agent-command-palette'
 import { ArchivedSessionsDialog } from '@/components/xero/archived-sessions-dialog'
 import { type View } from '@/components/xero/data'
 import { LoadingScreen } from '@/components/xero/loading-screen'
@@ -26,6 +27,16 @@ import { XeroShell, type PlatformVariant, type SurfacePreloadTarget } from '@/co
 import type { StatusFooterProps } from '@/components/xero/status-footer'
 import type { SettingsSection } from '@/components/xero/settings-dialog'
 import type { VcsCommitMessageModel } from '@/components/xero/vcs-sidebar'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { mapAgentSession, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
 import type { AgentDefinitionSummaryDto } from '@/src/lib/xero-model/agent-definition'
@@ -42,16 +53,11 @@ import type {
   VerifyUserToolResponseDto,
 } from '@/src/lib/xero-model/environment'
 import {
-  selectRuntimeStreamForProject,
   useXeroDesktopState,
-  useXeroHighChurnStoreValue,
   type AgentPaneView,
-  type XeroHighChurnStore,
 } from '@/src/features/xero/use-xero-desktop-state'
-import { getAgentMessagesUnavailableCredentialReason } from '@/src/features/xero/use-xero-desktop-state/runtime-provider'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
-import { getRuntimeStreamStatusLabel } from '@/src/lib/xero-model/runtime-stream'
 import { startLayoutShiftGuard } from '@/lib/layout-shift-guard'
 import { cn } from '@/lib/utils'
 
@@ -92,6 +98,7 @@ const SOLANA_WORKBENCH_MAX_WIDTH = 900
 const SIDEBAR_REVEAL_EASE_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
 const SIDEBAR_WIDTH_DURATION_MS = 200
 const SOLANA_WORKBENCH_MOUNT_DELAY_MS = SIDEBAR_WIDTH_DURATION_MS + 40
+const STARTUP_SURFACE_PREWARM_SETTLE_MS = 320
 const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
   'games',
   'browser',
@@ -215,6 +222,12 @@ function waitForStartupPrewarmPaints(): Promise<void> {
 
 async function waitForStartupPreloadSettle(): Promise<void> {
   await waitForStartupPrewarmPaints()
+  if (typeof window !== 'undefined') {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, STARTUP_SURFACE_PREWARM_SETTLE_MS)
+    })
+  }
+  await waitForStartupPrewarmPaints()
 }
 
 async function preloadStartupSurfaceChunks(): Promise<void> {
@@ -239,42 +252,52 @@ function useStartupSurfacePrewarm(enabled: boolean): {
   shouldMount: boolean
 } {
   const [ready, setReady] = useState(() => import.meta.env.MODE === 'test' || !enabled)
+  const [shouldMount, setShouldMount] = useState(false)
   const startedRef = useRef(false)
 
   useEffect(() => {
     if (import.meta.env.MODE === 'test') {
       setReady(true)
+      setShouldMount(false)
       return
     }
 
-    if (!enabled || startedRef.current) {
-      if (!enabled && !startedRef.current) {
-        setReady(false)
-      }
+    if (!enabled) {
+      setShouldMount(false)
+      return
+    }
+
+    if (startedRef.current) {
       return
     }
 
     let cancelled = false
     startedRef.current = true
     setReady(false)
+    setShouldMount(true)
 
     void preloadStartupSurfaceChunks()
       .catch(() => undefined)
       .then(() => waitForStartupPreloadSettle())
       .then(() => {
         if (!cancelled) {
+          setShouldMount(false)
           setReady(true)
         }
       })
 
     return () => {
       cancelled = true
+      setShouldMount(false)
     }
   }, [enabled])
 
   return {
     ready: import.meta.env.MODE === 'test' || !enabled ? true : ready && startedRef.current,
-    shouldMount: false,
+    shouldMount:
+      import.meta.env.MODE === 'test' || !enabled
+        ? false
+        : shouldMount && startedRef.current,
   }
 }
 
@@ -310,9 +333,6 @@ function useIdleSurfacePreloads(enabled: boolean): void {
   }, [enabled])
 }
 
-const LazyAgentRuntime = lazy(() =>
-  loadAgentRuntime().then((module) => ({ default: module.AgentRuntime })),
-)
 const LazyExecutionView = lazy(() =>
   loadExecutionView().then((module) => ({ default: module.ExecutionView })),
 )
@@ -394,74 +414,49 @@ function getVcsCommitMessageModel(
   }
 }
 
-function useAgentViewWithLiveRuntimeStream(
-  agent: AgentPaneView | null,
-  highChurnStore: XeroHighChurnStore,
-): AgentPaneView | null {
-  const projectId = agent?.project.id ?? null
-  const agentSessionId = agent?.project.selectedAgentSessionId ?? null
-  const streamSelector = useMemo(
-    () => selectRuntimeStreamForProject(projectId, agentSessionId),
-    [agentSessionId, projectId],
-  )
-  const runtimeStream = useXeroHighChurnStoreValue(highChurnStore, streamSelector)
-
-  return useMemo(() => {
-    if (!agent) {
-      return null
-    }
-
-    const streamStatus = runtimeStream?.status ?? 'idle'
-    return {
-      ...agent,
-      runtimeStream,
-      runtimeStreamStatus: streamStatus,
-      runtimeStreamStatusLabel: getRuntimeStreamStatusLabel(streamStatus),
-      runtimeStreamError: runtimeStream?.lastIssue ?? null,
-      runtimeStreamItems: runtimeStream?.items ?? [],
-      skillItems: runtimeStream?.skillItems ?? [],
-      activityItems: runtimeStream?.activityItems ?? [],
-      actionRequiredItems: runtimeStream?.actionRequired ?? [],
-      messagesUnavailableReason: getAgentMessagesUnavailableCredentialReason(
-        agent.runtimeSession ?? null,
-        runtimeStream,
-        agent.runtimeRun ?? null,
-        agent.agentRuntimeBlocked ?? false,
-      ),
-    }
-  }, [agent, runtimeStream])
-}
-
-type LiveAgentRuntimeProps = Omit<AgentRuntimeProps, 'agent'> & {
-  agent: AgentPaneView
-  highChurnStore: XeroHighChurnStore
-}
-
-const LiveAgentRuntime = memo(function LiveAgentRuntime({
-  agent,
-  highChurnStore,
-  ...props
-}: LiveAgentRuntimeProps) {
-  const liveAgent = useAgentViewWithLiveRuntimeStream(agent, highChurnStore)
-  if (!liveAgent) {
-    return null
-  }
+function sameRuntimeRunControlInput(
+  left: RuntimeRunControlInputDto | null,
+  right: RuntimeRunControlInputDto | null,
+): boolean {
+  if (left === right) return true
+  if (!left || !right) return left === right
 
   return (
-    <Suspense fallback={<LoadingScreen />}>
-      <LazyAgentRuntime {...props} agent={liveAgent} />
-    </Suspense>
+    (left.providerProfileId ?? null) === (right.providerProfileId ?? null) &&
+    left.runtimeAgentId === right.runtimeAgentId &&
+    (left.agentDefinitionId ?? null) === (right.agentDefinitionId ?? null) &&
+    left.modelId === right.modelId &&
+    (left.thinkingEffort ?? null) === (right.thinkingEffort ?? null) &&
+    left.approvalMode === right.approvalMode &&
+    Boolean(left.planModeRequired) === Boolean(right.planModeRequired)
   )
-})
+}
+
+function shouldConfirmPaneClose(state: AgentPaneCloseState | null | undefined): state is AgentPaneCloseState {
+  return Boolean(state?.hasRunningRun || state?.hasUnsavedComposerText)
+}
+
+function getPaneCloseConfirmationCopy(state: AgentPaneCloseState | null | undefined): string {
+  const reasons = [
+    state?.hasRunningRun ? 'The agent is still running' : null,
+    state?.hasUnsavedComposerText ? 'The composer has unsent text' : null,
+  ].filter((reason): reason is string => Boolean(reason))
+
+  if (reasons.length === 0) {
+    return 'This pane can close now.'
+  }
+
+  return `${reasons.join(' and ')}.`
+}
 
 export function useActivatedSurface(active: boolean, prewarm = false) {
-  const [activated, setActivated] = useState(active)
+  const [activated, setActivated] = useState(active || prewarm)
 
   useEffect(() => {
-    if (active) {
+    if (active || prewarm) {
       setActivated(true)
     }
-  }, [active])
+  }, [active, prewarm])
 
   return active || prewarm || activated
 }
@@ -496,10 +491,6 @@ function LazyActivityPane({
       {children}
     </div>
   )
-
-  if (prewarm) {
-    return pane
-  }
 
   return (
     <Activity mode={active ? 'visible' : 'hidden'} name={name}>
@@ -543,10 +534,6 @@ function LazyActivitySurface({ children, name, open, prewarm = false }: LazyActi
 
   if (!shouldMount) {
     return null
-  }
-
-  if (prewarm) {
-    return <>{children}</>
   }
 
   return (
@@ -610,7 +597,7 @@ function SolanaWorkbenchOpeningShell({ open }: { open: boolean }) {
     <aside
       aria-busy={open}
       aria-hidden={!open}
-      aria-label="Solana Workbench"
+      aria-label="Loading Solana Workbench"
       className={cn(
         'sidebar-motion-island relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
         open ? 'border-l border-border/80' : 'border-l-0',
@@ -652,26 +639,111 @@ function SolanaWorkbenchOpeningShell({ open }: { open: boolean }) {
   )
 }
 
+function InlineSidebarLoadingShell({
+  label,
+  open,
+  width = 420,
+}: {
+  label: string
+  open: boolean
+  width?: number
+}) {
+  const targetWidth = open ? width : 0
+
+  return (
+    <aside
+      aria-busy={open}
+      aria-hidden={!open}
+      aria-label={`Loading ${label}`}
+      className={cn(
+        'sidebar-motion-island relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
+        open ? 'border-l border-border/80' : 'border-l-0',
+      )}
+      inert={!open ? true : undefined}
+      style={{
+        width: targetWidth,
+        transition: `width ${SIDEBAR_WIDTH_DURATION_MS}ms ${SIDEBAR_REVEAL_EASE_CSS}`,
+      }}
+    >
+      <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
+        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
+          <div className="min-w-0 truncate text-[11px] font-semibold text-foreground">
+            {label}
+          </div>
+          <div className="h-3 w-3 shrink-0 animate-spin rounded-full border border-primary/30 border-t-primary" />
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3">
+          <div className="h-7 w-40 max-w-[70%] rounded-md bg-secondary/50" />
+          <div className="h-24 rounded-md border border-border/60 bg-background/35" />
+          <div className="space-y-2">
+            <div className="h-3 w-3/4 rounded bg-secondary/45" />
+            <div className="h-3 w-1/2 rounded bg-secondary/35" />
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function OverlaySidebarLoadingShell({
+  label,
+  open,
+  width = 420,
+}: {
+  label: string
+  open: boolean
+  width?: number
+}) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" />
+      <aside
+        aria-busy="true"
+        aria-label={`Loading ${label}`}
+        className="gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl"
+        style={{ width }}
+      >
+        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
+          <div className="min-w-0 truncate text-[11px] font-semibold text-foreground">
+            {label}
+          </div>
+          <div className="h-3 w-3 shrink-0 animate-spin rounded-full border border-primary/30 border-t-primary" />
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3">
+          <div className="h-7 w-40 max-w-[70%] rounded-md bg-secondary/50" />
+          <div className="h-24 rounded-md border border-border/60 bg-background/35" />
+          <div className="space-y-2">
+            <div className="h-3 w-3/4 rounded bg-secondary/45" />
+            <div className="h-3 w-1/2 rounded bg-secondary/35" />
+          </div>
+        </div>
+      </aside>
+    </>
+  )
+}
+
+function ModalLoadingShell({ open }: { open: boolean }) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <div className="fixed inset-0 z-[2147483600] bg-background">
+      <LoadingScreen className="h-screen w-screen" />
+    </div>
+  )
+}
+
 function SolanaWorkbenchSurface({ open, prewarm = false }: { open: boolean; prewarm?: boolean }) {
   const shouldMount = useActivatedSurface(open, prewarm)
   const workbenchMounted = useDeferredSolanaWorkbenchMount(open, prewarm)
 
   if (!shouldMount) {
     return null
-  }
-
-  if (prewarm) {
-    return (
-      <>
-        {workbenchMounted ? (
-          <Suspense fallback={<SolanaWorkbenchOpeningShell open={open} />}>
-            <LazySolanaWorkbenchSidebar open={open} prewarm />
-          </Suspense>
-        ) : (
-          <SolanaWorkbenchOpeningShell open={open} />
-        )}
-      </>
-    )
   }
 
   return (
@@ -743,6 +815,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
     repositoryStatus,
     workflowView,
     agentView,
+    agentWorkspaceLayout,
+    agentWorkspacePanes,
     executionView,
     isLoading,
     isProjectLoading,
@@ -830,6 +904,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     renameAgentSession,
     activeUsageSummary,
     refreshUsageSummary,
+    spawnPane,
+    closePane,
+    focusPane,
+    setSplitterRatios,
   } = useXeroDesktopState({ adapter, subscribeRuntimeStreams: false })
 
   const {
@@ -843,6 +921,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('providers')
   const [pendingAgentSessionId, setPendingAgentSessionId] = useState<string | null>(null)
+  const [paneCloseStates, setPaneCloseStates] = useState<Record<string, AgentPaneCloseState>>({})
+  const [pendingPaneCloseId, setPendingPaneCloseId] = useState<string | null>(null)
   const [agentComposerControls, setAgentComposerControls] =
     useState<RuntimeRunControlInputDto | null>(null)
   const [isCreatingAgentSession, setIsCreatingAgentSession] = useState(false)
@@ -1302,14 +1382,253 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [isLoading, onboardingDismissed, projects.length])
 
   const selectedAgentSessionId = activeProject?.selectedAgentSessionId ?? null
+  const resolvePaneAgentSessionId = useCallback(
+    (paneId: string): string | null => {
+      const slot = agentWorkspaceLayout?.paneSlots.find((candidate) => candidate.id === paneId)
+      if (slot) {
+        return slot.agentSessionId
+      }
+      return selectedAgentSessionId
+    },
+    [agentWorkspaceLayout, selectedAgentSessionId],
+  )
+  const ensurePaneAgentSessionSelected = useCallback(
+    async (paneId: string): Promise<boolean> => {
+      if (!activeProjectId) return false
+      const agentSessionId = resolvePaneAgentSessionId(paneId)
+      if (!agentSessionId) return false
+      if (agentSessionId === selectedAgentSessionId) return true
+      await selectAgentSession(agentSessionId)
+      return true
+    },
+    [activeProjectId, resolvePaneAgentSessionId, selectAgentSession, selectedAgentSessionId],
+  )
+  const paneCount = agentWorkspaceLayout?.paneSlots.length ?? 1
+  const isMultiPane = paneCount > 1
+  useEffect(() => {
+    const livePaneIds = new Set(agentWorkspaceLayout?.paneSlots.map((slot) => slot.id) ?? [])
+    setPaneCloseStates((current) => {
+      let changed = false
+      const next: Record<string, AgentPaneCloseState> = {}
+      for (const [paneId, state] of Object.entries(current)) {
+        if (livePaneIds.has(paneId)) {
+          next[paneId] = state
+        } else {
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+    setPendingPaneCloseId((current) => (current && livePaneIds.has(current) ? current : null))
+  }, [agentWorkspaceLayout])
+  const sessionPaneAssignments = useMemo<Record<string, number>>(() => {
+    const map: Record<string, number> = {}
+    if (!agentWorkspaceLayout) return map
+    agentWorkspaceLayout.paneSlots.forEach((slot, index) => {
+      if (slot.agentSessionId) {
+        map[slot.agentSessionId] = index + 1
+      }
+    })
+    return map
+  }, [agentWorkspaceLayout])
+  const preSpawnExplorerModeRef = useRef<'pinned' | 'collapsed' | null>(null)
+  useEffect(() => {
+    if (activeView !== 'agent') return
+    if (isMultiPane) {
+      if (preSpawnExplorerModeRef.current === null) {
+        preSpawnExplorerModeRef.current = explorerMode
+      }
+      if (explorerMode === 'pinned') {
+        setExplorerMode('collapsed')
+      }
+    } else if (preSpawnExplorerModeRef.current !== null) {
+      const restoreMode = preSpawnExplorerModeRef.current
+      preSpawnExplorerModeRef.current = null
+      if (restoreMode !== explorerMode) {
+        setExplorerMode(restoreMode)
+      }
+    }
+  }, [activeView, explorerMode, isMultiPane])
   const handleSelectAgentSession = useCallback(
     (agentSessionId: string) => {
       if (!activeProjectId) return
+      const loadedPaneId = agentWorkspaceLayout?.paneSlots.find(
+        (slot) => slot.agentSessionId === agentSessionId,
+      )?.id ?? null
+      if (loadedPaneId && loadedPaneId !== agentWorkspaceLayout?.focusedPaneId) {
+        focusPane(loadedPaneId)
+        return
+      }
       if (agentSessionId === selectedAgentSessionId) return
       void selectAgentSession(agentSessionId)
     },
-    [activeProjectId, selectAgentSession, selectedAgentSessionId],
+    [activeProjectId, agentWorkspaceLayout, focusPane, selectAgentSession, selectedAgentSessionId],
   )
+
+  const handleSpawnPane = useCallback(() => {
+    if (!activeProjectId) return
+    void spawnPane().catch(() => undefined)
+  }, [activeProjectId, spawnPane])
+  const getPaneCloseState = useCallback(
+    (paneId: string): AgentPaneCloseState | null => {
+      const reportedState = paneCloseStates[paneId]
+      if (reportedState) {
+        return reportedState
+      }
+
+      const pane = agentWorkspacePanes.find((candidate) => candidate.paneId === paneId)
+      if (!pane) {
+        return null
+      }
+
+      return {
+        hasRunningRun: Boolean(pane.agent?.runtimeRun && !pane.agent.runtimeRun.isTerminal),
+        hasUnsavedComposerText: false,
+        sessionTitle: pane.agent?.project.selectedAgentSession?.title?.trim() || 'New Chat',
+      }
+    },
+    [agentWorkspacePanes, paneCloseStates],
+  )
+  const handleClosePane = useCallback(
+    (paneId: string) => {
+      const closeState = getPaneCloseState(paneId)
+      if (shouldConfirmPaneClose(closeState)) {
+        setPendingPaneCloseId(paneId)
+        return
+      }
+      closePane(paneId)
+    },
+    [closePane, getPaneCloseState],
+  )
+  const handleConfirmClosePane = useCallback(() => {
+    if (!pendingPaneCloseId) {
+      return
+    }
+
+    closePane(pendingPaneCloseId)
+    setPendingPaneCloseId(null)
+  }, [closePane, pendingPaneCloseId])
+  const handlePaneCloseStateChange = useCallback(
+    (paneId: string, state: AgentPaneCloseState) => {
+      setPaneCloseStates((current) => {
+        const previous = current[paneId]
+        if (
+          previous &&
+          previous.hasRunningRun === state.hasRunningRun &&
+          previous.hasUnsavedComposerText === state.hasUnsavedComposerText &&
+          previous.sessionTitle === state.sessionTitle
+        ) {
+          return current
+        }
+
+        return {
+          ...current,
+          [paneId]: state,
+        }
+      })
+    },
+    [],
+  )
+  const pendingPaneCloseState = pendingPaneCloseId ? getPaneCloseState(pendingPaneCloseId) : null
+  const pendingPaneCloseCopy = getPaneCloseConfirmationCopy(pendingPaneCloseState)
+  const handleFocusPane = useCallback(
+    (paneId: string) => {
+      focusPane(paneId)
+    },
+    [focusPane],
+  )
+  const handleSplitterRatiosChange = useCallback(
+    (arrangementKey: string, ratios: number[]) => {
+      setSplitterRatios(arrangementKey, ratios)
+    },
+    [setSplitterRatios],
+  )
+
+  const focusPaneByIndex = useCallback(
+    (index: number) => {
+      const slot = agentWorkspaceLayout?.paneSlots[index]
+      if (!slot) return
+      focusPane(slot.id)
+    },
+    [agentWorkspaceLayout, focusPane],
+  )
+  const cycleFocusPane = useCallback(
+    (delta: number) => {
+      if (!agentWorkspaceLayout || agentWorkspaceLayout.paneSlots.length < 2) return
+      const slots = agentWorkspaceLayout.paneSlots
+      const currentIndex = slots.findIndex((slot) => slot.id === agentWorkspaceLayout.focusedPaneId)
+      const nextIndex = (currentIndex + delta + slots.length) % slots.length
+      const nextSlot = slots[nextIndex]
+      if (nextSlot) focusPane(nextSlot.id)
+    },
+    [agentWorkspaceLayout, focusPane],
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (activeView !== 'agent') return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isEditableTarget = Boolean(
+        target &&
+          (target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.isContentEditable),
+      )
+      const meta = event.metaKey || event.ctrlKey
+      // ⌘1–⌘6 focus pane N (skip when editable focused so users keep number entry)
+      if (meta && !event.shiftKey && !event.altKey && /^Digit[1-6]$/.test(event.code)) {
+        if (isEditableTarget) return
+        const index = Number(event.code.slice(-1)) - 1
+        if (agentWorkspaceLayout && index < agentWorkspaceLayout.paneSlots.length) {
+          event.preventDefault()
+          focusPaneByIndex(index)
+        }
+        return
+      }
+      // ⌘⇧N spawn pane
+      if (meta && event.shiftKey && (event.key === 'N' || event.key === 'n')) {
+        event.preventDefault()
+        handleSpawnPane()
+        return
+      }
+      // ⌘W close focused pane
+      if (meta && !event.shiftKey && (event.key === 'w' || event.key === 'W')) {
+        if (!agentWorkspaceLayout || agentWorkspaceLayout.paneSlots.length <= 1) return
+        const focusedId = agentWorkspaceLayout.focusedPaneId
+        if (!focusedId) return
+        event.preventDefault()
+        handleClosePane(focusedId)
+        return
+      }
+      // ⌥←/→ cycle focus
+      if (event.altKey && !meta && !event.shiftKey) {
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+          if (isEditableTarget) return
+          if (agentWorkspaceLayout && agentWorkspaceLayout.paneSlots.length > 1) {
+            event.preventDefault()
+            cycleFocusPane(1)
+          }
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+          if (isEditableTarget) return
+          if (agentWorkspaceLayout && agentWorkspaceLayout.paneSlots.length > 1) {
+            event.preventDefault()
+            cycleFocusPane(-1)
+          }
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [
+    activeView,
+    agentWorkspaceLayout,
+    cycleFocusPane,
+    focusPaneByIndex,
+    handleClosePane,
+    handleSpawnPane,
+  ])
 
   const handleCreateAgentSession = useCallback(() => {
     if (!activeProjectId) return
@@ -1347,36 +1666,69 @@ export function XeroApp({ adapter }: XeroAppProps) {
     () => openSettings('diagnostics'),
     [openSettings],
   )
-  const handleAgentStartAutonomousRun = useCallback<
-    NonNullable<AgentRuntimeProps['onStartAutonomousRun']>
-  >(() => startAutonomousRun(), [startAutonomousRun])
-  const handleAgentInspectAutonomousRun = useCallback<
-    NonNullable<AgentRuntimeProps['onInspectAutonomousRun']>
-  >(() => inspectAutonomousRun(), [inspectAutonomousRun])
-  const handleAgentCancelAutonomousRun = useCallback<
-    NonNullable<AgentRuntimeProps['onCancelAutonomousRun']>
-  >((runId) => cancelAutonomousRun(runId), [cancelAutonomousRun])
-  const handleAgentStartLogin = useCallback<
-    NonNullable<AgentRuntimeProps['onStartLogin']>
-  >((options) => startOpenAiLogin(options), [startOpenAiLogin])
-  const handleAgentStartRuntimeRun = useCallback<
-    NonNullable<AgentRuntimeProps['onStartRuntimeRun']>
-  >((options) => startRuntimeRun(options), [startRuntimeRun])
-  const handleAgentUpdateRuntimeRunControls = useCallback<
-    NonNullable<AgentRuntimeProps['onUpdateRuntimeRunControls']>
-  >((request) => updateRuntimeRunControls(request), [updateRuntimeRunControls])
-  const handleAgentStartRuntimeSession = useCallback<
-    NonNullable<AgentRuntimeProps['onStartRuntimeSession']>
-  >((options) => startRuntimeSession(options), [startRuntimeSession])
-  const handleAgentStopRuntimeRun = useCallback<
-    NonNullable<AgentRuntimeProps['onStopRuntimeRun']>
-  >((runId) => stopRuntimeRun(runId), [stopRuntimeRun])
-  const handleAgentLogout = useCallback<
-    NonNullable<AgentRuntimeProps['onLogout']>
-  >(() => logoutRuntimeSession(), [logoutRuntimeSession])
-  const handleAgentResolveOperatorAction = useCallback<
-    NonNullable<AgentRuntimeProps['onResolveOperatorAction']>
-  >(async (actionId, decision, options) => {
+  const handleAgentStartAutonomousRun = useCallback(async (paneId: string) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+    return startAutonomousRun()
+  }, [ensurePaneAgentSessionSelected, startAutonomousRun])
+  const handleAgentInspectAutonomousRun = useCallback(async (paneId: string) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+    return inspectAutonomousRun()
+  }, [ensurePaneAgentSessionSelected, inspectAutonomousRun])
+  const handleAgentCancelAutonomousRun = useCallback(async (paneId: string, runId: string) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+    return cancelAutonomousRun(runId)
+  }, [cancelAutonomousRun, ensurePaneAgentSessionSelected])
+  const handleAgentStartLogin = useCallback(
+    (
+      _paneId: string,
+      options?: Parameters<NonNullable<AgentRuntimeProps['onStartLogin']>>[0],
+    ) => startOpenAiLogin(options),
+    [startOpenAiLogin],
+  )
+  const handleAgentStartRuntimeRun = useCallback(async (
+    paneId: string,
+    options?: Parameters<NonNullable<AgentRuntimeProps['onStartRuntimeRun']>>[0],
+  ) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+    return startRuntimeRun(options)
+  }, [ensurePaneAgentSessionSelected, startRuntimeRun])
+  const handleAgentUpdateRuntimeRunControls = useCallback(async (
+    paneId: string,
+    request?: Parameters<NonNullable<AgentRuntimeProps['onUpdateRuntimeRunControls']>>[0],
+  ) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+    return updateRuntimeRunControls(request)
+  }, [ensurePaneAgentSessionSelected, updateRuntimeRunControls])
+  const handleAgentComposerControlsChange = useCallback((
+    _paneId: string,
+    controls: RuntimeRunControlInputDto | null,
+  ) => {
+    setAgentComposerControls((current) =>
+      sameRuntimeRunControlInput(current, controls) ? current : controls,
+    )
+  }, [])
+  const handleAgentStartRuntimeSession = useCallback(
+    (
+      _paneId: string,
+      options?: Parameters<NonNullable<AgentRuntimeProps['onStartRuntimeSession']>>[0],
+    ) => startRuntimeSession(options),
+    [startRuntimeSession],
+  )
+  const handleAgentStopRuntimeRun = useCallback(async (paneId: string, runId: string) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+    return stopRuntimeRun(runId)
+  }, [ensurePaneAgentSessionSelected, stopRuntimeRun])
+  const handleAgentLogout = useCallback(
+    (_paneId: string) => logoutRuntimeSession(),
+    [logoutRuntimeSession],
+  )
+  const handleAgentResolveOperatorAction = useCallback(async (
+    paneId: string,
+    actionId: string,
+    decision: 'approve' | 'reject',
+    options?: Parameters<NonNullable<AgentRuntimeProps['onResolveOperatorAction']>>[2],
+  ) => {
+    if (!(await ensurePaneAgentSessionSelected(paneId))) return null
     const result = await resolveOperatorAction(actionId, decision, {
       userAnswer: options?.userAnswer ?? null,
     })
@@ -1384,26 +1736,40 @@ export function XeroApp({ adapter }: XeroAppProps) {
       refreshCustomAgentDefinitions()
     }
     return result
-  }, [refreshCustomAgentDefinitions, resolveOperatorAction])
-  const handleAgentResumeOperatorRun = useCallback<
-    NonNullable<AgentRuntimeProps['onResumeOperatorRun']>
-  >(
-    (actionId, options) =>
-      resumeOperatorRun(actionId, { userAnswer: options?.userAnswer ?? null }),
-    [resumeOperatorRun],
+  }, [ensurePaneAgentSessionSelected, refreshCustomAgentDefinitions, resolveOperatorAction])
+  const handleAgentResumeOperatorRun = useCallback(
+    async (
+      paneId: string,
+      actionId: string,
+      options?: Parameters<NonNullable<AgentRuntimeProps['onResumeOperatorRun']>>[1],
+    ) => {
+      if (!(await ensurePaneAgentSessionSelected(paneId))) return null
+      return resumeOperatorRun(actionId, { userAnswer: options?.userAnswer ?? null })
+    },
+    [ensurePaneAgentSessionSelected, resumeOperatorRun],
   )
-  const handleAgentSubmitManualCallback = useCallback<
-    NonNullable<AgentRuntimeProps['onSubmitManualCallback']>
-  >(
-    (flowId, manualInput) => submitOpenAiCallback(flowId, { manualInput }),
+  const handleAgentSubmitManualCallback = useCallback(
+    (
+      _paneId: string,
+      flowId: string,
+      manualInput: string,
+    ) => submitOpenAiCallback(flowId, { manualInput }),
     [submitOpenAiCallback],
   )
-  const handleAgentRefreshNotificationRoutes = useCallback<
-    NonNullable<AgentRuntimeProps['onRefreshNotificationRoutes']>
-  >((options) => refreshNotificationRoutes(options), [refreshNotificationRoutes])
-  const handleAgentUpsertNotificationRoute = useCallback<
-    NonNullable<AgentRuntimeProps['onUpsertNotificationRoute']>
-  >((request) => upsertNotificationRoute(request), [upsertNotificationRoute])
+  const handleAgentRefreshNotificationRoutes = useCallback(
+    (
+      _paneId: string,
+      options?: Parameters<NonNullable<AgentRuntimeProps['onRefreshNotificationRoutes']>>[0],
+    ) => refreshNotificationRoutes(options),
+    [refreshNotificationRoutes],
+  )
+  const handleAgentUpsertNotificationRoute = useCallback(
+    (
+      _paneId: string,
+      request: Parameters<NonNullable<AgentRuntimeProps['onUpsertNotificationRoute']>>[0],
+    ) => upsertNotificationRoute(request),
+    [upsertNotificationRoute],
+  )
   const handleStartWorkflowRun = useCallback(() => startRuntimeRun(), [startRuntimeRun])
   const handleCreateWorkflow = useCallback(() => {
     if (!workflowsOpen) {
@@ -1554,6 +1920,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onPin={pinExplorer}
           onRequestPeek={sessionsPeekAvailable ? requestExplorerPeek : undefined}
           onReleasePeek={sessionsPeekAvailable ? releaseExplorerPeek : undefined}
+          sessionPaneAssignments={isMultiPane ? sessionPaneAssignments : undefined}
         />
         <ArchivedSessionsDialog
           open={archivedSessionsOpen}
@@ -1577,6 +1944,55 @@ export function XeroApp({ adapter }: XeroAppProps) {
             await deleteAgentSession(agentSessionId)
           }}
         />
+        <AgentCommandPalette
+          enabled={activeView === 'agent' && Boolean(agentWorkspaceLayout)}
+          panes={
+            agentWorkspaceLayout
+              ? agentWorkspaceLayout.paneSlots.map((slot, index) => {
+                  const session = activeProject.agentSessions.find(
+                    (candidate) => candidate.agentSessionId === slot.agentSessionId,
+                  )
+                  return {
+                    paneId: slot.id,
+                    paneNumber: index + 1,
+                    sessionTitle: session?.title ?? 'Untitled',
+                    isFocused: slot.id === agentWorkspaceLayout.focusedPaneId,
+                  }
+                })
+              : []
+          }
+          spawnDisabled={paneCount >= 6}
+          onSpawnPane={handleSpawnPane}
+          onClosePane={handleClosePane}
+          onFocusPane={handleFocusPane}
+          onCycleFocus={cycleFocusPane}
+        />
+        <AlertDialog
+          open={pendingPaneCloseId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingPaneCloseId(null)
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Close agent pane?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingPaneCloseCopy} Closing keeps the session in the sidebar, but this pane will stop showing it.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={handleConfirmClosePane}
+              >
+                Close pane
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {workflowView ? (
             <LazyActivityPane
@@ -1609,8 +2025,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
               name="agent-pane"
               prewarm={startupSurfacePrewarm.shouldMount}
             >
-              <LiveAgentRuntime
-                agent={agentView}
+              <AgentWorkspace
+                layout={agentWorkspaceLayout}
+                panes={agentWorkspacePanes}
                 highChurnStore={highChurnStore}
                 desktopAdapter={resolvedAdapter}
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
@@ -1619,6 +2036,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateSession={handleCreateAgentSession}
                 isCreatingSession={isCreatingAgentSession}
+                onSpawnPane={handleSpawnPane}
+                onClosePane={handleClosePane}
+                onFocusPane={handleFocusPane}
+                onSplitterRatiosChange={handleSplitterRatiosChange}
+                onPaneCloseStateChange={handlePaneCloseStateChange}
                 onLogout={handleAgentLogout}
                 onOpenSettings={handleOpenAgentProviderSettings}
                 onOpenDiagnostics={handleOpenAgentDiagnostics}
@@ -1632,7 +2054,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCancelAutonomousRun={handleAgentCancelAutonomousRun}
                 onStartRuntimeRun={handleAgentStartRuntimeRun}
                 onUpdateRuntimeRunControls={handleAgentUpdateRuntimeRunControls}
-                onComposerControlsChange={setAgentComposerControls}
+                onComposerControlsChange={handleAgentComposerControlsChange}
                 onStartRuntimeSession={handleAgentStartRuntimeSession}
                 onStopRuntimeRun={handleAgentStopRuntimeRun}
                 onSubmitManualCallback={handleAgentSubmitManualCallback}
@@ -1872,7 +2294,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={gamesOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={<InlineSidebarLoadingShell label="Games" open={gamesOpen} width={360} />}
+            >
               <LazyGamesSidebar accountLogin={githubSession?.user.login ?? null} open={gamesOpen} />
             </Suspense>
           </LazyActivitySurface>
@@ -1881,7 +2305,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={browserOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={<InlineSidebarLoadingShell label="Browser" open={browserOpen} width={640} />}
+            >
               <LazyBrowserSidebar open={browserOpen} />
             </Suspense>
           </LazyActivitySurface>
@@ -1890,7 +2316,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={usageOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={
+                <OverlaySidebarLoadingShell
+                  label="Project usage"
+                  open={usageOpen}
+                  width={420}
+                />
+              }
+            >
               <LazyUsageStatsSidebar
                 open={usageOpen}
                 projectId={activeProjectId}
@@ -1906,7 +2340,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={iosOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={
+                <InlineSidebarLoadingShell
+                  label="iOS Simulator"
+                  open={iosOpen}
+                  width={640}
+                />
+              }
+            >
               <LazyIosEmulatorSidebar open={iosOpen} />
             </Suspense>
           </LazyActivitySurface>
@@ -1915,7 +2357,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={androidOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={
+                <InlineSidebarLoadingShell
+                  label="Android Emulator"
+                  open={androidOpen}
+                  width={640}
+                />
+              }
+            >
               <LazyAndroidEmulatorSidebar open={androidOpen} />
             </Suspense>
           </LazyActivitySurface>
@@ -1928,7 +2378,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={workflowsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={
+                <InlineSidebarLoadingShell
+                  label="Workflows"
+                  open={workflowsOpen}
+                  width={420}
+                />
+              }
+            >
               <LazyWorkflowsSidebar open={workflowsOpen} />
             </Suspense>
           </LazyActivitySurface>
@@ -1937,7 +2395,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={vcsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={
+                <OverlaySidebarLoadingShell
+                  label="Source control"
+                  open={vcsOpen}
+                  width={720}
+                />
+              }
+            >
               <LazyVcsSidebar
                 open={vcsOpen}
                 projectId={activeProjectId}
@@ -1963,7 +2429,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={settingsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
-            <Suspense fallback={null}>
+            <Suspense fallback={<ModalLoadingShell open={settingsOpen} />}>
               <LazySettingsDialog
                 open={settingsOpen}
                 onOpenChange={setSettingsOpen}

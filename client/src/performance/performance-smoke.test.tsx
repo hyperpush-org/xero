@@ -418,7 +418,11 @@ describe('UI latency performance smoke replays', () => {
       let flushCallback: (() => void) | null = null
       let scheduledFlushCount = 0
       const updateRuntimeStream = vi.fn(
-        (_projectId: string, updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null) => {
+        (
+          _projectId: string,
+          _agentSessionId: string,
+          updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+        ) => {
           stream = updater(stream)
         },
       )

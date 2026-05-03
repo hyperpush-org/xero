@@ -19,6 +19,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Circle,
+  FileText,
   Info,
   Loader2,
   Terminal,
@@ -44,6 +45,18 @@ import { AppLogo } from '../app-logo'
 import { Markdown } from './conversation-markdown'
 import { getToolStateLabel } from './runtime-stream-helpers'
 
+export interface ConversationMessageAttachment {
+  id: string
+  kind: 'image' | 'document' | 'text'
+  mediaType: string
+  originalName: string
+  sizeBytes: number
+  /** Webview-renderable URL (e.g. via convertFileSrc) for image previews. */
+  previewSrc?: string
+  /** Absolute path on disk; used for click-to-open behaviour. */
+  absolutePath?: string
+}
+
 export type ConversationTurn =
   | {
       id: string
@@ -51,6 +64,7 @@ export type ConversationTurn =
       role: 'user' | 'assistant'
       sequence: number
       text: string
+      attachments?: ConversationMessageAttachment[]
     }
   | {
       id: string
@@ -103,6 +117,8 @@ interface ConversationSectionProps {
   accountAvatarUrl?: string | null
   /** GitHub login for the signed-in user, used as alt text. */
   accountLogin?: string | null
+  /** Visual density. `dense` collapses each turn into a single PTY-style line. */
+  variant?: 'default' | 'dense'
 }
 
 /**
@@ -128,6 +144,7 @@ export const ConversationSection = memo(function ConversationSection({
   streamCompletion = null,
   accountAvatarUrl = null,
   accountLogin = null,
+  variant = 'default',
 }: ConversationSectionProps) {
   const runFailureCode = runtimeRun?.lastError?.code ?? runtimeRun?.lastErrorCode ?? null
   const runFailureMessage =
@@ -158,6 +175,53 @@ export const ConversationSection = memo(function ConversationSection({
       lastTurn.role === 'assistant' &&
       lastTurn.text.trim().length > 0,
   )
+
+  if (variant === 'dense') {
+    return (
+      <section
+        aria-label="Agent conversation"
+        className="flex flex-col gap-1 font-mono text-[11px] leading-snug"
+      >
+        {showAnyTurn ? (
+          <ol aria-label="Agent conversation turns" className="flex flex-col gap-0.5">
+            {visibleTurns.map((turn) => (
+              <DenseTurnItem key={turn.id} turn={turn} />
+            ))}
+          </ol>
+        ) : null}
+        {showActivityIndicator ? (
+          <div className="flex items-center gap-1.5 px-1 text-[10.5px] text-muted-foreground">
+            <Loader2 className="h-2.5 w-2.5 animate-spin text-primary/70" />
+            <span>thinking…</span>
+          </div>
+        ) : null}
+        {showAnyNotice ? (
+          <ul aria-label="Agent run notices" className="mt-1 flex flex-col gap-1">
+            {showHandoffNotice ? (
+              <li className="rounded-sm border border-border/40 bg-muted/15 px-2 py-1 text-[10.5px] text-muted-foreground">
+                ⤳ handed off to a fresh same-type session
+              </li>
+            ) : null}
+            {showRunFailure ? (
+              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
+                ✗ {runFailureMessage}
+              </li>
+            ) : null}
+            {showStreamFailure && streamFailure ? (
+              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
+                ✗ {describeStreamMessage(streamFailure.code, streamFailure.message)}
+              </li>
+            ) : null}
+            {showStreamIssue && streamIssue ? (
+              <li className="rounded-sm border border-border/40 bg-muted/20 px-2 py-1 text-[10.5px] text-muted-foreground">
+                ⚠ {describeStreamMessage(streamIssue.code, streamIssue.message)}
+              </li>
+            ) : null}
+          </ul>
+        ) : null}
+      </section>
+    )
+  }
 
   return (
     <section aria-label="Agent conversation" className="flex flex-col gap-5">
@@ -307,7 +371,12 @@ function ConversationTurnRow({
 }: ConversationTurnRowProps) {
   if (turn.kind === 'message') {
     return turn.role === 'user' ? (
-      <UserMessage text={turn.text} accountAvatarUrl={accountAvatarUrl} accountLogin={accountLogin} />
+      <UserMessage
+        text={turn.text}
+        attachments={turn.attachments}
+        accountAvatarUrl={accountAvatarUrl}
+        accountLogin={accountLogin}
+      />
     ) : (
       <AssistantMessage messageId={turn.id} text={turn.text} isStreaming={isStreaming} />
     )
@@ -614,29 +683,68 @@ function ActionGroupCard({ title, detail, state, actions }: ActionGroupCardProps
 
 interface UserMessageProps {
   text: string
+  attachments?: ConversationMessageAttachment[]
   accountAvatarUrl: string | null
   accountLogin: string | null
 }
 
-function UserMessage({ text, accountAvatarUrl, accountLogin }: UserMessageProps) {
+function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: UserMessageProps) {
+  const hasAttachments = attachments && attachments.length > 0
   return (
     <div className="flex justify-end gap-2.5">
       <div className="flex min-w-0 max-w-[80%] flex-col items-end gap-1">
         <span className="px-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
           You
         </span>
-        <div
-          className={cn(
-            'rounded-2xl px-3.5 py-2',
-            'bg-primary/10 text-foreground',
-            'ring-1 ring-inset ring-primary/15',
-            'whitespace-pre-wrap break-words text-[13px] leading-relaxed',
-          )}
-        >
-          {text}
-        </div>
+        {hasAttachments ? (
+          <div className="flex max-w-full flex-wrap justify-end gap-1.5">
+            {attachments!.map((attachment) => (
+              <UserMessageAttachmentChip key={attachment.id} attachment={attachment} />
+            ))}
+          </div>
+        ) : null}
+        {text.length > 0 ? (
+          <div
+            className={cn(
+              'rounded-2xl px-3.5 py-2',
+              'bg-primary/10 text-foreground',
+              'ring-1 ring-inset ring-primary/15',
+              'whitespace-pre-wrap break-words text-[13px] leading-relaxed',
+            )}
+          >
+            {text}
+          </div>
+        ) : null}
       </div>
       <UserAvatar avatarUrl={accountAvatarUrl} login={accountLogin} />
+    </div>
+  )
+}
+
+function UserMessageAttachmentChip({ attachment }: { attachment: ConversationMessageAttachment }) {
+  if (attachment.kind === 'image' && attachment.previewSrc) {
+    return (
+      <div
+        className="overflow-hidden rounded-md border border-border/50 bg-background shadow-sm"
+        title={attachment.originalName}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={attachment.previewSrc}
+          alt={attachment.originalName}
+          className="block max-h-40 max-w-[260px] object-cover"
+          draggable={false}
+        />
+      </div>
+    )
+  }
+  return (
+    <div
+      className="flex max-w-[260px] items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-2 py-1 text-[11px] text-foreground"
+      title={attachment.originalName}
+    >
+      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="line-clamp-1 truncate">{attachment.originalName}</span>
     </div>
   )
 }
@@ -1022,6 +1130,79 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
         className,
       )}
     />
+  )
+}
+
+function truncateForLine(text: string, max = 240): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  if (collapsed.length <= max) return collapsed
+  return `${collapsed.slice(0, max - 1)}…`
+}
+
+interface DenseTurnItemProps {
+  turn: ConversationTurn
+}
+
+function DenseTurnItem({ turn }: DenseTurnItemProps) {
+  if (turn.kind === 'message') {
+    const isUser = turn.role === 'user'
+    const marker = isUser ? '>' : '◆'
+    const tone = isUser ? 'text-primary/85' : 'text-foreground/90'
+    return (
+      <li className="flex items-start gap-1.5 px-1">
+        <span className={cn('shrink-0 select-none font-semibold', tone)}>{marker}</span>
+        <span className="min-w-0 flex-1 truncate text-foreground/85" title={turn.text}>
+          {truncateForLine(turn.text)}
+        </span>
+      </li>
+    )
+  }
+
+  if (turn.kind === 'thinking') {
+    return (
+      <li className="flex items-start gap-1.5 px-1 text-muted-foreground/80">
+        <span className="shrink-0 select-none">~</span>
+        <span className="min-w-0 flex-1 truncate" title={turn.text}>
+          {truncateForLine(turn.text)}
+        </span>
+      </li>
+    )
+  }
+
+  if (turn.kind === 'failure') {
+    return (
+      <li className="flex items-start gap-1.5 px-1 text-destructive">
+        <span className="shrink-0 select-none">✗</span>
+        <span className="min-w-0 flex-1 truncate" title={`${turn.code}: ${turn.message}`}>
+          {truncateForLine(turn.message)}
+        </span>
+      </li>
+    )
+  }
+
+  const isAction = turn.kind === 'action' || turn.kind === 'action_group'
+  if (!isAction) return null
+  const state = turn.state ?? null
+  const stateClass =
+    state === 'failed'
+      ? 'text-destructive/90'
+      : state === 'running'
+        ? 'text-primary/90'
+        : state === 'succeeded'
+          ? 'text-success/90'
+          : 'text-muted-foreground/70'
+  return (
+    <li className="flex items-start gap-1.5 px-1">
+      <span className={cn('shrink-0 select-none font-semibold', stateClass)}>$</span>
+      <span className="min-w-0 flex-1 truncate text-foreground/85" title={`${turn.title} — ${turn.detail}`}>
+        {truncateForLine(turn.title)}
+      </span>
+      {state ? (
+        <span className={cn('shrink-0 text-[9.5px] uppercase tracking-wider tabular-nums', stateClass)}>
+          {getToolStateLabel(state)}
+        </span>
+      ) : null}
+    </li>
   )
 }
 

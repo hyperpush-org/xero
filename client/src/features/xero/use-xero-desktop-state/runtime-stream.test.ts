@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MutableRefObject } from 'react'
 import {
+  attachRuntimeStreamSubscription,
   createRuntimeStreamEventBuffer,
   mergeRuntimeStreamEvents,
+  RUNTIME_STREAM_BATCH_WINDOW_MS,
 } from './runtime-stream'
 import {
   createRuntimeStreamView,
@@ -10,6 +12,8 @@ import {
   type RuntimeStreamEventDto,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
+import type { RuntimeSessionView } from '@/src/lib/xero-model/runtime'
+import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 
 function makeRuntimeStreamEvent(
   sequence: number,
@@ -70,12 +74,66 @@ function makeRuntimeStream(): RuntimeStreamView {
   })
 }
 
+function makeSessionRuntimeStreamEvent(agentSessionId: string, sequence: number): RuntimeStreamEventDto {
+  const runId = `run-${agentSessionId}`
+  return {
+    ...makeRuntimeStreamEvent(sequence, {
+      runId,
+      text: `${agentSessionId}:${sequence};`,
+    }),
+    agentSessionId,
+    runId,
+    sessionId: 'runtime-session-1',
+    flowId: 'flow-1',
+    item: {
+      ...makeRuntimeStreamEvent(sequence, {
+        runId,
+        text: `${agentSessionId}:${sequence};`,
+      }).item,
+      runId,
+      sessionId: 'runtime-session-1',
+      flowId: 'flow-1',
+    },
+  }
+}
+
+function makeRuntimeSession(): RuntimeSessionView {
+  return {
+    projectId: 'project-1',
+    runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
+    flowId: 'flow-1',
+    sessionId: 'runtime-session-1',
+    accountId: 'acct-1',
+    phase: 'authenticated',
+    phaseLabel: 'Authenticated',
+    runtimeLabel: 'OpenAI Codex',
+    accountLabel: 'acct-1',
+    sessionLabel: 'runtime-session-1',
+    callbackBound: true,
+    authorizationUrl: null,
+    redirectUri: null,
+    lastErrorCode: null,
+    lastError: null,
+    updatedAt: '2026-04-16T13:30:00Z',
+    isAuthenticated: true,
+    isLoginInProgress: false,
+    needsManualInput: false,
+    isSignedOut: false,
+    isFailed: false,
+  }
+}
+
 describe('runtime stream event coalescing', () => {
   it('flushes non-urgent stream items in one buffered update', () => {
     let stream: RuntimeStreamView | null = makeRuntimeStream()
     let scheduledFlush: (() => void) | null = null
     const updateRuntimeStream = vi.fn(
-      (_projectId: string, updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null) => {
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
         stream = updater(stream)
       },
     )
@@ -116,7 +174,11 @@ describe('runtime stream event coalescing', () => {
     const refreshKeysRef: MutableRefObject<Record<string, Set<string>>> = { current: {} }
     const scheduleRuntimeMetadataRefresh = vi.fn()
     const updateRuntimeStream = vi.fn(
-      (_projectId: string, updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null) => {
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
         stream = updater(stream)
       },
     )
@@ -192,5 +254,90 @@ describe('runtime stream event coalescing', () => {
 
     expect(estimateRuntimeStreamViewBytes(stream)).toBeGreaterThan(512)
     expect(estimateRuntimeStreamViewBytes(null)).toBe(0)
+  })
+
+  it('isolates six simultaneous runtime stream subscriptions by agent session', async () => {
+    const sessionIds = Array.from({ length: 6 }, (_, index) => `agent-session-${index + 1}`)
+    const handlers = new Map<string, (payload: RuntimeStreamEventDto) => void>()
+    const unsubscribes = new Map<string, ReturnType<typeof vi.fn>>()
+    const streams: Record<string, RuntimeStreamView> = {}
+    const updateRuntimeStream = vi.fn(
+      (
+        projectId: string,
+        agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        const key = `${projectId}:${agentSessionId}`
+        const nextStream = updater(streams[key] ?? null)
+        if (nextStream) {
+          streams[key] = nextStream
+        } else {
+          delete streams[key]
+        }
+      },
+    )
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds, handler) => {
+          handlers.set(agentSessionId, handler)
+          const unsubscribe = vi.fn()
+          unsubscribes.set(agentSessionId, unsubscribe)
+          return {
+            response: {
+              projectId,
+              agentSessionId,
+              runtimeKind: 'openai_codex',
+              runId: `run-${agentSessionId}`,
+              sessionId: 'runtime-session-1',
+              flowId: 'flow-1',
+              subscribedItemKinds: itemKinds,
+            },
+            unsubscribe,
+          }
+        },
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+
+    const cleanups = sessionIds.map((agentSessionId) =>
+      attachRuntimeStreamSubscription({
+        projectId: 'project-1',
+        agentSessionId,
+        runtimeSession: makeRuntimeSession(),
+        runId: `run-${agentSessionId}`,
+        adapter,
+        runtimeActionRefreshKeysRef: { current: {} },
+        updateRuntimeStream,
+        scheduleRuntimeMetadataRefresh: vi.fn(),
+      }),
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(adapter.subscribeRuntimeStream).toHaveBeenCalledTimes(6)
+
+    for (const agentSessionId of sessionIds) {
+      const handler = handlers.get(agentSessionId)
+      expect(handler).toBeTypeOf('function')
+      for (let sequence = 1; sequence <= 30; sequence += 1) {
+        handler?.(makeSessionRuntimeStreamEvent(agentSessionId, sequence))
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, RUNTIME_STREAM_BATCH_WINDOW_MS + 5))
+
+    expect(Object.keys(streams)).toHaveLength(6)
+    for (const agentSessionId of sessionIds) {
+      const stream = streams[`project-1:${agentSessionId}`]
+      expect(stream?.agentSessionId).toBe(agentSessionId)
+      expect(stream?.lastSequence).toBe(30)
+      expect(stream?.transcriptItems.map((item) => item.text).join('')).toContain(`${agentSessionId}:30;`)
+      for (const otherSessionId of sessionIds.filter((id) => id !== agentSessionId)) {
+        expect(stream?.transcriptItems.map((item) => item.text).join('')).not.toContain(`${otherSessionId}:`)
+      }
+    }
+
+    cleanups.forEach((cleanup) => cleanup())
+    for (const unsubscribe of unsubscribes.values()) {
+      expect(unsubscribe).toHaveBeenCalledTimes(1)
+    }
   })
 })

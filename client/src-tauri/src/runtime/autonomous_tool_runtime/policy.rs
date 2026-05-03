@@ -8,7 +8,8 @@ use super::{
     AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousProcessActionRiskLevel,
     AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
     AutonomousProcessOwnershipScope, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
-    AutonomousSafetyPolicyDecision, AutonomousToolRequest, AutonomousToolRuntime,
+    AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
+    AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
     DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::commands::{
@@ -284,6 +285,27 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 requires_approval: trace.approval_required,
                 require_approval_code: "policy_requires_approval_process_control",
                 require_approval_reason: "Process control requires operator approval for this action.",
+            }
+        }
+        AutonomousToolRequest::SystemDiagnostics(request) => {
+            let trace = system_diagnostics_policy_trace(request.action);
+            let risk_class = match request.action {
+                AutonomousSystemDiagnosticsAction::ProcessSample => "system_profile",
+                AutonomousSystemDiagnosticsAction::MacosAccessibilitySnapshot => "os_automation",
+                _ => "system_read",
+            };
+            SafetyPolicyMetadata {
+                risk_class,
+                network_intent: "none",
+                credential_sensitivity: "possible",
+                os_target: Some(match request.action {
+                    AutonomousSystemDiagnosticsAction::MacosAccessibilitySnapshot => "macos",
+                    _ => "process",
+                }),
+                prior_observation_required: false,
+                requires_approval: trace.approval_required,
+                require_approval_code: "policy_requires_approval_system_diagnostics",
+                require_approval_reason: "This diagnostics action requires operator approval.",
             }
         }
         AutonomousToolRequest::Edit(_)
@@ -646,6 +668,71 @@ pub(super) fn process_manager_policy_trace(
     };
 
     AutonomousProcessManagerPolicyTrace {
+        risk_level,
+        approval_required,
+        code: code.into(),
+        reason: reason.into(),
+    }
+}
+
+pub(super) fn system_diagnostics_policy_trace(
+    action: AutonomousSystemDiagnosticsAction,
+) -> AutonomousSystemDiagnosticsPolicyTrace {
+    let risk_level = match action {
+        AutonomousSystemDiagnosticsAction::ProcessOpenFiles
+        | AutonomousSystemDiagnosticsAction::ProcessResourceSnapshot
+        | AutonomousSystemDiagnosticsAction::ProcessThreads
+        | AutonomousSystemDiagnosticsAction::SystemLogQuery
+        | AutonomousSystemDiagnosticsAction::DiagnosticsBundle => {
+            AutonomousProcessActionRiskLevel::SystemRead
+        }
+        AutonomousSystemDiagnosticsAction::ProcessSample => {
+            AutonomousProcessActionRiskLevel::SystemRead
+        }
+        AutonomousSystemDiagnosticsAction::MacosAccessibilitySnapshot => {
+            AutonomousProcessActionRiskLevel::OsAutomation
+        }
+    };
+
+    let (approval_required, code, reason) = match action {
+        AutonomousSystemDiagnosticsAction::ProcessSample => (
+            true,
+            "system_diagnostics_process_sample_requires_approval",
+            "Process sampling can capture sensitive runtime details and requires operator approval.",
+        ),
+        AutonomousSystemDiagnosticsAction::MacosAccessibilitySnapshot => (
+            true,
+            "system_diagnostics_accessibility_snapshot_requires_approval",
+            "macOS Accessibility snapshots can expose screen and UI state and require operator approval.",
+        ),
+        AutonomousSystemDiagnosticsAction::ProcessOpenFiles => (
+            false,
+            "system_diagnostics_process_open_files_allowed",
+            "Bounded process open-file inspection is read-only system observation.",
+        ),
+        AutonomousSystemDiagnosticsAction::ProcessResourceSnapshot => (
+            false,
+            "system_diagnostics_resource_snapshot_allowed",
+            "Bounded process resource snapshots are read-only system observation.",
+        ),
+        AutonomousSystemDiagnosticsAction::ProcessThreads => (
+            false,
+            "system_diagnostics_process_threads_allowed",
+            "Bounded process thread inspection is read-only system observation.",
+        ),
+        AutonomousSystemDiagnosticsAction::SystemLogQuery => (
+            false,
+            "system_diagnostics_log_query_allowed",
+            "Bounded filtered system log queries are read-only system observation.",
+        ),
+        AutonomousSystemDiagnosticsAction::DiagnosticsBundle => (
+            false,
+            "system_diagnostics_bundle_allowed",
+            "Diagnostics bundles compose bounded typed diagnostics and stop at approval boundaries.",
+        ),
+    };
+
+    AutonomousSystemDiagnosticsPolicyTrace {
         risk_level,
         approval_required,
         code: code.into(),

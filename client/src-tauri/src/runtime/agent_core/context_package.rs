@@ -407,7 +407,7 @@ fn context_retrieval_query_text(
     let mut used = 0_usize;
     for message in messages.iter().rev() {
         let (role, content) = match message {
-            ProviderMessage::User { content } => ("user", content.as_str()),
+            ProviderMessage::User { content, .. } => ("user", content.as_str()),
             ProviderMessage::Assistant { content, .. } => ("assistant", content.as_str()),
             ProviderMessage::Tool { .. } => continue,
         };
@@ -682,6 +682,7 @@ mod tests {
         seed_retrievable_context(&repo_root, &project_id);
         let messages = vec![ProviderMessage::User {
             content: "Use phase3 context package project records.".into(),
+            attachments: Vec::new(),
         }];
         let input = ProviderContextPackageInput {
             repo_root: &repo_root,

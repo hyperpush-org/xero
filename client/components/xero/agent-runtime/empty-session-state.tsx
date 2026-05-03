@@ -7,6 +7,8 @@ interface EmptySessionStateProps {
   projectLabel: string
   greetingName?: string | null
   onSelectSuggestion?: (prompt: string) => void
+  /** Density variant. `dense` strips the brand glyph + paragraph for ultra-compact panes. */
+  variant?: 'default' | 'dense'
 }
 
 interface Suggestion {
@@ -37,8 +39,42 @@ export function EmptySessionState({
   projectLabel,
   greetingName,
   onSelectSuggestion,
+  variant = 'default',
 }: EmptySessionStateProps) {
   const greeting = greetingName ? `${getDaypartGreeting()}, ${greetingName}` : null
+
+  if (variant === 'dense') {
+    return (
+      <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">
+        <div className="relative flex w-full max-w-[260px] flex-col items-stretch px-3 py-4">
+          <h2 className="text-center text-[13px] font-semibold tracking-tight text-foreground">
+            <span className="text-primary">{projectLabel}</span>
+          </h2>
+          {onSelectSuggestion ? (
+            <ul className="mt-3 flex w-full flex-col divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/30">
+              {SUGGESTIONS.map((suggestion) => (
+                <li key={suggestion.label}>
+                  <button
+                    className={cn(
+                      'group flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors',
+                      'hover:bg-secondary/40 focus-visible:bg-secondary/40 focus-visible:outline-none',
+                    )}
+                    onClick={() => onSelectSuggestion(suggestion.prompt)}
+                    type="button"
+                  >
+                    <suggestion.icon className="h-3 w-3 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+                    <span className="flex-1 truncate text-[11.5px] text-foreground/80 group-hover:text-foreground">
+                      {suggestion.label}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">

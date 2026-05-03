@@ -99,6 +99,46 @@ pub struct AgentMessageRecord {
     pub role: AgentMessageRole,
     pub content: String,
     pub created_at: String,
+    pub attachments: Vec<AgentMessageAttachmentRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageAttachmentKind {
+    Image,
+    Document,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMessageAttachmentRecord {
+    pub id: i64,
+    pub message_id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub kind: AgentMessageAttachmentKind,
+    pub storage_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAgentMessageAttachmentRecord {
+    pub message_id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub kind: AgentMessageAttachmentKind,
+    pub storage_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +252,18 @@ pub struct NewAgentMessageRecord {
     pub role: AgentMessageRole,
     pub content: String,
     pub created_at: String,
+    pub attachments: Vec<NewMessageAttachmentInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMessageAttachmentInput {
+    pub kind: AgentMessageAttachmentKind,
+    pub storage_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,8 +409,11 @@ pub fn append_agent_message(
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
     validate_non_empty_text(&record.content, "content")?;
-    let connection = open_agent_database(repo_root)?;
-    connection
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection.transaction().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_message_transaction_failed", error)
+    })?;
+    transaction
         .execute(
             r#"
             INSERT INTO agent_messages (project_id, run_id, role, content, created_at)
@@ -375,8 +430,76 @@ pub fn append_agent_message(
         .map_err(|error| {
             map_agent_store_write_error(repo_root, "agent_message_insert_failed", error)
         })?;
-
-    let id = connection.last_insert_rowid();
+    let id = transaction.last_insert_rowid();
+    let mut stored_attachments = Vec::with_capacity(record.attachments.len());
+    for attachment in &record.attachments {
+        validate_non_empty_text(&attachment.storage_path, "attachment.storagePath")?;
+        validate_non_empty_text(&attachment.media_type, "attachment.mediaType")?;
+        validate_non_empty_text(&attachment.original_name, "attachment.originalName")?;
+        if attachment.size_bytes < 0 {
+            return Err(CommandError::user_fixable(
+                "agent_message_attachment_invalid_size",
+                "Xero refused to record an attachment with a negative size.",
+            ));
+        }
+        transaction
+            .execute(
+                r#"
+                INSERT INTO agent_message_attachments (
+                    message_id,
+                    project_id,
+                    run_id,
+                    kind,
+                    storage_path,
+                    media_type,
+                    original_name,
+                    size_bytes,
+                    width,
+                    height,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
+                params![
+                    id,
+                    record.project_id,
+                    record.run_id,
+                    agent_message_attachment_kind_sql_value(&attachment.kind),
+                    attachment.storage_path,
+                    attachment.media_type,
+                    attachment.original_name,
+                    attachment.size_bytes,
+                    attachment.width,
+                    attachment.height,
+                    record.created_at,
+                ],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(
+                    repo_root,
+                    "agent_message_attachment_insert_failed",
+                    error,
+                )
+            })?;
+        let attachment_id = transaction.last_insert_rowid();
+        stored_attachments.push(AgentMessageAttachmentRecord {
+            id: attachment_id,
+            message_id: id,
+            project_id: record.project_id.clone(),
+            run_id: record.run_id.clone(),
+            kind: attachment.kind.clone(),
+            storage_path: attachment.storage_path.clone(),
+            media_type: attachment.media_type.clone(),
+            original_name: attachment.original_name.clone(),
+            size_bytes: attachment.size_bytes,
+            width: attachment.width,
+            height: attachment.height,
+            created_at: record.created_at.clone(),
+        });
+    }
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_message_transaction_commit_failed", error)
+    })?;
     Ok(AgentMessageRecord {
         id,
         project_id: record.project_id.clone(),
@@ -384,6 +507,7 @@ pub fn append_agent_message(
         role: record.role.clone(),
         content: record.content.clone(),
         created_at: record.created_at.clone(),
+        attachments: stored_attachments,
     })
 }
 
@@ -1395,14 +1519,81 @@ fn read_agent_messages(
                 role: parse_agent_message_role(row.get::<_, String>(3)?.as_str()),
                 content: row.get(4)?,
                 created_at: row.get(5)?,
+                attachments: Vec::new(),
             })
         })
         .map_err(|error| {
             map_agent_store_query_error(repo_root, "agent_messages_query_failed", error)
         })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
-        map_agent_store_query_error(repo_root, "agent_messages_decode_failed", error)
-    })
+    let mut messages: Vec<AgentMessageRecord> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_messages_decode_failed", error)
+        })?;
+    if messages.is_empty() {
+        return Ok(messages);
+    }
+    let mut attachment_statement = connection
+        .prepare(
+            r#"
+            SELECT id, message_id, project_id, run_id, kind, storage_path, media_type,
+                   original_name, size_bytes, width, height, created_at
+            FROM agent_message_attachments
+            WHERE project_id = ?1
+              AND run_id = ?2
+            ORDER BY message_id ASC, id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(
+                repo_root,
+                "agent_message_attachments_prepare_failed",
+                error,
+            )
+        })?;
+    let attachment_rows = attachment_statement
+        .query_map(params![project_id, run_id], |row| {
+            Ok(AgentMessageAttachmentRecord {
+                id: row.get(0)?,
+                message_id: row.get(1)?,
+                project_id: row.get(2)?,
+                run_id: row.get(3)?,
+                kind: parse_agent_message_attachment_kind(row.get::<_, String>(4)?.as_str()),
+                storage_path: row.get(5)?,
+                media_type: row.get(6)?,
+                original_name: row.get(7)?,
+                size_bytes: row.get(8)?,
+                width: row.get(9)?,
+                height: row.get(10)?,
+                created_at: row.get(11)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_message_attachments_query_failed", error)
+        })?;
+    let attachments: Vec<AgentMessageAttachmentRecord> = attachment_rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            map_agent_store_query_error(
+                repo_root,
+                "agent_message_attachments_decode_failed",
+                error,
+            )
+        })?;
+    let mut by_id: std::collections::HashMap<i64, Vec<AgentMessageAttachmentRecord>> =
+        std::collections::HashMap::new();
+    for attachment in attachments {
+        by_id
+            .entry(attachment.message_id)
+            .or_default()
+            .push(attachment);
+    }
+    for message in &mut messages {
+        if let Some(list) = by_id.remove(&message.id) {
+            message.attachments = list;
+        }
+    }
+    Ok(messages)
 }
 
 fn read_agent_events(
@@ -1734,6 +1925,24 @@ pub fn agent_message_role_sql_value(role: &AgentMessageRole) -> &'static str {
         AgentMessageRole::User => "user",
         AgentMessageRole::Assistant => "assistant",
         AgentMessageRole::Tool => "tool",
+    }
+}
+
+pub fn agent_message_attachment_kind_sql_value(
+    kind: &AgentMessageAttachmentKind,
+) -> &'static str {
+    match kind {
+        AgentMessageAttachmentKind::Image => "image",
+        AgentMessageAttachmentKind::Document => "document",
+        AgentMessageAttachmentKind::Text => "text",
+    }
+}
+
+fn parse_agent_message_attachment_kind(value: &str) -> AgentMessageAttachmentKind {
+    match value {
+        "image" => AgentMessageAttachmentKind::Image,
+        "document" => AgentMessageAttachmentKind::Document,
+        _ => AgentMessageAttachmentKind::Text,
     }
 }
 

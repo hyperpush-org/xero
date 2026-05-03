@@ -23,6 +23,7 @@ pub fn start_runtime_run<R: Runtime + 'static>(
         &request.agent_session_id,
         request.initial_controls,
         request.initial_prompt,
+        request.initial_attachments,
     )?;
 
     Ok(runtime_run_dto_from_snapshot(&outcome.snapshot))

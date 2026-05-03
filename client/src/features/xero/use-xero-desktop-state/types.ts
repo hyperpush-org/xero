@@ -55,6 +55,7 @@ import type {
   RuntimeStreamStatus,
   RuntimeStreamView,
   RuntimeStreamViewItem,
+  StagedAgentAttachmentDto,
   SyncNotificationAdaptersResponseDto,
   ListSkillRegistryRequestDto,
   RemovePluginRequestDto,
@@ -127,6 +128,7 @@ export type AgentRunControlTruthSource = 'runtime_run' | 'fallback'
 export interface RuntimeRunControlMutationRequest {
   controls?: RuntimeRunControlInputDto | null
   prompt?: string | null
+  attachments?: StagedAgentAttachmentDto[]
   autoCompact?: RuntimeAutoCompactPreferenceDto | null
 }
 
@@ -381,6 +383,26 @@ export interface AgentPaneView {
   messagesUnavailableReason: string
 }
 
+export interface AgentWorkspacePaneSlot {
+  id: string
+  agentSessionId: string | null
+}
+
+export type AgentWorkspaceSidebarMode = 'pinned' | 'collapsed'
+
+export interface AgentWorkspaceLayoutState {
+  paneSlots: AgentWorkspacePaneSlot[]
+  focusedPaneId: string
+  splitterRatios: Record<string, number[]>
+  preSpawnSidebarMode: AgentWorkspaceSidebarMode | null
+}
+
+export interface AgentWorkspacePaneView {
+  paneId: string
+  agentSessionId: string | null
+  agent: AgentPaneView
+}
+
 export interface ExecutionPaneView {
   project: ProjectDetailView
   activePhase: Phase | null
@@ -412,6 +434,8 @@ export interface UseXeroDesktopStateResult {
   repositoryStatus: RepositoryStatusView | null
   workflowView: WorkflowPaneView | null
   agentView: AgentPaneView | null
+  agentWorkspaceLayout: AgentWorkspaceLayoutState | null
+  agentWorkspacePanes: AgentWorkspacePaneView[]
   executionView: ExecutionPaneView | null
   repositoryDiffs: Record<RepositoryDiffScope, RepositoryDiffState>
   activeDiffScope: RepositoryDiffScope
@@ -555,6 +579,10 @@ export interface UseXeroDesktopStateResult {
   restoreAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
   deleteAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
   renameAgentSession: (agentSessionId: string, title: string) => Promise<ProjectDetailView | null>
+  spawnPane: () => Promise<AgentWorkspaceLayoutState | null>
+  closePane: (paneId: string) => void
+  focusPane: (paneId: string) => void
+  setSplitterRatios: (arrangementKey: string, ratios: number[]) => void
   usageSummaries: Record<string, ProjectUsageSummaryDto>
   activeUsageSummary: ProjectUsageSummaryDto | null
   activeUsageSummaryLoadError: string | null

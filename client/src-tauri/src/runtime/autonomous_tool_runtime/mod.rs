@@ -13,6 +13,7 @@ mod project_context;
 mod repo_scope;
 mod skills;
 pub mod solana;
+mod system_diagnostics;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -99,6 +100,7 @@ pub use solana::{
     AUTONOMOUS_TOOL_SOLANA_SQUADS, AUTONOMOUS_TOOL_SOLANA_TX, AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
     AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
 };
+pub(crate) use system_diagnostics::system_diagnostics_action_approval_id;
 
 pub const AUTONOMOUS_TOOL_READ: &str = "read";
 pub const AUTONOMOUS_TOOL_SEARCH: &str = "search";
@@ -119,6 +121,7 @@ pub const AUTONOMOUS_TOOL_COMMAND_SESSION_START: &str = "command_session_start";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_READ: &str = "command_session_read";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_STOP: &str = "command_session_stop";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
+pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
 pub const AUTONOMOUS_TOOL_MACOS_AUTOMATION: &str = "macos_automation";
 pub const AUTONOMOUS_TOOL_MCP: &str = "mcp";
 pub const AUTONOMOUS_TOOL_SUBAGENT: &str = "subagent";
@@ -172,6 +175,7 @@ const TOOL_ACCESS_COMMAND_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
 ];
 const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MANAGER];
+const TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS];
 const TOOL_ACCESS_MACOS_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MACOS_AUTOMATION];
 const TOOL_ACCESS_WEB_SEARCH_ONLY_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_WEB_SEARCH];
 const TOOL_ACCESS_WEB_FETCH_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_WEB_FETCH];
@@ -293,6 +297,12 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         description: "Xero-owned process lifecycle, output, and external process observation/control surfaces.",
         tools: TOOL_ACCESS_PROCESS_MANAGER_TOOLS,
         risk_class: "process_control",
+    },
+    ToolAccessGroupDefinition {
+        name: "system_diagnostics",
+        description: "Typed, bounded system diagnostics for process open files, resources, threads, logs, sampling, accessibility snapshots, and diagnostic bundles.",
+        tools: TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS,
+        risk_class: "system_read",
     },
     ToolAccessGroupDefinition {
         name: "macos",
@@ -676,9 +686,9 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_COMMAND_SESSION_READ
         | AUTONOMOUS_TOOL_COMMAND_SESSION_STOP
         | AUTONOMOUS_TOOL_POWERSHELL => AutonomousToolEffectClass::Command,
-        AUTONOMOUS_TOOL_PROCESS_MANAGER | AUTONOMOUS_TOOL_MACOS_AUTOMATION => {
-            AutonomousToolEffectClass::ProcessControl
-        }
+        AUTONOMOUS_TOOL_PROCESS_MANAGER
+        | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS
+        | AUTONOMOUS_TOOL_MACOS_AUTOMATION => AutonomousToolEffectClass::ProcessControl,
         AUTONOMOUS_TOOL_WEB_SEARCH | AUTONOMOUS_TOOL_WEB_FETCH | AUTONOMOUS_TOOL_MCP => {
             AutonomousToolEffectClass::ExternalService
         }
@@ -996,6 +1006,47 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &["action", "processId", "groupId", "argv", "input", "timeoutMs", "maxBytes"],
             &["Start an async build and await completion.", "Inspect system ports."],
             "process_control",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+            "system_diagnostics",
+            "Run typed, policy-aware advanced diagnostics including process open-file inspection, process resource snapshots, thread lists, sampling, unified logs, accessibility snapshots, and diagnostic bundles.",
+            &[
+                "diagnostics",
+                "process",
+                "lsof",
+                "open files",
+                "file descriptors",
+                "sockets",
+                "threads",
+                "sample",
+                "unified log",
+                "accessibility",
+                "hung process",
+                "port conflict",
+                "tauri",
+                "macos focus",
+                "high cpu",
+            ],
+            &[
+                "action",
+                "preset",
+                "pid",
+                "processName",
+                "limit",
+                "filter",
+                "fdKinds",
+                "includeSockets",
+                "includeFiles",
+                "includeDeleted",
+                "durationMs",
+                "intervalMs",
+            ],
+            &[
+                "Inspect open files for a PID without raw shell text.",
+                "Request a bounded diagnostics bundle for a hung process.",
+            ],
+            "system_read",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
@@ -1829,6 +1880,7 @@ impl AutonomousToolRuntime {
                 self.command_session_stop(request)
             }
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
+            AutonomousToolRequest::SystemDiagnostics(request) => self.system_diagnostics(request),
             AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
             AutonomousToolRequest::Mcp(request) => self.mcp(request),
             AutonomousToolRequest::Subagent(request) => self.subagent(request),
@@ -1955,6 +2007,9 @@ impl AutonomousToolRuntime {
             }
             AutonomousToolRequest::ProcessManager(request) => {
                 self.process_manager_with_operator_approval(request)
+            }
+            AutonomousToolRequest::SystemDiagnostics(request) => {
+                self.system_diagnostics_with_operator_approval(request)
             }
             AutonomousToolRequest::MacosAutomation(request) => {
                 self.macos_automation_with_operator_approval(request)
@@ -2233,6 +2288,7 @@ pub enum AutonomousToolRequest {
     CommandSessionRead(AutonomousCommandSessionReadRequest),
     CommandSessionStop(AutonomousCommandSessionStopRequest),
     ProcessManager(AutonomousProcessManagerRequest),
+    SystemDiagnostics(AutonomousSystemDiagnosticsRequest),
     MacosAutomation(AutonomousMacosAutomationRequest),
     Mcp(AutonomousMcpRequest),
     Subagent(AutonomousSubagentRequest),
@@ -2593,6 +2649,130 @@ pub struct AutonomousProcessManagerRequest {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+pub enum AutonomousSystemDiagnosticsAction {
+    ProcessOpenFiles,
+    ProcessResourceSnapshot,
+    ProcessThreads,
+    ProcessSample,
+    SystemLogQuery,
+    MacosAccessibilitySnapshot,
+    DiagnosticsBundle,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousSystemDiagnosticsPreset {
+    HungProcess,
+    PortConflict,
+    TauriWindowIssue,
+    MacosAppFocusIssue,
+    HighCpuProcess,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousSystemDiagnosticsFdKind {
+    Cwd,
+    Executable,
+    File,
+    Directory,
+    Socket,
+    Pipe,
+    Device,
+    Deleted,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousSystemDiagnosticsArtifactMode {
+    None,
+    Summary,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousSystemDiagnosticsLogLevel {
+    Debug,
+    Info,
+    Notice,
+    Error,
+    Fault,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsRequest {
+    pub action: AutonomousSystemDiagnosticsAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<AutonomousSystemDiagnosticsPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub include_children: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_mode: Option<AutonomousSystemDiagnosticsArtifactMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fd_kinds: Vec<AutonomousSystemDiagnosticsFdKind>,
+    #[serde(default)]
+    pub include_sockets: bool,
+    #[serde(default)]
+    pub include_files: bool,
+    #[serde(default)]
+    pub include_deleted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_count: Option<u32>,
+    #[serde(default)]
+    pub include_ports: bool,
+    #[serde(default)]
+    pub include_threads_summary: bool,
+    #[serde(default)]
+    pub include_wait_channel: bool,
+    #[serde(default)]
+    pub include_stack_hints: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_artifact_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<AutonomousSystemDiagnosticsLogLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsystem: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_predicate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+    #[serde(default)]
+    pub focused_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
 pub enum AutonomousMacosAutomationAction {
     MacPermissions,
     MacAppList,
@@ -2939,6 +3119,7 @@ pub enum AutonomousToolOutput {
     Command(AutonomousCommandOutput),
     CommandSession(AutonomousCommandSessionOutput),
     ProcessManager(AutonomousProcessManagerOutput),
+    SystemDiagnostics(AutonomousSystemDiagnosticsOutput),
     MacosAutomation(AutonomousMacosAutomationOutput),
     Mcp(AutonomousMcpOutput),
     Subagent(AutonomousSubagentOutput),
@@ -3525,6 +3706,123 @@ pub struct AutonomousProcessManagerOutput {
     pub policy: AutonomousProcessManagerPolicyTrace,
     pub contract: AutonomousProcessManagerContract,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsTarget {
+    pub pid: Option<u32>,
+    pub process_name: Option<String>,
+    pub bundle_id: Option<String>,
+    pub app_name: Option<String>,
+    pub window_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsPolicyTrace {
+    pub risk_level: AutonomousProcessActionRiskLevel,
+    pub approval_required: bool,
+    pub code: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsArtifact {
+    pub path: String,
+    pub byte_count: usize,
+    pub redacted: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsDiagnostic {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsRow {
+    pub row_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fd_kind: Option<AutonomousSystemDiagnosticsFdKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_memory_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsystem: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platform: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSystemDiagnosticsOutput {
+    pub action: AutonomousSystemDiagnosticsAction,
+    pub platform_supported: bool,
+    pub performed: bool,
+    pub target: AutonomousSystemDiagnosticsTarget,
+    pub policy: AutonomousSystemDiagnosticsPolicyTrace,
+    pub summary: String,
+    pub rows: Vec<AutonomousSystemDiagnosticsRow>,
+    pub truncated: bool,
+    pub redacted: bool,
+    pub artifact: Option<AutonomousSystemDiagnosticsArtifact>,
+    pub diagnostics: Vec<AutonomousSystemDiagnosticsDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

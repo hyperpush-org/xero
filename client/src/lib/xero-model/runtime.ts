@@ -601,12 +601,27 @@ export const runtimeRunUpdatedPayloadSchema = z
     }
   })
 
+export const agentAttachmentKindSchema = z.enum(['image', 'document', 'text'])
+
+export const stagedAgentAttachmentSchema = z
+  .object({
+    kind: agentAttachmentKindSchema,
+    absolutePath: z.string().min(1),
+    mediaType: z.string().min(1),
+    originalName: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+    width: z.number().int().nonnegative().nullable().optional(),
+    height: z.number().int().nonnegative().nullable().optional(),
+  })
+  .strict()
+
 export const startRuntimeRunRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
     initialControls: runtimeRunControlInputSchema.nullable().optional(),
     initialPrompt: z.string().trim().min(1).nullable().optional(),
+    initialAttachments: z.array(stagedAgentAttachmentSchema).default([]),
   })
   .strict()
 
@@ -631,6 +646,7 @@ export const updateRuntimeRunControlsRequestSchema = z
     runId: z.string().trim().min(1),
     controls: runtimeRunControlInputSchema.nullable().optional(),
     prompt: z.string().trim().min(1).nullable().optional(),
+    attachments: z.array(stagedAgentAttachmentSchema).default([]),
     autoCompact: runtimeAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
@@ -695,6 +711,8 @@ export type StartRuntimeRunRequestDto = z.infer<typeof startRuntimeRunRequestSch
 export type StartRuntimeSessionRequestDto = z.infer<typeof startRuntimeSessionRequestSchema>
 export type UpdateRuntimeRunControlsRequestDto = z.infer<typeof updateRuntimeRunControlsRequestSchema>
 export type StopRuntimeRunRequestDto = z.infer<typeof stopRuntimeRunRequestSchema>
+export type AgentAttachmentKindDto = z.infer<typeof agentAttachmentKindSchema>
+export type StagedAgentAttachmentDto = z.infer<typeof stagedAgentAttachmentSchema>
 
 export interface RuntimeSessionView {
   projectId: string

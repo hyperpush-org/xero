@@ -35,6 +35,7 @@ import {
   removeProjectRecord,
   type ProjectLoadSource,
 } from './project-loaders'
+import { removeRuntimeStreamsForProject } from './high-churn-store'
 import { createRepositoryStatusSyncKey } from './repository-status'
 import type { RefreshSource } from './types'
 
@@ -58,7 +59,11 @@ type RuntimeSessionRecords = Record<string, RuntimeSessionView>
 type RuntimeLoadErrorRecords = Record<string, string | null>
 type RuntimeStreamRecords = Record<string, RuntimeStreamView>
 
-type UpdateRuntimeStream = (projectId: string, updater: RuntimeStreamUpdater) => void
+type UpdateRuntimeStream = (
+  projectId: string,
+  agentSessionId: string,
+  updater: RuntimeStreamUpdater,
+) => void
 
 export type RuntimeMetadataRefreshSource = Extract<
   RefreshSource,
@@ -365,7 +370,7 @@ export function createRuntimeStreamEventBuffer({
     }
 
     const events = pendingEvents.splice(0, pendingEvents.length)
-    updateRuntimeStream(projectId, (currentStream) => mergeRuntimeStreamEvents(currentStream, events))
+    updateRuntimeStream(projectId, agentSessionId, (currentStream) => mergeRuntimeStreamEvents(currentStream, events))
     scheduleRuntimeActionRefreshes(
       projectId,
       events,
@@ -384,7 +389,7 @@ export function createRuntimeStreamEventBuffer({
 
   const reportIssue = (issue: { code: string; message: string; retryable: boolean }) => {
     flush()
-    updateRuntimeStream(projectId, (currentStream) =>
+    updateRuntimeStream(projectId, agentSessionId, (currentStream) =>
       applyRuntimeStreamIssue(currentStream, {
         projectId,
         agentSessionId,
@@ -708,7 +713,7 @@ export async function attachDesktopRuntimeListeners({
       })
 
       if (!nextRuntime.isAuthenticated) {
-        setters.setRuntimeStreams((currentStreams) => removeProjectRecord(currentStreams, payload.projectId))
+        setters.setRuntimeStreams((currentStreams) => removeRuntimeStreamsForProject(currentStreams, payload.projectId))
       }
 
       if (refs.activeProjectIdRef.current !== payload.projectId) {
@@ -779,12 +784,12 @@ export function attachRuntimeStreamSubscription({
   }
 
   if (!runtimeSession?.isAuthenticated || !runtimeSession.sessionId) {
-    updateRuntimeStream(projectId, () => null)
+    updateRuntimeStream(projectId, agentSessionId, () => null)
     return () => undefined
   }
 
   if (!runId) {
-    updateRuntimeStream(projectId, () => null)
+    updateRuntimeStream(projectId, agentSessionId, () => null)
     return () => undefined
   }
 
@@ -800,7 +805,7 @@ export function attachRuntimeStreamSubscription({
   let unsubscribe: () => void = () => {}
 
   if (typeof adapter.subscribeRuntimeStream !== 'function') {
-    updateRuntimeStream(projectId, (currentStream) =>
+    updateRuntimeStream(projectId, agentSessionId, (currentStream) =>
       applyRuntimeStreamIssue(currentStream, {
         projectId,
         agentSessionId,
@@ -818,7 +823,7 @@ export function attachRuntimeStreamSubscription({
     return () => undefined
   }
 
-  updateRuntimeStream(projectId, (currentStream) => {
+  updateRuntimeStream(projectId, agentSessionId, (currentStream) => {
     if (currentStream?.runId === runId && currentStream.agentSessionId === agentSessionId) {
       return {
         ...currentStream,
@@ -887,7 +892,7 @@ export function attachRuntimeStreamSubscription({
       }
 
       unsubscribe = subscription.unsubscribe
-      updateRuntimeStream(projectId, (currentStream) => {
+      updateRuntimeStream(projectId, agentSessionId, (currentStream) => {
         if (
           currentStream?.runId === subscription.response.runId
           && currentStream.agentSessionId === subscription.response.agentSessionId
@@ -917,7 +922,7 @@ export function attachRuntimeStreamSubscription({
         retryable: true,
       })
 
-      updateRuntimeStream(projectId, (currentStream) =>
+      updateRuntimeStream(projectId, agentSessionId, (currentStream) =>
         applyRuntimeStreamIssue(currentStream, {
           projectId,
           agentSessionId,

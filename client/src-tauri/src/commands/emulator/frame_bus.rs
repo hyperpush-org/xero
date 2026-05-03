@@ -181,10 +181,10 @@ mod tests {
         assert_eq!(bus.publish(320, 240, vec![1]), 1);
         assert!(bus.should_emit_frame_event_at(1));
 
-        for value in 2..=50 {
+        for value in 2u8..=50 {
             let seq = bus.publish(320, 240, vec![value]);
-            assert_eq!(seq, value as u64);
-            assert!(!bus.should_emit_frame_event_at(1 + value));
+            assert_eq!(seq, u64::from(value));
+            assert!(!bus.should_emit_frame_event_at(1 + u64::from(value)));
         }
 
         let latest = bus.latest().expect("latest frame");

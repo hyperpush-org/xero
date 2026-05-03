@@ -260,6 +260,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::complete_oauth_callback::complete_oauth_callback,
             commands::logout_runtime_session::logout_runtime_session,
             commands::start_autonomous_run::start_autonomous_run,
+            commands::stage_agent_attachment::stage_agent_attachment,
+            commands::stage_agent_attachment::discard_agent_attachment,
             commands::start_runtime_run::start_runtime_run,
             commands::update_runtime_run_controls::update_runtime_run_controls,
             commands::start_runtime_session::start_runtime_session,

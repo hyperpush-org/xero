@@ -19,8 +19,75 @@ pub(crate) fn append_message(
             role,
             content,
             created_at: now_timestamp(),
+            attachments: Vec::new(),
         },
     )
+}
+
+pub(crate) fn append_user_message_with_attachments(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    content: String,
+    attachments: Vec<project_store::NewMessageAttachmentInput>,
+) -> CommandResult<AgentMessageRecord> {
+    project_store::append_agent_message(
+        repo_root,
+        &NewAgentMessageRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            role: AgentMessageRole::User,
+            content,
+            created_at: now_timestamp(),
+            attachments,
+        },
+    )
+}
+
+pub(crate) fn provider_attachments_from_records(
+    records: &[project_store::AgentMessageAttachmentRecord],
+) -> Vec<MessageAttachment> {
+    records
+        .iter()
+        .map(|record| MessageAttachment {
+            kind: match record.kind {
+                project_store::AgentMessageAttachmentKind::Image => MessageAttachmentKind::Image,
+                project_store::AgentMessageAttachmentKind::Document => {
+                    MessageAttachmentKind::Document
+                }
+                project_store::AgentMessageAttachmentKind::Text => MessageAttachmentKind::Text,
+            },
+            absolute_path: PathBuf::from(&record.storage_path),
+            media_type: record.media_type.clone(),
+            original_name: record.original_name.clone(),
+            size_bytes: record.size_bytes,
+            width: record.width,
+            height: record.height,
+        })
+        .collect()
+}
+
+pub(crate) fn message_attachments_to_inputs(
+    attachments: &[MessageAttachment],
+) -> Vec<project_store::NewMessageAttachmentInput> {
+    attachments
+        .iter()
+        .map(|attachment| project_store::NewMessageAttachmentInput {
+            kind: match attachment.kind {
+                MessageAttachmentKind::Image => project_store::AgentMessageAttachmentKind::Image,
+                MessageAttachmentKind::Document => {
+                    project_store::AgentMessageAttachmentKind::Document
+                }
+                MessageAttachmentKind::Text => project_store::AgentMessageAttachmentKind::Text,
+            },
+            storage_path: attachment.absolute_path.to_string_lossy().into_owned(),
+            media_type: attachment.media_type.clone(),
+            original_name: attachment.original_name.clone(),
+            size_bytes: attachment.size_bytes,
+            width: attachment.width,
+            height: attachment.height,
+        })
+        .collect()
 }
 
 pub(crate) fn append_event(
@@ -1540,6 +1607,30 @@ pub(crate) fn record_command_output_event(
                 }
             }
         }
+        AutonomousToolOutput::SystemDiagnostics(output) => {
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::CommandOutput,
+                json!({
+                    "operation": output.action.clone(),
+                    "performed": output.performed,
+                    "platformSupported": output.platform_supported,
+                    "target": output.target.clone(),
+                    "rows": output.rows.clone(),
+                    "truncated": output.truncated,
+                    "redacted": output.redacted,
+                    "artifact": output.artifact.clone(),
+                    "diagnostics": output.diagnostics.clone(),
+                    "policy": output.policy.clone(),
+                }),
+            )?;
+
+            if !output.performed && output.policy.approval_required {
+                record_system_diagnostics_action_required(repo_root, project_id, run_id, output)?;
+            }
+        }
         AutonomousToolOutput::MacosAutomation(output) => {
             append_event(
                 repo_root,
@@ -1565,6 +1656,41 @@ pub(crate) fn record_command_output_event(
         _ => {}
     }
 
+    Ok(())
+}
+
+fn record_system_diagnostics_action_required(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    output: &AutonomousSystemDiagnosticsOutput,
+) -> CommandResult<()> {
+    let action_id = system_diagnostics_action_approval_id(output);
+    record_action_request(
+        repo_root,
+        project_id,
+        run_id,
+        &action_id,
+        "system_diagnostics_approval",
+        "System diagnostics requires review",
+        &output.policy.reason,
+    )?;
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ActionRequired,
+        json!({
+            "actionId": sanitize_action_id(&action_id),
+            "actionType": "system_diagnostics_approval",
+            "title": "System diagnostics requires review",
+            "reason": output.policy.reason,
+            "code": output.policy.code,
+            "toolName": "system_diagnostics",
+            "operation": output.action,
+            "target": output.target,
+        }),
+    )?;
     Ok(())
 }
 

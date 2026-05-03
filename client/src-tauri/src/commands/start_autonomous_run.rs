@@ -27,6 +27,7 @@ pub fn start_autonomous_run<R: Runtime>(
         &request.agent_session_id,
         request.initial_controls,
         request.initial_prompt,
+        Vec::new(),
     )?;
 
     sync_autonomous_run_state(

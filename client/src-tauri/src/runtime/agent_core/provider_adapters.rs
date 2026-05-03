@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, USER_AGENT,
@@ -15,8 +16,9 @@ use tempfile::NamedTempFile;
 use url::Url;
 
 use super::{
-    AgentToolCall, AgentToolDescriptor, FakeProviderAdapter, ProviderAdapter, ProviderMessage,
-    ProviderStreamEvent, ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage,
+    AgentToolCall, AgentToolDescriptor, FakeProviderAdapter, MessageAttachment,
+    MessageAttachmentKind, ProviderAdapter, ProviderMessage, ProviderStreamEvent,
+    ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage,
 };
 use crate::{
     commands::{CommandError, CommandResult, ProviderModelThinkingEffortDto},
@@ -664,7 +666,7 @@ fn openai_chat_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<Json
     })];
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content } => {
+            ProviderMessage::User { content, .. } => {
                 messages.push(json!({ "role": "user", "content": content }));
             }
             ProviderMessage::Assistant {
@@ -806,7 +808,7 @@ fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<Jso
     let mut input = Vec::new();
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content } => {
+            ProviderMessage::User { content, .. } => {
                 input.push(json!({ "role": "user", "content": content }));
             }
             ProviderMessage::Assistant {
@@ -845,7 +847,7 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
     let mut input = Vec::new();
     for (index, message) in request.messages.iter().enumerate() {
         match message {
-            ProviderMessage::User { content } => {
+            ProviderMessage::User { content, .. } => {
                 input.push(json!({
                     "role": "user",
                     "content": [{ "type": "input_text", "text": content }],
@@ -1062,7 +1064,7 @@ fn anthropic_request_body(
     body.insert("stream".into(), json!(stream));
     body.insert(
         "messages".into(),
-        JsonValue::Array(anthropic_messages(request)),
+        JsonValue::Array(anthropic_messages(request)?),
     );
     body.insert(
         "tools".into(),
@@ -1074,15 +1076,18 @@ fn anthropic_request_body(
     Ok(JsonValue::Object(body))
 }
 
-fn anthropic_messages(request: &ProviderTurnRequest) -> Vec<JsonValue> {
+fn anthropic_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
     let mut messages = Vec::new();
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content } => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": [{ "type": "text", "text": content }],
-                }));
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
+                let blocks = anthropic_user_content_blocks(content, attachments)?;
+                if !blocks.is_empty() {
+                    messages.push(json!({ "role": "user", "content": blocks }));
+                }
             }
             ProviderMessage::Assistant {
                 content,
@@ -1120,7 +1125,83 @@ fn anthropic_messages(request: &ProviderTurnRequest) -> Vec<JsonValue> {
             }
         }
     }
-    messages
+    Ok(messages)
+}
+
+fn anthropic_user_content_blocks(
+    content: &str,
+    attachments: &[MessageAttachment],
+) -> CommandResult<Vec<JsonValue>> {
+    let mut blocks: Vec<JsonValue> = Vec::with_capacity(attachments.len() + 1);
+    for attachment in attachments {
+        match attachment.kind {
+            MessageAttachmentKind::Image => {
+                let bytes = std::fs::read(&attachment.absolute_path).map_err(|error| {
+                    CommandError::system_fault(
+                        "agent_attachment_read_failed",
+                        format!(
+                            "Xero could not read attached image `{}` from disk: {error}",
+                            attachment.original_name
+                        ),
+                    )
+                })?;
+                let data = BASE64_STANDARD.encode(&bytes);
+                blocks.push(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.media_type,
+                        "data": data,
+                    },
+                }));
+            }
+            MessageAttachmentKind::Document => {
+                let bytes = std::fs::read(&attachment.absolute_path).map_err(|error| {
+                    CommandError::system_fault(
+                        "agent_attachment_read_failed",
+                        format!(
+                            "Xero could not read attached document `{}` from disk: {error}",
+                            attachment.original_name
+                        ),
+                    )
+                })?;
+                let data = BASE64_STANDARD.encode(&bytes);
+                blocks.push(json!({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": data,
+                    },
+                }));
+            }
+            MessageAttachmentKind::Text => {
+                let text =
+                    std::fs::read_to_string(&attachment.absolute_path).map_err(|error| {
+                        CommandError::system_fault(
+                            "agent_attachment_read_failed",
+                            format!(
+                                "Xero could not read attached text file `{}` from disk: {error}",
+                                attachment.original_name
+                            ),
+                        )
+                    })?;
+                blocks.push(json!({
+                    "type": "text",
+                    "text": format!(
+                        "<attached_file name=\"{}\">\n{}\n</attached_file>",
+                        attachment.original_name, text
+                    ),
+                }));
+            }
+        }
+    }
+    if !content.is_empty() {
+        blocks.push(json!({ "type": "text", "text": content }));
+    } else if blocks.is_empty() {
+        blocks.push(json!({ "type": "text", "text": "" }));
+    }
+    Ok(blocks)
 }
 
 fn anthropic_tool(tool: &AgentToolDescriptor) -> JsonValue {
@@ -2234,6 +2315,7 @@ mod tests {
             system_prompt: "system".into(),
             messages: vec![ProviderMessage::User {
                 content: "do work".into(),
+                attachments: Vec::new(),
             }],
             tools: vec![AgentToolDescriptor {
                 name: "read".into(),
@@ -2873,5 +2955,105 @@ mod tests {
         );
         assert_eq!(failed.code, "openai_codex_stream_failed");
         assert!(failed.message.contains("bad response"));
+    }
+
+    #[test]
+    fn anthropic_user_blocks_emit_image_document_and_text_blocks() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+
+        let pdf_path = dir.path().join("notes.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 fake-pdf-bytes").expect("write pdf fixture");
+
+        let text_path = dir.path().join("scratch.md");
+        let mut text_file = std::fs::File::create(&text_path).expect("create text fixture");
+        text_file
+            .write_all(b"# heading\nbody line")
+            .expect("write text fixture");
+
+        let attachments = vec![
+            MessageAttachment {
+                kind: MessageAttachmentKind::Image,
+                absolute_path: image_path.clone(),
+                media_type: "image/png".into(),
+                original_name: "snap.png".into(),
+                size_bytes: 10,
+                width: Some(640),
+                height: Some(480),
+            },
+            MessageAttachment {
+                kind: MessageAttachmentKind::Document,
+                absolute_path: pdf_path.clone(),
+                media_type: "application/pdf".into(),
+                original_name: "notes.pdf".into(),
+                size_bytes: 20,
+                width: None,
+                height: None,
+            },
+            MessageAttachment {
+                kind: MessageAttachmentKind::Text,
+                absolute_path: text_path.clone(),
+                media_type: "text/markdown".into(),
+                original_name: "scratch.md".into(),
+                size_bytes: 0,
+                width: None,
+                height: None,
+            },
+        ];
+
+        let blocks = anthropic_user_content_blocks("describe these", &attachments)
+            .expect("build content blocks");
+
+        assert_eq!(blocks.len(), 4, "image, document, text-file, prompt");
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert!(blocks[0]["source"]["data"].as_str().unwrap().len() > 0);
+
+        assert_eq!(blocks[1]["type"], "document");
+        assert_eq!(blocks[1]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["source"]["media_type"], "application/pdf");
+
+        assert_eq!(blocks[2]["type"], "text");
+        let inlined = blocks[2]["text"].as_str().expect("text block");
+        assert!(inlined.contains("scratch.md"));
+        assert!(inlined.contains("# heading"));
+
+        assert_eq!(blocks[3]["type"], "text");
+        assert_eq!(blocks[3]["text"], "describe these");
+    }
+
+    #[test]
+    fn anthropic_user_blocks_handles_empty_prompt_with_attachment() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("solo.png");
+        std::fs::write(&image_path, b"\x89PNG").expect("write png fixture");
+
+        let attachments = vec![MessageAttachment {
+            kind: MessageAttachmentKind::Image,
+            absolute_path: image_path,
+            media_type: "image/png".into(),
+            original_name: "solo.png".into(),
+            size_bytes: 4,
+            width: None,
+            height: None,
+        }];
+
+        let blocks =
+            anthropic_user_content_blocks("", &attachments).expect("build content blocks");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+    }
+
+    #[test]
+    fn anthropic_user_blocks_with_no_inputs_emits_empty_text_block() {
+        let blocks = anthropic_user_content_blocks("", &[]).expect("empty blocks");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "");
     }
 }

@@ -60,6 +60,7 @@ pub fn git_generate_commit_message<R: Runtime>(
         system_prompt: COMMIT_MESSAGE_SYSTEM_PROMPT.into(),
         messages: vec![ProviderMessage::User {
             content: user_prompt,
+            attachments: Vec::new(),
         }],
         tools: Vec::new(),
         turn_index: 0,

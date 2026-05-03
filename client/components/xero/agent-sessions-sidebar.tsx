@@ -70,6 +70,11 @@ interface AgentSessionsSidebarProps {
   onPin?: () => void
   onRequestPeek?: () => void
   onReleasePeek?: () => void
+  /**
+   * Map of agentSessionId → pane number (1-based) currently displaying that session.
+   * Used to render P2/P3/... chips when multiple panes are open.
+   */
+  sessionPaneAssignments?: Record<string, number>
 }
 
 const PINNED_SESSIONS_STORAGE_PREFIX = 'xero:pinned-sessions:'
@@ -163,6 +168,7 @@ export function AgentSessionsSidebar({
   onPin,
   onRequestPeek,
   onReleasePeek,
+  sessionPaneAssignments,
 }: AgentSessionsSidebarProps) {
   const isStripMode = mode === 'collapsed' && collapsed
   const showOverlay = isStripMode && peeking
@@ -484,6 +490,7 @@ export function AgentSessionsSidebar({
         onTogglePin={togglePinSession}
         onRenameSession={onRenameSession ? handleOpenRename : undefined}
         canArchive={entry.state !== 'exiting'}
+        paneNumber={sessionPaneAssignments?.[entry.session.agentSessionId] ?? null}
       />
     </li>
   )
@@ -836,6 +843,8 @@ export interface AgentSessionsSidebarItemProps {
   onTogglePin: (agentSessionId: string) => void
   onRenameSession?: (session: AgentSessionView) => void
   compact?: 'icon' | 'list' | 'full'
+  /** Pane number (1-based) when this session is loaded in a non-focused pane. */
+  paneNumber?: number | null
 }
 
 export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
@@ -850,6 +859,7 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
   onTogglePin,
   onRenameSession,
   compact = 'full',
+  paneNumber = null,
 }: AgentSessionsSidebarItemProps) {
   const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
     if (event.button === 0) {
@@ -960,6 +970,14 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
               aria-hidden
               className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70"
             />
+          ) : null}
+          {!isActive && paneNumber != null ? (
+            <span
+              aria-label={`Loaded in pane ${paneNumber}`}
+              className="ml-auto inline-flex h-[16px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1 text-[9.5px] font-semibold uppercase tracking-wider text-muted-foreground"
+            >
+              P{paneNumber}
+            </span>
           ) : null}
         </div>
       </button>

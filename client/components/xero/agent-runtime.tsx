@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
-import { ArrowDown, ChevronRight, Loader2, Plus } from 'lucide-react'
+import { ArrowDown, ChevronRight, Loader2, Plus, SplitSquareHorizontal, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useDebouncedValue } from '@/lib/input-priority'
@@ -29,7 +29,12 @@ import {
   getRuntimeAgentLabel,
   getRuntimeRunThinkingEffortLabel,
   type RuntimeRunControlInputDto,
+  type StagedAgentAttachmentDto,
 } from '@/src/lib/xero-model'
+import {
+  classifyAttachment,
+  classificationRejectionMessage,
+} from '@/lib/agent-attachments'
 
 import {
   AgentContextMeter,
@@ -42,7 +47,8 @@ import {
   getComposerPlaceholder,
   getComposerThinkingOptions,
 } from './agent-runtime/composer-helpers'
-import { ComposerDock } from './agent-runtime/composer-dock'
+import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
+import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
 import { AgentCreateDraftSection } from './agent-runtime/agent-create-draft-section'
 import { ConversationSection, type ConversationTurn } from './agent-runtime/conversation-section'
 import { EmptySessionState } from './agent-runtime/empty-session-state'
@@ -57,7 +63,13 @@ import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
 
-type AgentRuntimeDesktopAdapter = SpeechDictationAdapter & Partial<Pick<XeroDesktopAdapter, 'getSessionContextSnapshot'>>
+type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
+  Partial<
+    Pick<
+      XeroDesktopAdapter,
+      'getSessionContextSnapshot' | 'stageAgentAttachment' | 'discardAgentAttachment'
+    >
+  >
 
 export interface AgentRuntimeProps {
   agent: AgentPaneView
@@ -103,12 +115,42 @@ export interface AgentRuntimeProps {
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   /** Open the Settings → Agents tab so the user can manage custom agents. */
   onOpenAgentManagement?: () => void
+  /** Visual density. Compact attaches the composer flush to bottom and moves secondary controls into a gear popover. */
+  density?: 'comfortable' | 'compact'
+  /** Pane id for multi-pane workspaces. */
+  paneId?: string | null
+  /** Pane index (1-based) shown as a chip when more than one pane is open. */
+  paneNumber?: number | null
+  /** Total panes currently open. */
+  paneCount?: number
+  /** Spawn a new pane. Disabled when at max. */
+  onSpawnPane?: () => void
+  /** Spawn-pane button is disabled (e.g., already at the cap). */
+  spawnPaneDisabled?: boolean
+  /** Close this pane. Hidden when paneCount === 1. */
+  onClosePane?: () => void
+  /** Focus this pane. Called when the user interacts with the pane. */
+  onFocusPane?: () => void
+  /** Whether this pane is currently focused. */
+  isPaneFocused?: boolean
+  /** Whether this pane should show the first-run compact-mode tooltip. */
+  showCompactFirstRunTooltip?: boolean
+  /** Acknowledge first-run tooltip. */
+  onAckCompactFirstRunTooltip?: () => void
+  /** Reports pane-local state that should block an immediate close. */
+  onPaneCloseStateChange?: (state: AgentPaneCloseState) => void
 }
 
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
 const MAX_VISIBLE_RUNTIME_ACTION_TURNS = 16
 const COMPACT_TOOL_BURST_THRESHOLD = 5
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
+
+export interface AgentPaneCloseState {
+  hasRunningRun: boolean
+  hasUnsavedComposerText: boolean
+  sessionTitle: string
+}
 
 export function isRuntimeConversationNearBottom(
   viewport: Pick<HTMLElement, 'scrollTop' | 'scrollHeight' | 'clientHeight'>,
@@ -548,6 +590,15 @@ export const AgentRuntime = memo(function AgentRuntime({
   isCreatingSession = false,
   customAgentDefinitions = [],
   onOpenAgentManagement,
+  density = 'comfortable',
+  paneNumber = null,
+  paneCount = 1,
+  onSpawnPane,
+  spawnPaneDisabled = false,
+  onClosePane,
+  showCompactFirstRunTooltip = false,
+  onAckCompactFirstRunTooltip,
+  onPaneCloseStateChange,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -585,6 +636,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
+  const hasSelectedAgentSession = Boolean(selectedAgentSessionId?.trim())
 
   const selectedProviderId =
     agent.selectedModel?.providerId ?? agent.selectedProviderId ?? runtimeSession?.providerId ?? 'openai_codex'
@@ -618,6 +670,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const canMutateRuntimeRun = !agentRuntimeBlocked
   const canStartRuntimeSession = Boolean(
     canMutateRuntimeRun &&
+      hasSelectedAgentSession &&
       hasRepositoryBinding &&
       typeof onStartRuntimeSession === 'function' &&
       selectedProviderReadyForSession &&
@@ -625,13 +678,151 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
   const canStartRuntimeRun = Boolean(
     canMutateRuntimeRun &&
+      hasSelectedAgentSession &&
       hasRepositoryBinding &&
       typeof onStartRuntimeRun === 'function' &&
       runtimeSession?.isAuthenticated,
   )
   const canStopRuntimeRun = Boolean(
-    hasRepositoryBinding && renderableRuntimeRun && !renderableRuntimeRun.isTerminal && typeof onStopRuntimeRun === 'function',
+    hasSelectedAgentSession &&
+      hasRepositoryBinding &&
+      renderableRuntimeRun &&
+      !renderableRuntimeRun.isTerminal &&
+      typeof onStopRuntimeRun === 'function',
   )
+
+  const [pendingAttachments, setPendingAttachments] = useState<ComposerPendingAttachment[]>([])
+  const pendingAttachmentsRef = useRef<ComposerPendingAttachment[]>([])
+  pendingAttachmentsRef.current = pendingAttachments
+
+  const stageAgentAttachment = desktopAdapter?.stageAgentAttachment
+  const discardAgentAttachment = desktopAdapter?.discardAgentAttachment
+  const projectIdForAttachments = agent.project.id
+  const runIdForAttachments = renderableRuntimeRun?.runId ?? 'pending'
+
+  const handleAddFiles = useCallback(
+    (files: File[]) => {
+      if (files.length === 0 || !stageAgentAttachment) return
+      for (const file of files) {
+        const classification = classifyAttachment({
+          name: file.name,
+          type: file.type,
+          size: file.size,
+        })
+        if (classification.kind === null) {
+          console.warn(classificationRejectionMessage(file, classification))
+          continue
+        }
+        const id = `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const previewUrl =
+          classification.kind === 'image' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+            ? URL.createObjectURL(file)
+            : undefined
+        const optimistic: ComposerPendingAttachment = {
+          id,
+          kind: classification.kind,
+          originalName: file.name,
+          mediaType: classification.mediaType,
+          sizeBytes: file.size,
+          status: 'staging',
+          previewUrl,
+        }
+        setPendingAttachments((prev) => [...prev, optimistic])
+        void file
+          .arrayBuffer()
+          .then((buffer) =>
+            stageAgentAttachment({
+              projectId: projectIdForAttachments,
+              runId: runIdForAttachments,
+              originalName: file.name,
+              mediaType: classification.mediaType,
+              bytes: new Uint8Array(buffer),
+            }),
+          )
+          .then((staged) => {
+            setPendingAttachments((prev) =>
+              prev.map((attachment) =>
+                attachment.id === id
+                  ? {
+                      ...attachment,
+                      status: 'ready',
+                      absolutePath: staged.absolutePath,
+                      sizeBytes: staged.sizeBytes,
+                      mediaType: staged.mediaType,
+                    }
+                  : attachment,
+              ),
+            )
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : 'Upload failed'
+            setPendingAttachments((prev) =>
+              prev.map((attachment) =>
+                attachment.id === id
+                  ? { ...attachment, status: 'error', errorMessage: message }
+                  : attachment,
+              ),
+            )
+          })
+      }
+    },
+    [projectIdForAttachments, runIdForAttachments, stageAgentAttachment],
+  )
+
+  const handleRemoveAttachment = useCallback(
+    (id: string) => {
+      setPendingAttachments((prev) => {
+        const next = prev.filter((attachment) => attachment.id !== id)
+        const removed = prev.find((attachment) => attachment.id === id)
+        if (removed?.previewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+          URL.revokeObjectURL(removed.previewUrl)
+        }
+        if (removed?.absolutePath && discardAgentAttachment) {
+          void discardAgentAttachment(projectIdForAttachments, removed.absolutePath).catch(() => {
+            // Best-effort cleanup; swallow errors so the chip still goes away.
+          })
+        }
+        return next
+      })
+    },
+    [discardAgentAttachment, projectIdForAttachments],
+  )
+
+  const getPendingAttachments = useCallback((): StagedAgentAttachmentDto[] => {
+    return pendingAttachmentsRef.current
+      .filter(
+        (attachment): attachment is ComposerPendingAttachment & { absolutePath: string } =>
+          attachment.status === 'ready' && typeof attachment.absolutePath === 'string',
+      )
+      .map((attachment) => ({
+        kind: attachment.kind,
+        absolutePath: attachment.absolutePath,
+        mediaType: attachment.mediaType,
+        originalName: attachment.originalName,
+        sizeBytes: attachment.sizeBytes,
+      }))
+  }, [])
+
+  const handleSubmitAttachmentsSettled = useCallback(() => {
+    setPendingAttachments((prev) => {
+      for (const attachment of prev) {
+        if (attachment.previewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+          URL.revokeObjectURL(attachment.previewUrl)
+        }
+      }
+      return []
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      for (const attachment of pendingAttachmentsRef.current) {
+        if (attachment.previewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+          URL.revokeObjectURL(attachment.previewUrl)
+        }
+      }
+    }
+  }, [])
 
   const controller = useAgentRuntimeController({
     projectId: agent.project.id,
@@ -664,6 +855,8 @@ export const AgentRuntime = memo(function AgentRuntime({
     onStopRuntimeRun,
     onResolveOperatorAction,
     onResumeOperatorRun,
+    getPendingAttachments,
+    onSubmitAttachmentsSettled: handleSubmitAttachmentsSettled,
   })
 
   const selectedComposerModel = useMemo(
@@ -847,36 +1040,96 @@ export const AgentRuntime = memo(function AgentRuntime({
     setShowJumpToLatest(true)
   }, [conversationScrollKey, hasConversationViewportContent, scrollToLatest])
 
+  const isCompact = density === 'compact'
+  const isDense = paneCount >= 4
+  const showPaneNumberChip = paneCount > 1 && paneNumber != null
+  const showCloseButton = paneCount > 1 && typeof onClosePane === 'function'
+  const closeState = useMemo<AgentPaneCloseState>(
+    () => ({
+      hasRunningRun: Boolean(renderableRuntimeRun && !renderableRuntimeRun.isTerminal),
+      hasUnsavedComposerText: controller.draftPrompt.trim().length > 0,
+      sessionTitle: sessionLabel,
+    }),
+    [controller.draftPrompt, renderableRuntimeRun, sessionLabel],
+  )
+
+  useEffect(() => {
+    onPaneCloseStateChange?.(closeState)
+  }, [closeState, onPaneCloseStateChange])
+
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
-      <div className="relative flex min-w-0 flex-1 flex-col">
+    <AgentPaneDropOverlay
+      enabled={Boolean(stageAgentAttachment)}
+      onFilesDropped={handleAddFiles}
+    >
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
           <div className="flex items-center justify-between gap-1.5 bg-background px-3.5 py-2">
             <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+              {showPaneNumberChip ? (
+                <span
+                  aria-label={`Pane ${paneNumber}`}
+                  className="inline-flex h-[18px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                >
+                  P{paneNumber}
+                </span>
+              ) : null}
               <span className="truncate font-semibold text-foreground">{projectLabel}</span>
               <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
               <span className="truncate font-medium">{sessionLabel}</span>
             </div>
-            {onCreateSession ? (
-              <button
-                type="button"
-                aria-label="New session"
-                onClick={onCreateSession}
-                disabled={isCreatingSession}
-                className={cn(
-                  'pointer-events-auto inline-flex h-[30px] items-center gap-1.5 rounded-md px-2 text-[12.5px] font-semibold text-muted-foreground transition-colors',
-                  'hover:bg-primary/10 hover:text-primary',
-                  'disabled:cursor-not-allowed disabled:opacity-50',
-                )}
-              >
-                {isCreatingSession ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Plus className="h-3.5 w-3.5" />
-                )}
-                <span>New Session</span>
-              </button>
-            ) : null}
+            <div className="pointer-events-auto flex items-center gap-1">
+              {onCreateSession && paneCount === 1 ? (
+                <button
+                  type="button"
+                  aria-label="New session"
+                  onClick={onCreateSession}
+                  disabled={isCreatingSession}
+                  className={cn(
+                    'inline-flex h-[30px] items-center gap-1.5 rounded-md px-2 text-[12.5px] font-semibold text-muted-foreground transition-colors',
+                    'hover:bg-primary/10 hover:text-primary',
+                    'disabled:cursor-not-allowed disabled:opacity-50',
+                  )}
+                >
+                  {isCreatingSession ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="h-3.5 w-3.5" />
+                  )}
+                  <span>New Session</span>
+                </button>
+              ) : null}
+              {onSpawnPane ? (
+                <button
+                  type="button"
+                  aria-label={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
+                  title={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
+                  onClick={onSpawnPane}
+                  disabled={spawnPaneDisabled}
+                  className={cn(
+                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                    'hover:bg-primary/10 hover:text-primary',
+                    'disabled:cursor-not-allowed disabled:opacity-40',
+                  )}
+                >
+                  <SplitSquareHorizontal className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+              {showCloseButton ? (
+                <button
+                  type="button"
+                  aria-label="Close pane"
+                  onClick={onClosePane}
+                  className={cn(
+                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                    'hover:bg-destructive/10 hover:text-destructive',
+                  )}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
           </div>
           <div
             aria-hidden="true"
@@ -889,24 +1142,37 @@ export const AgentRuntime = memo(function AgentRuntime({
             ref={scrollViewportRef}
             onScroll={handleConversationScroll}
             onWheel={handleConversationWheel}
-            className={
+            className={cn(
               showAgentSetupEmptyState || showEmptySessionState
-                ? 'flex h-full items-center justify-center overflow-y-auto scrollbar-thin px-6 py-5'
-                : 'flex h-full overflow-y-auto scrollbar-thin px-4 pt-20'
-            }
+                ? 'flex h-full items-center justify-center overflow-y-auto scrollbar-thin'
+                : 'flex h-full overflow-y-auto scrollbar-thin',
+              isDense
+                ? showAgentSetupEmptyState || showEmptySessionState
+                  ? 'px-2 py-2'
+                  : 'px-2 pt-12'
+                : showAgentSetupEmptyState || showEmptySessionState
+                  ? 'px-6 py-5'
+                  : 'px-4 pt-20',
+            )}
           >
             {showAgentSetupEmptyState ? (
               <SetupEmptyState onOpenSettings={onOpenSettings} />
             ) : showEmptySessionState ? (
               <EmptySessionState
                 projectLabel={projectLabel}
+                variant={isDense ? 'dense' : 'default'}
                 onSelectSuggestion={(prompt) => {
                   controller.handleDraftPromptChange(prompt)
                   controller.promptInputRef.current?.focus()
                 }}
               />
             ) : (
-              <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4">
+              <div
+                className={cn(
+                  'mx-auto flex w-full flex-col',
+                  isDense ? 'max-w-full gap-1' : 'max-w-[720px] gap-4',
+                )}
+              >
                 <ConversationSection
                   runtimeRun={renderableRuntimeRun}
                   visibleTurns={visibleTurns}
@@ -916,6 +1182,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                   streamCompletion={runtimeStream?.completion ?? null}
                   accountAvatarUrl={accountAvatarUrl}
                   accountLogin={accountLogin}
+                  variant={isDense ? 'dense' : 'default'}
                 />
                 {controller.composerRuntimeAgentId === 'agent_create' ? (
                   <AgentCreateDraftSection
@@ -947,6 +1214,9 @@ export const AgentRuntime = memo(function AgentRuntime({
         </div>
 
         <ComposerDock
+          density={density}
+          showCompactFirstRunTooltip={showCompactFirstRunTooltip}
+          onAckCompactFirstRunTooltip={onAckCompactFirstRunTooltip}
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}
           composerAgentDefinitionId={controller.composerAgentDefinitionId}
@@ -975,6 +1245,8 @@ export const AgentRuntime = memo(function AgentRuntime({
           onComposerThinkingLevelChange={controller.handleComposerThinkingLevelChange}
           onDraftPromptChange={controller.handleDraftPromptChange}
           onSubmitDraftPrompt={handleSubmitDraftPrompt}
+          pendingAttachments={pendingAttachments}
+          onRemoveAttachment={handleRemoveAttachment}
           pendingRuntimeRunAction={pendingRuntimeRunAction}
           placeholder={composerPlaceholder}
           promptInputRef={controller.promptInputRef}
@@ -986,7 +1258,8 @@ export const AgentRuntime = memo(function AgentRuntime({
           sendButtonLabel={sendButtonLabel}
           onOpenDiagnostics={onOpenDiagnostics}
         />
+        </div>
       </div>
-    </div>
+    </AgentPaneDropOverlay>
   )
 })

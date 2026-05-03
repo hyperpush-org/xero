@@ -7,6 +7,7 @@ pub struct OwnedAgentRunRequest {
     pub agent_session_id: String,
     pub run_id: String,
     pub prompt: String,
+    pub attachments: Vec<MessageAttachment>,
     pub controls: Option<RuntimeRunControlInputDto>,
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
@@ -18,11 +19,32 @@ pub struct ContinueOwnedAgentRunRequest {
     pub project_id: String,
     pub run_id: String,
     pub prompt: String,
+    pub attachments: Vec<MessageAttachment>,
     pub controls: Option<RuntimeRunControlInputDto>,
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
     pub answer_pending_actions: bool,
     pub auto_compact: Option<AgentAutoCompactPreference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAttachmentKind {
+    Image,
+    Document,
+    Text,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageAttachment {
+    pub kind: MessageAttachmentKind,
+    pub absolute_path: PathBuf,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,6 +446,7 @@ pub trait ProviderAdapter {
             system_prompt: "You compact long coding-agent transcripts for future replay. Return a concise, factual summary that preserves user intent, decisions, unresolved work, pending approvals, tool outcomes, and important file or command evidence. Do not invent completed work. Do not include secrets.".into(),
             messages: vec![ProviderMessage::User {
                 content: request.transcript.clone(),
+                attachments: Vec::new(),
             }],
             tools: Vec::new(),
             turn_index: 0,
@@ -477,7 +500,10 @@ pub trait ProviderAdapter {
         );
         let turn = ProviderTurnRequest {
             system_prompt: "You propose durable context candidates for a coding-agent desktop app. Return strict JSON only, never markdown. Capture stable project facts, user preferences, decisions, session summaries, and troubleshooting facts. Prefer no item over a weak item. Never include secrets.".into(),
-            messages: vec![ProviderMessage::User { content: prompt }],
+            messages: vec![ProviderMessage::User {
+                content: prompt,
+                attachments: Vec::new(),
+            }],
             tools: Vec::new(),
             turn_index: 0,
                 controls: RuntimeRunControlStateDto {
@@ -524,6 +550,8 @@ pub struct ProviderTurnRequest {
 pub enum ProviderMessage {
     User {
         content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<MessageAttachment>,
     },
     Assistant {
         content: String,
@@ -697,7 +725,7 @@ impl ProviderAdapter for FakeProviderAdapter {
             .messages
             .iter()
             .filter_map(|message| match message {
-                ProviderMessage::User { content } => Some(content.as_str()),
+                ProviderMessage::User { content, .. } => Some(content.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -867,7 +895,7 @@ fn latest_user_message_contains(messages: &[ProviderMessage], needle: &str) -> b
         .iter()
         .rev()
         .find_map(|message| match message {
-            ProviderMessage::User { content } => Some(content.contains(needle)),
+            ProviderMessage::User { content, .. } => Some(content.contains(needle)),
             ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => None,
         })
         .unwrap_or(false)

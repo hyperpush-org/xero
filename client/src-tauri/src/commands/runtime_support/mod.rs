@@ -11,7 +11,8 @@ pub(crate) use run::{
     apply_owned_runtime_run_pending_controls, bind_owned_runtime_run_to_agent_handoff,
     emit_runtime_run_updated, emit_runtime_run_updated_if_changed, generate_runtime_run_id,
     launch_or_reconnect_runtime_run, load_persisted_runtime_run, load_runtime_run_status,
-    resolve_owned_agent_provider_config, runtime_run_dto_from_snapshot, stop_owned_runtime_run,
+    resolve_owned_agent_provider_config, runtime_run_dto_from_snapshot,
+    staged_attachment_dto_to_message_attachment, stop_owned_runtime_run,
     update_owned_runtime_run_controls,
 };
 #[allow(unused_imports)]

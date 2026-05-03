@@ -169,6 +169,56 @@ export function createXeroHighChurnStore(): XeroHighChurnStore {
 
 export const selectRepositoryStatus = (state: XeroHighChurnState) => state.repositoryStatus
 
+const RUNTIME_STREAM_STORE_KEY_SEPARATOR = '\u0000'
+
+export function createRuntimeStreamStoreKey(projectId: string, agentSessionId: string): string {
+  return `${projectId}${RUNTIME_STREAM_STORE_KEY_SEPARATOR}${agentSessionId}`
+}
+
+export function removeRuntimeStreamsForProject(
+  streams: Record<string, RuntimeStreamView>,
+  projectId: string,
+): Record<string, RuntimeStreamView> {
+  let changed = false
+  const nextStreams: Record<string, RuntimeStreamView> = {}
+
+  for (const [key, stream] of Object.entries(streams)) {
+    if (key === projectId || stream.projectId === projectId) {
+      changed = true
+      continue
+    }
+
+    nextStreams[key] = stream
+  }
+
+  return changed ? nextStreams : streams
+}
+
+export function removeRuntimeStreamForSession(
+  streams: Record<string, RuntimeStreamView>,
+  projectId: string,
+  agentSessionId: string,
+): Record<string, RuntimeStreamView> {
+  const sessionKey = createRuntimeStreamStoreKey(projectId, agentSessionId)
+  let changed = false
+  const nextStreams: Record<string, RuntimeStreamView> = {}
+
+  for (const [key, stream] of Object.entries(streams)) {
+    if (
+      key === sessionKey ||
+      (key === projectId && stream.agentSessionId === agentSessionId) ||
+      (stream.projectId === projectId && stream.agentSessionId === agentSessionId)
+    ) {
+      changed = true
+      continue
+    }
+
+    nextStreams[key] = stream
+  }
+
+  return changed ? nextStreams : streams
+}
+
 export const selectRepositoryShellStatus = (state: XeroHighChurnState): RepositoryShellStatus => ({
   branchLabel: state.repositoryStatus?.branchLabel ?? null,
   upstream: state.repositoryStatus?.upstream ?? null,
@@ -187,7 +237,9 @@ export function selectRuntimeStreamForProject(projectId: string | null, agentSes
       return null
     }
 
-    const stream = state.runtimeStreams[projectId] ?? null
+    const stream = agentSessionId
+      ? state.runtimeStreams[createRuntimeStreamStoreKey(projectId, agentSessionId)] ?? state.runtimeStreams[projectId] ?? null
+      : state.runtimeStreams[projectId] ?? null
     if (!stream || (agentSessionId && stream.agentSessionId !== agentSessionId)) {
       return null
     }

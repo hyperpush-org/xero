@@ -105,12 +105,13 @@ pub fn create_owned_agent_run(
         AgentMessageRole::System,
         system_prompt.clone(),
     )?;
-    append_message(
+    let initial_attachment_inputs = message_attachments_to_inputs(&request.attachments);
+    append_user_message_with_attachments(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
-        AgentMessageRole::User,
         request.prompt.clone(),
+        initial_attachment_inputs,
     )?;
     append_event(
         &request.repo_root,
@@ -422,12 +423,13 @@ pub fn prepare_owned_agent_continuation_for_drive(
         &before,
     )?;
 
-    append_message(
+    let continuation_attachment_inputs = message_attachments_to_inputs(&request.attachments);
+    append_user_message_with_attachments(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
-        AgentMessageRole::User,
         request.prompt.clone(),
+        continuation_attachment_inputs,
     )?;
     append_event(
         &request.repo_root,
@@ -1457,6 +1459,7 @@ fn request_for_handoff_target(
         project_id: request.project_id.clone(),
         run_id: target_run_id.to_string(),
         prompt: request.prompt.clone(),
+        attachments: Vec::new(),
         controls: Some(handoff_control_input_for_source(request, source_snapshot)),
         tool_runtime: request.tool_runtime.clone(),
         provider_config: request.provider_config.clone(),
@@ -1993,6 +1996,14 @@ fn answered_tool_replay_kind(
         return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
     }
 
+    if tool_call.state == AgentToolCallState::Succeeded
+        && system_diagnostics_approval_action_id_for_tool_call(tool_call)?
+            .as_deref()
+            .is_some_and(|action_id| answered_tool_action_ids.contains(action_id))
+    {
+        return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
+    }
+
     Ok(None)
 }
 
@@ -2059,6 +2070,33 @@ fn macos_approval_action_id_for_tool_call(
         return Ok(None);
     }
     Ok(Some(sanitize_action_id(&macos_action_approval_id(&output))))
+}
+
+fn system_diagnostics_approval_action_id_for_tool_call(
+    tool_call: &project_store::AgentToolCallRecord,
+) -> CommandResult<Option<String>> {
+    let Some(result_json) = tool_call.result_json.as_deref() else {
+        return Ok(None);
+    };
+    let result = serde_json::from_str::<AutonomousToolResult>(result_json).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_replay_result_decode_failed",
+            format!(
+                "Xero could not decode tool call `{}` while checking system diagnostics approval replay state: {error}",
+                tool_call.tool_call_id
+            ),
+        )
+    })?;
+
+    let AutonomousToolOutput::SystemDiagnostics(output) = result.output else {
+        return Ok(None);
+    };
+    if output.performed || !output.policy.approval_required {
+        return Ok(None);
+    }
+    Ok(Some(sanitize_action_id(
+        &system_diagnostics_action_approval_id(&output),
+    )))
 }
 
 fn mark_interrupted_tool_calls_before_continuation(
@@ -2309,6 +2347,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             agent_session_id: self.agent_session_id.clone(),
             run_id: child_run_id.clone(),
             prompt,
+            attachments: Vec::new(),
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: self.controls.active.runtime_agent_id,
                 agent_definition_id: self.controls.active.agent_definition_id.clone(),
@@ -2706,6 +2745,7 @@ mod tests {
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: "phase4-builder-run".into(),
             prompt: "Apply the custom policy.\ntool:write phase4-output.txt phase4-ok\ntool:command_echo phase4-verification".into(),
+            attachments: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "phase4_builder",
@@ -2758,6 +2798,7 @@ mod tests {
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: "phase4-observer-run".into(),
             prompt: "Attempt a forbidden mutation.\ntool:write blocked.txt nope".into(),
+            attachments: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "phase4_observer",

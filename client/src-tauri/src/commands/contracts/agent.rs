@@ -74,6 +74,33 @@ pub struct AgentMessageDto {
     pub role: AgentMessageRoleDto,
     pub content: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AgentMessageAttachmentDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageAttachmentKindDto {
+    Image,
+    Document,
+    Text,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentMessageAttachmentDto {
+    pub id: i64,
+    pub message_id: i64,
+    pub kind: AgentMessageAttachmentKindDto,
+    pub absolute_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -356,6 +383,11 @@ pub fn agent_run_summary_dto(run: AgentRunRecord) -> AgentRunSummaryDto {
 }
 
 fn agent_message_dto(message: AgentMessageRecord) -> AgentMessageDto {
+    let attachments = message
+        .attachments
+        .into_iter()
+        .map(agent_message_attachment_dto)
+        .collect();
     AgentMessageDto {
         id: message.id,
         project_id: message.project_id,
@@ -367,6 +399,29 @@ fn agent_message_dto(message: AgentMessageRecord) -> AgentMessageDto {
         .expect("agent message role should serialize to dto enum"),
         content: message.content,
         created_at: message.created_at,
+        attachments,
+    }
+}
+
+fn agent_message_attachment_dto(
+    attachment: crate::db::project_store::AgentMessageAttachmentRecord,
+) -> AgentMessageAttachmentDto {
+    use crate::db::project_store::AgentMessageAttachmentKind;
+    AgentMessageAttachmentDto {
+        id: attachment.id,
+        message_id: attachment.message_id,
+        kind: match attachment.kind {
+            AgentMessageAttachmentKind::Image => AgentMessageAttachmentKindDto::Image,
+            AgentMessageAttachmentKind::Document => AgentMessageAttachmentKindDto::Document,
+            AgentMessageAttachmentKind::Text => AgentMessageAttachmentKindDto::Text,
+        },
+        absolute_path: attachment.storage_path,
+        media_type: attachment.media_type,
+        original_name: attachment.original_name,
+        size_bytes: attachment.size_bytes,
+        width: attachment.width,
+        height: attachment.height,
+        created_at: attachment.created_at,
     }
 }
 

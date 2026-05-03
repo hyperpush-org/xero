@@ -105,6 +105,7 @@ fn generate_session_title<R: Runtime>(
         system_prompt: SESSION_TITLE_SYSTEM_PROMPT.into(),
         messages: vec![ProviderMessage::User {
             content: build_session_title_prompt(prompt),
+            attachments: Vec::new(),
         }],
         tools: Vec::new(),
         turn_index: 0,
