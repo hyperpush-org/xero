@@ -2509,6 +2509,43 @@ describe('XeroApp current UI', () => {
     expect(screen.getAllByText('Main session').length).toBeGreaterThan(0)
   })
 
+  it('closes the agent dock and keeps its session selected when opening the Agent view', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(
+      screen
+        .getAllByRole('button', { name: 'Close agent dock' })
+        .some((button) => button.getAttribute('aria-pressed') === 'true'),
+    ).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent dock')).toHaveAttribute('aria-hidden', 'true'),
+    )
+    expect(
+      screen
+        .getAllByLabelText('Agent conversation viewport')
+        .some((viewport) => !viewport.closest('aside[aria-label="Agent dock"]')),
+    ).toBe(true)
+    expect(screen.getByRole('button', { name: 'Open agent dock' })).toBeDisabled()
+    expect(
+      screen
+        .getAllByRole('button', { name: 'Main session' })
+        .some((button) => button.getAttribute('aria-current') === 'true'),
+    ).toBe(true)
+  })
+
   it('confirms before closing a pane with a running agent run', async () => {
     const { adapter } = createAdapter({
       runtimeRun: makeRuntimeRun('project-1'),
@@ -2793,6 +2830,33 @@ describe('XeroApp current UI', () => {
 
     expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
     expect(within(breadcrumb).getByText('Cluster')).toBeVisible()
+  })
+
+  it('keeps the project rail collapsed while a non-floating right sidebar is open', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open browser' }))
+
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand project sidebar' }))
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close browser' }))
+
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
   })
 
   it('starts GitHub auth from the titlebar without opening Account settings', async () => {

@@ -1,18 +1,11 @@
 "use client"
 
 import { useCallback, useMemo, useRef, useState } from "react"
-import { Bot, Check, ChevronDown, Plus, X } from "lucide-react"
+import { Bot, Plus } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import type {
   AgentRuntimeDesktopAdapter,
   AgentRuntimeProps,
@@ -112,11 +105,6 @@ export function AgentDockSidebar({
     () => sessions.filter((session) => session.isActive),
     [sessions],
   )
-  const selectedSession = useMemo(
-    () => activeSessions.find((session) => session.agentSessionId === selectedSessionId) ?? null,
-    [activeSessions, selectedSessionId],
-  )
-  const headerLabel = selectedSession?.title?.trim() || "New Chat"
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -195,69 +183,6 @@ export function AgentDockSidebar({
       />
 
       <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
-        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-2 pr-1.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label="Switch agent session"
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-foreground transition-colors hover:bg-secondary/50 data-[state=open]:bg-secondary/70"
-                title={headerLabel}
-                type="button"
-              >
-                <Bot className="h-3.5 w-3.5 shrink-0 text-primary" />
-                <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">
-                  {headerLabel}
-                </span>
-                <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-64" sideOffset={6}>
-              <DropdownMenuItem
-                disabled={isCreatingSession}
-                onSelect={(event) => {
-                  event.preventDefault()
-                  onCreateSession()
-                }}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>New session</span>
-              </DropdownMenuItem>
-              {activeSessions.length > 0 ? (
-                <>
-                  <DropdownMenuSeparator />
-                  {activeSessions.map((session) => {
-                    const isSelected = session.agentSessionId === selectedSessionId
-                    const label = session.title?.trim() || "Untitled"
-                    return (
-                      <DropdownMenuItem
-                        key={session.agentSessionId}
-                        onSelect={() => onSelectSession(session.agentSessionId)}
-                      >
-                        <Check
-                          aria-hidden="true"
-                          className={cn(
-                            "h-3.5 w-3.5",
-                            isSelected ? "text-primary" : "opacity-0",
-                          )}
-                        />
-                        <span className="min-w-0 flex-1 truncate">{label}</span>
-                      </DropdownMenuItem>
-                    )
-                  })}
-                </>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <button
-            aria-label="Close agent dock"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
-            onClick={onClose}
-            type="button"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
         <div className="flex min-h-0 flex-1 flex-col">
           {agent ? (
             <LiveAgentRuntimeView
@@ -267,6 +192,10 @@ export function AgentDockSidebar({
               density="compact"
               onCreateSession={onCreateSession}
               isCreatingSession={isCreatingSession}
+              inSidebar
+              sidebarSessions={activeSessions}
+              onSelectSidebarSession={onSelectSession}
+              onCloseSidebar={onClose}
             />
           ) : (
             <DockEmptyState

@@ -585,6 +585,11 @@ export interface UseXeroDesktopStateResult {
   spawnPane: () => Promise<AgentWorkspaceLayoutState | null>
   closePane: (paneId: string) => void
   focusPane: (paneId: string) => void
+  reorderPanes: (activePaneId: string, overPaneId: string) => void
+  openSessionInNewPane: (
+    agentSessionId: string,
+    options?: { atIndex?: number },
+  ) => 'opened' | 'focused' | 'rejected-max' | 'noop'
   setSplitterRatios: (arrangementKey: string, ratios: number[]) => void
   usageSummaries: Record<string, ProjectUsageSummaryDto>
   activeUsageSummary: ProjectUsageSummaryDto | null

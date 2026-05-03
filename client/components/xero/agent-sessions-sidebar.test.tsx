@@ -2,6 +2,8 @@ import type { ComponentProps } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DndContext } from '@dnd-kit/core'
+
 import { AgentSessionsSidebar } from './agent-sessions-sidebar'
 import type { AgentSessionView } from '@/src/lib/xero-model'
 import type { SessionTranscriptSearchResultSnippetDto } from '@/src/lib/xero-model/session-context'
@@ -79,6 +81,29 @@ describe('AgentSessionsSidebar', () => {
     const after = Number(separator.getAttribute('aria-valuenow'))
     expect(after).toBeGreaterThan(before)
     expect(window.localStorage.getItem('xero.agentSessions.width')).toBe(String(after))
+  })
+
+  it('exposes session rows as draggable when wrapped in a DndContext, while preserving click-to-select', () => {
+    const onSelectSession = vi.fn()
+    render(
+      <DndContext>
+        <AgentSessionsSidebar
+          projectId="project-1"
+          sessions={sessions}
+          selectedSessionId="agent-session-main"
+          onSelectSession={onSelectSession}
+          onCreateSession={vi.fn()}
+          onArchiveSession={vi.fn()}
+        />
+      </DndContext>,
+    )
+
+    const sessionButton = screen.getByRole('button', { name: 'Main session' })
+    const draggableWrapper = sessionButton.closest('[aria-roledescription="draggable"]')
+    expect(draggableWrapper).not.toBeNull()
+
+    fireEvent.click(sessionButton)
+    expect(onSelectSession).toHaveBeenCalledWith('agent-session-main')
   })
 
   it('previews session selection on pointer down before the click handler settles', () => {
@@ -355,7 +380,7 @@ describe('AgentSessionsSidebar', () => {
     await waitFor(() => expect(screen.queryByText('Old session')).not.toBeInTheDocument())
   })
 
-  it('confirms via alert dialog before deleting an archived session', async () => {
+  it('requires inline confirmation before deleting an archived session', async () => {
     const archivedSession: AgentSessionView = {
       ...sessions[0],
       agentSessionId: 'agent-session-archived',
@@ -383,7 +408,11 @@ describe('AgentSessionsSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete Old session permanently' }))
 
     expect(onDeleteSession).not.toHaveBeenCalled()
-    const confirmButton = await screen.findByRole('button', { name: 'Delete' })
+    expect(screen.queryByText('Permanently delete "Old session"?')).not.toBeInTheDocument()
+
+    const confirmButton = screen.getByRole('button', { name: 'Confirm delete Old session' })
+    expect(confirmButton).toHaveTextContent('Delete')
+
     fireEvent.click(confirmButton)
 
     await waitFor(() =>
@@ -392,7 +421,7 @@ describe('AgentSessionsSidebar', () => {
     await waitFor(() => expect(screen.queryByText('Old session')).not.toBeInTheDocument())
   })
 
-  it('renders pane number chips for sessions loaded in non-focused panes', () => {
+  it('renders pane number chips for sessions loaded in panes', () => {
     const altSession: AgentSessionView = {
       ...sessions[0],
       agentSessionId: 'agent-session-alt',
@@ -409,9 +438,8 @@ describe('AgentSessionsSidebar', () => {
       },
     })
 
-    // The focused session should NOT show a pane chip.
-    expect(screen.queryByLabelText('Loaded in pane 1')).not.toBeInTheDocument()
-    // The non-focused loaded session should show a P2 chip.
+    // The focused session still needs its pane chip so the sidebar matches the open pane list.
+    expect(screen.getByLabelText('Loaded in pane 1')).toHaveTextContent('P1')
     expect(screen.getByLabelText('Loaded in pane 2')).toHaveTextContent('P2')
   })
 })

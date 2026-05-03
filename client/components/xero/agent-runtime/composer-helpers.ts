@@ -450,7 +450,7 @@ export function getComposerPlaceholder(
   }
 
   if (!hasUsableRuntimeRunId(runtimeRun)) {
-    return 'Type your first message to start the agent.'
+    return 'Prompt the agent'
   }
 
   if (runtimeRun.isTerminal) {

@@ -1,8 +1,10 @@
 "use client"
 
 import { memo, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { useDroppable } from '@dnd-kit/core'
 
-import { PaneGrid, type PaneGridSlot } from '@/components/xero/agent-runtime/pane-grid'
+import { PaneGrid, type PaneDragHandle, type PaneGridSlot } from '@/components/xero/agent-runtime/pane-grid'
+import { AGENT_WORKSPACE_DROP_TARGET_ID } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
 import type { AgentPaneCloseState, AgentRuntimeProps } from '@/components/xero/agent-runtime'
 import { LiveAgentRuntimeView } from '@/components/xero/agent-runtime/live-agent-runtime'
 import type {
@@ -177,6 +179,12 @@ export const AgentWorkspace = memo(function AgentWorkspace({
   const density: 'comfortable' | 'compact' =
     paneCount >= COMPACT_DENSITY_PANE_THRESHOLD ? 'compact' : 'comfortable'
   const spawnPaneDisabled = paneCount >= AGENT_WORKSPACE_MAX_PANES
+  const {
+    isOver: isWorkspaceDropOver,
+    setNodeRef: setWorkspaceDropNodeRef,
+  } = useDroppable({
+    id: AGENT_WORKSPACE_DROP_TARGET_ID,
+  })
 
   const slots = useMemo<PaneGridSlot[]>(
     () =>
@@ -189,11 +197,20 @@ export const AgentWorkspace = memo(function AgentWorkspace({
   )
 
   if (paneCount === 0) {
-    return <>{fallback}</>
+    return (
+      <div
+        ref={setWorkspaceDropNodeRef}
+        className="flex h-full w-full min-h-0 min-w-0 flex-1"
+        data-agent-workspace-drop-over={isWorkspaceDropOver ? 'true' : undefined}
+        data-agent-workspace-drop-target
+      >
+        {fallback}
+      </div>
+    )
   }
 
   const renderPane = useCallback(
-    (slot: PaneGridSlot, index: number) => {
+    (slot: PaneGridSlot, index: number, dragHandle: PaneDragHandle) => {
       const pane = panes[index]
       if (!pane || pane.paneId !== slot.paneId) {
         return null
@@ -211,6 +228,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
           onFocusPane={onFocusPane}
           onPaneCloseStateChange={onPaneCloseStateChange}
           runtimeProps={stableRuntimeProps}
+          dragHandle={dragHandle}
           highChurnStore={highChurnStore}
           onStartAutonomousRun={onStartAutonomousRun}
           onInspectAutonomousRun={onInspectAutonomousRun}
@@ -260,13 +278,20 @@ export const AgentWorkspace = memo(function AgentWorkspace({
   )
 
   return (
-    <PaneGrid
-      slots={slots}
-      splitterRatios={layout?.splitterRatios}
-      onSplitterRatiosChange={onSplitterRatiosChange}
-      onFocusPane={onFocusPane}
-      renderPane={renderPane}
-    />
+    <div
+      ref={setWorkspaceDropNodeRef}
+      className="flex h-full w-full min-h-0 min-w-0 flex-1"
+      data-agent-workspace-drop-over={isWorkspaceDropOver ? 'true' : undefined}
+      data-agent-workspace-drop-target
+    >
+      <PaneGrid
+        slots={slots}
+        splitterRatios={layout?.splitterRatios}
+        onSplitterRatiosChange={onSplitterRatiosChange}
+        onFocusPane={onFocusPane}
+        renderPane={renderPane}
+      />
+    </div>
   )
 })
 
@@ -281,6 +306,7 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
   onClosePane?: (paneId: string) => void
   onFocusPane?: (paneId: string) => void
   onPaneCloseStateChange?: (paneId: string, state: AgentPaneCloseState) => void
+  dragHandle?: PaneDragHandle
   runtimeProps: Omit<AgentRuntimeProps,
     | 'agent'
     | 'density'
@@ -340,6 +366,7 @@ const PaneRuntime = memo(function PaneRuntime({
   onResumeOperatorRun,
   onRefreshNotificationRoutes,
   onUpsertNotificationRoute,
+  dragHandle,
 }: PaneRuntimeWrapperProps) {
   const paneId = pane.paneId
   const paneBoundHandlers = useMemo<
@@ -461,6 +488,7 @@ const PaneRuntime = memo(function PaneRuntime({
       onClosePane={handleClose}
       onFocusPane={handleFocus}
       onPaneCloseStateChange={handlePaneCloseStateChange}
+      dragHandle={dragHandle}
     />
   )
 })

@@ -1,9 +1,16 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
-import { ArrowDown, ChevronRight, Loader2, Plus, SplitSquareHorizontal, X } from 'lucide-react'
+import { ArrowDown, Check, ChevronDown, ChevronRight, Loader2, Plus, SplitSquareHorizontal, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useDebouncedValue } from '@/lib/input-priority'
 import { cn } from '@/lib/utils'
 import type {
@@ -135,6 +142,21 @@ export interface AgentRuntimeProps {
   isPaneFocused?: boolean
   /** Reports pane-local state that should block an immediate close. */
   onPaneCloseStateChange?: (state: AgentPaneCloseState) => void
+  /** Drag-handle bindings (from `useSortable`). When provided, the pane header acts as the drag activator. */
+  dragHandle?: {
+    setActivatorNodeRef?: (node: HTMLElement | null) => void
+    attributes?: Record<string, unknown>
+    listeners?: Record<string, unknown>
+    isDragging?: boolean
+  }
+  /** Render the pane header in sidebar context: bg matches sidebar surface and the header hosts close + session controls. */
+  inSidebar?: boolean
+  /** Sessions to show in the header session switcher when rendered inside the sidebar. */
+  sidebarSessions?: readonly AgentSessionView[]
+  /** Switch to a different session from the sidebar header dropdown. */
+  onSelectSidebarSession?: (agentSessionId: string) => void
+  /** Close the sidebar from the agent header (X button). */
+  onCloseSidebar?: () => void
 }
 
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
@@ -615,6 +637,11 @@ export const AgentRuntime = memo(function AgentRuntime({
   onClosePane,
   isPaneFocused,
   onPaneCloseStateChange,
+  dragHandle,
+  inSidebar = false,
+  sidebarSessions,
+  onSelectSidebarSession,
+  onCloseSidebar,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -1095,6 +1122,13 @@ export const AgentRuntime = memo(function AgentRuntime({
     onPaneCloseStateChange?.(closeState)
   }, [closeState, onPaneCloseStateChange])
 
+  const dragHandleAttributes = useMemo(() => {
+    if (!dragHandle?.attributes) return null
+    const { role: _role, ...rest } = dragHandle.attributes as Record<string, unknown>
+    void _role
+    return rest
+  }, [dragHandle?.attributes])
+
   return (
     <AgentPaneDropOverlay
       enabled={Boolean(stageAgentAttachment)}
@@ -1103,7 +1137,16 @@ export const AgentRuntime = memo(function AgentRuntime({
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
-          <div className="flex items-center justify-between gap-1.5 bg-background px-3.5 py-2">
+          <div
+            ref={dragHandle?.setActivatorNodeRef}
+            {...(dragHandleAttributes ?? {})}
+            {...(dragHandle?.listeners ?? {})}
+            className={cn(
+              'flex items-center justify-between gap-1.5 px-3.5 py-2',
+              inSidebar ? 'bg-sidebar' : 'bg-background',
+              dragHandle ? 'pointer-events-auto cursor-grab active:cursor-grabbing select-none' : null,
+            )}
+          >
             <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
               {showPaneNumberChip ? (
                 <span
@@ -1115,7 +1158,62 @@ export const AgentRuntime = memo(function AgentRuntime({
               ) : null}
               <span className="truncate font-semibold text-foreground">{projectLabel}</span>
               <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-              <span className="truncate font-medium">{sessionLabel}</span>
+              {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Switch agent session"
+                      title={sessionLabel}
+                      className={cn(
+                        'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1 py-0.5 text-left font-medium text-muted-foreground transition-colors',
+                        'hover:bg-secondary/50 hover:text-foreground data-[state=open]:bg-secondary/70 data-[state=open]:text-foreground',
+                      )}
+                    >
+                      <span className="truncate">{sessionLabel}</span>
+                      <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-64" sideOffset={6}>
+                    {onCreateSession ? (
+                      <>
+                        <DropdownMenuItem
+                          disabled={isCreatingSession}
+                          onSelect={(event) => {
+                            event.preventDefault()
+                            onCreateSession()
+                          }}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>New session</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                      </>
+                    ) : null}
+                    {sidebarSessions.map((session) => {
+                      const isSelected = session.agentSessionId === selectedAgentSessionId
+                      const label = session.title?.trim() || 'Untitled'
+                      return (
+                        <DropdownMenuItem
+                          key={session.agentSessionId}
+                          onSelect={() => onSelectSidebarSession(session.agentSessionId)}
+                        >
+                          <Check
+                            aria-hidden="true"
+                            className={cn(
+                              'h-3.5 w-3.5',
+                              isSelected ? 'text-primary' : 'opacity-0',
+                            )}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{label}</span>
+                        </DropdownMenuItem>
+                      )
+                    })}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <span className="truncate font-medium">{sessionLabel}</span>
+              )}
             </div>
             <div className="pointer-events-auto flex items-center gap-1">
               {onCreateSession && paneCount === 1 ? (
@@ -1167,11 +1265,27 @@ export const AgentRuntime = memo(function AgentRuntime({
                   <X className="h-3.5 w-3.5" />
                 </button>
               ) : null}
+              {inSidebar && onCloseSidebar ? (
+                <button
+                  type="button"
+                  aria-label="Close agent dock"
+                  onClick={onCloseSidebar}
+                  className={cn(
+                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                    'hover:bg-secondary/50 hover:text-foreground',
+                  )}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
             </div>
           </div>
           <div
             aria-hidden="true"
-            className="h-7 bg-gradient-to-b from-background to-background/0"
+            className={cn(
+              'h-7 bg-gradient-to-b',
+              inSidebar ? 'from-sidebar to-sidebar/0' : 'from-background to-background/0',
+            )}
           />
         </div>
         <div className="relative min-h-0 flex-1">

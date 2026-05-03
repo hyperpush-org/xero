@@ -10,6 +10,7 @@ import {
   useState,
   type FocusEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
 } from 'react'
 import {
@@ -27,20 +28,12 @@ import {
   Search,
   Trash2,
 } from 'lucide-react'
+import { useDraggable } from '@dnd-kit/core'
+import type { SessionDragData } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
 import { cn } from '@/lib/utils'
 import { createFrameCoalescer } from '@/lib/frame-governance'
 import { useSidebarWidthMotion } from '@/lib/sidebar-motion'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Toggle } from '@/components/ui/toggle'
 import type { AgentSessionView } from '@/src/lib/xero-model'
@@ -199,8 +192,6 @@ export function AgentSessionsSidebar({
   const [archivedError, setArchivedError] = useState<string | null>(null)
   const [pendingRestoreId, setPendingRestoreId] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
-  const [confirmDeleteSession, setConfirmDeleteSession] =
-    useState<AgentSessionView | null>(null)
   const [archivedActionError, setArchivedActionError] = useState<string | null>(null)
   const targetWidth = isStripMode ? STRIP_WIDTH : collapsed ? 0 : width
   const displayedSelectedSessionId = optimisticSessionId ?? selectedSessionId
@@ -285,7 +276,7 @@ export function AgentSessionsSidebar({
     [onReleasePeek, onSelectSession, showOverlay],
   )
 
-  const handlePreviewSession = useCallback((agentSessionId: string) => {
+  const handlePreviewSession = useCallback((agentSessionId: string | null) => {
     setOptimisticSessionId(agentSessionId)
   }, [])
 
@@ -365,7 +356,6 @@ export function AgentSessionsSidebar({
   useEffect(() => {
     if (!archivedVisible) {
       setArchivedActionError(null)
-      setConfirmDeleteSession(null)
       return
     }
     void refreshArchivedSessions()
@@ -392,9 +382,9 @@ export function AgentSessionsSidebar({
     [onRestoreSession],
   )
 
-  const handleConfirmDeleteArchivedSession = useCallback(async () => {
-    if (!confirmDeleteSession || !onDeleteSession) return
-    const targetId = confirmDeleteSession.agentSessionId
+  const handleDeleteArchivedSession = useCallback(async (session: AgentSessionView) => {
+    if (!onDeleteSession) return
+    const targetId = session.agentSessionId
     setPendingDeleteId(targetId)
     setArchivedActionError(null)
     try {
@@ -402,7 +392,6 @@ export function AgentSessionsSidebar({
       setArchivedSessions((prev) =>
         prev.filter((entry) => entry.agentSessionId !== targetId),
       )
-      setConfirmDeleteSession(null)
     } catch (error) {
       setArchivedActionError(
         error instanceof Error ? error.message : 'Failed to delete session.',
@@ -410,7 +399,7 @@ export function AgentSessionsSidebar({
     } finally {
       setPendingDeleteId(null)
     }
-  }, [confirmDeleteSession, onDeleteSession])
+  }, [onDeleteSession])
 
   const handleResizeStart = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (collapsed || event.button !== 0) return
@@ -800,7 +789,7 @@ export function AgentSessionsSidebar({
                               pendingRestoreId !== null || pendingDeleteId !== null
                             }
                             onRestore={handleRestoreArchivedSession}
-                            onRequestDelete={setConfirmDeleteSession}
+                            onDelete={handleDeleteArchivedSession}
                           />
                         </li>
                       ))}
@@ -816,39 +805,6 @@ export function AgentSessionsSidebar({
             </>
           )}
       </div>
-      {archiveSupported ? (
-        <AlertDialog
-          open={confirmDeleteSession !== null}
-          onOpenChange={(value) => {
-            if (!value) setConfirmDeleteSession(null)
-          }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>
-                Permanently delete "{confirmDeleteSession?.title ?? ''}"?
-              </AlertDialogTitle>
-              <AlertDialogDescription>
-                This permanently removes the session and all of its conversation history, runs, and
-                checkpoints. This cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={pendingDeleteId !== null}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                className={buttonVariants({ variant: 'destructive' })}
-                disabled={pendingDeleteId !== null}
-                onClick={(event) => {
-                  event.preventDefault()
-                  void handleConfirmDeleteArchivedSession()
-                }}
-              >
-                {pendingDeleteId !== null ? 'Deleting…' : 'Delete'}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      ) : null}
     </>
   )
 
@@ -988,7 +944,7 @@ export interface AgentSessionsSidebarItemProps {
   isPinned: boolean
   canArchive: boolean
   onSelectSession: (agentSessionId: string) => void
-  onPreviewSession?: (agentSessionId: string) => void
+  onPreviewSession?: (agentSessionId: string | null) => void
   onArchiveSession: (agentSessionId: string) => void
   onTogglePin: (agentSessionId: string) => void
   compact?: 'icon' | 'list' | 'full'
@@ -1010,11 +966,62 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
   paneNumber = null,
 }: AgentSessionsSidebarItemProps) {
   const [archiveConfirmationActive, setArchiveConfirmationActive] = useState(false)
+  const dragData = useMemo<SessionDragData>(
+    () => ({
+      type: 'session',
+      sessionId: session.agentSessionId,
+      title: session.title,
+    }),
+    [session.agentSessionId, session.title],
+  )
+  const {
+    attributes: dragAttributes,
+    listeners: dragListeners,
+    setNodeRef: setDragNodeRef,
+    isDragging,
+  } = useDraggable({
+    id: `session-${session.agentSessionId}`,
+    data: dragData,
+  })
+  const suppressNextClickRef = useRef(false)
+  const dragWrapperProps = useMemo(() => {
+    const { role: _role, ...restAttributes } =
+      (dragAttributes as unknown as Record<string, unknown>) ?? {}
+    void _role
+    return {
+      ref: setDragNodeRef,
+      ...restAttributes,
+      ...((dragListeners ?? {}) as unknown as Record<string, unknown>),
+      style: { opacity: isDragging ? 0 : undefined } as React.CSSProperties,
+    }
+  }, [dragAttributes, dragListeners, isDragging, setDragNodeRef])
   const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
     if (event.button === 0) {
+      suppressNextClickRef.current = false
       onPreviewSession?.(session.agentSessionId)
     }
   }, [onPreviewSession, session.agentSessionId])
+
+  const handleSelectClick = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false
+      event.preventDefault()
+      event.stopPropagation()
+      onPreviewSession?.(null)
+      return
+    }
+
+    onSelectSession(session.agentSessionId)
+  }, [onPreviewSession, onSelectSession, session.agentSessionId])
+
+  useEffect(() => {
+    if (!isDragging) {
+      return
+    }
+
+    suppressNextClickRef.current = true
+    onPreviewSession?.(null)
+  }, [isDragging, onPreviewSession])
 
   useEffect(() => {
     setArchiveConfirmationActive(false)
@@ -1028,13 +1035,15 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
 
   if (compact === 'icon') {
     return (
+      <div {...dragWrapperProps} className="w-full">
       <button
         aria-label={session.title}
+        aria-current={isActive ? 'true' : undefined}
         className={cn(
           'flex w-full items-center justify-center rounded-md p-1 transition-colors',
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/60',
         )}
-        onClick={() => onSelectSession(session.agentSessionId)}
+        onClick={handleSelectClick}
         onPointerDown={handlePointerDown}
         title={session.title}
         type="button"
@@ -1060,17 +1069,20 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
           ) : null}
         </span>
       </button>
+      </div>
     )
   }
 
   if (compact === 'list') {
     return (
+      <div {...dragWrapperProps} className="w-full">
       <button
+        aria-current={isActive ? 'true' : undefined}
         className={cn(
           'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
         )}
-        onClick={() => onSelectSession(session.agentSessionId)}
+        onClick={handleSelectClick}
         onPointerDown={handlePointerDown}
         title={session.title}
         type="button"
@@ -1101,6 +1113,7 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
           <Pin aria-hidden className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70" />
         ) : null}
       </button>
+      </div>
     )
   }
 
@@ -1118,15 +1131,16 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
   }
 
   return (
-    <div className="group relative">
+    <div {...dragWrapperProps} className="group relative">
       <button
         aria-label={session.title}
+        aria-current={isActive ? 'true' : undefined}
         className={cn(
           'flex w-full items-center rounded-md px-3 py-2 pr-[72px] text-left transition-colors',
           isArchiveConfirming && 'pr-[112px]',
           isActive ? 'bg-primary/[0.08]' : 'hover:bg-secondary/50',
         )}
-        onClick={() => onSelectSession(session.agentSessionId)}
+        onClick={handleSelectClick}
         onPointerDown={handlePointerDown}
         title={session.title}
         type="button"
@@ -1146,7 +1160,7 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
               className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70"
             />
           ) : null}
-          {!isActive && paneNumber != null ? (
+          {paneNumber != null ? (
             <span
               aria-label={`Loaded in pane ${paneNumber}`}
               className="ml-auto inline-flex h-[16px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1 text-[9.5px] font-semibold uppercase tracking-wider text-muted-foreground"
@@ -1245,7 +1259,7 @@ interface AgentArchivedSessionsSidebarItemProps {
   isDeleting: boolean
   isAnyActionPending: boolean
   onRestore: (session: AgentSessionView) => void | Promise<void>
-  onRequestDelete: (session: AgentSessionView) => void
+  onDelete: (session: AgentSessionView) => void | Promise<void>
 }
 
 const AgentArchivedSessionsSidebarItem = memo(function AgentArchivedSessionsSidebarItem({
@@ -1254,16 +1268,37 @@ const AgentArchivedSessionsSidebarItem = memo(function AgentArchivedSessionsSide
   isDeleting,
   isAnyActionPending,
   onRestore,
-  onRequestDelete,
+  onDelete,
 }: AgentArchivedSessionsSidebarItemProps) {
+  const [deleteConfirmationActive, setDeleteConfirmationActive] = useState(false)
+  const isDeleteConfirming = deleteConfirmationActive && !isAnyActionPending
+  const deleteActionLabel = isDeleteConfirming
+    ? `Confirm delete ${session.title}`
+    : `Delete ${session.title} permanently`
+  const deleteActionTitle = isDeleteConfirming
+    ? `Press again to delete ${session.title} permanently`
+    : `Delete ${session.title} permanently`
+  const clearDeleteConfirmation = () => setDeleteConfirmationActive(false)
   const stopActionPreview = (event: PointerEvent<HTMLButtonElement>) => {
     event.stopPropagation()
   }
+
+  useEffect(() => {
+    setDeleteConfirmationActive(false)
+  }, [session.agentSessionId])
+
+  useEffect(() => {
+    if (isAnyActionPending) {
+      setDeleteConfirmationActive(false)
+    }
+  }, [isAnyActionPending])
+
   return (
     <div className="group relative">
       <div
         className={cn(
           'flex w-full items-center rounded-md px-3 py-2 pr-[72px] text-left transition-colors',
+          isDeleteConfirming && 'pr-[112px]',
           'hover:bg-secondary/50',
         )}
         title={session.title}
@@ -1303,21 +1338,47 @@ const AgentArchivedSessionsSidebarItem = memo(function AgentArchivedSessionsSide
           )}
         </Button>
         <Button
-          aria-label={`Delete ${session.title} permanently`}
-          className="h-6 w-6 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          aria-label={deleteActionLabel}
+          className={cn(
+            'h-6 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive',
+            isDeleteConfirming
+              ? 'w-auto min-w-[52px] bg-destructive/10 px-2 text-[11px] font-semibold text-destructive hover:bg-destructive/15'
+              : 'w-6',
+          )}
           disabled={isAnyActionPending}
           onClick={(event) => {
             event.stopPropagation()
-            onRequestDelete(session)
+            if (isDeleteConfirming) {
+              setDeleteConfirmationActive(false)
+              void onDelete(session)
+              return
+            }
+            setDeleteConfirmationActive(true)
+          }}
+          onBlur={(event: FocusEvent<HTMLButtonElement>) => {
+            const nextFocused = event.relatedTarget
+            if (nextFocused instanceof Node && event.currentTarget.contains(nextFocused)) {
+              return
+            }
+            clearDeleteConfirmation()
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation()
+              clearDeleteConfirmation()
+            }
           }}
           onPointerDown={stopActionPreview}
+          onPointerLeave={clearDeleteConfirmation}
           size="icon-sm"
-          title={`Delete ${session.title} permanently`}
+          title={deleteActionTitle}
           type="button"
           variant="ghost"
         >
           {isDeleting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : isDeleteConfirming ? (
+            <span>Delete</span>
           ) : (
             <Trash2 className="h-3.5 w-3.5" />
           )}

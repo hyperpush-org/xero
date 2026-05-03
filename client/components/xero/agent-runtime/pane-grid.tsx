@@ -12,12 +12,26 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
+import {
+  SortableContext,
+  rectSortingStrategy,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { cn } from '@/lib/utils'
 import {
   solveLayout,
   type AgentWorkspaceArrangement,
   type SolvedAgentWorkspaceLayout,
 } from '@/lib/agent-workspace-layout'
+
+export interface PaneDragHandle {
+  setActivatorNodeRef?: (node: HTMLElement | null) => void
+  attributes?: Record<string, unknown>
+  listeners?: Record<string, unknown>
+  isDragging?: boolean
+}
 
 const REFLOW_DEBOUNCE_MS = 120
 const REFLOW_TRANSITION_MS = 200
@@ -36,8 +50,14 @@ export interface PaneGridProps {
   splitterRatios?: Record<string, number[]>
   onSplitterRatiosChange?: (arrangementKey: string, ratios: number[]) => void
   onFocusPane?: (paneId: string) => void
-  renderPane: (slot: PaneGridSlot, index: number) => ReactNode
+  renderPane: (slot: PaneGridSlot, index: number, dragHandle: PaneDragHandle) => ReactNode
   className?: string
+}
+
+export function getPaneSortableDisabledState(
+  isSolo: boolean,
+): boolean | { draggable: boolean; droppable: boolean } {
+  return isSolo ? { draggable: true, droppable: false } : false
 }
 
 interface ContainerSize {
@@ -149,10 +169,40 @@ interface PaneShellProps {
   /** When true the pane is the only one in the workspace; suppress the chrome frame entirely. */
   isSolo: boolean
   onFocusPane?: (paneId: string) => void
-  children: ReactNode
+  renderChildren: (dragHandle: PaneDragHandle) => ReactNode
 }
 
-const PaneShell = memo(function PaneShell({ slot, isSolo, onFocusPane, children }: PaneShellProps) {
+const PaneShell = memo(function PaneShell({
+  slot,
+  isSolo,
+  onFocusPane,
+  renderChildren,
+}: PaneShellProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: slot.paneId,
+    disabled: getPaneSortableDisabledState(isSolo),
+  })
+  const dragHandle: PaneDragHandle = useMemo(
+    () =>
+      isSolo
+        ? {}
+        : {
+            setActivatorNodeRef,
+            attributes: attributes as unknown as Record<string, unknown>,
+            listeners: (listeners ?? {}) as unknown as Record<string, unknown>,
+            isDragging,
+          },
+    [attributes, isDragging, isSolo, listeners, setActivatorNodeRef],
+  )
+
   const handleFocusCapture = useCallback(() => {
     if (!slot.isFocused) {
       onFocusPane?.(slot.paneId)
@@ -167,25 +217,35 @@ const PaneShell = memo(function PaneShell({ slot, isSolo, onFocusPane, children 
   if (isSolo) {
     return (
       <div
+        ref={setNodeRef}
         role="region"
         aria-label={slot.ariaLabel}
         data-pane-id={slot.paneId}
         data-pane-focused="true"
         className="agent-pane-shell flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background"
       >
-        {children}
+        {renderChildren(dragHandle)}
       </div>
     )
   }
 
+  const sortableStyle: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0 : undefined,
+  }
+
   return (
     <div
+      ref={setNodeRef}
       role="region"
       aria-label={slot.ariaLabel}
       data-pane-id={slot.paneId}
       data-pane-focused={slot.isFocused ? 'true' : 'false'}
+      data-pane-dragging={isDragging ? 'true' : undefined}
       onFocusCapture={handleFocusCapture}
       onMouseDown={handleMouseDown}
+      style={sortableStyle}
       className={cn(
         'agent-pane-shell flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background transition-[border-color,box-shadow] duration-200 ease-out',
         slot.isFocused
@@ -193,7 +253,7 @@ const PaneShell = memo(function PaneShell({ slot, isSolo, onFocusPane, children 
           : 'border-border/60',
       )}
     >
-      {children}
+      {renderChildren(dragHandle)}
     </div>
   )
 })
@@ -445,24 +505,28 @@ export const PaneGrid = memo(function PaneGrid({
           className,
         )}
       >
-        <div className={cn('flex w-full flex-col gap-2', slots.length > 1 ? 'p-2' : '')}>
-          {slots.map((slot, index) => (
-            <div
-              key={slot.paneId}
-              className="flex flex-col"
-              style={{ minHeight: STACK_MIN_PANE_HEIGHT }}
-            >
-              <PaneShell
-                slot={slot}
-                index={index}
-                isSolo={slots.length === 1}
-                onFocusPane={onFocusPane}
+        <SortableContext
+          items={slots.map((slot) => slot.paneId)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className={cn('flex w-full flex-col gap-2', slots.length > 1 ? 'p-2' : '')}>
+            {slots.map((slot, index) => (
+              <div
+                key={slot.paneId}
+                className="flex flex-col"
+                style={{ minHeight: STACK_MIN_PANE_HEIGHT }}
               >
-                {renderPane(slot, index)}
-              </PaneShell>
-            </div>
-          ))}
-        </div>
+                <PaneShell
+                  slot={slot}
+                  index={index}
+                  isSolo={slots.length === 1}
+                  onFocusPane={onFocusPane}
+                  renderChildren={(dragHandle) => renderPane(slot, index, dragHandle)}
+                />
+              </div>
+            ))}
+          </div>
+        </SortableContext>
       </div>
     )
   }
@@ -487,27 +551,31 @@ export const PaneGrid = memo(function PaneGrid({
         className,
       )}
     >
-      <div
-        className="h-full w-full gap-1"
-        style={gridStyle}
+      <SortableContext
+        items={slots.map((slot) => slot.paneId)}
+        strategy={rectSortingStrategy}
       >
-        {slots.map((slot, index) => (
-          <div
-            key={slot.paneId}
-            className="flex min-h-0 min-w-0"
-            style={getPaneGridStyle(index, arrangement)}
-          >
-            <PaneShell
-              slot={slot}
-              index={index}
-              isSolo={slots.length === 1}
-              onFocusPane={onFocusPane}
+        <div
+          className="h-full w-full gap-1"
+          style={gridStyle}
+        >
+          {slots.map((slot, index) => (
+            <div
+              key={slot.paneId}
+              className="flex min-h-0 min-w-0"
+              style={getPaneGridStyle(index, arrangement)}
             >
-              {renderPane(slot, index)}
-            </PaneShell>
-          </div>
-        ))}
-      </div>
+              <PaneShell
+                slot={slot}
+                index={index}
+                isSolo={slots.length === 1}
+                onFocusPane={onFocusPane}
+                renderChildren={(dragHandle) => renderPane(slot, index, dragHandle)}
+              />
+            </div>
+          ))}
+        </div>
+      </SortableContext>
       {slots.length > 1
         ? columnBoundaries.map((offsetPercent, boundaryIndex) => (
             <ResizeHandle

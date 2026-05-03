@@ -179,6 +179,10 @@ export interface UseXeroDesktopMutationsOperations {
   ) => { projectId: string; previousProject: ProjectDetailView | null } | null
   applyAgentSessionSelection: (agentSession: AgentSessionView) => ProjectDetailView | null
   applyAgentSessionUpdate: (agentSession: AgentSessionView) => ProjectDetailView | null
+  replaceAgentSessions: (
+    projectId: string,
+    agentSessions: AgentSessionView[],
+  ) => ProjectDetailView | null
   rollbackAgentSessionSelection: (previousProject: ProjectDetailView | null) => void
   hydrateAgentSessionRuntimeState: (
     projectId: string,

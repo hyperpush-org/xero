@@ -13,6 +13,7 @@ import type { AgentPaneCloseState, AgentRuntimeProps } from '@/components/xero/a
 import { SetupEmptyState } from '@/components/xero/agent-runtime/setup-empty-state'
 import { AgentWorkspace } from '@/components/xero/agent-workspace'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
+import { AgentWorkspaceDndProvider } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
 import { AgentCommandPalette } from '@/components/xero/agent-runtime/agent-command-palette'
 import { type View } from '@/components/xero/data'
 import { LoadingScreen } from '@/components/xero/loading-screen'
@@ -911,6 +912,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
     spawnPane,
     closePane,
     focusPane,
+    reorderPanes,
+    openSessionInNewPane,
     setSplitterRatios,
   } = useXeroDesktopState({ adapter, subscribeRuntimeStreams: false })
 
@@ -1216,6 +1219,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
       return next
     })
   }, [])
+  useEffect(() => {
+    if (activeView === 'agent' && agentDockOpen) {
+      setAgentDockOpen(false)
+    }
+  }, [activeView, agentDockOpen])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const toggleSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed((current) => !current)
@@ -1286,10 +1294,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const shouldRestoreSidebarFromAutoCollapseRef = useRef(false)
   const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
-  const shouldRestoreSidebarFromWorkflowsRef = useRef(false)
   const previousViewRef = useRef<View>(activeView)
   const previousBrowserOpenRef = useRef<boolean>(browserOpen)
-  const previousWorkflowsOpenRef = useRef<boolean>(workflowsOpen)
+  const shouldRestoreSidebarFromRightSidebarRef = useRef(false)
+  const previousNonFloatingRightSidebarOpenRef = useRef(false)
+  const projectRailViewAutoCollapseActive = activeView === 'execution' || activeView === 'agent'
+  const nonFloatingRightSidebarOpen =
+    gamesOpen ||
+    browserOpen ||
+    iosOpen ||
+    androidOpen ||
+    solanaOpen ||
+    workflowsOpen ||
+    agentDockOpen
 
   useEffect(() => {
     const wasBrowserOpen = previousBrowserOpenRef.current
@@ -1356,52 +1373,61 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   useEffect(() => {
     const previousView = previousViewRef.current
-    const autoCollapseViews: View[] = ['execution', 'agent']
-    const isAutoCollapseView = autoCollapseViews.includes(activeView)
-    const wasAutoCollapseView = autoCollapseViews.includes(previousView)
+    const wasAutoCollapseView = previousView === 'execution' || previousView === 'agent'
 
-    if (isAutoCollapseView && !wasAutoCollapseView) {
+    if (projectRailViewAutoCollapseActive && !wasAutoCollapseView) {
       shouldRestoreSidebarFromAutoCollapseRef.current = !sidebarCollapsed
       if (!sidebarCollapsed) {
         setSidebarCollapsed(true)
       }
     }
 
-    if (!isAutoCollapseView && wasAutoCollapseView && shouldRestoreSidebarFromAutoCollapseRef.current) {
+    if (!projectRailViewAutoCollapseActive && wasAutoCollapseView && !nonFloatingRightSidebarOpen) {
+      const shouldRestoreSidebar =
+        shouldRestoreSidebarFromAutoCollapseRef.current ||
+        shouldRestoreSidebarFromRightSidebarRef.current
       shouldRestoreSidebarFromAutoCollapseRef.current = false
-      if (sidebarCollapsed) {
+      shouldRestoreSidebarFromRightSidebarRef.current = false
+      if (shouldRestoreSidebar && sidebarCollapsed) {
         setSidebarCollapsed(false)
       }
     }
 
-    if (!isAutoCollapseView && !wasAutoCollapseView) {
+    if (!projectRailViewAutoCollapseActive && !wasAutoCollapseView) {
       shouldRestoreSidebarFromAutoCollapseRef.current = false
     }
 
     previousViewRef.current = activeView
-  }, [activeView, sidebarCollapsed])
+  }, [activeView, nonFloatingRightSidebarOpen, projectRailViewAutoCollapseActive, sidebarCollapsed])
 
   useEffect(() => {
-    const wasOpen = previousWorkflowsOpenRef.current
+    const wasOpen = previousNonFloatingRightSidebarOpenRef.current
 
-    if (workflowsOpen && !wasOpen) {
-      shouldRestoreSidebarFromWorkflowsRef.current = !sidebarCollapsed
-      if (!sidebarCollapsed) {
-        setSidebarCollapsed(true)
-      }
-    } else if (
-      !workflowsOpen &&
-      wasOpen &&
-      shouldRestoreSidebarFromWorkflowsRef.current
-    ) {
-      shouldRestoreSidebarFromWorkflowsRef.current = false
-      if (sidebarCollapsed) {
+    if (nonFloatingRightSidebarOpen && !wasOpen) {
+      shouldRestoreSidebarFromRightSidebarRef.current = !sidebarCollapsed
+    }
+
+    if (nonFloatingRightSidebarOpen && !sidebarCollapsed) {
+      setSidebarCollapsed(true)
+    }
+
+    if (!nonFloatingRightSidebarOpen && wasOpen && !projectRailViewAutoCollapseActive) {
+      const shouldRestoreSidebar =
+        shouldRestoreSidebarFromRightSidebarRef.current ||
+        shouldRestoreSidebarFromAutoCollapseRef.current
+      shouldRestoreSidebarFromRightSidebarRef.current = false
+      shouldRestoreSidebarFromAutoCollapseRef.current = false
+      if (shouldRestoreSidebar && sidebarCollapsed) {
         setSidebarCollapsed(false)
       }
     }
 
-    previousWorkflowsOpenRef.current = workflowsOpen
-  }, [workflowsOpen, sidebarCollapsed])
+    if (!nonFloatingRightSidebarOpen && !wasOpen && !projectRailViewAutoCollapseActive) {
+      shouldRestoreSidebarFromRightSidebarRef.current = false
+    }
+
+    previousNonFloatingRightSidebarOpenRef.current = nonFloatingRightSidebarOpen
+  }, [nonFloatingRightSidebarOpen, projectRailViewAutoCollapseActive, sidebarCollapsed])
 
   useEffect(() => {
     if (!onboardingDismissed && !isLoading && projects.length === 0) {
@@ -1459,6 +1485,24 @@ export function XeroApp({ adapter }: XeroAppProps) {
     })
     return map
   }, [agentWorkspaceLayout])
+  const dndPaneSlots = useMemo(() => {
+    if (!agentWorkspaceLayout || !activeProject) return []
+    const projectLabel = activeProject.name ?? null
+    return agentWorkspaceLayout.paneSlots.map((slot, index) => {
+      const session = slot.agentSessionId
+        ? activeProject.agentSessions.find(
+            (entry) => entry.agentSessionId === slot.agentSessionId,
+          ) ?? null
+        : null
+      return {
+        id: slot.id,
+        agentSessionId: slot.agentSessionId,
+        title: session?.title?.trim() || (slot.agentSessionId ? 'New Chat' : 'Empty pane'),
+        projectLabel,
+        index,
+      }
+    })
+  }, [activeProject, agentWorkspaceLayout])
   const preSpawnExplorerModeRef = useRef<'pinned' | 'collapsed' | null>(null)
   useEffect(() => {
     if (activeView !== 'agent') return
@@ -1485,7 +1529,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       )?.id ?? null
       if (loadedPaneId && loadedPaneId !== agentWorkspaceLayout?.focusedPaneId) {
         focusPane(loadedPaneId)
-        return
       }
       if (agentSessionId === selectedAgentSessionId) return
       void selectAgentSession(agentSessionId)
@@ -1922,7 +1965,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     const agentUsesHeavySwitchSurface = paneCount >= 3
 
     return (
-      <>
+      <AgentWorkspaceDndProvider
+        paneSlots={dndPaneSlots}
+        onReorderPanes={reorderPanes}
+        onOpenSessionInNewPane={openSessionInNewPane}
+      >
         <AgentSessionsSidebar
           projectId={activeProject.id}
           sessions={activeProject.agentSessions}
@@ -2118,7 +2165,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             </LazyMountedPane>
           ) : null}
         </div>
-      </>
+      </AgentWorkspaceDndProvider>
     )
   }
 

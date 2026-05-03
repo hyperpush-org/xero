@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from 'react'
+import type { ComponentProps } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,39 +6,52 @@ import { AgentDockSidebar } from './agent-dock-sidebar'
 import { createXeroHighChurnStore } from '@/src/features/xero/use-xero-desktop-state/high-churn-store'
 import type { AgentSessionView } from '@/src/lib/xero-model'
 
-vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
-  LiveAgentRuntimeView: ({ agent }: { agent: unknown }) =>
-    agent ? <div data-testid="live-agent-runtime">runtime</div> : null,
-}))
+interface CapturedRuntimeProps {
+  inSidebar?: boolean
+  sidebarSessions?: readonly AgentSessionView[]
+  onCloseSidebar?: () => void
+  onSelectSidebarSession?: (id: string) => void
+  onCreateSession?: () => void
+  isCreatingSession?: boolean
+}
 
-// Radix DropdownMenu in jsdom uses pointer-capture APIs that don't behave the
-// way fireEvent simulates them, which makes menu-item click handlers flaky.
-// Replace it with plain elements so the test can assert the wiring directly.
-vi.mock('@/components/ui/dropdown-menu', () => ({
-  DropdownMenu: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DropdownMenuTrigger: ({ children }: { asChild?: boolean; children: ReactNode }) => <>{children}</>,
-  DropdownMenuContent: ({ children }: { children: ReactNode }) => (
-    <div role="menu">{children}</div>
-  ),
-  DropdownMenuItem: ({
-    children,
-    onSelect,
-    disabled,
-  }: {
-    children: ReactNode
-    onSelect?: (event: { preventDefault: () => void }) => void
-    disabled?: boolean
-  }) => (
-    <button
-      disabled={disabled}
-      onClick={() => onSelect?.({ preventDefault: () => undefined })}
-      role="menuitem"
-      type="button"
-    >
-      {children}
-    </button>
-  ),
-  DropdownMenuSeparator: () => <hr />,
+vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
+  LiveAgentRuntimeView: ({
+    agent,
+    inSidebar,
+    sidebarSessions,
+    onCloseSidebar,
+    onSelectSidebarSession,
+    onCreateSession,
+    isCreatingSession,
+  }: CapturedRuntimeProps & { agent: unknown }) => {
+    if (!agent) return null
+    return (
+      <div data-testid="live-agent-runtime">
+        <div data-testid="live-agent-runtime-in-sidebar">{inSidebar ? 'true' : 'false'}</div>
+        <div data-testid="live-agent-runtime-session-count">{sidebarSessions?.length ?? 0}</div>
+        <button type="button" onClick={() => onCloseSidebar?.()}>
+          mock-close
+        </button>
+        <button
+          type="button"
+          disabled={isCreatingSession}
+          onClick={() => onCreateSession?.()}
+        >
+          mock-create-session
+        </button>
+        {sidebarSessions?.map((session) => (
+          <button
+            key={session.agentSessionId}
+            type="button"
+            onClick={() => onSelectSidebarSession?.(session.agentSessionId)}
+          >
+            mock-select-{session.agentSessionId}
+          </button>
+        ))}
+      </div>
+    )
+  },
 }))
 
 const sessions: AgentSessionView[] = [
@@ -113,12 +126,11 @@ describe('AgentDockSidebar', () => {
     window.localStorage.clear()
   })
 
-  it('renders the live agent runtime when open with an agent', () => {
+  it('renders the live agent runtime in sidebar mode when open with an agent', () => {
     renderDock()
     expect(screen.getByTestId('live-agent-runtime')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Switch agent session' })).toHaveTextContent(
-      'First session',
-    )
+    expect(screen.getByTestId('live-agent-runtime-in-sidebar')).toHaveTextContent('true')
+    expect(screen.getByTestId('live-agent-runtime-session-count')).toHaveTextContent('2')
   })
 
   it('shows the empty state when no agent is available', () => {
@@ -128,29 +140,29 @@ describe('AgentDockSidebar', () => {
     expect(screen.getByRole('button', { name: /New session/ })).toBeVisible()
   })
 
-  it('triggers onCreateSession when "New session" is selected from the dropdown', () => {
+  it('forwards onCreateSession into the agent runtime header', () => {
     const onCreateSession = vi.fn()
     renderDock({ onCreateSession })
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'New session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock-create-session' }))
 
     expect(onCreateSession).toHaveBeenCalledTimes(1)
   })
 
-  it('triggers onSelectSession when a sibling session is chosen', () => {
+  it('forwards onSelectSession into the agent runtime header', () => {
     const onSelectSession = vi.fn()
     renderDock({ onSelectSession })
 
-    fireEvent.click(screen.getByRole('menuitem', { name: /Second session/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock-select-session-b' }))
 
     expect(onSelectSession).toHaveBeenCalledWith('session-b')
   })
 
-  it('calls onClose when the close button is clicked', () => {
+  it('forwards onClose into the agent runtime header', () => {
     const onClose = vi.fn()
     renderDock({ onClose })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close agent dock' }))
+    fireEvent.click(screen.getByRole('button', { name: 'mock-close' }))
 
     expect(onClose).toHaveBeenCalledTimes(1)
   })
