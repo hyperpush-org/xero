@@ -109,7 +109,7 @@ afterEach(() => {
   }
 })
 
-import { XeroApp } from './App'
+import { XeroApp, useActivatedSurface } from './App'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
   createXeroDoctorReport,
@@ -2049,6 +2049,39 @@ function getProviderCard(label: string): HTMLElement {
 
   return card
 }
+
+function ActivatedSurfaceProbe({
+  active,
+  prewarm,
+}: {
+  active: boolean
+  prewarm?: boolean
+}) {
+  const mounted = useActivatedSurface(active, prewarm)
+  return <div data-mounted={mounted ? 'true' : 'false'}>surface</div>
+}
+
+describe('useActivatedSurface', () => {
+  it('does not permanently activate a surface just because it was prewarmed', () => {
+    const { rerender } = render(<ActivatedSurfaceProbe active={false} prewarm />)
+
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
+
+    rerender(<ActivatedSurfaceProbe active={false} prewarm={false} />)
+
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'false')
+  })
+
+  it('keeps a user-opened surface mounted after it closes', () => {
+    const { rerender } = render(<ActivatedSurfaceProbe active />)
+
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
+
+    rerender(<ActivatedSurfaceProbe active={false} />)
+
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
+  })
+})
 
 describe('XeroApp current UI', () => {
   it('shows the onboarding flow on a cold-start empty state', async () => {

@@ -237,7 +237,7 @@ export function SolanaWorkbenchSidebar({
   const widthRef = useRef(width)
   widthRef.current = width
 
-  const workbench = useSolanaWorkbench({ active: prewarm || workbenchActive })
+  const workbench = useSolanaWorkbench({ active: workbenchActive })
   const [selectedKind, setSelectedKind] = useState<ClusterKind>("localnet")
   const [activeTab, setActiveTab] = useState<TabId>("cluster")
 
@@ -801,7 +801,6 @@ export function SolanaWorkbenchSidebar({
             active={activeTab === "cluster"}
             padded={false}
             tabId="cluster"
-            warmLayout={prewarm}
           >
             <div className="px-3 pt-3">
               <PanelHeader
@@ -929,7 +928,7 @@ export function SolanaWorkbenchSidebar({
           </SolanaPanelSlot>
 
           <Suspense fallback={activeTab === "personas" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "personas"} tabId="personas" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "personas"} tabId="personas">
               <LazySolanaPersonaPanel
                 busy={workbench.personaBusy}
                 cluster={selectedKind}
@@ -945,7 +944,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "scenarios" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "scenarios"} tabId="scenarios" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "scenarios"} tabId="scenarios">
               <LazySolanaScenarioPanel
                 busy={workbench.scenarioBusy}
                 cluster={selectedKind}
@@ -959,7 +958,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "tx" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "tx"} tabId="tx" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "tx"} tabId="tx">
               <LazySolanaTxInspector
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
@@ -974,7 +973,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "logs" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "logs"} tabId="logs" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "logs"} tabId="logs">
               <LazySolanaLogFeed
                 cluster={selectedKind}
                 busy={workbench.logBusy}
@@ -992,7 +991,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "indexer" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "indexer"} tabId="indexer" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "indexer"} tabId="indexer">
               <LazySolanaIndexerPanel
                 cluster={selectedKind}
                 busy={workbench.indexerBusy}
@@ -1005,7 +1004,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "idl" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "idl"} tabId="idl" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "idl"} tabId="idl">
               <LazySolanaIdlPanel
                 cluster={selectedKind}
                 idls={workbench.idls}
@@ -1029,7 +1028,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "deploy" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "deploy"} tabId="deploy" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "deploy"} tabId="deploy">
               <LazySolanaDeployPanel
                 busy={workbench.programBusy}
                 cluster={selectedKind}
@@ -1051,7 +1050,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "audit" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "audit"} tabId="audit" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "audit"} tabId="audit">
               <LazySolanaAuditPanel
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
@@ -1076,7 +1075,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "token" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "token"} tabId="token" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "token"} tabId="token">
               <LazySolanaTokenPanel
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
@@ -1092,7 +1091,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "wallet" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "wallet"} tabId="wallet" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "wallet"} tabId="wallet">
               <LazySolanaWalletPanel
                 cluster={selectedKind}
                 busy={workbench.walletBusy}
@@ -1104,7 +1103,7 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "safety" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "safety"} tabId="safety" warmLayout={prewarm}>
+            <SolanaPanelSlot active={activeTab === "safety"} tabId="safety">
               <LazySolanaSafetyPanel
                 busy={workbench.safetyBusy}
                 lastSecretScan={workbench.lastSecretScan}
@@ -1121,7 +1120,7 @@ export function SolanaWorkbenchSidebar({
             </SolanaPanelSlot>
           </Suspense>
 
-          <SolanaPanelSlot active={activeTab === "rpc"} tabId="rpc" warmLayout={prewarm}>
+          <SolanaPanelSlot active={activeTab === "rpc"} tabId="rpc">
             <RpcEndpoints
               active={activeTab === "rpc"}
               onRefresh={() => workbench.refreshRpcHealth()}

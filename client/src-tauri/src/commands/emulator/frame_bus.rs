@@ -1,12 +1,16 @@
+use std::sync::OnceLock;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::time::Instant;
 
 use arc_swap::ArcSwapOption;
 use tauri::{AppHandle, Emitter, Runtime};
 
 use super::events::{FramePayload, EMULATOR_FRAME_EVENT};
+
+const FRAME_EVENT_MIN_INTERVAL_NS: u64 = 33_000_000;
 
 /// A single rendered frame ready to be served by the `emulator://frame` URI
 /// scheme. `bytes` is JPEG-encoded so the webview can paint it with its
@@ -28,6 +32,7 @@ pub struct Frame {
 /// see the previous frame or the new one, never a partially-written one.
 pub struct FrameBus {
     latest: ArcSwapOption<Frame>,
+    last_event_ns: AtomicU64,
     seq: AtomicU64,
 }
 
@@ -35,6 +40,7 @@ impl FrameBus {
     pub fn new() -> Self {
         Self {
             latest: ArcSwapOption::empty(),
+            last_event_ns: AtomicU64::new(0),
             seq: AtomicU64::new(0),
         }
     }
@@ -63,6 +69,32 @@ impl FrameBus {
     /// across sessions.
     pub fn clear(&self) {
         self.latest.store(None);
+        self.last_event_ns.store(0, Ordering::Release);
+    }
+
+    fn should_emit_frame_event(&self) -> bool {
+        self.should_emit_frame_event_at(monotonic_now_ns())
+    }
+
+    fn should_emit_frame_event_at(&self, now_ns: u64) -> bool {
+        let now_ns = now_ns.max(1);
+        let mut last_ns = self.last_event_ns.load(Ordering::Acquire);
+
+        loop {
+            if last_ns != 0 && now_ns.saturating_sub(last_ns) < FRAME_EVENT_MIN_INTERVAL_NS {
+                return false;
+            }
+
+            match self.last_event_ns.compare_exchange(
+                last_ns,
+                now_ns,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next_last_ns) => last_ns = next_last_ns,
+            }
+        }
     }
 }
 
@@ -72,8 +104,8 @@ impl Default for FrameBus {
     }
 }
 
-/// Publish a frame and emit the `emulator:frame` event so the frontend can
-/// swap its `<img src>` to the new sequence number.
+/// Publish a frame and rate-limit `emulator:frame` events so the frontend can
+/// swap its `<img src>` without flooding WebKit's custom scheme machinery.
 pub fn publish_and_emit<R: Runtime>(
     app: &AppHandle<R>,
     bus: &FrameBus,
@@ -82,6 +114,10 @@ pub fn publish_and_emit<R: Runtime>(
     bytes: Vec<u8>,
 ) -> u64 {
     let seq = bus.publish(width, height, bytes);
+    if !bus.should_emit_frame_event() {
+        return seq;
+    }
+
     if let Err(err) = app.emit(EMULATOR_FRAME_EVENT, FramePayload { seq, width, height }) {
         // We don't have a structured log surface here; stderr is enough
         // to diagnose the "never see the device" class of bug where the
@@ -89,6 +125,12 @@ pub fn publish_and_emit<R: Runtime>(
         eprintln!("[emulator] frame emit failed (seq {seq}): {err}");
     }
     seq
+}
+
+fn monotonic_now_ns() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let elapsed = START.get_or_init(Instant::now).elapsed().as_nanos();
+    elapsed.min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]
@@ -121,5 +163,44 @@ mod tests {
         bus.publish(1, 1, vec![0]);
         bus.clear();
         assert!(bus.latest().is_none());
+    }
+
+    #[test]
+    fn frame_events_are_rate_limited() {
+        let bus = FrameBus::new();
+
+        assert!(bus.should_emit_frame_event_at(1));
+        assert!(!bus.should_emit_frame_event_at(1 + FRAME_EVENT_MIN_INTERVAL_NS - 1));
+        assert!(bus.should_emit_frame_event_at(1 + FRAME_EVENT_MIN_INTERVAL_NS));
+    }
+
+    #[test]
+    fn rate_limited_bursts_still_keep_latest_frame() {
+        let bus = FrameBus::new();
+
+        assert_eq!(bus.publish(320, 240, vec![1]), 1);
+        assert!(bus.should_emit_frame_event_at(1));
+
+        for value in 2..=50 {
+            let seq = bus.publish(320, 240, vec![value]);
+            assert_eq!(seq, value as u64);
+            assert!(!bus.should_emit_frame_event_at(1 + value));
+        }
+
+        let latest = bus.latest().expect("latest frame");
+        assert_eq!(latest.seq, 50);
+        assert_eq!(latest.bytes.as_slice(), &[50]);
+    }
+
+    #[test]
+    fn clear_resets_frame_event_rate_limit() {
+        let bus = FrameBus::new();
+
+        assert!(bus.should_emit_frame_event_at(1));
+        assert!(!bus.should_emit_frame_event_at(2));
+
+        bus.clear();
+
+        assert!(bus.should_emit_frame_event_at(2));
     }
 }

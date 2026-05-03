@@ -43,6 +43,8 @@ const DEFAULT_RATIO = 0.4
 // Matches BrowserSidebar — keeps the left-edge drag handle clickable once the
 // frame viewport paints content over the sidebar.
 const RESIZE_HANDLE_INSET = 6
+export const EMULATOR_FRAME_REQUEST_INTERVAL_MS = 33
+const EMULATOR_FRAME_REQUEST_TIMEOUT_MS = 1500
 
 const PLATFORM_META: Record<EmulatorPlatform, {
   label: string
@@ -90,6 +92,126 @@ function writePersistedWidth(storageKey: string, width: number): void {
     window.localStorage?.setItem?.(storageKey, String(Math.round(width)))
   } catch {
     /* storage quota / privacy mode — width falls back to default next session */
+  }
+}
+
+function nowMs(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now()
+  }
+  return Date.now()
+}
+
+function frameSrcForSeq(seq: number): string {
+  return `emulator://localhost/frame?t=${seq}`
+}
+
+export function useThrottledEmulatorFrameSrc({
+  enabled,
+  frameSeq,
+  minIntervalMs = EMULATOR_FRAME_REQUEST_INTERVAL_MS,
+}: {
+  enabled: boolean
+  frameSeq: number | null
+  minIntervalMs?: number
+}): {
+  frameSrc: string | null
+  settleFrameRequest: () => void
+} {
+  const [requestedSeq, setRequestedSeq] = useState<number | null>(null)
+  const enabledRef = useRef(enabled)
+  const inFlightRef = useRef(false)
+  const latestSeqRef = useRef<number | null>(frameSeq)
+  const lastRequestAtRef = useRef<number | null>(null)
+  const requestedSeqRef = useRef<number | null>(null)
+  const retryTimerRef = useRef<number | null>(null)
+  const inFlightTimerRef = useRef<number | null>(null)
+  const requestLatestFrameRef = useRef<() => void>(() => undefined)
+
+  enabledRef.current = enabled
+  latestSeqRef.current = frameSeq
+
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimerRef.current === null || typeof window === "undefined") return
+    window.clearTimeout(retryTimerRef.current)
+    retryTimerRef.current = null
+  }, [])
+
+  const clearInFlightTimer = useCallback(() => {
+    if (inFlightTimerRef.current === null || typeof window === "undefined") return
+    window.clearTimeout(inFlightTimerRef.current)
+    inFlightTimerRef.current = null
+  }, [])
+
+  const requestLatestFrame = useCallback(() => {
+    clearRetryTimer()
+
+    if (!enabledRef.current) return
+    if (inFlightRef.current) return
+
+    const nextSeq = latestSeqRef.current
+    if (nextSeq === null || nextSeq === requestedSeqRef.current) return
+
+    const previousRequestAt = lastRequestAtRef.current
+    const elapsedMs = previousRequestAt === null ? minIntervalMs : nowMs() - previousRequestAt
+    const waitMs = Math.max(0, minIntervalMs - elapsedMs)
+
+    if (waitMs > 0 && typeof window !== "undefined") {
+      retryTimerRef.current = window.setTimeout(() => requestLatestFrameRef.current(), waitMs)
+      return
+    }
+
+    inFlightRef.current = true
+    requestedSeqRef.current = nextSeq
+    lastRequestAtRef.current = nowMs()
+    setRequestedSeq(nextSeq)
+
+    if (typeof window !== "undefined") {
+      clearInFlightTimer()
+      inFlightTimerRef.current = window.setTimeout(() => {
+        inFlightTimerRef.current = null
+        inFlightRef.current = false
+        requestLatestFrameRef.current()
+      }, EMULATOR_FRAME_REQUEST_TIMEOUT_MS)
+    }
+  }, [clearInFlightTimer, clearRetryTimer, minIntervalMs])
+
+  requestLatestFrameRef.current = requestLatestFrame
+
+  const cancelFrameRequests = useCallback(() => {
+    clearRetryTimer()
+    clearInFlightTimer()
+    inFlightRef.current = false
+  }, [clearInFlightTimer, clearRetryTimer])
+
+  const resetFrameRequests = useCallback(() => {
+    cancelFrameRequests()
+    requestedSeqRef.current = null
+    lastRequestAtRef.current = null
+    setRequestedSeq(null)
+  }, [cancelFrameRequests])
+
+  const settleFrameRequest = useCallback(() => {
+    clearInFlightTimer()
+    if (!inFlightRef.current) return
+    inFlightRef.current = false
+    requestLatestFrame()
+  }, [clearInFlightTimer, requestLatestFrame])
+
+  useEffect(() => {
+    if (!enabled || frameSeq === null) {
+      resetFrameRequests()
+      return
+    }
+
+    requestLatestFrame()
+  }, [enabled, frameSeq, requestLatestFrame, resetFrameRequests])
+
+  useEffect(() => cancelFrameRequests, [cancelFrameRequests])
+
+  return {
+    frameSrc: requestedSeq === null ? null : frameSrcForSeq(requestedSeq),
+    settleFrameRequest,
   }
 }
 
@@ -445,11 +567,10 @@ function EmulatorViewport({
   status,
 }: ViewportProps) {
   const imgRef = useRef<HTMLImageElement | null>(null)
-
-  const frameSrc = useMemo(() => {
-    if (frameSeq === null) return null
-    return `emulator://localhost/frame?t=${frameSeq}`
-  }, [frameSeq])
+  const { frameSrc, settleFrameRequest } = useThrottledEmulatorFrameSrc({
+    enabled: isStreaming && currentDevice !== null,
+    frameSeq,
+  })
 
   const toNormalized = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const node = event.currentTarget
@@ -579,7 +700,10 @@ function EmulatorViewport({
               "block h-full w-full select-none object-cover transition-transform duration-150",
               orientation === "landscape" && "rotate-90",
             )}
+            decoding="async"
             draggable={false}
+            onError={settleFrameRequest}
+            onLoad={settleFrameRequest}
             src={frameSrc}
           />
           {isIos && !isTablet ? <DynamicIsland /> : null}

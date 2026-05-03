@@ -92,7 +92,17 @@ const SOLANA_WORKBENCH_MAX_WIDTH = 900
 const SIDEBAR_REVEAL_EASE_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
 const SIDEBAR_WIDTH_DURATION_MS = 200
 const SOLANA_WORKBENCH_MOUNT_DELAY_MS = SIDEBAR_WIDTH_DURATION_MS + 40
-const STARTUP_SURFACE_PREWARM_SETTLE_MS = 1200
+const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
+  'games',
+  'browser',
+  'ios',
+  'android',
+  'solana',
+  'settings',
+  'usage',
+  'vcs',
+  'workflows',
+]
 
 function readPersistedSolanaWorkbenchWidth(): number {
   if (typeof window === 'undefined') {
@@ -203,16 +213,8 @@ function waitForStartupPrewarmPaints(): Promise<void> {
   })
 }
 
-async function waitForStartupPrewarmSettle(): Promise<void> {
+async function waitForStartupPreloadSettle(): Promise<void> {
   await waitForStartupPrewarmPaints()
-
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  await new Promise<void>((resolve) => {
-    window.setTimeout(resolve, STARTUP_SURFACE_PREWARM_SETTLE_MS)
-  })
 }
 
 async function preloadStartupSurfaceChunks(): Promise<void> {
@@ -229,13 +231,13 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
     loadVcsSidebar(),
     loadWorkflowsSidebar(),
   ])
+  STARTUP_SURFACE_PRELOAD_TARGETS.forEach((target) => warmedSurfaceChunks.add(target))
 }
 
 function useStartupSurfacePrewarm(enabled: boolean): {
   ready: boolean
   shouldMount: boolean
 } {
-  const [shouldMount, setShouldMount] = useState(false)
   const [ready, setReady] = useState(() => import.meta.env.MODE === 'test' || !enabled)
   const startedRef = useRef(false)
 
@@ -255,11 +257,10 @@ function useStartupSurfacePrewarm(enabled: boolean): {
     let cancelled = false
     startedRef.current = true
     setReady(false)
-    setShouldMount(true)
 
     void preloadStartupSurfaceChunks()
       .catch(() => undefined)
-      .then(() => waitForStartupPrewarmSettle())
+      .then(() => waitForStartupPreloadSettle())
       .then(() => {
         if (!cancelled) {
           setReady(true)
@@ -273,7 +274,7 @@ function useStartupSurfacePrewarm(enabled: boolean): {
 
   return {
     ready: import.meta.env.MODE === 'test' || !enabled ? true : ready && startedRef.current,
-    shouldMount: import.meta.env.MODE === 'test' ? false : shouldMount,
+    shouldMount: false,
   }
 }
 
@@ -453,14 +454,14 @@ const LiveAgentRuntime = memo(function LiveAgentRuntime({
   )
 })
 
-function useActivatedSurface(active: boolean, prewarm = false) {
-  const [activated, setActivated] = useState(active || prewarm)
+export function useActivatedSurface(active: boolean, prewarm = false) {
+  const [activated, setActivated] = useState(active)
 
   useEffect(() => {
-    if (active || prewarm) {
+    if (active) {
       setActivated(true)
     }
-  }, [active, prewarm])
+  }, [active])
 
   return active || prewarm || activated
 }
@@ -1683,7 +1684,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     !showOnboarding &&
       !isLoading &&
       !isProjectLoading &&
-      !startupSurfacePrewarm.shouldMount,
+      startupSurfacePrewarm.ready,
   )
   const showStartupSurfacePrewarm = !startupSurfacePrewarm.ready
   const showAppBootLoading = !showOnboarding && (

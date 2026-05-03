@@ -173,7 +173,7 @@ export function trimProjectFileTreeStoreToBudget(
       break
     }
 
-    const working = next ?? {
+    const working: ProjectFileTreeStore = next ?? {
       nodesByPath: { ...store.nodesByPath },
       childPathsByPath: { ...store.childPathsByPath },
     }

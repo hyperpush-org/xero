@@ -219,6 +219,15 @@ afterEach(() => {
 })
 
 describe("SolanaWorkbenchSidebar", () => {
+  it("does not activate backend probes while mounted only for prewarm", async () => {
+    render(<SolanaWorkbenchSidebar open={false} prewarm />)
+
+    await Promise.resolve()
+
+    expect(invokedCommands).toEqual([])
+    expect(Array.from(eventListeners.keys())).toEqual([])
+  })
+
   it("does not badge static tab inventory counts", async () => {
     render(<SolanaWorkbenchSidebar open />)
 

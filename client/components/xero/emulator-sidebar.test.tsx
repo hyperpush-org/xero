@@ -1,9 +1,12 @@
 /** @vitest-environment jsdom */
 
-import { fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { act, fireEvent, render, screen } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { EmulatorSidebar } from "./emulator-sidebar"
+import {
+  EmulatorSidebar,
+  useThrottledEmulatorFrameSrc,
+} from "./emulator-sidebar"
 import { IosEmulatorSidebar } from "./ios-emulator-sidebar"
 import { AndroidEmulatorSidebar } from "./android-emulator-sidebar"
 
@@ -102,5 +105,77 @@ describe("EmulatorSidebar", () => {
 
     render(<AndroidEmulatorSidebar open />)
     expect(screen.getByText("Android Emulator")).toBeVisible()
+  })
+})
+
+function FrameSrcProbe({
+  enabled = true,
+  frameSeq,
+  minIntervalMs = 0,
+}: {
+  enabled?: boolean
+  frameSeq: number | null
+  minIntervalMs?: number
+}) {
+  const { frameSrc, settleFrameRequest } = useThrottledEmulatorFrameSrc({
+    enabled,
+    frameSeq,
+    minIntervalMs,
+  })
+
+  return (
+    <button data-src={frameSrc ?? ""} onClick={settleFrameRequest} type="button">
+      settle
+    </button>
+  )
+}
+
+describe("useThrottledEmulatorFrameSrc", () => {
+  it("keeps only one custom-scheme frame request in flight", () => {
+    const { rerender } = render(<FrameSrcProbe frameSeq={1} />)
+    const probe = screen.getByRole("button", { name: "settle" })
+
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+
+    rerender(<FrameSrcProbe frameSeq={2} />)
+    rerender(<FrameSrcProbe frameSeq={3} />)
+
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+
+    fireEvent.click(probe)
+
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=3")
+  })
+
+  it("enforces a minimum interval between frame requests", () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<FrameSrcProbe frameSeq={1} minIntervalMs={100} />)
+      const probe = screen.getByRole("button", { name: "settle" })
+
+      rerender(<FrameSrcProbe frameSeq={2} minIntervalMs={100} />)
+      fireEvent.click(probe)
+
+      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+
+      act(() => {
+        vi.advanceTimersByTime(100)
+      })
+
+      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=2")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("drops the frame src when disabled", () => {
+    const { rerender } = render(<FrameSrcProbe frameSeq={1} />)
+    const probe = screen.getByRole("button", { name: "settle" })
+
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+
+    rerender(<FrameSrcProbe enabled={false} frameSeq={2} />)
+
+    expect(probe).toHaveAttribute("data-src", "")
   })
 })
