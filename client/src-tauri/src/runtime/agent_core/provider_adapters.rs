@@ -1176,16 +1176,15 @@ fn anthropic_user_content_blocks(
                 }));
             }
             MessageAttachmentKind::Text => {
-                let text =
-                    std::fs::read_to_string(&attachment.absolute_path).map_err(|error| {
-                        CommandError::system_fault(
-                            "agent_attachment_read_failed",
-                            format!(
-                                "Xero could not read attached text file `{}` from disk: {error}",
-                                attachment.original_name
-                            ),
-                        )
-                    })?;
+                let text = std::fs::read_to_string(&attachment.absolute_path).map_err(|error| {
+                    CommandError::system_fault(
+                        "agent_attachment_read_failed",
+                        format!(
+                            "Xero could not read attached text file `{}` from disk: {error}",
+                            attachment.original_name
+                        ),
+                    )
+                })?;
                 blocks.push(json!({
                     "type": "text",
                     "text": format!(
@@ -3012,7 +3011,7 @@ mod tests {
         assert_eq!(blocks[0]["type"], "image");
         assert_eq!(blocks[0]["source"]["type"], "base64");
         assert_eq!(blocks[0]["source"]["media_type"], "image/png");
-        assert!(blocks[0]["source"]["data"].as_str().unwrap().len() > 0);
+        assert!(!blocks[0]["source"]["data"].as_str().unwrap().is_empty());
 
         assert_eq!(blocks[1]["type"], "document");
         assert_eq!(blocks[1]["source"]["type"], "base64");
@@ -3043,8 +3042,7 @@ mod tests {
             height: None,
         }];
 
-        let blocks =
-            anthropic_user_content_blocks("", &attachments).expect("build content blocks");
+        let blocks = anthropic_user_content_blocks("", &attachments).expect("build content blocks");
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["type"], "image");
     }

@@ -4,6 +4,130 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ExecutionPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type { ListProjectFilesResponseDto, ReadProjectFileResponseDto } from '@/src/lib/xero-model'
 
+function textFileResponse(projectId: string, path: string, text: string): ReadProjectFileResponseDto {
+  return {
+    kind: 'text',
+    projectId,
+    path,
+    byteLength: text.length,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'text/plain; charset=utf-8',
+    rendererKind: 'code',
+    text,
+  }
+}
+
+function svgFileResponse(projectId: string, path: string, text: string): ReadProjectFileResponseDto {
+  return {
+    kind: 'text',
+    projectId,
+    path,
+    byteLength: text.length,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'image/svg+xml',
+    rendererKind: 'svg',
+    text,
+  }
+}
+
+function markdownFileResponse(projectId: string, path: string, text: string): ReadProjectFileResponseDto {
+  return {
+    kind: 'text',
+    projectId,
+    path,
+    byteLength: text.length,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'text/markdown; charset=utf-8',
+    rendererKind: 'markdown',
+    text,
+  }
+}
+
+function csvFileResponse(projectId: string, path: string, text: string): ReadProjectFileResponseDto {
+  return {
+    kind: 'text',
+    projectId,
+    path,
+    byteLength: text.length,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'text/csv; charset=utf-8',
+    rendererKind: 'csv',
+    text,
+  }
+}
+
+function imageFileResponse(
+  projectId: string,
+  path: string,
+  byteLength = 4096,
+): ReadProjectFileResponseDto {
+  return {
+    kind: 'renderable',
+    projectId,
+    path,
+    byteLength,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'image/png',
+    rendererKind: 'image',
+    previewUrl: `xero-asset://preview${path}`,
+  }
+}
+
+function renderableFileResponse(
+  projectId: string,
+  path: string,
+  rendererKind: 'pdf' | 'audio' | 'video',
+  mimeType: string,
+): ReadProjectFileResponseDto {
+  return {
+    kind: 'renderable',
+    projectId,
+    path,
+    byteLength: 8192,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType,
+    rendererKind,
+    previewUrl: `xero-asset://preview${path}`,
+  }
+}
+
+function unsupportedFileResponse(projectId: string, path: string): ReadProjectFileResponseDto {
+  return {
+    kind: 'unsupported',
+    projectId,
+    path,
+    byteLength: 1048576,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'application/octet-stream',
+    reason: 'binary',
+  }
+}
+
+function longMarkdownText(): string {
+  return [
+    '# Long doc',
+    '',
+    '```ts',
+    'const payload = `' + 'x'.repeat(112 * 1024) + '`',
+    '```',
+  ].join('\n')
+}
+
+function largeCsvText(rowCount = 1_500): string {
+  const rows = ['name,count']
+  for (let index = 1; index <= rowCount; index += 1) {
+    rows.push(`row-${index},${index}`)
+  }
+  return rows.join('\n')
+}
+
 vi.mock('./code-editor', async () => {
   const React = await import('react')
 
@@ -377,9 +501,7 @@ function createWorkspaceHarness(options?: {
     root: cloneNode(currentRoot),
   }))
   const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
-    projectId,
-    path,
-    content: currentFileContents[path] ?? '',
+    ...textFileResponse(projectId, path, currentFileContents[path] ?? ''),
   }))
   const writeProjectFile = vi.fn(async (projectId: string, path: string, content: string) => {
     currentFileContents[path] = content
@@ -667,7 +789,7 @@ describe('ExecutionView', () => {
     expect(workspace.readProjectFile).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'Open /app/notes.md' }))
-    expect(screen.getByLabelText('Editor for /app/notes.md')).toHaveValue('')
+    await waitFor(() => expect(screen.getByLabelText('Editor for /app/notes.md')).toHaveValue(''))
     expect(workspace.readProjectFile).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete /app/notes.md' }))
@@ -756,12 +878,12 @@ describe('ExecutionView', () => {
       }
 
       return Promise.resolve({
-        projectId,
-        path,
-        content: 'print("project two")\n',
+        ...textFileResponse(projectId, path, 'print("project two")\n'),
       })
     })
     const writeProjectFile = vi.fn(async (projectId: string, path: string) => ({ projectId, path }))
+    const revokeProjectAssetTokens = vi.fn(async () => undefined)
+    const openProjectFileExternal = vi.fn(async () => undefined)
     const createProjectEntry = vi.fn(async (request) => ({
       projectId: request.projectId,
       path: joinPath(request.parentPath, request.name),
@@ -831,9 +953,7 @@ describe('ExecutionView', () => {
 
     await act(async () => {
       slowRead.resolve({
-        projectId: 'project-1',
-        path: '/README.md',
-        content: '# stale response\n',
+        ...textFileResponse('project-1', '/README.md', '# stale response\n'),
       })
       await slowRead.promise
     })
@@ -876,5 +996,413 @@ describe('ExecutionView', () => {
     expect(screen.getByText('● Unsaved')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Revert' })).toBeVisible()
     expect(screen.getByTestId('file:/README.md')).toHaveTextContent('dirty')
+  })
+})
+
+describe('ExecutionView file editor host', () => {
+  function createMixedHarness() {
+    const root = folder('root', '/', [
+      file('README.md', '/README.md'),
+      file('logo.svg', '/logo.svg'),
+      file('photo.png', '/photo.png'),
+      file('large-photo.png', '/large-photo.png'),
+      file('data.csv', '/data.csv'),
+      file('large.csv', '/large.csv'),
+      file('paper.pdf', '/paper.pdf'),
+      file('theme.mp3', '/theme.mp3'),
+      file('demo.mp4', '/demo.mp4'),
+      folder('docs', '/docs', [
+        file('guide.md', '/docs/guide.md'),
+        file('logo.png', '/docs/logo.png'),
+      ]),
+      file('long.md', '/long.md'),
+      file('archive.bin', '/archive.bin'),
+    ])
+    const currentRoot = cloneNode(root)
+
+    const responses: Record<string, () => ReadProjectFileResponseDto> = {
+      '/README.md': () => textFileResponse('project-1', '/README.md', '# Xero\n'),
+      '/logo.svg': () =>
+        svgFileResponse('project-1', '/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
+      '/photo.png': () => imageFileResponse('project-1', '/photo.png'),
+      '/large-photo.png': () =>
+        imageFileResponse('project-1', '/large-photo.png', 128 * 1024 * 1024),
+      '/data.csv': () => csvFileResponse('project-1', '/data.csv', 'name,count\nAlpha,1\n'),
+      '/large.csv': () => csvFileResponse('project-1', '/large.csv', largeCsvText()),
+      '/paper.pdf': () =>
+        renderableFileResponse('project-1', '/paper.pdf', 'pdf', 'application/pdf'),
+      '/theme.mp3': () =>
+        renderableFileResponse('project-1', '/theme.mp3', 'audio', 'audio/mpeg'),
+      '/demo.mp4': () =>
+        renderableFileResponse('project-1', '/demo.mp4', 'video', 'video/mp4'),
+      '/docs/guide.md': () =>
+        markdownFileResponse(
+          'project-1',
+          '/docs/guide.md',
+          [
+            '# Guide',
+            '',
+            '![Logo](./logo.png)',
+            '',
+            '| Package | Status |',
+            '| --- | --- |',
+            '| renderer | ready |',
+            '',
+            '```ts',
+            'const preview = true',
+            '```',
+          ].join('\n'),
+        ),
+      '/docs/logo.png': () => imageFileResponse('project-1', '/docs/logo.png'),
+      '/long.md': () => markdownFileResponse('project-1', '/long.md', longMarkdownText()),
+      '/archive.bin': () => unsupportedFileResponse('project-1', '/archive.bin'),
+    }
+
+    const listProjectFiles = vi.fn(async (projectId: string, path = '/') => ({
+      projectId,
+      path,
+      root: cloneNode(currentRoot),
+    }))
+    const readProjectFile = vi.fn(async (_projectId: string, path: string) => {
+      const builder = responses[path]
+      if (!builder) {
+        return textFileResponse('project-1', path, '')
+      }
+      return builder()
+    })
+    const writeProjectFile = vi.fn(async (projectId: string, path: string) => ({ projectId, path }))
+    const revokeProjectAssetTokens = vi.fn(async () => undefined)
+    const openProjectFileExternal = vi.fn(async () => undefined)
+    const createProjectEntry = vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: joinPath(request.parentPath, request.name),
+    }))
+    const renameProjectEntry = vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: joinPath(parentPathOf(request.path), request.newName),
+    }))
+    const moveProjectEntry = vi.fn(async (request) => ({
+      projectId: request.projectId,
+      path: joinPath(request.targetParentPath, basename(request.path)),
+    }))
+    const deleteProjectEntry = vi.fn(async (projectId: string, path: string) => ({ projectId, path }))
+    const searchProject = vi.fn(async ({ projectId }: { projectId: string }) => ({
+      projectId,
+      totalMatches: 0,
+      totalFiles: 0,
+      truncated: false,
+      files: [],
+    }))
+    const replaceInProject = vi.fn(async ({ projectId }: { projectId: string }) => ({
+      projectId,
+      filesChanged: 0,
+      totalReplacements: 0,
+    }))
+
+    return {
+      listProjectFiles,
+      readProjectFile,
+      writeProjectFile,
+      revokeProjectAssetTokens,
+      openProjectFileExternal,
+      createProjectEntry,
+      renameProjectEntry,
+      moveProjectEntry,
+      deleteProjectEntry,
+      searchProject,
+      replaceInProject,
+    }
+  }
+
+  function renderHostExecutionView() {
+    const workspace = createMixedHarness()
+    return {
+      workspace,
+      ...render(
+        <ExecutionView
+          execution={makeExecution()}
+          listProjectFiles={workspace.listProjectFiles}
+          readProjectFile={workspace.readProjectFile}
+          writeProjectFile={workspace.writeProjectFile}
+          revokeProjectAssetTokens={workspace.revokeProjectAssetTokens}
+          openProjectFileExternal={workspace.openProjectFileExternal}
+          createProjectEntry={workspace.createProjectEntry}
+          renameProjectEntry={workspace.renameProjectEntry}
+          moveProjectEntry={workspace.moveProjectEntry}
+          deleteProjectEntry={workspace.deleteProjectEntry}
+          searchProject={workspace.searchProject}
+          replaceInProject={workspace.replaceInProject}
+        />,
+      ),
+    }
+  }
+
+  it('routes text/code files to CodeMirror without a source/preview toggle', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
+
+    expect(await screen.findByLabelText('Editor for /README.md')).toBeVisible()
+    expect(screen.queryByTestId('file-editor-host-toolbar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('preview-status-bar')).not.toBeInTheDocument()
+    expect(screen.getByText('Saved')).toBeVisible()
+  })
+
+  it('routes SVG files to source mode by default with a preview toggle', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/logo.svg')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /logo.svg' }))
+
+    // SVG defaults to preview surface
+    expect(await screen.findByTestId('svg-preview')).toBeVisible()
+    expect(screen.getByTestId('file-editor-host-toolbar')).toBeVisible()
+    // Save controls hidden while in preview mode (no dirty state from CodeMirror yet)
+    expect(screen.queryByText('Ln 1, Col 1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preview-status-bar')).toBeVisible()
+
+    // Toggle to source — shows CodeMirror and the source-mode status bar
+    fireEvent.click(screen.getByRole('radio', { name: 'Show source' }))
+    expect(await screen.findByLabelText('Editor for /logo.svg')).toBeVisible()
+    expect(screen.getByText(/Ln 1, Col 1/)).toBeVisible()
+  })
+
+  it('renders an image preview for renderable image files and hides save controls', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/photo.png')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /photo.png' }))
+
+    const preview = await screen.findByTestId('image-preview')
+    expect(preview.querySelector('img')).toHaveAttribute('src', 'xero-asset://preview/photo.png')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Revert' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('file-editor-host-toolbar')).not.toBeInTheDocument()
+    expect(screen.getByTestId('preview-status-bar')).toBeVisible()
+  })
+
+  it('revokes project asset preview tokens when preview tabs close or the project changes', async () => {
+    const { workspace, rerender } = renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/photo.png')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /photo.png' }))
+    expect(await screen.findByTestId('image-preview')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close photo.png' }))
+
+    await waitFor(() =>
+      expect(workspace.revokeProjectAssetTokens).toHaveBeenCalledWith('project-1', ['/photo.png']),
+    )
+
+    rerender(
+      <ExecutionView
+        execution={makeExecution('project-2', 'Project Two')}
+        listProjectFiles={workspace.listProjectFiles}
+        readProjectFile={workspace.readProjectFile}
+        writeProjectFile={workspace.writeProjectFile}
+        revokeProjectAssetTokens={workspace.revokeProjectAssetTokens}
+        openProjectFileExternal={workspace.openProjectFileExternal}
+        createProjectEntry={workspace.createProjectEntry}
+        renameProjectEntry={workspace.renameProjectEntry}
+        moveProjectEntry={workspace.moveProjectEntry}
+        deleteProjectEntry={workspace.deleteProjectEntry}
+        searchProject={workspace.searchProject}
+        replaceInProject={workspace.replaceInProject}
+      />,
+    )
+
+    await waitFor(() => expect(workspace.revokeProjectAssetTokens).toHaveBeenCalledWith('project-1'))
+  })
+
+  it('keeps large image previews URL-backed without source editor state', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/large-photo.png')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /large-photo.png' }))
+
+    const preview = await screen.findByTestId('image-preview')
+    expect(preview.querySelector('img')).toHaveAttribute(
+      'src',
+      'xero-asset://preview/large-photo.png',
+    )
+    expect(preview).toHaveTextContent('128 MB')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  it('renders PDF previews with fallback actions', async () => {
+    const { workspace } = renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/paper.pdf')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /paper.pdf' }))
+
+    const preview = await screen.findByTestId('pdf-preview')
+    const object = preview.querySelector('object')
+    expect(object).toHaveAttribute('data', 'xero-asset://preview/paper.pdf')
+    expect(object).toHaveAttribute('type', 'application/pdf')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open externally' })[0])
+    await waitFor(() =>
+      expect(workspace.openProjectFileExternal).toHaveBeenCalledWith('project-1', '/paper.pdf'),
+    )
+  })
+
+  it('renders audio and video previews with native controls', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/theme.mp3')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /theme.mp3' }))
+
+    const audioPreview = await screen.findByTestId('audio-preview')
+    expect(audioPreview.querySelector('audio')).toHaveAttribute(
+      'src',
+      'xero-asset://preview/theme.mp3',
+    )
+    expect(audioPreview.querySelector('audio')).toHaveAttribute('controls')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open /demo.mp4' }))
+    const videoPreview = await screen.findByTestId('video-preview')
+    expect(videoPreview.querySelector('video')).toHaveAttribute(
+      'src',
+      'xero-asset://preview/demo.mp4',
+    )
+    expect(videoPreview.querySelector('video')).toHaveAttribute('controls')
+  })
+
+  it('renders Markdown preview with GFM tables, highlighted code, and relative images', async () => {
+    const { workspace } = renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/docs/guide.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /docs/guide.md' }))
+
+    expect(await screen.findByLabelText('Editor for /docs/guide.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+
+    expect(await screen.findByTestId('markdown-preview')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Guide' })).toBeVisible()
+    expect(screen.getByRole('table')).toBeVisible()
+    expect(screen.getByText('const preview = true')).toBeVisible()
+
+    await waitFor(() =>
+      expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/docs/logo.png'),
+    )
+    expect(await screen.findByAltText('Logo')).toHaveAttribute(
+      'src',
+      'xero-asset://preview/docs/logo.png',
+    )
+  })
+
+  it('renders long Markdown previews without highlighting oversized code blocks', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/long.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /long.md' }))
+
+    expect(await screen.findByLabelText('Editor for /long.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+
+    expect(await screen.findByTestId('markdown-preview')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Long doc' })).toBeVisible()
+    expect(screen.getByText('Plain')).toBeVisible()
+  })
+
+  it('renders CSV preview and reflects unsaved source edits when toggled back to preview', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/data.csv')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /data.csv' }))
+
+    const editor = await screen.findByLabelText('Editor for /data.csv')
+    expect(editor).toHaveValue('name,count\nAlpha,1\n')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+    expect(await screen.findByTestId('csv-preview')).toBeVisible()
+    expect(screen.getByText('Alpha')).toBeVisible()
+    expect(screen.getByText('count')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Show source' }))
+    fireEvent.change(await screen.findByLabelText('Editor for /data.csv'), {
+      target: { value: 'name,count\nBeta,2\n' },
+    })
+    expect(screen.getByText('● Unsaved')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+    expect(await screen.findByTestId('csv-preview')).toBeVisible()
+    expect(screen.getByText('Beta')).toBeVisible()
+    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+  })
+
+  it('bounds large CSV previews to the row and column limits', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/large.csv')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /large.csv' }))
+
+    expect(await screen.findByLabelText('Editor for /large.csv')).toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+
+    const preview = await screen.findByTestId('csv-preview')
+    expect(preview).toHaveTextContent('1,501 rows')
+    expect(preview).toHaveTextContent('Preview limited to 1,000 rows and 80 columns')
+    expect(screen.getByText('row-999')).toBeVisible()
+    expect(screen.queryByText('row-1200')).not.toBeInTheDocument()
+  })
+
+  it('shows a metadata panel for unsupported binary files', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/archive.bin')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /archive.bin' }))
+
+    const panel = await screen.findByTestId('unsupported-file-panel')
+    expect(panel).toHaveTextContent('Xero cannot preview archive.bin')
+    expect(panel).toHaveTextContent('binary')
+    expect(panel).toHaveTextContent('application/octet-stream')
+    expect(panel).toHaveTextContent('1.0 MB')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  it('keeps preview mode per tab and isolates dirty state from other tabs', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
+    fireEvent.change(await screen.findByLabelText('Editor for /README.md'), {
+      target: { value: '# dirty markdown\n' },
+    })
+    expect(screen.getByText('● Unsaved')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open /photo.png' }))
+    expect(await screen.findByTestId('image-preview')).toBeVisible()
+    // Image tab should not show dirty/saving state since it's not text-backed
+    expect(screen.queryByText('● Unsaved')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
+    expect(await screen.findByLabelText('Editor for /README.md')).toHaveValue('# dirty markdown\n')
+    expect(screen.getByText('● Unsaved')).toBeVisible()
+    expect(screen.getByTestId('file:/README.md')).toHaveTextContent('dirty')
+    expect(screen.getByTestId('file:/photo.png')).toHaveTextContent('clean')
+  })
+
+  it('preserves unsaved SVG edits when toggling between source and preview', async () => {
+    renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/logo.svg')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /logo.svg' }))
+
+    fireEvent.click(await screen.findByRole('radio', { name: 'Show source' }))
+    const editor = await screen.findByLabelText('Editor for /logo.svg')
+    fireEvent.change(editor, { target: { value: '<svg><rect /></svg>' } })
+    expect(screen.getByText('● Unsaved')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+    expect(await screen.findByTestId('svg-preview')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Show source' }))
+    expect(await screen.findByLabelText('Editor for /logo.svg')).toHaveValue('<svg><rect /></svg>')
+    expect(screen.getByText('● Unsaved')).toBeVisible()
   })
 })

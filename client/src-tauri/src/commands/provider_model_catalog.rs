@@ -25,7 +25,6 @@ pub async fn get_provider_model_catalog<R: Runtime + 'static>(
     let desktop_state = state.inner().clone();
     let profile_id = request.profile_id;
     let force_refresh = request.force_refresh;
-    drop(state);
 
     jobs.run_blocking_latest(
         format!("provider-model-catalog:{profile_id}"),

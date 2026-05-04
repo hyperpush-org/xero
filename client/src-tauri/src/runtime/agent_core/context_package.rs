@@ -52,7 +52,6 @@ pub(crate) fn assemble_provider_context_package(
     .with_agent_definition_snapshot(input.agent_definition_snapshot)
     .with_owned_process_summary(input.owned_process_summary)
     .with_skill_contexts(skill_contexts)
-    .with_retrieved_project_context(Some(retrieved_project_context.clone()))
     .compile()?;
 
     let (included_contributors, prompt_fragments_json, prompt_redacted) =
@@ -103,11 +102,31 @@ pub(crate) fn assemble_provider_context_package(
         .iter()
         .map(|result| result.result_id.clone())
         .collect::<Vec<_>>();
+    let freshness_diagnostics = retrieved_project_context
+        .diagnostic
+        .as_ref()
+        .and_then(|diagnostic| diagnostic.get("freshnessDiagnostics"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let stale_context_rows_available = freshness_count(&freshness_diagnostics, "staleCount");
+    let source_missing_context_rows_available =
+        freshness_count(&freshness_diagnostics, "sourceMissingCount");
+    let superseded_context_rows_available =
+        freshness_count(&freshness_diagnostics, "supersededCount");
     let retrieval_json = json!({
         "queryIds": retrieval_query_ids,
         "resultIds": retrieval_result_ids,
+        "deliveryModel": "tool_mediated",
+        "rawContextInjected": false,
         "method": retrieved_project_context.method.clone(),
         "diagnostic": retrieved_project_context.diagnostic.clone(),
+        "freshnessDiagnostics": freshness_diagnostics,
+        "staleContextRowsAvailable": stale_context_rows_available,
+        "sourceMissingContextRowsAvailable": source_missing_context_rows_available,
+        "supersededContextRowsAvailable": superseded_context_rows_available,
+        "toolAvailability": {
+            "project_context": input.tools.iter().any(|tool| tool.name == AUTONOMOUS_TOOL_PROJECT_CONTEXT),
+        },
         "resultCount": retrieved_project_context.results.len(),
         "results": retrieved_project_context.results.iter().map(retrieval_result_manifest_json).collect::<Vec<_>>(),
     });
@@ -471,8 +490,7 @@ fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
         "xero.agent_definition_policy" => "agent_definition_policy",
         "project.code_map" => "code_map",
         "xero.owned_process_state" => "process_state",
-        "xero.approved_memory" => "approved_memory",
-        "xero.relevant_project_records" => "relevant_project_records",
+        "xero.durable_context_tools" => "durable_context_tool_instruction",
         id if id.starts_with("project.instructions.") => "repository_instructions",
         id if id.starts_with("skill.context.") => "skill_context",
         _ => "prompt_fragment",
@@ -509,8 +527,36 @@ fn retrieval_result_manifest_json(
         "rank": result.rank,
         "score": result.score,
         "redactionState": redaction_state_label(&result.redaction_state),
-        "metadata": result.metadata,
+        "metadata": retrieval_result_manifest_metadata(&result.metadata),
     })
+}
+
+fn retrieval_result_manifest_metadata(metadata: &JsonValue) -> JsonValue {
+    json!({
+        "freshness": metadata.get("freshness").cloned().unwrap_or(JsonValue::Null),
+        "trust": metadata.get("trust").cloned().unwrap_or(JsonValue::Null),
+        "recordKind": metadata.get("recordKind").cloned().unwrap_or(JsonValue::Null),
+        "memoryKind": metadata.get("memoryKind").cloned().unwrap_or(JsonValue::Null),
+        "scope": metadata.get("scope").cloned().unwrap_or(JsonValue::Null),
+        "runtimeAgentId": metadata.get("runtimeAgentId").cloned().unwrap_or(JsonValue::Null),
+        "agentSessionId": metadata.get("agentSessionId").cloned().unwrap_or(JsonValue::Null),
+        "runId": metadata.get("runId").cloned().unwrap_or(JsonValue::Null),
+        "sourceRunId": metadata.get("sourceRunId").cloned().unwrap_or(JsonValue::Null),
+        "sourceItemIds": metadata.get("sourceItemIds").cloned().unwrap_or(JsonValue::Null),
+        "relatedPaths": metadata.get("relatedPaths").cloned().unwrap_or(JsonValue::Null),
+        "confidence": metadata.get("confidence").cloned().unwrap_or(JsonValue::Null),
+        "embeddingPresent": metadata.get("embeddingPresent").cloned().unwrap_or(JsonValue::Null),
+        "embeddingModel": metadata.get("embeddingModel").cloned().unwrap_or(JsonValue::Null),
+        "embeddingDimension": metadata.get("embeddingDimension").cloned().unwrap_or(JsonValue::Null),
+        "embeddingVersion": metadata.get("embeddingVersion").cloned().unwrap_or(JsonValue::Null),
+    })
+}
+
+fn freshness_count(freshness_diagnostics: &JsonValue, key: &str) -> u64 {
+    freshness_diagnostics
+        .get(key)
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(0)
 }
 
 fn context_policy_action_label(action: &project_store::AgentContextPolicyAction) -> &'static str {
@@ -707,15 +753,24 @@ mod tests {
         let second = assemble_provider_context_package(input, Vec::new()).expect("second package");
 
         assert_eq!(first.manifest.context_hash, second.manifest.context_hash);
-        assert!(first
+        assert!(first.system_prompt.contains("Durable project context is"));
+        assert!(!first
             .system_prompt
             .contains("Phase 3 approved memory is injected"));
-        assert!(first
+        assert!(!first
             .system_prompt
             .contains("phase3 context package assembly retrieves project records"));
         assert!(first.compilation.fragments.iter().any(|fragment| {
-            fragment.id == "xero.relevant_project_records" && fragment.priority == 225
+            fragment.id == "xero.durable_context_tools" && fragment.priority == 240
         }));
+        assert_eq!(
+            first.manifest.manifest["retrieval"]["deliveryModel"],
+            "tool_mediated"
+        );
+        assert_eq!(
+            first.manifest.manifest["retrieval"]["rawContextInjected"],
+            false
+        );
         assert!(!first.manifest.retrieval_result_ids.is_empty());
     }
 }

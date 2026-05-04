@@ -67,7 +67,6 @@ pub async fn search_project<R: Runtime>(
         .unwrap_or(DEFAULT_MAX_RESULT_FILES);
     let jobs = state.backend_jobs().clone();
     let project_id = request.project_id;
-    drop(state);
     drop(app);
 
     jobs.run_blocking_latest(
@@ -75,14 +74,16 @@ pub async fn search_project<R: Runtime>(
         "project search",
         move |cancellation| {
             search_project_at_root(
-                project_root,
-                project_id,
-                pattern,
-                include,
-                exclude,
-                cap,
-                file_cap,
-                cursor,
+                SearchProjectJob {
+                    project_root,
+                    project_id,
+                    pattern,
+                    include,
+                    exclude,
+                    cap,
+                    file_cap,
+                    cursor,
+                },
                 cancellation,
             )
         },
@@ -90,7 +91,7 @@ pub async fn search_project<R: Runtime>(
     .await
 }
 
-fn search_project_at_root(
+struct SearchProjectJob {
     project_root: std::path::PathBuf,
     project_id: String,
     pattern: Regex,
@@ -99,8 +100,22 @@ fn search_project_at_root(
     cap: u32,
     file_cap: u32,
     cursor: Option<String>,
+}
+
+fn search_project_at_root(
+    job: SearchProjectJob,
     cancellation: BackendCancellationToken,
 ) -> CommandResult<SearchProjectResponseDto> {
+    let SearchProjectJob {
+        project_root,
+        project_id,
+        pattern,
+        include,
+        exclude,
+        cap,
+        file_cap,
+        cursor,
+    } = job;
     let mut total_matches: u32 = 0;
     let mut total_files: u32 = 0;
     let mut truncated = false;
@@ -249,7 +264,6 @@ pub async fn replace_in_project<R: Runtime>(
     let exclude = build_globset(&request.exclude_globs, "excludeGlobs")?;
     let jobs = state.backend_jobs().clone();
     let project_id = request.project_id.clone();
-    drop(state);
     drop(app);
 
     jobs.run_blocking_project_lane(project_id, "file", "project replace", move || {
@@ -536,7 +550,7 @@ mod tests {
 
     use super::{
         build_pattern, build_preview, search_project_at_root, to_virtual_path, utf8_char_col,
-        validate_search_cursor,
+        validate_search_cursor, SearchProjectJob,
     };
 
     #[test]
@@ -591,26 +605,30 @@ mod tests {
         let pattern = build_pattern("needle", true, false, false).expect("pattern");
 
         let first = search_project_at_root(
-            temp_dir.path().to_path_buf(),
-            "project-1".into(),
-            pattern.clone(),
-            None,
-            None,
-            100,
-            2,
-            None,
+            SearchProjectJob {
+                project_root: temp_dir.path().to_path_buf(),
+                project_id: "project-1".into(),
+                pattern: pattern.clone(),
+                include: None,
+                exclude: None,
+                cap: 100,
+                file_cap: 2,
+                cursor: None,
+            },
             BackendCancellationToken::default(),
         )
         .expect("first page");
         let second = search_project_at_root(
-            temp_dir.path().to_path_buf(),
-            "project-1".into(),
-            pattern,
-            None,
-            None,
-            100,
-            2,
-            first.next_cursor.clone(),
+            SearchProjectJob {
+                project_root: temp_dir.path().to_path_buf(),
+                project_id: "project-1".into(),
+                pattern,
+                include: None,
+                exclude: None,
+                cap: 100,
+                file_cap: 2,
+                cursor: first.next_cursor.clone(),
+            },
             BackendCancellationToken::default(),
         )
         .expect("second page");
@@ -638,6 +656,7 @@ mod tests {
     #[test]
     fn project_search_uses_same_ignore_rules_as_project_tree() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(temp_dir.path().join(".git")).expect("git dir");
         fs::write(temp_dir.path().join(".gitignore"), "ignored.txt\n").expect("gitignore");
         fs::write(temp_dir.path().join("visible.txt"), "needle").expect("visible");
         fs::write(temp_dir.path().join("ignored.txt"), "needle").expect("ignored");
@@ -650,14 +669,16 @@ mod tests {
         let pattern = build_pattern("needle", true, false, false).expect("pattern");
 
         let response = search_project_at_root(
-            temp_dir.path().to_path_buf(),
-            "project-1".into(),
-            pattern,
-            None,
-            None,
-            100,
-            10,
-            None,
+            SearchProjectJob {
+                project_root: temp_dir.path().to_path_buf(),
+                project_id: "project-1".into(),
+                pattern,
+                include: None,
+                exclude: None,
+                cap: 100,
+                file_cap: 10,
+                cursor: None,
+            },
             BackendCancellationToken::default(),
         )
         .expect("search");

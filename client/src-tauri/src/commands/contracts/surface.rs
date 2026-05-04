@@ -247,10 +247,32 @@ pub enum ProjectEntryKindDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFileRendererKindDto {
+    Code,
+    Svg,
+    Markdown,
+    Csv,
+    Html,
+    Image,
+    Pdf,
+    Audio,
+    Video,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectFileRequestDto {
     pub project_id: String,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeProjectAssetTokensRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -541,11 +563,44 @@ pub struct ListProjectFilesResponseDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReadProjectFileResponseDto {
-    pub project_id: String,
-    pub path: String,
-    pub content: String,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ReadProjectFileResponseDto {
+    Text {
+        project_id: String,
+        path: String,
+        byte_length: u64,
+        modified_at: String,
+        content_hash: String,
+        mime_type: String,
+        renderer_kind: ProjectFileRendererKindDto,
+        text: String,
+    },
+    Renderable {
+        project_id: String,
+        path: String,
+        byte_length: u64,
+        modified_at: String,
+        content_hash: String,
+        mime_type: String,
+        renderer_kind: ProjectFileRendererKindDto,
+        preview_url: String,
+    },
+    Unsupported {
+        project_id: String,
+        path: String,
+        byte_length: u64,
+        modified_at: String,
+        content_hash: String,
+        mime_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renderer_kind: Option<ProjectFileRendererKindDto>,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

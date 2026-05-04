@@ -1,11 +1,16 @@
 {
   "name": "xero-dev-root",
   "private": true,
+  "packageManager": "pnpm@10.28.1",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
   "scripts": {
     "dev": "node scripts/dev-preflight.mjs && concurrently -n DB,PHX,TAURI,LANDING -c blue,green,magenta,cyan -k \"pnpm run dev:db:logs\" \"pnpm run dev:server\" \"pnpm run dev:tauri\" \"pnpm run dev:landing\"",
     "dev:preflight": "node scripts/dev-preflight.mjs",
-    "dev:db": "docker compose -f server/docker-compose.yml up",
-    "dev:db:logs": "docker compose -f server/docker-compose.yml logs -f --tail=20 postgres",
+    "dev:db": "node scripts/docker-compose.mjs -f server/docker-compose.yml up",
+    "dev:db:logs": "node scripts/docker-compose.mjs -f server/docker-compose.yml logs -f --tail=20 postgres",
     "dev:server": "cd server && mix phx.server",
     "dev:tauri": "pnpm --dir ./client run tauri:dev",
     "dev:tauri:ios-grpc": "pnpm --dir ./client run tauri:dev:ios-grpc",
@@ -14,8 +19,8 @@
     "rust:test": "pnpm --dir ./client run rust:test",
     "rust:target:prune": "pnpm --dir ./client run rust:target:prune",
     "rust:target:prune:dry-run": "pnpm --dir ./client run rust:target:prune:dry-run",
-    "db:up": "docker compose -f server/docker-compose.yml up -d",
-    "db:down": "docker compose -f server/docker-compose.yml down",
+    "db:up": "node scripts/docker-compose.mjs -f server/docker-compose.yml up -d",
+    "db:down": "node scripts/docker-compose.mjs -f server/docker-compose.yml down",
     "db:reset": "cd server && mix ecto.reset",
     "server:setup": "cd server && mix setup"
   },

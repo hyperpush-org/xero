@@ -815,7 +815,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_PROJECT_CONTEXT,
             "core",
-            "Search and read source-cited, redacted durable project context, approved memory, handoffs, and current context manifests; Engineer and Debug may propose review-only candidate records.",
+            "Search, read, record, update, and refresh source-cited durable project context, approved memory, handoffs, and current context manifests with freshness evidence.",
             &["context", "memory", "records", "handoff", "retrieval", "citations"],
             &[
                 "action",
@@ -832,8 +832,8 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "text",
             ],
             &[
-                "Search project records before acting.",
-                "Read an approved memory or propose a candidate record for review.",
+                "Search project records before prior-work-sensitive tasks.",
+                "Record or update durable context after a durable finding.",
             ],
             "observe",
         ),

@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ComponentProps } from 'react'
 
 afterEach(() => {
   window.localStorage.clear()
@@ -2014,6 +2015,53 @@ describe('AgentRuntime current UI', () => {
       )
     })
 
+    it('keeps non-focused multi-pane runtimes off focused-pane polling paths', async () => {
+      const dictation = createDictationAdapter()
+      const getSessionContextSnapshot = vi.fn(async () => ({} as never))
+      const onComposerControlsChange = vi.fn()
+      const agent = makeAgent({
+        runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+        runtimeRun: makeRuntimeRun(),
+      })
+      const desktopAdapter: ComponentProps<typeof AgentRuntime>['desktopAdapter'] = {
+        ...dictation.adapter,
+        getSessionContextSnapshot,
+      }
+
+      const { rerender } = render(
+        <AgentRuntime
+          agent={agent}
+          desktopAdapter={desktopAdapter}
+          paneCount={3}
+          paneNumber={2}
+          isPaneFocused={false}
+          onComposerControlsChange={onComposerControlsChange}
+        />,
+      )
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(dictation.adapter.speechDictationStatus).not.toHaveBeenCalled()
+      expect(getSessionContextSnapshot).not.toHaveBeenCalled()
+      expect(onComposerControlsChange).not.toHaveBeenCalled()
+
+      rerender(
+        <AgentRuntime
+          agent={agent}
+          desktopAdapter={desktopAdapter}
+          paneCount={3}
+          paneNumber={2}
+          isPaneFocused
+          onComposerControlsChange={onComposerControlsChange}
+        />,
+      )
+
+      await waitFor(() => expect(onComposerControlsChange).toHaveBeenCalledTimes(1))
+    })
+
     it('disables the spawn-pane button when the workspace is at capacity', () => {
       const onSpawn = vi.fn()
       render(
@@ -2046,6 +2094,27 @@ describe('AgentRuntime current UI', () => {
       expect(screen.getByRole('button', { name: 'Composer settings' })).toBeVisible()
       // Comfortable-mode inline thinking selector is hidden in compact mode (lives inside gear popover).
       expect(screen.queryByLabelText('Thinking level selector')).not.toBeInTheDocument()
+    })
+
+    it('keeps a focused empty session condensed when exactly three panes are open', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          })}
+          density="compact"
+          paneCount={3}
+          paneNumber={2}
+          isPaneFocused
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      expect(
+        screen.queryByRole('heading', { name: /What can we build together/i }),
+      ).not.toBeInTheDocument()
+      expect(within(viewport).getByRole('heading', { name: 'Xero' })).toBeVisible()
+      expect(within(viewport).getByRole('button', { name: 'Explore the codebase' })).toBeVisible()
     })
 
     it('renders the comfortable composer variant with inline thinking selector when density is comfortable', () => {

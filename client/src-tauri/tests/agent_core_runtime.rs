@@ -305,6 +305,7 @@ fn append_auto_compact_fixture_messages(
                     "x".repeat(chars_per_message)
                 ),
                 created_at: format!("{timestamp_minute}:{:02}Z", index + 3),
+                attachments: Vec::new(),
             },
         )
         .expect("append auto compact fixture message");
@@ -357,6 +358,7 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "browser",
         "emulator",
         "environment_context",
+        "system_diagnostics",
         "solana_cluster",
         "solana_logs",
         "solana_tx",
@@ -662,6 +664,7 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
             "tool:command_echo verified-file-tools",
         ]
         .join("\n"),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -737,6 +740,7 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
             "tool:mcp_list",
         ]
         .join("\n"),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -838,6 +842,7 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-1".into(),
         prompt: "Please inspect the file.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -874,9 +879,10 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         snapshot
             .run
             .system_prompt
-            .contains("Xero redacted sensitive session-context text."),
-        "approved memory secrets should be redacted in the system prompt"
+            .contains("retrieve it through `project_context`"),
+        "approved memory policy should point agents at the durable-context tool"
     );
+    assert!(!snapshot.run.system_prompt.contains("Use api_key="));
     assert!(!snapshot.run.system_prompt.contains("sk-runtime-secret"));
     assert!(snapshot.messages.iter().any(|message| {
         message.role == db::project_store::AgentMessageRole::User
@@ -972,6 +978,7 @@ fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: run_id.into(),
         prompt: "Prepare a heartbeat-only run.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1013,6 +1020,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: run_id.into(),
         prompt: "Prepare a budget-guarded run.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: provider_config.clone(),
@@ -1049,6 +1057,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         project_id: project_id.clone(),
         run_id: run_id.into(),
         prompt: huge_prompt.clone(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config,
@@ -1090,6 +1099,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: run_id.into(),
         prompt: "Inspect before compact.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1129,6 +1139,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         project_id: project_id.clone(),
         run_id: run_id.into(),
         prompt: "Continue after compaction.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1165,6 +1176,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: run_id.into(),
         prompt: "Inspect before tamper.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1211,6 +1223,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         project_id: project_id.clone(),
         run_id: run_id.into(),
         prompt: "Continue after tamper.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1246,6 +1259,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: run_id.into(),
         prompt: "Prepare an auto-compact source run.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1283,6 +1297,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         project_id: project_id.clone(),
         run_id: run_id.into(),
         prompt: "Continue after automatic compaction.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1358,6 +1373,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             role: db::project_store::AgentMessageRole::System,
             content: "You are Xero.".into(),
             created_at: "2026-04-26T18:00:01Z".into(),
+            attachments: Vec::new(),
         },
     )
     .expect("append failure source system message");
@@ -1369,6 +1385,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             role: db::project_store::AgentMessageRole::User,
             content: "Prepare an auto-compact failure source.".into(),
             created_at: "2026-04-26T18:00:02Z".into(),
+            attachments: Vec::new(),
         },
     )
     .expect("append failure source user message");
@@ -1404,6 +1421,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
         project_id: project_id.clone(),
         run_id: run_id.into(),
         prompt: "This should not be appended.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
@@ -1459,6 +1477,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-plan-run-1".into(),
         prompt: "Please inspect the file.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
         controls: Some(RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
@@ -1502,6 +1521,7 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-write-1".into(),
         prompt: "Please update the tracked file.\ntool:read src/tracked.txt\ntool:write src/tracked.txt gamma\n".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1573,6 +1593,7 @@ fn owned_agent_omits_sensitive_file_content_from_rollback_checkpoints() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-sensitive-rollback-1".into(),
         prompt: "Please update the env file.\ntool:read .env\ntool:write .env REDACTED=1\n".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1615,6 +1636,7 @@ fn owned_agent_refuses_unobserved_existing_file_writes() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-unobserved-write-1".into(),
         prompt: "Please update the tracked file.\ntool:write src/tracked.txt gamma\n".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1661,6 +1683,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-approved-replay-1".into(),
         prompt: "Please update the tracked file.\ntool:write src/tracked.txt gamma\n".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1684,6 +1707,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         project_id: project_id.clone(),
         run_id: "owned-run-approved-replay-1".into(),
         prompt: "Approved. Continue.".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1741,6 +1765,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-stale-write-1".into(),
         prompt: "Please update safely.\ntool:read src/tracked.txt\ntool:command_sh printf outside > src/tracked.txt\ntool:write src/tracked.txt gamma\n".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1788,6 +1813,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: run_id.into(),
         prompt: "Initial interrupted run.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1818,6 +1844,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         project_id: project_id.clone(),
         run_id: run_id.into(),
         prompt: "Continue after restart.".into(),
+        attachments: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1871,6 +1898,7 @@ fn owned_agent_command_tools_emit_command_output_events() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-command-1".into(),
         prompt: "Please prove command output streaming.\ntool:command_echo hello-xero".into(),
+        attachments: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1909,6 +1937,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-command-approval-replay-1".into(),
         prompt: "Please run an approved command.\ntool:command_sh printf approved > approved-command.txt".into(),
+        attachments: Vec::new(),
         controls: Some(controls.clone()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1935,6 +1964,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         project_id: project_id.clone(),
         run_id: "owned-run-command-approval-replay-1".into(),
         prompt: "Approved. Run it now.".into(),
+        attachments: Vec::new(),
         controls: Some(controls),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2283,6 +2313,7 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             initial_controls: None,
             initial_prompt: None,
+            initial_attachments: Vec::new(),
         },
     )
     .expect("start runtime run should create owned agent runtime");
@@ -2315,6 +2346,7 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             initial_controls: None,
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+            initial_attachments: Vec::new(),
         },
     )
     .expect("start runtime run should execute owned agent task from initial prompt");
@@ -2350,6 +2382,7 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
             agent_session_id: agent_session_id.clone(),
             initial_controls: None,
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+            initial_attachments: Vec::new(),
         },
     )
     .expect("start runtime run should execute owned agent task from initial prompt");
@@ -2397,6 +2430,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             initial_controls: None,
             initial_prompt: None,
+            initial_attachments: Vec::new(),
         },
     )
     .expect("start runtime run should create owned agent runtime");
@@ -2410,6 +2444,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             run_id: runtime_run.run_id.clone(),
             controls: None,
             prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+            attachments: Vec::new(),
             auto_compact: None,
         },
     )
@@ -2437,6 +2472,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             run_id: runtime_run.run_id.clone(),
             controls: None,
             prompt: Some("Thanks, summarize the result.".into()),
+            attachments: Vec::new(),
             auto_compact: None,
         },
     )

@@ -28,9 +28,14 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         .manage(commands::BrowserState::default())
         .manage(commands::DictationState::default())
         .manage(commands::EmulatorState::default())
+        .manage(commands::project_assets::ProjectAssetState::default())
         .register_asynchronous_uri_scheme_protocol(
             commands::emulator::URI_SCHEME,
             commands::emulator::handle_uri_scheme,
+        )
+        .register_asynchronous_uri_scheme_protocol(
+            commands::project_assets::URI_SCHEME,
+            commands::project_assets::handle,
         )
         .register_asynchronous_uri_scheme_protocol(
             commands::solana::URI_SCHEME,
@@ -214,6 +219,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::project_files::list_project_files,
             commands::project_files::read_project_file,
             commands::project_files::write_project_file,
+            commands::project_assets::revoke_project_asset_tokens,
+            commands::project_files::open_project_file_external,
             commands::project_files::create_project_entry,
             commands::project_files::rename_project_entry,
             commands::project_files::move_project_entry,

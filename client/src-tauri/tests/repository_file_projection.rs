@@ -10,9 +10,10 @@ use xero_desktop_lib::{
     commands::{
         create_project_entry, delete_project_entry, import_repository, list_project_files,
         read_project_file, rename_project_entry, write_project_file, CommandError,
-        CreateProjectEntryRequestDto, ImportRepositoryRequestDto, ProjectEntryKindDto,
-        ProjectFileNodeDto, ProjectFileRequestDto, ProjectIdRequestDto,
-        RenameProjectEntryRequestDto, WriteProjectFileRequestDto,
+        CreateProjectEntryRequestDto, ImportRepositoryRequestDto, ListProjectFilesRequestDto,
+        ProjectAssetState, ProjectEntryKindDto, ProjectFileNodeDto, ProjectFileRendererKindDto,
+        ProjectFileRequestDto, ReadProjectFileResponseDto, RenameProjectEntryRequestDto,
+        WriteProjectFileRequestDto,
     },
     configure_builder_with_state,
     state::DesktopState,
@@ -49,11 +50,20 @@ fn list_files_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
 ) -> Result<xero_desktop_lib::commands::ListProjectFilesResponseDto, CommandError> {
+    list_files_at_with_app(app, project_id, "/")
+}
+
+fn list_files_at_with_app(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    path: &str,
+) -> Result<xero_desktop_lib::commands::ListProjectFilesResponseDto, CommandError> {
     tauri::async_runtime::block_on(list_project_files(
         app.handle().clone(),
         app.state::<DesktopState>(),
-        ProjectIdRequestDto {
+        ListProjectFilesRequestDto {
             project_id: project_id.to_owned(),
+            path: path.to_owned(),
         },
     ))
 }
@@ -66,6 +76,7 @@ fn read_file_with_app(
     tauri::async_runtime::block_on(read_project_file(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         ProjectFileRequestDto {
             project_id: project_id.to_owned(),
             path: path.to_owned(),
@@ -225,12 +236,24 @@ fn project_file_commands_list_read_write_create_rename_and_delete_real_repo_stat
     assert!(tree.payload_budget.is_none());
     assert!(find_node(&tree.root, "/README.md").is_some());
     assert!(find_node(&tree.root, "/src").is_some());
-    assert!(find_node(&tree.root, "/src/App.tsx").is_some());
     assert!(find_node(&tree.root, "/node_modules").is_none());
     assert!(find_node(&tree.root, "/.git").is_none());
 
+    let src_tree = list_files_at_with_app(&app, &project_id, "/src").expect("src tree loads");
+    assert!(find_node(&src_tree.root, "/src/App.tsx").is_some());
+
     let readme = read_file_with_app(&app, &project_id, "/README.md").expect("readme loads");
-    assert_eq!(readme.content, "Xero\n");
+    match readme {
+        ReadProjectFileResponseDto::Text {
+            text,
+            renderer_kind,
+            ..
+        } => {
+            assert_eq!(text, "Xero\n");
+            assert_eq!(renderer_kind, ProjectFileRendererKindDto::Markdown);
+        }
+        other => panic!("expected text response, got {other:?}"),
+    }
 
     write_file_with_app(&app, &project_id, "/README.md", "Xero\nUpdated\n")
         .expect("write succeeds");
@@ -290,7 +313,98 @@ fn project_file_commands_list_read_write_create_rename_and_delete_real_repo_stat
         .join("generated")
         .exists());
 
-    let refreshed_tree = list_files_with_app(&app, &project_id).expect("refreshed tree loads");
-    assert!(find_node(&refreshed_tree.root, "/src/editor-client.ts").is_some());
-    assert!(find_node(&refreshed_tree.root, "/src/generated").is_none());
+    let refreshed_src_tree =
+        list_files_at_with_app(&app, &project_id, "/src").expect("refreshed src tree loads");
+    assert!(find_node(&refreshed_src_tree.root, "/src/editor-client.ts").is_some());
+    assert!(find_node(&refreshed_src_tree.root, "/src/generated").is_none());
+}
+
+#[test]
+fn read_project_file_classifies_binary_without_utf8_error() {
+    let registry_root = tempfile::tempdir().expect("registry temp dir");
+    let repository_root = init_git_repo();
+    fs::write(
+        repository_root.path().join("payload.bin"),
+        [0_u8, 0xff, 0x01, 0x02],
+    )
+    .expect("write binary");
+    let app = build_mock_app(create_state(&registry_root));
+
+    let imported = import_with_app(&app, repository_root.path()).expect("import succeeds");
+    let response =
+        read_file_with_app(&app, &imported.project.id, "/payload.bin").expect("binary classifies");
+
+    match response {
+        ReadProjectFileResponseDto::Unsupported {
+            reason, mime_type, ..
+        } => {
+            assert_eq!(reason, "binary");
+            assert_eq!(mime_type.as_deref(), Some("application/octet-stream"));
+        }
+        other => panic!("expected unsupported binary response, got {other:?}"),
+    }
+}
+
+#[test]
+fn read_project_file_returns_preview_url_for_raster_image() {
+    let registry_root = tempfile::tempdir().expect("registry temp dir");
+    let repository_root = init_git_repo();
+    fs::write(
+        repository_root.path().join("pixel.png"),
+        [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00],
+    )
+    .expect("write png");
+    let app = build_mock_app(create_state(&registry_root));
+
+    let imported = import_with_app(&app, repository_root.path()).expect("import succeeds");
+    let response =
+        read_file_with_app(&app, &imported.project.id, "/pixel.png").expect("image classifies");
+
+    match response {
+        ReadProjectFileResponseDto::Renderable {
+            preview_url,
+            renderer_kind,
+            mime_type,
+            ..
+        } => {
+            assert!(preview_url.starts_with("project-asset://"));
+            assert_eq!(renderer_kind, ProjectFileRendererKindDto::Image);
+            assert_eq!(mime_type, "image/png");
+        }
+        other => panic!("expected renderable image response, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn read_project_file_denies_symlinked_paths() {
+    use std::os::unix::fs::symlink;
+
+    let registry_root = tempfile::tempdir().expect("registry temp dir");
+    let repository_root = init_git_repo();
+    symlink(
+        repository_root.path().join("README.md"),
+        repository_root.path().join("readme-link.md"),
+    )
+    .expect("create symlink");
+    let app = build_mock_app(create_state(&registry_root));
+
+    let imported = import_with_app(&app, repository_root.path()).expect("import succeeds");
+    let error = read_file_with_app(&app, &imported.project.id, "/readme-link.md")
+        .expect_err("symlink read should fail");
+
+    assert_eq!(error.code, "policy_denied");
+}
+
+#[test]
+fn read_project_file_denies_path_traversal_segments() {
+    let registry_root = tempfile::tempdir().expect("registry temp dir");
+    let repository_root = init_git_repo();
+    let app = build_mock_app(create_state(&registry_root));
+
+    let imported = import_with_app(&app, repository_root.path()).expect("import succeeds");
+    let error = read_file_with_app(&app, &imported.project.id, "/../README.md")
+        .expect_err("path traversal should fail");
+
+    assert_eq!(error.code, "policy_denied");
 }

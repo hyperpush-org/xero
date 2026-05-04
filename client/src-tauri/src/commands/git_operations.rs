@@ -19,7 +19,6 @@ pub async fn git_stage_paths<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let paths = request.paths;
@@ -42,7 +41,6 @@ pub async fn git_unstage_paths<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let paths = request.paths;
@@ -65,7 +63,6 @@ pub async fn git_discard_changes<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let paths = request.paths;
@@ -88,7 +85,6 @@ pub async fn git_commit<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let message = request.message;
@@ -112,7 +108,6 @@ pub async fn git_fetch<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let remote = request.remote;
@@ -131,7 +126,6 @@ pub async fn git_pull<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let remote = request.remote;
@@ -161,7 +155,6 @@ pub async fn git_push<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
-    drop(state);
 
     let project_id = request.project_id;
     let remote = request.remote;

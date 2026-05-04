@@ -1465,6 +1465,6 @@ mod tests {
         assert!(tool.present);
         assert_eq!(tool.version.as_deref(), Some("fixture-tool 1.2.3"));
         assert_eq!(tool.probe_status, EnvironmentToolProbeStatus::Ok);
-        assert_eq!(report.summary.tools[0].custom, true);
+        assert!(report.summary.tools[0].custom);
     }
 }

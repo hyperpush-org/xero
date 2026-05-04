@@ -101,7 +101,8 @@ Onboarding flow covers:
 - Rust toolchain + Cargo
 - `protoc` on PATH. LanceDB-backed memory pulls `lance-`* crates whose build scripts compile vendored `.proto` files. On macOS: `brew install protobuf`.
 - Tauri OS prerequisites for your platform (WebView/runtime dependencies)
-- Docker Desktop or a compatible Docker daemon, for the local Postgres service
+- Docker Desktop, Docker Engine, or a compatible Docker daemon, for the local Postgres service
+- Docker Compose v2 (`docker compose`) or legacy `docker-compose`; root scripts use whichever is available
 - Elixir/Mix for the Phoenix server
 
 ### 2) Emulator features
@@ -140,23 +141,28 @@ If tools are missing, workbench surfaces degraded/missing-toolchain states rathe
 
 ## Setup
 
-This repo is **not** a pnpm workspace; install dependencies per package.
+This repo is **not** a pnpm workspace, but the root dev preflight installs each package in place.
+After cloning and completing the prerequisite toolchain/env setup above, the happy path is:
 
 ```bash
-# root scripts
-pnpm install
-
-# desktop app
-pnpm --dir client install
-
-# Phoenix server
-cd server && mix setup
-
-# landing site
-pnpm --dir landing install
+pnpm run dev
 ```
 
-The root `pnpm run dev` command runs an idempotent preflight that starts Docker/Postgres, fetches missing Mix deps, creates the database, and applies migrations.
+The root `pnpm run dev` command runs an idempotent preflight that:
+
+- installs root, `client/`, and `landing/` pnpm dependencies from their lockfiles
+- verifies required local commands (`pnpm`, `git`, `mix`, `cargo`, `protoc`)
+- installs Hex/Rebar if missing, fetches Mix deps, and installs Phoenix asset tools
+- starts Docker/Postgres where the OS allows it, creates the database, and applies migrations
+
+Manual setup commands still work if you need to isolate a failing step:
+
+```bash
+pnpm install
+pnpm --dir client install
+pnpm --dir landing install
+cd server && mix setup
+```
 
 ---
 
@@ -404,7 +410,7 @@ Cookie import helper supports detection/import from common browsers, including:
 
 ### Root `pnpm run dev` fails before Tauri starts
 
-- Ensure Docker Desktop is installed and running, or let the preflight start it
+- Ensure Docker Desktop, Docker Engine, or a compatible Docker daemon is installed and running, or let the preflight start it where your OS allows
 - Ensure Elixir/Mix is installed for the Phoenix server
 - Inspect Postgres with `docker logs xero-postgres`
 - Run `pnpm run dev:preflight` to isolate setup failures

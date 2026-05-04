@@ -20,19 +20,253 @@
         }
 
         try {
-          // Keep this list in sync with any light theme ids in
-          // `client/src/features/theme/theme-definitions.ts`. Mismatch only
-          // causes a one-frame appearance flicker on cold start, not a bug.
-          var LIGHT_THEMES = ['daylight', 'solarized-light']
+          var BOOT_THEMES = {
+            dusk: {
+              appearance: 'dark',
+              colors: {
+                background: '#121212',
+                foreground: '#f8f9fa',
+                primary: '#d4a574',
+                shellBackground: '#101010',
+              },
+            },
+            carbon: {
+              appearance: 'dark',
+              colors: {
+                background: '#0a0a0a',
+                foreground: '#e6e6e6',
+                primary: '#fafafa',
+                shellBackground: '#050505',
+              },
+            },
+            midnight: {
+              appearance: 'dark',
+              colors: {
+                background: '#1e1e1e',
+                foreground: '#d4d4d4',
+                primary: '#4ea1ff',
+                shellBackground: '#1e1e1e',
+              },
+            },
+            'tokyo-night': {
+              appearance: 'dark',
+              colors: {
+                background: '#1a1b26',
+                foreground: '#c0caf5',
+                primary: '#7aa2f7',
+                shellBackground: '#16161e',
+              },
+            },
+            'catppuccin-mocha': {
+              appearance: 'dark',
+              colors: {
+                background: '#1e1e2e',
+                foreground: '#cdd6f4',
+                primary: '#cba6f7',
+                shellBackground: '#11111b',
+              },
+            },
+            'kanagawa-wave': {
+              appearance: 'dark',
+              colors: {
+                background: '#1f1f28',
+                foreground: '#dcd7ba',
+                primary: '#7e9cd8',
+                shellBackground: '#181820',
+              },
+            },
+            'ayu-mirage': {
+              appearance: 'dark',
+              colors: {
+                background: '#1f2430',
+                foreground: '#cbccc6',
+                primary: '#ffcc66',
+                shellBackground: '#191e2a',
+              },
+            },
+            nord: {
+              appearance: 'dark',
+              colors: {
+                background: '#2e3440',
+                foreground: '#d8dee9',
+                primary: '#88c0d0',
+                shellBackground: '#2e3440',
+              },
+            },
+            dracula: {
+              appearance: 'dark',
+              colors: {
+                background: '#282a36',
+                foreground: '#f8f8f2',
+                primary: '#bd93f9',
+                shellBackground: '#282a36',
+              },
+            },
+            'solarized-dark': {
+              appearance: 'dark',
+              colors: {
+                background: '#002b36',
+                foreground: '#93a1a1',
+                primary: '#b58900',
+                shellBackground: '#002b36',
+              },
+            },
+            monokai: {
+              appearance: 'dark',
+              colors: {
+                background: '#272822',
+                foreground: '#f8f8f2',
+                primary: '#f92672',
+                shellBackground: '#272822',
+              },
+            },
+            'gruvbox-dark': {
+              appearance: 'dark',
+              colors: {
+                background: '#282828',
+                foreground: '#ebdbb2',
+                primary: '#fabd2f',
+                shellBackground: '#1d2021',
+              },
+            },
+            'synthwave-84': {
+              appearance: 'dark',
+              colors: {
+                background: '#2a2139',
+                foreground: '#f8f8f2',
+                primary: '#ff7edb',
+                shellBackground: '#241b2f',
+              },
+            },
+            daylight: {
+              appearance: 'light',
+              colors: {
+                background: '#ffffff',
+                foreground: '#1f2328',
+                primary: '#0969da',
+                shellBackground: '#ffffff',
+              },
+            },
+            'solarized-light': {
+              appearance: 'light',
+              colors: {
+                background: '#fdf6e3',
+                foreground: '#586e75',
+                primary: '#b58900',
+                shellBackground: '#fdf6e3',
+              },
+            },
+            'rose-pine-dawn': {
+              appearance: 'light',
+              colors: {
+                background: '#faf4ed',
+                foreground: '#575279',
+                primary: '#d7827e',
+                shellBackground: '#faf4ed',
+              },
+            },
+          }
+          var COLOR_VAR_MAP = [
+            ['background', '--background'],
+            ['foreground', '--foreground'],
+            ['card', '--card'],
+            ['cardForeground', '--card-foreground'],
+            ['popover', '--popover'],
+            ['popoverForeground', '--popover-foreground'],
+            ['primary', '--primary'],
+            ['primaryForeground', '--primary-foreground'],
+            ['secondary', '--secondary'],
+            ['secondaryForeground', '--secondary-foreground'],
+            ['muted', '--muted'],
+            ['mutedForeground', '--muted-foreground'],
+            ['accent', '--accent'],
+            ['accentForeground', '--accent-foreground'],
+            ['destructive', '--destructive'],
+            ['destructiveForeground', '--destructive-foreground'],
+            ['success', '--success'],
+            ['successForeground', '--success-foreground'],
+            ['warning', '--warning'],
+            ['warningForeground', '--warning-foreground'],
+            ['info', '--info'],
+            ['infoForeground', '--info-foreground'],
+            ['border', '--border'],
+            ['input', '--input'],
+            ['ring', '--ring'],
+            ['chart1', '--chart-1'],
+            ['chart2', '--chart-2'],
+            ['chart3', '--chart-3'],
+            ['chart4', '--chart-4'],
+            ['chart5', '--chart-5'],
+            ['sidebar', '--sidebar'],
+            ['sidebarForeground', '--sidebar-foreground'],
+            ['sidebarPrimary', '--sidebar-primary'],
+            ['sidebarPrimaryForeground', '--sidebar-primary-foreground'],
+            ['sidebarAccent', '--sidebar-accent'],
+            ['sidebarAccentForeground', '--sidebar-accent-foreground'],
+            ['sidebarBorder', '--sidebar-border'],
+            ['sidebarRing', '--sidebar-ring'],
+            ['shellBackground', '--shell-background'],
+            ['scrollbarThumb', '--scrollbar-thumb'],
+            ['scrollbarThumbHover', '--scrollbar-thumb-hover'],
+          ]
+          var root = document.documentElement
+
+          function readCustomTheme(id) {
+            try {
+              var raw = window.localStorage.getItem('xero:custom-themes')
+              if (!raw) return null
+              var parsed = JSON.parse(raw)
+              if (!Array.isArray(parsed)) return null
+              for (var i = 0; i < parsed.length; i += 1) {
+                var theme = parsed[i]
+                if (
+                  theme &&
+                  theme.id === id &&
+                  (theme.appearance === 'dark' || theme.appearance === 'light') &&
+                  theme.colors &&
+                  typeof theme.colors === 'object'
+                ) {
+                  return theme
+                }
+              }
+            } catch (_) {
+              return null
+            }
+            return null
+          }
+
+          function applyBootColors(colors) {
+            for (var i = 0; i < COLOR_VAR_MAP.length; i += 1) {
+              var colorKey = COLOR_VAR_MAP[i][0]
+              var cssVar = COLOR_VAR_MAP[i][1]
+              var value = colors && colors[colorKey]
+              if (typeof value === 'string' && value.length > 0) {
+                root.style.setProperty(cssVar, value)
+              }
+            }
+          }
+
           var stored = window.localStorage.getItem('xero:theme')
           var themeId = stored || 'dusk'
-          var appearance = LIGHT_THEMES.indexOf(themeId) >= 0 ? 'light' : 'dark'
-          document.documentElement.classList.add('theme-' + themeId)
-          document.documentElement.classList.add(appearance)
-          document.documentElement.style.colorScheme = appearance
-          document.documentElement.dataset.theme = themeId
+          var customTheme = readCustomTheme(themeId)
+          var bootTheme = customTheme || BOOT_THEMES[themeId]
+
+          if (!bootTheme) {
+            themeId = 'dusk'
+            bootTheme = BOOT_THEMES.dusk
+          }
+
+          root.classList.add('theme-' + themeId)
+          root.classList.add(bootTheme.appearance)
+          root.style.colorScheme = bootTheme.appearance
+          root.dataset.theme = themeId
+          applyBootColors(bootTheme.colors)
         } catch (_) {
           document.documentElement.classList.add('theme-dusk', 'dark')
+          document.documentElement.style.setProperty('--background', '#121212')
+          document.documentElement.style.setProperty('--foreground', '#f8f9fa')
+          document.documentElement.style.setProperty('--primary', '#d4a574')
+          document.documentElement.style.setProperty('--shell-background', '#101010')
         }
       })()
     </script>
@@ -78,8 +312,7 @@
       /* Boot splash — mirrors <LoadingScreen /> so the JS bundle parse window
        * (between first paint and React mount) shows the same visual. Once React
        * mounts, createRoot replaces #root's children and the React loading
-       * screen takes over with effectively no visible transition. Dusk-palette
-       * hex fallbacks back up the theme tokens if globals.css loads late. */
+       * screen takes over with effectively no visible transition. */
       .boot-loading {
         display: flex;
         flex: 1 1 auto;
@@ -106,11 +339,10 @@
         animation: boot-loading-ring 2200ms cubic-bezier(0.2, 0, 0, 1) infinite;
         will-change: transform, opacity;
       }
-      .boot-loading-mark img {
+      .boot-loading-logo {
         width: 1.75rem;
         height: 1.75rem;
         user-select: none;
-        -webkit-user-drag: none;
         animation: boot-loading-breathe 2200ms ease-in-out infinite;
         will-change: opacity;
       }
@@ -140,7 +372,7 @@
 
       @media (prefers-reduced-motion: reduce) {
         .boot-loading-ring,
-        .boot-loading-mark img {
+        .boot-loading-logo {
           animation: none;
         }
       }
@@ -157,7 +389,31 @@
       >
         <div class="boot-loading-mark">
           <span class="boot-loading-ring" aria-hidden="true"></span>
-          <img src="/icon-logo.svg" alt="" draggable="false" />
+          <svg
+            class="boot-loading-logo"
+            viewBox="0 0 455 455"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <path
+              d="M256.391 256.395H454.326V404.33C454.326 431.944 431.941 454.33 404.326 454.33H256.391V256.395Z"
+              fill="var(--primary, #d4a574)"
+            ></path>
+            <path
+              d="M197.936 197.941L0.000289917 197.941L0.000276984 50.0064C0.00027457 22.3921 22.386 0.00637826 50.0003 0.00637585L197.936 0.00636292L197.936 197.941Z"
+              fill="var(--primary, #d4a574)"
+            ></path>
+            <path
+              d="M0 256.395H197.935V454.33H50.0001C22.3858 454.33 0 431.944 0 404.33L0 256.395Z"
+              fill="var(--foreground, #f8f9fa)"
+              fill-opacity="0.32"
+            ></path>
+            <path
+              d="M256.392 0L404.327 0C431.941 0 454.327 22.3858 454.327 50V197.935H256.392V0Z"
+              fill="var(--foreground, #f8f9fa)"
+              fill-opacity="0.32"
+            ></path>
+          </svg>
         </div>
       </div>
     </div>

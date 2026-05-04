@@ -998,9 +998,15 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
     .expect("context snapshot with approved memory");
     validate_context_snapshot_contract(&approved_snapshot).expect("valid approved-memory context");
     assert!(approved_snapshot.contributors.iter().any(|contributor| {
+        contributor.model_visible
+            && contributor.prompt_fragment_id.as_deref() == Some("xero.durable_context_tools")
+            && contributor.text.as_deref().is_some_and(|text| {
+                text.contains("Raw approved memory and project-record text are not preloaded")
+            })
+    }));
+    assert!(!approved_snapshot.contributors.iter().any(|contributor| {
         contributor.kind == SessionContextContributorKindDto::ApprovedMemory
             && contributor.model_visible
-            && contributor.prompt_fragment_id.as_deref() == Some("xero.approved_memory")
             && contributor
                 .text
                 .as_deref()
@@ -1009,7 +1015,8 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
     assert!(approved_snapshot.policy_decisions.iter().any(|decision| {
         decision.kind == SessionContextPolicyDecisionKindDto::MemoryInjection
             && decision.action == SessionContextPolicyActionDto::InjectMemory
-            && decision.model_visible
+            && !decision.model_visible
+            && decision.message.contains("project_context")
     }));
 
     let disabled = update_session_memory(
@@ -1039,13 +1046,9 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
         },
     )
     .expect("context snapshot with disabled memory");
-    assert!(disabled_snapshot.contributors.iter().any(|contributor| {
+    assert!(!disabled_snapshot.contributors.iter().any(|contributor| {
         contributor.kind == SessionContextContributorKindDto::ApprovedMemory
-            && contributor.prompt_fragment_id.as_deref() == Some("xero.approved_memory")
-            && contributor
-                .text
-                .as_deref()
-                .is_some_and(|text| text.contains("(none)"))
+            && contributor.model_visible
     }));
     assert!(disabled_snapshot.policy_decisions.iter().any(|decision| {
         decision.kind == SessionContextPolicyDecisionKindDto::MemoryInjection
@@ -1146,6 +1149,7 @@ fn session_context_privacy_hardening_covers_exports_search_compaction_and_memory
             role: project_store::AgentMessageRole::User,
             content: "Retry https://user:pass@example.invalid/v1?token=opaque-url-token with Authorization:Bearer opaque-header-token.".into(),
             created_at: plus_seconds(started_at, 11),
+            attachments: Vec::new(),
         },
     )
     .expect("append endpoint credential message");
@@ -1384,6 +1388,7 @@ fn seed_history_run_with_provider(
             role: project_store::AgentMessageRole::User,
             content: "Use api_key=sk-history-secret for the fixture.".into(),
             created_at: plus_seconds(started_at, 1),
+            attachments: Vec::new(),
         },
     )
     .expect("append redacted user message");
@@ -1395,6 +1400,7 @@ fn seed_history_run_with_provider(
             role: project_store::AgentMessageRole::Assistant,
             content: "The durable validation path is ready for export.".into(),
             created_at: plus_seconds(started_at, 2),
+            attachments: Vec::new(),
         },
     )
     .expect("append assistant message");
@@ -1427,6 +1433,7 @@ fn seed_history_run_with_provider(
             })
             .to_string(),
             created_at: plus_seconds(started_at, 3),
+            attachments: Vec::new(),
         },
     )
     .expect("append tool result message");
@@ -1638,6 +1645,7 @@ fn seed_memory_candidate_run(repo_root: &Path, project_id: &str) {
                 role,
                 content: content.into(),
                 created_at: plus_seconds(started_at, index as u32 + 1),
+                attachments: Vec::new(),
             },
         )
         .expect("append memory extraction message");

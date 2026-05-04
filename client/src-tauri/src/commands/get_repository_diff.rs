@@ -21,7 +21,6 @@ pub async fn get_repository_diff<R: Runtime>(
     let project_id = request.project_id;
     let scope = request.scope;
     let key = format!("repository-diff:{project_id}:{scope:?}");
-    drop(state);
     drop(app);
 
     jobs.run_blocking_latest(key, "repository diff", move |cancellation| {

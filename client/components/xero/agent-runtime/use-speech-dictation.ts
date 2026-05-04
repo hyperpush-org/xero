@@ -32,6 +32,7 @@ export type SpeechDictationAdapter = Pick<
 
 interface UseSpeechDictationOptions {
   adapter?: SpeechDictationAdapter
+  enabled?: boolean
   scopeKey: string
   draftPrompt: string
   setDraftPrompt: Dispatch<SetStateAction<string>>
@@ -139,6 +140,7 @@ function isDictationAvailable(status: DictationStatusDto | null): boolean {
 
 export function useSpeechDictation({
   adapter,
+  enabled = true,
   scopeKey,
   draftPrompt,
   setDraftPrompt,
@@ -280,6 +282,7 @@ export function useSpeechDictation({
     setStatus(null)
 
     if (
+      !enabled ||
       !adapter ||
       !adapter.isDesktopRuntime() ||
       !adapter.speechDictationStatus ||
@@ -306,11 +309,12 @@ export function useSpeechDictation({
     return () => {
       cancelled = true
     }
-  }, [adapter])
+  }, [adapter, enabled])
 
   const start = useCallback(async () => {
     const currentAdapter = adapterRef.current
     if (
+      !enabled ||
       promptInputDisabled ||
       phaseRef.current !== 'idle' ||
       !currentAdapter?.speechDictationStart ||
@@ -361,6 +365,7 @@ export function useSpeechDictation({
     focusPromptInput,
     handleChannelError,
     handleDictationEvent,
+    enabled,
     promptInputDisabled,
     releaseSession,
     status,
@@ -423,7 +428,7 @@ export function useSpeechDictation({
     await start()
   }, [start, stop])
 
-  const isVisible = Boolean(adapter?.speechDictationStart && isDictationAvailable(status))
+  const isVisible = Boolean(enabled && adapter?.speechDictationStart && isDictationAvailable(status))
   const isListening = phase === 'listening'
   const isBusy = phase === 'requesting' || phase === 'stopping'
   const isToggleDisabled = promptInputDisabled || isBusy

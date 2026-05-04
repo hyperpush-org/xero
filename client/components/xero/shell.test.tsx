@@ -124,7 +124,7 @@ describe('XeroShell', () => {
     expect(onToggleGames).toHaveBeenCalledTimes(2)
   })
 
-  it.each(['macos', 'windows'] as const)('toggles the Android emulator from the %s tools menu', (platform) => {
+  it.each(['macos', 'windows'] as const)('toggles the Android emulator from the %s tools menu', async (platform) => {
     const onToggleAndroid = vi.fn()
 
     const { rerender } = render(
@@ -140,7 +140,7 @@ describe('XeroShell', () => {
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open Android emulator' }))
-    expect(onToggleAndroid).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onToggleAndroid).toHaveBeenCalledTimes(1))
 
     rerender(
       <XeroShell
@@ -156,7 +156,7 @@ describe('XeroShell', () => {
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close Android emulator' }))
-    expect(onToggleAndroid).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(onToggleAndroid).toHaveBeenCalledTimes(2))
   })
 
   it('flips the iOS menu item to an Install Xcode CTA when Xcode is missing', async () => {
@@ -215,7 +215,7 @@ describe('XeroShell', () => {
     )
   })
 
-  it('renders the iOS menu item only on macOS', () => {
+  it('renders the iOS menu item only on macOS', async () => {
     const onToggleIos = vi.fn()
 
     const { rerender } = render(
@@ -232,7 +232,7 @@ describe('XeroShell', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
     expect(screen.getByRole('menuitem', { name: 'Open iOS simulator' })).toBeVisible()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open iOS simulator' }))
-    expect(onToggleIos).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(onToggleIos).toHaveBeenCalledTimes(1))
 
     for (const platform of ['windows', 'linux'] as const) {
       rerender(

@@ -774,7 +774,17 @@ function createMockAdapter(options?: {
         children: [],
       },
     })),
-    readProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path, content: '' })),
+    readProjectFile: vi.fn(async (projectId: string, path: string) => ({
+      kind: 'text' as const,
+      projectId,
+      path,
+      byteLength: 0,
+      modifiedAt: '2026-01-01T00:00:00Z',
+      contentHash: `test-${path}`,
+      mimeType: 'text/plain; charset=utf-8',
+      rendererKind: 'code' as const,
+      text: '',
+    })),
     writeProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path })),
     createProjectEntry: vi.fn(async (request) => ({
       projectId: request.projectId,

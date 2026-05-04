@@ -25,6 +25,7 @@ use crate::commands::{CommandError, RuntimeAgentIdDto};
 
 use super::{
     agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM, agent_memory_lance::PROJECT_LANCE_SUBDIR,
+    FreshnessUpdate, SupersessionUpdate,
 };
 
 pub const PROJECT_RECORD_EMBEDDING_DIM: i32 = AGENT_RETRIEVAL_EMBEDDING_DIM;
@@ -58,6 +59,14 @@ pub struct ProjectRecordRow {
     pub produced_artifact_refs_json: String,
     pub redaction_state: String,
     pub visibility: String,
+    pub freshness_state: String,
+    pub freshness_checked_at: Option<String>,
+    pub stale_reason: Option<String>,
+    pub source_fingerprints_json: String,
+    pub supersedes_id: Option<String>,
+    pub superseded_by_id: Option<String>,
+    pub invalidated_at: Option<String>,
+    pub fact_key: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub embedding: Option<Vec<f32>>,
@@ -101,6 +110,14 @@ pub fn schema() -> SchemaRef {
         Field::new("produced_artifact_refs_json", DataType::Utf8, false),
         Field::new("redaction_state", DataType::Utf8, false),
         Field::new("visibility", DataType::Utf8, false),
+        Field::new("freshness_state", DataType::Utf8, false),
+        Field::new("freshness_checked_at", DataType::Utf8, true),
+        Field::new("stale_reason", DataType::Utf8, true),
+        Field::new("source_fingerprints_json", DataType::Utf8, false),
+        Field::new("supersedes_id", DataType::Utf8, true),
+        Field::new("superseded_by_id", DataType::Utf8, true),
+        Field::new("invalidated_at", DataType::Utf8, true),
+        Field::new("fact_key", DataType::Utf8, true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("embedding_model", DataType::Utf8, true),
@@ -303,6 +320,58 @@ impl ProjectRecordStore {
             Ok(Some(row))
         })
     }
+
+    pub(crate) fn update_freshness(
+        &self,
+        record_id: &str,
+        update: FreshnessUpdate,
+    ) -> Result<Option<ProjectRecordRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let record_id = record_id.to_string();
+        runtime().block_on(async move {
+            let mut row = fetch_row(&dataset, &record_id).await?;
+            let Some(mut row) = row.take() else {
+                return Ok(None);
+            };
+            row.project_id = project_id;
+            row.freshness_state = update.freshness_state.as_str().into();
+            row.freshness_checked_at = update.freshness_checked_at;
+            row.stale_reason = update.stale_reason;
+            row.source_fingerprints_json = update.source_fingerprints_json;
+            row.invalidated_at = update.invalidated_at;
+            replace_row(&dataset, row.clone()).await?;
+            Ok(Some(row))
+        })
+    }
+
+    pub(crate) fn update_supersession(
+        &self,
+        record_id: &str,
+        update: SupersessionUpdate,
+    ) -> Result<Option<ProjectRecordRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let record_id = record_id.to_string();
+        runtime().block_on(async move {
+            let mut row = fetch_row(&dataset, &record_id).await?;
+            let Some(mut row) = row.take() else {
+                return Ok(None);
+            };
+            row.project_id = project_id;
+            if update.superseded_by_id.is_some() {
+                row.freshness_state = "superseded".into();
+            }
+            row.superseded_by_id = update.superseded_by_id;
+            row.supersedes_id = update.supersedes_id;
+            row.fact_key = update.fact_key;
+            row.invalidated_at = update.invalidated_at;
+            row.stale_reason = update.stale_reason;
+            row.updated_at = update.updated_at;
+            replace_row(&dataset, row.clone()).await?;
+            Ok(Some(row))
+        })
+    }
 }
 
 fn same_dedup_key(left: &ProjectRecordRow, right: &ProjectRecordRow) -> bool {
@@ -340,6 +409,14 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
     let mut produced_artifact_refs_json = StringBuilder::new();
     let mut redaction_state = StringBuilder::new();
     let mut visibility = StringBuilder::new();
+    let mut freshness_state = StringBuilder::new();
+    let mut freshness_checked_at = StringBuilder::new();
+    let mut stale_reason = StringBuilder::new();
+    let mut source_fingerprints_json = StringBuilder::new();
+    let mut supersedes_id = StringBuilder::new();
+    let mut superseded_by_id = StringBuilder::new();
+    let mut invalidated_at = StringBuilder::new();
+    let mut fact_key = StringBuilder::new();
     let mut created_at = StringBuilder::new();
     let mut updated_at = StringBuilder::new();
     let mut embedding_model = StringBuilder::new();
@@ -377,6 +454,17 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         produced_artifact_refs_json.append_value(&row.produced_artifact_refs_json);
         redaction_state.append_value(&row.redaction_state);
         visibility.append_value(&row.visibility);
+        freshness_state.append_value(&row.freshness_state);
+        append_optional(
+            &mut freshness_checked_at,
+            row.freshness_checked_at.as_deref(),
+        );
+        append_optional(&mut stale_reason, row.stale_reason.as_deref());
+        source_fingerprints_json.append_value(&row.source_fingerprints_json);
+        append_optional(&mut supersedes_id, row.supersedes_id.as_deref());
+        append_optional(&mut superseded_by_id, row.superseded_by_id.as_deref());
+        append_optional(&mut invalidated_at, row.invalidated_at.as_deref());
+        append_optional(&mut fact_key, row.fact_key.as_deref());
         created_at.append_value(&row.created_at);
         updated_at.append_value(&row.updated_at);
         append_optional(&mut embedding_model, row.embedding_model.as_deref());
@@ -414,6 +502,14 @@ fn build_batch(rows: &[ProjectRecordRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(produced_artifact_refs_json.finish()),
         Arc::new(redaction_state.finish()),
         Arc::new(visibility.finish()),
+        Arc::new(freshness_state.finish()),
+        Arc::new(freshness_checked_at.finish()),
+        Arc::new(stale_reason.finish()),
+        Arc::new(source_fingerprints_json.finish()),
+        Arc::new(supersedes_id.finish()),
+        Arc::new(superseded_by_id.finish()),
+        Arc::new(invalidated_at.finish()),
+        Arc::new(fact_key.finish()),
         Arc::new(created_at.finish()),
         Arc::new(updated_at.finish()),
         Arc::new(embedding_model.finish()),
@@ -567,6 +663,14 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
     let produced_artifact_refs_json = column_str(batch, "produced_artifact_refs_json")?;
     let redaction_state = column_str(batch, "redaction_state")?;
     let visibility = column_str(batch, "visibility")?;
+    let freshness_state = column_str(batch, "freshness_state")?;
+    let freshness_checked_at = column_str(batch, "freshness_checked_at")?;
+    let stale_reason = column_str(batch, "stale_reason")?;
+    let source_fingerprints_json = column_str(batch, "source_fingerprints_json")?;
+    let supersedes_id = column_str(batch, "supersedes_id")?;
+    let superseded_by_id = column_str(batch, "superseded_by_id")?;
+    let invalidated_at = column_str(batch, "invalidated_at")?;
+    let fact_key = column_str(batch, "fact_key")?;
     let created_at = column_str(batch, "created_at")?;
     let updated_at = column_str(batch, "updated_at")?;
     let embedding_model = column_str(batch, "embedding_model")?;
@@ -623,6 +727,19 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<ProjectRecordRow>, CommandEr
             .to_string(),
             redaction_state: require_str(redaction_state, index, "redaction_state")?.to_string(),
             visibility: require_str(visibility, index, "visibility")?.to_string(),
+            freshness_state: require_str(freshness_state, index, "freshness_state")?.to_string(),
+            freshness_checked_at: optional_str(freshness_checked_at, index),
+            stale_reason: optional_str(stale_reason, index),
+            source_fingerprints_json: require_str(
+                source_fingerprints_json,
+                index,
+                "source_fingerprints_json",
+            )?
+            .to_string(),
+            supersedes_id: optional_str(supersedes_id, index),
+            superseded_by_id: optional_str(superseded_by_id, index),
+            invalidated_at: optional_str(invalidated_at, index),
+            fact_key: optional_str(fact_key, index),
             created_at: require_str(created_at, index, "created_at")?.to_string(),
             updated_at: require_str(updated_at, index, "updated_at")?.to_string(),
             embedding: optional_embedding(embedding, index)?,

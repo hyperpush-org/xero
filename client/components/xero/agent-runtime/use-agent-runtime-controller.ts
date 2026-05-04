@@ -59,7 +59,9 @@ interface UseAgentRuntimeControllerOptions {
   canStopRuntimeRun: boolean
   actionRequiredItems: NonNullable<AgentPaneView['actionRequiredItems']>
   dictationAdapter?: SpeechDictationAdapter
+  dictationEnabled?: boolean
   dictationScopeKey: string
+  reportComposerControls?: boolean
   onStartRuntimeRun?: (options?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
@@ -156,7 +158,9 @@ export function useAgentRuntimeController({
   canStopRuntimeRun,
   actionRequiredItems,
   dictationAdapter,
+  dictationEnabled = true,
   dictationScopeKey,
+  reportComposerControls = true,
   onStartRuntimeRun,
   onStartRuntimeSession,
   onUpdateRuntimeRunControls,
@@ -261,6 +265,7 @@ export function useAgentRuntimeController({
   )
   const dictation = useSpeechDictation({
     adapter: dictationAdapter,
+    enabled: dictationEnabled,
     scopeKey: dictationScopeKey,
     draftPrompt,
     setDraftPrompt,
@@ -269,6 +274,11 @@ export function useAgentRuntimeController({
   })
 
   useEffect(() => {
+    if (!reportComposerControls) {
+      lastReportedComposerControlsRef.current = undefined
+      return
+    }
+
     if (
       lastReportedComposerControlsRef.current !== undefined &&
       sameRuntimeControlInput(lastReportedComposerControlsRef.current, selectedControlInput)
@@ -278,7 +288,7 @@ export function useAgentRuntimeController({
 
     lastReportedComposerControlsRef.current = selectedControlInput
     onComposerControlsChange?.(selectedControlInput)
-  }, [onComposerControlsChange, selectedControlInput])
+  }, [onComposerControlsChange, reportComposerControls, selectedControlInput])
 
   useEffect(() => {
     draftPromptRef.current = draftPrompt

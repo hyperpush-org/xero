@@ -1235,6 +1235,23 @@ fn record_single_file_change_event(
             created_at: now_timestamp(),
         },
     )?;
+    let mut touched_paths = vec![change.path.to_string()];
+    if let Some(to_path) = change.to_path.as_ref() {
+        touched_paths.push(to_path.clone());
+    }
+    let freshness_checked_at = now_timestamp();
+    project_store::refresh_project_record_freshness_for_paths(
+        repo_root,
+        project_id,
+        &touched_paths,
+        &freshness_checked_at,
+    )?;
+    project_store::refresh_agent_memory_freshness_for_paths(
+        repo_root,
+        project_id,
+        &touched_paths,
+        &freshness_checked_at,
+    )?;
 
     append_event(
         repo_root,

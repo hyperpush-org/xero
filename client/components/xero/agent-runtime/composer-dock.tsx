@@ -1,6 +1,6 @@
 import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, LoaderCircle, MessageCircle, Mic, Paperclip, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
-import { forwardRef, Fragment, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { forwardRef, Fragment, useMemo, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
 import type {
   OperatorActionErrorView,
@@ -80,8 +80,6 @@ export interface ComposerPendingAttachment {
 
 interface ComposerDockProps {
   density?: 'comfortable' | 'compact'
-  showCompactFirstRunTooltip?: boolean
-  onAckCompactFirstRunTooltip?: () => void
   placeholder: string
   draftPrompt: string
   promptInputRef: RefObject<HTMLTextAreaElement | null>
@@ -154,8 +152,6 @@ const ComposerInlineTrigger = forwardRef<HTMLButtonElement, ComposerInlineTrigge
 
 export function ComposerDock({
   density = 'comfortable',
-  showCompactFirstRunTooltip = false,
-  onAckCompactFirstRunTooltip,
   placeholder,
   draftPrompt,
   promptInputRef,
@@ -558,10 +554,7 @@ export function ComposerDock({
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
               {modelSelector}
-              <CompactGearPopover
-                showFirstRunTooltip={showCompactFirstRunTooltip}
-                onAcknowledge={onAckCompactFirstRunTooltip}
-              >
+              <CompactGearPopover>
                 <div className="space-y-2 p-2">
                   <div className="flex flex-col gap-1">
                     <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -653,28 +646,15 @@ export function ComposerDock({
 
 interface CompactGearPopoverProps {
   children: ReactNode
-  showFirstRunTooltip?: boolean
-  onAcknowledge?: () => void
 }
 
-function CompactGearPopover({ children, showFirstRunTooltip = false, onAcknowledge }: CompactGearPopoverProps) {
+function CompactGearPopover({ children }: CompactGearPopoverProps) {
   const [open, setOpen] = useState(false)
-  const [tooltipDismissed, setTooltipDismissed] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const tooltipVisible = showFirstRunTooltip && !tooltipDismissed && !open
-
-  useEffect(() => {
-    if (open && tooltipVisible) {
-      setTooltipDismissed(true)
-      onAcknowledge?.()
-    }
-  }, [open, tooltipVisible, onAcknowledge])
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
-          ref={triggerRef}
           aria-label="Composer settings"
           className="h-8 w-8 rounded-md px-0 text-muted-foreground/80 hover:text-foreground"
           size="icon-sm"
@@ -682,12 +662,6 @@ function CompactGearPopover({ children, showFirstRunTooltip = false, onAcknowled
           variant="ghost"
         >
           <Settings className="h-3.5 w-3.5" />
-          {tooltipVisible ? (
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-card"
-            />
-          ) : null}
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -828,7 +802,6 @@ function ComposerAttachmentChip({ attachment, onRemove }: ComposerAttachmentChip
     >
       <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-background">
         {isImage && previewUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={previewUrl}
             alt=""

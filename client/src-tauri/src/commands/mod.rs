@@ -32,6 +32,7 @@ pub mod list_projects;
 pub mod logout_runtime_session;
 pub mod payload_budget;
 pub mod platform;
+pub mod project_assets;
 pub mod project_files;
 pub mod provider_credentials;
 pub mod provider_diagnostics;
@@ -133,9 +134,10 @@ pub use list_notification_routes::list_notification_routes;
 pub use list_projects::list_projects;
 pub use logout_runtime_session::logout_runtime_session;
 pub use platform::desktop_platform;
+pub use project_assets::{revoke_project_asset_tokens, ProjectAssetState};
 pub use project_files::{
     create_project_entry, delete_project_entry, list_project_files, move_project_entry,
-    read_project_file, rename_project_entry, write_project_file,
+    open_project_file_external, read_project_file, rename_project_entry, write_project_file,
 };
 pub use provider_credentials::{
     delete_provider_credential, list_provider_credentials, upsert_provider_credential,

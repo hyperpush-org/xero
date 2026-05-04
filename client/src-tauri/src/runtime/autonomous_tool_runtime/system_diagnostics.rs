@@ -1974,7 +1974,7 @@ fn macos_process_sample(
     interval_ms: u64,
     artifact_path: &Path,
 ) -> CommandResult<ProcessSampleRunResult> {
-    let duration_seconds = ((duration_ms + 999) / 1000).max(1).to_string();
+    let duration_seconds = duration_ms.div_ceil(1000).max(1).to_string();
     let interval = interval_ms.max(1).to_string();
     let started = Instant::now();
     let timeout =
@@ -2304,7 +2304,7 @@ fn macos_system_log_query(
     last_ms: u64,
 ) -> CommandResult<SystemLogQueryResult> {
     let predicate = macos_log_predicate(request);
-    let last_seconds = ((last_ms + 999) / 1000).max(1).to_string() + "s";
+    let last_seconds = last_ms.div_ceil(1000).max(1).to_string() + "s";
     let output = Command::new("/usr/bin/log")
         .args([
             "show",
@@ -2593,7 +2593,7 @@ mod macos_accessibility {
             redacted: false,
             diagnostics: Vec::new(),
             include_children: request.include_children,
-            max_depth: request.max_depth.unwrap_or_else(|| {
+            max_depth: request.max_depth.unwrap_or({
                 if request.include_children {
                     2
                 } else {

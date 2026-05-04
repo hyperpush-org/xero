@@ -111,6 +111,7 @@ export interface BuildAgentViewDependencies {
   project: ProjectDetailView | null
   activePhase: Phase | null
   repositoryStatus: RepositoryStatusView | null
+  fallbackRuntimeAgentId?: RuntimeAgentIdDto | null
   providerCredentials?: ProviderCredentialsSnapshotDto | null
   runtimeSession: RuntimeSessionView | null
   providerModelCatalogs?: Record<string, ProviderModelCatalogDto>
@@ -178,7 +179,10 @@ function getSelectedProviderProjection(
   }
 }
 
-function getAgentRunControlProjection(runtimeRun: RuntimeRunView | null): AgentRunControlProjection {
+function getAgentRunControlProjection(
+  runtimeRun: RuntimeRunView | null,
+  fallbackRuntimeAgentId: RuntimeAgentIdDto = DEFAULT_RUNTIME_AGENT_ID,
+): AgentRunControlProjection {
   const activeControls = runtimeRun?.controls?.active ?? null
   const pendingControls = runtimeRun?.controls?.pending ?? null
   const selectedControls = runtimeRun?.controls?.selected ?? null
@@ -189,7 +193,7 @@ function getAgentRunControlProjection(runtimeRun: RuntimeRunView | null): AgentR
     selectedProviderProfileId: useRuntimeRunTruth ? selectedControls?.providerProfileId ?? null : null,
     selectedRuntimeAgentId: useRuntimeRunTruth
       ? selectedControls?.runtimeAgentId ?? DEFAULT_RUNTIME_AGENT_ID
-      : DEFAULT_RUNTIME_AGENT_ID,
+      : fallbackRuntimeAgentId,
     selectedModelId: useRuntimeRunTruth ? selectedControls?.modelId ?? null : null,
     selectedThinkingEffort: useRuntimeRunTruth ? selectedControls?.thinkingEffort ?? null : null,
     selectedApprovalMode: useRuntimeRunTruth
@@ -574,6 +578,7 @@ export function buildAgentView({
   project,
   activePhase,
   repositoryStatus,
+  fallbackRuntimeAgentId,
   providerCredentials = null,
   runtimeSession,
   providerModelCatalogs,
@@ -658,7 +663,10 @@ export function buildAgentView({
     providerCredentials !== null
       ? isAgentRuntimeBlocked(providerCredentials, selectedModel)
       : undefined
-  const controlProjection = getAgentRunControlProjection(runtimeRun)
+  const controlProjection = getAgentRunControlProjection(
+    runtimeRun,
+    fallbackRuntimeAgentId ?? DEFAULT_RUNTIME_AGENT_ID,
+  )
   const providerModelCatalogProjection = buildAgentProviderModelCatalog({
     selectedModel,
     composerModelOptions,

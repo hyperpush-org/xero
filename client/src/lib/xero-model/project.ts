@@ -54,6 +54,12 @@ const projectTreePathSchema = z
   .refine((value) => value === '/' || value.startsWith('/'), 'Project file paths must start with `/`.')
 
 export const projectEntryKindSchema = z.enum(['file', 'folder'])
+export const projectTextRendererKindSchema = z.enum(['code', 'svg', 'markdown', 'csv', 'html'])
+export const projectRenderableRendererKindSchema = z.enum(['image', 'pdf', 'audio', 'video'])
+export const projectFileRendererKindSchema = z.union([
+  projectTextRendererKindSchema,
+  projectRenderableRendererKindSchema,
+])
 
 export interface ProjectFileNodeDto {
   name: string
@@ -90,6 +96,13 @@ export const projectFileRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     path: projectTreePathSchema,
+  })
+  .strict()
+
+export const revokeProjectAssetTokensRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    paths: z.array(projectTreePathSchema).default([]),
   })
   .strict()
 
@@ -270,13 +283,42 @@ export const listProjectFilesResponseSchema = z
   })
   .strict()
 
-export const readProjectFileResponseSchema = z
+const projectFileContentBaseSchema = z
   .object({
     projectId: z.string().trim().min(1),
     path: projectTreePathSchema,
-    content: z.string(),
+    byteLength: z.number().int().nonnegative(),
+    modifiedAt: z.string().trim().min(1),
+    contentHash: z.string().trim().min(1),
   })
   .strict()
+
+export const readProjectFileResponseSchema = z.discriminatedUnion('kind', [
+  projectFileContentBaseSchema
+    .extend({
+      kind: z.literal('text'),
+      mimeType: z.string().trim().min(1),
+      rendererKind: projectTextRendererKindSchema,
+      text: z.string(),
+    })
+    .strict(),
+  projectFileContentBaseSchema
+    .extend({
+      kind: z.literal('renderable'),
+      mimeType: z.string().trim().min(1),
+      rendererKind: projectRenderableRendererKindSchema,
+      previewUrl: z.string().trim().min(1),
+    })
+    .strict(),
+  projectFileContentBaseSchema
+    .extend({
+      kind: z.literal('unsupported'),
+      mimeType: z.string().trim().min(1).nullable(),
+      rendererKind: projectFileRendererKindSchema.nullable().optional(),
+      reason: z.string().trim().min(1),
+    })
+    .strict(),
+])
 
 export const writeProjectFileResponseSchema = z
   .object({
@@ -399,8 +441,12 @@ export type ListProjectsResponseDto = z.infer<typeof listProjectsResponseSchema>
 export type RepositoryStatusResponseDto = z.infer<typeof repositoryStatusResponseSchema>
 export type RepositoryDiffResponseDto = z.infer<typeof repositoryDiffResponseSchema>
 export type ProjectEntryKindDto = z.infer<typeof projectEntryKindSchema>
+export type ProjectTextRendererKindDto = z.infer<typeof projectTextRendererKindSchema>
+export type ProjectRenderableRendererKindDto = z.infer<typeof projectRenderableRendererKindSchema>
+export type ProjectFileRendererKindDto = z.infer<typeof projectFileRendererKindSchema>
 export type ListProjectFilesRequestDto = z.infer<typeof listProjectFilesRequestSchema>
 export type ProjectFileRequestDto = z.infer<typeof projectFileRequestSchema>
+export type RevokeProjectAssetTokensRequestDto = z.infer<typeof revokeProjectAssetTokensRequestSchema>
 export type WriteProjectFileRequestDto = z.infer<typeof writeProjectFileRequestSchema>
 export type CreateProjectEntryRequestDto = z.infer<typeof createProjectEntryRequestSchema>
 export type RenameProjectEntryRequestDto = z.infer<typeof renameProjectEntryRequestSchema>

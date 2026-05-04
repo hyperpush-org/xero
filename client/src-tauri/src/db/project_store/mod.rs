@@ -10,6 +10,7 @@ mod agent_retrieval;
 mod agent_session;
 mod autonomous;
 mod connection;
+mod freshness;
 mod notifications;
 mod operator;
 mod plugins;
@@ -32,6 +33,7 @@ pub use agent_session::*;
 pub(crate) use agent_session::{ensure_agent_session_active, touch_agent_session_runtime_run};
 pub use autonomous::*;
 pub(crate) use connection::{open_project_database, open_runtime_database};
+pub use freshness::*;
 pub use notifications::*;
 pub use operator::*;
 pub(crate) use operator::{

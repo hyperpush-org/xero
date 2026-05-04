@@ -440,6 +440,17 @@ fn session_context_redaction_hardens_tokens_paths_endpoints_and_memory_integrity
             source_run_id: Some(RUN_ID.into()),
             source_item_ids: vec!["message:1".into()],
             diagnostic: None,
+            freshness_state: xero_desktop_lib::db::project_store::FreshnessState::SourceUnknown
+                .as_str()
+                .into(),
+            freshness_checked_at: None,
+            stale_reason: None,
+            source_fingerprints_json:
+                xero_desktop_lib::db::project_store::source_fingerprints_empty_json(),
+            supersedes_id: None,
+            superseded_by_id: None,
+            invalidated_at: None,
+            fact_key: None,
             created_at: "2026-04-26T10:04:00Z".into(),
             updated_at: "2026-04-26T10:04:00Z".into(),
         },
@@ -629,6 +640,7 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
                 role: AgentMessageRole::System,
                 content: "System prompt".into(),
                 created_at: "2026-04-26T10:00:00Z".into(),
+                attachments: Vec::new(),
             },
             AgentMessageRecord {
                 id: 2,
@@ -637,6 +649,7 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
                 role: AgentMessageRole::User,
                 content: "Please use api_key=sk-live-secret".into(),
                 created_at: "2026-04-26T10:00:01Z".into(),
+                attachments: Vec::new(),
             },
             AgentMessageRecord {
                 id: 3,
@@ -645,6 +658,7 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
                 role: AgentMessageRole::Assistant,
                 content: "I will inspect the project first.".into(),
                 created_at: "2026-04-26T10:00:02Z".into(),
+                attachments: Vec::new(),
             },
         ],
         events: vec![

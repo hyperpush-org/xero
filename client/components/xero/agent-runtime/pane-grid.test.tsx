@@ -1,10 +1,16 @@
 /** @vitest-environment jsdom */
 
 import { useEffect } from 'react'
+import { DndContext } from '@dnd-kit/core'
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PaneGrid, type PaneGridSlot } from './pane-grid'
+import {
+  getPaneSortableDisabledState,
+  PaneGrid,
+  type PaneDragHandle,
+  type PaneGridSlot,
+} from './pane-grid'
 
 const resizeObserverMock = vi.hoisted(() => {
   return class ResizeObserverMock {
@@ -62,6 +68,14 @@ describe('PaneGrid', () => {
     rectSpy.mockRestore()
   })
 
+  it('keeps a solo pane droppable while disabling pane dragging', () => {
+    expect(getPaneSortableDisabledState(true)).toEqual({
+      draggable: true,
+      droppable: false,
+    })
+    expect(getPaneSortableDisabledState(false)).toBe(false)
+  })
+
   it('keeps existing pane contents mounted while panes are added and removed', async () => {
     const onMount = vi.fn()
     const onUnmount = vi.fn()
@@ -106,5 +120,52 @@ describe('PaneGrid', () => {
     expect(onUnmount).not.toHaveBeenCalledWith('pane-1')
     await waitFor(() => expect(onUnmount).toHaveBeenCalledWith('pane-2'))
     expect(onUnmount).toHaveBeenCalledWith('pane-3')
+  })
+
+  it('exposes a sortable drag handle to its rendered panes when more than one pane is open', async () => {
+    const handles: Record<string, PaneDragHandle> = {}
+    const renderPane = (slot: PaneGridSlot, _index: number, dragHandle: PaneDragHandle) => {
+      handles[slot.paneId] = dragHandle
+      return <div>{slot.paneId}</div>
+    }
+
+    render(
+      <DndContext>
+        <PaneGrid
+          slots={[makeSlot('pane-1', true), makeSlot('pane-2')]}
+          renderPane={renderPane}
+        />
+      </DndContext>,
+    )
+
+    await screen.findByText('pane-2')
+    const receivedHandle = handles['pane-2']
+    expect(receivedHandle).toBeDefined()
+    expect(typeof receivedHandle.setActivatorNodeRef).toBe('function')
+    expect(receivedHandle.attributes).toBeDefined()
+    expect(receivedHandle.listeners).toBeDefined()
+
+    const panes = Array.from(document.querySelectorAll('[data-pane-id]'))
+    expect(panes.map((node) => node.getAttribute('data-pane-id'))).toEqual([
+      'pane-1',
+      'pane-2',
+    ])
+  })
+
+  it('emits an empty drag handle when only one pane is mounted (sortable disabled)', async () => {
+    const handles: PaneDragHandle[] = []
+    const renderPane = (slot: PaneGridSlot, _index: number, dragHandle: PaneDragHandle) => {
+      handles.push(dragHandle)
+      return <div>{slot.paneId}</div>
+    }
+
+    render(
+      <DndContext>
+        <PaneGrid slots={[makeSlot('pane-1', true)]} renderPane={renderPane} />
+      </DndContext>,
+    )
+
+    await screen.findByText('pane-1')
+    expect(handles[0]).toEqual({})
   })
 })

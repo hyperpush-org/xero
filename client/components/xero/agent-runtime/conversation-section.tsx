@@ -728,7 +728,6 @@ function UserMessageAttachmentChip({ attachment }: { attachment: ConversationMes
         className="overflow-hidden rounded-md border border-border/50 bg-background shadow-sm"
         title={attachment.originalName}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={attachment.previewSrc}
           alt={attachment.originalName}

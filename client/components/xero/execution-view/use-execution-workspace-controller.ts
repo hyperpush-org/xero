@@ -12,6 +12,9 @@ import type {
   ListProjectFilesResponseDto,
   MoveProjectEntryRequestDto,
   MoveProjectEntryResponseDto,
+  ProjectFileRendererKindDto,
+  ProjectRenderableRendererKindDto,
+  ProjectTextRendererKindDto,
   ReadProjectFileResponseDto,
   RenameProjectEntryRequestDto,
   RenameProjectEntryResponseDto,
@@ -94,6 +97,15 @@ function filterByPathNotWithin<T>(record: Record<string, T>, path: string, prefi
   return next
 }
 
+function filterByExactPaths<T>(record: Record<string, T>, paths: Set<string>): Record<string, T> {
+  const next: Record<string, T> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (paths.has(key)) continue
+    next[key] = value
+  }
+  return next
+}
+
 function childPath(parentPath: string, name: string): string {
   return parentPath === '/' ? `/${name}` : `${parentPath}/${name}`
 }
@@ -117,6 +129,69 @@ function splitEntryPath(value: string): string[] {
 
 function countLines(value: string): number {
   return value.length === 0 ? 1 : value.split('\n').length
+}
+
+export type ProjectFileResource =
+  | {
+      kind: 'text'
+      mimeType: string
+      rendererKind: ProjectTextRendererKindDto
+      byteLength: number
+      modifiedAt: string
+      contentHash: string
+    }
+  | {
+      kind: 'renderable'
+      mimeType: string
+      rendererKind: ProjectRenderableRendererKindDto
+      byteLength: number
+      modifiedAt: string
+      contentHash: string
+      previewUrl: string
+    }
+  | {
+      kind: 'unsupported'
+      mimeType: string | null
+      rendererKind: ProjectFileRendererKindDto | null
+      byteLength: number
+      modifiedAt: string
+      contentHash: string
+      reason: string
+    }
+
+function projectFileResourceFromResponse(response: ReadProjectFileResponseDto): ProjectFileResource {
+  if (response.kind === 'text') {
+    return {
+      kind: 'text',
+      mimeType: response.mimeType,
+      rendererKind: response.rendererKind,
+      byteLength: response.byteLength,
+      modifiedAt: response.modifiedAt,
+      contentHash: response.contentHash,
+    }
+  }
+
+  if (response.kind === 'renderable') {
+    return {
+      kind: 'renderable',
+      mimeType: response.mimeType,
+      rendererKind: response.rendererKind,
+      byteLength: response.byteLength,
+      modifiedAt: response.modifiedAt,
+      contentHash: response.contentHash,
+      previewUrl: response.previewUrl,
+    }
+  }
+
+  return {
+    kind: 'unsupported',
+    mimeType: response.mimeType,
+    rendererKind: response.rendererKind ?? null,
+    byteLength: response.byteLength,
+    modifiedAt: response.modifiedAt,
+    contentHash: response.contentHash,
+    reason: response.reason,
+  }
 }
 
 export function useExecutionWorkspaceController({
@@ -146,6 +221,7 @@ export function useExecutionWorkspaceController({
   const [fileContents, setFileContents] = useState<Record<string, string>>({})
   const [documentVersions, setDocumentVersions] = useState<Record<string, number>>({})
   const [lineCounts, setLineCounts] = useState<Record<string, number>>({})
+  const [fileResources, setFileResources] = useState<Record<string, ProjectFileResource>>({})
   const [openTabs, setOpenTabs] = useState<string[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['/']))
@@ -288,6 +364,7 @@ export function useExecutionWorkspaceController({
     setFileContents({})
     setDocumentVersions({})
     setLineCounts({})
+    setFileResources({})
     setOpenTabs([])
     setActivePath(null)
     setExpandedFolders(new Set(['/']))
@@ -312,6 +389,17 @@ export function useExecutionWorkspaceController({
     void refreshTree({ preserveExpandedFolders: false })
   }, [active, projectId, refreshTree])
 
+  const dropCachedPaths = useCallback((paths: Iterable<string>) => {
+    const pathSet = new Set(paths)
+    if (pathSet.size === 0) return
+
+    setSavedContents((current) => filterByExactPaths(current, pathSet))
+    setFileContents((current) => filterByExactPaths(current, pathSet))
+    setDocumentVersions((current) => filterByExactPaths(current, pathSet))
+    setLineCounts((current) => filterByExactPaths(current, pathSet))
+    setFileResources((current) => filterByExactPaths(current, pathSet))
+  }, [])
+
   const closeTab = useCallback(
     (path: string) => {
       setOpenTabs((current) => {
@@ -329,18 +417,19 @@ export function useExecutionWorkspaceController({
         next.delete(path)
         return next
       })
+      dropCachedPaths([path])
     },
-    [activePath],
+    [activePath, dropCachedPaths],
   )
 
   const handleSelectFile = useCallback(
-    async (path: string) => {
+    async (path: string, options: { force?: boolean } = {}) => {
       const node = findNode(tree, path)
       if ((node && node.type !== 'file') || !path.startsWith('/')) {
         return
       }
 
-      if (fileContents[path] !== undefined) {
+      if (!options.force && fileResources[path]) {
         openFile(path)
         return
       }
@@ -359,9 +448,15 @@ export function useExecutionWorkspaceController({
           return
         }
 
-        setSavedContents((current) => ({ ...current, [path]: response.content }))
-        setFileContents((current) => ({ ...current, [path]: response.content }))
-        setLineCounts((current) => ({ ...current, [path]: countLines(response.content) }))
+        const resource = projectFileResourceFromResponse(response)
+        setFileResources((current) => ({ ...current, [path]: resource }))
+
+        if (response.kind === 'text') {
+          setSavedContents((current) => ({ ...current, [path]: response.text }))
+          setFileContents((current) => ({ ...current, [path]: response.text }))
+          setLineCounts((current) => ({ ...current, [path]: countLines(response.text) }))
+        }
+
         openFile(path)
       } catch (error) {
         if (isStaleBackendRequestError(error)) {
@@ -378,7 +473,7 @@ export function useExecutionWorkspaceController({
         }
       }
     },
-    [fileContents, openFile, projectId, readProjectFile, tree],
+    [fileResources, openFile, projectId, readProjectFile, tree],
   )
 
   const handleToggleFolder = useCallback((path: string) => {
@@ -483,6 +578,10 @@ export function useExecutionWorkspaceController({
       return
     }
 
+    if (fileResources[activePath]?.kind !== 'text') {
+      return
+    }
+
     const requestEpoch = loadEpochRef.current
     const path = activePath
     const content = snapshot ?? fileContents[path] ?? ''
@@ -526,10 +625,14 @@ export function useExecutionWorkspaceController({
         setSavingPath((current) => (current === path ? null : current))
       }
     }
-  }, [activePath, fileContents, projectId, writeProjectFile])
+  }, [activePath, fileContents, fileResources, projectId, writeProjectFile])
 
   const revertActive = useCallback(() => {
     if (!activePath) {
+      return
+    }
+
+    if (fileResources[activePath]?.kind !== 'text') {
       return
     }
 
@@ -543,11 +646,17 @@ export function useExecutionWorkspaceController({
       next.delete(activePath)
       return next
     })
-  }, [activePath, bumpDocumentVersion, savedContents])
+  }, [activePath, bumpDocumentVersion, fileResources, savedContents])
 
   const reloadProjectTree = useCallback(() => {
-    void refreshTree({ preserveExpandedFolders: true })
-  }, [refreshTree])
+    const cleanOpenTabs = openTabs.filter((path) => !dirtyPaths.has(path))
+    dropCachedPaths(cleanOpenTabs)
+    void refreshTree({ preserveExpandedFolders: true }).then(() => {
+      if (activePath && cleanOpenTabs.includes(activePath)) {
+        void handleSelectFile(activePath, { force: true })
+      }
+    })
+  }, [activePath, dirtyPaths, dropCachedPaths, handleSelectFile, openTabs, refreshTree])
 
   const collapseAll = useCallback(() => {
     setExpandedFolders(new Set(['/']))
@@ -610,6 +719,7 @@ export function useExecutionWorkspaceController({
         setFileContents((current) => remapKeys(current, oldPath, newPath))
         setDocumentVersions((current) => remapKeys(current, oldPath, newPath))
         setLineCounts((current) => remapKeys(current, oldPath, newPath))
+        setFileResources((current) => remapKeys(current, oldPath, newPath))
         setOpenTabs((current) => current.map((path) => remapPath(path, oldPath, newPath)))
         setDirtyPaths((current) => new Set(Array.from(current).map((path) => remapPath(path, oldPath, newPath))))
         setExpandedFolders((current) => new Set(Array.from(current).map((path) => remapPath(path, oldPath, newPath))))
@@ -641,6 +751,7 @@ export function useExecutionWorkspaceController({
       setFileContents((current) => filterByPathNotWithin(current, deletedPath, deletedPrefix))
       setDocumentVersions((current) => filterByPathNotWithin(current, deletedPath, deletedPrefix))
       setLineCounts((current) => filterByPathNotWithin(current, deletedPath, deletedPrefix))
+      setFileResources((current) => filterByPathNotWithin(current, deletedPath, deletedPrefix))
       setOpenTabs((current) => current.filter((path) => path !== deletedPath && !path.startsWith(deletedPrefix)))
       setDirtyPaths((current) => {
         const next = new Set<string>()
@@ -717,6 +828,17 @@ export function useExecutionWorkspaceController({
           setSavedContents((current) => ({ ...current, [response.path]: '' }))
           setFileContents((current) => ({ ...current, [response.path]: '' }))
           setLineCounts((current) => ({ ...current, [response.path]: 1 }))
+          setFileResources((current) => ({
+            ...current,
+            [response.path]: {
+              kind: 'text',
+              mimeType: 'text/plain; charset=utf-8',
+              rendererKind: 'code',
+              byteLength: 0,
+              modifiedAt: new Date(0).toISOString(),
+              contentHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+            },
+          }))
           openFile(response.path)
         }
 
@@ -757,6 +879,7 @@ export function useExecutionWorkspaceController({
         setFileContents((current) => remapKeys(current, path, newPath))
         setDocumentVersions((current) => remapKeys(current, path, newPath))
         setLineCounts((current) => remapKeys(current, path, newPath))
+        setFileResources((current) => remapKeys(current, path, newPath))
         setOpenTabs((current) => current.map((candidate) => remapPath(candidate, path, newPath)))
         setDirtyPaths((current) => new Set(Array.from(current).map((candidate) => remapPath(candidate, path, newPath))))
         setExpandedFolders((current) => {
@@ -779,6 +902,7 @@ export function useExecutionWorkspaceController({
   )
 
   const activeNode = useMemo(() => (activePath ? findNode(tree, activePath) : null), [activePath, tree])
+  const activeResource = activePath ? fileResources[activePath] ?? null : null
   const activeContent = activePath ? fileContents[activePath] ?? '' : ''
   const activeSavedContent = activePath ? savedContents[activePath] ?? '' : ''
   const activeDocumentVersion = activePath ? documentVersions[activePath] ?? 0 : 0
@@ -787,6 +911,7 @@ export function useExecutionWorkspaceController({
   const isActiveDirty = activePath ? dirtyPaths.has(activePath) : false
   const isActiveSaving = activePath ? savingPath === activePath : false
   const isActiveLoading = activePath ? pendingFilePath === activePath : false
+  const isActiveText = activeResource?.kind === 'text'
 
   return {
     tree,
@@ -812,6 +937,7 @@ export function useExecutionWorkspaceController({
     newChildTarget,
     setNewChildTarget,
     activeNode,
+    activeResource,
     activeContent,
     activeSavedContent,
     activeDocumentVersion,
@@ -820,6 +946,7 @@ export function useExecutionWorkspaceController({
     isActiveDirty,
     isActiveSaving,
     isActiveLoading,
+    isActiveText,
     closeTab,
     handleSelectFile,
     handleToggleFolder,

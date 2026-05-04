@@ -75,6 +75,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 xcap = "0.6"
 ignore = "0.4"
 libc = "0.2"
+mime_guess = "2"
 openh264 = { version = "0.6", optional = true }
 prost = { version = "0.13", optional = true }
 quick-xml = "0.36"

@@ -38,6 +38,8 @@ import {
   type RuntimeSessionView,
   type RunDoctorReportRequestDto,
   type RuntimeStreamView,
+  runtimeAgentIdSchema,
+  type RuntimeAgentIdDto,
   type SkillRegistryDto,
   type SyncNotificationAdaptersResponseDto,
 } from '@/src/lib/xero-model'
@@ -171,6 +173,7 @@ const PROVIDER_MODEL_CATALOG_CACHE_MAX_ENTRIES = 24
 const AGENT_WORKSPACE_LAYOUT_STORAGE_KEY = 'agentWorkspaceLayout'
 const AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS = 250
 const AGENT_WORKSPACE_MAX_PANES = 6
+const SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'engineer'
 
 let agentWorkspacePaneIdSequence = 0
 
@@ -327,12 +330,16 @@ function sanitizeAgentWorkspaceLayout(value: unknown): AgentWorkspaceLayoutState
           : typeof maybeSlot.agentSessionId === 'string'
             ? maybeSlot.agentSessionId.trim()
             : ''
+      const defaultRuntimeAgentParse = runtimeAgentIdSchema.safeParse(maybeSlot.defaultRuntimeAgentId)
+      const defaultRuntimeAgentId = defaultRuntimeAgentParse.success
+        ? defaultRuntimeAgentParse.data
+        : null
       if (!id || agentSessionId === '' || seenPaneIds.has(id)) {
         continue
       }
 
       seenPaneIds.add(id)
-      paneSlots.push({ id, agentSessionId })
+      paneSlots.push({ id, agentSessionId, defaultRuntimeAgentId })
       if (paneSlots.length >= AGENT_WORKSPACE_MAX_PANES) {
         break
       }
@@ -398,31 +405,57 @@ function reconcileAgentWorkspaceLayout(
       : activeSessionIds.has(agentSessionId)
 
   const sanitizedLayout = sanitizeAgentWorkspaceLayout(layout) ?? createDefaultAgentWorkspaceLayout(project)
-  const paneSlots = sanitizedLayout.paneSlots.map((slot) => {
+  const seenSessionPaneIds = new Map<string, string>()
+  let duplicateFocusedPaneReplacementId: string | null = null
+  const paneSlots = sanitizedLayout.paneSlots.reduce<AgentWorkspacePaneSlot[]>((slots, slot) => {
     if (!slot.agentSessionId) {
-      return slot
+      slots.push(slot)
+      return slots
     }
 
-    return isKnownSession(slot.agentSessionId)
+    const normalizedSlot = isKnownSession(slot.agentSessionId)
       ? slot
       : {
           ...slot,
           agentSessionId: null,
         }
-  })
+
+    if (!normalizedSlot.agentSessionId) {
+      slots.push(normalizedSlot)
+      return slots
+    }
+
+    const existingPaneId = seenSessionPaneIds.get(normalizedSlot.agentSessionId)
+    if (existingPaneId) {
+      if (sanitizedLayout.focusedPaneId === normalizedSlot.id) {
+        duplicateFocusedPaneReplacementId = existingPaneId
+      }
+      return slots
+    }
+
+    seenSessionPaneIds.set(normalizedSlot.agentSessionId, normalizedSlot.id)
+    slots.push(normalizedSlot)
+    return slots
+  }, [])
 
   if (paneSlots.length === 0) {
     return createDefaultAgentWorkspaceLayout(project)
   }
 
   const normalizedPaneSlots =
-    paneSlots.length === 1 && paneSlots[0]?.agentSessionId && paneSlots[0].agentSessionId !== selectedAgentSessionId
+    paneSlots.length === 1 && selectedAgentSessionId && paneSlots[0]?.agentSessionId !== selectedAgentSessionId
       ? [{ ...paneSlots[0], agentSessionId: selectedAgentSessionId }]
       : paneSlots
 
-  const focusedPaneId = normalizedPaneSlots.some((slot) => slot.id === sanitizedLayout.focusedPaneId)
-    ? sanitizedLayout.focusedPaneId
-    : normalizedPaneSlots[0].id
+  let focusedPaneId = normalizedPaneSlots[0].id
+  if (normalizedPaneSlots.some((slot) => slot.id === sanitizedLayout.focusedPaneId)) {
+    focusedPaneId = sanitizedLayout.focusedPaneId
+  } else if (
+    duplicateFocusedPaneReplacementId &&
+    normalizedPaneSlots.some((slot) => slot.id === duplicateFocusedPaneReplacementId)
+  ) {
+    focusedPaneId = duplicateFocusedPaneReplacementId
+  }
 
   return {
     ...sanitizedLayout,
@@ -467,6 +500,23 @@ function applyAgentSessionToProject(
     selectedAgentSessionId,
     selectedAgentSession:
       agentSessions.find((session) => session.agentSessionId === selectedAgentSessionId) ?? null,
+  }
+}
+
+function replaceAgentSessionsInProject(
+  project: ProjectDetailView,
+  agentSessions: AgentSessionView[],
+): ProjectDetailView {
+  const inScopeAgentSessions = agentSessions.filter((session) => session.projectId === project.id)
+  const selectedAgentSessionId = selectAgentSessionId(inScopeAgentSessions)
+
+  return {
+    ...project,
+    agentSessions: inScopeAgentSessions,
+    selectedAgentSessionId,
+    selectedAgentSession:
+      inScopeAgentSessions.find((session) => session.agentSessionId === selectedAgentSessionId) ??
+      null,
   }
 }
 
@@ -1499,6 +1549,114 @@ export function useXeroDesktopState(
     return nextProject
   }, [])
 
+  const applyAgentSessionUpdate = useCallback(
+    (agentSession: AgentSessionView) => {
+      const currentProject = activeProjectRef.current
+      if (!currentProject || currentProject.id !== agentSession.projectId) {
+        return null
+      }
+
+      supersedeInFlightProjectLoad(agentSession.projectId)
+      setErrorMessage(null)
+
+      const previousSelectedSessionId = selectAgentSessionId(currentProject.agentSessions)
+      const nextProject = applyAgentSessionToProject(currentProject, agentSession)
+      const nextSelectedSessionId = selectAgentSessionId(nextProject.agentSessions)
+
+      activeProjectRef.current = nextProject
+      projectDetailsRef.current[nextProject.id] = nextProject
+      setActiveProject(nextProject)
+
+      if (nextSelectedSessionId === previousSelectedSessionId) {
+        return nextProject
+      }
+
+      setRefreshSource('selection')
+      setRuntimeRunActionError(null)
+      setPendingRuntimeRunAction(null)
+      setRuntimeRunActionStatus('idle')
+      setAutonomousRunActionError(null)
+      setPendingAutonomousRunAction(null)
+      setAutonomousRunActionStatus('idle')
+
+      const cacheKey = createAgentSessionStateKey(nextProject.id, nextSelectedSessionId)
+      const cachedRuntimeRun = hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey)
+        ? runtimeRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedAutonomousRun = hasOwnRecord(autonomousRunsBySessionRef.current, cacheKey)
+        ? autonomousRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedRuntimeStream = runtimeStreamsBySessionRef.current[cacheKey] ?? null
+      const nextRuntimeStream =
+        cachedRuntimeStream && (!cachedRuntimeRun || cachedRuntimeStream.runId === cachedRuntimeRun.runId)
+          ? cachedRuntimeStream
+          : null
+
+      return applyAgentSessionRuntimeState(
+        nextProject.id,
+        nextSelectedSessionId,
+        cachedRuntimeRun ?? null,
+        cachedAutonomousRun ?? null,
+        nextRuntimeStream,
+      )
+    },
+    [applyAgentSessionRuntimeState, supersedeInFlightProjectLoad],
+  )
+
+  const replaceAgentSessions = useCallback(
+    (projectId: string, agentSessions: AgentSessionView[]) => {
+      const currentProject = activeProjectRef.current
+      if (!currentProject || currentProject.id !== projectId) {
+        return null
+      }
+
+      supersedeInFlightProjectLoad(projectId)
+      setErrorMessage(null)
+
+      const previousSelectedSessionId = selectAgentSessionId(currentProject.agentSessions)
+      const nextProject = replaceAgentSessionsInProject(currentProject, agentSessions)
+      const nextSelectedSessionId = selectAgentSessionId(nextProject.agentSessions)
+
+      activeProjectRef.current = nextProject
+      projectDetailsRef.current[nextProject.id] = nextProject
+      setActiveProject(nextProject)
+
+      if (nextSelectedSessionId === previousSelectedSessionId) {
+        return nextProject
+      }
+
+      setRefreshSource('selection')
+      setRuntimeRunActionError(null)
+      setPendingRuntimeRunAction(null)
+      setRuntimeRunActionStatus('idle')
+      setAutonomousRunActionError(null)
+      setPendingAutonomousRunAction(null)
+      setAutonomousRunActionStatus('idle')
+
+      const cacheKey = createAgentSessionStateKey(nextProject.id, nextSelectedSessionId)
+      const cachedRuntimeRun = hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey)
+        ? runtimeRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedAutonomousRun = hasOwnRecord(autonomousRunsBySessionRef.current, cacheKey)
+        ? autonomousRunsBySessionRef.current[cacheKey]
+        : null
+      const cachedRuntimeStream = runtimeStreamsBySessionRef.current[cacheKey] ?? null
+      const nextRuntimeStream =
+        cachedRuntimeStream && (!cachedRuntimeRun || cachedRuntimeStream.runId === cachedRuntimeRun.runId)
+          ? cachedRuntimeStream
+          : null
+
+      return applyAgentSessionRuntimeState(
+        nextProject.id,
+        nextSelectedSessionId,
+        cachedRuntimeRun ?? null,
+        cachedAutonomousRun ?? null,
+        nextRuntimeStream,
+      )
+    },
+    [applyAgentSessionRuntimeState, supersedeInFlightProjectLoad],
+  )
+
   const rollbackAgentSessionSelection = useCallback(
     (previousProject: ProjectDetailView | null) => {
       if (!previousProject || activeProjectIdRef.current !== previousProject.id) {
@@ -2420,6 +2578,8 @@ export function useXeroDesktopState(
       syncAutonomousRun,
       optimisticallySelectAgentSession,
       applyAgentSessionSelection,
+      applyAgentSessionUpdate,
+      replaceAgentSessions,
       rollbackAgentSessionSelection,
       hydrateAgentSessionRuntimeState,
       applyRuntimeSessionUpdate,
@@ -2454,10 +2614,21 @@ export function useXeroDesktopState(
       reusablePaneIndex >= 0 ? currentLayout.paneSlots[reusablePaneIndex]?.id ?? paneId : paneId
     const pendingPaneSlots =
       reusablePaneIndex >= 0
-        ? currentLayout.paneSlots
+        ? currentLayout.paneSlots.map((slot, index) =>
+            index === reusablePaneIndex
+              ? {
+                  ...slot,
+                  defaultRuntimeAgentId: SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID,
+                }
+              : slot,
+          )
         : [
             ...currentLayout.paneSlots,
-            { id: paneId, agentSessionId: null },
+            {
+              id: paneId,
+              agentSessionId: null,
+              defaultRuntimeAgentId: SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID,
+            },
           ]
     const pendingLayout: AgentWorkspaceLayoutState = {
       ...currentLayout,
@@ -2641,6 +2812,106 @@ export function useXeroDesktopState(
       }
     })
   }, [])
+
+  const reorderPanes = useCallback((activePaneId: string, overPaneId: string) => {
+    if (!activePaneId || !overPaneId || activePaneId === overPaneId) {
+      return
+    }
+    const projectId = activeProjectIdRef.current
+    const currentProject = activeProjectRef.current
+    if (!projectId || !currentProject || currentProject.id !== projectId) {
+      return
+    }
+
+    setAgentWorkspaceLayouts((currentLayouts) => {
+      const currentLayout = reconcileAgentWorkspaceLayout(
+        currentProject,
+        currentLayouts[projectId],
+      )
+      const fromIndex = currentLayout.paneSlots.findIndex((slot) => slot.id === activePaneId)
+      const toIndex = currentLayout.paneSlots.findIndex((slot) => slot.id === overPaneId)
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+        return currentLayouts
+      }
+      const paneSlots = currentLayout.paneSlots.slice()
+      const [moved] = paneSlots.splice(fromIndex, 1)
+      paneSlots.splice(toIndex, 0, moved)
+      const nextLayouts = {
+        ...currentLayouts,
+        [projectId]: {
+          ...currentLayout,
+          paneSlots,
+        },
+      }
+      agentWorkspaceLayoutsRef.current = nextLayouts
+      return nextLayouts
+    })
+  }, [])
+
+  const openSessionInNewPane = useCallback(
+    (
+      agentSessionId: string,
+      options: { atIndex?: number } = {},
+    ): 'opened' | 'focused' | 'rejected-max' | 'noop' => {
+      if (!agentSessionId) return 'noop'
+      const projectId = activeProjectIdRef.current
+      const currentProject = activeProjectRef.current
+      if (!projectId || !currentProject || currentProject.id !== projectId) {
+        return 'noop'
+      }
+
+      const currentLayout = reconcileAgentWorkspaceLayout(
+        currentProject,
+        agentWorkspaceLayoutsRef.current[projectId],
+      )
+      const existingSlot = currentLayout.paneSlots.find(
+        (slot) => slot.agentSessionId === agentSessionId,
+      )
+      if (existingSlot) {
+        const nextLayout =
+          currentLayout.focusedPaneId === existingSlot.id
+            ? currentLayout
+            : { ...currentLayout, focusedPaneId: existingSlot.id }
+        const nextLayouts = {
+          ...agentWorkspaceLayoutsRef.current,
+          [projectId]: nextLayout,
+        }
+        agentWorkspaceLayoutsRef.current = nextLayouts
+        setAgentWorkspaceLayouts(nextLayouts)
+        return 'focused'
+      }
+
+      if (currentLayout.paneSlots.length >= AGENT_WORKSPACE_MAX_PANES) {
+        return 'rejected-max'
+      }
+
+      const paneId = createAgentWorkspacePaneId()
+      const insertIndex =
+        typeof options.atIndex === 'number'
+          ? Math.max(0, Math.min(options.atIndex, currentLayout.paneSlots.length))
+          : currentLayout.paneSlots.length
+      const newSlot: AgentWorkspacePaneSlot = {
+        id: paneId,
+        agentSessionId,
+      }
+      const paneSlots = currentLayout.paneSlots.slice()
+      paneSlots.splice(insertIndex, 0, newSlot)
+
+      const nextLayouts = {
+        ...agentWorkspaceLayoutsRef.current,
+        [projectId]: {
+          ...currentLayout,
+          paneSlots,
+          focusedPaneId: paneId,
+        },
+      }
+      agentWorkspaceLayoutsRef.current = nextLayouts
+      setAgentWorkspaceLayouts(nextLayouts)
+      void hydrateAgentSessionRuntimeState(projectId, agentSessionId).catch(() => undefined)
+      return 'opened'
+    },
+    [hydrateAgentSessionRuntimeState],
+  )
 
   const setSplitterRatios = useCallback((arrangementKey: string, ratios: number[]) => {
     const key = arrangementKey.trim()
@@ -3009,6 +3280,7 @@ export function useXeroDesktopState(
           project: createEmptyAgentSessionProject(activeProject),
           activePhase,
           repositoryStatus,
+          fallbackRuntimeAgentId: slot.defaultRuntimeAgentId,
           providerCredentials,
           runtimeSession: activeRuntimeSession,
           providerModelCatalogs,
@@ -3054,10 +3326,51 @@ export function useXeroDesktopState(
       }
 
       if (slot.agentSessionId === activeAgentSessionId && agentView) {
+        const paneAgentView = slot.defaultRuntimeAgentId
+          ? buildAgentView({
+              project: activeProject,
+              activePhase,
+              repositoryStatus,
+              fallbackRuntimeAgentId: slot.defaultRuntimeAgentId,
+              providerCredentials,
+              runtimeSession: activeRuntimeSession,
+              providerModelCatalogs,
+              providerModelCatalogLoadStatuses,
+              providerModelCatalogLoadErrors,
+              activeProviderModelCatalog,
+              activeProviderModelCatalogLoadStatus,
+              activeProviderModelCatalogLoadError,
+              runtimeRun: activeRuntimeRun,
+              autonomousRun: activeAutonomousRun,
+              runtimeErrorMessage: activeRuntimeErrorMessage,
+              runtimeRunErrorMessage: activeRuntimeRunErrorMessage,
+              autonomousRunErrorMessage: activeAutonomousRunErrorMessage,
+              runtimeStream: activeRuntimeStream,
+              notificationRoutes: activeNotificationRoutes,
+              notificationRouteLoadStatus: activeNotificationRouteLoadStatus,
+              notificationRouteError: activeNotificationRouteLoadError,
+              notificationSyncSummary: activeNotificationSyncSummary,
+              notificationSyncError: activeNotificationSyncError,
+              blockedNotificationSyncPollTarget: activeBlockedNotificationSyncPollTarget,
+              notificationRouteMutationStatus,
+              pendingNotificationRouteId,
+              notificationRouteMutationError,
+              previousTrustSnapshot: activeProject ? trustSnapshotRef.current[activeProject.id] ?? null : null,
+              operatorActionStatus,
+              pendingOperatorActionId,
+              operatorActionError,
+              autonomousRunActionStatus,
+              pendingAutonomousRunAction,
+              autonomousRunActionError,
+              runtimeRunActionStatus,
+              pendingRuntimeRunAction,
+              runtimeRunActionError,
+            }).view ?? agentView
+          : agentView
         return [{
           paneId: slot.id,
           agentSessionId: slot.agentSessionId,
-          agent: agentView,
+          agent: paneAgentView,
         }]
       }
 
@@ -3074,6 +3387,7 @@ export function useXeroDesktopState(
         project: paneProject,
         activePhase,
         repositoryStatus,
+        fallbackRuntimeAgentId: slot.defaultRuntimeAgentId,
         providerCredentials,
         runtimeSession: activeRuntimeSession,
         providerModelCatalogs,
@@ -3300,6 +3614,8 @@ export function useXeroDesktopState(
     spawnPane,
     closePane,
     focusPane,
+    reorderPanes,
+    openSessionInNewPane,
     setSplitterRatios,
     usageSummaries,
     activeUsageSummary: activeProjectId ? (usageSummaries[activeProjectId] ?? null) : null,

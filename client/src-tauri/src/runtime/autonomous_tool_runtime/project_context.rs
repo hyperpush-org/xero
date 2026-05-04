@@ -17,6 +17,8 @@ use crate::{
 const DEFAULT_CONTEXT_LIMIT: u32 = 6;
 const MAX_CONTEXT_LIMIT: u32 = 10;
 const MAX_CONTEXT_TEXT_CHARS: usize = 4_000;
+const PROJECT_CONTEXT_RECORD_SCHEMA: &str = "xero.project_context_tool.record.v1";
+const PROJECT_CONTEXT_UPDATE_SCHEMA: &str = "xero.project_context_tool.record_update.v1";
 const PROJECT_CONTEXT_RECORD_CANDIDATE_SCHEMA: &str =
     "xero.project_context_tool.record_candidate.v1";
 
@@ -31,7 +33,10 @@ pub enum AutonomousProjectContextAction {
     ListActiveDecisionsConstraints,
     ListOpenQuestionsBlockers,
     ExplainCurrentContextPackage,
+    RecordContext,
+    UpdateContext,
     ProposeRecordCandidate,
+    RefreshFreshness,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,6 +85,10 @@ pub struct AutonomousProjectContextRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub record_kinds: Vec<AutonomousProjectContextRecordKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory_kinds: Vec<AutonomousProjectContextMemoryKind>,
@@ -118,6 +127,8 @@ impl AutonomousProjectContextRequest {
             query: None,
             record_id: None,
             memory_id: None,
+            record_ids: Vec::new(),
+            memory_ids: Vec::new(),
             record_kinds: Vec::new(),
             memory_kinds: Vec::new(),
             tags: Vec::new(),
@@ -198,6 +209,7 @@ pub struct AutonomousProjectContextRecord {
     pub run_id: String,
     pub redaction_state: String,
     pub visibility: String,
+    pub trust: JsonValue,
     pub citation: String,
     pub created_at: String,
     pub updated_at: String,
@@ -219,6 +231,7 @@ pub struct AutonomousProjectContextMemory {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_item_ids: Vec<String>,
     pub redaction_state: String,
+    pub trust: JsonValue,
     pub citation: String,
     pub created_at: String,
     pub updated_at: String,
@@ -307,8 +320,17 @@ impl AutonomousToolRuntime {
             AutonomousProjectContextAction::ExplainCurrentContextPackage => {
                 self.explain_current_context_package(request, &run_context, runtime_agent_id)
             }
+            AutonomousProjectContextAction::RecordContext => {
+                self.record_context(request, &run_context, runtime_agent_id)
+            }
+            AutonomousProjectContextAction::UpdateContext => {
+                self.update_context(request, &run_context, runtime_agent_id)
+            }
             AutonomousProjectContextAction::ProposeRecordCandidate => {
                 self.propose_record_candidate(request, &run_context, runtime_agent_id)
+            }
+            AutonomousProjectContextAction::RefreshFreshness => {
+                self.refresh_freshness(request, &run_context)
             }
         }
     }
@@ -382,6 +404,11 @@ impl AutonomousToolRuntime {
         runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
         let record_id = required_text(request.record_id.as_deref(), "recordId")?;
+        project_store::refresh_all_project_record_freshness(
+            &self.repo_root,
+            &run_context.project_id,
+            &now_timestamp(),
+        )?;
         let record = project_store::list_project_records(&self.repo_root, &run_context.project_id)?
             .into_iter()
             .find(|record| record.record_id == record_id)
@@ -436,6 +463,11 @@ impl AutonomousToolRuntime {
         runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
         let memory_id = required_text(request.memory_id.as_deref(), "memoryId")?;
+        project_store::refresh_all_agent_memory_freshness(
+            &self.repo_root,
+            &run_context.project_id,
+            &now_timestamp(),
+        )?;
         let memory =
             project_store::get_agent_memory(&self.repo_root, &run_context.project_id, &memory_id)?;
         if memory.review_state != project_store::AgentMemoryReviewState::Approved || !memory.enabled
@@ -533,12 +565,210 @@ impl AutonomousToolRuntime {
         run_context: &AutonomousAgentRunContext,
         runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
-        if !runtime_agent_id.allows_engineering_tools() {
-            return Err(CommandError::user_fixable(
-                "project_context_candidate_forbidden_for_ask",
-                "Ask can search and read durable project context, but cannot propose project record candidates.",
+        ensure_context_write_allowed(runtime_agent_id)?;
+        let action = request.action;
+        let record = self.insert_context_record(
+            request,
+            run_context,
+            runtime_agent_id,
+            project_store::ProjectRecordVisibility::MemoryCandidate,
+            PROJECT_CONTEXT_RECORD_CANDIDATE_SCHEMA,
+        )?;
+        Ok(AutonomousProjectContextOutput {
+            action,
+            message: format!(
+                "project_context proposed review-only candidate record `{}`.",
+                record.record_id
+            ),
+            query_id: None,
+            result_count: 1,
+            results: Vec::new(),
+            record: None,
+            memory: None,
+            manifest: None,
+            candidate_record: Some(context_record_from_record(&record)),
+        })
+    }
+
+    fn record_context(
+        &self,
+        request: AutonomousProjectContextRequest,
+        run_context: &AutonomousAgentRunContext,
+        runtime_agent_id: RuntimeAgentIdDto,
+    ) -> CommandResult<AutonomousProjectContextOutput> {
+        ensure_context_write_allowed(runtime_agent_id)?;
+        let action = request.action;
+        let record = self.insert_context_record(
+            request,
+            run_context,
+            runtime_agent_id,
+            project_store::ProjectRecordVisibility::Retrieval,
+            PROJECT_CONTEXT_RECORD_SCHEMA,
+        )?;
+        Ok(AutonomousProjectContextOutput {
+            action,
+            message: format!(
+                "project_context recorded durable context `{}`.",
+                record.record_id
+            ),
+            query_id: None,
+            result_count: 1,
+            results: Vec::new(),
+            record: Some(context_record_from_record(&record)),
+            memory: None,
+            manifest: None,
+            candidate_record: None,
+        })
+    }
+
+    fn update_context(
+        &self,
+        mut request: AutonomousProjectContextRequest,
+        run_context: &AutonomousAgentRunContext,
+        runtime_agent_id: RuntimeAgentIdDto,
+    ) -> CommandResult<AutonomousProjectContextOutput> {
+        ensure_context_write_allowed(runtime_agent_id)?;
+        let action = request.action;
+        let superseded_record_id = optional_trimmed(request.record_id.as_deref());
+        let superseded_record = superseded_record_id
+            .as_deref()
+            .map(|record_id| self.load_update_target_record(&run_context.project_id, record_id))
+            .transpose()?;
+        if let Some(record) = superseded_record.as_ref() {
+            if request
+                .title
+                .as_ref()
+                .and_then(|value| optional_trimmed(Some(value.as_str())))
+                .is_none()
+            {
+                request.title = Some(record.title.clone());
+            }
+            if request
+                .summary
+                .as_ref()
+                .and_then(|value| optional_trimmed(Some(value.as_str())))
+                .is_none()
+            {
+                request.summary =
+                    Some(format!("Supersedes project record `{}`.", record.record_id));
+            }
+            if request.record_kind.is_none() {
+                request.record_kind = Some(AutonomousProjectContextRecordKind::from_project_store(
+                    &record.record_kind,
+                ));
+            }
+            if request.importance.is_none() {
+                request.importance = Some(
+                    AutonomousProjectContextRecordImportance::from_project_store(
+                        &record.importance,
+                    ),
+                );
+            }
+            if request.confidence.is_none() {
+                request.confidence = record
+                    .confidence
+                    .map(|confidence| (confidence * 100.0).round().clamp(0.0, 100.0) as u8);
+            }
+            if request.tags.is_empty() {
+                request.tags = record.tags.clone();
+            }
+            if request.related_paths.is_empty() {
+                request.related_paths = record.related_paths.clone();
+            }
+            request.content_json = Some(update_record_content_json(
+                request.content_json.take(),
+                "supersedesRecordId",
+                &record.record_id,
+            ));
+        } else if let Some(memory_id) = optional_trimmed(request.memory_id.as_deref()) {
+            let memory = self.load_update_target_memory(&run_context.project_id, &memory_id)?;
+            if request
+                .title
+                .as_ref()
+                .and_then(|value| optional_trimmed(Some(value.as_str())))
+                .is_none()
+            {
+                request.title = Some(format!("Correction for memory `{memory_id}`"));
+            }
+            if request
+                .summary
+                .as_ref()
+                .and_then(|value| optional_trimmed(Some(value.as_str())))
+                .is_none()
+            {
+                request.summary = Some(format!("Supersedes approved memory `{memory_id}`."));
+            }
+            if request.record_kind.is_none() {
+                request.record_kind = Some(record_kind_for_memory(&memory.kind));
+            }
+            if request.importance.is_none() {
+                request.importance = Some(AutonomousProjectContextRecordImportance::Normal);
+            }
+            if request.confidence.is_none() {
+                request.confidence = memory.confidence;
+            }
+            if request.related_paths.is_empty() {
+                request.related_paths =
+                    project_store::source_fingerprint_paths(&memory.source_fingerprints_json)
+                        .unwrap_or_default();
+            }
+            request
+                .source_item_ids
+                .push(format!("agent_memories:{}", memory.memory_id));
+            request.content_json = Some(update_record_content_json(
+                request.content_json.take(),
+                "supersedesMemoryId",
+                &memory.memory_id,
             ));
         }
+
+        let mut record = self.insert_context_record(
+            request,
+            run_context,
+            runtime_agent_id,
+            project_store::ProjectRecordVisibility::Retrieval,
+            PROJECT_CONTEXT_UPDATE_SCHEMA,
+        )?;
+        if let Some(record_id) = superseded_record_id {
+            project_store::mark_project_record_superseded_by(
+                &self.repo_root,
+                &run_context.project_id,
+                &record_id,
+                &record.record_id,
+                &now_timestamp(),
+            )?;
+            if let Some(updated_record) =
+                project_store::list_project_records(&self.repo_root, &run_context.project_id)?
+                    .into_iter()
+                    .find(|candidate| candidate.record_id == record.record_id)
+            {
+                record = updated_record;
+            }
+        }
+        Ok(AutonomousProjectContextOutput {
+            action,
+            message: format!(
+                "project_context updated durable context `{}`.",
+                record.record_id
+            ),
+            query_id: None,
+            result_count: 1,
+            results: Vec::new(),
+            record: Some(context_record_from_record(&record)),
+            memory: None,
+            manifest: None,
+            candidate_record: None,
+        })
+    }
+
+    fn insert_context_record(
+        &self,
+        request: AutonomousProjectContextRequest,
+        run_context: &AutonomousAgentRunContext,
+        runtime_agent_id: RuntimeAgentIdDto,
+        visibility: project_store::ProjectRecordVisibility,
+        schema_name: &str,
+    ) -> CommandResult<project_store::ProjectRecordRecord> {
         let title = required_text(request.title.as_deref(), "title")?;
         let summary = required_text(request.summary.as_deref(), "summary")?;
         let text = required_text(request.text.as_deref(), "text")?;
@@ -565,14 +795,14 @@ impl AutonomousToolRuntime {
         } else {
             project_store::ProjectRecordRedactionState::Clean
         };
-        let tags = candidate_tags(&request.tags, runtime_agent_id);
+        let tags = context_record_tags(&request.tags, runtime_agent_id, &visibility);
         let source_item_ids = candidate_source_item_ids(&request.source_item_ids, run_context);
         let run_snapshot = project_store::load_agent_run(
             &self.repo_root,
             &run_context.project_id,
             &run_context.run_id,
         )?;
-        let record = project_store::insert_project_record(
+        project_store::insert_project_record(
             &self.repo_root,
             &project_store::NewProjectRecordRecord {
                 record_id: project_store::generate_project_record_id(),
@@ -592,7 +822,7 @@ impl AutonomousToolRuntime {
                 summary: truncate_chars(summary.trim(), 500),
                 text: truncate_chars(text.trim(), MAX_CONTEXT_TEXT_CHARS),
                 content_json,
-                schema_name: Some(PROJECT_CONTEXT_RECORD_CANDIDATE_SCHEMA.into()),
+                schema_name: Some(schema_name.into()),
                 schema_version: 1,
                 importance: request
                     .importance
@@ -606,23 +836,135 @@ impl AutonomousToolRuntime {
                 related_paths: normalized_strings(&request.related_paths),
                 produced_artifact_refs: Vec::new(),
                 redaction_state,
-                visibility: project_store::ProjectRecordVisibility::MemoryCandidate,
+                visibility,
                 created_at: now_timestamp(),
             },
+        )
+    }
+
+    fn load_update_target_record(
+        &self,
+        project_id: &str,
+        record_id: &str,
+    ) -> CommandResult<project_store::ProjectRecordRecord> {
+        project_store::refresh_project_record_freshness_for_ids(
+            &self.repo_root,
+            project_id,
+            &[record_id.to_string()],
+            &now_timestamp(),
         )?;
+        let record = project_store::list_project_records(&self.repo_root, project_id)?
+            .into_iter()
+            .find(|record| record.record_id == record_id)
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "project_context_update_record_not_found",
+                    format!("Project record `{record_id}` was not found."),
+                )
+            })?;
+        if record.redaction_state == project_store::ProjectRecordRedactionState::Blocked {
+            return Err(CommandError::user_fixable(
+                "project_context_update_record_blocked",
+                format!("Project record `{record_id}` is blocked by redaction policy."),
+            ));
+        }
+        if record.visibility == project_store::ProjectRecordVisibility::MemoryCandidate {
+            return Err(CommandError::user_fixable(
+                "project_context_update_record_candidate_unreviewed",
+                format!(
+                    "Project record `{record_id}` is a review-only candidate and cannot be superseded automatically."
+                ),
+            ));
+        }
+        Ok(record)
+    }
+
+    fn load_update_target_memory(
+        &self,
+        project_id: &str,
+        memory_id: &str,
+    ) -> CommandResult<project_store::AgentMemoryRecord> {
+        project_store::refresh_agent_memory_freshness_for_ids(
+            &self.repo_root,
+            project_id,
+            &[memory_id.to_string()],
+            &now_timestamp(),
+        )?;
+        let memory = project_store::get_agent_memory(&self.repo_root, project_id, memory_id)?;
+        if memory.review_state != project_store::AgentMemoryReviewState::Approved || !memory.enabled
+        {
+            return Err(CommandError::user_fixable(
+                "project_context_update_memory_not_approved",
+                format!("Memory `{memory_id}` is not approved and enabled."),
+            ));
+        }
+        Ok(memory)
+    }
+
+    fn refresh_freshness(
+        &self,
+        request: AutonomousProjectContextRequest,
+        run_context: &AutonomousAgentRunContext,
+    ) -> CommandResult<AutonomousProjectContextOutput> {
+        let checked_at = now_timestamp();
+        let related_paths = normalized_strings(&request.related_paths);
+        let record_ids = selected_ids(request.record_id.as_deref(), &request.record_ids);
+        let memory_ids = selected_ids(request.memory_id.as_deref(), &request.memory_ids);
+        let summary = if !record_ids.is_empty() || !memory_ids.is_empty() {
+            let mut summary = project_store::refresh_project_record_freshness_for_ids(
+                &self.repo_root,
+                &run_context.project_id,
+                &record_ids,
+                &checked_at,
+            )?;
+            summary.merge(project_store::refresh_agent_memory_freshness_for_ids(
+                &self.repo_root,
+                &run_context.project_id,
+                &memory_ids,
+                &checked_at,
+            )?);
+            summary
+        } else if related_paths.is_empty() {
+            let mut summary = project_store::refresh_all_project_record_freshness(
+                &self.repo_root,
+                &run_context.project_id,
+                &checked_at,
+            )?;
+            summary.merge(project_store::refresh_all_agent_memory_freshness(
+                &self.repo_root,
+                &run_context.project_id,
+                &checked_at,
+            )?);
+            summary
+        } else {
+            let mut summary = project_store::refresh_project_record_freshness_for_paths(
+                &self.repo_root,
+                &run_context.project_id,
+                &related_paths,
+                &checked_at,
+            )?;
+            summary.merge(project_store::refresh_agent_memory_freshness_for_paths(
+                &self.repo_root,
+                &run_context.project_id,
+                &related_paths,
+                &checked_at,
+            )?);
+            summary
+        };
+        let result_count = summary.inspected_count;
+        let manifest = summary.as_json();
         Ok(AutonomousProjectContextOutput {
             action: request.action,
             message: format!(
-                "project_context proposed review-only candidate record `{}`.",
-                record.record_id
+                "project_context refreshed freshness for {result_count} durable context row(s)."
             ),
             query_id: None,
-            result_count: 1,
+            result_count,
             results: Vec::new(),
             record: None,
             memory: None,
-            manifest: None,
-            candidate_record: Some(context_record_from_record(&record)),
+            manifest: Some(manifest),
+            candidate_record: None,
         })
     }
 }
@@ -643,6 +985,22 @@ impl AutonomousProjectContextRecordKind {
             Self::Diagnostic => project_store::ProjectRecordKind::Diagnostic,
         }
     }
+
+    fn from_project_store(kind: &project_store::ProjectRecordKind) -> Self {
+        match kind {
+            project_store::ProjectRecordKind::AgentHandoff => Self::AgentHandoff,
+            project_store::ProjectRecordKind::ProjectFact => Self::ProjectFact,
+            project_store::ProjectRecordKind::Decision => Self::Decision,
+            project_store::ProjectRecordKind::Constraint => Self::Constraint,
+            project_store::ProjectRecordKind::Plan => Self::Plan,
+            project_store::ProjectRecordKind::Finding => Self::Finding,
+            project_store::ProjectRecordKind::Verification => Self::Verification,
+            project_store::ProjectRecordKind::Question => Self::Question,
+            project_store::ProjectRecordKind::Artifact => Self::Artifact,
+            project_store::ProjectRecordKind::ContextNote => Self::ContextNote,
+            project_store::ProjectRecordKind::Diagnostic => Self::Diagnostic,
+        }
+    }
 }
 
 impl AutonomousProjectContextRecordImportance {
@@ -652,6 +1010,15 @@ impl AutonomousProjectContextRecordImportance {
             Self::Normal => project_store::ProjectRecordImportance::Normal,
             Self::High => project_store::ProjectRecordImportance::High,
             Self::Critical => project_store::ProjectRecordImportance::Critical,
+        }
+    }
+
+    fn from_project_store(importance: &project_store::ProjectRecordImportance) -> Self {
+        match importance {
+            project_store::ProjectRecordImportance::Low => Self::Low,
+            project_store::ProjectRecordImportance::Normal => Self::Normal,
+            project_store::ProjectRecordImportance::High => Self::High,
+            project_store::ProjectRecordImportance::Critical => Self::Critical,
         }
     }
 }
@@ -752,6 +1119,7 @@ fn context_record_from_record(
         run_id: record.run_id.clone(),
         redaction_state: project_record_redaction_state_label(&redaction_state).into(),
         visibility: project_record_visibility_label(&record.visibility).into(),
+        trust: project_record_trust_envelope(record),
         citation: format!("project_records:{}", record.record_id),
         created_at: record.created_at.clone(),
         updated_at: record.updated_at.clone(),
@@ -777,10 +1145,116 @@ fn context_memory_from_memory(
             "clean"
         }
         .into(),
+        trust: memory_trust_envelope(memory),
         citation: format!("agent_memories:{}", memory.memory_id),
         created_at: memory.created_at.clone(),
         updated_at: memory.updated_at.clone(),
     }
+}
+
+fn project_record_freshness_metadata(record: &project_store::ProjectRecordRecord) -> JsonValue {
+    project_store::freshness_metadata_json(project_store::FreshnessMetadata {
+        freshness_state: &record.freshness_state,
+        freshness_checked_at: record.freshness_checked_at.as_deref(),
+        stale_reason: record.stale_reason.as_deref(),
+        source_fingerprints_json: &record.source_fingerprints_json,
+        supersedes_id: record.supersedes_id.as_deref(),
+        superseded_by_id: record.superseded_by_id.as_deref(),
+        invalidated_at: record.invalidated_at.as_deref(),
+        fact_key: record.fact_key.as_deref(),
+    })
+    .unwrap_or_else(|error| {
+        json!({
+            "state": record.freshness_state.clone(),
+            "checkedAt": record.freshness_checked_at.clone(),
+            "staleReason": record.stale_reason.clone(),
+            "sourceFingerprints": [],
+            "supersedesId": record.supersedes_id.clone(),
+            "supersededById": record.superseded_by_id.clone(),
+            "invalidatedAt": record.invalidated_at.clone(),
+            "factKey": record.fact_key.clone(),
+            "diagnostic": {
+                "code": error.code,
+                "message": error.message,
+            },
+        })
+    })
+}
+
+fn memory_freshness_metadata(memory: &project_store::AgentMemoryRecord) -> JsonValue {
+    project_store::freshness_metadata_json(project_store::FreshnessMetadata {
+        freshness_state: &memory.freshness_state,
+        freshness_checked_at: memory.freshness_checked_at.as_deref(),
+        stale_reason: memory.stale_reason.as_deref(),
+        source_fingerprints_json: &memory.source_fingerprints_json,
+        supersedes_id: memory.supersedes_id.as_deref(),
+        superseded_by_id: memory.superseded_by_id.as_deref(),
+        invalidated_at: memory.invalidated_at.as_deref(),
+        fact_key: memory.fact_key.as_deref(),
+    })
+    .unwrap_or_else(|error| {
+        json!({
+            "state": memory.freshness_state.clone(),
+            "checkedAt": memory.freshness_checked_at.clone(),
+            "staleReason": memory.stale_reason.clone(),
+            "sourceFingerprints": [],
+            "supersedesId": memory.supersedes_id.clone(),
+            "supersededById": memory.superseded_by_id.clone(),
+            "invalidatedAt": memory.invalidated_at.clone(),
+            "factKey": memory.fact_key.clone(),
+            "diagnostic": {
+                "code": error.code,
+                "message": error.message,
+            },
+        })
+    })
+}
+
+fn project_record_trust_envelope(record: &project_store::ProjectRecordRecord) -> JsonValue {
+    let freshness = project_record_freshness_metadata(record);
+    json!({
+        "freshnessState": record.freshness_state.clone(),
+        "staleReason": record.stale_reason.clone(),
+        "checkedAt": record.freshness_checked_at.clone(),
+        "sourceFingerprints": freshness.get("sourceFingerprints").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+        "supersedesId": record.supersedes_id.clone(),
+        "supersededById": record.superseded_by_id.clone(),
+        "invalidatedAt": record.invalidated_at.clone(),
+        "factKey": record.fact_key.clone(),
+        "confidence": record.confidence,
+        "sourceRunId": record.run_id.clone(),
+        "sourceItemIds": record.source_item_ids.clone(),
+        "relatedPaths": record.related_paths.clone(),
+    })
+}
+
+fn memory_trust_envelope(memory: &project_store::AgentMemoryRecord) -> JsonValue {
+    let freshness = memory_freshness_metadata(memory);
+    let related_paths = freshness
+        .get("sourceFingerprints")
+        .and_then(JsonValue::as_array)
+        .map(|fingerprints| {
+            fingerprints
+                .iter()
+                .filter_map(|fingerprint| fingerprint.get("path").and_then(JsonValue::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "freshnessState": memory.freshness_state.clone(),
+        "staleReason": memory.stale_reason.clone(),
+        "checkedAt": memory.freshness_checked_at.clone(),
+        "sourceFingerprints": freshness.get("sourceFingerprints").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+        "supersedesId": memory.supersedes_id.clone(),
+        "supersededById": memory.superseded_by_id.clone(),
+        "invalidatedAt": memory.invalidated_at.clone(),
+        "factKey": memory.fact_key.clone(),
+        "confidence": memory.confidence,
+        "sourceRunId": memory.source_run_id.clone(),
+        "sourceItemIds": memory.source_item_ids.clone(),
+        "relatedPaths": related_paths,
+    })
 }
 
 struct ManualRetrievalSource {
@@ -807,8 +1281,14 @@ impl ManualRetrievalSource {
                 redaction.redacted,
             ),
             metadata: Some(json!({
-                "title": record.title,
+                "title": record.title.clone(),
                 "recordKind": project_record_kind_label(&record.record_kind),
+                "freshness": project_record_freshness_metadata(record),
+                "trust": project_record_trust_envelope(record),
+                "confidence": record.confidence,
+                "sourceRunId": record.run_id.clone(),
+                "sourceItemIds": record.source_item_ids.clone(),
+                "relatedPaths": record.related_paths.clone(),
                 "citation": format!("project_records:{}", record.record_id)
             })),
         }
@@ -827,6 +1307,11 @@ impl ManualRetrievalSource {
             },
             metadata: Some(json!({
                 "memoryKind": agent_memory_kind_label(&memory.kind),
+                "freshness": memory_freshness_metadata(memory),
+                "trust": memory_trust_envelope(memory),
+                "confidence": memory.confidence,
+                "sourceRunId": memory.source_run_id.clone(),
+                "sourceItemIds": memory.source_item_ids.clone(),
                 "citation": format!("agent_memories:{}", memory.memory_id)
             })),
         }
@@ -897,10 +1382,28 @@ fn generated_project_context_query_id(run_id: &str) -> String {
     format!("project-context-{run_id}-{suffix}")
 }
 
-fn candidate_tags(tags: &[String], runtime_agent_id: RuntimeAgentIdDto) -> Vec<String> {
+fn ensure_context_write_allowed(runtime_agent_id: RuntimeAgentIdDto) -> CommandResult<()> {
+    if runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
+        return Err(CommandError::user_fixable(
+            "project_context_write_forbidden_for_agent_create",
+            "Agent Create can search and read durable project context, but records agent definitions through the agent_definition tool.",
+        ));
+    }
+    Ok(())
+}
+
+fn context_record_tags(
+    tags: &[String],
+    runtime_agent_id: RuntimeAgentIdDto,
+    visibility: &project_store::ProjectRecordVisibility,
+) -> Vec<String> {
     let mut values = normalized_strings(tags);
     values.push("project-context-tool".into());
-    values.push("candidate".into());
+    if *visibility == project_store::ProjectRecordVisibility::MemoryCandidate {
+        values.push("candidate".into());
+    } else {
+        values.push("automatic".into());
+    }
     values.push(format!("runtime-agent:{}", runtime_agent_id.as_str()));
     dedupe_strings(values)
 }
@@ -912,6 +1415,50 @@ fn candidate_source_item_ids(
     let mut values = normalized_strings(source_item_ids);
     values.push(format!("agent_runs:{}", run_context.run_id));
     dedupe_strings(values)
+}
+
+fn selected_ids(single: Option<&str>, many: &[String]) -> Vec<String> {
+    let mut values = normalized_strings(many);
+    if let Some(value) = optional_trimmed(single) {
+        values.push(value);
+    }
+    dedupe_strings(values)
+}
+
+fn update_record_content_json(
+    content_json: Option<JsonValue>,
+    supersession_key: &str,
+    supersession_id: &str,
+) -> JsonValue {
+    let mut object = JsonMap::new();
+    object.insert(
+        supersession_key.into(),
+        JsonValue::String(supersession_id.into()),
+    );
+    if let Some(content_json) = content_json {
+        object.insert("update".into(), content_json);
+    }
+    JsonValue::Object(object)
+}
+
+fn record_kind_for_memory(
+    kind: &project_store::AgentMemoryKind,
+) -> AutonomousProjectContextRecordKind {
+    match kind {
+        project_store::AgentMemoryKind::ProjectFact => {
+            AutonomousProjectContextRecordKind::ProjectFact
+        }
+        project_store::AgentMemoryKind::UserPreference => {
+            AutonomousProjectContextRecordKind::ContextNote
+        }
+        project_store::AgentMemoryKind::Decision => AutonomousProjectContextRecordKind::Decision,
+        project_store::AgentMemoryKind::SessionSummary => {
+            AutonomousProjectContextRecordKind::AgentHandoff
+        }
+        project_store::AgentMemoryKind::Troubleshooting => {
+            AutonomousProjectContextRecordKind::Finding
+        }
+    }
 }
 
 fn normalize_limit(limit: Option<u32>) -> u32 {

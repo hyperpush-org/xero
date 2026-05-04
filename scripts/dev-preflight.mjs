@@ -1,22 +1,29 @@
 #!/usr/bin/env node
-// Preflight for `pnpm run dev` — make sure Docker, Postgres, deps,
-// and database schema are ready before the concurrently fan-out kicks
-// in. Each step is idempotent: running it on a fully-prepped machine is
-// fast and silent.
+// Preflight for `pnpm run dev`: make sure local toolchain commands,
+// package deps, Docker/Postgres, Phoenix assets, and database schema are
+// ready before the concurrently fan-out kicks in. Each step is
+// idempotent: running it on a fully-prepped machine is fast and quiet.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { delimiter, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { platform } from 'node:os'
+import { homedir, platform } from 'node:os'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '..')
 const composeFile = resolve(repoRoot, 'server/docker-compose.yml')
+const composeScript = resolve(scriptDir, 'docker-compose.mjs')
+const clientDir = resolve(repoRoot, 'client')
+const landingDir = resolve(repoRoot, 'landing')
 const serverDir = resolve(repoRoot, 'server')
 const containerName = 'xero-postgres'
+const host = platform()
+const isWindows = host === 'win32'
 
 const DOCKER_DAEMON_TIMEOUT_MS = 90_000
+const DOCKER_INFO_TIMEOUT_MS = 5_000
+const DOCKER_START_TIMEOUT_MS = 10_000
 const CONTAINER_HEALTHY_TIMEOUT_MS = 90_000
 const POLL_INTERVAL_MS = 1500
 
@@ -44,7 +51,7 @@ function run(cmd, args, opts = {}) {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     timeout: opts.timeout,
-    shell: platform() === 'win32',
+    shell: opts.shell ?? isWindows,
   })
   return result
 }
@@ -53,13 +60,53 @@ function quiet(cmd, args, opts = {}) {
   return run(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
+function quietAsync(cmd, args, opts = {}) {
+  return new Promise((resolveChild) => {
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    let settled = false
+    let timer = null
+
+    const child = spawn(cmd, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: opts.cwd,
+      env: opts.env ?? process.env,
+      shell: opts.shell ?? isWindows,
+    })
+
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolveChild({ stdout, stderr, timedOut, ...result })
+    }
+
+    timer = opts.timeout
+      ? setTimeout(() => {
+          timedOut = true
+          child.kill('SIGKILL')
+        }, opts.timeout)
+      : null
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.on('exit', (code, signal) => finish({ status: code, signal }))
+    child.on('error', (error) => finish({ status: null, error }))
+  })
+}
+
 function streamRun(cmd, args, opts = {}) {
   return new Promise((resolveChild, reject) => {
     const child = spawn(cmd, args, {
       stdio: 'inherit',
       cwd: opts.cwd,
       env: opts.env ?? process.env,
-      shell: platform() === 'win32',
+      shell: opts.shell ?? isWindows,
     })
     child.on('exit', (code) => {
       if (code === 0) {
@@ -74,23 +121,158 @@ function streamRun(cmd, args, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-function dockerDaemonReady() {
+function statMtimeMs(path) {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+function nodeModulesBinPath(dir, binName) {
+  const extension = isWindows ? '.cmd' : ''
+  return resolve(dir, 'node_modules', '.bin', `${binName}${extension}`)
+}
+
+function pnpmDepsNeedInstall(dir, requiredBins = []) {
+  const nodeModulesDir = resolve(dir, 'node_modules')
+  const installMarker = resolve(nodeModulesDir, '.modules.yaml')
+  if (!existsSync(nodeModulesDir) || !existsSync(installMarker)) return true
+
+  for (const binName of requiredBins) {
+    if (!existsSync(nodeModulesBinPath(dir, binName))) return true
+  }
+
+  const installMtime = statMtimeMs(installMarker)
+  const manifestMtime = statMtimeMs(resolve(dir, 'package.json'))
+  const lockfileMtime = statMtimeMs(resolve(dir, 'pnpm-lock.yaml'))
+  return installMtime < Math.max(manifestMtime, lockfileMtime)
+}
+
+function parseMajorVersion(versionText) {
+  const match = String(versionText).match(/\d+/)
+  return match ? Number.parseInt(match[0], 10) : Number.NaN
+}
+
+function isRunnableFile(path) {
+  try {
+    const stat = statSync(path)
+    if (!stat.isFile()) return false
+    return isWindows || (stat.mode & 0o111) !== 0
+  } catch {
+    return false
+  }
+}
+
+async function dockerDaemonReady() {
   // `docker info` exits non-zero if the daemon is unreachable. We use
   // `--format` to keep the output tiny on success.
-  const probe = quiet('docker', ['info', '--format', '{{.ServerVersion}}'])
+  const probe = await quietAsync('docker', ['info', '--format', '{{.ServerVersion}}'], {
+    shell: false,
+    timeout: DOCKER_INFO_TIMEOUT_MS,
+  })
   return probe.status === 0
 }
 
 function commandExists(command) {
-  const locator = platform() === 'win32' ? 'where.exe' : 'which'
-  return quiet(locator, [command]).status === 0
+  if (command.includes('/') || command.includes('\\')) {
+    return isRunnableFile(command)
+  }
+
+  const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+  const extensions = isWindows
+    ? ['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';')]
+    : ['']
+
+  return pathDirs.some((dir) =>
+    extensions.some((extension) => isRunnableFile(resolve(dir, `${command}${extension}`))),
+  )
+}
+
+function requireCommand(command, help) {
+  if (commandExists(command)) return
+  fail(`Missing required command \`${command}\` on PATH. ${help}`)
+  process.exit(1)
+}
+
+function requireMinimumMajor(command, args, minimumMajor, help) {
+  const result = quiet(command, args)
+  if (result.status !== 0) {
+    fail(`Could not read ${command} version. ${help}`)
+    process.exit(1)
+  }
+
+  const major = parseMajorVersion(result.stdout || result.stderr)
+  if (!Number.isFinite(major) || major < minimumMajor) {
+    fail(`Required ${command} ${minimumMajor}+ but found: ${(result.stdout || result.stderr).trim()}`)
+    console.error(`${tag} ${help}`)
+    process.exit(1)
+  }
+}
+
+function ensureRequiredToolchain() {
+  const nodeMajor = parseMajorVersion(process.versions.node)
+  if (!Number.isFinite(nodeMajor) || nodeMajor < 20) {
+    fail(`Required Node.js 20+ but found ${process.version}. Install a modern LTS release and retry.`)
+    process.exit(1)
+  }
+
+  requireCommand('pnpm', 'Enable Corepack or install pnpm, then run `pnpm run dev` again.')
+  requireCommand('git', 'Install Git so Mix can fetch git-backed dependencies.')
+  requireCommand('mix', 'Install Elixir/Mix for the Phoenix sidecar server.')
+  requireCommand('cargo', 'Install the Rust toolchain for the Tauri backend.')
+  requireCommand('protoc', 'Install Protocol Buffers; on macOS, `brew install protobuf`.')
+
+  requireMinimumMajor('pnpm', ['--version'], 9, 'Enable Corepack or install pnpm 9+.')
+
+  ok('Required local toolchain commands are available.')
+}
+
+async function ensurePnpmDeps({ label, dir, requiredBins = [] }) {
+  if (!existsSync(resolve(dir, 'package.json'))) {
+    warn(`Skipping ${label} pnpm install because ${dir}/package.json is missing.`)
+    return
+  }
+
+  if (!pnpmDepsNeedInstall(dir, requiredBins)) {
+    log(`${label} pnpm deps already installed.`)
+    return
+  }
+
+  const args = ['install']
+  if (existsSync(resolve(dir, 'pnpm-lock.yaml'))) {
+    args.push('--frozen-lockfile')
+  }
+  args.push('--prefer-offline')
+
+  log(`Installing ${label} pnpm deps...`)
+  await streamRun('pnpm', args, { cwd: dir })
+  ok(`${label} pnpm deps ready.`)
+}
+
+async function ensureNodeDeps() {
+  await ensurePnpmDeps({
+    label: 'root dev tooling',
+    dir: repoRoot,
+    requiredBins: ['concurrently'],
+  })
+  await ensurePnpmDeps({
+    label: 'desktop client',
+    dir: clientDir,
+    requiredBins: ['tauri', 'vite'],
+  })
+  await ensurePnpmDeps({
+    label: 'landing site',
+    dir: landingDir,
+    requiredBins: ['next'],
+  })
 }
 
 function psSingleQuoted(value) {
   return `'${value.replaceAll("'", "''")}'`
 }
 
-function launchDockerDesktopOnWindows() {
+async function launchDockerDesktopOnWindows() {
   const candidates = [
     process.env.ProgramFiles && resolve(process.env.ProgramFiles, 'Docker', 'Docker', 'Docker Desktop.exe'),
     process.env['ProgramFiles(x86)'] &&
@@ -100,32 +282,66 @@ function launchDockerDesktopOnWindows() {
 
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue
-    const launch = quiet('powershell.exe', [
+    const launch = await quietAsync('powershell.exe', [
       '-NoProfile',
       '-Command',
       `Start-Process -FilePath ${psSingleQuoted(candidate)}`,
-    ])
+    ], { shell: false, timeout: DOCKER_START_TIMEOUT_MS })
     if (launch.status === 0) return true
   }
 
   return false
 }
 
+async function startDockerOnLinux() {
+  const attempts = []
+
+  if (commandExists('systemctl')) {
+    attempts.push(['systemctl', ['--user', 'start', 'docker-desktop']])
+
+    if (process.getuid?.() === 0) {
+      attempts.push(['systemctl', ['start', 'docker']])
+    } else if (commandExists('sudo')) {
+      attempts.push(['sudo', ['-n', 'systemctl', 'start', 'docker']])
+    }
+  }
+
+  if (commandExists('service')) {
+    if (process.getuid?.() === 0) {
+      attempts.push(['service', ['docker', 'start']])
+    } else if (commandExists('sudo')) {
+      attempts.push(['sudo', ['-n', 'service', 'docker', 'start']])
+    }
+  }
+
+  for (const [cmd, args] of attempts) {
+    const start = await quietAsync(cmd, args, {
+      shell: false,
+      timeout: DOCKER_START_TIMEOUT_MS,
+    })
+    if (start.status === 0) return true
+  }
+
+  return false
+}
+
 async function ensureDockerRunning() {
-  if (dockerDaemonReady()) {
+  if (await dockerDaemonReady()) {
     ok('Docker daemon is running.')
     return
   }
 
   if (!commandExists('docker')) {
-    fail('Docker CLI not found on PATH. Install Docker Desktop and retry.')
+    fail('Docker CLI not found on PATH. Install Docker Desktop, Docker Engine, or a compatible Docker CLI and retry.')
     process.exit(1)
   }
 
-  const host = platform()
   if (host === 'darwin') {
     log('Docker daemon is not running — launching Docker Desktop...')
-    const launch = quiet('open', ['-ga', 'Docker'])
+    const launch = await quietAsync('open', ['-ga', 'Docker'], {
+      shell: false,
+      timeout: DOCKER_START_TIMEOUT_MS,
+    })
     if (launch.status !== 0) {
       fail(
         'Could not launch Docker Desktop with `open -ga Docker`. Start it manually and retry.',
@@ -133,17 +349,17 @@ async function ensureDockerRunning() {
       process.exit(1)
     }
   } else if (host === 'linux') {
-    log('Docker daemon is not running — attempting `systemctl start docker`...')
-    const start = quiet('sudo', ['-n', 'systemctl', 'start', 'docker'])
-    if (start.status !== 0) {
+    log('Docker daemon is not running — attempting to start a local Docker service...')
+    const start = await startDockerOnLinux()
+    if (!start) {
       fail(
-        'Could not start dockerd via systemctl (sudo may have prompted). Start Docker manually and retry.',
+        'Could not start Docker automatically. Start Docker Desktop, dockerd, or a compatible daemon manually and retry.',
       )
       process.exit(1)
     }
   } else if (host === 'win32') {
     log('Docker daemon is not running — launching Docker Desktop...')
-    if (!launchDockerDesktopOnWindows()) {
+    if (!(await launchDockerDesktopOnWindows())) {
       fail('Could not launch Docker Desktop automatically. Start Docker Desktop manually and retry.')
       process.exit(1)
     }
@@ -157,7 +373,7 @@ async function ensureDockerRunning() {
   const deadline = Date.now() + DOCKER_DAEMON_TIMEOUT_MS
   let dots = 0
   while (Date.now() < deadline) {
-    if (dockerDaemonReady()) {
+    if (await dockerDaemonReady()) {
       ok('Docker daemon is up.')
       return
     }
@@ -169,60 +385,61 @@ async function ensureDockerRunning() {
   fail(
     `Docker daemon did not become ready within ${Math.round(
       DOCKER_DAEMON_TIMEOUT_MS / 1000,
-    )}s. Open Docker Desktop manually and retry.`,
+    )}s. Start Docker Desktop, dockerd, or a compatible Docker daemon manually and retry.`,
   )
   process.exit(1)
 }
 
-function containerExists() {
-  const probe = quiet('docker', [
+async function containerExists() {
+  const probe = await quietAsync('docker', [
     'ps',
     '-a',
     '--filter',
     `name=^${containerName}$`,
     '--format',
     '{{.Names}}',
-  ])
+  ], { shell: false, timeout: DOCKER_INFO_TIMEOUT_MS })
   return probe.status === 0 && probe.stdout.trim() === containerName
 }
 
-function containerRunning() {
-  const probe = quiet('docker', [
+async function containerRunning() {
+  const probe = await quietAsync('docker', [
     'ps',
     '--filter',
     `name=^${containerName}$`,
     '--format',
     '{{.Names}}',
-  ])
+  ], { shell: false, timeout: DOCKER_INFO_TIMEOUT_MS })
   return probe.status === 0 && probe.stdout.trim() === containerName
 }
 
-function containerHealth() {
-  const probe = quiet('docker', [
+async function containerHealth() {
+  const probe = await quietAsync('docker', [
     'inspect',
     '--format',
     '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}',
     containerName,
-  ])
+  ], { shell: false, timeout: DOCKER_INFO_TIMEOUT_MS })
   if (probe.status !== 0) return null
   return probe.stdout.trim() || null
 }
 
 async function ensurePostgresUp() {
-  if (containerRunning()) {
+  if (await containerRunning()) {
     log('Postgres container already running.')
   } else {
+    const exists = await containerExists()
     log(
-      containerExists()
+      exists
         ? 'Postgres container exists but is stopped — bringing it up...'
         : 'Postgres container does not exist — pulling image and starting it (first run takes a minute)...',
     )
-    await streamRun('docker', ['compose', '-f', composeFile, 'up', '-d'])
+    await streamRun('node', [composeScript, '-f', composeFile, 'up', '-d'], { shell: false })
   }
 
   const deadline = Date.now() + CONTAINER_HEALTHY_TIMEOUT_MS
   while (Date.now() < deadline) {
-    const status = containerHealth()
+    const status = await containerHealth()
     if (status === 'healthy' || status === 'running') {
       // `running` covers the moment between healthcheck rounds during
       // startup; a follow-up loop will catch the unhealthy case.
@@ -255,13 +472,90 @@ function depsLooksPopulated() {
   }
 }
 
+function mixDepsNeedFetch() {
+  if (!depsLooksPopulated()) return true
+
+  const depsMtime = statMtimeMs(resolve(serverDir, 'deps'))
+  const mixExsMtime = statMtimeMs(resolve(serverDir, 'mix.exs'))
+  const mixLockMtime = statMtimeMs(resolve(serverDir, 'mix.lock'))
+  return depsMtime < Math.max(mixExsMtime, mixLockMtime)
+}
+
+function fileExistsUnder(dir, names, maxDepth) {
+  if (maxDepth < 0 || !existsSync(dir)) return false
+
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (names.includes(entry.name)) return true
+      if (entry.isDirectory() && fileExistsUnder(resolve(dir, entry.name), names, maxDepth - 1)) {
+        return true
+      }
+    }
+  } catch {
+    return false
+  }
+
+  return false
+}
+
+function rebarLooksInstalled() {
+  const mixHome = process.env.MIX_HOME ?? resolve(homedir(), '.mix')
+  const names = isWindows ? ['rebar3.exe', 'rebar.exe', 'rebar3', 'rebar'] : ['rebar3', 'rebar']
+  return fileExistsUnder(mixHome, names, 4)
+}
+
+async function ensureMixBootstrapTools() {
+  if (quiet('mix', ['hex.info']).status === 0) {
+    log('Hex is available.')
+  } else {
+    log('Installing Hex for Mix...')
+    await streamRun('mix', ['local.hex', '--force'])
+  }
+
+  if (rebarLooksInstalled()) {
+    log('Rebar is available.')
+  } else {
+    log('Installing Rebar for Mix...')
+    await streamRun('mix', ['local.rebar', '--force'])
+  }
+}
+
 async function ensureMixDeps() {
-  if (depsLooksPopulated()) {
+  if (!mixDepsNeedFetch()) {
     log('Mix deps already populated — skipping `mix deps.get`.')
     return
   }
   log('Fetching mix deps (`mix deps.get`)...')
   await streamRun('mix', ['deps.get'], { cwd: serverDir })
+}
+
+function phoenixAssetToolsReady() {
+  const buildDir = resolve(serverDir, '_build')
+  if (!existsSync(buildDir)) return false
+
+  try {
+    const entries = readdirSync(buildDir)
+    return (
+      entries.some((entry) => entry.startsWith('esbuild-')) &&
+      entries.some((entry) => entry.startsWith('tailwind-'))
+    )
+  } catch {
+    return false
+  }
+}
+
+async function ensurePhoenixAssets() {
+  if (phoenixAssetToolsReady()) {
+    log('Phoenix asset tools already installed.')
+    return
+  }
+
+  log('Installing Phoenix asset tools (`mix assets.setup`)...')
+  await streamRun('mix', ['assets.setup'], {
+    cwd: serverDir,
+    env: { ...process.env, MIX_ENV: process.env.MIX_ENV ?? 'dev' },
+  })
+  ok('Phoenix asset tools ready.')
 }
 
 async function ensureSchema() {
@@ -283,9 +577,13 @@ async function ensureSchema() {
 
 async function main() {
   const t0 = Date.now()
+  ensureRequiredToolchain()
+  await ensureNodeDeps()
+  await ensureMixBootstrapTools()
+  await ensureMixDeps()
+  await ensurePhoenixAssets()
   await ensureDockerRunning()
   await ensurePostgresUp()
-  await ensureMixDeps()
   await ensureSchema()
   ok(`Preflight complete in ${((Date.now() - t0) / 1000).toFixed(1)}s.`)
 }

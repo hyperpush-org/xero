@@ -145,6 +145,7 @@ import {
   repositoryDiffResponseSchema,
   repositoryStatusChangedPayloadSchema,
   repositoryStatusResponseSchema,
+  revokeProjectAssetTokensRequestSchema,
   searchProjectRequestSchema,
   searchProjectResponseSchema,
   writeProjectFileRequestSchema,
@@ -183,6 +184,7 @@ import {
   type RepositoryDiffScope,
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
+  type RevokeProjectAssetTokensRequestDto,
   type SearchProjectRequestDto,
   type SearchProjectResponseDto,
   type WriteProjectFileResponseDto,
@@ -381,6 +383,8 @@ const COMMANDS = {
   listProjectFiles: 'list_project_files',
   readProjectFile: 'read_project_file',
   writeProjectFile: 'write_project_file',
+  revokeProjectAssetTokens: 'revoke_project_asset_tokens',
+  openProjectFileExternal: 'open_project_file_external',
   createProjectEntry: 'create_project_entry',
   renameProjectEntry: 'rename_project_entry',
   moveProjectEntry: 'move_project_entry',
@@ -697,6 +701,8 @@ export interface XeroDesktopAdapter {
   listProjectFiles(projectId: string, path?: string): Promise<ListProjectFilesResponseDto>
   readProjectFile(projectId: string, path: string): Promise<ReadProjectFileResponseDto>
   writeProjectFile(projectId: string, path: string, content: string): Promise<WriteProjectFileResponseDto>
+  revokeProjectAssetTokens?(projectId: string, paths?: string[]): Promise<void>
+  openProjectFileExternal?(projectId: string, path: string): Promise<void>
   createProjectEntry(request: CreateProjectEntryRequestDto): Promise<CreateProjectEntryResponseDto>
   renameProjectEntry(request: RenameProjectEntryRequestDto): Promise<RenameProjectEntryResponseDto>
   moveProjectEntry(request: MoveProjectEntryRequestDto): Promise<MoveProjectEntryResponseDto>
@@ -1572,6 +1578,19 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTyped(COMMANDS.writeProjectFile, writeProjectFileResponseSchema, {
       request,
     })
+  },
+
+  async revokeProjectAssetTokens(projectId, paths = []) {
+    const request: RevokeProjectAssetTokensRequestDto = revokeProjectAssetTokensRequestSchema.parse({
+      projectId,
+      paths,
+    })
+    await invokeRaw(COMMANDS.revokeProjectAssetTokens, { request })
+  },
+
+  async openProjectFileExternal(projectId, path) {
+    const request = projectFileRequestSchema.parse({ projectId, path })
+    await invokeRaw(COMMANDS.openProjectFileExternal, { request })
   },
 
   createProjectEntry(request) {

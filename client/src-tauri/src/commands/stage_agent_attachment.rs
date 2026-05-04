@@ -74,10 +74,7 @@ pub fn stage_agent_attachment<R: Runtime>(
         .unwrap_or_else(|| "bin".to_string());
     let mut id_bytes = [0_u8; 12];
     rand::thread_rng().fill_bytes(&mut id_bytes);
-    let file_id: String = id_bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let file_id: String = id_bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let filename = format!("{file_id}.{extension}");
     let storage_path: PathBuf = attachments_dir.join(&filename);
 

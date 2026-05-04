@@ -23,11 +23,16 @@ import { DeleteFileDialog } from './delete-file-dialog'
 import { RenameFileDialog } from './rename-file-dialog'
 import { EditorEmptyState, LoadingState } from './execution-view/editor-empty-state'
 import { ExplorerPane } from './execution-view/explorer-pane'
-import { EditorStatusBar, EditorToolbar } from './execution-view/editor-status-bar'
+import { EditorStatusBar, EditorToolbar, PreviewStatusBar } from './execution-view/editor-status-bar'
 import { EditorTabs } from './execution-view/editor-tabs'
+import {
+  FileEditorHost,
+  defaultModeForResource,
+  resourceSupportsPreviewToggle,
+  type FileEditorMode,
+} from './execution-view/file-editor-host'
 import { useExecutionWorkspaceController } from './execution-view/use-execution-workspace-controller'
 
-const LazyCodeEditor = lazy(() => import('./code-editor').then((module) => ({ default: module.CodeEditor })))
 const LazyFindReplacePane = lazy(() =>
   import('./execution-view/find-replace-pane').then((module) => ({ default: module.FindReplacePane })),
 )
@@ -38,6 +43,8 @@ export interface ExecutionViewProps {
   listProjectFiles: (projectId: string, path?: string) => Promise<ListProjectFilesResponseDto>
   readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
   writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
+  revokeProjectAssetTokens?: (projectId: string, paths?: string[]) => Promise<void>
+  openProjectFileExternal?: (projectId: string, path: string) => Promise<void>
   createProjectEntry: (request: CreateProjectEntryRequestDto) => Promise<CreateProjectEntryResponseDto>
   renameProjectEntry: (request: RenameProjectEntryRequestDto) => Promise<RenameProjectEntryResponseDto>
   moveProjectEntry: (request: MoveProjectEntryRequestDto) => Promise<MoveProjectEntryResponseDto>
@@ -52,6 +59,8 @@ function EditorView({
   listProjectFiles,
   readProjectFile,
   writeProjectFile,
+  revokeProjectAssetTokens,
+  openProjectFileExternal,
   createProjectEntry,
   renameProjectEntry,
   moveProjectEntry,
@@ -84,6 +93,7 @@ function EditorView({
     newChildTarget,
     setNewChildTarget,
     activeNode,
+    activeResource,
     activeContent,
     activeSavedContent,
     activeDocumentVersion,
@@ -92,6 +102,7 @@ function EditorView({
     isActiveDirty,
     isActiveSaving,
     isActiveLoading,
+    isActiveText,
     closeTab,
     handleSelectFile,
     handleToggleFolder,
@@ -129,6 +140,45 @@ function EditorView({
     token: number
   }>({ open: false, query: '', token: 0 })
   const pendingJumpRef = useRef<{ path: string; line: number; column: number } | null>(null)
+  const assetPreviewUrlCacheRef = useRef<Map<string, Promise<string | null>>>(new Map())
+  const previousProjectIdRef = useRef(projectId)
+  const [editorModeByPath, setEditorModeByPath] = useState<Record<string, FileEditorMode>>({})
+
+  const activeMode: FileEditorMode = activePath
+    ? editorModeByPath[activePath] ?? defaultModeForResource(activeResource)
+    : 'source'
+
+  // When the active project changes the controller resets caches, so prune mode state too.
+  useEffect(() => {
+    const previousProjectId = previousProjectIdRef.current
+    if (previousProjectId !== projectId) {
+      void revokeProjectAssetTokens?.(previousProjectId).catch(() => {})
+      previousProjectIdRef.current = projectId
+    }
+    setEditorModeByPath({})
+    assetPreviewUrlCacheRef.current.clear()
+  }, [projectId, revokeProjectAssetTokens])
+
+  const resolveAssetPreviewUrl = useCallback(
+    (path: string): Promise<string | null> => {
+      const key = `${projectId}:${path}`
+      const cached = assetPreviewUrlCacheRef.current.get(key)
+      if (cached) {
+        return cached
+      }
+
+      const request = readProjectFile(projectId, path)
+        .then((response) =>
+          response.kind === 'renderable' && response.rendererKind === 'image'
+            ? response.previewUrl
+            : null,
+        )
+        .catch(() => null)
+      assetPreviewUrlCacheRef.current.set(key, request)
+      return request
+    },
+    [projectId, readProjectFile],
+  )
 
   const flushEditorSnapshot = useCallback(() => {
     if (!editorView) {
@@ -139,6 +189,17 @@ function EditorView({
     handleSnapshotChange(snapshot)
     return snapshot
   }, [editorView, handleSnapshotChange])
+
+  const handleModeChange = useCallback(
+    (mode: FileEditorMode) => {
+      if (!activePath) return
+      flushEditorSnapshot()
+      setEditorModeByPath((current) =>
+        current[activePath] === mode ? current : { ...current, [activePath]: mode },
+      )
+    },
+    [activePath, flushEditorSnapshot],
+  )
 
   const handleSaveActive = useCallback(
     (snapshot?: string) => {
@@ -158,9 +219,24 @@ function EditorView({
   const handleCloseTab = useCallback(
     (path: string) => {
       flushEditorSnapshot()
+      assetPreviewUrlCacheRef.current.delete(`${projectId}:${path}`)
+      void revokeProjectAssetTokens?.(projectId, [path]).catch(() => {})
       closeTab(path)
     },
-    [closeTab, flushEditorSnapshot],
+    [closeTab, flushEditorSnapshot, projectId, revokeProjectAssetTokens],
+  )
+
+  const handleReloadProjectTree = useCallback(() => {
+    assetPreviewUrlCacheRef.current.clear()
+    void revokeProjectAssetTokens?.(projectId).catch(() => {})
+    reloadProjectTree()
+  }, [projectId, reloadProjectTree, revokeProjectAssetTokens])
+
+  const handleOpenExternal = useCallback(
+    (path: string) => {
+      void openProjectFileExternal?.(projectId, path).catch(() => {})
+    },
+    [openProjectFileExternal, projectId],
   )
 
   const handleSelectFileWithSnapshot = useCallback(
@@ -307,7 +383,7 @@ function EditorView({
           onCreateEntry={handleCreateSubmitWithSnapshot}
           onCopyPath={handleCopyPath}
           onOpenFind={() => handleOpenFind({ withReplace: true, initialQuery: '' })}
-          onReload={reloadProjectTree}
+          onReload={handleReloadProjectTree}
         />
       )}
 
@@ -326,6 +402,7 @@ function EditorView({
             activePath={activePath}
             isDirty={isActiveDirty}
             isSaving={isActiveSaving}
+            showSaveControls={isActiveText}
             onRevert={revertActive}
             onSave={() => {
               handleSaveActive()
@@ -335,35 +412,47 @@ function EditorView({
 
         <div className="flex min-h-0 flex-1 flex-col bg-background">
           {activePath && activeNode?.type === 'file' ? (
-            isActiveLoading ? (
+            isActiveLoading || !activeResource ? (
               <LoadingState path={activePath} />
             ) : (
               <>
-                <div className="flex-1 overflow-hidden">
-                  <Suspense fallback={<LoadingState path={activePath} />}>
-                    <LazyCodeEditor
-                      key={activePath}
-                      value={activeContent}
-                      savedValue={activeSavedContent}
-                      documentVersion={activeDocumentVersion}
-                      filePath={activePath}
-                      onSnapshotChange={handleSnapshotChange}
-                      onDirtyChange={handleDirtyChange}
-                      onDocumentStatsChange={handleDocumentStatsChange}
-                      onSave={handleSaveActive}
-                      onCursorChange={setCursor}
-                      onOpenFind={handleOpenFind}
-                      onViewReady={setEditorView}
-                    />
-                  </Suspense>
+                <div className="flex min-h-0 flex-1 overflow-hidden">
+                  <FileEditorHost
+                    key={activePath}
+                    filePath={activePath}
+                    resource={activeResource}
+                    textValue={activeContent}
+                    textSavedValue={activeSavedContent}
+                    textDocumentVersion={activeDocumentVersion}
+                    onSnapshotChange={handleSnapshotChange}
+                    onDirtyChange={handleDirtyChange}
+                    onDocumentStatsChange={handleDocumentStatsChange}
+                    onSave={handleSaveActive}
+                    onCursorChange={setCursor}
+                    onOpenFind={handleOpenFind}
+                    onViewReady={setEditorView}
+                    onResolveAssetPreviewUrl={resolveAssetPreviewUrl}
+                    onCopyPath={handleCopyPath}
+                    onOpenExternal={openProjectFileExternal ? handleOpenExternal : undefined}
+                    mode={activeMode}
+                    onModeChange={handleModeChange}
+                  />
                 </div>
-                <EditorStatusBar
-                  cursor={cursor}
-                  lang={activeLang}
-                  lineCount={activeLineCount}
-                  isDirty={isActiveDirty}
-                  isSaving={isActiveSaving}
-                />
+                {isActiveText && (activeMode === 'source' || !resourceSupportsPreviewToggle(activeResource)) ? (
+                  <EditorStatusBar
+                    cursor={cursor}
+                    lang={activeLang}
+                    lineCount={activeLineCount}
+                    isDirty={isActiveDirty}
+                    isSaving={isActiveSaving}
+                  />
+                ) : (
+                  <PreviewStatusBar
+                    rendererKind={activeResource.rendererKind ?? 'binary'}
+                    mimeType={activeResource.mimeType}
+                    byteLength={activeResource.byteLength}
+                  />
+                )}
               </>
             )
           ) : (

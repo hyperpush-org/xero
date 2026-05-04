@@ -19,7 +19,6 @@ pub async fn get_repository_status<R: Runtime>(
     let registry_path = state.global_db_path(&app)?;
     let jobs = state.backend_jobs().clone();
     let project_id = request.project_id;
-    drop(state);
     drop(app);
 
     jobs.run_blocking_latest(

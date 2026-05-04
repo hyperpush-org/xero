@@ -527,9 +527,15 @@ describe('live views', () => {
 
   it('renders the editor against the selected project tree', async () => {
     const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
+      kind: 'text' as const,
       projectId,
       path,
-      content: '# Xero\n',
+      byteLength: 7,
+      modifiedAt: '2026-01-01T00:00:00Z',
+      contentHash: 'test-readme',
+      mimeType: 'text/markdown; charset=utf-8',
+      rendererKind: 'markdown' as const,
+      text: '# Xero\n',
     }))
 
     render(

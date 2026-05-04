@@ -2,7 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -126,7 +126,7 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
 
   const theme = useMemo(() => getThemeById(themeId, allThemes), [themeId, allThemes])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyThemeToDocument(
       theme,
       allThemes.map((t) => t.id),

@@ -1165,6 +1165,15 @@
     isolation: isolate;
   }
 
+  .sessions-collapse-ghost {
+    animation-name: xero-sessions-collapse-ghost;
+    animation-timing-function: var(--motion-ease-in);
+    animation-fill-mode: both;
+    contain: layout paint style;
+    transform: translateZ(0);
+    will-change: transform, opacity;
+  }
+
   /* Apply to elements that animate transform/opacity for slides — keeps them
    * on their own composite layer so the browser can re-composite without
    * repainting. */
@@ -1341,6 +1350,23 @@
     transition: none !important;
   }
 
+  @keyframes xero-sessions-collapse-ghost {
+    from {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    to {
+      opacity: 0;
+      transform: translate3d(calc(-100% + 6px), 0, 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sessions-collapse-ghost {
+      animation-duration: 1ms !important;
+    }
+  }
+
   /* Keep inactive view panes from re-laying out their heavy children every
    * frame as the main content's width changes during a sidebar animation.
    * `contain: layout paint` isolates internal layout/paint; combined with
@@ -1349,6 +1375,16 @@
    * time. */
   .view-pane {
     contain: layout paint;
+  }
+
+  .agent-pane-shell {
+    contain: layout paint style;
+    isolation: isolate;
+  }
+
+  .agent-pane-shell[data-pane-focused='false'] {
+    content-visibility: auto;
+    contain-intrinsic-size: 360px 320px;
   }
 }
 

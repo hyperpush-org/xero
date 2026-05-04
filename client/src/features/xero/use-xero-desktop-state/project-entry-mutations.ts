@@ -23,6 +23,8 @@ export function useProjectEntryMutations({
   | 'listProjectFiles'
   | 'readProjectFile'
   | 'writeProjectFile'
+  | 'revokeProjectAssetTokens'
+  | 'openProjectFileExternal'
   | 'createProjectEntry'
   | 'renameProjectEntry'
   | 'moveProjectEntry'
@@ -136,6 +138,20 @@ export function useProjectEntryMutations({
     [adapter],
   )
 
+  const revokeProjectAssetTokens = useCallback(
+    async (projectId: string, paths?: string[]) => {
+      await adapter.revokeProjectAssetTokens?.(projectId, paths)
+    },
+    [adapter],
+  )
+
+  const openProjectFileExternal = useCallback(
+    async (projectId: string, path: string) => {
+      await adapter.openProjectFileExternal?.(projectId, path)
+    },
+    [adapter],
+  )
+
   const createProjectEntry = useCallback(
     async (request: Parameters<XeroDesktopMutationActions['createProjectEntry']>[0]) => {
       return await adapter.createProjectEntry(request)
@@ -185,6 +201,8 @@ export function useProjectEntryMutations({
     listProjectFiles,
     readProjectFile,
     writeProjectFile,
+    revokeProjectAssetTokens,
+    openProjectFileExternal,
     createProjectEntry,
     renameProjectEntry,
     moveProjectEntry,

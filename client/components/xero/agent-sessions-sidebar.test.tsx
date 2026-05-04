@@ -2,6 +2,8 @@ import type { ComponentProps } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DndContext } from '@dnd-kit/core'
+
 import { AgentSessionsSidebar } from './agent-sessions-sidebar'
 import type { AgentSessionView } from '@/src/lib/xero-model'
 import type { SessionTranscriptSearchResultSnippetDto } from '@/src/lib/xero-model/session-context'
@@ -36,7 +38,6 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof AgentSessionsSid
       onSelectSession={vi.fn()}
       onCreateSession={vi.fn()}
       onArchiveSession={vi.fn()}
-      onOpenArchivedSessions={vi.fn()}
       {...overrides}
     />,
   )
@@ -82,6 +83,29 @@ describe('AgentSessionsSidebar', () => {
     expect(window.localStorage.getItem('xero.agentSessions.width')).toBe(String(after))
   })
 
+  it('exposes session rows as draggable when wrapped in a DndContext, while preserving click-to-select', () => {
+    const onSelectSession = vi.fn()
+    render(
+      <DndContext>
+        <AgentSessionsSidebar
+          projectId="project-1"
+          sessions={sessions}
+          selectedSessionId="agent-session-main"
+          onSelectSession={onSelectSession}
+          onCreateSession={vi.fn()}
+          onArchiveSession={vi.fn()}
+        />
+      </DndContext>,
+    )
+
+    const sessionButton = screen.getByRole('button', { name: 'Main session' })
+    const draggableWrapper = sessionButton.closest('[aria-roledescription="draggable"]')
+    expect(draggableWrapper).not.toBeNull()
+
+    fireEvent.click(sessionButton)
+    expect(onSelectSession).toHaveBeenCalledWith('agent-session-main')
+  })
+
   it('previews session selection on pointer down before the click handler settles', () => {
     const onSelectSession = vi.fn()
     const altSession = {
@@ -108,17 +132,58 @@ describe('AgentSessionsSidebar', () => {
     expect(onSelectSession).toHaveBeenCalledWith('agent-session-alt')
   })
 
-  it('allows archiving the only active session', async () => {
+  it('requires inline confirmation before archiving the only active session from the card', () => {
+    const onArchiveSession = vi.fn()
+    const onSelectSession = vi.fn()
+    renderSidebar({ onArchiveSession, onSelectSession })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive Main session' }))
+
+    expect(onArchiveSession).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Confirm archive Main session' })).toHaveTextContent('Archive')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm archive Main session' }))
+
+    expect(onArchiveSession).toHaveBeenCalledWith('agent-session-main')
+    expect(onSelectSession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Session actions for Main session' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Rename')).not.toBeInTheDocument()
+  })
+
+  it('clears archive confirmation when the cursor leaves the archive button', () => {
     const onArchiveSession = vi.fn()
     renderSidebar({ onArchiveSession })
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Session actions for Main session' }), {
-      button: 0,
-      ctrlKey: false,
-    })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Archive Main session' }))
+    const confirmButton = screen.getByRole('button', { name: 'Confirm archive Main session' })
 
-    expect(onArchiveSession).toHaveBeenCalledWith('agent-session-main')
+    fireEvent.pointerLeave(confirmButton)
+
+    expect(screen.queryByRole('button', { name: 'Confirm archive Main session' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive Main session' }))
+
+    expect(onArchiveSession).not.toHaveBeenCalled()
+  })
+
+  it('pins and unpins a session from the card without selecting it', () => {
+    const onSelectSession = vi.fn()
+    renderSidebar({ onSelectSession })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pin Main session' }))
+
+    expect(onSelectSession).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('xero:pinned-sessions:project-1')).toBe(
+      JSON.stringify(['agent-session-main']),
+    )
+    expect(screen.getByText('Pinned')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin Main session' }))
+
+    expect(onSelectSession).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('xero:pinned-sessions:project-1')).toBe(
+      JSON.stringify([]),
+    )
   })
 
   it('keeps the resize control hidden while collapsed', () => {
@@ -154,6 +219,32 @@ describe('AgentSessionsSidebar', () => {
 
     expect(onRequestPeek).toHaveBeenCalledTimes(1)
     expect(onReleasePeek).toHaveBeenCalledTimes(1)
+  })
+
+  it('snaps the sessions strip closed while animating a compositor collapse ghost', () => {
+    const props: ComponentProps<typeof AgentSessionsSidebar> = {
+      projectId: 'project-1',
+      sessions,
+      selectedSessionId: 'agent-session-main',
+      onSelectSession: vi.fn(),
+      onCreateSession: vi.fn(),
+      onArchiveSession: vi.fn(),
+    }
+    const { container, rerender } = render(<AgentSessionsSidebar {...props} />)
+
+    rerender(
+      <AgentSessionsSidebar
+        {...props}
+        collapsed
+        mode="collapsed"
+        onPin={vi.fn()}
+      />,
+    )
+
+    const sidebar = container.querySelector('aside') as HTMLElement
+    expect(sidebar.style.width).toBe('6px')
+    expect(sidebar.style.transition).toBe('none')
+    expect(container.querySelector('[data-session-collapse-ghost="true"]')).toBeInTheDocument()
   })
 
   it('expands the collapsed sessions strip when the chevron is pressed without requesting peek', () => {
@@ -205,36 +296,6 @@ describe('AgentSessionsSidebar', () => {
     expect(onReleasePeek).toHaveBeenCalled()
   })
 
-  it('validates rename input and recovers after a failed rename', async () => {
-    const onRenameSession = vi
-      .fn<NonNullable<ComponentProps<typeof AgentSessionsSidebar>['onRenameSession']>>()
-      .mockRejectedValueOnce(new Error('Session name already exists.'))
-      .mockResolvedValueOnce(undefined)
-
-    renderSidebar({ onRenameSession })
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Session actions for Main session' }), {
-      button: 0,
-      ctrlKey: false,
-    })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }))
-
-    const input = screen.getByRole('textbox', { name: 'Name' })
-    fireEvent.change(input, { target: { value: '   ' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
-    expect(await screen.findByText('Enter a session name.')).toBeVisible()
-    expect(onRenameSession).not.toHaveBeenCalled()
-
-    fireEvent.change(input, { target: { value: 'Investigation notes' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
-    expect(await screen.findByText('Session name already exists.')).toBeVisible()
-    expect(onRenameSession).toHaveBeenCalledWith('agent-session-main', 'Investigation notes')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    expect(onRenameSession).toHaveBeenCalledTimes(2)
-  })
-
   it('debounces transcript search and opens the selected result', async () => {
     const onSearchSessions = vi.fn(async () => [searchResult])
     const onOpenSearchResult = vi.fn()
@@ -280,7 +341,87 @@ describe('AgentSessionsSidebar', () => {
     expect(screen.getByRole('searchbox', { name: 'Search sessions' })).toHaveValue('')
   })
 
-  it('renders pane number chips for sessions loaded in non-focused panes', () => {
+  it('toggles the archived section, restores, and deletes archived sessions inline', async () => {
+    const archivedSession: AgentSessionView = {
+      ...sessions[0],
+      agentSessionId: 'agent-session-archived',
+      title: 'Old session',
+      status: 'archived',
+      statusLabel: 'Archived',
+      selected: false,
+      archivedAt: '2026-04-10T20:00:00Z',
+      isActive: false,
+      isArchived: true,
+    }
+    const onLoadArchivedSessions = vi.fn(async () => [archivedSession])
+    const onRestoreSession = vi.fn(async () => undefined)
+    const onDeleteSession = vi.fn(async () => undefined)
+
+    renderSidebar({
+      onLoadArchivedSessions,
+      onRestoreSession,
+      onDeleteSession,
+    })
+
+    expect(screen.queryByText('Archived')).not.toBeInTheDocument()
+    expect(screen.queryByText('Old session')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show archived sessions' }))
+
+    expect(onLoadArchivedSessions).toHaveBeenCalledWith('project-1')
+    expect(await screen.findByText('Archived')).toBeVisible()
+    expect(await screen.findByText('Old session')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Old session' }))
+
+    await waitFor(() =>
+      expect(onRestoreSession).toHaveBeenCalledWith('agent-session-archived'),
+    )
+    await waitFor(() => expect(screen.queryByText('Old session')).not.toBeInTheDocument())
+  })
+
+  it('requires inline confirmation before deleting an archived session', async () => {
+    const archivedSession: AgentSessionView = {
+      ...sessions[0],
+      agentSessionId: 'agent-session-archived',
+      title: 'Old session',
+      status: 'archived',
+      statusLabel: 'Archived',
+      selected: false,
+      archivedAt: '2026-04-10T20:00:00Z',
+      isActive: false,
+      isArchived: true,
+    }
+    const onLoadArchivedSessions = vi.fn(async () => [archivedSession])
+    const onRestoreSession = vi.fn(async () => undefined)
+    const onDeleteSession = vi.fn(async () => undefined)
+
+    renderSidebar({
+      onLoadArchivedSessions,
+      onRestoreSession,
+      onDeleteSession,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show archived sessions' }))
+    await screen.findByText('Old session')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Old session permanently' }))
+
+    expect(onDeleteSession).not.toHaveBeenCalled()
+    expect(screen.queryByText('Permanently delete "Old session"?')).not.toBeInTheDocument()
+
+    const confirmButton = screen.getByRole('button', { name: 'Confirm delete Old session' })
+    expect(confirmButton).toHaveTextContent('Delete')
+
+    fireEvent.click(confirmButton)
+
+    await waitFor(() =>
+      expect(onDeleteSession).toHaveBeenCalledWith('agent-session-archived'),
+    )
+    await waitFor(() => expect(screen.queryByText('Old session')).not.toBeInTheDocument())
+  })
+
+  it('renders pane number chips for sessions loaded in panes', () => {
     const altSession: AgentSessionView = {
       ...sessions[0],
       agentSessionId: 'agent-session-alt',
@@ -297,9 +438,8 @@ describe('AgentSessionsSidebar', () => {
       },
     })
 
-    // The focused session should NOT show a pane chip.
-    expect(screen.queryByLabelText('Loaded in pane 1')).not.toBeInTheDocument()
-    // The non-focused loaded session should show a P2 chip.
+    // The focused session still needs its pane chip so the sidebar matches the open pane list.
+    expect(screen.getByLabelText('Loaded in pane 1')).toHaveTextContent('P1')
     expect(screen.getByLabelText('Loaded in pane 2')).toHaveTextContent('P2')
   })
 })

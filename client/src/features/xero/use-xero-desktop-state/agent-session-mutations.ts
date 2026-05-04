@@ -41,10 +41,20 @@ export function useAgentSessionMutations({
     loadProject,
     optimisticallySelectAgentSession,
     applyAgentSessionSelection,
+    applyAgentSessionUpdate,
+    replaceAgentSessions,
     rollbackAgentSessionSelection,
     hydrateAgentSessionRuntimeState,
   } = operations
   const selectionRequestRef = useRef(0)
+
+  const refreshActiveAgentSessions = useCallback(
+    async (projectId: string) => {
+      const response = await adapter.listAgentSessions({ projectId, includeArchived: false })
+      return replaceAgentSessions(projectId, response.sessions.map(mapAgentSession))
+    },
+    [adapter, replaceAgentSessions],
+  )
 
   const createAgentSession = useCallback(
     async (options: { title?: string | null; summary?: string | null } = {}) => {
@@ -53,16 +63,29 @@ export function useAgentSessionMutations({
         'Select an imported project before creating an agent session.',
       )
 
-      await adapter.createAgentSession({
+      const response = await adapter.createAgentSession({
         projectId,
         title: options.title ?? null,
         summary: options.summary ?? undefined,
         selected: true,
       })
-      await loadProject(projectId, 'selection')
+
+      if (activeProjectIdRef.current === projectId) {
+        const currentProject = activeProjectRef.current
+        const createdSession = mapAgentSession(response)
+        if (currentProject?.id === projectId) {
+          replaceAgentSessions(projectId, [
+            ...currentProject.agentSessions
+              .filter((session) => session.agentSessionId !== createdSession.agentSessionId)
+              .map((session) => (createdSession.selected ? { ...session, selected: false } : session)),
+            createdSession,
+          ])
+        }
+      }
+
       return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
     },
-    [activeProjectIdRef, activeProjectRef, adapter, loadProject],
+    [activeProjectIdRef, activeProjectRef, adapter, replaceAgentSessions],
   )
 
   const selectAgentSession = useCallback(
@@ -118,12 +141,34 @@ export function useAgentSessionMutations({
         activeProjectIdRef,
         'Select an imported project before archiving an agent session.',
       )
+      const currentProject = activeProjectRef.current
+      const isArchivingLastActiveSession =
+        currentProject?.id === projectId &&
+        currentProject.agentSessions.filter((session) => session.isActive).length === 1 &&
+        currentProject.agentSessions.some(
+          (session) => session.agentSessionId === agentSessionId && session.isActive,
+        )
 
-      await adapter.archiveAgentSession({ projectId, agentSessionId })
-      await loadProject(projectId, 'selection')
+      const response = await adapter.archiveAgentSession({ projectId, agentSessionId })
+      const archivedSession = mapAgentSession(response)
+      if (isArchivingLastActiveSession) {
+        await refreshActiveAgentSessions(projectId)
+        return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+      }
+
+      const nextProject = applyAgentSessionUpdate(archivedSession)
+      if (nextProject?.agentSessions.every((session) => !session.isActive)) {
+        await refreshActiveAgentSessions(projectId)
+      }
       return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
     },
-    [activeProjectIdRef, activeProjectRef, adapter, loadProject],
+    [
+      activeProjectIdRef,
+      activeProjectRef,
+      adapter,
+      applyAgentSessionUpdate,
+      refreshActiveAgentSessions,
+    ],
   )
 
   const restoreAgentSession = useCallback(
@@ -148,10 +193,10 @@ export function useAgentSessionMutations({
       )
 
       await adapter.deleteAgentSession({ projectId, agentSessionId })
-      await loadProject(projectId, 'selection')
+      await refreshActiveAgentSessions(projectId)
       return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
     },
-    [activeProjectIdRef, activeProjectRef, adapter, loadProject],
+    [activeProjectIdRef, activeProjectRef, adapter, refreshActiveAgentSessions],
   )
 
   const renameAgentSession = useCallback(

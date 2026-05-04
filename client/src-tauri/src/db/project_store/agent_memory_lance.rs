@@ -35,6 +35,7 @@ use super::agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM;
 use super::agent_memory::{
     AgentMemoryKind, AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope,
 };
+use super::{FreshnessUpdate, SupersessionUpdate};
 
 /// Reserved fixed dimension for opt-in semantic embeddings. Picked to match the
 /// most common embedding sizes (768 = MiniLM/E5; OpenAI text-embedding-3-small
@@ -90,6 +91,14 @@ pub fn schema() -> SchemaRef {
         Field::new("source_run_id", DataType::Utf8, true),
         Field::new("source_item_ids_json", DataType::Utf8, false),
         Field::new("diagnostic_json", DataType::Utf8, true),
+        Field::new("freshness_state", DataType::Utf8, false),
+        Field::new("freshness_checked_at", DataType::Utf8, true),
+        Field::new("stale_reason", DataType::Utf8, true),
+        Field::new("source_fingerprints_json", DataType::Utf8, false),
+        Field::new("supersedes_id", DataType::Utf8, true),
+        Field::new("superseded_by_id", DataType::Utf8, true),
+        Field::new("invalidated_at", DataType::Utf8, true),
+        Field::new("fact_key", DataType::Utf8, true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("embedding_model", DataType::Utf8, true),
@@ -122,6 +131,14 @@ pub struct AgentMemoryRow {
     pub source_run_id: Option<String>,
     pub source_item_ids: Vec<String>,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
+    pub freshness_state: String,
+    pub freshness_checked_at: Option<String>,
+    pub stale_reason: Option<String>,
+    pub source_fingerprints_json: String,
+    pub supersedes_id: Option<String>,
+    pub superseded_by_id: Option<String>,
+    pub invalidated_at: Option<String>,
+    pub fact_key: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub embedding: Option<Vec<f32>>,
@@ -147,6 +164,14 @@ impl AgentMemoryRow {
             source_run_id: self.source_run_id,
             source_item_ids: self.source_item_ids,
             diagnostic: self.diagnostic,
+            freshness_state: self.freshness_state,
+            freshness_checked_at: self.freshness_checked_at,
+            stale_reason: self.stale_reason,
+            source_fingerprints_json: self.source_fingerprints_json,
+            supersedes_id: self.supersedes_id,
+            superseded_by_id: self.superseded_by_id,
+            invalidated_at: self.invalidated_at,
+            fact_key: self.fact_key,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -272,6 +297,14 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
     let mut source_run_id = StringBuilder::new();
     let mut source_item_ids_json = StringBuilder::new();
     let mut diagnostic_json = StringBuilder::new();
+    let mut freshness_state = StringBuilder::new();
+    let mut freshness_checked_at = StringBuilder::new();
+    let mut stale_reason = StringBuilder::new();
+    let mut source_fingerprints_json = StringBuilder::new();
+    let mut supersedes_id = StringBuilder::new();
+    let mut superseded_by_id = StringBuilder::new();
+    let mut invalidated_at = StringBuilder::new();
+    let mut fact_key = StringBuilder::new();
     let mut created_at = StringBuilder::new();
     let mut updated_at = StringBuilder::new();
     let mut embedding_model = StringBuilder::new();
@@ -329,6 +362,17 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
             }
             None => diagnostic_json.append_null(),
         }
+        freshness_state.append_value(&row.freshness_state);
+        append_optional(
+            &mut freshness_checked_at,
+            row.freshness_checked_at.as_deref(),
+        );
+        append_optional(&mut stale_reason, row.stale_reason.as_deref());
+        source_fingerprints_json.append_value(&row.source_fingerprints_json);
+        append_optional(&mut supersedes_id, row.supersedes_id.as_deref());
+        append_optional(&mut superseded_by_id, row.superseded_by_id.as_deref());
+        append_optional(&mut invalidated_at, row.invalidated_at.as_deref());
+        append_optional(&mut fact_key, row.fact_key.as_deref());
         created_at.append_value(&row.created_at);
         updated_at.append_value(&row.updated_at);
         match &row.embedding_model {
@@ -359,6 +403,14 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(source_run_id.finish()),
         Arc::new(source_item_ids_json.finish()),
         Arc::new(diagnostic_json.finish()),
+        Arc::new(freshness_state.finish()),
+        Arc::new(freshness_checked_at.finish()),
+        Arc::new(stale_reason.finish()),
+        Arc::new(source_fingerprints_json.finish()),
+        Arc::new(supersedes_id.finish()),
+        Arc::new(superseded_by_id.finish()),
+        Arc::new(invalidated_at.finish()),
+        Arc::new(fact_key.finish()),
         Arc::new(created_at.finish()),
         Arc::new(updated_at.finish()),
         Arc::new(embedding_model.finish()),
@@ -372,6 +424,13 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
             format!("Xero could not assemble lance record batch: {error}"),
         )
     })
+}
+
+fn append_optional(builder: &mut StringBuilder, value: Option<&str>) {
+    match value {
+        Some(value) => builder.append_value(value),
+        None => builder.append_null(),
+    }
 }
 
 fn batches_to_rows(batches: Vec<RecordBatch>) -> Result<Vec<AgentMemoryRow>, CommandError> {
@@ -430,6 +489,14 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
     let source_run_id_arr = column_str(batch, "source_run_id")?;
     let source_item_ids_json_arr = column_str(batch, "source_item_ids_json")?;
     let diagnostic_json_arr = column_str(batch, "diagnostic_json")?;
+    let freshness_state_arr = column_str(batch, "freshness_state")?;
+    let freshness_checked_at_arr = column_str(batch, "freshness_checked_at")?;
+    let stale_reason_arr = column_str(batch, "stale_reason")?;
+    let source_fingerprints_json_arr = column_str(batch, "source_fingerprints_json")?;
+    let supersedes_id_arr = column_str(batch, "supersedes_id")?;
+    let superseded_by_id_arr = column_str(batch, "superseded_by_id")?;
+    let invalidated_at_arr = column_str(batch, "invalidated_at")?;
+    let fact_key_arr = column_str(batch, "fact_key")?;
     let created_at_arr = column_str(batch, "created_at")?;
     let updated_at_arr = column_str(batch, "updated_at")?;
     let embedding_model_arr = column_str(batch, "embedding_model")?;
@@ -472,6 +539,20 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
             source_run_id: optional_str(source_run_id_arr, index),
             source_item_ids,
             diagnostic,
+            freshness_state: require_str(freshness_state_arr, index, "freshness_state")?
+                .to_string(),
+            freshness_checked_at: optional_str(freshness_checked_at_arr, index),
+            stale_reason: optional_str(stale_reason_arr, index),
+            source_fingerprints_json: require_str(
+                source_fingerprints_json_arr,
+                index,
+                "source_fingerprints_json",
+            )?
+            .to_string(),
+            supersedes_id: optional_str(supersedes_id_arr, index),
+            superseded_by_id: optional_str(superseded_by_id_arr, index),
+            invalidated_at: optional_str(invalidated_at_arr, index),
+            fact_key: optional_str(fact_key_arr, index),
             created_at: require_str(created_at_arr, index, "created_at")?.to_string(),
             updated_at: require_str(updated_at_arr, index, "updated_at")?.to_string(),
             embedding: optional_embedding(embedding_arr, index)?,
@@ -933,6 +1014,58 @@ impl ProjectMemoryStore {
             Ok(Some(stamp_project(row, &project_id)))
         })
     }
+
+    pub(crate) fn update_freshness(
+        &self,
+        memory_id: &str,
+        update: FreshnessUpdate,
+    ) -> Result<Option<AgentMemoryRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let memory_id = memory_id.to_string();
+        runtime().block_on(async move {
+            let mut row = fetch_row(&dataset, &memory_id).await?;
+            let Some(mut row) = row.take() else {
+                return Ok(None);
+            };
+            row.project_id = project_id.clone();
+            row.freshness_state = update.freshness_state.as_str().into();
+            row.freshness_checked_at = update.freshness_checked_at;
+            row.stale_reason = update.stale_reason;
+            row.source_fingerprints_json = update.source_fingerprints_json;
+            row.invalidated_at = update.invalidated_at;
+            replace_row(&dataset, row.clone()).await?;
+            Ok(Some(stamp_project(row, &project_id)))
+        })
+    }
+
+    pub(crate) fn update_supersession(
+        &self,
+        memory_id: &str,
+        update: SupersessionUpdate,
+    ) -> Result<Option<AgentMemoryRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let memory_id = memory_id.to_string();
+        runtime().block_on(async move {
+            let mut row = fetch_row(&dataset, &memory_id).await?;
+            let Some(mut row) = row.take() else {
+                return Ok(None);
+            };
+            row.project_id = project_id.clone();
+            if update.superseded_by_id.is_some() {
+                row.freshness_state = "superseded".into();
+            }
+            row.superseded_by_id = update.superseded_by_id;
+            row.supersedes_id = update.supersedes_id;
+            row.fact_key = update.fact_key;
+            row.invalidated_at = update.invalidated_at;
+            row.stale_reason = update.stale_reason;
+            row.updated_at = update.updated_at;
+            replace_row(&dataset, row.clone()).await?;
+            Ok(Some(stamp_project(row, &project_id)))
+        })
+    }
 }
 
 fn same_dedup_key(left: &AgentMemoryRow, right: &AgentMemoryRow) -> bool {
@@ -1145,6 +1278,7 @@ fn missing_memory_error(project_id: &str, memory_id: &str) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::project_store::source_fingerprints_empty_json;
 
     fn sample_row(memory_id: &str, scope: AgentMemoryScope) -> AgentMemoryRow {
         AgentMemoryRow {
@@ -1164,6 +1298,14 @@ mod tests {
             source_run_id: Some("run-1".into()),
             source_item_ids: vec!["message:1".into()],
             diagnostic: None,
+            freshness_state: "source_unknown".into(),
+            freshness_checked_at: None,
+            stale_reason: None,
+            source_fingerprints_json: source_fingerprints_empty_json(),
+            supersedes_id: None,
+            superseded_by_id: None,
+            invalidated_at: None,
+            fact_key: None,
             created_at: "2026-04-26T00:00:00Z".into(),
             updated_at: "2026-04-26T00:00:00Z".into(),
             embedding: None,
@@ -1186,6 +1328,11 @@ mod tests {
         assert_eq!(rows[0].text, "Memory body for memory-a");
         assert_eq!(rows[0].source_item_ids, vec!["message:1".to_string()]);
         assert_eq!(rows[0].confidence, Some(50));
+        assert_eq!(rows[0].freshness_state, "source_unknown");
+        assert_eq!(
+            rows[0].source_fingerprints_json,
+            source_fingerprints_empty_json()
+        );
     }
 
     #[test]

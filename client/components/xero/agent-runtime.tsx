@@ -1,9 +1,16 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
-import { ArrowDown, ChevronRight, Loader2, Plus, SplitSquareHorizontal, X } from 'lucide-react'
+import { ArrowDown, Check, ChevronDown, ChevronRight, Loader2, Plus, SplitSquareHorizontal, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useDebouncedValue } from '@/lib/input-priority'
 import { cn } from '@/lib/utils'
 import type {
@@ -63,7 +70,7 @@ import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
 
-type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
+export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
   Partial<
     Pick<
       XeroDesktopAdapter,
@@ -133,18 +140,31 @@ export interface AgentRuntimeProps {
   onFocusPane?: () => void
   /** Whether this pane is currently focused. */
   isPaneFocused?: boolean
-  /** Whether this pane should show the first-run compact-mode tooltip. */
-  showCompactFirstRunTooltip?: boolean
-  /** Acknowledge first-run tooltip. */
-  onAckCompactFirstRunTooltip?: () => void
   /** Reports pane-local state that should block an immediate close. */
   onPaneCloseStateChange?: (state: AgentPaneCloseState) => void
+  /** Drag-handle bindings (from `useSortable`). When provided, the pane header acts as the drag activator. */
+  dragHandle?: {
+    setActivatorNodeRef?: (node: HTMLElement | null) => void
+    attributes?: Record<string, unknown>
+    listeners?: Record<string, unknown>
+    isDragging?: boolean
+  }
+  /** Render the pane header in sidebar context: bg matches sidebar surface and the header hosts close + session controls. */
+  inSidebar?: boolean
+  /** Sessions to show in the header session switcher when rendered inside the sidebar. */
+  sidebarSessions?: readonly AgentSessionView[]
+  /** Switch to a different session from the sidebar header dropdown. */
+  onSelectSidebarSession?: (agentSessionId: string) => void
+  /** Close the sidebar from the agent header (X button). */
+  onCloseSidebar?: () => void
 }
 
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
 const MAX_VISIBLE_RUNTIME_ACTION_TURNS = 16
 const COMPACT_TOOL_BURST_THRESHOLD = 5
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
+const BACKGROUND_PANE_STREAM_ITEM_LIMIT = 160
+const BACKGROUND_PANE_VISIBLE_TURN_LIMIT = 48
 
 export interface AgentPaneCloseState {
   hasRunningRun: boolean
@@ -473,6 +493,22 @@ function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): Co
   return limitActionTurns(compactActionBursts(turns))
 }
 
+function sliceBackgroundPaneStreamItems(
+  runtimeStreamItems: RuntimeStreamViewItem[],
+): RuntimeStreamViewItem[] {
+  if (runtimeStreamItems.length <= BACKGROUND_PANE_STREAM_ITEM_LIMIT) {
+    return runtimeStreamItems
+  }
+  return runtimeStreamItems.slice(-BACKGROUND_PANE_STREAM_ITEM_LIMIT)
+}
+
+function sliceBackgroundPaneTurns(visibleTurns: ConversationTurn[]): ConversationTurn[] {
+  if (visibleTurns.length <= BACKGROUND_PANE_VISIBLE_TURN_LIMIT) {
+    return visibleTurns
+  }
+  return visibleTurns.slice(-BACKGROUND_PANE_VISIBLE_TURN_LIMIT)
+}
+
 function toContextMeterError(error: unknown): {
   code: string
   message: string
@@ -493,6 +529,7 @@ function toContextMeterError(error: unknown): {
 }
 
 function useAgentContextMeterSnapshot(options: {
+  enabled?: boolean
   adapter?: AgentRuntimeDesktopAdapter
   projectId: string
   agentSessionId: string | null
@@ -514,13 +551,14 @@ function useAgentContextMeterSnapshot(options: {
   const [error, setError] = useState<ReturnType<typeof toContextMeterError> | null>(null)
   const requestIdRef = useRef(0)
   const snapshotRef = useRef<SessionContextSnapshotDto | null>(null)
+  const enabled = options.enabled ?? true
 
   useEffect(() => {
     snapshotRef.current = snapshot
   }, [snapshot])
 
   const refresh = useCallback(() => {
-    if (!options.adapter?.getSessionContextSnapshot || !options.agentSessionId) {
+    if (!enabled || !options.adapter?.getSessionContextSnapshot || !options.agentSessionId) {
       requestIdRef.current += 1
       setStatus('idle')
       setSnapshot(null)
@@ -557,6 +595,7 @@ function useAgentContextMeterSnapshot(options: {
       })
   }, [
     debouncedPendingPrompt,
+    enabled,
     options.adapter,
     options.agentSessionId,
     options.modelId,
@@ -596,9 +635,13 @@ export const AgentRuntime = memo(function AgentRuntime({
   onSpawnPane,
   spawnPaneDisabled = false,
   onClosePane,
-  showCompactFirstRunTooltip = false,
-  onAckCompactFirstRunTooltip,
+  isPaneFocused,
   onPaneCloseStateChange,
+  dragHandle,
+  inSidebar = false,
+  sidebarSessions,
+  onSelectSidebarSession,
+  onCloseSidebar,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -613,7 +656,26 @@ export const AgentRuntime = memo(function AgentRuntime({
   const transcriptItems = runtimeStream?.transcriptItems ?? []
   const toolCalls = runtimeStream?.toolCalls ?? []
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
-  const visibleTurns = useMemo(() => buildConversationTurns(runtimeStreamItems), [runtimeStreamItems])
+  const isFocusedPane = paneCount <= 1 || isPaneFocused !== false
+  const useBackgroundPaneFastPath = paneCount >= 3 && !isFocusedPane
+  const runtimeStreamItemsForTurns = useMemo(
+    () =>
+      useBackgroundPaneFastPath
+        ? sliceBackgroundPaneStreamItems(runtimeStreamItems)
+        : runtimeStreamItems,
+    [runtimeStreamItems, useBackgroundPaneFastPath],
+  )
+  const visibleTurns = useMemo(
+    () => buildConversationTurns(runtimeStreamItemsForTurns),
+    [runtimeStreamItemsForTurns],
+  )
+  const visibleTurnsForDisplay = useMemo(
+    () =>
+      useBackgroundPaneFastPath
+        ? sliceBackgroundPaneTurns(visibleTurns)
+        : visibleTurns,
+    [useBackgroundPaneFastPath, visibleTurns],
+  )
   const pendingRuntimeRunAction = agent.pendingRuntimeRunAction ?? null
   const runtimeRunActionStatus = agent.runtimeRunActionStatus
   const isQueueingRuntimePrompt =
@@ -847,7 +909,9 @@ export const AgentRuntime = memo(function AgentRuntime({
     canStopRuntimeRun,
     actionRequiredItems,
     dictationAdapter: desktopAdapter,
+    dictationEnabled: isFocusedPane,
     dictationScopeKey: `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`,
+    reportComposerControls: isFocusedPane,
     onStartRuntimeRun,
     onStartRuntimeSession,
     onUpdateRuntimeRunControls: canMutateRuntimeRun ? onUpdateRuntimeRunControls : undefined,
@@ -877,6 +941,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const contextMeterState = useAgentContextMeterSnapshot({
+    enabled: isFocusedPane,
     adapter: desktopAdapter,
     projectId: agent.project.id,
     agentSessionId: selectedAgentSessionId,
@@ -964,7 +1029,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const shouldAutoFollowRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
-  const latestVisibleTurn = visibleTurns.at(-1)
+  const latestVisibleTurn = visibleTurnsForDisplay.at(-1)
   const conversationScrollKey = [
     latestVisibleTurn?.id ?? 'none',
     latestVisibleTurn?.sequence ?? 'none',
@@ -1041,7 +1106,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   }, [conversationScrollKey, hasConversationViewportContent, scrollToLatest])
 
   const isCompact = density === 'compact'
-  const isDense = paneCount >= 4
+  const isDense = isCompact || paneCount >= 4 || useBackgroundPaneFastPath
   const showPaneNumberChip = paneCount > 1 && paneNumber != null
   const showCloseButton = paneCount > 1 && typeof onClosePane === 'function'
   const closeState = useMemo<AgentPaneCloseState>(
@@ -1057,6 +1122,13 @@ export const AgentRuntime = memo(function AgentRuntime({
     onPaneCloseStateChange?.(closeState)
   }, [closeState, onPaneCloseStateChange])
 
+  const dragHandleAttributes = useMemo(() => {
+    if (!dragHandle?.attributes) return null
+    const { role: _role, ...rest } = dragHandle.attributes as Record<string, unknown>
+    void _role
+    return rest
+  }, [dragHandle?.attributes])
+
   return (
     <AgentPaneDropOverlay
       enabled={Boolean(stageAgentAttachment)}
@@ -1065,7 +1137,16 @@ export const AgentRuntime = memo(function AgentRuntime({
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
-          <div className="flex items-center justify-between gap-1.5 bg-background px-3.5 py-2">
+          <div
+            ref={dragHandle?.setActivatorNodeRef}
+            {...(dragHandleAttributes ?? {})}
+            {...(dragHandle?.listeners ?? {})}
+            className={cn(
+              'flex items-center justify-between gap-1.5 px-3.5 py-2',
+              inSidebar ? 'bg-sidebar' : 'bg-background',
+              dragHandle ? 'pointer-events-auto cursor-grab active:cursor-grabbing select-none' : null,
+            )}
+          >
             <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
               {showPaneNumberChip ? (
                 <span
@@ -1077,7 +1158,62 @@ export const AgentRuntime = memo(function AgentRuntime({
               ) : null}
               <span className="truncate font-semibold text-foreground">{projectLabel}</span>
               <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-              <span className="truncate font-medium">{sessionLabel}</span>
+              {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Switch agent session"
+                      title={sessionLabel}
+                      className={cn(
+                        'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1 py-0.5 text-left font-medium text-muted-foreground transition-colors',
+                        'hover:bg-secondary/50 hover:text-foreground data-[state=open]:bg-secondary/70 data-[state=open]:text-foreground',
+                      )}
+                    >
+                      <span className="truncate">{sessionLabel}</span>
+                      <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-64" sideOffset={6}>
+                    {onCreateSession ? (
+                      <>
+                        <DropdownMenuItem
+                          disabled={isCreatingSession}
+                          onSelect={(event) => {
+                            event.preventDefault()
+                            onCreateSession()
+                          }}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>New session</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                      </>
+                    ) : null}
+                    {sidebarSessions.map((session) => {
+                      const isSelected = session.agentSessionId === selectedAgentSessionId
+                      const label = session.title?.trim() || 'Untitled'
+                      return (
+                        <DropdownMenuItem
+                          key={session.agentSessionId}
+                          onSelect={() => onSelectSidebarSession(session.agentSessionId)}
+                        >
+                          <Check
+                            aria-hidden="true"
+                            className={cn(
+                              'h-3.5 w-3.5',
+                              isSelected ? 'text-primary' : 'opacity-0',
+                            )}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{label}</span>
+                        </DropdownMenuItem>
+                      )
+                    })}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <span className="truncate font-medium">{sessionLabel}</span>
+              )}
             </div>
             <div className="pointer-events-auto flex items-center gap-1">
               {onCreateSession && paneCount === 1 ? (
@@ -1129,11 +1265,27 @@ export const AgentRuntime = memo(function AgentRuntime({
                   <X className="h-3.5 w-3.5" />
                 </button>
               ) : null}
+              {inSidebar && onCloseSidebar ? (
+                <button
+                  type="button"
+                  aria-label="Close agent dock"
+                  onClick={onCloseSidebar}
+                  className={cn(
+                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                    'hover:bg-secondary/50 hover:text-foreground',
+                  )}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
             </div>
           </div>
           <div
             aria-hidden="true"
-            className="h-7 bg-gradient-to-b from-background to-background/0"
+            className={cn(
+              'h-7 bg-gradient-to-b',
+              inSidebar ? 'from-sidebar to-sidebar/0' : 'from-background to-background/0',
+            )}
           />
         </div>
         <div className="relative min-h-0 flex-1">
@@ -1175,7 +1327,7 @@ export const AgentRuntime = memo(function AgentRuntime({
               >
                 <ConversationSection
                   runtimeRun={renderableRuntimeRun}
-                  visibleTurns={visibleTurns}
+                  visibleTurns={visibleTurnsForDisplay}
                   streamIssue={streamIssue}
                   streamFailure={runtimeStream?.failure ?? null}
                   showActivityIndicator={showAgentActivityIndicator}
@@ -1215,8 +1367,6 @@ export const AgentRuntime = memo(function AgentRuntime({
 
         <ComposerDock
           density={density}
-          showCompactFirstRunTooltip={showCompactFirstRunTooltip}
-          onAckCompactFirstRunTooltip={onAckCompactFirstRunTooltip}
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}
           composerAgentDefinitionId={controller.composerAgentDefinitionId}

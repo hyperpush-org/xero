@@ -6,6 +6,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import {
+  Bot,
   ChevronDown,
   GitCompareArrows,
   Gamepad2,
@@ -121,6 +122,10 @@ interface XeroShellProps {
   vcsOpen?: boolean
   onToggleWorkflows?: () => void
   workflowsOpen?: boolean
+  onToggleAgentDock?: () => void
+  agentDockOpen?: boolean
+  /** Disabled state for the agent dock toggle (e.g., when on the agent view). */
+  agentDockDisabled?: boolean
   /** Number of changed files in the working tree — surfaced as a badge on the diff button. */
   vcsChangeCount?: number
   /** Lines added across the working tree (for the +/- badge). */
@@ -261,6 +266,9 @@ export function XeroShell({
   vcsOpen = false,
   onToggleWorkflows,
   workflowsOpen = false,
+  onToggleAgentDock,
+  agentDockOpen = false,
+  agentDockDisabled = false,
   vcsChangeCount = 0,
   vcsAdditions = 0,
   vcsDeletions = 0,
@@ -629,6 +637,26 @@ export function XeroShell({
     </button>
   )
 
+  const AgentDockBtn = (
+    <button
+      aria-label={agentDockOpen ? "Close agent dock" : "Open agent dock"}
+      aria-pressed={agentDockOpen}
+      className={cn(
+        "rounded-md p-1.5 transition-colors",
+        agentDockDisabled && "cursor-not-allowed opacity-40",
+        agentDockOpen
+          ? "bg-primary/15 text-primary"
+          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+      )}
+      disabled={agentDockDisabled}
+      onClick={onToggleAgentDock}
+      title={agentDockDisabled ? "Already in Agent view" : "Agent"}
+      type="button"
+    >
+      <Bot className="h-4 w-4" />
+    </button>
+  )
+
   const SidebarToggleBtn = (
     <button
       aria-label={sidebarCollapsed ? "Expand project sidebar" : "Collapse project sidebar"}
@@ -777,6 +805,7 @@ export function XeroShell({
             {VcsBtn}
             {ToolsMenu}
             {GamesBtn}
+            {AgentDockBtn}
             {AccountBtn}
             {SettingsBtn}
           </div>
@@ -812,9 +841,11 @@ export function XeroShell({
         >
           {!chromeOnly ? (
             <>
+              {WorkflowsBtn}
               {VcsBtn}
               {ToolsMenu}
               {GamesBtn}
+              {AgentDockBtn}
               {AccountBtn}
               {SettingsBtn}
               <div className="mx-2 h-4 w-px bg-border" />

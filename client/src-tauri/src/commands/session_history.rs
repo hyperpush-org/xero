@@ -764,14 +764,14 @@ fn build_session_context_snapshot(
             false,
         )
     } else {
-        memory_policy_decision(
-            "memory:approved:inject",
-            crate::commands::SessionContextPolicyActionDto::InjectMemory,
-            "approved_memory_enabled",
-            "Approved memory is included in the next provider system prompt.",
-            true,
-        )
-    });
+            memory_policy_decision(
+                "memory:approved:inject",
+                crate::commands::SessionContextPolicyActionDto::InjectMemory,
+                "approved_memory_enabled",
+                "Approved memory is enabled and available through `project_context` retrieval; raw memory is not preloaded into provider prompts.",
+                false,
+            )
+        });
     let redaction = strongest_context_redaction(
         contributors
             .iter()

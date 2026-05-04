@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rusqlite::{params, OptionalExtension, Row};
@@ -23,12 +23,18 @@ use super::{
         validate_embedding_dimension, AgentEmbedding, AgentEmbeddingService,
         DEFAULT_AGENT_EMBEDDING_MODEL, DEFAULT_AGENT_EMBEDDING_VERSION,
     },
+    agent_memory::refresh_agent_memory_rows,
     agent_memory::{AgentMemoryKind, AgentMemoryReviewState, AgentMemoryScope},
     agent_memory_lance::{self, AgentMemoryListFilterOwned, AgentMemoryRow, ProjectMemoryStore},
+    freshness::{
+        evaluate_freshness, freshness_metadata_json, freshness_update_changed,
+        parse_freshness_state, source_fingerprint_paths, FreshnessMetadata,
+        FreshnessRefreshSummary, FreshnessState,
+    },
     open_runtime_database,
     project_record::{
-        project_record_kind_sql_value, ProjectRecordImportance, ProjectRecordKind,
-        ProjectRecordRedactionState,
+        project_record_kind_sql_value, refresh_project_record_rows, ProjectRecordImportance,
+        ProjectRecordKind, ProjectRecordRedactionState,
     },
     project_record_lance::{self, ProjectRecordRow, ProjectRecordStore},
     read_project_row, validate_non_empty_text,
@@ -175,13 +181,16 @@ pub fn search_agent_context_with_embedding_service(
         .map(|service| embedding_with_service(service, &request.query_text))
         .transpose()?;
     let query_tokens = token_set(&request.query_text);
-    let candidates = collect_candidates(
+    let freshness_diagnostics =
+        refresh_retrieval_freshness(repo_root, &record_store, &memory_store, &request)?;
+    let collection = collect_candidates(
         &record_store,
         &memory_store,
         &request,
         query_embedding.as_ref(),
         &query_tokens,
     )?;
+    let candidates = collection.candidates;
 
     let fallback_used = query_embedding.is_none()
         || candidates
@@ -193,12 +202,17 @@ pub fn search_agent_context_with_embedding_service(
         "hybrid"
     }
     .to_string();
-    let diagnostic = fallback_used.then(|| {
-        json!({
+    let diagnostic = retrieval_diagnostic(
+        fallback_used.then(|| {
+            json!({
             "code": "agent_retrieval_keyword_fallback",
             "message": "Xero used deterministic keyword, metadata, recency, and importance scoring for records without usable embeddings."
         })
-    });
+        }),
+        freshness_diagnostics,
+        collection.blocked_excluded_count,
+        collection.freshness_reason_counts.clone(),
+    );
 
     let filters_json = retrieval_filters_json(&request.filters);
     let completed_at = now_timestamp();
@@ -284,6 +298,7 @@ pub fn enqueue_missing_agent_embedding_backfill_jobs(
     for row in record_store.list_rows()? {
         if row.redaction_state
             == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked)
+            || backfill_should_skip_for_freshness(&row.freshness_state)
             || embedding_is_current(
                 row.embedding.as_ref(),
                 row.embedding_model.as_deref(),
@@ -316,6 +331,7 @@ pub fn enqueue_missing_agent_embedding_backfill_jobs(
     for row in memory_store.list_all_rows()? {
         if row.review_state != AgentMemoryReviewState::Approved
             || !row.enabled
+            || backfill_should_skip_for_freshness(&row.freshness_state)
             || embedding_is_current(
                 row.embedding.as_ref(),
                 row.embedding_model.as_deref(),
@@ -443,7 +459,7 @@ pub fn run_agent_embedding_backfill_jobs(
             now,
             None,
         )?;
-        let result = apply_backfill_job(&record_store, &memory_store, &job, now);
+        let result = apply_backfill_job(repo_root, &record_store, &memory_store, &job, now);
         match result {
             Ok(BackfillOutcome::Succeeded) => {
                 run.succeeded_count += 1;
@@ -515,14 +531,50 @@ pub fn list_agent_embedding_backfill_jobs(
         .collect()
 }
 
+fn refresh_retrieval_freshness(
+    repo_root: &Path,
+    record_store: &ProjectRecordStore,
+    memory_store: &ProjectMemoryStore,
+    request: &AgentContextRetrievalRequest,
+) -> Result<FreshnessRefreshSummary, CommandError> {
+    let mut summary = FreshnessRefreshSummary::default();
+    if matches!(
+        request.search_scope,
+        AgentRetrievalSearchScope::ProjectRecords
+            | AgentRetrievalSearchScope::HybridContext
+            | AgentRetrievalSearchScope::Handoffs
+    ) {
+        summary.merge(refresh_project_record_rows(
+            repo_root,
+            record_store,
+            None,
+            &request.created_at,
+        )?);
+    }
+    if matches!(
+        request.search_scope,
+        AgentRetrievalSearchScope::ApprovedMemory | AgentRetrievalSearchScope::HybridContext
+    ) {
+        summary.merge(refresh_agent_memory_rows(
+            repo_root,
+            memory_store,
+            None,
+            &request.created_at,
+        )?);
+    }
+    Ok(summary)
+}
+
 fn collect_candidates(
     record_store: &ProjectRecordStore,
     memory_store: &ProjectMemoryStore,
     request: &AgentContextRetrievalRequest,
     query_embedding: Option<&AgentEmbedding>,
     query_tokens: &BTreeSet<String>,
-) -> Result<Vec<SearchCandidate>, CommandError> {
+) -> Result<CandidateCollection, CommandError> {
     let mut candidates = Vec::new();
+    let mut blocked_excluded_count = 0_usize;
+    let mut freshness_reason_counts = BTreeMap::new();
     if matches!(
         request.search_scope,
         AgentRetrievalSearchScope::ProjectRecords
@@ -530,9 +582,15 @@ fn collect_candidates(
             | AgentRetrievalSearchScope::Handoffs
     ) {
         for row in record_store.list_rows()? {
+            if row.redaction_state
+                == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked)
+            {
+                blocked_excluded_count += 1;
+            }
             if let Some(candidate) =
                 project_record_candidate(row, request, query_embedding, query_tokens)?
             {
+                record_candidate_freshness_reason(&candidate, &mut freshness_reason_counts);
                 candidates.push(candidate);
             }
         }
@@ -549,6 +607,7 @@ fn collect_candidates(
         for row in memory_store.list_rows(session_filter, AgentMemoryListFilterOwned::default())? {
             if let Some(candidate) = memory_candidate(row, request, query_embedding, query_tokens)?
             {
+                record_candidate_freshness_reason(&candidate, &mut freshness_reason_counts);
                 candidates.push(candidate);
             }
         }
@@ -563,7 +622,11 @@ fn collect_candidates(
             .then_with(|| left.source_id.cmp(&right.source_id))
     });
     candidates.truncate(request.limit_count as usize);
-    Ok(candidates)
+    Ok(CandidateCollection {
+        candidates,
+        blocked_excluded_count,
+        freshness_reason_counts,
+    })
 }
 
 fn project_record_candidate(
@@ -619,6 +682,7 @@ fn project_record_candidate(
         return Ok(None);
     }
     let related_paths = parse_string_array(&row.related_paths_json, "relatedPaths")?;
+    let source_item_ids = parse_string_array(&row.source_item_ids_json, "sourceItemIds")?;
     if !request.filters.related_paths.is_empty()
         && !request.filters.related_paths.iter().any(|filter| {
             related_paths
@@ -650,6 +714,7 @@ fn project_record_candidate(
     }
     let score = keyword_score.mul_add(2.0, vector_score)
         + f64::from(importance_rank(&row.importance)) * 0.05;
+    let score = (score + freshness_score_adjustment(&row.freshness_state)).max(0.0);
     let (snippet, snippet_redaction) = retrieval_snippet(&row.text);
     let redaction_state = if row.redaction_state
         == project_record_redaction_state_value(&ProjectRecordRedactionState::Redacted)
@@ -664,6 +729,30 @@ fn project_record_candidate(
         } else {
             AgentRetrievalResultSourceKind::ProjectRecord
         };
+    let freshness = freshness_metadata_json(FreshnessMetadata {
+        freshness_state: &row.freshness_state,
+        freshness_checked_at: row.freshness_checked_at.as_deref(),
+        stale_reason: row.stale_reason.as_deref(),
+        source_fingerprints_json: &row.source_fingerprints_json,
+        supersedes_id: row.supersedes_id.as_deref(),
+        superseded_by_id: row.superseded_by_id.as_deref(),
+        invalidated_at: row.invalidated_at.as_deref(),
+        fact_key: row.fact_key.as_deref(),
+    })?;
+    let trust = json!({
+        "freshnessState": row.freshness_state,
+        "staleReason": row.stale_reason,
+        "checkedAt": row.freshness_checked_at,
+        "sourceFingerprints": freshness.get("sourceFingerprints").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+        "supersedesId": row.supersedes_id,
+        "supersededById": row.superseded_by_id,
+        "invalidatedAt": row.invalidated_at,
+        "factKey": row.fact_key,
+        "confidence": row.confidence,
+        "sourceRunId": row.run_id,
+        "sourceItemIds": source_item_ids,
+        "relatedPaths": related_paths,
+    });
     Ok(Some(SearchCandidate {
         source_kind,
         source_id: row.record_id,
@@ -677,16 +766,20 @@ fn project_record_candidate(
             "recordKind": row.record_kind,
             "runtimeAgentId": row.runtime_agent_id.as_str(),
             "agentSessionId": row.agent_session_id,
-            "runId": row.run_id,
+            "runId": trust["sourceRunId"].clone(),
             "tags": tags,
-            "relatedPaths": related_paths,
+            "relatedPaths": trust["relatedPaths"].clone(),
             "importance": row.importance,
+            "confidence": trust["confidence"].clone(),
+            "sourceItemIds": trust["sourceItemIds"].clone(),
             "embeddingPresent": row.embedding_model.is_some(),
             "embeddingModel": row.embedding_model,
             "embeddingDimension": row.embedding_dimension,
             "embeddingVersion": row.embedding_version,
             "keywordScore": keyword_score,
-            "semanticScore": vector_score
+            "semanticScore": vector_score,
+            "freshness": freshness,
+            "trust": trust
         }),
     }))
 }
@@ -734,9 +827,35 @@ fn memory_candidate(
             .confidence
             .map(|value| f64::from(value) / 500.0)
             .unwrap_or(0.0);
+    let score = (score + freshness_score_adjustment(&row.freshness_state)).max(0.0);
     let (snippet, redaction_state) = retrieval_snippet(&row.text);
     let scope = memory_scope_sql_value(&row.scope);
     let kind = memory_kind_sql_value(&row.kind);
+    let freshness = freshness_metadata_json(FreshnessMetadata {
+        freshness_state: &row.freshness_state,
+        freshness_checked_at: row.freshness_checked_at.as_deref(),
+        stale_reason: row.stale_reason.as_deref(),
+        source_fingerprints_json: &row.source_fingerprints_json,
+        supersedes_id: row.supersedes_id.as_deref(),
+        superseded_by_id: row.superseded_by_id.as_deref(),
+        invalidated_at: row.invalidated_at.as_deref(),
+        fact_key: row.fact_key.as_deref(),
+    })?;
+    let related_paths = source_fingerprint_paths(&row.source_fingerprints_json)?;
+    let trust = json!({
+        "freshnessState": row.freshness_state,
+        "staleReason": row.stale_reason,
+        "checkedAt": row.freshness_checked_at,
+        "sourceFingerprints": freshness.get("sourceFingerprints").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+        "supersedesId": row.supersedes_id,
+        "supersededById": row.superseded_by_id,
+        "invalidatedAt": row.invalidated_at,
+        "factKey": row.fact_key,
+        "confidence": row.confidence,
+        "sourceRunId": row.source_run_id,
+        "sourceItemIds": row.source_item_ids,
+        "relatedPaths": related_paths,
+    });
     Ok(Some(SearchCandidate {
         source_kind: AgentRetrievalResultSourceKind::ApprovedMemory,
         source_id: row.memory_id,
@@ -749,17 +868,27 @@ fn memory_candidate(
             "scope": scope,
             "memoryKind": kind,
             "agentSessionId": row.agent_session_id,
-            "sourceRunId": row.source_run_id,
-            "sourceItemIds": row.source_item_ids,
-            "confidence": row.confidence,
+            "sourceRunId": trust["sourceRunId"].clone(),
+            "sourceItemIds": trust["sourceItemIds"].clone(),
+            "relatedPaths": trust["relatedPaths"].clone(),
+            "confidence": trust["confidence"].clone(),
             "embeddingPresent": row.embedding_model.is_some(),
             "embeddingModel": row.embedding_model,
             "embeddingDimension": row.embedding_dimension,
             "embeddingVersion": row.embedding_version,
             "keywordScore": keyword_score,
-            "semanticScore": vector_score
+            "semanticScore": vector_score,
+            "freshness": freshness,
+            "trust": trust
         }),
     }))
+}
+
+#[derive(Debug)]
+struct CandidateCollection {
+    candidates: Vec<SearchCandidate>,
+    blocked_excluded_count: usize,
+    freshness_reason_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -774,12 +903,42 @@ struct SearchCandidate {
     metadata: JsonValue,
 }
 
+fn record_candidate_freshness_reason(
+    candidate: &SearchCandidate,
+    freshness_reason_counts: &mut BTreeMap<String, usize>,
+) {
+    let Some(freshness) = candidate
+        .metadata
+        .get("freshness")
+        .and_then(JsonValue::as_object)
+    else {
+        return;
+    };
+    let state = freshness
+        .get("state")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("source_unknown");
+    let reason = freshness
+        .get("staleReason")
+        .and_then(JsonValue::as_str)
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or("No stale reason recorded.");
+    if matches!(
+        state,
+        "stale" | "source_missing" | "superseded" | "source_unknown"
+    ) {
+        let key = format!("{state}: {reason}");
+        *freshness_reason_counts.entry(key).or_insert(0) += 1;
+    }
+}
+
 enum BackfillOutcome {
     Succeeded,
     Skipped(JsonValue),
 }
 
 fn apply_backfill_job(
+    repo_root: &Path,
     record_store: &ProjectRecordStore,
     memory_store: &ProjectMemoryStore,
     job: &AgentEmbeddingBackfillJobRecord,
@@ -794,16 +953,39 @@ fn apply_backfill_job(
             else {
                 return Ok(BackfillOutcome::Skipped(json!({
                     "code": "agent_embedding_backfill_source_missing",
-                    "message": "The project record no longer exists."
+                    "message": "The project record no longer exists.",
+                    "freshnessState": JsonValue::Null
                 })));
             };
+            let row = refresh_project_record_backfill_freshness(repo_root, record_store, row, now)?;
             if row.redaction_state
                 == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked)
             {
-                return Ok(BackfillOutcome::Skipped(json!({
-                    "code": "agent_embedding_backfill_source_blocked",
-                    "message": "The project record is redaction-blocked."
-                })));
+                return Ok(BackfillOutcome::Skipped(
+                    backfill_project_record_diagnostic(
+                        &row,
+                        "agent_embedding_backfill_source_blocked",
+                        "The project record is redaction-blocked.",
+                    ),
+                ));
+            }
+            if row.text_hash != job.source_hash {
+                return Ok(BackfillOutcome::Skipped(
+                    backfill_project_record_diagnostic(
+                        &row,
+                        "agent_embedding_backfill_source_hash_mismatch",
+                        "The project record text changed after this embedding backfill job was queued.",
+                    ),
+                ));
+            }
+            if backfill_should_skip_for_freshness(&row.freshness_state) {
+                return Ok(BackfillOutcome::Skipped(
+                    backfill_project_record_diagnostic(
+                        &row,
+                        "agent_embedding_backfill_source_not_fresh",
+                        "The project record is not factually current, so Xero skipped embedding backfill.",
+                    ),
+                ));
             }
             let embedding = embedding_with_service(
                 default_embedding_service(),
@@ -826,14 +1008,31 @@ fn apply_backfill_job(
             else {
                 return Ok(BackfillOutcome::Skipped(json!({
                     "code": "agent_embedding_backfill_source_missing",
-                    "message": "The approved memory no longer exists."
+                    "message": "The approved memory no longer exists.",
+                    "freshnessState": JsonValue::Null
                 })));
             };
+            let row = refresh_memory_backfill_freshness(repo_root, memory_store, row, now)?;
             if row.review_state != AgentMemoryReviewState::Approved || !row.enabled {
-                return Ok(BackfillOutcome::Skipped(json!({
-                    "code": "agent_embedding_backfill_source_not_approved",
-                    "message": "The memory is no longer approved and enabled."
-                })));
+                return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
+                    &row,
+                    "agent_embedding_backfill_source_not_approved",
+                    "The memory is no longer approved and enabled.",
+                )));
+            }
+            if row.text_hash != job.source_hash {
+                return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
+                    &row,
+                    "agent_embedding_backfill_source_hash_mismatch",
+                    "The approved memory text changed after this embedding backfill job was queued.",
+                )));
+            }
+            if backfill_should_skip_for_freshness(&row.freshness_state) {
+                return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
+                    &row,
+                    "agent_embedding_backfill_source_not_fresh",
+                    "The approved memory is not factually current, so Xero skipped embedding backfill.",
+                )));
             }
             let embedding = embedding_with_service(default_embedding_service(), &row.text)?;
             memory_store.update_embedding(
@@ -847,6 +1046,109 @@ fn apply_backfill_job(
         }
     }
     Ok(BackfillOutcome::Succeeded)
+}
+
+fn refresh_project_record_backfill_freshness(
+    repo_root: &Path,
+    record_store: &ProjectRecordStore,
+    row: ProjectRecordRow,
+    checked_at: &str,
+) -> Result<ProjectRecordRow, CommandError> {
+    let update = evaluate_freshness(
+        repo_root,
+        parse_freshness_state(&row.freshness_state),
+        row.invalidated_at.as_deref(),
+        &row.source_fingerprints_json,
+        checked_at,
+        row.redaction_state
+            == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked),
+    )?;
+    if freshness_update_changed(
+        &row.freshness_state,
+        row.freshness_checked_at.as_deref(),
+        row.stale_reason.as_deref(),
+        &row.source_fingerprints_json,
+        row.invalidated_at.as_deref(),
+        &update,
+    ) {
+        return Ok(record_store
+            .update_freshness(&row.record_id, update)?
+            .unwrap_or(row));
+    }
+    Ok(row)
+}
+
+fn refresh_memory_backfill_freshness(
+    repo_root: &Path,
+    memory_store: &ProjectMemoryStore,
+    row: AgentMemoryRow,
+    checked_at: &str,
+) -> Result<AgentMemoryRow, CommandError> {
+    let update = evaluate_freshness(
+        repo_root,
+        parse_freshness_state(&row.freshness_state),
+        row.invalidated_at.as_deref(),
+        &row.source_fingerprints_json,
+        checked_at,
+        false,
+    )?;
+    if freshness_update_changed(
+        &row.freshness_state,
+        row.freshness_checked_at.as_deref(),
+        row.stale_reason.as_deref(),
+        &row.source_fingerprints_json,
+        row.invalidated_at.as_deref(),
+        &update,
+    ) {
+        return Ok(memory_store
+            .update_freshness(&row.memory_id, update)?
+            .unwrap_or(row));
+    }
+    Ok(row)
+}
+
+fn backfill_should_skip_for_freshness(freshness_state: &str) -> bool {
+    matches!(
+        parse_freshness_state(freshness_state),
+        FreshnessState::Blocked
+            | FreshnessState::Stale
+            | FreshnessState::SourceMissing
+            | FreshnessState::Superseded
+    )
+}
+
+fn backfill_project_record_diagnostic(
+    row: &ProjectRecordRow,
+    code: &'static str,
+    message: &'static str,
+) -> JsonValue {
+    json!({
+        "code": code,
+        "message": message,
+        "freshnessState": row.freshness_state.as_str(),
+        "staleReason": row.stale_reason.as_deref(),
+        "freshnessCheckedAt": row.freshness_checked_at.as_deref(),
+        "invalidatedAt": row.invalidated_at.as_deref(),
+        "supersedesId": row.supersedes_id.as_deref(),
+        "supersededById": row.superseded_by_id.as_deref(),
+    })
+}
+
+fn backfill_memory_diagnostic(
+    row: &AgentMemoryRow,
+    code: &'static str,
+    message: &'static str,
+) -> JsonValue {
+    json!({
+        "code": code,
+        "message": message,
+        "freshnessState": row.freshness_state.as_str(),
+        "staleReason": row.stale_reason.as_deref(),
+        "freshnessCheckedAt": row.freshness_checked_at.as_deref(),
+        "invalidatedAt": row.invalidated_at.as_deref(),
+        "supersedesId": row.supersedes_id.as_deref(),
+        "supersededById": row.superseded_by_id.as_deref(),
+    })
 }
 
 fn log_failed_retrieval_query(
@@ -966,6 +1268,44 @@ fn validate_backfill_job(record: &NewAgentEmbeddingBackfillJobRecord) -> Result<
     Ok(())
 }
 
+fn retrieval_diagnostic(
+    base: Option<JsonValue>,
+    mut freshness: FreshnessRefreshSummary,
+    blocked_excluded_count: usize,
+    freshness_reason_counts: BTreeMap<String, usize>,
+) -> Option<JsonValue> {
+    freshness.blocked_count = freshness.blocked_count.max(blocked_excluded_count);
+    let mut freshness_json = freshness.as_json();
+    if let Some(object) = freshness_json.as_object_mut() {
+        object.insert(
+            "reasonCounts".into(),
+            json!(freshness_reason_counts
+                .iter()
+                .map(|(reason, count)| json!({
+                    "reason": reason,
+                    "count": count,
+                }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    match base {
+        Some(mut diagnostic) => {
+            if let Some(object) = diagnostic.as_object_mut() {
+                object.insert("freshnessDiagnostics".into(), freshness_json);
+                Some(diagnostic)
+            } else {
+                Some(json!({
+                    "detail": diagnostic,
+                    "freshnessDiagnostics": freshness_json,
+                }))
+            }
+        }
+        None => Some(json!({
+            "freshnessDiagnostics": freshness_json,
+        })),
+    }
+}
+
 fn retrieval_filters_json(filters: &AgentContextRetrievalFilters) -> JsonValue {
     json!({
         "recordKinds": filters.record_kinds.iter().map(project_record_kind_sql_value).collect::<Vec<_>>(),
@@ -1074,6 +1414,17 @@ fn embedding_is_current(
         && model == Some(DEFAULT_AGENT_EMBEDDING_MODEL)
         && dimension == Some(super::agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM)
         && version == Some(DEFAULT_AGENT_EMBEDDING_VERSION)
+}
+
+fn freshness_score_adjustment(freshness_state: &str) -> f64 {
+    match freshness_state {
+        "current" => 0.20,
+        "source_unknown" => 0.0,
+        "stale" => -0.15,
+        "source_missing" => -0.25,
+        "superseded" => -0.30,
+        _ => 0.0,
+    }
 }
 
 fn embedding_backfill_job_id(
